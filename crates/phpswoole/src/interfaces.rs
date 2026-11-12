@@ -172,9 +172,7 @@ fn local_mac(call: &Call) {
             let start = usize::from(link.sdl_nlen);
             let base = (&raw const link.sdl_data).cast::<u8>();
             // SAFETY: sdl_data holds the name then sdl_alen address bytes.
-            let address = unsafe { base.add(start) };
-            // SAFETY: as above.
-            let address = unsafe { std::slice::from_raw_parts(address, 6) };
+            let address = unsafe { std::slice::from_raw_parts(base.wrapping_add(start), 6) };
             add_address(&mut array, entry.name().to_bytes(), address);
         }
     }

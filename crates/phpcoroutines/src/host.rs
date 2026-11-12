@@ -519,8 +519,7 @@ extern "C" fn defers(_context: *mut c_void) {
         if unsafe { swoole_rs_zend::host::call_anyway(fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
-        // SAFETY: the executor's pending exception, if any.
-        if !unsafe { swoole_rs_zend::sys::swr_zend_facade_exception() }.is_null() {
+        if !swoole_rs_zend::host::exception().is_null() {
             bailout::raise(Err(bailout::Bailout));
         }
         // SAFETY: the callable's cache, then its emalloc'd holder.

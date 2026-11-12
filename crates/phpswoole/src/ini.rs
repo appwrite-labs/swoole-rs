@@ -118,12 +118,11 @@ static mut ENTRIES: [zend_ini_entry_def; 11] = [
 pub unsafe fn swr_v1_phpswoole_register_ini(globals: *mut c_void, number: c_int, kind: c_int) {
     let entries = ptr::addr_of_mut!(ENTRIES).cast::<zend_ini_entry_def>();
     for index in 0..10 {
-        // SAFETY: startup alone writes this in-bounds definition before registration.
-        let entry = unsafe { entries.add(index) };
-        // SAFETY: this field is not borrowed by Zend until registration below.
-        let argument = unsafe { ptr::addr_of_mut!((*entry).mh_arg2) };
-        // SAFETY: startup exclusively initializes this callback argument.
-        unsafe { argument.write(globals) };
+        // One of the eleven definitions.
+        let entry = entries.wrapping_add(index);
+        // SAFETY: startup alone writes this in-bounds definition's callback
+        // argument, which Zend does not borrow until registration below.
+        unsafe { (*entry).mh_arg2 = globals };
     }
     // SAFETY: all definitions and their NTS/ZTS callback arguments have process lifetime;
     // the native leaf traps Zend allocation/update-handler bailouts below this frame.

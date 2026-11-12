@@ -368,8 +368,7 @@ impl<'a> FrameObject<'a> {
     /// `FrameObject(zdata, opcode, flags, code)`: a `Frame` object's
     /// properties, or the arguments around any other value.
     fn new(data: Option<&'a Value>, opcode: i64, flags: i64, code: i64) -> Self {
-        let frame = data.filter(|value| value.instance_of(&FRAME));
-        let Some((frame, object)) = frame.and_then(|frame| Some((frame, frame.object()?))) else {
+        let Some(frame) = data.filter(|value| value.instance_of(&FRAME)) else {
             #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
             #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
             let code = code as u16;
@@ -380,8 +379,8 @@ impl<'a> FrameObject<'a> {
                 data,
             };
         };
-        // SAFETY: a live Frame, which declares the property.
-        let long = |name: &CStr| unsafe { swoole_rs_zend::property(object, name) }.long();
+        // The Frame class declares both properties read here.
+        let long = |name: &CStr| frame.property(name).map_or(0, Value::long);
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
         let data = if opcode == OPCODE_CLOSE {
@@ -553,18 +552,16 @@ fn encoded(size: usize, write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize) -> 
         let mut buffer = [MaybeUninit::uninit(); INLINE];
         return (write(&mut buffer) == size).then_some(Frame::Inline(buffer, size));
     }
-    let out = string::alloc(size);
+    let mut out = string::ZBuf::with_capacity(size);
     // SAFETY: the fresh string's `size` writable bytes, which nothing else references.
-    let bytes = unsafe { slice::from_raw_parts_mut(string::val(out).cast(), size) };
+    let bytes = unsafe { slice::from_raw_parts_mut(out.as_mut_ptr().cast(), size) };
     if write(bytes) != size {
-        // SAFETY: the fresh string nothing else references.
-        unsafe { string::free(out) };
+        // Dropped: the string is freed.
         return None;
     }
-    // SAFETY: as above, now holding `size` bytes.
-    unsafe { string::truncate(out, size) };
-    // SAFETY: the fresh string's one reference, which the frame takes.
-    Some(Frame::Heap(unsafe { ZString::from_raw(out) }))
+    // SAFETY: `write` filled all `size` bytes of the capacity.
+    unsafe { out.set_len(size) };
+    Some(Frame::Heap(out.into_zstring()))
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
@@ -749,14 +746,14 @@ fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
 }
 
 fn unpack(call: &Call) {
-    let Ok(Some(string)) = call.arity(1, 1).and_then(|()| call.str(1)) else {
+    let Ok(Some(string)) = call.arity(1, 1).and_then(|()| call.zstr(1)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the argument's string; upstream decodes (unmasks) it in place.
-    let length = unsafe { (*string).len };
-    // SAFETY: the string holds `length` bytes at its value.
-    let data = unsafe { std::slice::from_raw_parts_mut(string::val(string), length) };
+    let length = string.bytes().len();
+    // SAFETY: the argument's string holds `length` bytes at its value; upstream
+    // decodes (unmasks) it in place.
+    let data = unsafe { std::slice::from_raw_parts_mut(string::val(string.as_ptr()), length) };
     if data.len() < 2 {
         host::set_last_error(PROTOCOL_ERROR);
         call.set_bool(false);
@@ -1033,7 +1030,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let key = key.filter(|key| key.bytes().len() == SEC_KEY_LENGTH);
     let Some(key) = key else {
         context.state().response.status = 400;
-        send::end(context, ptr::null_mut())?;
+        send::end(context, None)?;
         return Ok(false);
     };
     let accept = swoole_rs_websocket::accept(key.bytes());
@@ -1074,7 +1071,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     let state = context.state();
     state.response.status = 101;
     state.upgrade = 1;
-    send::end(context, ptr::null_mut())
+    send::end(context, None)
 }
 
 /// `swoole_error_log(SW_LOG_TRACE, SW_ERROR_SESSION_NOT_EXIST, ...)`.

@@ -14,12 +14,11 @@ use std::{
 };
 use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
-use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Owned, Value,
+    Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zend_string, zval},
+    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zval},
     value::set_long,
 };
 
@@ -232,16 +231,12 @@ pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> boo
 }
 
 /// `ctx->sendfile`.
-pub(crate) fn sendfile(mut ctx: Ctx, file: *mut zend_string, offset: i64, length: usize) -> bool {
+pub(crate) fn sendfile(mut ctx: Ctx, file: &ZStr, offset: i64, length: usize) -> bool {
     let state = ctx.state();
     if let Some(socket) = socket(state) {
-        // SAFETY: a live, NUL-terminated file name.
-        let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
-        socket.sendfile(file, offset, length)
+        socket.sendfile(file.c_str(), offset, length)
     } else {
-        // SAFETY: a live file name.
-        let name = unsafe { swoole_rs_zend::string::bytes(file) };
-        server_methods::sendfile(server(state), state.fd, name, offset, length)
+        server_methods::sendfile(server(state), state.fd, file.bytes(), offset, length)
     }
 }
 

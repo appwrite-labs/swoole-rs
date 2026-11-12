@@ -5,7 +5,7 @@ use std::ffi::c_int;
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_facade_exception, swr_zend_unserialize},
+    sys::swr_zend_unserialize,
 };
 
 /// `serialize($value)`'s bytes (`None` when it threw), and whether it bailed out.
@@ -14,8 +14,7 @@ pub fn serialize(value: &Value) -> (Option<Box<[u8]>>, Result<(), Bailout>) {
         Ok(serialized) => serialized,
         Err(bailout) => return (None, Err(bailout)),
     };
-    // SAFETY: a pure read of EG(exception).
-    let threw = !unsafe { swr_zend_facade_exception() }.is_null();
+    let threw = !swoole_rs_zend::host::exception().is_null();
     let bytes = serialized.filter(|_| !threw);
     (bytes.map(|bytes| bytes.bytes().into()), Ok(()))
 }

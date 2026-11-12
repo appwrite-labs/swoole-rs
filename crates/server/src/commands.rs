@@ -163,11 +163,8 @@ pub(crate) fn reply_socket<'a>(
     if u64::from(config.mode_) == MODE_BASE {
         return serv.worker_pipe(0, true);
     }
-    let pair = config
-        .pipe_command
-        .cast::<swoole_rs_tls::socket_pair::SocketPair>();
-    // SAFETY: the server's live command pipe, a `UnixSocket`.
-    crate::objects::socket(unsafe { (*pair).worker_socket }.cast())
+    // The server's live command pipe, a `UnixSocket`.
+    crate::objects::socket(config.command_pipe()?.worker_socket.cast())
 }
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {

@@ -377,26 +377,27 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: on the new coroutine, into its own context.
     unsafe { swr_zend_coroutine_start(this.vm(), stack, size) };
     record_last_msec(this);
-    let call = this.call();
-    // SAFETY: the context's callable, which nothing else reaches yet.
-    let callable = unsafe { &mut *call };
     // SAFETY: the creator's resolved callable.
-    callable.fcc = unsafe { *args.fcc };
-    let fci = &mut callable.fci;
-    fci.size = size_of::<zend_fcall_info>();
-    fci.object = ptr::null_mut();
-    fci.param_count = args.argc;
-    fci.params = args.argv;
-    fci.named_params = ptr::null_mut();
-    fci.retval = this.return_value();
-    if !args.callable.is_null() {
-        // SAFETY: the creator's live callable zval.
-        fci.function_name = unsafe { *args.callable };
-        // SAFETY: the copy takes a reference.
-        unsafe { swr_zval_try_addref(&raw mut fci.function_name) };
-    }
+    let fcc = unsafe { *args.fcc };
+    let retval = this.return_value();
+    this.with(|context| {
+        context.call.fcc = fcc;
+        let fci = &mut context.call.fci;
+        fci.size = size_of::<zend_fcall_info>();
+        fci.object = ptr::null_mut();
+        fci.param_count = args.argc;
+        fci.params = args.argv;
+        fci.named_params = ptr::null_mut();
+        fci.retval = retval;
+        if !args.callable.is_null() {
+            // SAFETY: the creator's live callable zval.
+            fci.function_name = unsafe { *args.callable };
+            // SAFETY: the copy takes a reference.
+            unsafe { swr_zval_try_addref(&raw mut fci.function_name) };
+        }
+    });
     // SAFETY: a resolved callable (sw_zend_fci_cache_persist).
-    unsafe { swr_zend_callable_hold(call) };
+    unsafe { swr_zend_callable_hold(this.call()) };
     Some(this)
 }
 
@@ -405,8 +406,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
 pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
-    // SAFETY: the context's resolved callable; a field read.
-    let handler = unsafe { (*ctx.call()).fcc.function_handler };
+    let handler = ctx.with(|context| context.call.fcc.function_handler);
     // SAFETY: a resolved callable's handler.
     let function = unsafe { &*handler };
     // SAFETY: every zend_function starts with its type.
@@ -431,8 +431,7 @@ pub(crate) fn defer_next(ctx: Ctx) -> *mut swr_zend_callable {
         return ptr::null_mut();
     };
     let return_value = ctx.return_value();
-    // SAFETY: the context's return value.
-    if swoole_rs_zend::kind(unsafe { &*return_value }) != IS_UNDEF {
+    if ctx.with(|context| swoole_rs_zend::kind(&context.return_value)) != IS_UNDEF {
         // SAFETY: a kept callable.
         let task = unsafe { &mut *task };
         task.fci.param_count = 1;
@@ -471,9 +470,7 @@ pub(crate) fn close(ctx: Ctx) {
         .cast::<zval>();
     // SAFETY: a live context's callable; `open` added this reference.
     unsafe { zval_ptr_dtor(function_name) };
-    // SAFETY: as above.
-    let undef = unsafe { &mut *function_name };
-    undef.u1.type_info = IS_UNDEF;
+    ctx.with(|context| context.call.fci.function_name.u1.type_info = IS_UNDEF);
     // SAFETY: as above; `open` held its object and closure.
     unsafe { swr_zend_coroutine_fcc_discard(fcc(call)) };
     // SAFETY: a live context's return value.
@@ -503,8 +500,7 @@ pub(crate) fn init_main() {
 
 /// `free_main_context`, at RSHUTDOWN.
 pub(crate) fn free_main() {
-    // SAFETY: the thread's main context, which no reference reaches meanwhile.
-    unsafe { *main().ptr() = Context::EMPTY };
+    main().with(|context| *context = Context::EMPTY);
 }
 
 /// `PHPCoroutine::defer`: keep a task on the running context.

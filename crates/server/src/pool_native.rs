@@ -58,7 +58,7 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
-    TimerNode, owner_reinit, swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec,
+    TimerNode, swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec,
     swoole_timer_is_available, swoole_timer_select, swr_v1_timer_add_plain,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
@@ -658,9 +658,7 @@ fn master_ops(pool: Pool, worker: Worker, op: u32, arg: u64) -> i64 {
         }
         OP_TIMER_INIT => {
             if swoole_timer_is_available() {
-                let timer = swoole_rs_corebase::thread_timer();
-                // SAFETY: a timer is available, so the slot holds this thread's live timer.
-                owner_reinit(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }, true);
+                crate::objects::timer_reinit(true);
             } else {
                 // This thread has no timer.
                 swoole_timer_create(true);

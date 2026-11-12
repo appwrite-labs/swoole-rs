@@ -17,8 +17,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
-    swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload, zend_string,
-    zval,
+    swr_zend_http_treat_data, swr_zend_http_upload, zend_string, zval,
 };
 use swoole_rs_zend::{Class, Owned, OwnedArray, Value, ZStr, ZString, string};
 
@@ -295,10 +294,8 @@ pub(crate) fn minit(codecs: u32) {
 /// # Panics
 /// The class is not registered.
 pub(crate) fn property_offset(class: &Class, name: &CStr) -> u32 {
-    let ce = class.entry();
-    assert!(!ce.is_null(), "a registered class");
-    // SAFETY: a registered class; the lookup only reads its property table.
-    unsafe { swr_zend_http_property_offset(ce, name.as_ptr(), name.count_bytes()) }
+    assert!(!class.entry().is_null(), "a registered class");
+    class.property_offset(name)
 }
 
 /// `Swoole\Http\Request`'s declared `fd` slot.

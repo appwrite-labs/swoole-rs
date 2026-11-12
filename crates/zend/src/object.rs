@@ -48,22 +48,12 @@ impl<T> Object<T> {
         std
     }
 
-    /// The standard destructor, with PHP property-destructor bailouts contained.
-    /// # Errors
-    /// A property destructor bailed out.
-    /// # Safety
-    /// The same live-object contract as [`Self::dtor`].
-    pub unsafe fn try_dtor(object: *mut zend_object) -> Result<(), crate::bailout::Bailout> {
-        // SAFETY: Zend is freeing this initialized standard object.
-        crate::bailout::trapped(unsafe { crate::sys::swr_zend_try_facade_object_dtor(object) })
-    }
-
     /// Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: the class creates `Object<T>`s
     /// with `create` and frees them with `free`.
     /// # Safety
     /// `create` returns the `std` of a new `Object<T>` (one [`Self::create`]
     /// made), and `free` destroys the standard object
-    /// it is given ([`Self::dtor`] or [`Self::try_dtor`]) without freeing it:
+    /// it is given ([`Self::dtor`]) without freeing it:
     /// Zend then frees the allocation at `std - OFFSET`.
     pub unsafe fn install(
         entry: &mut zend_class_entry,

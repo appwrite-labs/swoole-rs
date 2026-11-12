@@ -32,6 +32,24 @@ pub(crate) fn in_worker_bus(
     }
 }
 
+/// Runs `f` over this thread's timer (`SwooleTG.timer`), if it has one.
+fn thread_timer<R>(f: impl FnOnce(&swoole_rs_timer::Owner) -> R) -> Option<R> {
+    let timer = swoole_rs_corebase::thread_timer().cast::<swoole_rs_timer::Owner>();
+    // SAFETY: null, or this thread's live timer, which only this thread frees and
+    // neither caller below does; the borrow ends with `f`.
+    unsafe { timer.as_ref() }.map(f)
+}
+
+/// Whether this thread has a timer that no reactor drives (`!timer->get_reactor()`).
+pub(crate) fn timer_detached() -> bool {
+    thread_timer(|timer| swoole_rs_timer::owner_reactor(timer).is_null()).unwrap_or(false)
+}
+
+/// `SwooleTG.timer->reinit(manually_trigger)`, when this thread has a timer.
+pub(crate) fn timer_reinit(manually_trigger: bool) {
+    thread_timer(|timer| swoole_rs_timer::owner_reinit(timer, manually_trigger));
+}
+
 /// `sock->set_nonblock()`.
 pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let set = swoole_rs_reactor::socket_upstream::socket_set_fd_option;

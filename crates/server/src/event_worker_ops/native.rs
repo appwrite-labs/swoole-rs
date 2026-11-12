@@ -60,6 +60,11 @@ impl Context<'_> {
     pub(super) fn tables(&self) -> &crate::ServerTables {
         self.state().tables_ref()
     }
+    /// The connection `OP_CONN_AT` selected, if any.
+    pub(super) fn conn(&self) -> Option<&crate::ConnectionRecord> {
+        // SAFETY: null or the connection selected, a live slot of the server's table.
+        unsafe { self.conn.as_ref() }
+    }
     pub(super) fn info(&self) -> &DataHead {
         // SAFETY: the ops reading it run with the event's live head.
         unsafe { &*self.info }
@@ -202,12 +207,8 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_COMMAND_REQUEST => {
-            let pair = ctx
-                .config()
-                .pipe_command
-                .cast::<swoole_rs_tls::socket_pair::SocketPair>();
-            // SAFETY: the server's live command pipe, a `UnixSocket`.
-            let pipe = unsafe { (*pair).worker_socket }.cast();
+            // The server's live command pipe, a `UnixSocket`.
+            let pipe = ctx.config().command_pipe()?.worker_socket.cast();
             let id = u16::try_from(ctx.worker().id()).unwrap_or(0);
             let bus = ctx.state().message_bus();
             let pipe = crate::objects::socket(pipe);
@@ -307,8 +308,7 @@ fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CONN_UNREAD => {
-            // SAFETY: the connection OP_CONN_AT selected.
-            let sock = socket(unsafe { (*ctx.conn).socket })?;
+            let sock = socket(ctx.conn()?.socket)?;
             ctx.reactor().unread(sock);
             0
         }

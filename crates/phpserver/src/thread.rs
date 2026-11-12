@@ -16,7 +16,7 @@ use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
     kind,
-    sys::{IS_NULL, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_fcall_info},
+    sys::{IS_NULL, swr_zend_thread_main_request, zend_fcall_info},
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -66,8 +66,7 @@ pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
         *existing = Some(server);
         return 1;
     }
-    // SAFETY: a pure TSRM read.
-    if unsafe { swr_zend_tsrm_is_main_thread() } {
+    if swoole_rs_zend::is_main_thread() {
         0
     } else {
         2

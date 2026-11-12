@@ -70,15 +70,14 @@ fn free(event: &AsyncEvent) {
     unsafe { swoole_rs_corebase::swr_v1_core_resolver_free(event.data) };
 }
 
-/// Hands `event` to the reactor thread that owns its pipe, or frees it if the write
-/// fails.
+/// Hands `event` to the reactor thread that owns its pipe, `socket`, or frees it if
+/// the write fails.
 ///
 /// # Safety
-/// `event` is a heap event nothing else uses, with a live pipe socket.
-unsafe fn send_event(event: *mut AsyncEvent) {
+/// `event` is a heap event nothing else uses, and `socket` its live pipe socket.
+unsafe fn send_event(event: *mut AsyncEvent, socket: *mut c_void) {
     let token = event.expose_provenance();
-    // SAFETY: as the caller promises.
-    let socket = unsafe { (*event).pipe_socket }.cast::<SocketRecord>();
+    let socket = socket.cast::<SocketRecord>();
     // SAFETY: `token` is readable for its size; the socket is live.
     let sent = unsafe { socket_write_sync(socket, (&raw const token).cast(), size_of::<usize>()) };
     if sent <= 0 {
@@ -98,6 +97,8 @@ extern "C" fn execute(token: usize) {
     // SAFETY: the pool passes a dispatched event; until it is sent back the reactor
     // thread only sets `canceled`, atomically, and reads nothing the worker writes.
     let mut job = unsafe { &*event }.clone();
+    // The event's pipe, which nothing writes once it is dispatched.
+    let pipe = job.pipe_socket;
     match job.handler {
         None => (job.error, job.retval) = (AIO_BAD_REQUEST, -1),
         Some(_) if job.canceled.load(Relaxed) != 0 => (job.error, job.retval) = (AIO_CANCELED, -1),
@@ -107,8 +108,8 @@ extern "C" fn execute(token: usize) {
     unsafe { (*event).error = job.error };
     // SAFETY: as above.
     unsafe { (*event).retval = job.retval };
-    // SAFETY: the worker owns the event until it sends it.
-    unsafe { send_event(event) };
+    // SAFETY: the worker owns the event until it sends it, on its own pipe.
+    unsafe { send_event(event, pipe) };
 }
 
 /// A retirement notice, back on the reactor thread: joins the idle worker.
@@ -130,15 +131,16 @@ extern "C" fn release_callback(event: &AsyncEvent) {
 
 /// Asks the main thread to join idle worker `key`.
 extern "C" fn retire(key: usize) {
+    let pipe = swr_v1_core_aio_default_socket();
     let notice = AsyncEvent::new(
         ptr::without_provenance_mut(key),
         None,
         Some(release_callback),
-        swr_v1_core_aio_default_socket(),
+        pipe,
     );
     let event = copy(&notice);
     // SAFETY: a fresh heap event on the default pipe.
-    unsafe { send_event(event) };
+    unsafe { send_event(event, pipe) };
 }
 
 extern "C" fn thread_init() {

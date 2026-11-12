@@ -1,7 +1,7 @@
 //! The executor introspection functions of `swoole_admin_server.cc`, which the
 //! library's admin server calls: `swoole_get_vm_status()`,
 //! `swoole_get_objects()` and `swoole_get_object_by_handle()`.
-use std::ptr::NonNull;
+use std::{ops::Range, ptr::NonNull};
 use swoole_rs_zend::{
     Call, Php, handlers, set_object,
     sys::{
@@ -22,17 +22,33 @@ fn objects_top(_php: Php<'_>) -> u32 {
     unsafe { swr_zend_objects_top() }
 }
 
-/// The live objects of the store, in handle order (`objects_store_foreach`).
-fn live_objects(php: Php<'_>) -> impl Iterator<Item = NonNull<zend_object>> {
+/// An object the store holds, live while this call releases none. Only
+/// [`live_objects`] makes one.
+struct Live(NonNull<zend_object>);
+
+impl Live {
+    /// The object, with a new reference for the caller to hand on.
+    fn retained(&self) -> *mut zend_object {
+        // SAFETY: a live object.
+        unsafe { swr_zend_object_addref(self.0.as_ptr()) };
+        self.0.as_ptr()
+    }
+}
+
+/// The live objects of the store among `handles`, in handle order
+/// (`objects_store_foreach`).
+fn live_objects(php: Php<'_>, handles: Range<u32>) -> impl Iterator<Item = Live> {
     let top = objects_top(php);
-    // SAFETY: each handle is below the store's top.
-    (0..top).filter_map(|handle| NonNull::new(unsafe { swr_zend_objects_get(handle) }))
+    (handles.start..handles.end.min(top))
+        // SAFETY: each handle is below the store's top.
+        .filter_map(|handle| NonNull::new(unsafe { swr_zend_objects_get(handle) }))
+        .map(Live)
 }
 
 fn vm_status(call: &Call) {
     call.set_array();
     // At most the store's u32 top.
-    let count = u32::try_from(live_objects(call.php()).count()).unwrap_or(u32::MAX);
+    let count = u32::try_from(live_objects(call.php(), 0..u32::MAX).count()).unwrap_or(u32::MAX);
     call.add_assoc_long(c"object_num", i64::from(count));
     // SAFETY: the executor's resource list.
     call.add_assoc_long(
@@ -47,11 +63,9 @@ fn objects(call: &Call) {
         return;
     }
     call.set_array();
-    for object in live_objects(call.php()) {
-        // SAFETY: a live object; the array takes the new reference.
-        unsafe { swr_zend_object_addref(object.as_ptr()) };
-        // SAFETY: as above.
-        unsafe { add_next_index_object(call.return_value(), object.as_ptr()) };
+    for object in live_objects(call.php(), 0..u32::MAX) {
+        // SAFETY: the array in the return slot takes the new reference.
+        unsafe { add_next_index_object(call.return_value(), object.retained()) };
     }
 }
 
@@ -69,17 +83,15 @@ fn object_by_handle(call: &Call) {
         return;
     };
     let top = objects_top(call.php());
-    // SAFETY: the handle is below the store's top.
+    // `handle + 1` is at most the store's top.
     let object = in_store(handle, top)
-        .and_then(|handle| NonNull::new(unsafe { swr_zend_objects_get(handle) }));
+        .and_then(|handle| live_objects(call.php(), handle..handle + 1).next());
     let Some(object) = object else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a live object; the return value takes the new reference.
-    unsafe { swr_zend_object_addref(object.as_ptr()) };
-    // SAFETY: the return slot is writable.
-    unsafe { set_object(call.return_value(), object.as_ptr()) };
+    // SAFETY: the return slot is writable, and takes the new reference.
+    unsafe { set_object(call.return_value(), object.retained()) };
 }
 
 #[cfg(test)]

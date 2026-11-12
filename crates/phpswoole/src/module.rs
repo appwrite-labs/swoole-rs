@@ -15,17 +15,17 @@ use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
 };
 use swoole_rs_zend::{
-    Call, Class, E_WARNING,
+    Call, Class, E_WARNING, Value,
     bailout::{self, Bailout},
     report,
     sys::{
         HashTable, swr_zend_after_fork, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
-        swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_function_find,
-        swr_zend_leak_check, swr_zend_module_globals, swr_zend_module_globals_init,
-        swr_zend_php_version, swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
+        swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_leak_check,
+        swr_zend_module_globals, swr_zend_module_globals_init, swr_zend_php_version,
+        swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
         swr_zend_runtime_call_handler, swr_zend_sapi_name, swr_zend_signals_uncheck,
         swr_zend_stream_constant_no_close, swr_zend_temporary_directory, swr_zend_try_hook,
-        swr_zend_try_minit, zend_class_entry, zend_execute_data, zval,
+        swr_zend_try_minit, zend_class_entry, zend_execute_data, zend_function, zval,
     },
 };
 
@@ -626,20 +626,12 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
     frame: *mut zend_execute_data,
     value: *mut zval,
 ) {
-    let name = c"cli_set_process_title";
-    // SAFETY: this request's function table.
-    let function = unsafe { swr_zend_function_find(name.as_ptr(), name.count_bytes()) };
-    if function.is_null() {
-        set_last_error(PHP_FATAL_ERROR);
-        bailout::defer(report(
-            E_WARNING,
-            c"swoole_set_process_name only support in CLI mode",
-        ));
-        // SAFETY: Zend's frame and return slot.
-        unsafe { Call::new(frame, value) }.set_bool(false);
-    } else {
-        // SAFETY: a found function.
-        let function = unsafe { &*function };
+    // SAFETY: Zend's frame and return slot.
+    let call = unsafe { Call::new(frame, value) };
+    let function = call.php().function_table().find(b"cli_set_process_title");
+    if let Some(function) = function.and_then(Value::pointer) {
+        // SAFETY: a function table's values point at its live functions.
+        let function = unsafe { &*function.cast::<zend_function>() };
         // SAFETY: an internal function (the CLI SAPI's).
         let handler = unsafe { function.internal_function.handler };
         // SAFETY: its handler, with this call's frame and return slot; the
@@ -647,6 +639,13 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
         if unsafe { swr_zend_runtime_call_handler(handler, frame, value) } != 0 {
             Bailout.defer();
         }
+    } else {
+        set_last_error(PHP_FATAL_ERROR);
+        bailout::defer(report(
+            E_WARNING,
+            c"swoole_set_process_name only support in CLI mode",
+        ));
+        call.set_bool(false);
     }
     bailout::finish();
 }

@@ -413,7 +413,7 @@ mod tests {
         let lock = CoroutineLock::new(false, &FUTEX);
         assert_eq!(lock.acquire(true).code, 0);
         contender(&lock);
-        unsafe { *super::super::errno() = libc::EINTR };
+        swoole_rs_corebase::sys::set_errno(libc::EINTR);
         STATE.with(|state| state.borrow_mut().result = -1);
         assert_eq!(lock.acquire(true).code, libc::EINTR);
         STATE.with(|state| {

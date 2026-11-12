@@ -177,6 +177,18 @@ impl Default for ServerConfig {
     }
 }
 
+impl ServerConfig {
+    /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
+    pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
+        let pipe = self
+            .pipe_command
+            .cast::<swoole_rs_tls::socket_pair::SocketPair>();
+        // SAFETY: null, or the pair that op boxed, which nothing frees while the
+        // configuration lives.
+        unsafe { pipe.as_ref() }
+    }
+}
+
 #[cfg(any(test, feature = "upstream-symbols"))]
 impl ServerConfig {
     /// The platform/runtime-dependent defaults a new server starts with.

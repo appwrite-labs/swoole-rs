@@ -244,8 +244,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
         return Some(u64::from(valid));
     }
-    // SAFETY: null or the connection OP_CONN_AT selected.
-    let conn = unsafe { ctx.conn.as_ref() }?;
+    let conn = ctx.conn()?;
     Some(match op {
         OP_CONN_READABLE => {
             let removed =
@@ -297,8 +296,7 @@ fn global_hook(ctx: &Context<'_>, hook: u64) {
         return;
     }
     if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
-        // SAFETY: the shutdown hooks take the server.
-        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv.raw()) };
+        ctx.serv.call_hook(view::ServerHook::BeforeShutdown);
         return;
     }
     let worker_id = ctx.worker().id() as usize;

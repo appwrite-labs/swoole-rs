@@ -74,8 +74,9 @@ pub mod exports {
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::log;
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
-    use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_reactor::{Socket, SocketRecord};
     use swoole_rs_server::{ConnectionRecord, view};
+    use swoole_rs_tls::upstream::send;
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
@@ -178,14 +179,15 @@ pub mod exports {
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket) };
         let fragment = conn.websocket_buffer.cast::<CppString>();
+        // SAFETY: null or the connection's live fragment buffer, which only this call
+        // reaches until it deletes it.
+        let mut buffered = unsafe { fragment.as_mut() };
         let mut context = Context {
-            has_fragment: u8::from(!fragment.is_null()),
+            has_fragment: u8::from(buffered.is_some()),
             closing: u8::from(conn.websocket_status == STATUS_CLOSING),
             ..Context::default()
         };
-        if !fragment.is_null() {
-            // SAFETY: the connection's live fragment buffer.
-            let fragment = unsafe { &*fragment };
+        if let Some(fragment) = buffered.as_deref() {
             context.fragment_length = fragment.len();
             #[expect(
                 clippy::cast_possible_truncation,
@@ -236,8 +238,10 @@ pub mod exports {
                 conn.websocket_buffer = buffer.cast();
             }
             Action::Append | Action::Finish => {
-                // SAFETY: the decision appends only to a live fragment.
-                let buffer = unsafe { &mut *fragment };
+                // The decision appends only to a live fragment.
+                let Some(buffer) = buffered.take() else {
+                    return -1;
+                };
                 buffer.append(payload.unwrap_or_default());
                 if decision.action == Action::Finish {
                     #[expect(
@@ -322,30 +326,20 @@ pub mod exports {
     /// 503 while the server is at `max_concurrency`, else `Server::dispatch_task`.
     ///
     /// # Safety
-    /// Upstream's: a live server, its port's protocol, a connection socket and its data.
-    pub unsafe extern "C" fn dispatch_request(
-        serv: *mut c_void,
-        proto: *const c_void,
-        socket: *mut SocketRecord,
+    /// Upstream's: the server's port's protocol, and the connection socket's data.
+    pub(crate) unsafe fn dispatch_request(
+        serv: view::Server<'_>,
+        proto: *const Protocol,
+        socket: Socket<'_>,
         rdata: *const c_void,
     ) -> c_int {
-        // SAFETY: per the caller, `serv` is a live `Server` for the call.
-        let serv = unsafe { view::Server::from_raw(serv) };
         let counters = serv.counters();
         if counters.concurrency.load(Ordering::Relaxed) >= counters.max_concurrency {
-            // SAFETY: a live socket and a static packet.
-            unsafe {
-                swoole_rs_tls::upstream::socket_send(
-                    socket,
-                    SERVICE_UNAVAILABLE.as_ptr().cast(),
-                    SERVICE_UNAVAILABLE.len(),
-                    0,
-                )
-            };
+            _ = send(socket, SERVICE_UNAVAILABLE, 0);
             return -1;
         }
         // SAFETY: upstream's arguments, forwarded.
-        unsafe { dispatch_task(proto.cast(), socket.cast(), rdata) }
+        unsafe { dispatch_task(proto, socket.as_ptr().cast(), rdata) }
     }
 
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.

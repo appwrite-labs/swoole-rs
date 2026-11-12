@@ -245,12 +245,12 @@ pub unsafe fn factory(
     exception: *mut sys::zend_class_entry,
     report: Report,
 ) -> Result<*mut Callable, bailout::Bailout> {
-    if !name.is_null() {
+    // SAFETY: the caller supplies null or the NUL-terminated argument name.
+    let name = (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes());
+    if let Some(name) = name {
         // SAFETY: a non-null candidate is a live initialized zval.
         if value.is_null() || unsafe { type_of(value) } == sys::IS_NULL {
             if !allow_null {
-                // SAFETY: the caller supplies the NUL-terminated argument name.
-                let name = unsafe { CStr::from_ptr(name) }.to_bytes();
                 let message = [name, b" must be of type callable, null given"].concat();
                 let message = CString::new(message).unwrap_or_default();
                 // SAFETY: a registered exception class; Zend copies the message.
@@ -270,9 +270,7 @@ pub unsafe fn factory(
     // Release the failed candidate as the original factory does.
     drop(handle);
     bailout::outcome(())?;
-    if !name.is_null() {
-        // SAFETY: the caller supplies a NUL-terminated argument name.
-        let name = unsafe { CStr::from_ptr(name) }.to_bytes();
+    if let Some(name) = name {
         // SAFETY: Zend returns a static type name for a live candidate.
         let kind = unsafe { sys::zend_zval_type_name(value) };
         // SAFETY: Zend returned a static NUL-terminated type name.

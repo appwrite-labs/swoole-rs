@@ -371,8 +371,7 @@ fn can_exit() -> Result<bool, Bailout> {
     if !unsafe { kept::invoke(handle, 0, ptr::null_mut(), &raw mut retval) }? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
-    // SAFETY: the executor's pending exception, if any.
-    let exception = unsafe { z::swr_zend_facade_exception() };
+    let exception = swoole_rs_zend::host::exception();
     if !exception.is_null() {
         // SAFETY: zend_exception_error(EG(exception), E_ERROR), inside a trap.
         unsafe { bailout::trap(z::swr_zend_facade_exception_error, exception.cast()) }?;

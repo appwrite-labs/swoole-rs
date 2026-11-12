@@ -14,7 +14,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Event, ReactorPrepared, Socket, SocketRecord};
+use swoole_rs_reactor::{Event, ReactorPrepared, Socket};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -61,10 +61,9 @@ pub(crate) unsafe fn on_read(
     kind: u32,
 ) -> c_int {
     let event = event.cast::<Event>();
-    // SAFETY: as the caller guarantees.
-    let socket = unsafe { (*event).socket_ptr() }.cast::<SocketRecord>();
-    // SAFETY: the event's live connection socket, which only this reactor thread touches.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+    // SAFETY: as the caller guarantees; the borrow ends with this read of its socket,
+    // the live connection socket, which only this reactor thread touches.
+    let Some(socket) = unsafe { &*event }.socket() else {
         return -1;
     };
     // A connection socket's object is its connection.
@@ -225,10 +224,11 @@ impl Connection for Read<'_> {
             Framing::Length => self.framed::<Callbacks>(MODE_LENGTH),
             Framing::Eof => self.framed::<Callbacks>(MODE_EOF),
             Framing::Redis => {
-                let protocol = &raw const self.port.protocol;
-                // SAFETY: the port's protocol, the live connection and the current buffer.
+                let (port, socket, buffer) = (self.port, self.socket, self.buffer);
+                let conn = self.conn();
+                // SAFETY: the current buffer; the connection's object is its request.
                 i64::from(unsafe {
-                    crate::resp_recv::recv_packet(protocol, self.conn.cast(), self.buffer)
+                    crate::resp_recv::recv_packet(&port.protocol, conn, socket, buffer)
                 })
             }
         }
@@ -249,17 +249,14 @@ impl Connection for Read<'_> {
             },
             data: self.string().as_mut_ptr(),
         };
-        let proto: *const c_void = (&raw const self.port.protocol).cast();
+        let proto = &raw const self.port.protocol;
         let rdata: *const c_void = (&raw const data).cast();
         if dispatch == Dispatch::Task {
             // SAFETY: the port's protocol, the live socket and its data.
-            return i64::from(unsafe {
-                dispatch_task(proto.cast(), self.socket.as_ptr().cast(), rdata)
-            });
+            return i64::from(unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) });
         }
-        let serv = self.server.raw();
         // SAFETY: as above, on the live server.
-        let result = unsafe { dispatch_request(serv, proto, self.socket.as_ptr(), rdata) };
+        let result = unsafe { dispatch_request(self.server, proto, self.socket, rdata) };
         // The connection, which dispatch may have given a new request.
         self.request = self.conn().object.cast();
         i64::from(result)
