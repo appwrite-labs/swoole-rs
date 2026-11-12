@@ -5,9 +5,9 @@ use crate::{
     sys::{
         _zval_struct__bindgen_ty_1, IS_OBJECT, IS_OBJECT_EX, object_init_ex,
         object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
-        swr_zend_property_slot, swr_zend_try_facade_update, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -170,6 +170,34 @@ pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
     // `free::<T>` drops it, when no reference to the object (so none to its
     // data) remains. Handlers are null only before registration.
     Some(unsafe { &*Object::<T>::data_ptr(std) })
+}
+
+/// One of `T`'s objects by its handle, for a holder the object must not keep
+/// alive, such as a hook its own data registers. It is found again in the
+/// executor's object store at each use, so it reads `None` once the object is
+/// being freed, or when its handle went to an object that is no `T`. Another
+/// `T` can take the handle later: a holder that needs the same object compares
+/// what it finds.
+pub struct Weak<T>(u32, PhantomData<fn() -> T>);
+
+impl<T: Custom> Weak<T> {
+    /// The handle of the `T` object `value` holds.
+    #[must_use]
+    pub fn of(value: &Value) -> Option<Self> {
+        value.custom::<T>()?;
+        // SAFETY: the zval holds the live object.
+        Some(Self(unsafe { (*value.object()?).handle }, PhantomData))
+    }
+
+    /// The object, with a reference of its own.
+    #[must_use]
+    pub fn get(&self) -> Option<Owned> {
+        let found = Owned::default();
+        // SAFETY: reads the executor's object store on its thread, and writes
+        // the empty zval `found` owns only with a counted object.
+        unsafe { swr_zend_objects_hold(self.0, T::class().handlers(), found.as_ptr()) }
+            .then_some(found)
+    }
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler

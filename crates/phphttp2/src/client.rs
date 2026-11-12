@@ -25,8 +25,8 @@ use swoole_rs_inflate::Inflate;
 use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
+    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak, ZString,
+    sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -139,16 +139,29 @@ impl Custom for Plain<1> {
 /// drops the socket; the client releases what hangs off it (streams, queue,
 /// HPACK) the next time it looks (`reap`).
 struct Conn {
-    object: *mut zend_object,
+    /// The client object, which a conn must not keep alive.
+    object: Weak<Data>,
     socket: Cell<Option<Co>>,
     zsocket: RefCell<Owned>,
     closed: Cell<bool>,
 }
 
 impl Conn {
-    fn props(&self) -> Props<'_> {
-        // SAFETY: the client object outlives its client and conn.
-        unsafe { Props::new(ce(), self.object) }
+    /// The client object, while it lives and this is its client's conn.
+    fn this(&self) -> Option<Owned> {
+        let this = self.object.get()?;
+        let conn = &this.custom::<Data>()?.client.get()?.conn;
+        std::ptr::eq(Rc::as_ptr(conn), self).then_some(this)
+    }
+
+    /// `write` over the client object's properties, under its class; nothing
+    /// once the object is gone.
+    fn props(&self, write: impl FnOnce(Props<'_>)) {
+        if let Some(this) = self.this()
+            && let Some(props) = this.props(Some(&CLIENT))
+        {
+            write(props);
+        }
     }
 }
 
@@ -223,7 +236,6 @@ enum Frame {
 /// so it is only borrowed shared, its state is in cells, and no `RefCell`
 /// borrow is held across a yield or a call into PHP.
 struct Client {
-    object: *mut zend_object,
     conn: Rc<Conn>,
     host: RefCell<Vec<u8>>,
     port: i64,
@@ -244,10 +256,6 @@ struct Client {
 
 fn strerror(code: c_int) -> String {
     swoole_rs_corebase::sys::strerror(code)
-}
-
-fn ce() -> *mut zend_class_entry {
-    CLIENT.entry()
 }
 
 /// `php_swoole_socket_set` when `settings` is an array.
@@ -322,15 +330,17 @@ type Streams<T = Stream> = IdMap<u32, T>;
 fn socket_closed(conn: &Conn) {
     conn.socket.set(None);
     conn.closed.set(true);
-    conn.props().bool(c"connected", false);
-    conn.props().null(c"socket");
+    conn.props(|props| {
+        props.bool(c"connected", false);
+        props.null(c"socket");
+    });
     // Emptied before the socket object's reference goes.
     let zsocket = conn.zsocket.take();
     drop(zsocket);
 }
 
 impl Client {
-    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
+    fn new(object: Weak<Data>, host: &[u8], port: i64, ssl: bool) -> Self {
         let conn = Rc::new(Conn {
             object,
             socket: Cell::new(None),
@@ -339,7 +349,6 @@ impl Client {
         });
         let local = sw_rs_http2_default_settings();
         Self {
-            object,
             conn,
             host: RefCell::new(host.to_vec()),
             port,
@@ -367,11 +376,6 @@ impl Client {
         self.conn.zsocket.borrow().copy()
     }
 
-    /// Writes under the client class.
-    fn props(&self) -> Props<'_> {
-        self.conn.props()
-    }
-
     /// `socket_dtor`'s release of what hung off the closed socket.
     fn reap(&self) {
         if !self.conn.closed.replace(false) {
@@ -385,8 +389,10 @@ impl Client {
     /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
     fn update_error(&self, code: c_int, message: &[u8]) {
         swoole_rs_corebase::log::set_last_error(code);
-        self.props().long(c"errCode", i64::from(code));
-        self.props().bytes(c"errMsg", message);
+        self.conn.props(|props| {
+            props.long(c"errCode", i64::from(code));
+            props.bytes(c"errMsg", message);
+        });
     }
 
     /// `io_error`: the socket's errCode and errMsg.
@@ -451,10 +457,11 @@ impl Client {
         protocol.package_body_offset = 0;
         protocol.get_package_length = Some(swoole_rs_ports::http_routes::exports::http2_length);
         socket.set_protocol(protocol);
-        // SAFETY: `$this` declares `setting`.
-        apply(socket, unsafe {
-            swoole_rs_zend::property(self.object, c"setting")
-        });
+        if let Some(this) = self.conn.this()
+            && let Some(setting) = this.property(c"setting")
+        {
+            apply(socket, setting);
+        }
         let host = self.host.borrow().clone();
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
@@ -471,10 +478,10 @@ impl Client {
             self.close();
             return false;
         }
-        self.props()
-            .own()
-            .value(c"socket", &self.conn.zsocket.borrow());
-        self.props().bool(c"connected", true);
+        self.conn.props(|props| {
+            props.own().value(c"socket", &self.conn.zsocket.borrow());
+            props.bool(c"connected", true);
+        });
         true
     }
 
@@ -489,7 +496,8 @@ impl Client {
             self.update_error(libc::EBADF, strerror(libc::EBADF).as_bytes());
             return false;
         };
-        self.props().own().bool(c"connected", false);
+        self.conn
+            .props(|props| props.own().bool(c"connected", false));
         // Its members are not read after a close.
         if !socket.close() {
             self.io_error(socket);
@@ -862,10 +870,11 @@ impl Client {
                     debug,
                 } = read
                 {
-                    let props = self.props();
-                    props.long(c"errCode", i64::from(code));
-                    props.bytes(c"errMsg", &debug);
-                    props.long(c"serverLastStreamId", i64::from(server_last));
+                    self.conn.props(|props| {
+                        props.long(c"errCode", i64::from(code));
+                        props.bytes(c"errMsg", &debug);
+                        props.long(c"serverLastStreamId", i64::from(server_last));
+                    });
                 }
                 self.close();
                 return Frame::Fail;
@@ -1315,7 +1324,6 @@ fn construct(call: &Call) {
     let Ok((host, port, ssl)) = parsed else {
         return call.set_bool(false);
     };
-    let object = call.this();
     if this(call).is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
@@ -1324,11 +1332,15 @@ fn construct(call: &Call) {
         call.throw(&EXCEPTION, c"host is empty", INVALID_PARAMS);
         return call.set_bool(false);
     }
+    let Some(object) = call.this_value().and_then(Weak::of) else {
+        return call.set_bool(false);
+    };
     let client = Client::new(object, host, port, ssl);
-    let props = client.props();
-    props.bytes(c"host", host);
-    props.long(c"port", port);
-    props.bool(c"ssl", ssl);
+    if let Some(props) = call.props(Some(&CLIENT)) {
+        props.bytes(c"host", host);
+        props.long(c"port", port);
+        props.bool(c"ssl", ssl);
+    }
     if let Some(data) = call.custom::<Data>()
         && data.client.set(client).is_err()
     {
