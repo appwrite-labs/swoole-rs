@@ -36,15 +36,7 @@ fn putenv(call: &Call) {
     // SAFETY: PHP's environment lock, released below.
     unsafe { swr_zend_runtime_env_lock(true) };
     let mut environ = ENVIRON.lock().unwrap_or_else(PoisonError::into_inner);
-    let entry = environ.entry(key.to_vec()).insert_entry(stored);
-    let pointer = entry.get().as_ptr().cast_mut();
-    if assignment.is_none() {
-        // no '=' unsets the name
-        // SAFETY: a NUL-terminated name.
-        unsafe { libc::unsetenv(pointer) };
-    }
-    // SAFETY: the string stays in ENVIRON until this name is set again.
-    let set = assignment.is_none() || unsafe { libc::putenv(pointer) } == 0;
+    let set = store(&mut environ, key, stored, assignment.is_none());
     if set && key.eq_ignore_ascii_case(b"TZ") {
         // SAFETY: TZ changed; under the environment lock.
         unsafe { tzset() };
@@ -55,6 +47,83 @@ fn putenv(call: &Call) {
     call.set_bool(set);
 }
 
+/// Point the process environment at `stored` for `key` (or unset `key`), keeping
+/// `stored` in `environ`. libc holds the pointer it is given, so the name's previous
+/// string is freed only once libc has let go of it.
+fn store(
+    environ: &mut HashMap<Vec<u8>, CString>,
+    key: &[u8],
+    stored: CString,
+    unset: bool,
+) -> bool {
+    let pointer = stored.as_ptr().cast_mut();
+    let previous = environ.insert(key.to_vec(), stored);
+    if unset {
+        // SAFETY: a NUL-terminated name.
+        unsafe { libc::unsetenv(pointer) };
+    }
+    // SAFETY: the string stays in `environ` until this name is set again.
+    let set = unset || unsafe { libc::putenv(pointer) } == 0;
+    if !set && let Some(previous) = previous {
+        // libc still holds the previous string.
+        environ.insert(key.to_vec(), previous);
+    }
+    set
+}
+
 unsafe extern "C" {
     fn tzset();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{CStr, c_char};
+
+    unsafe extern "C" {
+        static environ: *const *const c_char;
+    }
+
+    /// How many entries of the process environment are for `name`.
+    fn entries(name: &[u8]) -> usize {
+        let (mut count, mut at) = (0, unsafe { environ });
+        while let Some(entry) = unsafe { at.as_ref() }.filter(|entry| !entry.is_null()) {
+            let entry = unsafe { CStr::from_ptr(*entry) }.to_bytes();
+            let rest = entry.strip_prefix(name);
+            count += usize::from(rest.is_some_and(|rest| rest.first() == Some(&b'=')));
+            at = at.wrapping_add(1);
+        }
+        count
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no putenv")]
+    fn a_name_set_again_keeps_one_entry_then_unsets() {
+        let name = b"SWR_PUTENV_TEST";
+        let mut map = HashMap::new();
+        for value in [
+            "a-first-value-too-long-for-the-second-to-reuse-0123456789",
+            "second",
+            "third",
+        ] {
+            let stored = CString::new(format!("SWR_PUTENV_TEST={value}")).unwrap();
+            assert!(store(&mut map, name, stored, false), "putenv {value}");
+            assert_eq!(entries(name), 1, "after {value}");
+            assert_eq!(
+                std::env::var("SWR_PUTENV_TEST").as_deref(),
+                Ok(value),
+                "reads {value}"
+            );
+        }
+        assert!(
+            store(
+                &mut map,
+                name,
+                CString::new("SWR_PUTENV_TEST").unwrap(),
+                true
+            ),
+            "unset"
+        );
+        assert_eq!(entries(name), 0, "after the unset");
+    }
 }
