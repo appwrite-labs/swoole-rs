@@ -239,8 +239,10 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_MESSAGE_BUS => {
-            let counter = ctx.server().counters().pipe_packet_msg_id.as_ptr();
-            let bus = pool_native::new_bus(counter.cast());
+            let counter = core::ptr::from_ref(&ctx.server().counters().pipe_packet_msg_id);
+            // SAFETY: the server's shared counters, mapped until `swr_v1_server_delete`,
+            // after this thread has freed its bus (`OP_DESTROY_MESSAGE_BUS`).
+            let bus = pool_native::new_bus(unsafe { &*counter });
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
             handle.set_always_chunked();

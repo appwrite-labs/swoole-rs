@@ -155,10 +155,10 @@ fn listen(call: &Call) {
 }
 
 /// `network::Socket::sendto(host, port, data, length)` on `socket`: the bytes
-/// sent, or -1.
+/// sent, or -1. `host` ends with a NUL, and C reads it up to its first.
 /// # Safety
 /// `socket` is null or a live socket.
-unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]) -> isize {
+unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]) -> isize {
     if socket.is_null() {
         return -1;
     }
@@ -170,14 +170,7 @@ unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]
         reason = "Socket::sendto's (int) port, as upstream"
     )]
     let port = port as c_int;
-    let error = assign(
-        &mut address.addr,
-        &mut address.len,
-        kind,
-        host.to_bytes_with_nul(),
-        port,
-        true,
-    );
+    let error = assign(&mut address.addr, &mut address.len, kind, host, port, true);
     if error != 0 {
         swoole_rs_corebase::log::set_last_error(error);
         return -1;
@@ -211,7 +204,7 @@ fn send(call: &Call) {
                 serv.server_socket(server_socket)
             };
             // SAFETY: null or a live socket, and the path's bytes.
-            let sent = unsafe { socket_sendto(socket, path.c_str(), 0, payload) } > 0;
+            let sent = unsafe { socket_sendto(socket, path.bytes_with_nul(), 0, payload) } > 0;
             return call.set_bool(sent);
         }
     }
@@ -236,7 +229,7 @@ fn sendto(call: &Call) {
     let Ok((address, port, data, server_socket)) = parsed else {
         return call.set_bool(false);
     };
-    let (host, address) = address.map_or((c"", &[][..]), |a| (a.c_str(), a.bytes()));
+    let (host, address) = address.map_or((&[0][..], &[][..]), |a| (a.bytes_with_nul(), a.bytes()));
     if data.is_empty() {
         no_payload();
         return call.set_bool(false);

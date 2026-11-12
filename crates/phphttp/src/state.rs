@@ -198,7 +198,8 @@ pub(crate) struct Response {
     method: c_int,
     version: c_int,
     pub(crate) status: c_int,
-    pub(crate) reason: *mut c_char,
+    /// `status()`'s reason, as `%s` prints it: up to its first NUL.
+    pub(crate) reason: Option<Box<CString>>,
     pub(crate) zobject: Slot,
     pub(crate) zheader: Slot,
     pub(crate) zcookie: Slot,

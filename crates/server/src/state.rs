@@ -19,7 +19,6 @@ use crate::send::send_to_connection;
 use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
-use std::cell::RefCell;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_tls::socket_pair::SocketPair;
@@ -433,21 +432,13 @@ impl Drop for ServerState {
     }
 }
 
-thread_local! {
-    static ERROR_TEXT: RefCell<CString> = RefCell::new(CString::default());
-}
-
 /// `Server::get_startup_error_message`: the last error message, or the last error
-/// code as text when there is no message. The text lives until the thread's next call.
-pub(crate) fn startup_error(message: &CStr, code: c_int) -> *const c_char {
+/// code as text when there is no message.
+pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
     if !message.is_empty() || code <= 0 {
-        return message.as_ptr();
+        return message;
     }
-    ERROR_TEXT.with(|text| {
-        let mut text = text.borrow_mut();
-        *text = CString::new(code.to_string()).unwrap_or_default();
-        text.as_ptr()
-    })
+    CString::new(code.to_string()).unwrap_or_default()
 }
 
 fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
@@ -829,11 +820,7 @@ mod tests {
 
     #[test]
     fn startup_error_falls_back_to_the_code() {
-        let text = |message: &CStr, code| {
-            let out = startup_error(message, code);
-            // SAFETY: the message or this thread's text.
-            unsafe { CStr::from_ptr(out) }.to_owned()
-        };
+        let text = |message: &CStr, code| startup_error(message.to_owned(), code);
         assert_eq!(text(c"bind failed", 98), c"bind failed");
         assert_eq!(text(c"", 1004), c"1004");
         assert_eq!(text(c"", 0), c"");

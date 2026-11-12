@@ -9,7 +9,8 @@
 //! exports them to C and supplies OS messages.
 #![forbid(unsafe_code)]
 
-use std::ffi::c_char;
+use std::borrow::Cow;
+use std::ffi::{CStr, CString, c_char};
 
 /// Return the supported C ABI version.
 #[must_use]
@@ -33,9 +34,9 @@ pub use state::*;
 macro_rules! messages {
     ($($name:ident => $message:literal),* $(,)?) => {
         #[inline(always)]
-        fn known_message(code: i32) -> *const c_char {
+        fn known(code: i32) -> Option<&'static CStr> {
             $(const $name: i32 = ErrorCode::$name as i32;)*
-            match code { $($name => $message,)* _ => return std::ptr::null() }.as_ptr()
+            Some(match code { $($name => $message,)* _ => return None })
         }
     };
 }
@@ -172,6 +173,11 @@ messages! {
     SW_ERROR_CO_SOCKET_CLOSE_WAIT => c"Coroutine socket close wait",
 }
 
+/// A known code's static message; null for an unknown one.
+fn known_message(code: i32) -> *const c_char {
+    known(code).map_or(std::ptr::null(), CStr::as_ptr)
+}
+
 /// Return an immutable process-lifetime message, never to be freed; unknown is null.
 #[must_use]
 pub fn swr_v1_error_message(code: i32) -> *const c_char {
@@ -231,6 +237,15 @@ pub fn swoole_get_last_error_msg() -> *const c_char {
     swr_v1_error_buffer()
 }
 
+/// A copy of this thread's last error message, which C++ may overwrite.
+#[must_use]
+pub fn last_error_message() -> CString {
+    LAST_ERROR.with(|buffer| {
+        let bytes = buffer.iter().map(|cell| cell.get().to_ne_bytes()[0]);
+        CString::new(bytes.take_while(|&byte| byte != 0).collect::<Vec<_>>()).unwrap_or_default()
+    })
+}
+
 /// `void swoole_clear_last_error_msg()`.
 pub fn swoole_clear_last_error_msg() {
     LAST_ERROR.with(|buffer| buffer[0].set(0));
@@ -253,7 +268,6 @@ pub fn strerror_with(
     code: i32,
     system: Option<extern "C" fn(i32) -> *const c_char>,
 ) -> *const c_char {
-    use std::io::Write;
     thread_local! {
         static UNKNOWN: [std::cell::Cell<c_char>; 32] = const { [const { std::cell::Cell::new(0) }; 32] };
     }
@@ -264,16 +278,11 @@ pub fn strerror_with(
     if !known.is_null() {
         return known;
     }
-    let colon = if cfg!(target_vendor = "apple") {
-        ":"
-    } else {
-        ""
-    };
     // The longest prefix + int32 decimal representation is 26 bytes including NUL,
     // so the zeroed tail always terminates it.
     let mut text = [0u8; 32];
     let mut remaining = text.as_mut_slice();
-    if write!(remaining, "Unknown error{colon} {code}").is_err() {
+    if write_unknown(&mut remaining, code).is_err() {
         return std::ptr::null();
     }
     let used = 32 - remaining.len();
@@ -285,4 +294,29 @@ pub fn strerror_with(
         }
         buffer.as_ptr().cast()
     })
+}
+
+/// An unknown code's message, as libc spells one.
+fn write_unknown(out: &mut impl std::io::Write, code: i32) -> std::io::Result<()> {
+    let colon = if cfg!(target_vendor = "apple") {
+        ":"
+    } else {
+        ""
+    };
+    write!(out, "Unknown error{colon} {code}")
+}
+
+/// [`strerror_with`] for Rust: `system`'s text below `SW_ERROR_BEGIN`, a known code's
+/// static message, else an unknown code's, which no later code overwrites.
+#[must_use]
+pub fn strerror_text(code: i32, system: impl FnOnce(i32) -> String) -> Cow<'static, CStr> {
+    if code < ErrorCode::SW_ERROR_BEGIN as i32 {
+        return Cow::Owned(CString::new(system(code)).unwrap_or_default());
+    }
+    if let Some(known) = known(code) {
+        return Cow::Borrowed(known);
+    }
+    let mut text = Vec::new();
+    write_unknown(&mut text, code).ok();
+    Cow::Owned(CString::new(text).unwrap_or_default())
 }

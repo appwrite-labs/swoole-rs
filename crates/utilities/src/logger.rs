@@ -623,8 +623,7 @@ pub fn swr_v1_utils_log(kind: c_int, level: c_int, code: c_int, origin: &CStr, m
     let message = message.to_bytes();
     let threshold = swoole_get_log_level();
     let failed = || {
-        // SAFETY: swoole_strerror returns a NUL-terminated message.
-        let reason = unsafe { CStr::from_ptr(swoole_rs_error_ffi::swoole_strerror(code)) };
+        let reason = swoole_rs_error::strerror_text(code, swoole_rs_corebase::sys::strerror);
         let code = code.to_string();
         let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
         [origin, b"(): ", message, &tail.concat()].concat()
