@@ -281,11 +281,8 @@ struct Peer {
 }
 
 /// The socket's error code and message.
-fn socket_error<'a>(socket: Co) -> (c_int, &'a CStr) {
-    // SAFETY: the socket's message is NUL-terminated, and kept until its next error.
-    (socket.err_code(), unsafe {
-        CStr::from_ptr(socket.err_msg())
-    })
+fn socket_error(socket: Co) -> (c_int, CString) {
+    (socket.err_code(), socket.err_message().unwrap_or_default())
 }
 
 /// `get_addr()` and `get_port()`: the network socket's address.
@@ -745,7 +742,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
         Some(cid)
     }
 
-    fn error(&mut self) -> (c_int, &CStr) {
+    fn error(&mut self) -> (c_int, CString) {
         socket_error(self.socket)
     }
 

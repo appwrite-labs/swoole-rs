@@ -7,9 +7,10 @@
 use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
 use core::cell::{Cell, UnsafeCell};
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
+use std::ffi::CString;
 use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
@@ -253,6 +254,14 @@ impl Co {
         write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
+    }
+
+    /// A copy of `errMsg`, which the socket may replace or free; `None` when null.
+    #[must_use]
+    pub fn err_message(self) -> Option<CString> {
+        let message = self.err_msg();
+        // SAFETY: `set_err_msg`'s contract: a NUL-terminated message the record holds.
+        (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) }.to_owned())
     }
 
     /// `f` over a copy of the protocol, written back after it: nothing borrows the

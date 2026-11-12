@@ -209,14 +209,7 @@ impl Co {
     /// `errCode` and a copy of `errMsg`, which the socket may replace or free.
     #[must_use]
     pub fn error(self) -> (c_int, CString) {
-        let message = self.0.err_msg();
-        let message = if message.is_null() {
-            CString::default()
-        } else {
-            // SAFETY: errMsg is a NUL-terminated string the socket keeps for this read.
-            unsafe { CStr::from_ptr(message) }.to_owned()
-        };
-        (self.0.err_code(), message)
+        (self.0.err_code(), self.0.err_message().unwrap_or_default())
     }
 
     /// `set_err(code)`: the code's message.

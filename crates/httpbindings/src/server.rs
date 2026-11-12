@@ -1,5 +1,5 @@
 //! Coroutine HTTP server handler routing and accept loop. Native code owns all effects/data.
-use core::ffi::CStr;
+use std::ffi::CString;
 use swoole_rs_locale::case_prefix;
 
 /// Whether a coroutine HTTP server handler's `pattern` routes `path`: a
@@ -27,7 +27,7 @@ pub trait AcceptHost {
     /// cid for the connection.
     fn accept(&mut self) -> Option<i64>;
     /// The socket's `errCode` and `errMsg`.
-    fn error(&mut self) -> (i32, &CStr);
+    fn error(&mut self) -> (i32, CString);
     /// `System::sleep(SW_ACCEPT_RETRY_TIME)`.
     fn sleep(&mut self);
     /// `http_server_coro_set_error`.
@@ -97,8 +97,8 @@ mod tests {
                 cid
             })
         }
-        fn error(&mut self) -> (i32, &CStr) {
-            (self.rounds.remove(0).2, c"boom")
+        fn error(&mut self) -> (i32, CString) {
+            (self.rounds.remove(0).2, c"boom".to_owned())
         }
         fn sleep(&mut self) {
             self.trace.push("sleep".into());

@@ -9,6 +9,7 @@ use crate::{
 };
 use libc::{c_int, iovec};
 use std::{
+    borrow::Cow,
     cell::Cell,
     ffi::{CStr, CString},
     ptr,
@@ -273,7 +274,7 @@ fn register_constants(minit: &Minit) {
 pub(crate) fn open(call: &Call) -> Option<Co> {
     let socket = constructed(call)?;
     if socket.is_closed() {
-        set_error(call, libc::EBADF, strerror(libc::EBADF));
+        set_error(call, libc::EBADF, &strerror(libc::EBADF));
         call.set_bool(false);
         return None;
     }
@@ -281,7 +282,7 @@ pub(crate) fn open(call: &Call) -> Option<Co> {
 }
 
 /// `strerror(code)` of a system error: `swoole_strerror` passes those to it.
-pub(crate) fn strerror(code: c_int) -> &'static CStr {
+pub(crate) fn strerror(code: c_int) -> Cow<'static, CStr> {
     swoole_rs_phpruntime::strerror(code)
 }
 
@@ -385,7 +386,7 @@ fn construct(call: &Call) {
     match owner::construct_core(domain, kind, protocol) {
         Ok(Ok(socket)) => sock.adopt(socket),
         Ok(Err(error)) => {
-            let text = strerror(error).to_string_lossy();
+            let text = strerror(error).to_string_lossy().into_owned();
             throw(
                 error,
                 &format!("new Socket() failed. Error: {text} [{error}]"),

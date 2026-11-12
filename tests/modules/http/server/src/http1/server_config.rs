@@ -50,9 +50,7 @@ impl Server {
     }
 
     fn get_startup_error_message(self) -> String {
-        let message = server_methods::get_startup_error_message();
-        // SAFETY: the thread's error text, terminated.
-        unsafe { CStr::from_ptr(message) }
+        server_methods::get_startup_error_message()
             .to_string_lossy()
             .into_owned()
     }

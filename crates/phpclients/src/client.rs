@@ -9,7 +9,7 @@ use crate::{
     socket::{Sock, strerror, warn},
 };
 use libc::c_int;
-use std::{cell::Cell, ffi::CStr, ptr};
+use std::{borrow::Cow, cell::Cell, ffi::CStr, ptr};
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
@@ -160,13 +160,13 @@ fn report_object(props: Option<Props>, code: c_int, message: &CStr) {
 }
 
 /// `swoole_strerror(code)`.
-fn error_message(code: c_int) -> &'static CStr {
+fn error_message(code: c_int) -> Cow<'static, CStr> {
     swoole_rs_phpruntime::strerror(code)
 }
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, code)`: `swoole_strerror(code)`.
 fn report_code(call: &Call, code: c_int) {
-    report(call, code, error_message(code));
+    report(call, code, &error_message(code));
 }
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, socket)`.
@@ -217,7 +217,7 @@ fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
         Ok(Some(created)) => created,
         Ok(None) => {
             let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            report_object(Some(this), code, error_message(code));
+            report_object(Some(this), code, &error_message(code));
             return None;
         }
         Err(bailout) => {
@@ -242,7 +242,7 @@ fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
     socket.use_zend_strings();
     socket.handle().set_zero_copy(true);
     if kind & SOCK_SSL != 0 && !socket.enable_ssl() {
-        report_object(Some(this), libc::EISCONN, error_message(libc::EISCONN));
+        report_object(Some(this), libc::EISCONN, &error_message(libc::EISCONN));
         socket_closed(data, this);
         return None;
     }
@@ -270,7 +270,7 @@ fn connected(call: &Call) -> Option<(Co, Owned)> {
 fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     let data = this(call)?;
     if data.co().is_some() {
-        report(call, libc::EISCONN, strerror(libc::EISCONN));
+        report(call, libc::EISCONN, &strerror(libc::EISCONN));
         return None;
     }
     let kind = type_property(call);

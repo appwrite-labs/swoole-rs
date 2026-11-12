@@ -12,6 +12,7 @@ use crate::{
 };
 use libc::c_int;
 use std::{
+    borrow::Cow,
     cell::{Cell, OnceCell, RefCell, RefMut},
     ffi::{CStr, CString},
     ptr,
@@ -207,7 +208,7 @@ fn features() -> u32 {
 }
 
 /// `swoole_strerror(code)`.
-fn strerror(code: c_int) -> &'static CStr {
+fn strerror(code: c_int) -> Cow<'static, CStr> {
     swoole_rs_phpruntime::strerror(code)
 }
 
@@ -431,7 +432,7 @@ impl Client {
     /// `is_available`: connected, else errCode says no connection.
     fn is_available(&self) -> bool {
         if !self.co().is_some_and(Co::is_connected) {
-            set_error_properties(self.props(), NO_CONNECTION, strerror(NO_CONNECTION));
+            set_error_properties(self.props(), NO_CONNECTION, &strerror(NO_CONNECTION));
             return false;
         }
         true
@@ -534,7 +535,7 @@ impl Client {
             Ok(zsocket) => zsocket,
             Err(error) => {
                 if !bailout::pending() {
-                    self.set_error(error, strerror(error), CONNECT_FAILED);
+                    self.set_error(error, &strerror(error), CONNECT_FAILED);
                 }
                 return false;
             }
@@ -601,7 +602,7 @@ impl Client {
     )]
     fn send_request(&self, path: &[u8]) -> bool {
         if path.is_empty() {
-            set_error_properties(self.props(), INVALID_PARAMS, strerror(INVALID_PARAMS));
+            set_error_properties(self.props(), INVALID_PARAMS, &strerror(INVALID_PARAMS));
             return false;
         }
         self.props().null(c"headers");
@@ -905,7 +906,11 @@ impl Client {
             if let Some(socket) = self.co() {
                 socket.check_bound(EVENT_RDWR);
             }
-            set_error_properties(self.props(), CO_HAS_BEEN_BOUND, strerror(CO_HAS_BEEN_BOUND));
+            set_error_properties(
+                self.props(),
+                CO_HAS_BEEN_BOUND,
+                &strerror(CO_HAS_BEEN_BOUND),
+            );
         }
         parser
     }
@@ -2047,7 +2052,7 @@ fn close(call: &Call) {
     let Some(_hold) = client.hold() else {
         // A failed request already closed its socket; keep its error.
         if client.get_long(c"errCode") == 0 {
-            set_error_properties(client.props(), NO_CONNECTION, strerror(NO_CONNECTION));
+            set_error_properties(client.props(), NO_CONNECTION, &strerror(NO_CONNECTION));
         }
         return call.set_bool(false);
     };

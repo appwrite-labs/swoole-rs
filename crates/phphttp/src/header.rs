@@ -298,13 +298,12 @@ fn build(
     let state = ctx.state();
     // http status line
     out.extend_from_slice(b"HTTP/1.1 ");
-    if state.response.reason.is_null() {
-        out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
-    } else {
+    if let Some(reason) = &state.response.reason {
         out.extend_from_slice(decimal(&mut [0; 20], state.response.status.into()));
         out.push(b' ');
-        // SAFETY: `status()` stored a NUL-terminated reason.
-        out.extend_from_slice(unsafe { CStr::from_ptr(state.response.reason) }.to_bytes());
+        out.extend_from_slice(reason.as_bytes());
+    } else {
+        out.extend_from_slice(&swoole_rs_http::status_message(state.response.status));
     }
     out.extend_from_slice(b"\r\n");
 
