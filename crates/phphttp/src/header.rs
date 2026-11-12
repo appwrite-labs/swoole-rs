@@ -16,9 +16,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::{
-    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, zend_string, zval,
-};
+use swoole_rs_zend::sys::{swr_zend_efree, swr_zend_emalloc, zval};
 use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
@@ -83,20 +81,8 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// of its own (`GC_TRY_ADDREF`). A value's `__toString` may reach the same
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
-fn property(response: &Slot, which: usize) -> Option<HeldArray> {
-    let object = response.object()?;
-    let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
-    // OBJ_PROP: a declared slot of that object.
-    let slot = object.wrapping_byte_add(offset).cast::<zval>();
-    // SAFETY: a declared property slot of the context's live response.
-    unsafe { Value::from_ptr(slot) }?.hold()
-}
-
-/// `swr_zend_http_string`: `zval_get_string`'s argument and result.
-#[repr(C)]
-struct Arg {
-    value: *mut zval,
-    result: *mut zend_string,
+fn property(response: &Slot, name: &CStr) -> Option<HeldArray> {
+    response.get()?.property(name)?.hold()
 }
 
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
@@ -132,14 +118,7 @@ fn to_string(value_: &Value) -> Result<Text<'_>, bailout::Bailout> {
     if let Some(text) = value_.str() {
         return Ok(Text::Borrowed(text));
     }
-    let mut arg = Arg {
-        value: value_.as_ptr(),
-        result: ptr::null_mut(),
-    };
-    // SAFETY: a C body over a live zval and a writable result.
-    unsafe { bailout::trap(swr_zend_http_get_string, (&raw mut arg).cast())? };
-    // SAFETY: `zval_get_string`'s new reference, which the `ZString` takes.
-    Ok(Text::Owned(unsafe { ZString::from_raw(arg.result) }))
+    bailout::outcome(Text::Owned(value_.string()))
 }
 
 /// Each element of an array (`ZEND_HASH_FOREACH_KEY_VAL`): `Ok(key)` for a string
@@ -310,7 +289,7 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    if let Some(header) = property(&state.response.zobject, 0)
+    if let Some(header) = property(&state.response.zobject, c"header")
         && let Some(header) = header.array()
     {
         // Asked once, like upstream's `compression_types` test.
@@ -365,7 +344,7 @@ fn build(
     let state = ctx.state();
 
     // http cookies
-    if let Some(cookie) = property(&state.response.zobject, 1)
+    if let Some(cookie) = property(&state.response.zobject, c"cookie")
         && let Some(cookie) = cookie.array()
     {
         each::<()>(cookie, |_, value_| {
@@ -458,7 +437,7 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        if let Some(trailer) = property(&ctx.state().response.zobject, 2)
+        if let Some(trailer) = property(&ctx.state().response.zobject, c"trailer")
             && let Some(trailer) = trailer.array()
         {
             each(trailer, |key, value_| {
