@@ -538,7 +538,8 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// The ops that write the configuration and tables, each of which runs only while
 /// the master is the server's only thread: `Server::create` (`OP_ALLOC_SESSIONS`,
 /// `OP_ALLOC_PORT_GS`, `OP_HTTP_DEFAULTS`, `OP_ALLOC_WORKERS`, `OP_CREATE_FACTORY`,
-/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_CONNECTION_NUMS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
+/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_CONNECTION_NUMS`,
+/// `OP_ALLOC_PORT_CONNECTION_NUMS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
 /// `OP_STREAM_PORT`, `OP_ST_PIPE_COMMAND_NEW`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
 /// `OP_CLEAR_SEND_YIELD`, `OP_CLEAR_MAX_QUEUED`, `OP_SEND_TIMEOUT_MIN`), and `destroy`
 /// once the factory has joined its threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
@@ -557,6 +558,9 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // SAFETY: as `config`, for the counters `swr_v1_server_new` mapped; and before
     // the server forks or after its workers are reaped, no process shares them.
     let counters = || unsafe { &mut *gs() };
+    let port_gs = |index| Some(o.port_at(index)?.gs.cast::<PortCounters>());
+    // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
+    let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
     let mode = || u64::from(o.config().mode_);
     Some(match op {
         OP_SET_DISABLE_NOTIFY => {
@@ -705,11 +709,20 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             tables().connection_list.free();
             counters().connection_nums.free();
             for index in 0..o.tables().ports().len() {
-                if let Some(gs) = o.port_at(index as u64).and_then(|port| port.counters()) {
+                if let Some(gs) = port_counters(index as u64) {
                     gs.connection_nums.free();
                 }
             }
             0
+        }
+        OP_ALLOC_PORT_CONNECTION_NUMS => {
+            let Some(gs) = port_counters(arg) else {
+                return Some(0);
+            };
+            let cells = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            let ready = !cells.is_null();
+            gs.connection_nums = cells;
+            u64::from(ready)
         }
         OP_FREE_USER_WORKERS => {
             config().user_workers.free();
@@ -1568,13 +1581,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {
             thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
             0
-        }
-        OP_ALLOC_PORT_CONNECTION_NUMS => {
-            let Some(gs) = o.port_at(arg).and_then(|port| port.counters()) else {
-                return Some(0);
-            };
-            gs.connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
-            u64::from(!gs.connection_nums.is_null())
         }
         op => return effects(o, op, arg),
     })

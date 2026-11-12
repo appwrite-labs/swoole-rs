@@ -131,7 +131,7 @@ fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<
     let port = state.connection(server_fd.into(), 0)?.object;
     // SAFETY: null, or one of the server's ports, which live as long as it.
     let port = unsafe { crate::view::Port::from_raw(port) }?;
-    port.config().counters().map(|gs| &*gs)
+    port.config().counters()
 }
 
 /// `Server::send`'s counts: the server's and the session's port's responses and bytes,

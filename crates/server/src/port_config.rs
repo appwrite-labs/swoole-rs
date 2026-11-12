@@ -175,13 +175,9 @@ pub fn swr_v1_port_config_new(buffer_size: c_int) -> *mut PortConfig {
 
 impl PortConfig {
     /// The port's slot in `port_gs_list`, once the server has made it.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "shared-memory counters, atomic but for `connection_nums`, set at create"
-    )]
-    pub(crate) fn counters(&self) -> Option<&mut crate::shared::PortCounters> {
+    pub(crate) fn counters(&self) -> Option<&crate::shared::PortCounters> {
         // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
-        unsafe { self.gs.cast::<crate::shared::PortCounters>().as_mut() }
+        unsafe { self.gs.cast::<crate::shared::PortCounters>().as_ref() }
     }
     /// A new port's settings.
     pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
