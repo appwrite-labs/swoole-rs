@@ -388,7 +388,7 @@ impl<'a> Server<'a> {
     /// `Server::get_user_worker_num()`: the user workers added so far.
     #[must_use]
     pub fn user_worker_num(self) -> usize {
-        self.registry().pending().len()
+        self.registry().pending_count()
     }
 
     /// The server's worker arrays and counts.
