@@ -74,9 +74,8 @@ impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     fn tables(&self) -> &mut crate::records::ServerTables {
         // SAFETY: the server's tables, which live as long as it.
@@ -246,7 +245,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
             handle.set_always_chunked();
-            if !handle.alloc_buffer(ctx.config().ipc_max_size as usize) {
+            if !handle.alloc_buffer(ctx.config().ipc_max_size() as usize) {
                 std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
             }
             // SAFETY: a started server and its new bus.
@@ -322,7 +321,9 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 reason = "`serv->reactor_num = serv->worker_num`, as upstream converts it"
             )]
             let reactor_num = config.worker_num as u16;
-            config.reactor_num = reactor_num;
+            // SAFETY: `create_thread_factory`, in `Server::create` before any thread
+            // starts; `config` isn't read across the write.
+            unsafe { serv.config_mut() }.reactor_num = reactor_num;
             0
         }
         OP_SINGLE_REACTOR_PIPE => {
@@ -344,7 +345,14 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(crate::factory_ops::run_server(serv, RUN_CREATE_WORKER_PIPES) != 0)
         }
         OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
-        OP_CREATE_USER_WORKERS => u64::from(create_user_workers(serv, ctx.config())),
+        OP_CREATE_USER_WORKERS => {
+            let workers = create_user_workers(serv);
+            let created = !workers.is_null();
+            // SAFETY: `ThreadFactory::start`, before it starts a thread; `config` isn't
+            // read after the write.
+            unsafe { serv.config_mut() }.user_workers = workers;
+            u64::from(created)
+        }
         OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
             server_methods::store_listen_socket(ctx.server());

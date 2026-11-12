@@ -50,7 +50,8 @@ pub use helpers::{
 pub use local::Php;
 pub use minit::{Minit, Parent};
 pub use object::{
-    Custom, CustomClass, Object, Props, custom as custom_of, init_object, new_object, set_object,
+    Custom, CustomClass, Object, Props, Weak, custom as custom_of, init_object, new_object,
+    set_object,
 };
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;

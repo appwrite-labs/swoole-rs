@@ -4,7 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_memory::members::Shm;
 
 /// The independently configurable server fields and borrowed native handles.
@@ -14,7 +14,8 @@ pub struct ServerConfig {
     pub worker_num: u32,
     pub dgram_port_num: u8,
     pub dispatch_mode: u8,
-    pub scheduler_warning: bool,
+    /// Set and cleared by whichever thread dispatches, so an atomic.
+    pub scheduler_warning: AtomicBool,
     pub max_request: u32,
     pub max_request_grace: u32,
     pub udp_socket_ipv4: *mut c_void,
@@ -56,12 +57,16 @@ pub struct ServerConfig {
     pub heartbeat_check_interval: u16,
     pub warning_time: libc::time_t,
     pub timezone_: libc::c_long,
-    pub master_timer: *mut c_void,
-    pub heartbeat_timer: *mut c_void,
+    /// Armed and deleted by the master (or a base-mode worker) after its threads
+    /// start, so an atomic; only that thread uses the node.
+    pub master_timer: AtomicPtr<c_void>,
+    /// Armed by the heartbeat thread (or a single-threaded reactor), as `master_timer`.
+    pub heartbeat_timer: AtomicPtr<c_void>,
     pub output_buffer_size: u32,
     pub input_buffer_size: u32,
     pub max_queued_bytes: u32,
-    pub ipc_max_size: u32,
+    /// Raised at start, by whichever factory starts; read through [`Self::ipc_max_size`].
+    pub ipc_max_size: AtomicU32,
     pub private_data_1: *mut c_void,
     pub private_data_2: *mut c_void,
     pub private_data_3: *mut c_void,
@@ -107,7 +112,7 @@ impl Default for ServerConfig {
             worker_num: 0,
             dgram_port_num: 0,
             dispatch_mode: 2,
-            scheduler_warning: false,
+            scheduler_warning: AtomicBool::new(false),
             max_request: 0,
             max_request_grace: 0,
             udp_socket_ipv4: core::ptr::null_mut(),
@@ -145,16 +150,16 @@ impl Default for ServerConfig {
             heartbeat_check_interval: 0,
             warning_time: 0,
             timezone_: 0,
-            master_timer: core::ptr::null_mut(),
-            heartbeat_timer: core::ptr::null_mut(),
+            master_timer: AtomicPtr::new(core::ptr::null_mut()),
+            heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
             output_buffer_size: u32::MAX,
             input_buffer_size: 2 * 1024 * 1024,
             max_queued_bytes: 0,
-            ipc_max_size: if cfg!(target_vendor = "apple") {
+            ipc_max_size: AtomicU32::new(if cfg!(target_vendor = "apple") {
                 2048
             } else {
                 8192
-            },
+            }),
             private_data_1: core::ptr::null_mut(),
             private_data_2: core::ptr::null_mut(),
             private_data_3: core::ptr::null_mut(),
@@ -182,6 +187,19 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// `serv->ipc_max_size`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn ipc_max_size(&self) -> u32 {
+        self.ipc_max_size.load(Relaxed)
+    }
+
+    /// `Server::init_ipc_max_size()`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn init_ipc_max_size(&self) {
+        let size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+        self.ipc_max_size.store(size, Relaxed);
+    }
+
     /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self
@@ -267,8 +285,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         }
         _ => {}
     }
-    // SAFETY: no native callback runs during this leaf record access.
-    let config = unsafe { &mut *state.config() };
+    let config = state.config_ref();
     // SAFETY: no native callback runs during this leaf table access.
     let tables = unsafe { &mut *state.tables() };
     Some(match op {
@@ -326,7 +343,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             0
         }
         OP_SET_WARNING => {
-            config.scheduler_warning = true;
+            config.scheduler_warning.store(true, Relaxed);
             0
         }
         OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {
@@ -341,6 +358,9 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             _ => 0,
         },
         OP_SET_FIELD => {
+            // SAFETY: `Server::create`'s and `start`'s checks, before any thread or
+            // process starts; `config` isn't read across the write.
+            let config = unsafe { &mut *state.config() };
             let value = arg >> 8;
             match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
                 FIELD_REACTOR_NUM => {

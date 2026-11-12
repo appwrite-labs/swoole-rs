@@ -109,9 +109,8 @@ impl<'a> Context<'a> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     fn counters(&self) -> &mut crate::ServerCounters {
         // SAFETY: the server's shared counters, which only the manager writes meanwhile.
@@ -291,14 +290,17 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             )));
         }
         OP_CREATE_USER_WORKERS => {
-            let created = worker_methods::create_user_workers(ctx.server(), config);
+            let workers = worker_methods::create_user_workers(ctx.server());
+            let created = !workers.is_null();
+            // SAFETY: `start_manager_process`, in the master before it forks or starts
+            // a thread; `config` isn't read after the write.
+            unsafe { serv.config_mut() }.user_workers = workers;
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
         OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
         OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
         OP_MANAGER_INIT => {
-            config.manager_ = core::ptr::without_provenance_mut(index(arg));
             let pid = std::process::id().cast_signed();
             ctx.counters().manager_pid = pid;
             let event_pool = ctx.pool();
@@ -306,6 +308,9 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             event_pool.set_max_wait_time(config.max_wait_time);
             event_pool.set_master_pid(pid);
             ctx.task_pool().set_master_pid(pid);
+            // SAFETY: `Manager::start`, in the manager process its master just forked,
+            // whose only thread this is; the arm's last config access.
+            unsafe { serv.config_mut() }.manager_ = core::ptr::without_provenance_mut(index(arg));
         }
         OP_ON_MANAGER_START => callback(CB_MANAGER_START),
         OP_ON_MANAGER_STOP => callback(CB_MANAGER_STOP),
