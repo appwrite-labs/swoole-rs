@@ -28,7 +28,7 @@ use swoole_rs_reactor::{
 };
 use swoole_rs_tls::upstream::{
     peek, recv, send, sendfile as socket_sendfile_fd, socket_readv, socket_recv, socket_send,
-    socket_ssl_get_peer_certificate_pem, socket_writev,
+    socket_ssl_peer_certificate_pem, socket_writev,
 };
 
 /// `SW_EVENT_WRITE`.
@@ -130,7 +130,7 @@ impl Setup for Accepting {
 /// A transfer's call over the `network::Socket` and the buffer it is given.
 macro_rules! call {
     (|$s:tt, $at:tt, $len:tt| $body:expr) => {
-        |$s: *mut SocketRecord, $at: *mut u8, $len: usize| {
+        |$s: Socket<'_>, $at: *mut u8, $len: usize| {
             // SAFETY: the transfer's live network::Socket, over the buffer it lends
             // (null for the vector and message calls, which carry their own).
             unsafe { $body }
@@ -322,9 +322,9 @@ impl Co {
         self,
         flags: u32,
         buffer: Buffer<'_>,
-        mut call: impl FnMut(*mut SocketRecord, *mut u8, usize) -> isize,
+        mut call: impl FnMut(Socket<'_>, *mut u8, usize) -> isize,
     ) -> isize {
-        let mut each = |at, length| call(self.socket(), at, length);
+        let mut each = |at, length| self.with_network(|s| call(s, at, length)).unwrap_or(-1);
         transfer(self, flags, buffer, &mut each)
     }
 
@@ -414,7 +414,7 @@ impl Co {
             };
         }
         let length = address.len;
-        let call = call!(|s, at, len| libc::sendto((*s).fields.fd, at.cast(), len, 0, to, length));
+        let call = call!(|s, at, len| libc::sendto(s.fd(), at.cast(), len, 0, to, length));
         // Availability was checked above.
         self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call)
     }
@@ -423,10 +423,8 @@ impl Co {
     #[must_use]
     pub fn peer_cert(self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE as usize];
-        // SAFETY: the live network::Socket and the local buffer.
-        let length = unsafe {
-            socket_ssl_get_peer_certificate_pem(self.socket(), pem.as_mut_ptr().cast(), pem.len())
-        };
+        let read = |socket: Socket<'_>| socket_ssl_peer_certificate_pem(socket, &mut pem);
+        let length = self.with_network(read).unwrap_or(-1);
         if let Ok(length) = usize::try_from(length) {
             pem.truncate(length);
             return pem;
@@ -483,7 +481,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::read(&ops, buf);
         }
-        let call = call!(|s, at, len| libc::read((*s).fields.fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::read(s.fd(), at.cast(), len));
         self.transfer(0, Buffer::read(buf), call)
     }
 
@@ -494,7 +492,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::send(&ops, ring::WRITE, buf);
         }
-        let call = call!(|s, at, len| libc::write((*s).fields.fd, at.cast(), len));
+        let call = call!(|s, at, len| libc::write(s.fd(), at.cast(), len));
         self.transfer(0, Buffer::write(buf), call)
     }
 
@@ -511,8 +509,11 @@ impl Co {
         let io = if write { socket_writev } else { socket_readv };
         let at = vector.as_ptr();
         if all {
-            // SAFETY: the socket's current network::Socket, over the live vector.
-            let call = || unsafe { io(self.socket(), at) };
+            let call = || {
+                // SAFETY: the socket's current network::Socket, over the live vector.
+                let io = |socket: Socket<'_>| unsafe { io(socket, at) };
+                self.with_network(io).unwrap_or(-1)
+            };
             return vector_all(self, event, call, || vector.remaining());
         }
         self.transfer(0, Buffer::none(event), call!(|s, _, _| io(s, at)))

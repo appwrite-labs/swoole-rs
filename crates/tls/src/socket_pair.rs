@@ -169,7 +169,7 @@ pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: us
     };
     if this.blocking {
         // SAFETY: the live end, and the caller's buffer.
-        unsafe { socket_read_sync(socket.as_ptr(), buffer, length) }
+        unsafe { socket_read_sync(socket, buffer, length) }
     } else {
         // SAFETY: as the caller promises.
         unsafe { libc::read(socket.fd(), buffer, length) }
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length:
     };
     if this.blocking {
         // SAFETY: the live end, and the caller's buffer.
-        unsafe { socket_write_sync(socket.as_ptr(), buffer, length) }
+        unsafe { socket_write_sync(socket, buffer, length) }
     } else {
         // SAFETY: as the caller promises.
         unsafe { libc::write(socket.fd(), buffer, length) }

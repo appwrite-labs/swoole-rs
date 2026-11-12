@@ -13,7 +13,7 @@ use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
 use core::mem::MaybeUninit;
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket, SocketRecord};
 
 /// `SW_ERROR_INVALID_PARAMS`.
 const INVALID_PARAMS: c_int = 505;
@@ -426,9 +426,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     }
     on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, false);
-        let (at, count) = (buf.as_mut_ptr().cast(), buf.len());
-        // SAFETY: a record on this frame; `buf`'s slots.
-        unsafe { swoole_rs_tls::upstream::socket_read_sync(&raw mut socket, at, count) }
+        swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
     })
 }
 
@@ -460,9 +458,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     }
     on_pool(Some(crate::stdio::NATIVE.offload), -1, || {
         let mut socket = blocking(fd, true);
-        let (at, count) = (buf.as_ptr().cast(), buf.len());
-        // SAFETY: a record on this frame; `buf`'s bytes.
-        unsafe { swoole_rs_tls::upstream::socket_write_sync(&raw mut socket, at, count) }
+        swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
     })
 }
 
