@@ -49,28 +49,29 @@ pub fn format_into<'a>(buffer: &'a mut [u8], args: std::fmt::Arguments<'_>) -> O
 #[must_use]
 pub fn ipv4(text: &[u8], allow_zeroes: bool) -> Option<Ipv4Addr> {
     // One pass over the bytes, as inet_pton4's: four dotted decimals of at most 255,
-    // without leading zeroes unless `allow_zeroes`.
-    let mut octets = [0u8; 4];
-    let (mut index, mut digits) = (0, 0u32);
+    // without leading zeroes unless `allow_zeroes`. Each finished octet shifts into
+    // `address`, so the loop indexes nothing.
+    let (mut address, mut dots, mut octet, mut digits) = (0u32, 0, 0u32, false);
     for &byte in text {
-        if byte == b'.' {
-            if digits == 0 || index == 3 {
+        let digit = byte.wrapping_sub(b'0');
+        if digit < 10 {
+            if digits && octet == 0 && !allow_zeroes {
                 return None;
             }
-            index += 1;
-            digits = 0;
-        } else if byte.is_ascii_digit() {
-            let octet = octets.get_mut(index)?;
-            if digits == 1 && *octet == 0 && !allow_zeroes {
+            octet = octet * 10 + u32::from(digit);
+            if octet > 255 {
                 return None;
             }
-            *octet = octet.checked_mul(10)?.checked_add(byte - b'0')?;
-            digits = digits.saturating_add(1);
+            digits = true;
+        } else if byte == b'.' && digits && dots < 3 {
+            address = address << 8 | octet;
+            dots += 1;
+            (octet, digits) = (0, false);
         } else {
             return None;
         }
     }
-    (digits > 0 && index == 3).then(|| Ipv4Addr::from(octets))
+    (digits && dots == 3).then(|| Ipv4Addr::from(address << 8 | octet))
 }
 
 #[must_use]
@@ -191,6 +192,8 @@ mod tests {
             ("255.255.255.255", Some([255; 4]), Some([255; 4])),
             ("01.2.3.4", None, Some([1, 2, 3, 4])),
             ("1.2.3.00", None, Some([1, 2, 3, 0])),
+            ("0000000001.2.3.4", None, Some([1, 2, 3, 4])),
+            ("1.2.3.0256", None, None),
             ("256.0.0.1", None, None),
             ("1.2.3", None, None),
             ("1.2.3.4.5", None, None),

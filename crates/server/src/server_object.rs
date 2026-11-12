@@ -50,14 +50,11 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         );
         std::process::abort();
     }
-    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters.
-    unsafe { crate::swr_v1_server_shared_init(gs) };
+    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters,
+    // freed only by `swr_v1_server_delete` after the message bus.
+    let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
     config.mode_ = u8::try_from(mode).unwrap_or_default();
-    let counter = gs.wrapping_byte_add(core::mem::offset_of!(
-        crate::ServerCounters,
-        pipe_packet_msg_id
-    ));
-    tables.message_bus = crate::pool_native::new_bus(counter.cast());
+    tables.message_bus = crate::pool_native::new_bus(&counters.pipe_packet_msg_id);
     let object = Box::new(ServerObject {
         state,
         config,
@@ -103,9 +100,10 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     state.close_pipes();
     // SAFETY: the state's configuration, which nothing else uses now.
     let config = unsafe { &mut *object.config };
-    config.gs.free();
     // SAFETY: `swr_v1_server_new`'s bus, freed once.
     unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
+    // After the bus, which numbers its messages from a counter in here.
+    config.gs.free();
     // SAFETY: `swr_v1_server_new`'s boxed state, not used again.
     drop(unsafe { Box::from_raw(object.state) });
     if swoole_rs_corebase::swr_v1_core_server() == object_ptr {

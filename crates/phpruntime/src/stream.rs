@@ -301,10 +301,8 @@ fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<is
             if socket.catch_error(code) == SW_WAIT {
                 written = 0;
             } else {
-                let reason = socket
-                    .message()
-                    .map(CStr::to_string_lossy)
-                    .unwrap_or_default();
+                let reason = socket.message().unwrap_or_default();
+                let reason = reason.to_string_lossy();
                 let message = message!("Send of {count} bytes failed with errno={code} {reason}");
                 report(Report::Docref, E_NOTICE, message.as_cstr())?;
                 set_eof(stream);

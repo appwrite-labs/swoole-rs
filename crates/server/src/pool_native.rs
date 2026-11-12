@@ -235,21 +235,17 @@ fn bus_deliver(pool: Pool) {
 
 /// The pool's new bus, which the pool keeps; null when its counter can't be allocated.
 fn new_message_bus() -> *mut c_void {
-    let msg_id = mem_pool::alloc(8).cast::<i64>();
-    if msg_id.is_null() {
+    let Some([msg_id]) = mem_pool::words::<AtomicU64>(1) else {
         return ptr::null_mut();
-    }
-    // SAFETY: a fresh, aligned counter.
-    unsafe { msg_id.write(1) };
-    new_bus(msg_id.cast())
+    };
+    *msg_id.get_mut() = 1;
+    new_bus(msg_id)
 }
 
-/// `new MessageBus()` numbering its messages from `counter`, which outlives it;
-/// [`free_bus`] frees it.
-pub(crate) fn new_bus(counter: *mut c_void) -> *mut c_void {
+/// `new MessageBus()` numbering its messages from `counter`; [`free_bus`] frees it.
+pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
     let mut bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
-    // SAFETY: the caller's live, aligned counter, which outlives the bus.
-    bus.count_ids(unsafe { &*counter.cast::<AtomicU64>() });
+    bus.count_ids(counter);
     let bus = PoolBus {
         bus,
         allocator: &raw const STD_ALLOCATOR,

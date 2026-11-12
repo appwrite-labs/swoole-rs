@@ -923,7 +923,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-error-ffi",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",

@@ -131,8 +131,8 @@ impl PortInfo {
 
 // crates/server's `new Server(mode)`, `delete serv` and the admin commands;
 // `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
-// unconstructed one; and `swoole_get_last_error_msg()`, `sw_error`.
-use swoole_rs_error::swoole_get_last_error_msg;
+// unconstructed one; and a copy of `sw_error`.
+use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
 use swoole_rs_server::{admin_register, swr_v1_server_delete, swr_v1_server_new};
 
@@ -1087,9 +1087,7 @@ fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
 fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
     if server_methods::create(serv) < 0 {
         // The calling thread's `sw_error`.
-        let reason = swoole_get_last_error_msg();
-        // SAFETY: always NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(reason) };
+        let reason = last_error_message();
         let mut text = Message::new();
         text.push(b"failed to create the server. Error: ");
         text.push(reason.to_bytes());
@@ -1300,9 +1298,7 @@ fn start(call: &Call) {
     match start_server(serv) {
         Err(bailout) => return bailout.defer(),
         Ok(..0) => {
-            let error = server_methods::get_startup_error_message();
-            // SAFETY: the startup error message, NUL-terminated.
-            let reason = unsafe { CStr::from_ptr(error) };
+            let reason = server_methods::get_startup_error_message();
             let mut text = Message::new();
             text.push(b"failed to start server. Error: ");
             text.push(reason.to_bytes());
