@@ -720,19 +720,20 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
 }
 
 fn on_message_complete(state: &mut State) -> c_int {
-    let chunked = state
-        .parse
-        .chunked_body
-        .as_ref()
-        .map(|body| (body.as_ptr(), body.len()));
-    let content_length = chunked.map_or(state.request.body_length, |(_, length)| length);
-    if let Some((body, length)) = chunked
+    // Out of the state while the callbacks below take it, then back for `getContent()`.
+    let chunked = state.parse.chunked_body.take();
+    let result = message_complete(state, chunked.as_deref().map(Vec::as_slice));
+    state.parse.chunked_body = chunked;
+    result
+}
+
+/// `on_message_complete` over the dechunked body, if the request was chunked.
+fn message_complete(state: &mut State, chunked: Option<&[u8]>) -> c_int {
+    if let Some(body) = chunked
         && state.mt_parser.is_some()
     {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
-        // SAFETY: the dechunked body, which the multipart callbacks leave alone.
-        let body = unsafe { std::slice::from_raw_parts(body, length) };
         let prefix = body_prefix(body, true);
         if !multipart_parse(state, body.get(prefix..).unwrap_or_default()) {
             return -1;
@@ -746,14 +747,9 @@ fn on_message_complete(state: &mut State) -> c_int {
             | (u32::from(!state.request.body_at.is_null()) << 4),
     );
     match (form_source, chunked) {
-        (1, Some((body, _))) => {
+        (1, Some(body)) => {
             let post = property(state, Property::Post);
-            // SAFETY: the dechunked body.
-            treat_data(
-                PARSE_STRING,
-                unsafe { std::slice::from_raw_parts(body, content_length) },
-                post,
-            );
+            treat_data(PARSE_STRING, body, post);
         }
         (2, _) => {
             let post = property(state, Property::Post);
