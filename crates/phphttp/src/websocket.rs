@@ -1023,8 +1023,8 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             &mut args,
             fd,
         )?;
-    } else if let Some(socket) = context::socket(context.state()) {
-        swoole_rs_phpclients::websocket_protocol(socket);
+    } else {
+        swoole_rs_phpclients::websocket_protocol(&context.state().zsocket);
     }
     let state = context.state();
     state.response.status = 101;

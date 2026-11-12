@@ -1192,9 +1192,13 @@ impl OutputEffects for Output<'_> {
 #[must_use]
 pub fn socket_handle_send(record: Socket<'_>) -> c_int {
     let hooks = Output(record);
-    let queue = out_queue(record);
-    // SAFETY: the live record's queue and the hooks over it.
-    let output = unsafe { handle_send_owned(record, queue, &hooks) };
+    let output = with_queue(record, |queue| {
+        handle_send_owned(
+            record,
+            queue.unwrap_or_else(|| std::process::abort()),
+            &hooks,
+        )
+    });
     buffer_check(output.status);
     if output.result.warn == 1 {
         let fd = record.fd();
@@ -1203,10 +1207,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
             format_args!("send to fd[{fd}] failed"),
         );
     }
-    if let Some(dispose) = output.detached.dispose {
-        // SAFETY: the popped chunk's token, now ours to dispose.
-        unsafe { dispose(output.detached.token) };
-    }
+    output.detached.dispose();
     output.result.code
 }
 
@@ -1220,10 +1221,10 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 #[must_use]
 pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     let hooks = Output(socket);
-    let mut front = swoole_rs_buffer::TypedFront::default();
-    buffer_check(with_queue(socket, |queue| {
-        swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_deref(), Some(&mut front))
-    }));
+    let front = with_queue(socket, |queue| queue.map(|queue| queue.front()));
+    let Some(Ok(front)) = front else {
+        std::process::abort();
+    };
     if front.kind != SENDFILE_TOKEN {
         std::process::abort();
     }
@@ -1246,16 +1247,10 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
         );
     }
     if result.pop {
-        let mut detached = swoole_rs_buffer::TypedDetached::default();
-        let status = with_queue(socket, |queue| {
-            swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut detached))
-        });
-        if status != BUFFER_EMPTY {
-            buffer_check(status);
-            if let Some(dispose) = detached.dispose {
-                // SAFETY: the popped request, now ours to dispose.
-                unsafe { dispose(detached.token) };
-            }
+        match with_queue(socket, |queue| queue.map(swoole_rs_buffer::Buffer::pop)) {
+            Some(Ok(detached)) => detached.dispose(),
+            Some(Err(BUFFER_EMPTY)) => {}
+            _ => std::process::abort(),
         }
     }
     result.code
@@ -1283,15 +1278,10 @@ pub fn socket_sendfile_async(
     }
     let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
     let status = with_queue(socket, |queue| {
-        // SAFETY: the queue now owns the request.
-        unsafe {
-            swoole_rs_buffer::swr_v1_buffer_typed_push(
-                queue,
-                SENDFILE_TOKEN,
-                request.cast(),
-                dispose,
-            )
-        }
+        // SAFETY: the queue now owns the request, which only `dispose` frees.
+        queue.map_or(-1, |queue| unsafe {
+            queue.push(SENDFILE_TOKEN, request.cast(), dispose)
+        })
     });
     if status != 0 {
         // SAFETY: the queue refused the request, which is still ours.
@@ -1788,11 +1778,7 @@ mod tests {
     #[test]
     fn queued_file_and_data_drain_through_the_handlers() {
         let (mut left, right) = pair();
-        let mut queue: *mut swoole_rs_buffer::Buffer = std::ptr::null_mut();
-        assert_eq!(
-            swoole_rs_buffer::swr_v1_buffer_typed_create(65536, Some(&mut queue)),
-            0
-        );
+        let queue = Box::into_raw(swoole_rs_buffer::Buffer::create(65536).unwrap());
         // `Buffer`'s only member is its Rust handle.
         let mut native = Box::new(queue);
         left.output.out_buffer = (&raw mut *native).cast();
@@ -1800,9 +1786,7 @@ mod tests {
         let socket = &raw mut left;
         let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
         let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
-        let queued = unsafe {
-            swoole_rs_buffer::swr_v1_buffer_typed_push(queue.as_mut(), 1, request.cast(), dispose)
-        };
+        let queued = unsafe { (*queue).push(1, request.cast(), dispose) };
         assert_eq!(queued, 0);
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
@@ -1811,20 +1795,11 @@ mod tests {
         let handle = unsafe { Socket::from_ptr(socket) }.unwrap();
         assert_eq!(socket_handle_sendfile(handle), 0);
         assert_eq!(read_all(&right, 5), b"bcdef");
-        assert_eq!(
-            unsafe { swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"tail".as_ptr(), 4) },
-            0
-        );
+        assert_eq!(unsafe { (*queue).append(b"tail") }, 0);
         assert_eq!(socket_handle_send(handle), 0);
         assert_eq!(read_all(&right, 4), b"tail");
-        let (mut length, mut count) = (0, 0);
-        swoole_rs_buffer::swr_v1_buffer_stats(
-            unsafe { queue.as_ref() },
-            Some(&mut length),
-            Some(&mut count),
-        );
-        assert_eq!((length, count), (0, 0), "both chunks popped");
-        assert_eq!(unsafe { swoole_rs_buffer::swr_v1_buffer_release(queue) }, 0);
+        assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");
+        assert!(unsafe { Box::from_raw(queue) }.release().is_ok());
         std::fs::remove_file(path).unwrap();
         unsafe { libc::close(left.fd) };
         unsafe { libc::close(right.fd) };

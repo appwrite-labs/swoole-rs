@@ -9,14 +9,9 @@
 //! `invalid_argument`, which no first-party code catches, so the process ended either way.
 //! Nothing here calls C++: entry disposers are the Rust sendfile request's, so no C++
 //! exception can unwind into these frames.
-use crate::typed::{Detached, Front};
-use crate::{
-    EMPTY, OK, swr_v1_buffer_append, swr_v1_buffer_release, swr_v1_buffer_stats,
-    swr_v1_buffer_typed_consume, swr_v1_buffer_typed_create, swr_v1_buffer_typed_front,
-    swr_v1_buffer_typed_pop,
-};
+use crate::OK;
+use crate::typed::Front;
 use std::mem::MaybeUninit;
-use std::ptr;
 
 /// `swoole::Buffer`: its only member is the queue handle.
 #[repr(C)]
@@ -42,27 +37,13 @@ impl CppBuffer {
 
     /// Pops the first entry and runs its disposer; false when the queue is empty.
     fn pop(&self) -> bool {
-        let mut effect = Detached::default();
-        let status = self.with(|queue| swr_v1_buffer_typed_pop(Some(queue), Some(&mut effect)));
-        if status == EMPTY {
-            return false;
-        }
-        check(status);
-        if let Some(dispose) = effect.dispose {
-            // SAFETY: the detached token is ours now, handed to its own disposer once.
-            unsafe { dispose(effect.token) };
-        }
-        true
+        self.with(crate::Buffer::pop)
+            .map(crate::TypedDetached::dispose)
+            .is_ok()
     }
 
     fn stats(&self) -> (u32, usize) {
-        let (mut length, mut count) = (0, 0);
-        check(
-            self.with(|queue| {
-                swr_v1_buffer_stats(Some(queue), Some(&mut length), Some(&mut count))
-            }),
-        );
-        (length, count)
+        self.with(|queue| queue.stats())
     }
 }
 
@@ -73,9 +54,10 @@ upstream! {
     "_ZN6swoole6BufferC1Ej", "_ZN6swoole6BufferC1Ej" =>
     /// `Buffer(uint32_t chunk_size)`, in uninitialized storage.
     pub extern "C" fn swr_cpp_buffer_new(this: &mut MaybeUninit<CppBuffer>, chunk_size: u32) -> *mut CppBuffer {
-        let mut queue = ptr::null_mut();
-        check(swr_v1_buffer_typed_create(chunk_size, Some(&mut queue)));
-        this.write(CppBuffer { queue })
+        let Ok(queue) = crate::Buffer::create(chunk_size) else {
+            std::process::abort();
+        };
+        this.write(CppBuffer { queue: Box::into_raw(queue) })
     }
     "_ZN6swoole6BufferD1Ev", "_ZN6swoole6BufferD1Ev" =>
     /// `~Buffer()`: pops every entry, then releases the queue.
@@ -83,22 +65,22 @@ upstream! {
     /// `this` is not used again.
     pub unsafe extern "C" fn swr_cpp_buffer_drop(this: &mut CppBuffer) -> *mut CppBuffer {
         while this.pop() {}
-        // SAFETY: the drained handle, released once.
-        check(unsafe { swr_v1_buffer_release(this.queue) });
+        // SAFETY: the handle `swr_cpp_buffer_new` boxed, released once: `this` is not used again.
+        if unsafe { Box::from_raw(this.queue) }.release().is_err() {
+            std::process::abort();
+        }
         this
     }
     "_ZNK6swoole6Buffer11typed_frontEv", "_ZNK6swoole6Buffer11typed_frontEv" =>
     /// `typed_front()`: the first entry; the queue must not be empty.
     #[must_use]
     pub extern "C" fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
-        let mut view = Front::default();
-        check(this.with(|queue| swr_v1_buffer_typed_front(Some(queue), Some(&mut view))));
-        view
+        this.with(|queue| queue.front()).unwrap_or_else(|_| std::process::abort())
     }
     "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj", "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj" =>
     /// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
     pub extern "C" fn swr_cpp_buffer_typed_consume(this: &CppBuffer, front: &Front, count: u32) {
-        check(this.with(|queue| swr_v1_buffer_typed_consume(Some(queue), front.generation, front.offset, count)));
+        check(this.with(|queue| queue.consume(front.generation, front.offset, count)));
     }
     "_ZN6swoole6Buffer11typed_closeEv", "_ZN6swoole6Buffer11typed_closeEv" =>
     /// `typed_close()`: queues a payload-free CLOSE marker.
@@ -115,8 +97,15 @@ upstream! {
     /// # Safety
     /// `data` holds `size` bytes.
     pub unsafe extern "C" fn swr_cpp_buffer_append(this: &CppBuffer, data: *const u8, size: u32) {
-        // SAFETY: as the caller promises.
-        check(this.with(|queue| unsafe { swr_v1_buffer_append(Some(queue), data, size as usize) }));
+        let data = if size == 0 {
+            &[]
+        } else if data.is_null() {
+            std::process::abort();
+        } else {
+            // SAFETY: non-null with `size` readable bytes, as the caller promises.
+            unsafe { std::slice::from_raw_parts(data, size as usize) }
+        };
+        check(this.with(|queue| queue.append(data)));
     }
     "_ZN6swoole6Buffer6appendEPK5iovecml", "_ZN6swoole6Buffer6appendEPK5iovecmx" =>
     /// `append(iov, iovcnt, offset)`: the bytes past `offset`.
@@ -129,7 +118,7 @@ upstream! {
         offset: libc::off_t,
     ) {
         // SAFETY: as the caller promises.
-        check(this.with(|queue| unsafe { crate::swr_v1_buffer_append_iovec(Some(queue), iov, count, offset) }));
+        check(this.with(|queue| unsafe { crate::swr_v1_buffer_append_iovec(queue, iov, count, offset) }));
     }
     "_ZNK6swoole6Buffer6lengthEv", "_ZNK6swoole6Buffer6lengthEv" =>
     /// `length()`: queued bytes.
