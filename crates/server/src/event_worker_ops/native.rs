@@ -79,8 +79,7 @@ impl Context<'_> {
             .worker_record(u16::try_from(id).unwrap_or(u16::MAX))
     }
     pub(super) fn reactor(&self) -> Reactor {
-        // SAFETY: the context's live reactor, on this thread.
-        unsafe { Reactor::of(self.reactor) }
+        self.reactor
     }
     /// `serv->get_worker_message_bus()`.
     pub(super) fn bus(&self) -> Bus {
@@ -415,7 +414,7 @@ fn context(serv: view::Server<'_>, reactor: Reactor) -> Context<'_> {
         serv,
         worker: swoole_rs_process::worker_globals::current_worker(),
         info: core::ptr::null_mut(),
-        reactor: reactor.ptr(),
+        reactor,
         conn: core::ptr::null_mut(),
         status: core::ptr::null(),
         socket: core::ptr::null_mut(),
