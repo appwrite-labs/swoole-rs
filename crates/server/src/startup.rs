@@ -90,7 +90,11 @@ pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
     let started = match h.get(OP_MODE)? {
         MODE_BASE => h.signed(OP_LC_START_BASE)?,
         MODE_PROCESS => h.signed(OP_LC_START_PROCESS)?,
-        MODE_THREAD => h.signed(OP_LC_START_THREAD)?,
+        MODE_THREAD => {
+            // Before the worker threads start, which read it in onWorkerStart.
+            h.get(OP_SET_MASTER_PID)?;
+            h.signed(OP_LC_START_THREAD)?
+        }
         _ => std::process::abort(),
     };
     if started < 0 {
@@ -324,7 +328,9 @@ pub(crate) fn start_master_thread<H: Host>(h: &mut H) -> crate::Effect<i64> {
     if mode == MODE_PROCESS {
         h.get(OP_MANAGER_BARRIER)?;
     }
-    h.get(OP_SET_MASTER_PID)?;
+    if mode != MODE_THREAD {
+        h.get(OP_SET_MASTER_PID)?;
+    }
     h.get(OP_MASTER_START)?;
     h.signed(OP_EVENT_WAIT)
 }
@@ -416,10 +422,11 @@ mod tests {
                     OP_LC_INIT_PROTOCOLS,
                     OP_LC_WRITE_PID,
                     OP_MODE,
-                    run,
-                    OP_IS_CREATED,
-                    OP_AFTER_SHUTDOWN,
                 ]);
+                if mode == MODE_THREAD {
+                    expected.push(OP_SET_MASTER_PID);
+                }
+                expected.extend([run, OP_IS_CREATED, OP_AFTER_SHUTDOWN]);
                 let ops: Vec<u32> = s.log.iter().map(|&(op, _)| op).collect();
                 assert_eq!(
                     ops[..expected.len()],
@@ -764,6 +771,18 @@ mod tests {
         );
         assert_eq!(s.script.called(OP_REACTOR_BARRIER), 1, "reactor barrier");
         assert_eq!(s.script.called(OP_MANAGER_BARRIER), 1, "manager barrier");
+        assert_eq!(s.script.called(OP_SET_MASTER_PID), 1, "master pid");
+
+        let mut s = server(
+            &[(OP_MODE, MODE_THREAD), (OP_MASTER_TIMER, 1)],
+            [(FIELD_REACTOR_NUM, 4); 3],
+        );
+        start_master_thread(&mut s).unwrap();
+        assert_eq!(
+            s.script.called(OP_SET_MASTER_PID),
+            0,
+            "set before the worker threads start"
+        );
 
         let mut s = server(
             &[(OP_MODE, MODE_BASE), (OP_SINGLE_THREAD, 1)],

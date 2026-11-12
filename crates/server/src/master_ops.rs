@@ -82,7 +82,6 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
-use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
@@ -256,20 +255,6 @@ impl<'a> Objects<'a> {
     fn reactor(&self) -> crate::reactor_handle::Reactor {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
-    }
-    /// `serv->get_task_worker_pool()`.
-    fn task_pool(&self) -> *mut PoolRecord {
-        self.server().task_pool()
-    }
-    /// The server's live task pool.
-    fn task_pool_record(&self) -> &mut PoolRecord {
-        // SAFETY: the pools live in the server's shared counters for its life.
-        unsafe { &mut *self.task_pool() }
-    }
-    /// `serv->get_event_worker_pool()`, right after the task pool.
-    fn event_pool(&self) -> &mut PoolRecord {
-        // SAFETY: as `task_pool`; the server's live event pool.
-        unsafe { &mut *self.task_pool().wrapping_add(1) }
     }
     fn worker(&self) -> &mut WorkerRecord {
         // SAFETY: the ops reading it run with a live worker as the context's object.
@@ -1013,16 +998,16 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.config().warning_time = (arg >> 1).cast_signed() as libc::time_t;
             0
         }
-        OP_WARNING => u64::from(o.task_pool_record().scheduler_warning),
-        OP_WARNING_TIME => sign(o.task_pool_record().warning_time),
+        OP_WARNING => u64::from(o.server().task_pool_ref().scheduler_warning()),
+        OP_WARNING_TIME => sign(o.server().task_pool_ref().warning_time()),
         OP_WARNING_RESET => {
-            let pool = o.task_pool_record();
-            pool.scheduler_warning = 0;
-            pool.warning_time = (arg >> 1).cast_signed();
+            let pool = o.server().task_pool_ref();
+            pool.set_scheduler_warning(0);
+            pool.set_warning_time((arg >> 1).cast_signed());
             0
         }
         OP_SIGNAL_READ_MESSAGE => {
-            o.event_pool().read_message = true;
+            o.server().event_pool_ref().set_read_message(true);
             0
         }
         OP_SET_DISABLE_NOTIFY => {
@@ -1305,7 +1290,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SIGNAL_ACTIVE => {
-            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running())
+            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.state.running())
         }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
@@ -1452,7 +1437,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_STOP_SINGLE_WORKER => {
-            o.event_pool().running = false;
+            o.server().event_pool_ref().set_running(false);
             stop_single_worker(o.server());
             0
         }
@@ -2298,7 +2283,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_TASK_POOL_CREATE => {
-            let task_pool = o.task_pool();
+            let task_pool = o.server().task_pool();
             // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
             unsafe { task_pool.write_bytes(0, 1) };
             #[expect(clippy::cast_possible_truncation, reason = "C++'s key_t conversion")]
@@ -2330,7 +2315,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_POOL_LISTEN => {
             // SAFETY: the NUL-terminated path `arg` lends.
             let file = unsafe { CStr::from_ptr(ptr_of(arg)) };
-            sign(pool_listen(o.task_pool_record(), file, 2048))
+            sign(pool_listen(o.server().task_pool_ref(), file, 2048))
         }
         OP_TASK_PIPE => {
             let ready = o.state.push_task_pipe();
@@ -2543,7 +2528,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     .unwrap_or(false)
                 } else {
                     let pool = o.server().event_pool_ref();
-                    swoole_rs_process::methods::push_event(pool, task) >= 0
+                    let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
+                    swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0
                 };
                 return Some(u64::from(sent));
             }

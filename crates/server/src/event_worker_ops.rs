@@ -105,7 +105,9 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FACTORY_END => u64::from(crate::factory::end(ctx.state(), ctx.info().fd, 0)),
         OP_MODE => u64::from(config.mode_),
         OP_SIGNAL_LIVE => u64::from(
-            swoole_rs_corebase::swr_v1_core_running() && !ctx.worker.is_null() && config.running(),
+            swoole_rs_corebase::swr_v1_core_running()
+                && !ctx.worker.is_null()
+                && ctx.state().running(),
         ),
         OP_EXCEEDED_MAX_REQUEST => u64::from(ctx.worker().exceeded_max_request()),
         OP_INFO_TYPE => u64::from(ctx.info().kind),

@@ -22,7 +22,7 @@ use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
     swr_zend_http_upload, zval,
 };
-use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString, string};
+use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -40,7 +40,6 @@ struct Parts<'a> {
 }
 
 unsafe extern "C" {
-    fn php_url_decode(text: *mut c_char, len: usize) -> usize;
     fn php_register_variable_safe(
         var: *const c_char,
         val: *const c_char,
@@ -656,8 +655,8 @@ fn on_headers_complete(state: &mut State) -> c_int {
         .iter()
         .rposition(|&byte| byte == b'.')
         .map_or(path_len, |dot| dot + 1);
-    // The URI, and path_info, which is decoded below.
-    let (uri, decoded) = (ZString::new(path), ZString::new(path));
+    // The URI, and path_info, which is decoded.
+    let (uri, decoded) = (ZString::new(path), ZString::url_decode(path));
     request.ext = request.path.cast_const().wrapping_add(ext);
     #[expect(
         clippy::cast_possible_truncation,
@@ -671,10 +670,6 @@ fn on_headers_complete(state: &mut State) -> c_int {
     add_server(state, Key::RequestMethod, method);
     add_server(state, Key::RequestUri, Owned::string(uri));
 
-    // SAFETY: a fresh string of `path_len` bytes, decoded in place.
-    let decoded_len = unsafe { php_url_decode(string::val(decoded.as_ptr()).cast(), path_len) };
-    // SAFETY: the decoded bytes fit the string, which nothing else holds.
-    unsafe { (*decoded.as_ptr()).len = decoded_len };
     add_server(state, Key::PathInfo, Owned::string(decoded));
     request_times(state);
     let protocol = if state.request.version == 101 {

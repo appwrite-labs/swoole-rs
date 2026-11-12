@@ -288,7 +288,7 @@ impl Worker<'_> {
         pipe_worker, set_pipe_worker, pipe_worker: *mut c_void
     );
     field!(
-        /// The worker's pipe (a native `UnixSocket`), or null.
+        /// The native pipe object that owns the worker's two ends, or null.
         pipe_object, set_pipe_object, pipe_object: *mut c_void
     );
     field!(

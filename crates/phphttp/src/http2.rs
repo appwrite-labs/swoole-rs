@@ -12,7 +12,7 @@ use std::{
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
-    HeldArray, Owned,
+    HeldArray, Owned, ZString,
     bailout::Bailout,
     sys::{swr_zend_treat_string, zval},
 };
@@ -127,10 +127,38 @@ impl Ctx {
         crate::response::set_header_bytes(self, key, value);
     }
 
+    /// `$request->header` and `$request->server`, made unless they exist: a
+    /// header block makes both, whatever it holds.
+    pub fn header_arrays(mut self) {
+        let state = self.state();
+        parse::property(state, parse::Property::Header);
+        parse::property(state, parse::Property::Server);
+    }
+
+    /// `add_assoc_str_ex` on `$request->server` or `header` (made on first
+    /// use): the array takes `value` under `key`. Nothing for another `which`.
+    pub fn insert(mut self, which: Value, key: &[u8], value: ZString) {
+        let state = self.state();
+        let property = match which {
+            Value::Server => parse::Property::Server,
+            Value::Header => parse::Property::Header,
+            _ => return,
+        };
+        parse::property(state, property);
+        let request = &mut state.request;
+        let slot = if matches!(which, Value::Server) {
+            &mut request.zserver
+        } else {
+            &mut request.zheader
+        };
+        if let Some(array) = slot.array_mut() {
+            array.insert(key, Owned::string(value));
+        }
+    }
+
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
     /// use), or the response object.
-    #[must_use]
-    pub fn value(mut self, which: Value) -> *mut zval {
+    fn value(mut self, which: Value) -> *mut zval {
         let state = self.state();
         let property = match which {
             Value::Response => return state.response.zobject.ptr,
