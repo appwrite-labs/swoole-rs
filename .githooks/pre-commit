@@ -6,6 +6,16 @@ set -e
 unset $(env | sed -n 's/^\(GIT_[A-Z_]*\)=.*/\1/p')
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -q -- -D warnings
+# That skips code behind features, which is every PHP crate. Where they build (Linux
+# with PHP's headers, as in the dev image), lint the staged crates as the PR tier does;
+# the whole workspace that way is several times slower after an edit.
+if [ "$(uname)" = Linux ] && command -v php-config >/dev/null; then
+    staged=$(git diff --cached --name-only -- crates | cut -d/ -f2 | sort -u |
+        while read -r crate; do
+            if grep -qs '^\[features\]' "crates/$crate/Cargo.toml"; then echo "-p swoole-rs-$crate"; fi
+        done)
+    [ -z "$staged" ] || cargo clippy --locked $staged --all-targets --all-features -q -- -D warnings
+fi
 python3 tools/check_migration.py > /dev/null
 git diff --cached --quiet -- native crates || tools/headers.sh --check
 git diff --cached --quiet -- crates || python3 tools/budget.py > /dev/null
