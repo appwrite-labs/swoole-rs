@@ -5,9 +5,8 @@
 //! the buffer and the protocol's callbacks; `default_length_func`, under its upstream
 //! symbol; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int, c_void};
 use core::marker::PhantomData;
-use core::ptr;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
@@ -173,19 +172,6 @@ unsafe fn dispatch(
     }
 }
 
-/// `buffer->split`'s handler: each part to `onPackage`, while the socket stays.
-unsafe extern "C" fn split_part(
-    context: *const c_void,
-    data: *const c_char,
-    length: usize,
-) -> bool {
-    // SAFETY: `effect`'s live receive.
-    let r = unsafe { &*context.cast::<Recv>() };
-    // SAFETY: the live protocol and socket, and the part inside the buffer.
-    let result = unsafe { dispatch(r.protocol(), r.socket.as_ptr(), data.cast(), length as u64) };
-    result >= 0 && r.socket.read(|s| s.removed) == 0
-}
-
 /// `proto_error`: the warning, with the peer's address (or the socket's own when
 /// `getpeername` fails) appended as `<host:port>`.
 fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str) {
@@ -331,10 +317,12 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
             let Some(eof) = p.package_eof.get(..usize::from(p.package_eof_len)) else {
                 return -1;
             };
-            let context = ptr::from_ref(r).cast();
-            // SAFETY: the EOF is not empty (the loop checks it); the handler takes
-            // this receive.
-            unsafe { b.split(eof, split_part, context) as i64 }
+            // Each part to `onPackage`, while the socket stays.
+            b.split(eof, |data, length| {
+                // SAFETY: the live protocol and socket, and the part inside the buffer.
+                let result = unsafe { dispatch(p, s.as_ptr(), data, length as u64) };
+                result >= 0 && s.read(|s| s.removed) == 0
+            }) as i64
         }
         OP_SSL_PENDING => {
             let ssl = s.read(swoole_rs_reactor::SocketFields::ssl);
