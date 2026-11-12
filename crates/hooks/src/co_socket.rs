@@ -51,8 +51,8 @@ pub struct CoSocket {
     pub zero_copy: bool,
     pub(crate) resolve_context: *mut c_void,
     /// The coroutines, barriers and timers bound to each direction, and the parts
-    /// lent out.
-    pub(crate) state: *mut Bound,
+    /// lent out, which `init` makes and `fini` releases.
+    pub(crate) state: Option<Box<Bound>>,
     /// The record's metadata, which `init` makes and `fini` releases.
     pub(crate) extra: Option<Box<SocketExtra>>,
 }
@@ -116,11 +116,16 @@ pub struct Bound {
 
 impl Bound {
     /// A new record's: nothing bound, nothing lent. `fini` frees it.
-    fn alloc() -> *mut Self {
-        Box::into_raw(Box::new(Self {
+    fn new() -> Self {
+        Self {
             state: UnsafeCell::new(SocketState::new()),
             lent: Cell::new(0),
-        }))
+        }
+    }
+
+    /// The bound state's address, which [`Co::with_state`] borrows.
+    fn state(&self) -> *mut SocketState {
+        self.state.get()
     }
 }
 
@@ -339,17 +344,18 @@ impl Co {
     #[must_use]
     pub fn state(self) -> *mut SocketState {
         // SAFETY: `new`'s contract: a live record; only the field is read.
-        unsafe { (*self.0).state }.cast()
+        let bound = unsafe { &(*self.0).state };
+        bound.as_deref().map_or(ptr::null_mut(), Bound::state)
     }
 
     /// `f` with `part` lent out: the loan, of the [`Bound`] `new`'s contract keeps
     /// live, ends with the call.
     #[track_caller]
     fn lend<T>(self, part: u8, f: impl FnOnce(&Bound) -> T) -> T {
-        let bound = self.state().cast::<Bound>();
-        // SAFETY: `new`'s contract: the live state. What it lends sits in an
-        // `UnsafeCell`, which the shared reference doesn't cover.
-        let bound = unsafe { &*bound };
+        // SAFETY: `new`'s contract: a live record; only the field is borrowed, and
+        // what the state lends sits in an `UnsafeCell`, which the borrow doesn't cover.
+        let bound = unsafe { &(*self.0).state };
+        let bound = bound.as_deref().unwrap_or_else(|| std::process::abort());
         let _loan = Loan::take(&bound.lent, part);
         f(bound)
     }
@@ -425,7 +431,7 @@ impl CoSocket {
         self.sock_fd == -1
     }
 
-    fn new(state: *mut Bound) -> Self {
+    fn new() -> Self {
         Self {
             err_code: 0,
             err_msg: c"".as_ptr(),
@@ -449,7 +455,7 @@ impl CoSocket {
             ssl_handshaked: false,
             zero_copy: false,
             resolve_context: ptr::null_mut(),
-            state,
+            state: Some(Box::new(Bound::new())),
             extra: Some(SocketExtra::boxed()),
         }
     }
@@ -597,7 +603,7 @@ pub fn make_quiet(
         (false, true) => NEW_BY_TYPE,
         (false, false) => NEW_FD_BY_TYPE,
     };
-    let mut socket = Box::new(CoSocket::new(Bound::alloc()));
+    let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast();
     let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
     // SAFETY: the record just made, with its state and metadata, which the caller owns.
@@ -648,7 +654,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     // SAFETY: as the caller promises: storage for one record, which needn't be
     // initialized yet; the native object owns it for its lifetime.
     let storage = unsafe { &mut *socket.cast::<MaybeUninit<CoSocket>>() };
-    let record = storage.write(CoSocket::new(Bound::alloc()));
+    let record = storage.write(CoSocket::new());
     record.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
@@ -656,12 +662,7 @@ impl CoSocket {
     /// Release the bound state and the metadata [`CoSocket::new`] made, as a
     /// constructor's undo or the end of `~Socket()`.
     pub(crate) fn fini(&mut self) {
-        if !self.state.is_null() {
-            // SAFETY: the record's own state, from `Bound::alloc` (the only value
-            // `state` takes besides null), released once: it is nulled next.
-            drop(unsafe { Box::from_raw(self.state) });
-        }
-        self.state = ptr::null_mut();
+        self.state = None;
         self.extra = None;
     }
 
@@ -747,7 +748,7 @@ impl CoSocket {
 /// `server`, with the server's type, framing and timeouts, connected; `accept`
 /// shares the TLS context after. [`swr_v1_hook_co_socket_free`] releases it.
 pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
-    let mut socket = Box::new(CoSocket::new(Bound::alloc()));
+    let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
     let kind = server.kind();
@@ -847,7 +848,7 @@ mod test_support {
 
     /// Writes a fresh record (not open, nothing bound) into `socket`'s storage.
     pub(crate) unsafe fn init(socket: *mut CoSocket) {
-        unsafe { socket.write(CoSocket::new(Bound::alloc())) };
+        unsafe { socket.write(CoSocket::new()) };
     }
 
     /// An open record over a `network::Socket` record without a descriptor, for the
@@ -873,7 +874,10 @@ mod test_support {
         }
 
         pub(crate) fn state(&self) -> *mut SocketState {
-            self.0.state.cast()
+            self.0
+                .state
+                .as_deref()
+                .map_or(ptr::null_mut(), Bound::state)
         }
     }
 
@@ -917,7 +921,7 @@ mod tests {
             }
         }
         socket.fini();
-        assert!(socket.state.is_null());
+        assert!(socket.state.is_none());
     }
 
     fn new(socket: &mut CoSocket, how: c_int, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
@@ -942,7 +946,7 @@ mod tests {
         assert_eq!(socket.sock_fd, -1);
         assert_eq!(socket.buffer_init_size, 65536);
         assert_eq!(unsafe { *socket.err_msg }, 0);
-        assert!(!socket.state.is_null());
+        assert!(socket.state.is_some());
         assert_eq!(socket.protocol.package_length_type, 0);
         release(socket);
     }
@@ -1116,7 +1120,12 @@ mod tests {
         let record = unsafe { &*conn };
         assert_eq!((record.fd_type, record.socket_type), (6, 1));
         assert!((record.timeouts.read - 1.5).abs() < f64::EPSILON);
-        assert!(unsafe { (*socket.state.cast::<SocketState>()).flags.connected });
+        assert!(
+            socket
+                .state
+                .as_deref()
+                .is_some_and(|bound| unsafe { (*bound.state()).flags.connected })
+        );
         release(socket);
         release(server);
     }
