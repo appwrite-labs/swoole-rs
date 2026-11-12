@@ -282,8 +282,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         return None;
     }
     let config = state.config_ref();
-    // SAFETY: no native callback runs during this leaf table access.
-    let tables = unsafe { &mut *state.tables() };
+    let tables = state.tables_ref();
     Some(match op {
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
@@ -332,11 +331,16 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             }
         }
         OP_SET_MAX_CONNECTION => {
-            tables.max_connection = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            let max = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            // SAFETY: `Server::create`, before any thread or process starts; `tables`
+            // isn't read after the write.
+            unsafe { &mut *state.tables() }.max_connection = max;
             0
         }
         OP_ACCEPT_TIMER_CLEAR => {
-            tables.enable_accept_timer = core::ptr::null_mut();
+            tables
+                .enable_accept_timer
+                .store(core::ptr::null_mut(), Relaxed);
             0
         }
         OP_SET_RUNNING => {
