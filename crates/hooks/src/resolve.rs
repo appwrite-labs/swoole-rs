@@ -23,9 +23,8 @@ const TIMEOUT_ALL: c_int = 15;
 /// `co->yield()` of the current coroutine (fatal outside one).
 pub(crate) fn park() {
     let co = current();
-    let scheduler = swoole_rs_coroutine::scheduler();
-    // SAFETY: this thread's scheduler and its running coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_yield(scheduler, co.cast()) };
+    // SAFETY: the running coroutine.
+    unsafe { swoole_rs_coroutine::suspend(co.cast()) };
 }
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
