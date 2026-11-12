@@ -160,13 +160,24 @@ jobs:
       # The workload only this variant's build runs (#2683), against its record like merge.yml's
       # callgrind job: a file read through io_uring, or a Swoole\Thread start and join. A thread
       # start costs 45.6M instructions, so 30 of them measure the ratio that 1,000 took 11 minutes to.
+      # Its profiles get an artifact of their own, so the cost can be split by object (#3408);
+      # baseline.sh downloads phpt-<variant> on every PR and badges.yml every callgrind-*, so the
+      # name matches neither.
       - name: Count instructions
         if: inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts')
         run: |
           if [ "$VARIANT" = zts ]; then set -- --workload thread --requests 30 --warmup 5; else set -- --workload uring-file --requests 1000; fi
           python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits "$@" $RUN \
             --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
+            --profiles target/callgrind/profiles \
             --output "target/phpt/$VARIANT/callgrind.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always() && inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts')
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: profiles-${{ inputs.variant }}-callgrind
+          path: target/callgrind/profiles/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
         if: always()
         with:
