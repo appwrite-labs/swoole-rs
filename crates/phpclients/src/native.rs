@@ -575,8 +575,7 @@ impl Cli {
 
     /// `cli->socket`, while the client has one.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
-        // SAFETY: null or a constructed client's socket, live while the client is.
-        unsafe { Net::from_ptr(self.get().record().socket) }
+        self.get().socket()
     }
 
     /// crates/clients' handle on the client.
