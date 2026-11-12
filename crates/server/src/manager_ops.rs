@@ -217,6 +217,10 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 /// The facts read from the server, its pools and the context.
 fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
+    // `running` is shared state, read and set before any `&mut ServerConfig` exists.
+    if op == OP_RUNNING {
+        return Some(u64::from(ctx.state().running()));
+    }
     let config = ctx.config();
     let workers = ctx.workers();
     let (pool, task_pool) = (ctx.pool(), ctx.task_pool());
@@ -240,7 +244,6 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .map_or(0, swoole_rs_process::worker_record::Worker::pid),
         ),
         OP_WORKER_REGISTRY => config.worker_registry as u64,
-        OP_RUNNING => u64::from(config.running),
         OP_RELOAD_INIT => u64::from(pool.reload_init()),
         OP_RELOAD_TASK => pool.reload_task() as u64,
         OP_WAIT_STATUS => signed(ctx.wait_status),
@@ -267,6 +270,11 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The effects on the server, its pools and the process.
 fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
+    // `running` is shared state, read and set before any `&mut ServerConfig` exists.
+    if op == OP_SET_RUNNING {
+        ctx.state().set_running(arg != 0);
+        return Some(0);
+    }
     let serv = ctx.server();
     let config = ctx.config();
     let callback = |index| ctx.state().callbacks.call_server(index, ctx.server());
@@ -305,7 +313,6 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
         OP_KILL_TASK_WORKERS => _ = crate::factory_ops::run_server(serv, RUN_KILL_TASK_WORKERS),
-        OP_SET_RUNNING => config.running = arg != 0,
         OP_SET_RELOAD_INIT => ctx.pool().set_reload_init(arg != 0),
         OP_SET_READ_MESSAGE => ctx.pool().set_read_message(arg != 0),
         OP_REAP_WAIT => {

@@ -284,6 +284,23 @@ impl ServerState {
         };
     }
 
+    /// `serv->running` alone: no reference to the rest of the record, which an
+    /// op context on another thread may hold as `&mut ServerConfig`.
+    fn running_flag(&self) -> &AtomicBool {
+        // SAFETY: a field of the box this state owns until it drops.
+        unsafe { &(*self.config()).running }
+    }
+
+    /// `serv->running`.
+    pub(crate) fn running(&self) -> bool {
+        self.running_flag().load(Ordering::Acquire)
+    }
+
+    /// `serv->running = running`, seen by every thread's next [`Self::running`].
+    pub(crate) fn set_running(&self, running: bool) {
+        self.running_flag().store(running, Ordering::Release);
+    }
+
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
         self.config.load(Ordering::Relaxed)
     }
@@ -396,10 +413,24 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 /// The result is freed once, as a `Box`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
+    let (config, tables) = fresh_records();
+    boxed(config, tables)
+}
+
+/// A new server's records, before a state owns them: the defaults and an empty
+/// worker registry.
+pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
     let mut config = crate::config::ServerConfig::default();
     config.worker_registry =
         Box::into_raw(Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default()).cast();
-    let tables = crate::records::ServerTables::default();
+    (config, crate::records::ServerTables::default())
+}
+
+/// The state of a server with these records, freed by `swr_v1_server_state_free`.
+pub(crate) fn boxed(
+    config: crate::config::ServerConfig,
+    tables: crate::records::ServerTables,
+) -> *mut ServerState {
     Box::into_raw(Box::new(ServerState::with(config, tables)))
 }
 
