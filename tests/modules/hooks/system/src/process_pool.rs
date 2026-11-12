@@ -288,11 +288,6 @@ unsafe extern "C" {
     fn __libc_current_sigrtmin() -> c_int;
 }
 
-unsafe extern "C-unwind" {
-    #[link_name = "_Z20swoole_random_stringPcm"]
-    fn swoole_random_string(buf: *mut c_char, size: usize);
-}
-
 // The `ProcessPool` and `Worker` methods: crates/process's Rust functions over the mirrors,
 // whose layout the fixture checks against the records'.
 unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
@@ -939,8 +934,8 @@ extern "C" fn shutdown_on_task(pool: *mut Pool, _: *mut Worker, _: *mut EventDat
 extern "C" fn dispatch_random_128(pool: *mut Pool) {
     let mut msg = EventData::new();
     msg.info.len = 128;
-    // SAFETY: 128 writable bytes.
-    unsafe { swoole_random_string(msg.data.as_mut_ptr().cast(), 128) };
+    // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
+    swoole_rs_corebase::swoole_random_string(&mut msg.data[..=128]);
     dispatch_sync(pool, &mut msg);
 }
 
@@ -1147,8 +1142,8 @@ fn async_() {
 
     let mut msg = EventData::new();
     msg.info.len = 128;
-    // SAFETY: 128 writable bytes.
-    unsafe { swoole_random_string(msg.data.as_mut_ptr().cast(), 128) };
+    // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
+    swoole_rs_corebase::swoole_random_string(&mut msg.data[..=128]);
     dispatch_sync(pool, &mut msg);
 
     assert_eq!(wait(pool), SW_OK);
