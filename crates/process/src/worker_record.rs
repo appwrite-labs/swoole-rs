@@ -5,16 +5,15 @@
 //! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
 //! fails when that header is stale. See #629.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
 
 /// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
 /// pointer and atomic fields are opaque storage here.
-#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct WorkerRecord {
-    pid: c_int,
+    pub(crate) pid: c_int,
     id: u32,
     pool: *mut c_void,
     queue: *mut c_void,
@@ -22,7 +21,8 @@ pub struct WorkerRecord {
     pub redirect_stdout: bool,
     pub redirect_stdin: bool,
     pub redirect_stderr: bool,
-    status: u8,
+    /// Written by the worker (busy, idle) while its dispatcher reads it.
+    status: AtomicU8,
     kind: u8,
     msgqueue_mode: u8,
     pub child_process: u8,
@@ -54,7 +54,7 @@ impl WorkerRecord {
             redirect_stdout: false,
             redirect_stdin: false,
             redirect_stderr: false,
-            status: 0,
+            status: AtomicU8::new(0),
             kind: 0,
             msgqueue_mode: 0,
             child_process: 0,
@@ -127,7 +127,7 @@ impl WorkerRecord {
     }
 
     pub fn set_status(&mut self, status: u8) {
-        self.status = status;
+        *self.status.get_mut() = status;
     }
 
     /// `worker->ptr = data`: what its owner keeps there.
@@ -146,27 +146,6 @@ impl WorkerRecord {
         let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
         limit != 0 && self.request_count.cast_unsigned() >= limit
     }
-}
-
-/// First event worker with this pid, preserving array order and public raw writes.
-/// # Safety
-/// `workers` is null or lends `count` initialized canonical Worker records.
-pub unsafe fn swr_v1_worker_array_lookup(
-    workers: *mut WorkerRecord,
-    count: u32,
-    pid: c_int,
-) -> *mut WorkerRecord {
-    // SAFETY: the caller lends the complete initialized canonical array and its PID slots.
-    unsafe {
-        crate::worker_registry::find_array(
-            workers.cast(),
-            count,
-            core::mem::size_of::<WorkerRecord>(),
-            core::mem::offset_of!(WorkerRecord, pid),
-            pid,
-        )
-    }
-    .cast()
 }
 
 /// A live worker record: the only way to reach one's fields. Each read and write
@@ -249,10 +228,6 @@ impl Worker<'_> {
     }
 
     field!(
-        /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…).
-        status, set_status, status: u8
-    );
-    field!(
         /// The worker's kind (C++ `type`: `SW_EVENT_WORKER`/`SW_TASK_WORKER`/…).
         kind, set_kind, kind: u8
     );
@@ -319,6 +294,24 @@ impl Worker<'_> {
             self.dispatch_count(),
             i64::from(self.concurrency().load(Ordering::Relaxed)),
         ]
+    }
+
+    /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…). Relaxed: a dispatcher only
+    /// picks an idle worker by it, and the message it then sends synchronizes.
+    #[must_use]
+    pub fn status(self) -> u8 {
+        self.status_slot().load(Ordering::Relaxed)
+    }
+
+    /// Sets the worker's status, which its dispatcher reads concurrently.
+    pub fn set_status(self, status: u8) {
+        self.status_slot().store(status, Ordering::Relaxed);
+    }
+
+    fn status_slot(&self) -> &AtomicU8 {
+        // SAFETY: `new`'s contract: a live record, for longer than this borrow; the
+        // reference covers only the atomic field.
+        unsafe { &(*self.raw).status }
     }
 
     /// `worker->concurrency`, which native workers access atomically.
@@ -588,6 +581,25 @@ mod tests {
 #[cfg(test)]
 mod public_pid_array_tests {
     use super::*;
+
+    /// `server_workers`' event-worker lookup: the first record in the array with this pid.
+    unsafe fn swr_v1_worker_array_lookup(
+        workers: *mut WorkerRecord,
+        count: u32,
+        pid: c_int,
+    ) -> *mut WorkerRecord {
+        unsafe {
+            crate::worker_registry::find_array(
+                workers.cast(),
+                count,
+                size_of::<WorkerRecord>(),
+                core::mem::offset_of!(WorkerRecord, pid),
+                pid,
+            )
+        }
+        .cast()
+    }
+
     #[test]
     fn public_pid_writes_and_duplicates_keep_first_array_match_including_zero() {
         let mut workers: [WorkerRecord; 3] = unsafe { core::mem::zeroed() };
