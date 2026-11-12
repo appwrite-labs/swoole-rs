@@ -35,9 +35,7 @@ pub(crate) unsafe extern "C" fn php_swoole_length_func(
 ) -> isize {
     // SAFETY: per the caller.
     let callable = unsafe { (*protocol).private_data_1 };
-    // SAFETY: as above.
-    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
-    let length = package_length(callable, bytes);
+    let length = package_length(callable, packet.bytes());
     bailout::finish();
     length
 }
