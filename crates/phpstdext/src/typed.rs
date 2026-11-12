@@ -421,7 +421,7 @@ pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
         return false;
     }
     match (value.class(), Typed::of(&value)) {
-        (Some(actual), _) => check_object(typed.header().ce, actual),
+        (Some(actual), _) => check_object(typed, &value, actual),
         (None, element) if expected == IS_ARRAY => check_array(typed, element),
         _ => true,
     }
@@ -460,24 +460,27 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
     true
 }
 
-/// Whether an object of class `actual` is a `ce`.
-fn check_object(ce: *mut zend_class_entry, actual: *mut zend_class_entry) -> bool {
-    // SAFETY: live classes.
+/// Whether `value`, an object of class `actual`, is of the class `typed`'s
+/// values have.
+fn check_object(typed: Typed, value: &Value, actual: *mut zend_class_entry) -> bool {
+    let ce = typed.header().ce;
+    // SAFETY: live classes: `value`'s own, and the one the definition's parse
+    // looked up for its object values.
     if unsafe { swr_zend_instanceof(actual, ce) } {
         return true;
     }
-    // SAFETY: live classes.
-    let expected_name = unsafe { (*ce).name };
-    // SAFETY: as above.
-    let actual_name = unsafe { (*actual).name };
-    // SAFETY: printf arguments: two class names.
-    unsafe {
-        zend_type_error(
-            c"Array value type mismatch, expected `%s`, got `%s`".as_ptr(),
-            swoole_rs_zend::string::val(expected_name),
-            swoole_rs_zend::string::val(actual_name),
-        );
-    }
+    // SAFETY: that live class.
+    let expected = unsafe { (*ce).name };
+    // SAFETY: a class's name lives as long as the class.
+    let expected = unsafe { swoole_rs_zend::string::bytes(expected) };
+    type_error(&message(&[
+        b"Array value type mismatch, expected `",
+        expected,
+        b"`, got `",
+        // An object's value name is its class's.
+        value.value_name().to_bytes(),
+        b"`",
+    ]));
     false
 }
 
@@ -751,12 +754,14 @@ unsafe fn replace(function: *mut zend_function, handler: zif_handler) -> zif_han
 /// # Safety
 /// At MINIT.
 pub(crate) unsafe fn install() {
+    type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
+    let [push, unshift, splice] = [
+        (c"array_push", push as Handler),
+        (c"array_unshift", unshift),
+        (c"array_splice", splice),
+    ]
     // SAFETY: a core function, at MINIT.
-    let push = unsafe { replace(compiled_function(c"array_push"), Some(push)) };
-    // SAFETY: as above.
-    let unshift = unsafe { replace(compiled_function(c"array_unshift"), Some(unshift)) };
-    // SAFETY: as above.
-    let splice = unsafe { replace(compiled_function(c"array_splice"), Some(splice)) };
+    .map(|(name, handler)| unsafe { replace(compiled_function(name), Some(handler)) });
     let originals = Originals {
         push,
         unshift,

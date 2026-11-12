@@ -158,7 +158,7 @@ impl PoolCall {
     }
 }
 
-/// What the bailout trap runs: a body over its [`PoolCall`].
+/// What the bailout trap runs: a body over the argument the trap got with it.
 pub type Step = unsafe extern "C" fn(call: *mut c_void);
 
 /// The pool's IPC state. Native creates one per pool and frees it in `destroy`.
@@ -208,10 +208,8 @@ struct Body<F, R> {
 }
 
 unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
-    // SAFETY: `trapped` passes its call.
-    let data = unsafe { (*call.cast::<PoolCall>()).data };
-    // SAFETY: the call's data is `trapped`'s body, which owns nothing a bailout skips.
-    let body = unsafe { &mut *data.cast::<Body<F, R>>() };
+    // SAFETY: `trapped` passes its body, which owns nothing a bailout skips.
+    let body = unsafe { &mut *call.cast::<Body<F, R>>() };
     body.result = body.body.take().map(|body| body());
 }
 
@@ -224,11 +222,9 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
         body: Some(body),
         result: None,
     };
-    let mut call = PoolCall::new(ptr::null_mut(), ptr::null_mut());
-    call.data = (&raw mut body).cast();
-    // SAFETY: the trap runs `step` inside `zend_try`; no Rust frame is between its
-    // `setjmp` and `step`, whose body owns nothing a bailout skips.
-    if unsafe { trap(step::<F, R>, (&raw mut call).cast()) } != 0 {
+    // SAFETY: the trap runs `step` over `body` inside `zend_try`; no Rust frame is
+    // between its `setjmp` and `step`, whose body owns nothing a bailout skips.
+    if unsafe { trap(step::<F, R>, (&raw mut body).cast()) } != 0 {
         return Err(Bailed);
     }
     body.result.ok_or(Bailed)

@@ -67,7 +67,8 @@ struct Query {
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
     retired: Arc<AtomicBool>,
-    sockets: RefCell<HashMap<i32, *mut SocketRecord>>,
+    /// The wrapper of each descriptor c-ares watches, live until [`free`].
+    sockets: RefCell<HashMap<i32, Socket<'static>>>,
     results: RefCell<Vec<Vec<u8>>>,
 }
 struct Completion {
@@ -129,31 +130,34 @@ unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
-    unsafe { event_api::swoole_event_set_handler(FD, read, Some(readable)) };
-    // SAFETY: as above.
-    unsafe { event_api::swoole_event_set_handler(FD, write, Some(writable)) };
+    for (event, handler) in [
+        (read, readable as swoole_rs_reactor::Handler),
+        (write, writable),
+    ] {
+        // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
+        unsafe { event_api::swoole_event_set_handler(FD, event, Some(handler)) };
+    }
     // SAFETY: `cleanup` runs once, when the reactor goes; it keeps no data.
     unsafe { event_api::on_destroy_with(cleanup, ptr::null_mut()) };
 }
 const FD: i32 = FdType::SW_FD_CARES as i32;
 /// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the
 /// next deferred pass while a reactor runs, as the event being handled may hold it.
-unsafe fn free(socket: *mut SocketRecord) {
-    // SAFETY: a live wrapper; c-ares retains the OS descriptor.
-    if let Some(wrapper) = unsafe { Socket::from_ptr(socket) } {
-        wrapper.edit(|wrapper| wrapper.fd = -1);
-    }
-    let detached = Detached(socket);
-    let Err(Detached(socket)) = (if event_api::swr_v1_event_reactor().is_null() {
+/// # Safety
+/// `wrapper` is out of the reactor, and nothing uses it or a copy of it afterwards.
+unsafe fn free(wrapper: Socket<'static>) {
+    // c-ares retains the OS descriptor.
+    wrapper.edit(|wrapper| wrapper.fd = -1);
+    let detached = Detached(wrapper.as_ptr());
+    let Err(detached) = (if event_api::swr_v1_event_reactor().is_null() {
         Err(detached)
     } else {
         event_api::swoole_event_defer_value(detached)
     }) else {
         return;
     };
-    // SAFETY: the detached wrapper, unused since.
-    unsafe { SocketRecord::free(socket) };
+    // No reactor to defer to: now.
+    event_api::Deferred::run(detached);
 }
 /// A detached wrapper the next deferred pass frees (a freed reactor leaks it, as
 /// upstream's).
@@ -177,18 +181,18 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     };
     // SAFETY: c-ares passes the live query's userdata.
     let query = unsafe { query(data) };
-    let socket = query.sockets.borrow().get(&fd).copied();
-    let wrapper = if let Some(socket) = socket {
+    let registered = query.sockets.borrow().get(&fd).copied();
+    let wrapper = if let Some(wrapper) = registered {
         if events == 0 {
             // SAFETY: remove the registered native socket before detaching its descriptor.
-            unsafe { event_api::swoole_event_del(socket) };
-            // SAFETY: free detaches fd first; c-ares retains ownership of the OS descriptor.
-            unsafe { free(socket) };
+            unsafe { event_api::swoole_event_del(wrapper.as_ptr()) };
+            // SAFETY: out of the reactor above, and of the registry below; free
+            // detaches fd first, as c-ares retains ownership of the OS descriptor.
+            unsafe { free(wrapper) };
             query.sockets.borrow_mut().remove(&fd);
             return;
         }
-        // SAFETY: a registered wrapper, live while the registry holds it.
-        unsafe { Socket::from_ptr(socket) }
+        wrapper
     } else {
         if events == 0 {
             log::warning(ORIGIN, format_args!("error events, fd={fd}"));
@@ -196,16 +200,14 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         }
         // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
         let socket = socket_upstream::make_socket_fd(fd, FD);
-        // SAFETY: the fresh record, or null.
-        let wrapper = unsafe { Socket::from_ptr(socket) };
-        if let Some(wrapper) = wrapper {
-            wrapper.edit(|wrapper| wrapper.object = data);
-        }
-        query.sockets.borrow_mut().insert(fd, socket);
+        // SAFETY: the fresh record (never null), live until `free`, which only this
+        // function calls, on taking it out of the registry.
+        let Some(wrapper) = (unsafe { Socket::from_ptr(socket) }) else {
+            return;
+        };
+        wrapper.edit(|wrapper| wrapper.object = data);
+        query.sockets.borrow_mut().insert(fd, wrapper);
         wrapper
-    };
-    let Some(wrapper) = wrapper else {
-        return;
     };
     if wrapper.read(|wrapper| wrapper.events) != 0 {
         // SAFETY: update this existing registered wrapper with the requested event mask.
@@ -253,8 +255,8 @@ unsafe extern "C" fn host(
             let length = usize::try_from(text.length).unwrap_or(0);
             let text = text.bytes.get(..length).unwrap_or_default().to_vec();
             query.results.borrow_mut().push(text);
-            // SAFETY: the SDK address list has another slot or its terminating null.
-            addresses = unsafe { addresses.add(1) };
+            // The SDK address list has another slot or its terminating null.
+            addresses = addresses.wrapping_add(1);
         }
     }
     let coroutine = query.coroutine.get();
@@ -287,8 +289,10 @@ unsafe extern "C" fn host(
     reason = "upstream passes the int port to c-ares' uint16_t"
 )]
 pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
-    let (server, port) = crate::dns::server();
-    let (server, port) = (server.as_ptr().cast::<c_char>(), port as u16);
+    // The configured server's host, NUL-terminated: empty when none is set.
+    let (server_host, port) = crate::dns::server();
+    let has_server = server_host.first().is_some_and(|&byte| byte != 0);
+    let (server, port) = (server_host.as_ptr().cast::<c_char>(), port as u16);
     let domain = domain.as_ptr();
     if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
@@ -326,8 +330,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     if status == metadata.success {
         // Publish the initialized channel before issuing any SDK query.
         query.channel.set(channel);
-        // SAFETY: inspect the borrowed static/input server string without retaining it.
-        if unsafe { *server } != 0 {
+        if has_server {
             if metadata.server_api != 0 {
                 // SAFETY: the wrapper uses the actual SDK node layout for this version.
                 unsafe { sdk::swrs_cares_server(channel, server, port) };

@@ -3,7 +3,7 @@
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::native::{Co, Socket};
-use libc::{c_int, c_void};
+use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
@@ -14,11 +14,7 @@ use swoole_rs_hooks::stdio::{
 };
 use swoole_rs_phpruntime::co;
 use swoole_rs_websocket_ffi::frame_api::get_package_length;
-use swoole_rs_zend::host::callable::Callable;
-use swoole_rs_zend::{
-    Array, Call, Owned, UNDEF, Value, ZString, bailout, set_object,
-    sys::{zend_object, zval_ptr_dtor},
-};
+use swoole_rs_zend::{Array, Call, Owned, Value};
 
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
 /// the message it is assembling. Framing is crates/phphttp's, which depends
@@ -81,13 +77,31 @@ pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, 
     }
 }
 
-/// `delete buffer`.
-pub(crate) unsafe fn swoole_http_client_coro_buffer_free(buffer: *mut c_void) {
-    if buffer.is_null() {
-        return;
+/// The write buffer a closed socket left (`tmp_write_buffer`): a `new String`
+/// this owns alone, or none.
+pub(crate) struct Written(*mut CppString);
+
+impl Default for Written {
+    fn default() -> Self {
+        Self(std::ptr::null_mut())
     }
-    // SAFETY: a popped `new String`, deleted once.
-    unsafe { delete_string(buffer.cast()) };
+}
+
+impl Written {
+    /// The bytes the socket had written, if it left a buffer.
+    pub(crate) fn buffer(&self) -> Option<&CppString> {
+        // SAFETY: null, or the String this owns, which nothing else reaches.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl Drop for Written {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the `new String` this owns, deleted once.
+            unsafe { delete_string(self.0) };
+        }
+    }
 }
 
 /// The socket frames WebSocket packets from now on.
@@ -133,19 +147,15 @@ impl Co {
         Some(value)
     }
 
-    /// Connect timeout (0: the default), resolve context, the close hook and
-    /// the zend string allocator.
-    /// # Safety
-    /// `resolve` outlives the socket.
-    pub(crate) unsafe fn configure_http(self, timeout: f64, resolve: *mut c_void, hook: CloseHook) {
+    /// Connect timeout (0: the default), the close hook and the zend string
+    /// allocator.
+    pub(crate) fn configure_http(self, timeout: f64, hook: CloseHook) {
         let timeout = if timeout == 0.0 {
             swoole_rs_reactor::SOCKET_DEFAULTS.connect.get()
         } else {
             timeout
         };
         self.set_timeout(timeout, TIMEOUT_CONNECT);
-        // SAFETY: the caller's context, which outlives the socket.
-        unsafe { self.handle().set_resolve_context(resolve) };
         self.use_zend_strings();
         set_close_hook(self.handle(), hook);
     }
@@ -172,6 +182,15 @@ impl Co {
     /// `send_all(data)`: whether all went.
     pub(crate) fn send_all(self, data: &[u8]) -> bool {
         self.handle().send_all(data).cast_unsigned() == data.len()
+    }
+
+    /// The socket gives up its write buffer, as before its first write.
+    pub(crate) fn take_write_buffer(self) -> Written {
+        let written = Written(self.handle().write_buffer().cast());
+        // SAFETY: null, as before the socket's first write; `written` owns the
+        // String the socket no longer reaches.
+        unsafe { self.handle().set_write_buffer(std::ptr::null_mut()) };
+        written
     }
 
     /// The write or read buffer, made on first use.
@@ -263,27 +282,6 @@ pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool
 pub(crate) fn swoole_http_client_coro_file_close(fd: c_int) {
     // A plain close of a descriptor nothing else holds.
     swoole_coroutine_close(fd);
-}
-
-/// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
-/// 2 if it bailed out.
-pub(crate) unsafe fn swoole_http_client_coro_call(
-    callable: &Callable,
-    client: *mut zend_object,
-    data: &[u8],
-) -> c_int {
-    let mut args = [UNDEF; 2];
-    // SAFETY: the client object, borrowed for the call as upstream's `ZVAL_OBJ`.
-    unsafe { set_object(&raw mut args[0], client) };
-    args[1] = Owned::string(ZString::new(data)).into_zval();
-    let result = match crate::native::call(callable, &mut args, std::ptr::null_mut(), false) {
-        Ok(true) => 0,
-        Ok(false) => 1,
-        Err(bailout::Bailout) => 2,
-    };
-    // SAFETY: the string argument's reference.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
-    result
 }
 
 /// Upstream's `decompress_response` warnings.

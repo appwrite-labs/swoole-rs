@@ -41,21 +41,15 @@ const _: () = assert!(
 /// The constructors: the base's fields, then `pipe(2)` or an `AF_UNIX` `socketpair(2)`
 /// of `protocol`, then a socket for each end (`socks[1]` the master, which writes).
 /// False, after a warning from `origin`, when the descriptors can't be created.
-fn open<'a>(
-    this: &'a mut MaybeUninit<SocketPair>,
-    blocking: bool,
-    unix: Option<c_int>,
-    origin: &CStr,
-) -> Option<&'a mut SocketPair> {
+fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool) {
     let timeout = SOCKET_DEFAULTS.read.get();
-    let pair = SocketPair {
+    let mut pair = SocketPair {
         blocking,
         timeout,
         socks: [0; 2],
         master_socket: ptr::null_mut(),
         worker_socket: ptr::null_mut(),
     };
-    let pair = this.write(pair);
     let socks = match unix {
         Some(protocol) => swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, protocol, 0),
         None => swoole_rs_corebase::sys::pipe(),
@@ -63,13 +57,13 @@ fn open<'a>(
     let Some(socks) = socks else {
         let call = if unix.is_some() { "socketpair" } else { "pipe" };
         log::sys_warning(origin, format_args!("{call}() failed"));
-        return None;
+        return (pair, false);
     };
     pair.socks = socks;
     pair.master_socket = make_socket_fd(pair.socks[1], FD_PIPE);
     pair.worker_socket = make_socket_fd(pair.socks[0], FD_PIPE);
-    set_blocking(pair, blocking);
-    Some(pair)
+    set_blocking(&mut pair, blocking);
+    (pair, true)
 }
 
 /// `Pipe(bool blocking)`.
@@ -78,8 +72,7 @@ fn open<'a>(
     unsafe(export_name = "_ZN6swoole4PipeC1Eb")
 )]
 pub extern "C" fn pipe_new(this: &mut MaybeUninit<SocketPair>, blocking: bool) -> *mut SocketPair {
-    open(this, blocking, None, c"Pipe");
-    this.as_mut_ptr()
+    this.write(open(blocking, None, c"Pipe").0)
 }
 
 /// `UnixSocket(bool blocking, int protocol)`: also sets both ends' kernel buffers to
@@ -93,24 +86,22 @@ pub extern "C" fn unix_socket_new(
     blocking: bool,
     protocol: c_int,
 ) -> *mut SocketPair {
-    if let Some(pair) = open(this, blocking, Some(protocol), c"UnixSocket") {
-        let size = SOCKET_DEFAULTS.buffer_size();
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "upstream's constructor ignores whether the buffers were set"
-        )]
-        let _ = unix_socket_set_buffer_size(pair, size as usize);
-    }
-    this.as_mut_ptr()
+    this.write(unix_socket(blocking, protocol))
 }
 
 /// `UnixSocket(blocking, protocol)` by value: both ends null when it failed.
 #[must_use]
 pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
-    let mut storage = MaybeUninit::uninit();
-    unix_socket_new(&mut storage, blocking, protocol);
-    // SAFETY: `unix_socket_new` writes the pair before anything can fail.
-    unsafe { storage.assume_init() }
+    let (pair, opened) = open(blocking, Some(protocol), c"UnixSocket");
+    if opened {
+        let size = SOCKET_DEFAULTS.buffer_size();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "upstream's constructor ignores whether the buffers were set"
+        )]
+        let _ = unix_socket_set_buffer_size(&pair, size as usize);
+    }
+    pair
 }
 
 /// The two ends, master first (None once closed).

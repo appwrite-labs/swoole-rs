@@ -39,9 +39,7 @@ impl Bytes {
 pub struct StringSlot {
     bytes: UnsafeCell<Bytes>,
 }
-// SAFETY: every operation that reads or mutates a slot is unsafe and requires
-// external synchronization, matching the native configuration's caller contract.
-unsafe impl Send for StringSlot {}
+// `Send` is the compiler's: the slot owns its bytes.
 // SAFETY: sharing exposes no safe mutation or references; C callers synchronize
 // accesses.
 unsafe impl Sync for StringSlot {}

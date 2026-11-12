@@ -8,16 +8,9 @@ use crate::signal::SIGNALS;
 
 /// `swoole_signal_kqueue_set`: `handler` (0 to clear) for `signo` on the kqueue
 /// `kq`; returns the previous handler. `*failed` is set when adding the event
-/// failed, for native to warn with `errno`.
-///
-/// # Safety
-/// `kq` is the reactor's kqueue.
-pub unsafe fn signal_kqueue_set(
-    kq: c_int,
-    signo: c_int,
-    handler: usize,
-    failed: &mut bool,
-) -> usize {
+/// failed, for native to warn with `errno`. `kq` is the reactor's kqueue; any
+/// other descriptor fails the change or registers the signal where nothing reads it.
+pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: usize, failed: &mut bool) -> usize {
     let Some(slot) = usize::try_from(signo)
         .ok()
         .and_then(|index| SIGNALS.get(index))
@@ -32,8 +25,8 @@ pub unsafe fn signal_kqueue_set(
         if slot.activated.load(Relaxed) {
             crate::signal::restore_origin(signo);
         } else {
-            // SAFETY: restores the default disposition.
-            unsafe { libc::signal(signo, libc::SIG_DFL) };
+            // Restores the default disposition.
+            crate::signal::install(signo, libc::SIG_DFL, false, false);
         }
         slot.reset();
         event.flags = libc::EV_DELETE;
@@ -58,18 +51,14 @@ pub unsafe fn signal_kqueue_set(
 }
 
 /// `swoole_signal_kqueue_clear`: when the event loop is `available`, removes every
-/// registered signal from `kq`; then empties the table.
-///
-/// # Safety
-/// As [`signal_kqueue_set`].
-pub unsafe fn signal_kqueue_clear(kq: c_int, available: bool) {
+/// registered signal from `kq` (as [`signal_kqueue_set`]'s); then empties the table.
+pub fn signal_kqueue_clear(kq: c_int, available: bool) {
     for slot in &SIGNALS {
         if slot.activated.load(Relaxed) && available {
             slot.activated.store(false, Relaxed);
             slot.handler.store(0, Relaxed);
             let mut failed = false;
-            // SAFETY: as the caller guarantees.
-            unsafe { signal_kqueue_set(kq, c_int::from(slot.signo.load(Relaxed)), 0, &mut failed) };
+            signal_kqueue_set(kq, c_int::from(slot.signo.load(Relaxed)), 0, &mut failed);
         }
     }
     crate::signal::signal_reset();
@@ -86,14 +75,12 @@ mod tests {
         let kq = unsafe { libc::kqueue() };
         assert!(kq >= 0);
         let mut failed = true;
-        // SAFETY: a live kqueue and a local flag.
-        let origin = unsafe { signal_kqueue_set(kq, libc::SIGUSR2, 0x1234, &mut failed) };
+        let origin = signal_kqueue_set(kq, libc::SIGUSR2, 0x1234, &mut failed);
         assert_eq!((origin, failed), (0, false));
         let slot = &SIGNALS[libc::SIGUSR2 as usize];
         assert_eq!(slot.handler.load(Relaxed), 0x1234);
         assert!(slot.activated.load(Relaxed));
-        // SAFETY: as above.
-        unsafe { signal_kqueue_clear(kq, true) };
+        signal_kqueue_clear(kq, true);
         assert!(!slot.activated.load(Relaxed));
         assert_eq!(slot.handler.load(Relaxed), 0);
         // SAFETY: the test's kqueue.

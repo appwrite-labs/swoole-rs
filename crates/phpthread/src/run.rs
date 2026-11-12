@@ -6,17 +6,18 @@
 use crate::{Arguments, request, thread};
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CString, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Minit, Owned, OwnedArray, bailout,
+    Call, Minit, Owned, OwnedArray, Value, bailout,
     sys::{
         swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
         swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
-        swr_zend_thread_leave, swr_zend_thread_request, swr_zend_thread_set_argv,
-        swr_zend_tsrm_api_name, swr_zend_tsrm_is_shutdown, zend_declare_class_constant_string,
+        swr_zend_thread_leave, swr_zend_thread_main_request, swr_zend_thread_request,
+        swr_zend_thread_set_argv, swr_zend_tsrm_api_name, swr_zend_tsrm_is_shutdown,
+        zend_declare_class_constant_string,
     },
 };
 
@@ -216,8 +217,14 @@ fn main_thread() -> bool {
 /// RINIT.
 pub unsafe extern "C" fn thread_rinit() {
     if main_thread() {
-        // SAFETY: the main thread's RINIT.
-        unsafe { request::keep() };
+        let (mut path, mut argc) = (ptr::null(), 0);
+        // SAFETY: the main thread's request.
+        let argv = unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
+        // SAFETY: SAPI's NUL-terminated script path, live for the request.
+        let path = (!path.is_null()).then(|| unsafe { CStr::from_ptr(path) });
+        // SAFETY: null or `$argv`, live for the request.
+        let argv = unsafe { Value::from_ptr(argv) };
+        request::keep(path, argv, argc);
         bailout::finish();
     }
 }

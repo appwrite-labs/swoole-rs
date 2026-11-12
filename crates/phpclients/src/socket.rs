@@ -958,38 +958,37 @@ swoole_rs_zend::handlers! {
     zim_swoole_socket_coro_isClosed => is_closed;
 }
 
-/// A created object, or null. Null with a bailout pending is one the caller
+/// A created object, or none. None with a bailout pending is one the caller
 /// stops on, leaving the raise to its handler's last step.
-fn created(result: Result<Option<Owned>, Bailout>) -> *mut zend_object {
-    match result {
-        Ok(Some(object)) => into_object(object),
-        Ok(None) => ptr::null_mut(),
-        Err(error) => {
-            error.defer();
-            ptr::null_mut()
-        }
-    }
+fn created(result: Result<Option<Owned>, Bailout>) -> Option<Owned> {
+    result.unwrap_or_else(|error| {
+        error.defer();
+        None
+    })
 }
 
-/// The object `value` holds, carrying the reference the value gives up.
-fn into_object(value: Owned) -> *mut zend_object {
+/// The object `value` holds, carrying the reference the value gives up; null for none.
+fn into_object(value: Option<Owned>) -> *mut zend_object {
+    let Some(value) = value else {
+        return ptr::null_mut();
+    };
     let object = value.object().unwrap_or(ptr::null_mut());
     let _reference = value.into_zval();
     object
 }
 
 /// `php_swoole_create_socket(type)`: a new socket object of a native Swoole
-/// socket kind, or null with `errno` or a bailout pending.
+/// socket kind, or none with `errno` or a bailout pending.
 #[must_use]
-pub fn create_socket(kind: i32) -> *mut zend_object {
+pub fn create_socket(kind: i32) -> Option<Owned> {
     created(owner::create_kind(kind))
 }
 
-/// `php_swoole_create_socket_from_fd(fd, type)`, null as [`create_socket`].
+/// `php_swoole_create_socket_from_fd(fd, type)`, none as [`create_socket`].
 /// # Safety
 /// The caller gives up `fd`, which the new object owns.
 #[must_use]
-pub unsafe fn create_from_fd(fd: i32, kind: i32) -> *mut zend_object {
+pub unsafe fn create_from_fd(fd: i32, kind: i32) -> Option<Owned> {
     // SAFETY: per the caller.
     created(unsafe { owner::from_fd(fd, kind) })
 }
@@ -998,7 +997,7 @@ pub unsafe fn create_from_fd(fd: i32, kind: i32) -> *mut zend_object {
 /// which stays the caller's; null as [`create_socket`].
 #[must_use]
 pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
-    created(owner::duplicate(fd, kind))
+    into_object(created(owner::duplicate(fd, kind)))
 }
 
 /// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
@@ -1007,6 +1006,14 @@ pub fn get_socket(value: &Value) -> Socket {
     Sock::of(value)
         .and_then(Sock::co)
         .map_or(ptr::null_mut(), Co::as_ptr)
+}
+
+/// The descriptor and type (`get_fd()`, `get_type()`) of the core socket a
+/// socket object holds; `None` for any other value or an unconstructed socket.
+#[must_use]
+pub fn socket_descriptor(value: &Value) -> Option<(i32, i32)> {
+    let socket = Sock::of(value)?.co()?.handle();
+    Some((socket.sock_fd(), socket.kind()))
 }
 
 /// `php_swoole_socket_is_closed(zobject)`.

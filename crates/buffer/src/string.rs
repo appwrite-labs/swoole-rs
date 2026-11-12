@@ -487,24 +487,15 @@ impl CppString {
     }
 
     pub fn print(&self, value: bool) {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
-            reason = "upstream's (int) length"
-        )]
-        let precision = self.length as c_int;
         if value {
-            // SAFETY: the arguments match the format; `str` holds `length` bytes.
-            unsafe {
-                libc::printf(
-                    c"String[length=%zu,size=%zu,offset=%jd]=%.*s\n".as_ptr(),
-                    self.length,
-                    self.size,
-                    self.offset,
-                    precision,
-                    self.str,
-                )
-            };
+            let head = format!(
+                "String[length={},size={},offset={}]=",
+                self.length, self.size, self.offset
+            );
+            // `%.*s` of the content: `print` stops at a NUL, as upstream's does.
+            swoole_rs_corebase::sys::print(head.as_bytes());
+            swoole_rs_corebase::sys::print(self.view());
+            swoole_rs_corebase::sys::print(b"\n");
         } else {
             // SAFETY: the arguments match the format.
             unsafe {

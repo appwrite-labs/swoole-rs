@@ -237,6 +237,15 @@ struct AsyncEvent {
     callback: Option<AsyncCallback>,
 }
 
+impl AsyncEvent {
+    /// The event's request; none on an event built without one.
+    fn request(&self) -> Option<&ResolverRequest> {
+        // SAFETY: only this module builds an event, whose request is null or a
+        // record the event (and each copy the pool makes of it) keeps live.
+        unsafe { self.data.as_ref() }
+    }
+}
+
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
     size_of::<AsyncEvent>() == 72
@@ -1345,15 +1354,20 @@ fn dns_lookup(this: Handle) -> c_int {
 /// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
 /// [`dns_lookup`] dispatched.
 extern "C" fn resolve(event: &mut AsyncEvent) {
-    // SAFETY: its request record, held by the copy.
-    (event.retval, event.error) = crate::resolver::host(unsafe { &*event.data });
+    // Its request record, held by the copy.
+    if let Some(request) = event.request() {
+        (event.retval, event.error) = crate::resolver::host(request);
+    }
 }
 
 /// `Client_onResolveCompleted`, on the client's thread, over the completed copy
 /// of the event [`dns_lookup`] dispatched.
 extern "C" fn resolve_completed(event: &AsyncEvent) {
-    // SAFETY: its request record, held by the copy.
-    let address = crate::resolver::address(unsafe { &*event.data });
+    // Its request record, held by the copy.
+    let Some(request) = event.request() else {
+        return;
+    };
+    let address = crate::resolver::address(request);
     resolved(
         Handle(event.object.cast()),
         event.error,

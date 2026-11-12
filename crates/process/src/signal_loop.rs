@@ -75,9 +75,7 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
     {
         let mut failed = false;
         let kq = (ops.native_handle)();
-        // SAFETY: a live kqueue and writable result flag; no Rust borrow spans callbacks.
-        let previous =
-            unsafe { crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed) };
+        let previous = crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed);
         if failed {
             report(ops, 9, signo, errno());
         }
@@ -175,8 +173,8 @@ pub fn clear(ops: &Ops) {
     if caps & 2 != 0 && corebase::swr_v1_core_enable_kqueue() {
         let available = (ops.available)();
         let kq = if available { (ops.native_handle)() } else { -1 };
-        // SAFETY: actual kqueue or -1 when unavailable, as the backend contract requires.
-        unsafe { crate::signal_kqueue::signal_kqueue_clear(kq, available) };
+        // The actual kqueue, or -1 when unavailable.
+        crate::signal_kqueue::signal_kqueue_clear(kq, available);
         return;
     }
     signal::signal_clear();

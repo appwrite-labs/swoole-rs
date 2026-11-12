@@ -71,54 +71,6 @@ pub enum Io {
     RecvAll = 8,
 }
 
-/// The caller's `length` bytes at `buf`.
-/// # Safety
-/// `buf` holds `length` readable bytes, or `length` is 0.
-unsafe fn bytes<'a>(buf: *const c_char, length: usize) -> &'a [u8] {
-    if length == 0 {
-        return &[];
-    }
-    // SAFETY: per the caller.
-    unsafe { std::slice::from_raw_parts(buf.cast(), length) }
-}
-
-/// The caller's `length` writable bytes at `buf`.
-/// # Safety
-/// `buf` holds `length` writable bytes, or `length` is 0.
-unsafe fn bytes_mut<'a>(buf: *mut c_char, length: usize) -> &'a mut [u8] {
-    if length == 0 {
-        return &mut [];
-    }
-    // SAFETY: per the caller.
-    unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
-}
-
-/// One `op` transfer of `length` bytes at `buf` on `socket`: its Rust member, or
-/// its `network::Socket`'s for the synchronous pair.
-/// # Safety
-/// `buf` holds `length` bytes (writable for the receiving operations).
-unsafe fn io(socket: Co, op: Io, buf: *mut c_char, length: usize) -> isize {
-    // SAFETY: per the caller.
-    let data = || unsafe { bytes(buf, length) };
-    // SAFETY: per the caller.
-    let out = || unsafe { bytes_mut(buf, length) };
-    match op {
-        Io::SendSync => socket
-            .with_network(|network| send_sync(network, data(), 0))
-            .unwrap_or(-1),
-        Io::RecvSync => socket
-            .with_network(|network| recv_sync(network, out(), 0))
-            .unwrap_or(-1),
-        Io::SendAll => socket.send_all(data()),
-        Io::SendOnce => socket.send_once(data()),
-        Io::Recv => socket.recv(out()),
-        Io::RecvOnce => socket.recv_once(out()),
-        Io::Peek => socket.peek(out()),
-        Io::Send => socket.send(data()),
-        Io::RecvAll => socket.recv_all(out()),
-    }
-}
-
 /// `SW_WAIT`.
 pub(crate) const SW_WAIT: i32 = 2;
 
@@ -234,12 +186,42 @@ impl Socket {
         self.co().set_err_code(code);
     }
 
-    /// One transfer of `length` bytes at `buf`.
+    /// One `op` transfer of `length` bytes at `buf`: the socket's Rust member, or
+    /// its `network::Socket`'s for the synchronous pair.
     /// # Safety
-    /// `buf` holds `length` bytes (writable for the receiving operations).
+    /// `buf` holds `length` bytes (writable for the receiving operations), or
+    /// `length` is 0.
     pub(crate) unsafe fn io(&self, op: Io, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        unsafe { io(self.co(), op, buf, length) }
+        let socket = self.co();
+        let data = || -> &[u8] {
+            if length == 0 {
+                return &[];
+            }
+            // SAFETY: per the caller, `length` readable bytes.
+            unsafe { std::slice::from_raw_parts(buf.cast(), length) }
+        };
+        let out = || -> &mut [u8] {
+            if length == 0 {
+                return &mut [];
+            }
+            // SAFETY: per the caller, `length` writable bytes.
+            unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
+        };
+        match op {
+            Io::SendSync => socket
+                .with_network(|network| send_sync(network, data(), 0))
+                .unwrap_or(-1),
+            Io::RecvSync => socket
+                .with_network(|network| recv_sync(network, out(), 0))
+                .unwrap_or(-1),
+            Io::SendAll => socket.send_all(data()),
+            Io::SendOnce => socket.send_once(data()),
+            Io::Recv => socket.recv(out()),
+            Io::RecvOnce => socket.recv_once(out()),
+            Io::Peek => socket.peek(out()),
+            Io::Send => socket.send(data()),
+            Io::RecvAll => socket.recv_all(out()),
+        }
     }
 
     /// `catch_write_error`/`catch_read_error` of `code`, which are one rule.

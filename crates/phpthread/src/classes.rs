@@ -8,18 +8,17 @@ use crate::{
     queue::Queue,
     table::Key,
 };
-use std::{cell::OnceCell, ptr, sync::Arc};
+use std::{cell::OnceCell, sync::Arc};
 use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Minit, Owned, Value as ZValue, bailout, new_object,
     sys::{
-        _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
-        IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        ZPP_ERROR_WRONG_ARG, swr_zend_dval_to_lval_safe, swr_zend_handle_numeric_str,
-        swr_zend_resource_handle, zend_argument_type_error, zend_type_error, zend_ulong,
-        zend_use_resource_as_offset, zend_wrong_parameter_error,
+        IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL,
+        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_dval_to_lval_safe,
+        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_type_error, zend_ulong,
+        zend_use_resource_as_offset,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -209,28 +208,11 @@ fn constructed<T: Shared>(call: &Call, list: bool) -> Option<&T::Target> {
 }
 
 /// `Z_PARAM_ARRAY_HT_OR_NULL` of optional argument 1.
-fn array_or_null(call: &Call) -> Result<Option<&swoole_rs_zend::Array>, Invalid> {
-    let Some(arg) = call.value(1) else {
+fn array_or_null(call: &Call) -> Result<Option<Owned>, Invalid> {
+    if call.value(1).is_none() {
         return Ok(None);
-    };
-    match arg.array() {
-        Some(array) => Ok(Some(array)),
-        None if arg.is_null() => Ok(None),
-        None => {
-            #[expect(clippy::cast_possible_wrap, reason = "a small ZPP error code")]
-            // SAFETY: in a handler, with the argument that failed.
-            unsafe {
-                zend_wrong_parameter_error(
-                    ZPP_ERROR_WRONG_ARG as i32,
-                    1,
-                    ptr::null_mut(),
-                    _zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
-                    arg.as_ptr(),
-                );
-            }
-            Err(Invalid)
-        }
     }
+    call.array_or_null(1)
 }
 
 /// `__construct(?array $array = null)` of Map and `ArrayList`.
@@ -245,7 +227,7 @@ fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
         call.throw_constructed_twice();
         return;
     }
-    let shared = match array {
+    let shared = match array.as_ref().and_then(|array| array.array()) {
         Some(array) if list && !array.is_list() => {
             call.throw_error(c"the parameter $array must be an array of type list");
             return;
@@ -263,7 +245,7 @@ fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
 
 /// `handle_array_key` and `ZEND_ARRAY_CALL_METHOD`'s dispatch: the key, or
 /// `None` after Zend's errors.
-fn map_key(key: &swoole_rs_zend::Value) -> Option<Key> {
+fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
     match key.kind() {
         IS_STRING => {
             let text = key.str()?.bytes();
@@ -297,9 +279,9 @@ fn map_key(key: &swoole_rs_zend::Value) -> Option<Key> {
             Some(Key::Int(unsafe { swr_zend_resource_handle(key.as_ptr()) }))
         }
         _ => {
-            // SAFETY: in a handler; both of upstream's errors, in its order.
-            unsafe { zend_argument_type_error(1, c"%s".as_ptr(), c"Illegal offset type".as_ptr()) };
-            // SAFETY: as above.
+            // Both of upstream's errors, in its order.
+            call.argument_type_error(1, c"Illegal offset type");
+            // SAFETY: in a handler; Zend copies the message.
             unsafe { zend_type_error(c"%s".as_ptr(), c"Illegal offset type".as_ptr()) };
             None
         }
@@ -310,7 +292,7 @@ fn map_key(key: &swoole_rs_zend::Value) -> Option<Key> {
 fn map_call(call: &Call, min: u32, max: u32) -> Option<(&Array, Key)> {
     call.arity(min, max).ok()?;
     let map = constructed::<Map>(call, false)?;
-    let key = map_key(call.value(1)?)?;
+    let key = map_key(call, call.value(1)?)?;
     Some((map, key))
 }
 

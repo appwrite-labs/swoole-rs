@@ -4,7 +4,7 @@
 //! `upstream-symbols`. Logs name the function as upstream's `__SW_FUNC__` did.
 
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -87,14 +87,9 @@ pub unsafe extern "C" fn swoole_shell_exec(
     read
 }
 
-fn put(format: &CStr, value: c_uint) {
-    // SAFETY: `format` takes exactly one unsigned argument.
-    unsafe { printf(format.as_ptr(), value) };
-}
-
-fn newline() {
-    // SAFETY: a literal format without conversions.
-    unsafe { printf(c"\n".as_ptr()) };
+/// `printf` of text that holds no conversion, to C's stdout.
+fn put(text: &str) {
+    crate::sys::print(text.as_bytes());
 }
 
 /// `swoole_dump_ascii`: each byte as its native `(unsigned) char` value.
@@ -108,9 +103,10 @@ pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
     for index in 0..size {
         // SAFETY: `index < size`, inside the caller's readable extent.
         let byte = unsafe { data.wrapping_add(index).read() };
-        put(c"%u ", c_int::from(byte).cast_unsigned());
+        // `%u` of the promoted char.
+        put(&format!("{} ", c_int::from(byte).cast_unsigned()));
     }
-    newline();
+    put("\n");
 }
 
 /// `swoole_dump_hex`: sixteen bytes per row, each row led by its offset.
@@ -123,19 +119,16 @@ pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
 pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
     for index in 0..size {
         if index % 16 == 0 {
-            // SAFETY: `%08zX` takes one size_t.
-            unsafe { printf(c"%08zX: ".as_ptr(), index) };
+            put(&format!("{index:08X}: "));
         }
         // SAFETY: `index < size`, inside the caller's readable extent.
-        put(
-            c"%02X ",
-            c_uint::from(unsafe { data.wrapping_add(index).read() }),
-        );
+        let byte = unsafe { data.wrapping_add(index).read() };
+        put(&format!("{byte:02X} "));
         if (index + 1) % 16 == 0 {
-            newline();
+            put("\n");
         }
     }
-    newline();
+    put("\n");
 }
 
 /// `swoole_dump_bin`: each whole `kind`-sized value, unpacked as `swoole_unpack`
@@ -162,10 +155,9 @@ pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: us
     };
     for field in bytes.chunks_exact(width) {
         let value = swoole_rs_framing::unpack(format, field).unwrap_or(-1);
-        // SAFETY: `%ld,` takes one long.
-        unsafe { printf(c"%ld,".as_ptr(), value as c_long) };
+        put(&format!("{},", value as c_long));
     }
-    newline();
+    put("\n");
 }
 
 /// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode.

@@ -10,11 +10,11 @@ use crate::{
 };
 use std::{
     ffi::{CStr, c_int},
-    mem::offset_of,
     ptr, slice,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
+    Value,
     bailout::{Bailout, trap},
     string,
     sys::{
@@ -23,7 +23,6 @@ use swoole_rs_zend::{
         swr_zend_try_call_known, swr_zend_zval_release, zend_execute_data, zend_function,
         zend_throw_error, zend_zval_type_name, zval,
     },
-    value::str_of,
 };
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
@@ -151,21 +150,24 @@ unsafe fn call(
 /// A frame the `INIT_METHOD_CALL` handler pushed.
 unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: the handler stored its `CallInfo` here.
-    let info = unsafe { (*frame).run_time_cache }.cast::<CallInfo>();
-    // SAFETY: op2 of INIT_METHOD_CALL is the method name, a string literal.
-    let name = unsafe { str_of(info.wrapping_byte_add(offset_of!(CallInfo, func)).cast()) };
-    // SAFETY: a live literal.
-    let alias = aliases::find(receiver, unsafe { string::bytes(name) });
+    let allocation = unsafe { (*frame).run_time_cache }.cast::<CallInfo>();
+    // SAFETY: the handler's initialized allocation, which only this frame's
+    // `run_time_cache` points to until it is freed below.
+    let info = unsafe { &mut *allocation };
+    // op2 of INIT_METHOD_CALL is the method name, a string literal.
+    let name = Value::of(&mut info.func).str();
+    let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
     let outcome = match alias {
         None => {
             // SAFETY: the receiver's live zval.
-            let kind = unsafe { zend_zval_type_name(this_of(info)) };
+            let kind = unsafe { zend_zval_type_name(&raw const info.this) };
+            let name = name.map_or(ptr::null_mut(), |name| string::val(name.as_ptr()));
             // SAFETY: printf arguments: two NUL-terminated strings.
             unsafe {
                 zend_throw_error(
                     ptr::null_mut(),
                     c"The method `%s` is undefined on %s".as_ptr(),
-                    string::val(name),
+                    name,
                     kind,
                 );
             }
@@ -175,7 +177,7 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
         Some(alias) => unsafe { call_alias(alias, info, frame, value) },
     };
     // SAFETY: the handler's allocation; nothing else holds it.
-    unsafe { swr_zend_efree(info.cast()) };
+    unsafe { swr_zend_efree(allocation.cast()) };
     // SAFETY: a live frame.
     unsafe { (*frame).run_time_cache = ptr::null_mut() };
     swoole_rs_zend::bailout::raise(outcome);
@@ -185,7 +187,7 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
 /// As [`call_method`]; `info` is its `CallInfo`.
 unsafe fn call_alias(
     alias: &CStr,
-    info: *mut CallInfo,
+    info: &mut CallInfo,
     frame: *mut zend_execute_data,
     value: *mut zval,
 ) -> Result<(), Bailout> {
@@ -199,23 +201,17 @@ unsafe fn call_alias(
         ]));
         return Ok(());
     }
-    // SAFETY: per the caller, the handler's `CallInfo`; a plain copy, as upstream's.
-    let this = unsafe { this_of(info).read() };
+    // A plain copy, as upstream's.
+    let this = info.this;
     // SAFETY: a live frame.
     let mut argv = [slice::from_ref(&this), unsafe { arguments(frame) }].concat();
     // SAFETY: a live function and the caller's return slot.
     unsafe { call(function, value, &mut argv) }?;
-    // SAFETY: the handler's copy of op1's type.
-    if u32::from(unsafe { (*info).op1_type }) == IS_VAR {
+    if u32::from(info.op1_type) == IS_VAR {
         // SAFETY: a C body releasing the receiver, which may run destructors.
-        unsafe { trap(swr_zend_zval_release, this_of(info).cast()) }?;
+        unsafe { trap(swr_zend_zval_release, (&raw mut info.this).cast()) }?;
     }
     Ok(())
-}
-
-/// The `this` field of a `CallInfo`.
-fn this_of(info: *mut CallInfo) -> *mut zval {
-    info.wrapping_byte_add(offset_of!(CallInfo, this)).cast()
 }
 
 /// Upstream's `move_first_element`: the first argument moves to `position`.

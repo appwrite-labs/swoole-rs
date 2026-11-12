@@ -163,11 +163,11 @@ unsafe fn separate(container: &Value, source: Typed) -> *mut z::HashTable {
 fn strict(frame: Frame) -> bool {
     // SAFETY: a live execution frame points at its active function.
     let function = unsafe { (*frame.as_ptr()).func };
-    // SAFETY: this active function has a live common function header.
-    let function = unsafe { &*function };
-    // SAFETY: every zend_function variant begins with this common header.
-    let common = unsafe { function.common };
-    common.fn_flags & z::ZEND_ACC_STRICT_TYPES != 0
+    // Every zend_function variant begins with this common header.
+    let common = function.cast::<z::_zend_function__bindgen_ty_1>();
+    // SAFETY: the active function's live common header.
+    let flags = unsafe { (*common).fn_flags };
+    flags & z::ZEND_ACC_STRICT_TYPES != 0
 }
 
 /// # Safety
