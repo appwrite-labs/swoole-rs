@@ -199,7 +199,7 @@ mod tests {
         assert!(get_worker_by_pid(serv, 79).is_null());
 
         unsafe { (*worker).set_id(1) };
-        unsafe { (*worker).concurrency = 3 };
+        unsafe { &(*worker).concurrency }.store(3, SeqCst);
         let worker = unsafe { Worker::new(worker) };
         worker.set_request_count(7);
         worker.set_response_count(8);
@@ -230,7 +230,7 @@ mod tests {
             assert_eq!(slot.reactor_bits & 0xff, if edge { 1 } else { 2 });
             assert_eq!(slot.fd, if edge { 0 } else { 23 });
         }
-        unsafe { (*worker.raw()).concurrency = 9 };
+        unsafe { &(*worker.raw()).concurrency }.store(9, SeqCst);
         serv.counters().concurrency.store(3, SeqCst);
         reset_worker_counter(serv, worker);
         assert_eq!(worker.counters()[3], 0);

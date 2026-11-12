@@ -1236,18 +1236,18 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if op == OP_WORKER_COROUTINES {
                 worker.coroutine_num as u64
             } else {
-                u64::from(worker.concurrency)
+                u64::from(worker.concurrency.load(SeqCst))
             }
         }
-        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency),
+        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency.load(SeqCst)),
         OP_ST_W_CONCURRENCY_CAS => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t) arg")]
             let expected = arg as u32;
-            // SAFETY: the worker's aligned `sw_atomic_t`, shared with other processes.
-            let cell =
-                unsafe { core::sync::atomic::AtomicU32::from_ptr(&raw mut o.worker().concurrency) };
             // `sw_atomic_value_cmp_set`: the value before, swapped or not.
-            let before = cell.compare_exchange(expected, 0, SeqCst, SeqCst);
+            let before = o
+                .worker()
+                .concurrency
+                .compare_exchange(expected, 0, SeqCst, SeqCst);
             u64::from(before.unwrap_or_else(|value| value))
         }
         OP_ST_W_RESET_COUNTS => {
@@ -2802,7 +2802,7 @@ mod tests {
         let mut ctx = context();
         // SAFETY: every WorkerRecord field is a pointer or integer; zero is valid.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        worker.concurrency = 3;
+        worker.concurrency = 3.into();
         ctx.object = (&raw mut worker).cast();
         // SAFETY: the context's worker is live above.
         unsafe {
@@ -2810,12 +2810,22 @@ mod tests {
                 answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
                 Some(3)
             );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
+            assert_eq!(
+                (*ctx.object.cast::<WorkerRecord>())
+                    .concurrency
+                    .load(SeqCst),
+                3
+            );
             assert_eq!(
                 answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
                 Some(3)
             );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
+            assert_eq!(
+                (*ctx.object.cast::<WorkerRecord>())
+                    .concurrency
+                    .load(SeqCst),
+                0
+            );
             crate::state::free_state(state);
         }
     }

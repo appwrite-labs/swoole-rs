@@ -618,8 +618,8 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
 
 /// The counters of the worker serving requests, for one admission or release.
 struct Worker {
-    /// `Worker::concurrency`.
-    concurrency: &'static mut u32,
+    /// `Worker::concurrency`, which the master resets as it retires the worker.
+    concurrency: &'static AtomicU32,
     /// `ServerGS::concurrency`, shared by every worker.
     server_concurrency: &'static AtomicU32,
     max_concurrency: u32,
@@ -636,9 +636,9 @@ fn worker() -> Option<Worker> {
         return None;
     }
     Some(Worker {
-        // SAFETY: the current worker's live record, whose counter only this
-        // thread writes, and only through this short-lived borrow.
-        concurrency: unsafe { &mut (*current).concurrency },
+        // SAFETY: the current worker's live record; the borrow covers only its
+        // atomic counter.
+        concurrency: unsafe { &(*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency,
         shutdown: swoole_rs_process::methods::worker_is_shutdown(),
@@ -660,8 +660,7 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
-    *worker.concurrency += 1;
-    if *worker.concurrency > worker.max_concurrency {
+    if worker.concurrency.fetch_add(1, SeqCst) >= worker.max_concurrency {
         QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
         return false;
     }
@@ -684,7 +683,7 @@ pub(crate) fn release_request() {
         return;
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
-    *worker.concurrency = worker.concurrency.wrapping_sub(1);
+    worker.concurrency.fetch_sub(1, SeqCst);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         let reactor = swoole_rs_reactor::event_api::swr_v1_event_reactor();
         // SAFETY: the thread's live reactor, which begins with its prepared state.
