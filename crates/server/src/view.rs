@@ -114,16 +114,13 @@ impl<'a> Server<'a> {
         self.state().tables_ref().ports()
     }
 
-    /// `serv->onX = f`: callback slot `index` (`callbacks::CB_*`) now calls `invoke`, a
-    /// Rust `extern "C"` fn taking a null `ctx` and then the member's own arguments
-    /// (its `Server *` may be a `Server`).
-    ///
-    /// # Safety
-    /// No other thread reads the slot meanwhile, and `invoke` has the slot's signature.
-    pub unsafe fn set_callback(self, index: u32, invoke: *const c_void) {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            slot.set(invoke);
-        }
+    /// `serv->onX = f`: the slot `callback` names now calls its fn, a Rust
+    /// `extern "C"` fn taking a `ctx` it ignores and then the member's own
+    /// arguments (its `Server *` is a `Server`). Only the slot's fn is replaced,
+    /// atomically, and nothing is freed, so a thread that calls the slot meanwhile
+    /// runs the old fn or the new one with a live context.
+    pub fn set_callback(self, callback: crate::callbacks::Callback) {
+        self.state().callbacks.set(callback);
     }
 
     /// `serv->onX != nullptr` of callback slot `index`.
@@ -521,6 +518,20 @@ impl<'a> Server<'a> {
     }
 }
 
+/// A setter for a field of a port's settings, which writes through the port's pointer
+/// and forms no reference to the settings. Crate-private: only the master's startup
+/// ops call them, before any reader holds a `&PortConfig` from [`Port::config`].
+macro_rules! port_setter {
+    ($(#[$doc:meta])* $set:ident: $($field:ident).+: $ty:ty) => {
+        $(#[$doc])*
+        pub(crate) fn $set(self, value: $ty) {
+            // SAFETY: a live port, whose writers its server keeps apart from readers
+            // (`from_raw`); only the field is written.
+            unsafe { (*self.raw.as_ptr().cast::<PortConfig>()).$($field).+ = value };
+        }
+    };
+}
+
 /// A live `ListenPort`, borrowed for `'a`: its settings' box
 /// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
 /// reads it then allows are safe, as [`Server`]'s are.
@@ -558,6 +569,15 @@ impl<'a> Port<'a> {
         // SAFETY: a live port is its settings, with writers kept apart (`from_raw`).
         unsafe { &*self.raw.as_ptr().cast::<PortConfig>() }
     }
+
+    port_setter!(
+        /// `port->gs = gs`: the port's slot in `port_gs_list`.
+        set_gs: gs: *mut c_void
+    );
+    port_setter!(
+        /// `port->protocol.package_max_length = length`.
+        set_package_max_length: protocol.package_max_length: u32
+    );
 
     /// The port's settings, to write.
     ///

@@ -114,7 +114,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_FINISH => {
-            ctx.callback(CB_FINISH);
+            if let Some(slot) = ctx.state().callbacks.slot(CB_FINISH) {
+                // SAFETY: `onFinish` is `int (Server *, EventData *)`; its result is discarded.
+                let _ = unsafe { slot.receive(ctx.serv.raw(), ctx.bus().buffer().cast()) };
+            }
             0
         }
         OP_STOP_ASYNC => {

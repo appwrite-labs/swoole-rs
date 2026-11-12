@@ -930,6 +930,18 @@ impl Default for Owned {
 }
 
 impl Owned {
+    /// `php_json_decode(text)` with objects as arrays; false when `text` is
+    /// not JSON. It runs no PHP code.
+    #[must_use]
+    pub fn json_decode(text: &[u8]) -> Self {
+        let decoded = Self::default();
+        // SAFETY: the text's bytes, only read, and an undefined slot this owns.
+        unsafe {
+            crate::sys::swr_zend_json_decode(text.as_ptr().cast(), text.len(), decoded.as_ptr());
+        };
+        decoded
+    }
+
     /// `ZVAL_LONG`.
     #[must_use]
     #[inline]

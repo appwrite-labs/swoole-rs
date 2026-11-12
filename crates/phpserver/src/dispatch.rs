@@ -7,7 +7,7 @@ use crate::callable::Callable;
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     mem::ManuallyDrop,
     ptr,
     rc::Rc,
@@ -18,16 +18,12 @@ use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_phpcoroutines::create_coroutine;
+use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_server::callbacks::{
-    CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL,
-    CB_CLOSE, CB_CONNECT, CB_DISPATCH_FUNC, CB_FINISH, CB_MANAGER_START, CB_MANAGER_STOP,
-    CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_SHUTDOWN, CB_START, CB_TASK, CB_USER_WORKER_START,
-    CB_WORKER_ERROR, CB_WORKER_EXIT, CB_WORKER_START, CB_WORKER_STOP,
-};
+use swoole_rs_server::callbacks::{CB_USER_WORKER_START, Callback, Ctx};
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
@@ -258,7 +254,7 @@ fn receive_args(
     event_object: bool,
     args: &mut [zval; 4],
 ) -> usize {
-    let info = &request.info;
+    let info = request.info();
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
     if event_object {
         let props = Props::init(&mut args[1], &DATA[EVENT]);
@@ -596,21 +592,9 @@ const UNIX_DGRAM: c_int = 6;
 const WEBSOCKET_ACTIVE: u8 = 3;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
-/// receive slot its request for the call; private fields, so safe code can't
-/// make one whose payload pointer and length disagree.
-#[repr(C)]
-pub struct RecvData {
-    pub(crate) info: DataHead,
-    pub(crate) data: *const c_char,
-}
-
-impl RecvData {
-    /// The event's head.
-    #[must_use]
-    pub fn info(&self) -> &DataHead {
-        &self.info
-    }
-}
+/// receive slot its request for the call; its fields are private, so safe code
+/// can't make one whose payload pointer and length disagree.
+pub use swoole_rs_server::reactor_entry::RecvData;
 
 /// `DgramPacket`'s head; the datagram follows.
 #[repr(C)]
@@ -619,15 +603,6 @@ struct DgramPacket {
     socket_addr: SocketAddress,
     length: u32,
 }
-
-/// `ExitStatus`.
-#[repr(C)]
-struct ExitStatus {
-    pid: c_int,
-    status: c_int,
-}
-
-type Ctx = *mut c_void;
 
 fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> Option<Callable> {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
@@ -675,7 +650,7 @@ extern "C" fn on_worker_error_slot(
     worker: &WorkerRecord,
     exit: &ExitStatus,
 ) {
-    let &ExitStatus { pid, status } = exit;
+    let (pid, status) = (exit.pid(), exit.status());
     let (code, signal) = (libc::WEXITSTATUS(status), libc::WTERMSIG(status));
     let id = worker_id(worker);
     let error = |n: c_int| i64::from(n);
@@ -730,7 +705,7 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Pa
 /// crates/phphttp's fallback).
 #[must_use]
 pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
-    let info = &request.info;
+    let info = request.info();
     let Some(cb) = port_callback(server, info.server_fd, ON_RECEIVE) else {
         return SW_OK;
     };
@@ -787,7 +762,7 @@ extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvDa
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
 extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    let fd = request.info.fd;
+    let fd = request.info().fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
@@ -815,8 +790,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
 }
 
 extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    let packet = request.data;
-    #[expect(clippy::cast_ptr_alignment, reason = "read unaligned")]
+    let packet = request.data();
     let dgram = packet.cast::<DgramPacket>();
     // SAFETY: an onPacket event's payload is its `DgramPacket`.
     let DgramPacket {
@@ -824,7 +798,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
         socket_addr,
         length,
     } = unsafe { dgram.read_unaligned() };
-    let info = &request.info;
+    let info = request.info();
     // The sender, of the packet's socket type: an IP address and port, or a path.
     let sender = SocketAddress {
         kind: socket_type,
@@ -1002,17 +976,16 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
 /// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
 /// unless one is set.
 pub(crate) fn port_hook(server: view::Server<'_>, hook: u32) {
-    let (slot, invoke) = match hook {
-        1 => (CB_CONNECT, on_connect as *const c_void),
-        2 => (CB_PACKET, on_packet_slot as *const c_void),
-        3 => (CB_CLOSE, on_close as *const c_void),
-        4 => (CB_BUFFER_FULL, on_buffer_full as *const c_void),
-        5 => (CB_BUFFER_EMPTY, on_buffer_empty as *const c_void),
+    let callback = match hook {
+        1 => Callback::Connect(on_connect),
+        2 => Callback::Packet(on_packet_slot),
+        3 => Callback::Close(on_close),
+        4 => Callback::BufferFull(on_buffer_full),
+        5 => Callback::BufferEmpty(on_buffer_empty),
         _ => return,
     };
-    if !server.has_callback(slot) {
-        // SAFETY: as above; the fn has the slot's signature.
-        unsafe { server.set_callback(slot, invoke) };
+    if !server.has_callback(callback.slot()) {
+        server.set_callback(callback);
     }
 }
 
@@ -1022,39 +995,34 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
         BUFFER_EMPTY, CLOSE, CONTROL, HTTP_CLOSE, HTTP_RECEIVE, PIPE_MESSAGE, RECEIVE,
         REDIS_RECEIVE, TASK, USER_WORKER_START,
     };
-    let slots: &[(u32, *const c_void)] = match which {
+    let slots: &[Callback] = match which {
         CONTROL => &[
-            (CB_START, on_start as *const c_void),
-            (CB_BEFORE_SHUTDOWN, on_before_shutdown as *const c_void),
-            (CB_SHUTDOWN, on_shutdown as *const c_void),
-            (CB_WORKER_START, on_worker_start as *const c_void),
-            (CB_WORKER_STOP, on_worker_stop as *const c_void),
-            (CB_WORKER_EXIT, on_worker_exit as *const c_void),
-            (CB_BEFORE_RELOAD, on_before_reload as *const c_void),
-            (CB_AFTER_RELOAD, on_after_reload as *const c_void),
-            (CB_MANAGER_START, on_manager_start as *const c_void),
-            (CB_MANAGER_STOP, on_manager_stop as *const c_void),
-            (CB_WORKER_ERROR, on_worker_error_slot as *const c_void),
+            Callback::Start(on_start),
+            Callback::BeforeShutdown(on_before_shutdown),
+            Callback::Shutdown(on_shutdown),
+            Callback::WorkerStart(on_worker_start),
+            Callback::WorkerStop(on_worker_stop),
+            Callback::WorkerExit(on_worker_exit),
+            Callback::BeforeReload(on_before_reload),
+            Callback::AfterReload(on_after_reload),
+            Callback::ManagerStart(on_manager_start),
+            Callback::ManagerStop(on_manager_stop),
+            Callback::WorkerError(on_worker_error_slot),
         ],
-        TASK => &[
-            (CB_TASK, on_task as *const c_void),
-            (CB_FINISH, on_finish as *const c_void),
-        ],
-        PIPE_MESSAGE => &[(CB_PIPE_MESSAGE, on_pipe_message_slot as *const c_void)],
-        BUFFER_EMPTY => &[(CB_BUFFER_EMPTY, on_buffer_empty as *const c_void)],
-        CLOSE => &[(CB_CLOSE, on_close as *const c_void)],
-        HTTP_CLOSE => &[(CB_CLOSE, on_http_close as *const c_void)],
-        RECEIVE => &[(CB_RECEIVE, on_receive as *const c_void)],
-        HTTP_RECEIVE => &[(CB_RECEIVE, on_http_receive as *const c_void)],
-        REDIS_RECEIVE => &[(CB_RECEIVE, on_redis_receive as *const c_void)],
+        TASK => &[Callback::Task(on_task), Callback::Finish(on_finish)],
+        PIPE_MESSAGE => &[Callback::PipeMessage(on_pipe_message_slot)],
+        BUFFER_EMPTY => &[Callback::BufferEmpty(on_buffer_empty)],
+        CLOSE => &[Callback::Close(on_close)],
+        HTTP_CLOSE => &[Callback::Close(on_http_close)],
+        RECEIVE => &[Callback::Receive(on_receive)],
+        HTTP_RECEIVE => &[Callback::Receive(on_http_receive)],
+        REDIS_RECEIVE => &[Callback::Receive(on_redis_receive)],
         USER_WORKER_START if server.has_callback(CB_USER_WORKER_START) => &[],
-        USER_WORKER_START => &[(CB_USER_WORKER_START, on_user_worker_start as *const c_void)],
+        USER_WORKER_START => &[Callback::UserWorkerStart(on_user_worker_start)],
         _ => return,
     };
-    for &(slot, invoke) in slots {
-        // SAFETY: a live server, configured before it starts; each fn has its
-        // slot's signature.
-        unsafe { server.set_callback(slot, invoke) };
+    for &callback in slots {
+        server.set_callback(callback);
     }
 }
 
@@ -1074,8 +1042,7 @@ pub(crate) unsafe fn set_dispatch_func(
     // SAFETY: the server is configured on this thread, with no other reference to the field.
     let config = unsafe { server.config_mut() };
     let previous = std::mem::replace(&mut config.private_data_3, handle.cast());
-    // SAFETY: per the caller; the slot fn has `dispatch_func`'s signature.
-    unsafe { server.set_callback(CB_DISPATCH_FUNC, on_dispatch as *const c_void) };
+    server.set_callback(Callback::DispatchFunc(on_dispatch));
     config.single_thread = true;
     release_dispatch_func(previous)
 }
@@ -1151,9 +1118,9 @@ extern "C" fn on_dispatch(
     let zserv = zserv();
     let session = match conn {
         Some(conn) => conn.session_id,
-        None => send.map_or(0, |send| send.info.fd),
+        None => send.map_or(0, |send| send.info().fd),
     };
-    let kind = send.map_or(EVENT_CLOSE, |send| send.info.kind);
+    let kind = send.map_or(EVENT_CLOSE, |send| send.info().kind);
     let mut args = [
         zserv,
         long_zval(session),
@@ -1162,9 +1129,9 @@ extern "C" fn on_dispatch(
     ];
     let mut argc = 3;
     if let Some(send) = send.filter(|_| max_num_args(cache) > 3) {
-        let length = (send.info.len as usize).min(SW_IPC_BUFFER_SIZE);
+        let length = (send.info().len as usize).min(SW_IPC_BUFFER_SIZE);
         // SAFETY: the payload holds `info.len` bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(send.data.cast::<u8>(), length) };
+        let bytes = unsafe { std::slice::from_raw_parts(send.data().cast::<u8>(), length) };
         args[3] = Owned::string(ZString::new(bytes)).into_zval();
         argc = 4;
     }

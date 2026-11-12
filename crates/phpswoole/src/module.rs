@@ -157,7 +157,7 @@ pub struct Families {
     /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
     pub coroutine_minit: [Minit; 3],
     /// `php_swoole_server_minit`.
-    pub server_minit: Minit,
+    pub server_minit: fn(&swoole_rs_zend::Minit),
     /// crates/phplocks' MINITs: `php_swoole_atomic_minit`, `_lock_minit` and
     /// `_coroutine_lock_minit`, then (`SW_THREAD`) the thread atomics' and lock's.
     pub locks_minit: [Minit; 4],
@@ -239,9 +239,9 @@ pub struct Http {
     pub response_rshutdown: Hook,
     /// `php_swoole_http2_server_onClose`: the session of a closed connection goes.
     pub http2_on_close: fn(i64),
-    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server`, after MINIT.
-    pub server_class: fn() -> *mut zend_class_entry,
-    pub websocket_class: fn() -> *mut zend_class_entry,
+    /// `Swoole\Http\Server` and `Swoole\WebSocket\Server`, registered at MINIT.
+    pub server_class: fn() -> &'static swoole_rs_zend::Class,
+    pub websocket_class: fn() -> &'static swoole_rs_zend::Class,
 }
 
 static FAMILIES: OnceLock<&'static Families> = OnceLock::new();
@@ -328,7 +328,7 @@ pub(crate) fn startup(module_number: c_int) {
     steps.extend(optional::client_minit());
     steps.extend([
         // server
-        M(families.server_minit),
+        M(server_minit),
         M(http_minit::<0>),
         M(http_minit::<1>),
         M(http_minit::<2>),
@@ -357,6 +357,16 @@ extern "C" fn tracer_minit(module_number: c_int) {
     }
     if blocking || profile {
         g.enable_fiber_mock.set(true);
+    }
+}
+
+/// `php_swoole_server_minit`.
+extern "C" fn server_minit(module: c_int) {
+    if let Some(families) = families() {
+        // SAFETY: Zend runs this module's MINIT on this thread; the token goes
+        // before it returns.
+        let minit = unsafe { swoole_rs_zend::Minit::new(module) };
+        (families.server_minit)(&minit);
     }
 }
 

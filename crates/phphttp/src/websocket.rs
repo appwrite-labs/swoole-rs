@@ -31,8 +31,7 @@ use swoole_rs_zend::{
     string::{self},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_class_entry, zend_long, zend_object, zend_value,
-        zval, zval_ptr_dtor,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zend_object, zend_value, zval, zval_ptr_dtor,
     },
 };
 
@@ -138,8 +137,8 @@ const ERR: c_int = -1;
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.
 #[must_use]
-pub fn websocket_class() -> *mut zend_class_entry {
-    SERVER.entry()
+pub fn websocket_class() -> &'static Class {
+    &SERVER
 }
 
 /// What the methods read of a `swoole::Connection`.

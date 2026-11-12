@@ -39,16 +39,12 @@ const MAX_FIND_COUNT: i64 = 100;
 /// its kin).
 pub(crate) fn invalid(name: &CStr) {
     crate::set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: a format with one string argument; the bailout jumps past this
-    // frame and the caller's, which own nothing.
-    unsafe {
-        z::php_error_docref(
-            ptr::null(),
-            swoole_rs_zend::E_ERROR,
-            c"Invalid instance of %s".as_ptr(),
-            name.as_ptr(),
-        );
+    let reported = {
+        let text = swoole_rs_zend::message!("Invalid instance of {}", name.to_string_lossy());
+        report(swoole_rs_zend::E_ERROR, text.as_cstr())
     };
+    // The bailout jumps past this frame and the caller's, which own nothing.
+    swoole_rs_zend::bailout::raise(reported);
 }
 
 /// `$this`'s class name, for [`invalid`].
@@ -441,12 +437,8 @@ use swoole_rs_phpswoole::zif_swoole_last_error;
 
 /// `php_swoole_server_minit`: `Swoole\Server` and its classes, then
 /// `Swoole\Server\Port`.
-/// # Safety
-/// Zend's MINIT, once.
-pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
+pub fn php_swoole_server_minit(minit: &Minit) {
     use swoole_rs_corebase::{Switch, built_with};
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module) };
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
     THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
@@ -456,19 +448,19 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     };
     minit.register_object::<crate::lifecycle::ServerData>(c"Swoole\\Server", methods, 0);
     minit.register_object::<TaskData>(c"Swoole\\Server\\Task", &TASK_METHODS.0, ZEND_ACC_FINAL);
-    declare(&minit, &TASK, TASK_PROPERTIES);
+    declare(minit, &TASK, TASK_PROPERTIES);
     for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
         // `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
         minit.register(class, name, &[], |_, _| {});
-        declare(&minit, class, properties);
+        declare(minit, class, properties);
     }
     minit.register_object::<Iterator>(c"Swoole\\Connection\\Iterator", &ITERATOR_METHODS.0, 0);
     minit.implements(&ITERATOR, minit.iterator());
     minit.implements(&ITERATOR, minit.array_access());
     minit.implements(&ITERATOR, minit.countable());
-    declare(&minit, &SERVER, SERVER_PROPERTIES);
+    declare(minit, &SERVER, SERVER_PROPERTIES);
     if thread {
-        declare(&minit, &SERVER, &[Str(c"bootstrap")]);
+        declare(minit, &SERVER, &[Str(c"bootstrap")]);
     }
     for &(name, value) in CONSTANTS {
         if name == c"SWOOLE_THREAD" && !thread {
@@ -476,7 +468,7 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
         }
         minit.long_constant(name, value);
     }
-    crate::port::minit(&minit, sockets);
+    crate::port::minit(minit, sockets);
 }
 
 /// The constants `php_swoole_server_minit` registers, in its order (the values
