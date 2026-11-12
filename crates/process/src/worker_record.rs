@@ -26,7 +26,8 @@ pub struct WorkerRecord {
     kind: u8,
     msgqueue_mode: u8,
     pub child_process: u8,
-    pub concurrency: u32,
+    /// Its worker's requests in flight, which the master's retirement resets.
+    pub concurrency: AtomicU32,
     start_time: i64,
     pub dispatch_count: i64,
     pub request_count: i64,
@@ -63,7 +64,7 @@ impl WorkerRecord {
             kind: 0,
             msgqueue_mode: 0,
             child_process: 0,
-            concurrency: 0,
+            concurrency: AtomicU32::new(0),
             start_time: 0,
             dispatch_count: 0,
             request_count: 0,
@@ -288,7 +289,7 @@ impl Worker<'_> {
         pipe_worker, set_pipe_worker, pipe_worker: *mut c_void
     );
     field!(
-        /// The worker's pipe (a native `UnixSocket`), or null.
+        /// The native pipe object that owns the worker's two ends, or null.
         pipe_object, set_pipe_object, pipe_object: *mut c_void
     );
     field!(
@@ -338,15 +339,11 @@ impl Worker<'_> {
         unsafe { &(*self.raw).status }
     }
 
-    /// `worker->concurrency`, which native workers access atomically.
+    /// `worker->concurrency`.
     fn concurrency(&self) -> &AtomicU32 {
-        let slot = self
-            .raw
-            .wrapping_byte_add(core::mem::offset_of!(WorkerRecord, concurrency))
-            .cast::<u32>();
-        // SAFETY: `new`'s contract: a live record, for longer than this borrow, whose
-        // concurrency is an aligned u32 that native workers access atomically.
-        unsafe { AtomicU32::from_ptr(slot) }
+        // SAFETY: `new`'s contract: a live record, for longer than this borrow; the
+        // reference covers only the atomic field.
+        unsafe { &(*self.raw).concurrency }
     }
 
     /// `worker->request_count++`, with the native unsigned wrapping.
@@ -512,7 +509,7 @@ mod tests {
         let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
         record.pid = 17;
         record.id = 29;
-        record.concurrency = 3;
+        record.concurrency = AtomicU32::new(3);
         record.request_count = 7;
         record.response_count = 8;
         record.dispatch_count = 9;
@@ -523,7 +520,7 @@ mod tests {
                 record.pid,
                 record.id,
                 total.load(core::sync::atomic::Ordering::SeqCst),
-                record.concurrency
+                *record.concurrency.get_mut()
             ),
             (17, 29, 4, 0)
         );
@@ -535,12 +532,12 @@ mod tests {
             ),
             (0, 0, 0)
         );
-        record.concurrency = 9;
+        record.concurrency = AtomicU32::new(9);
         total.store(3, core::sync::atomic::Ordering::SeqCst);
         unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
         assert_eq!(
             (
-                record.concurrency,
+                *record.concurrency.get_mut(),
                 total.load(core::sync::atomic::Ordering::SeqCst)
             ),
             (0, 0)

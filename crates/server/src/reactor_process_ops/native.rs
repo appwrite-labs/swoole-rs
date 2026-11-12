@@ -20,7 +20,7 @@ use swoole_rs_reactor::{Event, Running};
 
 use super::Context;
 use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
-use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
+use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::reactor_ops::sign;
 use crate::view;
 
@@ -41,13 +41,11 @@ impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    pub(super) fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: as above.
-        unsafe { self.server().config_mut() }
+    pub(super) fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
-    pub(super) fn counters(&self) -> &mut crate::ServerCounters {
-        // SAFETY: the context's live server.
-        unsafe { self.server().counters_mut() }
+    pub(super) fn counters(&self) -> &crate::ServerCounters {
+        self.server().counters()
     }
     pub(super) fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
         self.server().workers()
@@ -88,8 +86,8 @@ impl Context<'_> {
     pub(super) fn event(&self) -> &Event {
         self.event.unwrap_or_else(|| std::process::abort())
     }
-    pub(super) fn event_socket(&self) -> *mut c_void {
-        self.event().socket_ptr().cast()
+    pub(super) fn event_socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
+        self.event().socket()
     }
     /// The connection `OP_CONN_AT` or `OP_EVENT_CONN_ACTIVE` selected, if any.
     pub(super) fn conn(&self) -> Option<&mut crate::ConnectionRecord> {
@@ -112,7 +110,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let mut ctx = over(ctx.serv, worker);
             sign(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN))
         }
-        OP_BUS_READ => (ctx.bus().read(socket(ctx.event_socket())?) as i64).cast_unsigned(),
+        OP_BUS_READ => (ctx.bus().read(ctx.event_socket()?) as i64).cast_unsigned(),
         OP_INFO_TYPE => u64::from(ctx.bus().head().kind),
         OP_INFO_REACTOR_ID => sign(ctx.bus().head().reactor_id),
         OP_ON_PIPE_MESSAGE => {
@@ -132,7 +130,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let me = swoole_rs_process::worker_globals::current_worker();
             // SAFETY: as above.
             let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
-            let pipe = crate::objects::socket(ctx.other(0)?.pipe_master());
+            let pipe = worker_pipe(ctx.other(0)?, true);
             crate::commands::call_command_handler(ctx.server(), ctx.bus(), id, pipe);
             0
         }
@@ -152,12 +150,12 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_PORT_ADD => {
-            let port = ctx.ports().get(usize::try_from(arg).ok()?)?.config();
-            let gs = port.counters()?;
+            let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
+            let gs = port.config().counters()?;
             let id = ctx.worker().id() as usize;
             // SAFETY: the worker's slot of them.
             unsafe { &*gs.cells().wrapping_add(id) }.store(0, Ordering::Relaxed);
-            sign(ctx.reactor_handle().add(socket(port.socket)?, EVENT_READ))
+            sign(port.with_socket(|socket| ctx.reactor_handle().add(socket, EVENT_READ))?)
         }
         OP_REACTOR_SETUP => {
             let reactor = ctx.reactor_handle();
@@ -174,8 +172,8 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ADD_PIPES => {
             let worker = ctx.worker();
-            let pipe_worker = socket(worker.pipe_worker())?;
-            let pipe_master = socket(worker.pipe_master())?;
+            let pipe_worker = worker_pipe(worker, false)?;
+            let pipe_master = worker_pipe(worker, true)?;
             set_nonblock(pipe_worker);
             set_nonblock(pipe_master);
             let reactor = ctx.reactor_handle();
@@ -187,7 +185,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_PIPE_NONBLOCK => {
             let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
             let worker = pool.worker(usize::try_from(arg).ok()?)?;
-            set_nonblock(socket(worker.pipe_master())?);
+            set_nonblock(worker_pipe(worker, true)?);
             0
         }
         OP_ADD_HEARTBEAT_TIMER => {
@@ -196,10 +194,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
             let node =
                 unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor) };
-            ctx.config().heartbeat_timer = node;
+            ctx.config().heartbeat_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
-        OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(socket(ctx.event_socket())?)),
+        OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(ctx.event_socket()?)),
         OP_CLOSE_NOTIFY => {
             let conn = ctx.conn()?;
             let event = conn.event(i16::from(conn.reactor_id), FD_SESSION);

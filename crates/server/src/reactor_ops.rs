@@ -432,6 +432,7 @@ pub(crate) enum Facts {
 }
 
 /// The facts an entry point passes its run.
+#[inline(always)]
 pub(crate) fn facts(ctx: &mut ReactorContext<'_>, state: &ServerState, which: Facts) -> u64 {
     let mut o = Objects { ctx, state };
     match which {

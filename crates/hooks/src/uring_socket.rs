@@ -14,6 +14,7 @@ use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::IoVector;
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use openssl_sys::BIO;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -72,8 +73,8 @@ impl TlsSocket for Co {
 /// The session's own BIOs (read, write) while they are the memory BIOs `tls_session`
 /// stored for it, else none: a stored one is stale once the SSL is freed or its BIOs
 /// replaced, so it is only compared, never handed out.
-fn session_bios(ssl: Option<Ssl>, stored: [Option<Bio>; 2]) -> [Option<Bio>; 2] {
-    let live = |bio: Option<Bio>, stored| bio.filter(|_| bio == stored);
+fn session_bios<'a>(ssl: Option<Ssl<'a>>, stored: [*mut BIO; 2]) -> [Option<Bio<'a>>; 2] {
+    let live = |bio: Option<Bio<'a>>, stored| bio.filter(|bio| bio.as_ptr() == stored);
     let [read, write] = stored;
     [
         live(ssl.and_then(Ssl::read_bio), read),
@@ -89,7 +90,10 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
         return None;
     }
     socket.net(|network| {
-        let ssl = Ssl::of_fields(network);
+        // SAFETY: the record's SSL is null or live until the unsafe `socket_ssl_close`,
+        // whose callers run it between the socket's operations, so not while this
+        // view, made per operation, is in use.
+        let ssl = unsafe { Ssl::new(network.ssl().cast()) };
         let [rbio, wbio] = session_bios(ssl, stored);
         UringSocketOps {
             socket,
@@ -517,20 +521,25 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     if !create() {
         return false;
     }
-    let Some(session) = socket.with_network(Ssl::of).flatten() else {
+    let server = socket.ssl_is_server();
+    let made = socket.with_network(|network| {
+        let session = Ssl::of(network)?;
+        let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
+            return None;
+        };
+        // SAFETY: `create` just made the session, whose socket BIO no handle holds.
+        let (rbio, wbio) = unsafe { session.set_bio(rbio, Some(wbio)) };
+        if server {
+            session.set_accept_state();
+        } else {
+            session.set_connect_state();
+        }
+        Some([rbio.as_ptr(), wbio.as_ptr()])
+    });
+    let Some(bios) = made.flatten() else {
         return false;
     };
-    let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
-        return false;
-    };
-    // SAFETY: `create` just made the session, whose socket BIO no handle holds.
-    let (rbio, wbio) = unsafe { session.set_bio(rbio, Some(wbio)) };
-    socket.with_extra(|extra| extra.bio = [Some(rbio), Some(wbio)]);
-    if socket.ssl_is_server() {
-        session.set_accept_state();
-    } else {
-        session.set_connect_state();
-    }
+    socket.with_extra(|extra| extra.bio = bios);
     true
 }
 
@@ -662,18 +671,20 @@ mod tests {
             };
             let (read, write) = pair();
             let (read, write) = session.set_bio(read, write);
-            let stored = [Some(read), Some(write)];
-            assert_eq!(session_bios(Some(session), stored), stored);
+            let stored = [read.as_ptr(), write.as_ptr()];
+            let live = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), stored), live);
             assert_eq!(
-                session_bios(Some(session), [Some(read), None]),
+                session_bios(Some(session), [read.as_ptr(), std::ptr::null_mut()]),
                 [Some(read), None]
             );
             // Replaced: the stored pair is freed and no longer the session's.
             let (read, write) = pair();
             let (read, write) = session.set_bio(read, write);
             assert_eq!(session_bios(Some(session), stored), [None, None]);
-            let fresh = [Some(read), Some(write)];
-            assert_eq!(session_bios(Some(session), fresh), fresh);
+            let fresh = [read.as_ptr(), write.as_ptr()];
+            let live = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), fresh), live);
             // Closed: the record holds no session.
             assert_eq!(session_bios(None, fresh), [None, None]);
             ssl::SSL_free(made);

@@ -23,9 +23,9 @@ const SW_USER_WORKER: u8 = 5;
 #[must_use]
 pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
     let workers = serv.workers();
-    let registry = serv.config().worker_registry;
+    let registry = serv.config().registry();
     // SAFETY: the server's live arrays and registry.
-    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry.cast(), pid) }
+    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry, pid) }
 }
 
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
@@ -133,19 +133,21 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 }
 
 /// `Server::create_user_workers()`: copy the added user workers into shared
-/// memory (no process is forked) and give each its lock. `config` is the server's.
+/// memory (no process is forked) and give each its lock. The copies are the
+/// caller's to store in `user_workers`; null, after a warning, when they couldn't
+/// be mapped.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn create_user_workers(serv: view::Server<'_>, config: &mut crate::ServerConfig) -> bool {
+pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members::Shm {
     let size = size_of::<WorkerRecord>();
     let pending = serv.registry().pending();
     let count = pending.len();
-    config.user_workers = swoole_rs_memory::members::Shm::calloc(count, size);
-    let copies = config.user_workers.as_ptr().cast::<WorkerRecord>();
+    let workers = swoole_rs_memory::members::Shm::calloc(count, size);
+    let copies = workers.as_ptr().cast::<WorkerRecord>();
     if copies.is_null() {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
-        return false;
+        return workers;
     }
     for (index, &worker) in pending.iter().enumerate() {
         // SAFETY: null or a live worker `add_worker` added, which outlives the server.
@@ -157,7 +159,7 @@ pub fn create_user_workers(serv: view::Server<'_>, config: &mut crate::ServerCon
         create_worker(serv, worker);
         worker.set_kind(SW_USER_WORKER);
     }
-    true
+    workers
 }
 
 #[cfg(test)]
@@ -199,7 +201,7 @@ mod tests {
         assert!(get_worker_by_pid(serv, 79).is_null());
 
         unsafe { (*worker).set_id(1) };
-        unsafe { (*worker).concurrency = 3 };
+        unsafe { &(*worker).concurrency }.store(3, SeqCst);
         let worker = unsafe { Worker::new(worker) };
         worker.set_request_count(7);
         worker.set_response_count(8);
@@ -230,7 +232,7 @@ mod tests {
             assert_eq!(slot.reactor_bits & 0xff, if edge { 1 } else { 2 });
             assert_eq!(slot.fd, if edge { 0 } else { 23 });
         }
-        unsafe { (*worker.raw()).concurrency = 9 };
+        unsafe { &(*worker.raw()).concurrency }.store(9, SeqCst);
         serv.counters().concurrency.store(3, SeqCst);
         reset_worker_counter(serv, worker);
         assert_eq!(worker.counters()[3], 0);

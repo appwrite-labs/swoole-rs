@@ -33,6 +33,10 @@ pub struct SocketPair {
     pub worker_socket: *mut SocketRecord,
 }
 
+// SAFETY: a pair owns its two socket records (`open` makes them, `drop` frees them),
+// and neither is tied to the thread that made it.
+unsafe impl Send for SocketPair {}
+
 const _: () = assert!(
     size_of::<SocketPair>() == 40,
     "SWR_SOCKET_PAIR_RECORD_FIELDS on LP64"
@@ -108,6 +112,20 @@ pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
 fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
     // SAFETY: a pair's open ends are live sockets, freed only by its close.
     [pair.master_socket, pair.worker_socket].map(|end| unsafe { Socket::from_ptr(end) })
+}
+
+impl SocketPair {
+    /// The master's end, or `None` once closed.
+    #[must_use]
+    pub fn master_end(&self) -> Option<Socket<'_>> {
+        ends(self)[0]
+    }
+
+    /// The worker's end, or `None` once closed.
+    #[must_use]
+    pub fn worker_end(&self) -> Option<Socket<'_>> {
+        ends(self)[1]
+    }
 }
 
 /// `bool UnixSocket::set_buffer_size(size_t) const`: the master's kernel buffers, then

@@ -239,18 +239,6 @@ impl<'a> Server<'a> {
         unsafe { &*gs }
     }
 
-    /// The shared counters, for the settings `Server::set()` writes before the
-    /// server starts.
-    ///
-    /// # Safety
-    /// No concurrent reader of the fields written, and no other reference to them.
-    #[must_use]
-    pub unsafe fn counters_mut(self) -> &'a mut ServerCounters {
-        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
-        // SAFETY: as `counters`, with the caller's exclusion.
-        unsafe { &mut *gs }
-    }
-
     /// `Server::is_started()`.
     #[must_use]
     pub fn is_started(self) -> bool {
@@ -275,7 +263,8 @@ impl<'a> Server<'a> {
         let config = self.config();
         u64::from(config.mode_) == crate::MODE_BASE
             && self.is_single_worker()
-            && self.counters().master_pid == std::process::id().cast_signed()
+            && self.counters().master_pid.load(Ordering::Relaxed)
+                == std::process::id().cast_signed()
             && !config.factory_.is_null()
     }
 
@@ -386,10 +375,10 @@ impl<'a> Server<'a> {
         unsafe { PoolRef::new(self.task_pool().wrapping_add(1)) }
     }
 
-    /// The server's worker registry, which `ServerState` boxed for the server's life.
+    /// The server's worker registry, which its configuration owns for the server's life.
     #[must_use]
     pub fn registry(self) -> &'a WorkerRegistry {
-        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        let registry = self.config().registry();
         // SAFETY: the server's live registry, whose writers the server's own
         // synchronization keeps apart from readers (`registry_mut`).
         unsafe { &*registry }
@@ -402,7 +391,7 @@ impl<'a> Server<'a> {
     /// reads it (only the master configures it, and only the manager tracks pids).
     #[must_use]
     pub unsafe fn registry_mut(self) -> &'a mut WorkerRegistry {
-        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        let registry = self.config().registry();
         // SAFETY: per the caller; the registry lives as long as the server.
         unsafe { &mut *registry }
     }
@@ -449,15 +438,7 @@ impl<'a> Server<'a> {
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
     #[must_use]
     pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Socket<'a>> {
-        let worker = self.worker_record(id)?;
-        let pipe = if master {
-            worker.pipe_master()
-        } else {
-            worker.pipe_worker()
-        };
-        // SAFETY: null or a pipe socket of one of the server's live workers, which the
-        // server keeps until it frees its workers.
-        unsafe { Socket::from_ptr(pipe.cast()) }
+        worker_pipe(self.worker_record(id)?, master)
     }
 
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
@@ -616,6 +597,20 @@ impl<'a> Port<'a> {
     }
 }
 
+/// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
+/// it has none.
+#[must_use]
+pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>> {
+    let pipe = if master {
+        worker.pipe_master()
+    } else {
+        worker.pipe_worker()
+    };
+    // SAFETY: null or a pipe socket of a live worker, which its owner keeps until it
+    // frees the worker.
+    unsafe { Socket::from_ptr(pipe.cast()) }
+}
+
 /// A `network::Socket`'s fd and `swSocketType`.
 ///
 /// # Safety
@@ -657,11 +652,11 @@ mod tests {
         let mut factory = 0u8;
         config.factory_ = (&raw mut factory).cast();
         let own = std::process::id().cast_signed();
-        unsafe { serv.counters_mut() }.master_pid = own;
+        serv.counters().master_pid.store(own, Ordering::Relaxed);
         assert!(serv.ran_its_single_worker_here());
-        unsafe { serv.counters_mut() }.master_pid = own + 1;
+        serv.counters().master_pid.store(own + 1, Ordering::Relaxed);
         assert!(!serv.ran_its_single_worker_here(), "another process's");
-        unsafe { serv.counters_mut() }.master_pid = own;
+        serv.counters().master_pid.store(own, Ordering::Relaxed);
         let config = unsafe { serv.config_mut() };
         config.factory_ = core::ptr::null_mut();
         assert!(!serv.ran_its_single_worker_here(), "destroyed");

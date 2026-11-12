@@ -83,20 +83,13 @@ impl Class {
     /// # Errors
     /// The constructor bailed out.
     /// # Panics
-    /// The class is not registered.
+    /// The class is not registered, or more than two arguments.
     pub fn instantiate(
         &self,
         args: &[&crate::Value],
     ) -> Result<crate::Owned, crate::bailout::Bailout> {
-        let entry = self.entry();
-        assert!(!entry.is_null(), "instantiate a registered class");
         let object = self.create_object();
-        let Some(std) = object.object() else {
-            return Ok(object);
-        };
-        let args: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
-        // SAFETY: the new object, of this class, and live arguments.
-        unsafe { crate::bailout::call_method(std, entry, b"__construct", ptr::null_mut(), &args) }?;
+        drop(object.call_method(Some(self), b"__construct", args)?);
         Ok(object)
     }
 

@@ -66,21 +66,15 @@ const THREAD_WORKER: u8 = 4;
 /// A task pool's `onWorkerStart` and `onWorkerStop`, and `main_loop`, whose result
 /// thread mode ignores.
 /// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the thread that owns them as workers.cc did"
-)]
 impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
-    fn tables(&self) -> &mut crate::records::ServerTables {
-        // SAFETY: the server's tables, which live as long as it.
-        unsafe { &mut *self.state().tables() }
+    fn tables(&self) -> &crate::records::ServerTables {
+        self.state().tables_ref()
     }
     fn workers(&self) -> ServerWorkers {
         self.server().workers()
@@ -246,7 +240,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
             handle.set_always_chunked();
-            if !handle.alloc_buffer(ctx.config().ipc_max_size as usize) {
+            if !handle.alloc_buffer(ctx.config().ipc_max_size() as usize) {
                 std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
             }
             // SAFETY: a started server and its new bus.
@@ -290,11 +284,15 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
 fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
     let config = ctx.config();
+    // SAFETY: only the arms below that `create_thread_factory` and its teardown run
+    // call it, while the master is the server's only thread, and each as its arm's
+    // last tables access.
+    let tables_mut = || unsafe { &mut *ctx.state().tables() };
     let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
             let threads = crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num);
-            ctx.tables().reactor_threads = threads;
+            tables_mut().reactor_threads = threads;
             0
         }
         OP_DELETE_REACTOR_THREADS => {
@@ -310,7 +308,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(ctx.state().running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
@@ -319,29 +317,39 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 reason = "`serv->reactor_num = serv->worker_num`, as upstream converts it"
             )]
             let reactor_num = config.worker_num as u16;
-            config.reactor_num = reactor_num;
+            // SAFETY: `create_thread_factory`, in `Server::create` before any thread
+            // starts; `config` isn't read across the write.
+            unsafe { serv.config_mut() }.reactor_num = reactor_num;
             0
         }
         OP_SINGLE_REACTOR_PIPE => {
-            ctx.tables().reactor_pipe_num = 1;
+            tables_mut().reactor_pipe_num = 1;
             0
         }
         OP_CALLOC_CONNECTIONS => {
             // Private, as `sw_calloc`'s memory was.
-            let tables = ctx.tables();
             let size = size_of::<ConnectionRecord>();
-            tables.connection_list = Shm::calloc_private(tables.max_connection as usize, size);
-            u64::from(!tables.connection_list.is_null())
+            let list = Shm::calloc_private(ctx.tables().max_connection as usize, size);
+            let ready = !list.is_null();
+            tables_mut().connection_list = list;
+            u64::from(ready)
         }
         OP_FREE_THREAD_CONNECTIONS => {
-            ctx.tables().connection_list.free();
+            tables_mut().connection_list.free();
             0
         }
         OP_CREATE_WORKER_PIPES => {
             u64::from(crate::factory_ops::run_server(serv, RUN_CREATE_WORKER_PIPES) != 0)
         }
         OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
-        OP_CREATE_USER_WORKERS => u64::from(create_user_workers(serv, ctx.config())),
+        OP_CREATE_USER_WORKERS => {
+            let workers = create_user_workers(serv);
+            let created = !workers.is_null();
+            // SAFETY: `ThreadFactory::start`, before it starts a thread; `config` isn't
+            // read after the write.
+            unsafe { serv.config_mut() }.user_workers = workers;
+            u64::from(created)
+        }
         OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
             server_methods::store_listen_socket(ctx.server());
@@ -371,16 +379,13 @@ fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     // are copied out first: the pool's own code, every task worker thread and PHP code
     // a hook runs (`$server->stats()`) reach the record while one runs.
     let pool_hook = |op| {
-        let pool = ctx.workers().task_pool;
-        // The borrow ends with the copy.
-        let record = crate::shared::ServerShared::of(ctx.server()).task_pool();
+        let pool = ctx.server().task_pool_ref();
         let (start, main_loop, stop) = (
-            record.on_worker_start,
-            record.main_loop,
-            record.on_worker_stop,
+            pool.on_worker_start(),
+            pool.main_loop(),
+            pool.on_worker_stop(),
         );
         let worker = ctx.worker();
-        let pool = pool_native::pool_ref(pool);
         match (op, start, main_loop, stop) {
             (OP_ON_WORKER_START, Some(hook), ..) | (OP_ON_WORKER_STOP, .., Some(hook)) => {
                 // SAFETY: the pool that holds the hook, and the worker it lends.

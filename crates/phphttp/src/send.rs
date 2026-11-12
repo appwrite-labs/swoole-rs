@@ -59,20 +59,17 @@ fn file_type(mut ctx: Ctx, file: &ZStr) {
     let Some(props) = response.and_then(|response| response.props(Some(&RESPONSE))) else {
         return;
     };
-    // SAFETY: nothing else borrows `header`, and no PHP code runs, until the
-    // type is added.
-    let Some(header) = (unsafe { props.array(c"header") }) else {
-        return;
-    };
-    let key = b"Content-Type";
-    if header
-        .array()
-        .is_some_and(|header| header.find(key).is_some())
-    {
-        return;
-    }
-    let mime = swoole_rs_phpswoole::mime_type(file.bytes());
-    header.insert_bytes(key, Some(&mime));
+    props.edit_array(c"header", |header| {
+        let key = b"Content-Type";
+        if header
+            .array()
+            .is_some_and(|header| header.find(key).is_some())
+        {
+            return;
+        }
+        let mime = swoole_rs_phpswoole::mime_type(file.bytes());
+        header.insert_bytes(key, Some(&mime));
+    });
 }
 
 /// Send a header without borrowing context state across the IO.

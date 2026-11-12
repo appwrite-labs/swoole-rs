@@ -145,61 +145,6 @@ pub unsafe fn callable_free(callable: *mut c_void) {
     }
 }
 
-/// `callable->dup()`.
-/// # Safety
-/// `callable` is live.
-pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { handle::copy(callable.cast()) }.cast()
-}
-
-/// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
-/// `from_loop` `sw_zend_call_function_ex2`, which raises an uncaught exception at
-/// once as the event loop's callbacks do: whether the call succeeded.
-/// # Errors
-/// The callable bailed out.
-/// # Safety
-/// PHP is running, `callable` is live, `args` are live zvals and `retval` is
-/// null or writable.
-pub unsafe fn callable_call(
-    callable: *mut c_void,
-    args: &mut [zval],
-    retval: *mut zval,
-    from_loop: bool,
-) -> Result<bool, Bailout> {
-    #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
-    let (argc, argv) = (args.len() as u32, args.as_mut_ptr());
-    let callable = callable.cast();
-    let mut result = false;
-    let invoke = || {
-        result = if from_loop {
-            // SAFETY: per the caller.
-            let cache = unsafe { handle::cache(callable) };
-            // SAFETY: per the caller; the reporter is C.
-            let called = unsafe {
-                swoole_rs_zend::host::swr_v1_phphelpers_call(
-                    std::ptr::null_mut(),
-                    cache,
-                    argc,
-                    argv,
-                    retval,
-                    true,
-                    swr_zend_callable_warning,
-                )
-            };
-            called == 0
-        } else {
-            // SAFETY: per the caller.
-            let called = unsafe { handle::invoke(callable, argc, argv, retval) };
-            bailout::finish();
-            called.unwrap_or(false)
-        };
-    };
-    // SAFETY: per the caller; the body holds copies and the result slot.
-    unsafe { bailout::trap_with(invoke) }?;
-    Ok(result)
-}
-
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
 const SW_ERROR_UNDEFINED_BEHAVIOR: i64 = 600;
 

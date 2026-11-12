@@ -156,7 +156,7 @@ pub(crate) fn answer(
 /// `serv->get_command_reply_socket()`: worker 0's master pipe in base mode, else the
 /// command pipe's worker end.
 pub(crate) fn reply_socket<'a>(
-    state: &ServerState,
+    state: &'a ServerState,
     serv: crate::view::Server<'a>,
 ) -> Option<Socket<'a>> {
     let config = state.config_ref();
@@ -164,7 +164,7 @@ pub(crate) fn reply_socket<'a>(
         return serv.worker_pipe(0, true);
     }
     // The server's live command pipe, a `UnixSocket`.
-    crate::objects::socket(config.command_pipe()?.worker_socket.cast())
+    config.command_pipe()?.worker_end()
 }
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
@@ -266,7 +266,6 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         let mut commands = commands(h.state()?);
         let id = commands.next_request;
         commands.next_request = id.wrapping_add(1);
-        commands.callbacks.insert(id, send.callback.clone());
         id
     };
     if route.action == TO_MASTER {
@@ -284,6 +283,10 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         (send.callback)(&reply);
         return Ok(true);
     }
+    // Only a reply from another process looks the callback up.
+    commands(h.state()?)
+        .callbacks
+        .insert(request_id, send.callback.clone());
     let message = CommandSend {
         action: route.action,
         process_id: route.process_id,
@@ -447,6 +450,10 @@ mod tests {
         assert!(command(&mut s, &send(b"hi", EVENT_WORKER, &out)).unwrap());
         assert_eq!(*out.lock().unwrap(), b"re:ping");
         assert_eq!(s.called(OP_ST_CMD_SEND), 0);
+        assert!(
+            commands(&s.state).callbacks.is_empty(),
+            "an answered request keeps no callback"
+        );
     }
 
     #[test]

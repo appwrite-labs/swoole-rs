@@ -8,7 +8,7 @@ use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
-use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
+use swoole_rs_process::process_pool::PoolRef;
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::{
@@ -109,25 +109,21 @@ impl<'a> Context<'a> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
-    fn counters(&self) -> &mut crate::ServerCounters {
-        // SAFETY: the server's shared counters, which only the manager writes meanwhile.
-        unsafe { self.server().counters_mut() }
+    fn counters(&self) -> &crate::ServerCounters {
+        self.server().counters()
     }
     fn workers(&self) -> ServerWorkers {
         self.server().workers()
     }
     /// The server's event worker pool.
-    fn pool(&self) -> &mut PoolRecord {
-        // SAFETY: the server's live event pool, which only the manager writes meanwhile.
-        unsafe { &mut *self.workers().event_pool }
+    fn pool(&self) -> PoolRef<'_> {
+        self.server().event_pool_ref()
     }
-    fn task_pool(&self) -> &mut PoolRecord {
-        // SAFETY: the server's live task pool, which only the manager writes meanwhile.
-        unsafe { &mut *self.workers().task_pool }
+    fn task_pool(&self) -> PoolRef<'_> {
+        self.server().task_pool_ref()
     }
     /// `serv->get_worker(id)`, or `None` past the last.
     fn worker_at(&self, id: u64) -> Option<Worker<'a>> {
@@ -241,20 +237,29 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .worker(index(arg))
                 .map_or(0, swoole_rs_process::worker_record::Worker::pid),
         ),
-        OP_WORKER_REGISTRY => config.worker_registry as u64,
-        OP_RUNNING => u64::from(config.running),
-        OP_RELOAD_INIT => u64::from(pool.reload_init),
+        OP_WORKER_REGISTRY => config.registry() as u64,
+        OP_RUNNING => u64::from(ctx.state().running()),
+        OP_RELOAD_INIT => u64::from(pool.reload_init()),
         OP_RELOAD_TASK => pool.reload_task() as u64,
         OP_WAIT_STATUS => signed(ctx.wait_status),
         OP_WAIT_ERROR => signed(ctx.wait_error),
-        OP_READ_MESSAGE => u64::from(pool.read_message),
-        OP_HAS_ON_WORKER_MESSAGE => u64::from(pool.on_worker_message.is_some()),
+        OP_READ_MESSAGE => u64::from(pool.read_message()),
+        OP_HAS_ON_WORKER_MESSAGE => u64::from(pool.on_worker_message().is_some()),
         OP_RELOAD_WARN => methods::reload_warn as *const () as u64,
         OP_IS_MANAGER => {
             let pid = std::process::id().cast_signed();
-            u64::from(pid == ctx.counters().manager_pid)
+            u64::from(
+                pid == ctx
+                    .counters()
+                    .manager_pid
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
         }
-        OP_MANAGER_PID => signed(ctx.counters().manager_pid),
+        OP_MANAGER_PID => signed(
+            ctx.counters()
+                .manager_pid
+                .load(core::sync::atomic::Ordering::Relaxed),
+        ),
         OP_ALL_WORKER_NUM => {
             u64::from(config.worker_num)
                 + u64::from(config.task_worker_num)
@@ -285,21 +290,34 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             )));
         }
         OP_CREATE_USER_WORKERS => {
-            let created = worker_methods::create_user_workers(ctx.server(), config);
+            let workers = worker_methods::create_user_workers(ctx.server());
+            let created = !workers.is_null();
+            // SAFETY: `start_manager_process`, in the master before it forks or starts
+            // a thread; `config` isn't read after the write.
+            unsafe { serv.config_mut() }.user_workers = workers;
             return Some(u64::from(created));
         }
-        OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
+        OP_SET_MANAGER_PID => {
+            let pid = std::process::id().cast_signed();
+            ctx.counters()
+                .manager_pid
+                .store(pid, core::sync::atomic::Ordering::Relaxed);
+        }
         OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
         OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
         OP_MANAGER_INIT => {
-            config.manager_ = core::ptr::without_provenance_mut(index(arg));
             let pid = std::process::id().cast_signed();
-            ctx.counters().manager_pid = pid;
+            ctx.counters()
+                .manager_pid
+                .store(pid, core::sync::atomic::Ordering::Relaxed);
             let event_pool = ctx.pool();
-            event_pool.on_worker_message = Some(read_worker_message);
-            event_pool.max_wait_time = config.max_wait_time;
-            event_pool.master_pid = pid;
-            ctx.task_pool().master_pid = pid;
+            event_pool.set_on_worker_message(Some(read_worker_message));
+            event_pool.set_max_wait_time(config.max_wait_time);
+            event_pool.set_master_pid(pid);
+            ctx.task_pool().set_master_pid(pid);
+            // SAFETY: `Manager::start`, in the manager process its master just forked,
+            // whose only thread this is; the arm's last config access.
+            unsafe { serv.config_mut() }.manager_ = core::ptr::without_provenance_mut(index(arg));
         }
         OP_ON_MANAGER_START => callback(CB_MANAGER_START),
         OP_ON_MANAGER_STOP => callback(CB_MANAGER_STOP),
@@ -307,9 +325,9 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
         OP_KILL_TASK_WORKERS => _ = crate::factory_ops::run_server(serv, RUN_KILL_TASK_WORKERS),
-        OP_SET_RUNNING => config.running = arg != 0,
-        OP_SET_RELOAD_INIT => ctx.pool().reload_init = arg != 0,
-        OP_SET_READ_MESSAGE => ctx.pool().read_message = arg != 0,
+        OP_SET_RUNNING => ctx.state().set_running(arg != 0),
+        OP_SET_RELOAD_INIT => ctx.pool().set_reload_init(arg != 0),
+        OP_SET_READ_MESSAGE => ctx.pool().set_read_message(arg != 0),
         OP_REAP_WAIT => {
             let waited = swoole_rs_process::reaper::wait_child(arg != 0);
             ctx.wait_status = waited.status;
@@ -471,9 +489,9 @@ fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_WORKER_MESSAGE => {
             let msg = (&raw mut ctx.msg).cast();
             let pool = ctx.pool();
-            let on_message = pool.on_worker_message?;
+            let on_message = pool.on_worker_message()?;
             // SAFETY: the message popped from the pool.
-            unsafe { on_message(pool.into(), msg) };
+            unsafe { on_message(pool, msg) };
             0
         }
         OP_STOP_MESSAGE_WORKER => {

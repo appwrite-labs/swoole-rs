@@ -766,8 +766,6 @@ pub const RUN_ST_DOCUMENT_ROOT: u32 = 302;
 pub const RUN_ST_STORE_PIPE_FD: u32 = 303;
 /// `Server::init_pipe_sockets`: context message bus (`object`).
 pub const RUN_ST_INIT_PIPE_SOCKETS: u32 = 304;
-/// `Server::reset_worker_counter`: context worker (`object`).
-pub const RUN_ST_RESET_COUNTER: u32 = 305;
 /// `Server::abort_connection`: context reactor, port and socket.
 pub const RUN_ST_ABORT: u32 = 306;
 /// `Server::send`: context session, data and length.
@@ -788,15 +786,10 @@ pub const OP_ST_PIPE_FD: u32 = 1015;
 pub const OP_ST_PIPE_BIND: u32 = 1016;
 /// The message bus initialises worker arg's pipe sockets.
 pub const OP_ST_INIT_PIPE: u32 = 1017;
-/// The worker's `concurrency`; compare-and-set it from arg to 0, returning the old value.
-pub const OP_ST_W_CONCURRENCY: u32 = 1018;
-pub const OP_ST_W_CONCURRENCY_CAS: u32 = 1019;
 /// `gs->concurrency`: subtract arg; read; set 0.
 pub const OP_ST_GS_CONCURRENCY_SUB: u32 = 1020;
 pub const OP_ST_GS_CONCURRENCY: u32 = 1021;
 pub const OP_ST_GS_CONCURRENCY_ZERO: u32 = 1022;
-/// The worker's request, response and dispatch counts become 0.
-pub const OP_ST_W_RESET_COUNTS: u32 = 1023;
 /// The server's and port's abort counts; the socket has an object; the reactor
 /// closes it; it is freed.
 pub const OP_ST_ABORT_COUNT: u32 = 1024;

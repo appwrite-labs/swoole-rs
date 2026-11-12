@@ -6,11 +6,9 @@ use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
     LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
-    OP_ST_GS_CONCURRENCY_ZERO, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
+    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
     OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_ST_W_CONCURRENCY, OP_ST_W_CONCURRENCY_CAS,
-    OP_ST_W_RESET_COUNTS, OP_WORKER_IDLE,
+    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
@@ -55,14 +53,19 @@ pub struct ServerState {
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
-    task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    #[expect(
+        clippy::vec_box,
+        reason = "`task_pipe` hands out addresses that outlive the lock"
+    )]
+    task_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
     /// `swr_v1_server_delete` closes, as `~Server` did.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
-    worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
+    worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// A worker thread asked to shut down: the thread manager respawns no worker.
     pub(crate) stopping: AtomicBool,
 }
@@ -127,8 +130,12 @@ impl ServerState {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
-        let pipe = Box::into_raw(pair);
-        lock(&self.worker_pipes).push(AtomicPtr::new(pipe));
+        let mut pipes = lock(&self.worker_pipes);
+        pipes.push(pair);
+        // The box keeps the pair at this address while the list owns it.
+        let pipe = pipes
+            .last_mut()
+            .map_or(core::ptr::null_mut(), |pair| &raw mut **pair);
         worker.pipe_master = master.cast();
         worker.pipe_worker = end.cast();
         worker.pipe_object = pipe.cast();
@@ -148,11 +155,7 @@ impl ServerState {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
-        let pipe = Box::into_raw(pair);
-        self.task_pipes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(AtomicPtr::new(pipe));
+        lock(&self.task_pipes).push(pair);
         true
     }
 
@@ -162,17 +165,16 @@ impl ServerState {
     pub(crate) fn close_pipes(&self) {
         let task = core::mem::take(&mut *lock(&self.task_pipes));
         let worker = core::mem::take(&mut *lock(&self.worker_pipes));
-        for pipe in task.into_iter().chain(worker) {
-            // SAFETY: a pipe `push_task_pipe` or `push_worker_pipe` boxed, now out of its list.
-            swoole_rs_tls::socket_pair::drop(&mut *unsafe { Box::from_raw(pipe.into_inner()) });
+        for mut pipe in task.into_iter().chain(worker) {
+            swoole_rs_tls::socket_pair::drop(&mut pipe);
         }
     }
 
     /// `task_notify_pipes.at(index)`, or null past the end.
     pub(crate) fn task_pipe(&self, index: usize) -> *mut SocketPair {
         lock(&self.task_pipes)
-            .get(index)
-            .map_or(core::ptr::null_mut(), |pipe| pipe.load(Ordering::Relaxed))
+            .get_mut(index)
+            .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
     }
 
     /// One of `texts`' slots.
@@ -282,6 +284,16 @@ impl ServerState {
             items: ports.as_ptr().cast(),
             count,
         };
+    }
+
+    /// `serv->running`.
+    pub(crate) fn running(&self) -> bool {
+        self.config_ref().running.load(Ordering::Acquire)
+    }
+
+    /// `serv->running = running`, seen by every thread's next [`Self::running`].
+    pub(crate) fn set_running(&self, running: bool) {
+        self.config_ref().running.store(running, Ordering::Release);
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
@@ -396,10 +408,25 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 /// The result is freed once, as a `Box`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
-    let mut config = crate::config::ServerConfig::default();
-    config.worker_registry =
-        Box::into_raw(Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default()).cast();
-    let tables = crate::records::ServerTables::default();
+    let (config, tables) = fresh_records();
+    boxed(config, tables)
+}
+
+/// A new server's records, before a state owns them: the defaults and an empty
+/// worker registry.
+pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
+    let config = crate::config::ServerConfig {
+        worker_registry: Some(Box::default()),
+        ..Default::default()
+    };
+    (config, crate::records::ServerTables::default())
+}
+
+/// The state of a server with these records, freed by `swr_v1_server_state_free`.
+pub(crate) fn boxed(
+    config: crate::config::ServerConfig,
+    tables: crate::records::ServerTables,
+) -> *mut ServerState {
     Box::into_raw(Box::new(ServerState::with(config, tables)))
 }
 
@@ -542,21 +569,6 @@ fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// `Server::reset_worker_counter`: the worker's concurrency leaves the server's (never
-/// below 0) and its counters restart.
-fn reset_worker_counter<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let value = h.get(OP_ST_W_CONCURRENCY)?;
-    if value > 0 && h.op(OP_ST_W_CONCURRENCY_CAS, value)? == value {
-        h.op(OP_ST_GS_CONCURRENCY_SUB, value)?;
-        let now = u32::try_from(h.get(OP_ST_GS_CONCURRENCY)? & 0xffff_ffff).unwrap_or(0);
-        if now.cast_signed() < 0 {
-            h.get(OP_ST_GS_CONCURRENCY_ZERO)?;
-        }
-    }
-    h.get(OP_ST_W_RESET_COUNTS)?;
-    Ok(())
-}
-
 /// `Server::abort_connection`: counted, then closed through the reactor when it is
 /// a connection, else freed.
 fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
@@ -606,7 +618,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
         RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_RESET_COUNTER, RUN_ST_STORE_PIPE_FD,
+        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_ADD_COMMAND => {
@@ -638,10 +650,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_ST_INIT_PIPE_SOCKETS => {
             init_pipe_sockets(h)?;
-            0
-        }
-        RUN_ST_RESET_COUNTER => {
-            reset_worker_counter(h)?;
             0
         }
         RUN_ST_ABORT => {
@@ -730,28 +738,6 @@ mod tests {
         let mut s = Script::default().queue(OP_FIELD, &[2, 2, 2]);
         init_pipe_sockets(&mut s).unwrap();
         assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1]);
-    }
-
-    #[test]
-    fn worker_counter_reset_clamps_the_server_concurrency() {
-        let mut s = Script::with(&[
-            (OP_ST_W_CONCURRENCY, 3),
-            (OP_ST_W_CONCURRENCY_CAS, 3),
-            (OP_ST_GS_CONCURRENCY, u64::from(u32::MAX)),
-        ]);
-        reset_worker_counter(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_GS_CONCURRENCY_SUB), vec![3]);
-        assert_eq!(s.called(OP_ST_GS_CONCURRENCY_ZERO), 1);
-        assert_eq!(s.called(OP_ST_W_RESET_COUNTS), 1);
-
-        let mut raced = Script::with(&[(OP_ST_W_CONCURRENCY, 3), (OP_ST_W_CONCURRENCY_CAS, 2)]);
-        reset_worker_counter(&mut raced).unwrap();
-        assert_eq!(raced.called(OP_ST_GS_CONCURRENCY_SUB), 0);
-        assert_eq!(raced.called(OP_ST_W_RESET_COUNTS), 1);
-
-        let mut idle = Script::default();
-        reset_worker_counter(&mut idle).unwrap();
-        assert_eq!(idle.called(OP_ST_W_CONCURRENCY_CAS), 0);
     }
 
     #[test]

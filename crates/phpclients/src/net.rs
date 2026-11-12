@@ -9,7 +9,6 @@ use libc::c_int;
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
-    ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -652,10 +651,9 @@ fn destruct(call: &Call) {
     if !destructing(call) || !this(call).has_conn() {
         return;
     }
-    // SAFETY: a live client object; `Swoole\Client::close` with no arguments.
-    bailed(unsafe {
-        bailout::call_method(call.this(), CLIENT.entry(), b"close", ptr::null_mut(), &[])
-    });
+    if let Some(this) = call.this_value() {
+        bailed(this.call_method(Some(&CLIENT), b"close", &[]));
+    }
 }
 
 /// `set(array $settings): bool`.

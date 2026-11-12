@@ -685,7 +685,7 @@ fn stats(call: &Call) {
     let gs = serv.counters();
     let load = |count: &AtomicU64| count.load(Ordering::Relaxed).cast_signed();
     let values = [
-        gs.start_time,
+        gs.start_time.load(Ordering::Relaxed),
         i64::try_from(serv.connection_num()).unwrap_or(i64::MAX),
         load(&gs.abort_count),
         load(&gs.accept_count),
@@ -702,7 +702,7 @@ fn stats(call: &Call) {
         load(&gs.total_send_bytes),
         load(&gs.pipe_packet_msg_id),
         i64::from(gs.concurrency.load(Ordering::Relaxed)),
-        gs.session_round,
+        gs.session_round.load(Ordering::Relaxed),
         i64::from(gs.min_fd()),
         i64::from(gs.max_fd()),
     ];
@@ -1047,12 +1047,20 @@ fn get_worker_pid(call: &Call) {
 
 fn get_manager_pid(call: &Call) {
     let serv = server(call);
-    call.set_long(i64::from(serv.counters().manager_pid));
+    call.set_long(i64::from(
+        serv.counters()
+            .manager_pid
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ));
 }
 
 fn get_master_pid(call: &Call) {
     let serv = server(call);
-    call.set_long(i64::from(serv.counters().master_pid));
+    call.set_long(i64::from(
+        serv.counters()
+            .master_pid
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ));
 }
 
 fn shutdown(call: &Call) {
@@ -1154,23 +1162,13 @@ fn delegate(call: &Call, method: &[u8]) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let object = crate::lifecycle::ServerObject::running().raw();
-    let retval = swoole_rs_zend::Owned::default();
-    // SAFETY: the server's live object, its class, a writable result and the argument.
-    let called = unsafe {
-        swoole_rs_zend::bailout::call_method(
-            object,
-            SERVER.entry(),
-            method,
-            retval.as_ptr(),
-            &[call.zval(1)],
-        )
+    let mut object = crate::lifecycle::ServerObject::running().zval();
+    let args: Vec<&Value> = call.value(1).into_iter().collect();
+    let retval = match Value::of(&mut object).call_method(Some(&SERVER), method, &args) {
+        Ok(retval) => retval,
+        // Nothing here to release: the bailout jumps over this frame.
+        Err(bailout) => return swoole_rs_zend::bailout::raise(Err(bailout)),
     };
-    if let Err(bailout) = called {
-        // Released first: the bailout jumps over this frame.
-        drop(retval);
-        return swoole_rs_zend::bailout::raise(Err(bailout));
-    }
     if method == b"exists" {
         // RETVAL_BOOL(Z_BVAL_P(&retval)): only `true` is true.
         call.set_bool(retval.kind() == swoole_rs_zend::sys::IS_TRUE);

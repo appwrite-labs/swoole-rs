@@ -588,6 +588,14 @@ def docker_image():
 # build, then dev.py with the image's PHP extensions unless the command names its own.
 DOCKER_SCRIPT = r'''set -e
 git config --global --add safe.directory '*'
+# Cargo builds into the target/docker of the worktree it runs in: worktrees sharing one
+# target dir hash a crate alike, so each takes the other's build of it as fresh.
+mkdir -p /tmp/swr-bin
+printf '%s\n' '#!/bin/sh' \
+    'top=$(git rev-parse --show-toplevel 2>/dev/null) && export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$top/$SWR_TARGET}"' \
+    "exec $(command -v cargo) \"\$@\"" > /tmp/swr-bin/cargo
+chmod +x /tmp/swr-bin/cargo
+export PATH="/tmp/swr-bin:$PATH"
 # Entries of one worktree and architecture share target/upstream: prepare it one at a time.
 {
 flock 9
@@ -625,6 +633,16 @@ def docker(arguments):
         subprocess.run(['docker', 'build', '-t', image, str(ROOT / '.devcontainer')], check=True)
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                                           cwd=ROOT, text=True).strip())
+    # A commit made inside runs this worktree's hooks (core.hooksPath may name a host path
+    # that isn't mounted, and git skips a missing hooks directory silently), as the host's user.
+    config = {'core.hooksPath': '.githooks'}
+    for key in ['user.name', 'user.email']:
+        value = subprocess.run(['git', 'config', key], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        if value:
+            config[key] = value
+    git_config = [f'GIT_CONFIG_COUNT={len(config)}']
+    for index, (key, value) in enumerate(config.items()):
+        git_config += [f'GIT_CONFIG_KEY_{index}={key}', f'GIT_CONFIG_VALUE_{index}={value}']
     architecture = os.uname().machine
     mounts = [ROOT, common] if not common.is_relative_to(ROOT) else [ROOT]
     # Linux builds live in target/docker/<arch>/, seen inside at their usual paths, so
@@ -638,7 +656,8 @@ def docker(arguments):
                *[part for mount in mounts for part in ('-v', f'{mount}:{mount}')], *builds,
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
-               '-e', f'CARGO_TARGET_DIR={private}/cargo',
+               '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
+               *[part for variable in git_config for part in ('-e', variable)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 

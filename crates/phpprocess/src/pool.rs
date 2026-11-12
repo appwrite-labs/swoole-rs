@@ -918,62 +918,63 @@ fn get_process(call: &Call) {
     let Some(props) = call.props(Some(&POOL)) else {
         return;
     };
-    // SAFETY: nothing else borrows `workers` here.
-    let workers = unsafe { props.array(c"workers") };
-    // Separated: a new worker is added in place.
-    let Some(table) = workers.and_then(|workers| workers.as_mut_ptr().and(workers.array())) else {
-        return;
-    };
-    let key = id.cast_unsigned();
-    let class = crate::process::process_class();
-    match table.index(key).filter(|found| !found.is_null()) {
-        None => {
-            let object = class.create_object();
-            // A worker C++ allocates, as the Process object frees it.
-            let mut copy = WorkerRecord::boxed();
-            #[expect(
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation,
-                reason = "a checked worker id"
-            )]
-            let pipe = worker_record::copy_for_process(record(pool), id as usize, &mut copy);
-            // The Process object takes the copy.
-            let worker = Box::into_raw(copy).cast::<c_void>();
-            if let Some(props) = object.props(Some(class)) {
-                props.long(c"id", current_id);
-                props.long(c"pid", i64::from(worker_pid(worker)));
-                if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
-                    props.long(c"pipe", i64::from(pipe));
-                }
-            }
-            // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-            set_worker_of(&object, worker, true, c_int::from(view.is_async));
-            let mut object = object.into_zval();
-            // SAFETY: a live table; it takes the new object's reference.
-            unsafe { zend_hash_index_update(table.as_ptr(), key, &raw mut object) };
-        }
-        Some(found) => {
-            if found.object().is_some() {
-                let worker = crate::process::worker_of(found);
+    // The property reads null meanwhile; creating a Process object runs no PHP code.
+    props.edit_array(c"workers", |workers| {
+        // Separated: a new worker is added in place.
+        let Some(table) = workers.as_mut_ptr().and(workers.array()) else {
+            return;
+        };
+        let key = id.cast_unsigned();
+        let class = crate::process::process_class();
+        match table.index(key).filter(|found| !found.is_null()) {
+            None => {
+                let object = class.create_object();
+                // A worker C++ allocates, as the Process object frees it.
+                let mut copy = WorkerRecord::boxed();
                 #[expect(
                     clippy::cast_sign_loss,
                     clippy::cast_possible_truncation,
                     reason = "a checked worker id"
                 )]
-                let pid = view.worker(id as usize).map_or(0, Worker::pid);
-                if worker_pid(worker) != pid {
-                    crate::worker::record(worker).set_pid(pid);
-                    if let Some(props) = found.props(Some(class)) {
-                        props.long(c"pid", i64::from(pid));
+                let pipe = worker_record::copy_for_process(record(pool), id as usize, &mut copy);
+                // The Process object takes the copy.
+                let worker = Box::into_raw(copy).cast::<c_void>();
+                if let Some(props) = object.props(Some(class)) {
+                    props.long(c"id", current_id);
+                    props.long(c"pid", i64::from(worker_pid(worker)));
+                    if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
+                        props.long(c"pipe", i64::from(pipe));
+                    }
+                }
+                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
+                set_worker_of(&object, worker, true, c_int::from(view.is_async));
+                let mut object = object.into_zval();
+                // SAFETY: a live table; it takes the new object's reference.
+                unsafe { zend_hash_index_update(table.as_ptr(), key, &raw mut object) };
+            }
+            Some(found) => {
+                if found.object().is_some() {
+                    let worker = crate::process::worker_of(found);
+                    #[expect(
+                        clippy::cast_sign_loss,
+                        clippy::cast_possible_truncation,
+                        reason = "a checked worker id"
+                    )]
+                    let pid = view.worker(id as usize).map_or(0, Worker::pid);
+                    if worker_pid(worker) != pid {
+                        crate::worker::record(worker).set_pid(pid);
+                        if let Some(props) = found.props(Some(class)) {
+                            props.long(c"pid", i64::from(pid));
+                        }
                     }
                 }
             }
         }
-    }
-    // The return value shares the element (`ZVAL_COPY`).
-    if let Some(found) = table.index(key) {
-        call.set_owned(found.copy());
-    }
+        // The return value shares the element (`ZVAL_COPY`).
+        if let Some(found) = table.index(key) {
+            call.set_owned(found.copy());
+        }
+    });
 }
 
 fn stop(_call: &Call) {

@@ -101,9 +101,12 @@ manual setup:
 
 - builds the image the first time (tagged `swoole-rs-dev:<arch>-<.devcontainer hash>`,
   so arm64 and amd64 never mix and a changed `.devcontainer/` gets a new image)
-- mounts this worktree, and its git metadata, at their host paths
+- mounts this worktree, and its git metadata, at their host paths, and points
+  `core.hooksPath` at the worktree's `.githooks`, so a commit made inside runs the hook
+  (as the host's `user.name` and `user.email`)
 - keeps the toolchain and crate registry in named volumes (`swr-rustup-<arch>`,
-  `swr-cargo-<arch>`), and cargo output in `target/docker/`
+  `swr-cargo-<arch>`), and cargo output in `target/docker/` of the worktree cargo
+  runs in, so a worktree under this one never reuses this one's builds
 - inside the container, installs the pinned toolchain, runs `cargo fetch --locked`,
   builds `target/upstream` (cached; concurrent entries in one worktree take turns at
   these steps, under `flock target/upstream/prepare.lock`, then run together), and passes the image's PHP extensions to

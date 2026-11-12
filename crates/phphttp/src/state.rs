@@ -174,8 +174,9 @@ pub(crate) struct State {
         reason = "all zeroes must be valid: a null Box is None"
     )]
     pub(crate) compressed: Option<Box<Vec<u8>>>,
-    /// `private_data_2`: the handler the server picked for the request.
-    pub(crate) callback: *mut c_void,
+    /// `private_data_2`: the handler the server picked for the request; none
+    /// (all zeroes) until it picks one.
+    pub(crate) callback: Option<std::rc::Rc<crate::server::Callable>>,
     /// `onBeforeRequest` is the server's: count or queue the request first.
     pub(crate) before_request: u8,
     /// `onAfterResponse` is the server's: uncount the request.

@@ -11,24 +11,23 @@ use swoole_rs_bus::{BusPacket, MessageBus};
 use crate::pool_native::read_bus;
 use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
 
-/// A live socket, or `None` for null.
-pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<Socket<'a>> {
-    // SAFETY: the native objects hand out null or live sockets, each used by one thread.
-    unsafe { Socket::from_ptr(socket.cast()) }
-}
+pub(crate) use crate::view::worker_pipe;
 
-/// `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the thread
-/// bus's own end of the worker's `pipe`.
-pub(crate) fn in_worker_bus(
+/// `f` over `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the
+/// thread bus's own end of the worker's `pipe`; `None` without one.
+pub(crate) fn in_worker_bus<R>(
     state: &crate::ServerState,
     config: &crate::ServerConfig,
-    pipe: *mut c_void,
-) -> *mut c_void {
-    match socket(pipe) {
-        Some(sock) if u64::from(config.mode_) == crate::MODE_THREAD => {
-            crate::master_ops::worker_message_bus(state).pipe_socket(sock)
-        }
-        _ => pipe,
+    pipe: Option<Socket<'_>>,
+    f: impl FnOnce(Socket<'_>) -> R,
+) -> Option<R> {
+    let pipe = pipe?;
+    if u64::from(config.mode_) == crate::MODE_THREAD {
+        crate::master_ops::worker_message_bus(state)
+            .pipe_socket(pipe)
+            .map(f)
+    } else {
+        Some(f(pipe))
     }
 }
 
@@ -183,8 +182,8 @@ impl Bus {
         unsafe { self.rust().set_buffer(core::ptr::null_mut()) };
     }
     /// `get_pipe_socket(sock)`: this bus's own end of the pipe `sock`.
-    pub(crate) fn pipe_socket(self, sock: Socket<'_>) -> *mut c_void {
-        self.pipe_fd(sock.fd())
+    pub(crate) fn pipe_socket(&self, sock: Socket<'_>) -> Option<Socket<'_>> {
+        self.rust().pipe(sock.fd())
     }
     /// This bus's own end of the pipe `fd`.
     pub(crate) fn pipe_fd(self, fd: c_int) -> *mut c_void {

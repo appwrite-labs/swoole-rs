@@ -260,34 +260,30 @@ upstream! {
     /// `frame`'s payload covers `payload_length` bytes.
     pub unsafe extern "C" fn print_frame(frame: &Frame) {
         let [first, second] = frame.header;
-        #[expect(clippy::cast_possible_wrap, reason = "upstream prints a size_t with %ld")]
-        let length = frame.payload_length as libc::c_long;
         // `sw_printf`: Swoole's stdout stream, which swoole_set_stdout_stream replaces.
-        let out = swoole_rs_corebase::swoole_get_stdout_stream().cast::<libc::FILE>();
-        // SAFETY: the stream is live and the arguments match the format.
-        unsafe {
-            libc::fprintf(
-                out,
-                c"FIN: %x, RSV1: %d, RSV2: %d, RSV3: %d, opcode: %d, MASK: %d, length: %ld\n".as_ptr(),
-                c_int::from(first >> 7),
-                c_int::from((first >> 6) & 1),
-                c_int::from((first >> 5) & 1),
-                c_int::from((first >> 4) & 1),
-                c_int::from(first & 15),
-                c_int::from(second >> 7),
-                length,
-            )
-        };
+        let mut line = format!(
+            "FIN: {:x}, RSV1: {}, RSV2: {}, RSV3: {}, opcode: {}, MASK: {}, length: {}\n",
+            first >> 7,
+            (first >> 6) & 1,
+            (first >> 5) & 1,
+            (first >> 4) & 1,
+            first & 15,
+            second >> 7,
+            frame.payload_length.cast_signed(),
+        )
+        .into_bytes();
         if frame.payload_length != 0 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "upstream's (int) precision"
-            )]
-            let precision = frame.payload_length as c_int;
             // SAFETY: the payload holds `payload_length` bytes.
-            unsafe { libc::fprintf(out, c"payload: %.*s\n".as_ptr(), precision, frame.payload) };
+            let payload = unsafe {
+                std::slice::from_raw_parts(frame.payload.cast::<u8>(), frame.payload_length)
+            };
+            // `%.*s` stops at the first NUL.
+            let text = payload.split(|&byte| byte == 0).next().unwrap_or(payload);
+            line.extend_from_slice(b"payload: ");
+            line.extend_from_slice(text);
+            line.push(b'\n');
         }
+        swoole_rs_corebase::sw_print(&line);
     }
 }
 

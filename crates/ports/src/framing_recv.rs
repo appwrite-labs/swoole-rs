@@ -40,10 +40,6 @@ struct RecvData {
     data: *const u8,
 }
 
-unsafe extern "C" {
-    fn SSL_pending(ssl: *const c_void) -> c_int;
-}
-
 /// One receive: what each effect acts on, live for the receive.
 pub(crate) struct Recv<'a> {
     mode: u32,
@@ -320,11 +316,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
                 result >= 0 && s.read(|s| s.removed) == 0
             }) as i64
         }
-        OP_SSL_PENDING => {
-            let ssl = s.read(swoole_rs_reactor::SocketFields::ssl);
-            // SAFETY: the socket's live SSL.
-            i64::from(unsafe { SSL_pending(ssl) })
-        }
+        OP_SSL_PENDING => swoole_rs_tls::Ssl::of(s).map_or(0, |ssl| i64::from(ssl.pending())),
         OP_CLEAR_SKIP => {
             s.edit(|s| s.skip_recv = 0);
             0

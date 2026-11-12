@@ -331,7 +331,7 @@ impl Client {
         // for the call as upstream's `ZVAL_OBJ`.
         unsafe { set_object(&raw mut args[0], self.object) };
         args[1] = Owned::string(ZString::new(data)).into_zval();
-        let result = match crate::native::call(callable, &mut args, ptr::null_mut(), false) {
+        let result = match callable.call(&mut args, None, false) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(bailout::Bailout) => 2,
@@ -1110,9 +1110,7 @@ impl Client {
         let token = request::token::<WEBSOCKET_KEY>();
         let mut key = vec![0_u8; WEBSOCKET_KEY.div_ceil(3) * 4 + 1];
         let written = swoole_rs_base64::encode(&token, &mut key);
-        // SAFETY: nothing else borrows `requestHeaders`, and no PHP runs while
-        // adding.
-        if let Some(headers) = unsafe { self.props().array(c"requestHeaders") } {
+        self.props().edit_array(c"requestHeaders", |headers| {
             headers.insert_bytes(b"Connection", Some(b"Upgrade"));
             headers.insert_bytes(b"Upgrade", Some(b"websocket"));
             headers.insert_bytes(b"Sec-WebSocket-Version", Some(b"13"));
@@ -1127,7 +1125,7 @@ impl Client {
                     Some(DEFLATE_EXTENSION.to_bytes()),
                 );
             }
-        }
+        });
         if !self.exec(path) {
             return false;
         }
@@ -1283,10 +1281,9 @@ impl Client {
     }
 
     fn add_header(&self, key: &[u8], data: &[u8]) {
-        // SAFETY: nothing else borrows `headers`, and no PHP runs while merging.
-        if let Some(headers) = unsafe { self.props().array(c"headers") } {
+        self.props().edit_array(c"headers", |headers| {
             headers.merge(key, Owned::from(ZString::new(data)));
-        }
+        });
     }
 }
 
@@ -1413,13 +1410,12 @@ fn on_header_value(hooks: &Hooks, data: &[u8]) -> c_int {
             client.accept_websocket_compression.set(true);
         }
     } else if name == b"set-cookie" {
-        // SAFETY: two properties nothing else borrows; no PHP runs while parsing.
-        let cookies = unsafe { client.props().array(c"cookies") };
-        // SAFETY: as above.
-        let headers = unsafe { client.props().array(c"set_cookie_headers") };
-        if let (Some(cookies), Some(headers)) = (cookies, headers) {
-            parse_set_cookies(data, cookies, headers);
-        }
+        let props = client.props();
+        props.edit_array(c"cookies", |cookies| {
+            props.edit_array(c"set_cookie_headers", |headers| {
+                parse_set_cookies(data, cookies, headers);
+            })
+        });
     } else if features() != 0 && name == b"content-encoding" {
         if let Some(method) = request::content_encoding(data, features()) {
             client.compress.set(method);
@@ -1773,16 +1769,15 @@ fn add_upload(call: &Call, entry: &[(&CStr, Upload<'_>)]) {
     let Some(props) = props::this(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: nothing else borrows `uploadFiles`, and no PHP runs while adding.
-    let Some(files) = (unsafe { props.array(c"uploadFiles") }) else {
-        return call.set_bool(false);
-    };
     // The next-index insert fails once the array's next key would pass
     // `ZEND_LONG_MAX`; upstream returns false then.
     let count = |files: &ArrayMut| files.array().map_or(0, Array::count);
-    let before = count(files);
-    files.push(file.into_owned());
-    call.set_bool(count(files) > before);
+    let added = props.edit_array(c"uploadFiles", |files| {
+        let before = count(files);
+        files.push(file.into_owned());
+        count(files) > before
+    });
+    call.set_bool(added.unwrap_or(false));
 }
 
 enum Upload<'a> {

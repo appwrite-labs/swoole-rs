@@ -5,9 +5,9 @@ use crate::{
     sys::{
         _zval_struct__bindgen_ty_1, IS_OBJECT, IS_OBJECT_EX, object_init_ex,
         object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
-        swr_zend_property_slot, swr_zend_try_facade_update, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -170,6 +170,35 @@ pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
     // `free::<T>` drops it, when no reference to the object (so none to its
     // data) remains. Handlers are null only before registration.
     Some(unsafe { &*Object::<T>::data_ptr(std) })
+}
+
+/// One of `T`'s objects by its handle, for a holder the object must not keep
+/// alive, such as a hook its own data registers. It is found again in the
+/// executor's object store at each use, so it reads `None` once the object is
+/// being freed, or when its handle went to an object that is no `T`. Another
+/// `T` can take the handle later: a holder that needs the same object compares
+/// what it finds. The handle means something only to the executor of the
+/// thread that made it, so a `Weak` is neither `Send` nor `Sync`.
+pub struct Weak<T>(u32, PhantomData<*const T>);
+
+impl<T: Custom> Weak<T> {
+    /// The handle of the `T` object `value` holds.
+    #[must_use]
+    pub fn of(value: &Value) -> Option<Self> {
+        value.custom::<T>()?;
+        // SAFETY: the zval holds the live object.
+        Some(Self(unsafe { (*value.object()?).handle }, PhantomData))
+    }
+
+    /// The object, with a reference of its own.
+    #[must_use]
+    pub fn get(&self) -> Option<Owned> {
+        let found = Owned::default();
+        // SAFETY: reads the executor's object store on its thread, and writes
+        // the empty zval `found` owns only with a counted object.
+        unsafe { swr_zend_objects_hold(self.0, T::class().handlers(), found.as_ptr()) }
+            .then_some(found)
+    }
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler
@@ -354,12 +383,30 @@ impl<'a> Props<'a> {
     /// result is borrowed.
     #[must_use]
     #[inline]
-    pub unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
+    unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
+        let slot = self.array_slot(name)?;
+        // SAFETY: an array slot of a live object; per the caller.
+        Some(unsafe { ArrayMut::from_ptr(slot.as_ptr()) })
+    }
+
+    /// [`Props::array`], lent to `edit` out of its property: the property
+    /// reads null while `edit` runs, so nothing `edit` does can free or
+    /// replace the array under it, and takes the array back when `edit`
+    /// returns, in place of whatever was put there meanwhile. None as
+    /// [`Props::array`].
+    pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.array_slot(name)?
+            .lend(|held| held.array_mut().map(|array| edit(array)))
+    }
+
+    /// The slot of the declared property `name`, holding an array, as
+    /// [`Props::array`] converts it.
+    fn array_slot(self, name: &CStr) -> Option<&'a Value> {
         let array = || {
             // SAFETY: a live object; Zend reads `name` only.
             let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
-            // SAFETY: null, or a slot of the live object.
-            unsafe { Value::from_ptr(slot) }?.array().map(|_| slot)
+            // SAFETY: null, or a slot of the object, live for `'a`.
+            unsafe { Value::from_ptr(slot) }.filter(|slot| slot.array().is_some())
         };
         let slot = match array() {
             Some(slot) => slot,
@@ -385,8 +432,7 @@ impl<'a> Props<'a> {
                 array()?
             }
         };
-        // SAFETY: an array slot of a live object; per the caller.
-        Some(unsafe { ArrayMut::from_ptr(slot) })
+        Some(slot)
     }
 }
 

@@ -447,10 +447,9 @@ fn construct(call: &Call) {
         }
         if ssl {
             // ssl_check_context runs once the user has set the protocols.
-            // SAFETY: nothing else borrows `settings` while one key is added.
-            if let Some(settings) = unsafe { props.array(c"settings") } {
+            props.edit_array(c"settings", |settings| {
                 settings.insert_bool(b"open_ssl", true);
-            }
+            });
         }
         if ssl {
             let _enabled = socket.enable_ssl();
@@ -548,8 +547,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
-    // SAFETY: `settings` is only read from here on.
-    let Some(settings) = (unsafe { props.array(c"settings") }) else {
+    // A reference of its own: reading a setting (`__toString`) can run PHP code.
+    let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
     // SAFETY: a live socket and the settings array.
@@ -1064,7 +1063,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
-            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false, NO_THEN)? {
+            if !call_handler(&callable, &mut args, false, NO_THEN)? {
                 host::notice("handler error");
             }
         } else {
@@ -1106,7 +1105,6 @@ fn http2(conn: &Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
             fd,
             context,
             max_body_size,
-            true,
             Box::new(move |ctx, http1| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
@@ -1175,7 +1173,7 @@ fn http2_request(
     let mut args = objects(context);
     let mut result = Ok(());
     if let Some(callable) = callable {
-        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true, NO_THEN) {
+        match call_handler(&callable, &mut args, true, NO_THEN) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;

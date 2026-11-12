@@ -28,18 +28,12 @@ struct ServerObject {
 /// C++'s uncaught `std::bad_alloc` did.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
-    let state = crate::swr_v1_server_state_new();
-    // SAFETY: the fresh state; it lives until `swr_v1_server_delete` frees it.
-    let fresh = unsafe { &*state };
-    // SAFETY: the fresh state's configuration, which nothing else reads yet.
-    let config = unsafe { &mut *fresh.config() };
+    let (mut config, mut tables) = crate::state::fresh_records();
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
         swoole_rs_utilities::timezone(),
         (&raw const crate::pool_native::STD_ALLOCATOR).cast(),
     );
-    // SAFETY: as above, its tables.
-    let tables = unsafe { &mut *fresh.tables() };
     tables.max_connection = swoole_rs_corebase::max_sockets().min(100_000);
     config.gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
     let gs = config.gs.as_ptr();
@@ -55,10 +49,13 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
     config.mode_ = u8::try_from(mode).unwrap_or_default();
     tables.message_bus = crate::pool_native::new_bus(&counters.pipe_packet_msg_id);
+    let state = crate::state::boxed(config, tables);
+    // SAFETY: the fresh state; it lives until `swr_v1_server_delete` frees it.
+    let fresh = unsafe { &*state };
     let object = Box::new(ServerObject {
         state,
-        config,
-        tables,
+        config: fresh.config(),
+        tables: fresh.tables(),
         callbacks: fresh.callbacks_ptr(),
         // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
         reactor_thread_barrier: unsafe { core::mem::zeroed() },
@@ -79,7 +76,10 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
     let counters = serv.counters();
-    let master = std::process::id().cast_signed() == counters.master_pid;
+    let master = std::process::id().cast_signed()
+        == counters
+            .master_pid
+            .load(core::sync::atomic::Ordering::Relaxed);
     if master
         && counters
             .shutdown
