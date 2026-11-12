@@ -362,8 +362,8 @@ fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> 
             &[settings.as_ptr()],
         )
     }?;
-    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings.as_ptr())
-        .map(|_| ())
+    crate::lifecycle::Props::server(this).merge(c"setting", settings);
+    bailout::outcome(())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.

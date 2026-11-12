@@ -646,21 +646,8 @@ pub extern "C" fn rshutdown() {
     swoole_rs_zend::bailout::raise(disabled.map(|_| ()));
 }
 
-/// `php_swoole_get_original_handler(name, length)`.
-/// # Safety
-/// `name` points to `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z31php_swoole_get_original_handlerPKcm")
-)]
-#[must_use]
-pub unsafe extern "C" fn original_handler(name: *const c_char, length: usize) -> zif_handler {
-    // SAFETY: per the caller.
-    let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
-    functions::original_handler(name)
-}
-
-/// The handler `name` had before the first hook, or null.
+/// `php_swoole_get_original_handler`: the handler `name` had before the first
+/// hook, or null.
 #[must_use]
 pub fn original(name: &[u8]) -> zif_handler {
     functions::original_handler(name)

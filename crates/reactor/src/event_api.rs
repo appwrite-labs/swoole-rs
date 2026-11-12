@@ -175,34 +175,16 @@ pub unsafe extern "C-unwind" fn swoole_event_writev(
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
-/// nothing without a reactor. Safe callers use [`swoole_event_set_fd_handler`].
-///
-/// # Safety
-/// `handler` is sound to call with the live reactor and any live event of
-/// `fd_type`, whenever the reactor dispatches one.
+/// nothing without a reactor. A `Handler` is a safe function, sound with the live
+/// reactor and event the loop calls it with.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE")
 )]
-pub unsafe extern "C" fn swoole_event_set_handler(
-    fd_type: c_int,
-    event: c_int,
-    handler: Option<Handler>,
-) {
-    set_handler(fd_type, event, handler);
-}
-
-/// `sw_reactor()->set_handler(fd_type, event, handler)`: nothing without a reactor;
-/// upstream asserts the event names a table. A `Handler` is a safe function, sound
-/// with the live reactor and event the loop calls it with.
-fn set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
-    let Some(prepared) = current_prepared() else {
-        return;
-    };
-    // SAFETY: the thread's live reactor's handler tables, which no reference holds,
-    // borrowed for this call alone.
-    let set = unsafe { &mut *prepared.handlers }.set(fd_type, event, handler);
-    debug_assert!(set, "Reactor::set_handler: no table for event {event}");
+pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
+    if let Some(reactor) = running() {
+        crate::reactor_upstream::reactor_set_handler(reactor, fd_type, event, handler);
+    }
 }
 
 /// `bool swoole_event_isset_handler(int fd_type, int event)`: false without a reactor.
@@ -336,7 +318,7 @@ extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate:
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
 pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: c_int) {
-    set_handler(fd_type, event, Some(fd_handler::<H>));
+    swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>));
 }
 
 /// A reactor cycle task: `Reactor::future_task` or `idle_task`. The reactor

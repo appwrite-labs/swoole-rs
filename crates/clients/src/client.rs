@@ -714,11 +714,8 @@ extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
-///
-/// # Safety
-/// `reactor` is the reactor being initialised.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
+pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
     let handlers: [(c_int, c_int, swoole_rs_reactor::Handler); 4] = [
         (FD_STREAM_CLIENT, EVENT_READ, on_stream_read),
         (FD_DGRAM_CLIENT, EVENT_READ, on_dgram_read),
@@ -726,8 +723,7 @@ pub unsafe extern "C" fn swr_v1_clients_init_reactor(reactor: *mut c_void) {
         (FD_STREAM_CLIENT, EVENT_ERROR, on_failure),
     ];
     for (fd_type, event, handler) in handlers {
-        // SAFETY: as the caller promises.
-        unsafe { reactor_set_handler(reactor, fd_type, event, Some(handler)) };
+        reactor_set_handler(reactor, fd_type, event, Some(handler));
     }
 }
 
@@ -1925,8 +1921,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
             }
             return OK;
         }
-        // SAFETY: the handler's reactor and event.
-        if unsafe { writable_callback(reactor.as_ptr(), event) } < 0 {
+        if writable_callback(reactor, event) < 0 {
             return ERR;
         }
         if this.has(ON_BUFFER_EMPTY)
