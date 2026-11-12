@@ -288,6 +288,14 @@ impl Value {
         }
     }
 
+    /// `ZSTR_VAL(Z_OBJCE_P(value)->name)` of an object.
+    #[must_use]
+    #[inline]
+    pub fn class_name(&self) -> Option<&CStr> {
+        // SAFETY: the zval holds the object while borrowed, and its class outlives it.
+        Some(unsafe { crate::class_name(self.object()?) })
+    }
+
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
     /// statics) at any time, so it stays a pointer.
     #[must_use]

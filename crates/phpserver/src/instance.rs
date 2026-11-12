@@ -4,16 +4,14 @@
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
 use crate::callable::Callable;
-use crate::lifecycle::ServerObject;
+use crate::lifecycle::{ServerData, ServerObject};
 use crate::port::PortProperty;
-use crate::server::THREAD;
 use std::os::unix::ffi::OsStrExt;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::{CStr, CString, c_int, c_long},
     ptr,
     rc::Rc,
-    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{
@@ -24,40 +22,62 @@ use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_recor
 use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
-    Value, bailout, string,
-    sys::{
-        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zend_object, zval,
-    },
+    Owned, Value, Weak, bailout, string,
+    sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
 
-/// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
-/// server's object, held without a reference as upstream's zval was; one per
-/// process, or one per thread under `SW_THREAD`. Null until bound.
-static INSTANCE: AtomicPtr<zend_object> = AtomicPtr::new(ptr::null_mut());
-
 thread_local! {
-    static THREAD_INSTANCE: Cell<*mut zend_object> = const { Cell::new(ptr::null_mut()) };
+    /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
+    /// server's object, named without a reference as upstream's zval was. Only the
+    /// thread that runs PHP reads it. None until bound.
+    /// It goes with the mark [`set_server_object`] gave the object: Zend hands a
+    /// freed object's handle to the next object made, which has no such mark.
+    static INSTANCE: RefCell<Option<(Weak<ServerData>, u64)>> = const { RefCell::new(None) };
+    /// The last mark given.
+    static MARKS: Cell<u64> = const { Cell::new(0) };
 }
 
-/// `Z_OBJ_P(php_swoole_server_zval_ptr())`: the running server's object, or null
-/// before one is bound.
+/// `php_swoole_server_zval_ptr()`: the running server's object, with a reference
+/// of its own; none before one is bound and once it is being freed.
 #[must_use]
-pub(crate) fn server_object() -> *mut zend_object {
-    if THREAD.load(Ordering::Relaxed) {
-        THREAD_INSTANCE.get()
+pub(crate) fn server_object() -> Option<Owned> {
+    let (object, mark) = INSTANCE.with_borrow(|instance| {
+        let (object, mark) = instance.as_ref()?;
+        Some((object.get()?, *mark))
+    })?;
+    // The handle may be another Server object's by now.
+    (ServerObject::of(&object)?.mark() == mark).then_some(object)
+}
+
+/// `*php_swoole_server_zval_ptr()` as upstream copies it: the running server's
+/// object without a reference of its own (undefined for none), for an event's
+/// arguments. A counted lookup costs a reference taken and released per event.
+pub(crate) fn server_zval() -> zval {
+    let found = INSTANCE.with_borrow(|instance| {
+        let (object, mark) = instance.as_ref()?;
+        // SAFETY: the running Server object, which its server keeps live while it
+        // runs; the zval is an event's argument, read during the call, never released.
+        Some((unsafe { object.zval() }?, *mark))
+    });
+    let Some((mut object, mark)) = found else {
+        return swoole_rs_zend::UNDEF;
+    };
+    // The handle may be another Server object's by now.
+    let current = ServerObject::of(Value::of(&mut object)).map(ServerObject::mark);
+    if current == Some(mark) {
+        object
     } else {
-        INSTANCE.load(Ordering::Relaxed)
+        swoole_rs_zend::UNDEF
     }
 }
 
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
-pub(crate) fn set_server_object(object: *mut zend_object) {
-    if THREAD.load(Ordering::Relaxed) {
-        THREAD_INSTANCE.set(object);
-    } else {
-        INSTANCE.store(object, Ordering::Relaxed);
-    }
+pub(crate) fn set_server_object(object: ServerObject<'_>) {
+    let mark = MARKS.get() + 1;
+    MARKS.set(mark);
+    object.set_mark(mark);
+    INSTANCE.set(Weak::of(object.value()).map(|object| (object, mark)));
 }
 
 /// `php_swoole_server_get_ptr`: the `Server` of a Server object, which `value`

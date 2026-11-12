@@ -3,11 +3,12 @@
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_OBJECT, IS_OBJECT_EX, object_init_ex,
-        object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
-        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
-        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
-        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_OBJECT, IS_OBJECT_EX,
+        object_init_ex, object_properties_init, swr_zend_class_set_create_object,
+        swr_zend_object_alloc, swr_zend_objects_find, swr_zend_objects_hold,
+        swr_zend_property_slot, swr_zend_try_facade_update, zend_class_entry, zend_long,
+        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
+        zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -120,8 +121,10 @@ pub trait Custom: Sized + 'static {
     /// The object's `dtor_obj` step after `__destruct` ran (Zend runs it once,
     /// on the last reference or at shutdown, before the object is freed). PHP
     /// code it runs sees a live object; a bailout it defers is raised after it,
-    /// unless one was already pending.
-    fn destruct(&self) {}
+    /// unless one was already pending. `last` says the object's last reference
+    /// went, so Zend frees it next unless this step gives it a new one; at
+    /// shutdown an object something still holds is destructed with `last` false.
+    fn destruct(&self, _last: bool) {}
     /// Whether PHP may serialize the objects, asked once, when the class registers.
     #[must_use]
     fn serializable() -> bool {
@@ -199,6 +202,25 @@ impl<T: Custom> Weak<T> {
         unsafe { swr_zend_objects_hold(self.0, T::class().handlers(), found.as_ptr()) }
             .then_some(found)
     }
+
+    /// The object as a zval that takes no reference (`ZVAL_OBJ` without
+    /// `GC_ADDREF`), as upstream's uncounted copies are, or `None`. It costs no
+    /// reference taken and released, which [`Weak::get`]'s `Owned` does.
+    /// # Safety
+    /// The zval is used only while something else keeps the object live, and
+    /// nothing releases it: no reference comes with it.
+    #[must_use]
+    pub unsafe fn zval(&self) -> Option<zval> {
+        // SAFETY: reads the executor's object store on its thread.
+        let object = unsafe { swr_zend_objects_find(self.0, T::class().handlers()) };
+        (!object.is_null()).then_some(zval {
+            value: zend_value { obj: object },
+            u1: _zval_struct__bindgen_ty_1 {
+                type_info: IS_OBJECT_EX,
+            },
+            u2: _zval_struct__bindgen_ty_2 { next: 0 },
+        })
+    }
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler
@@ -254,10 +276,13 @@ unsafe extern "C" fn destruct<T: Custom>(std: *mut zend_object) {
     // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
     // which owns nothing yet.
     unsafe { zend_objects_destroy_object(std) };
+    // SAFETY: a live object. Zend holds one reference across this handler, so
+    // a count of one means nothing else names the object.
+    let last = unsafe { (*std).gc.refcount } == 1;
     bailout::finish_after(|| {
         // SAFETY: a live object of `T`'s class, which outlives this call.
         if let Some(data) = unsafe { custom::<T>(std) } {
-            data.destruct();
+            data.destruct(last);
         }
     });
 }
