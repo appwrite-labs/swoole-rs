@@ -355,6 +355,41 @@ pub fn if_nametoindex(name: &CStr) -> libc::c_uint {
     unsafe { libc::if_nametoindex(name.as_ptr()) }
 }
 
+/// An `ioctl(2)` request on a socket that reads and writes one `ifreq`, and no
+/// memory it points to.
+#[derive(Clone, Copy)]
+pub enum InterfaceRequest {
+    /// `SIOCGIFADDR`: the interface's address.
+    Address,
+    /// `SIOCGIFFLAGS`: its `IFF_*` flags.
+    #[cfg(target_os = "linux")]
+    Flags,
+    /// `SIOCGIFHWADDR`: its hardware address.
+    #[cfg(target_os = "linux")]
+    HardwareAddress,
+    /// `SIOCGIFNAME`: the name of the interface `ifru_ifindex` numbers.
+    #[cfg(target_os = "linux")]
+    Name,
+}
+
+/// `ioctl(fd, request, value)`: -1 with errno set on failure.
+pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::ifreq) -> c_int {
+    // The request numbers as `ioctl` takes them (an int on musl).
+    #[cfg(target_os = "linux")]
+    let request: libc::Ioctl = match request {
+        InterfaceRequest::Address => 0x8915,
+        InterfaceRequest::Flags => 0x8913,
+        InterfaceRequest::HardwareAddress => 0x8927,
+        InterfaceRequest::Name => 0x8910,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let request = match request {
+        InterfaceRequest::Address => libc::SIOCGIFADDR,
+    };
+    // SAFETY: each request reads and writes only the one live ifreq.
+    unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }
+}
+
 /// The host's interface addresses (`getifaddrs(3)`), freed on drop.
 pub struct Interfaces(*mut libc::ifaddrs);
 
