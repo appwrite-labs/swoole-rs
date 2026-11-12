@@ -144,7 +144,9 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let stream = |port: crate::view::Port<'_>| is_stream(port.config().r#type);
     Some(match op {
         OP_SET_SINGLE_THREAD => {
-            config.single_thread = true;
+            // SAFETY: `create_reactor_processes`, in the master before it forks or
+            // starts a thread, and `config` isn't read across the write.
+            unsafe { serv.config_mut() }.single_thread = true;
             0
         }
         OP_HAVE_STREAM_SOCK => u64::from(config.have_stream_sock),
@@ -168,7 +170,10 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
         OP_INIT_IPC_MAX_SIZE => {
-            config.ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+            // SAFETY: `start_reactor_processes`, in the master before it forks or
+            // starts a thread, and `config` isn't read across the write.
+            unsafe { serv.config_mut() }.ipc_max_size =
+                swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
             0
         }
         OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),
@@ -221,7 +226,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: `tick` takes the server, which outlives the master's timer.
             let node =
                 unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv.raw()) };
-            config.master_timer = node;
+            config.master_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
         OP_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval),

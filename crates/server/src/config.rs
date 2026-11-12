@@ -4,6 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use swoole_rs_memory::members::Shm;
 
 /// The independently configurable server fields and borrowed native handles.
@@ -13,7 +14,8 @@ pub struct ServerConfig {
     pub worker_num: u32,
     pub dgram_port_num: u8,
     pub dispatch_mode: u8,
-    pub scheduler_warning: bool,
+    /// Set and cleared by whichever thread dispatches, so an atomic.
+    pub scheduler_warning: AtomicBool,
     pub max_request: u32,
     pub max_request_grace: u32,
     pub udp_socket_ipv4: *mut c_void,
@@ -44,7 +46,8 @@ pub struct ServerConfig {
     pub send_yield: bool,
     pub enable_coroutine: bool,
     pub single_thread: bool,
-    pub running: bool,
+    /// Cleared by whichever thread stops the server while the others read it.
+    pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
     pub cpu_affinity_available: Vec<c_int>,
     pub pipe_command: *mut c_void,
@@ -52,8 +55,11 @@ pub struct ServerConfig {
     pub heartbeat_check_interval: u16,
     pub warning_time: libc::time_t,
     pub timezone_: libc::c_long,
-    pub master_timer: *mut c_void,
-    pub heartbeat_timer: *mut c_void,
+    /// Armed and deleted by the master (or a base-mode worker) after its threads
+    /// start, so an atomic; only that thread uses the node.
+    pub master_timer: AtomicPtr<c_void>,
+    /// Armed by the heartbeat thread (or a single-threaded reactor), as `master_timer`.
+    pub heartbeat_timer: AtomicPtr<c_void>,
     pub output_buffer_size: u32,
     pub input_buffer_size: u32,
     pub max_queued_bytes: u32,
@@ -103,7 +109,7 @@ impl Default for ServerConfig {
             worker_num: 0,
             dgram_port_num: 0,
             dispatch_mode: 2,
-            scheduler_warning: false,
+            scheduler_warning: AtomicBool::new(false),
             max_request: 0,
             max_request_grace: 0,
             udp_socket_ipv4: core::ptr::null_mut(),
@@ -134,15 +140,15 @@ impl Default for ServerConfig {
             send_yield: true,
             enable_coroutine: true,
             single_thread: false,
-            running: true,
+            running: AtomicBool::new(true),
             cpu_affinity_available: Vec::new(),
             pipe_command: core::ptr::null_mut(),
             send_timeout: 0.0,
             heartbeat_check_interval: 0,
             warning_time: 0,
             timezone_: 0,
-            master_timer: core::ptr::null_mut(),
-            heartbeat_timer: core::ptr::null_mut(),
+            master_timer: AtomicPtr::new(core::ptr::null_mut()),
+            heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
             output_buffer_size: u32::MAX,
             input_buffer_size: 2 * 1024 * 1024,
             max_queued_bytes: 0,
@@ -178,6 +184,16 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// `serv->running`.
+    pub(crate) fn running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+
+    /// `serv->running = running`, seen by every thread's next [`Self::running`].
+    pub(crate) fn set_running(&self, running: bool) {
+        self.running.store(running, Ordering::Release);
+    }
+
     /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self
@@ -254,8 +270,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     ) {
         return None;
     }
-    // SAFETY: no native callback runs during this leaf record access.
-    let config = unsafe { &mut *state.config() };
+    let config = state.config_ref();
     // SAFETY: no native callback runs during this leaf table access.
     let tables = unsafe { &mut *state.tables() };
     Some(match op {
@@ -263,7 +278,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(config.running()),
         OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
@@ -314,11 +329,11 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             0
         }
         OP_SET_RUNNING => {
-            config.running = arg != 0;
+            config.set_running(arg != 0);
             0
         }
         OP_SET_WARNING => {
-            config.scheduler_warning = true;
+            config.scheduler_warning.store(true, Ordering::Relaxed);
             0
         }
         OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {
@@ -333,6 +348,9 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             _ => 0,
         },
         OP_SET_FIELD => {
+            // SAFETY: `Server::start`'s checks, before any thread or process starts;
+            // `config` isn't read across the write.
+            let config = unsafe { &mut *state.config() };
             let value = arg >> 8;
             match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
                 FIELD_REACTOR_NUM => {
@@ -382,7 +400,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
             assert_eq!((*config).worker_num, 19);
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
-            assert!(!(*config).running);
+            assert!(!(*config).running());
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
             free_state(state);
         }

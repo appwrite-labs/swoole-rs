@@ -1006,10 +1006,10 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         // arg 1 (bit 0 for the reset) names the task pool's.
-        OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning),
+        OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning.load(Relaxed)),
         OP_WARNING_TIME if arg == 0 => sign(o.config().warning_time),
         OP_WARNING_RESET if arg & 1 == 0 => {
-            o.config().scheduler_warning = false;
+            o.config().scheduler_warning.store(false, Relaxed);
             o.config().warning_time = (arg >> 1).cast_signed() as libc::time_t;
             0
         }
@@ -1057,8 +1057,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ST_TIMER => u64::from(match arg {
-            0 => !o.config().master_timer.is_null(),
-            1 => !o.config().heartbeat_timer.is_null(),
+            0 => !o.config().master_timer.load(Relaxed).is_null(),
+            1 => !o.config().heartbeat_timer.load(Relaxed).is_null(),
             _ => !o.tables().enable_accept_timer.is_null(),
         }),
         OP_SET_MASTER_PID => {
@@ -1305,7 +1305,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SIGNAL_ACTIVE => {
-            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running)
+            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running())
         }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
@@ -1778,14 +1778,14 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ST_TIMER_DEL => {
+            let null = core::ptr::null_mut();
             let node = match arg {
-                0 => &mut o.config().master_timer,
-                1 => &mut o.config().heartbeat_timer,
-                _ => &mut o.tables().enable_accept_timer,
+                0 => o.config().master_timer.swap(null, Relaxed),
+                1 => o.config().heartbeat_timer.swap(null, Relaxed),
+                _ => core::mem::replace(&mut o.tables().enable_accept_timer, null),
             };
-            // SAFETY: null or one of this thread's live timer nodes.
-            unsafe { swoole_timer_del((*node).cast()) };
-            *node = core::ptr::null_mut();
+            // SAFETY: null or one of this thread's live timer nodes, forgotten above.
+            unsafe { swoole_timer_del(node.cast()) };
             0
         }
         OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
@@ -1866,7 +1866,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tick = crate::server_methods::master_timer_tick;
             // SAFETY: `tick` takes the server, which outlives the master's timer.
             let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
-            o.config().master_timer = node;
+            o.config().master_timer.store(node, Relaxed);
             u64::from(!node.is_null())
         }
         OP_MASTER_START => {
@@ -2778,9 +2778,9 @@ mod tests {
             assert!(!(*config).send_yield);
             answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
             assert_eq!((*config).reactor_num, 6);
-            (*config).scheduler_warning = true;
+            (*config).scheduler_warning.store(true, Relaxed);
             answer(&raw mut ctx, None, &*state, OP_WARNING_RESET, 7 << 1);
-            assert!(!(*config).scheduler_warning);
+            assert!(!(*config).scheduler_warning.load(Relaxed));
             assert_eq!(
                 answer(&raw mut ctx, None, &*state, OP_WARNING_TIME, 0),
                 Some(7)

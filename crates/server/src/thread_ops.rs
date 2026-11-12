@@ -130,8 +130,7 @@ pub(crate) fn answer(
 ) -> Option<u64> {
     let (server, handle) = (ctx.serv, ctx.reactor);
     let (serv, reactor) = (server.raw(), handle.map_or(ptr::null_mut(), Reactor::ptr));
-    // SAFETY: a live server's config, borrowed only by the arm that reads it.
-    let config = || unsafe { &mut *state.config() };
+    let config = || state.config_ref();
     let reactor_id = || handle.map(|handle| handle.fields().id);
     // `reactor->add(socket, SW_EVENT_READ)`.
     let add_read = |socket: Option<Socket<'_>>| match (socket, handle) {
@@ -312,7 +311,9 @@ pub(crate) fn answer(
             // SAFETY: `heartbeat_check` takes the reactor, which outlives its timers.
             let timer = unsafe { swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor) };
             if op == OP_HEARTBEAT_TIMER {
-                config().heartbeat_timer = timer;
+                config()
+                    .heartbeat_timer
+                    .store(timer, core::sync::atomic::Ordering::Relaxed);
             } else {
                 ctx.thread_record()?.heartbeat_timer = timer;
             }

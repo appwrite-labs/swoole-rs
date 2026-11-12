@@ -109,9 +109,8 @@ impl<'a> Context<'a> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     fn counters(&self) -> &mut crate::ServerCounters {
         // SAFETY: the server's shared counters, which only the manager writes meanwhile.
@@ -242,7 +241,7 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .map_or(0, swoole_rs_process::worker_record::Worker::pid),
         ),
         OP_WORKER_REGISTRY => config.worker_registry as u64,
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(config.running()),
         OP_RELOAD_INIT => u64::from(pool.reload_init),
         OP_RELOAD_TASK => pool.reload_task() as u64,
         OP_WAIT_STATUS => signed(ctx.wait_status),
@@ -285,14 +284,19 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             )));
         }
         OP_CREATE_USER_WORKERS => {
-            let created = worker_methods::create_user_workers(ctx.server(), config);
+            // SAFETY: `start_manager_process`, in the master before it forks or starts
+            // a thread; `config` isn't read across the call.
+            let start = unsafe { serv.config_mut() };
+            let created = worker_methods::create_user_workers(ctx.server(), start);
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
         OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
         OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
         OP_MANAGER_INIT => {
-            config.manager_ = core::ptr::without_provenance_mut(index(arg));
+            // SAFETY: `Manager::start`, in the manager process its master just forked,
+            // whose only thread this is; `config` isn't read across the write.
+            unsafe { serv.config_mut() }.manager_ = core::ptr::without_provenance_mut(index(arg));
             let pid = std::process::id().cast_signed();
             ctx.counters().manager_pid = pid;
             let event_pool = ctx.pool();
@@ -307,7 +311,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
         OP_KILL_TASK_WORKERS => _ = crate::factory_ops::run_server(serv, RUN_KILL_TASK_WORKERS),
-        OP_SET_RUNNING => config.running = arg != 0,
+        OP_SET_RUNNING => config.set_running(arg != 0),
         OP_SET_RELOAD_INIT => ctx.pool().reload_init = arg != 0,
         OP_SET_READ_MESSAGE => ctx.pool().read_message = arg != 0,
         OP_REAP_WAIT => {

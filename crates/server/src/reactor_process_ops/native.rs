@@ -41,9 +41,8 @@ impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    pub(super) fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: as above.
-        unsafe { self.server().config_mut() }
+    pub(super) fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     pub(super) fn counters(&self) -> &mut crate::ServerCounters {
         // SAFETY: the context's live server.
@@ -196,7 +195,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
             let node =
                 unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor) };
-            ctx.config().heartbeat_timer = node;
+            ctx.config().heartbeat_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
         OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(socket(ctx.event_socket())?)),

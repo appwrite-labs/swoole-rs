@@ -74,9 +74,8 @@ impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.server().config()
     }
     fn tables(&self) -> &mut crate::records::ServerTables {
         // SAFETY: the server's tables, which live as long as it.
@@ -310,7 +309,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(config.running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
@@ -319,7 +318,9 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 reason = "`serv->reactor_num = serv->worker_num`, as upstream converts it"
             )]
             let reactor_num = config.worker_num as u16;
-            config.reactor_num = reactor_num;
+            // SAFETY: `create_thread_factory`, in `Server::create` before any thread
+            // starts; `config` isn't read across the write.
+            unsafe { serv.config_mut() }.reactor_num = reactor_num;
             0
         }
         OP_SINGLE_REACTOR_PIPE => {
@@ -341,7 +342,11 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(crate::factory_ops::run_server(serv, RUN_CREATE_WORKER_PIPES) != 0)
         }
         OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
-        OP_CREATE_USER_WORKERS => u64::from(create_user_workers(serv, ctx.config())),
+        OP_CREATE_USER_WORKERS => {
+            // SAFETY: `ThreadFactory::start`, before it starts a thread; `config`
+            // isn't read across the call.
+            u64::from(create_user_workers(serv, unsafe { serv.config_mut() }))
+        }
         OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
             server_methods::store_listen_socket(ctx.server());
