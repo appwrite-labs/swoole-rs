@@ -79,6 +79,15 @@ pub fn current_worker() -> *mut WorkerRecord {
     with_globals(|globals| globals.worker.load(Relaxed))
 }
 
+/// `SwooleWG.worker` as a handle, or `None` while this thread runs no worker.
+#[must_use]
+pub fn current() -> Option<crate::worker_record::Worker<'static>> {
+    // SAFETY: each `set_current_worker` stores the live record of the worker
+    // loop this thread runs, and clears or replaces it before that record goes;
+    // the loop orders the field writes made through the handle.
+    unsafe { crate::worker_record::Worker::from_raw(current_worker()) }
+}
+
 /// `SwooleWG.worker = worker`.
 pub fn set_current_worker(worker: *mut WorkerRecord) {
     with_globals(|globals| globals.worker.store(worker, Relaxed));

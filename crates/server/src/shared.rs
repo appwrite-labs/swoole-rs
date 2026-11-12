@@ -4,7 +4,6 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
 use swoole_rs_memory::members::Shm;
-use swoole_rs_process::worker_record::Worker;
 #[derive(Default)]
 #[repr(C)]
 pub struct PortCounters {
@@ -142,10 +141,8 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
         gs.response_count.fetch_add(1, SeqCst);
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
-    let worker = swoole_rs_process::worker_globals::current_worker();
-    if !worker.is_null() {
-        // SAFETY: the current worker's record, which this worker loop owns.
-        unsafe { Worker::new(worker).add_response_count() };
+    if let Some(worker) = swoole_rs_process::worker_globals::current() {
+        worker.add_response_count();
     }
 }
 

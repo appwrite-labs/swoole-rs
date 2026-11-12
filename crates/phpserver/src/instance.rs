@@ -202,9 +202,8 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 /// `php_swoole_server_rshutdown`: a worker whose request ended (`exit()`,
 /// `die()` or a fatal error) drains its pipe, shuts down and logs why.
 pub extern "C" fn php_swoole_server_rshutdown() {
-    let worker = worker_globals::current_worker();
     // A worker's server, which its object keeps past the request's end.
-    let Some(share) = SharedServer::current().filter(|_| !worker.is_null()) else {
+    let (Some(worker), Some(share)) = (worker_globals::current(), SharedServer::current()) else {
         return;
     };
     let serv = share.view();
@@ -213,8 +212,6 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     if !serv.is_started() || !worker_is_running() || kind == USER_WORKER {
         return;
     }
-    // SAFETY: this thread's current worker.
-    let worker = unsafe { worker_record::Worker::new(worker) };
     worker_record::swr_v1_worker_shutdown(worker);
     if kind == crate::server::EVENT_WORKER {
         event_worker_ops::clean_worker_connections(serv, worker);

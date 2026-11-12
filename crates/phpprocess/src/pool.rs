@@ -100,9 +100,9 @@ fn pool_free(pool: Pool) {
 
 /// `SwooleWG.worker`'s status, and its request count once idle again.
 fn worker_busy(busy: bool) {
-    let worker = swoole_rs_process::worker_globals::current_worker();
-    // SAFETY: this process's worker.
-    let worker = unsafe { Worker::new(worker) };
+    let Some(worker) = swoole_rs_process::worker_globals::current() else {
+        return;
+    };
     if busy {
         worker.set_status(WORKER_BUSY);
     } else {
