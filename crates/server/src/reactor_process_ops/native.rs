@@ -23,6 +23,7 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
+use swoole_rs_timer::{owner_reactor, owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -70,9 +71,10 @@ impl Context<'_> {
         // SAFETY: the ops reading it run with the context's live worker.
         unsafe { Worker::new(self.worker) }
     }
-    /// `serv->get_worker(id)`.
-    fn other(&self, id: u64) -> *mut WorkerRecord {
-        self.server().worker(u16::try_from(id).unwrap_or(u16::MAX))
+    /// `serv->get_worker(id)`, or `None` past the last.
+    fn other(&self, id: u64) -> Option<Worker<'_>> {
+        self.server()
+            .worker_record(u16::try_from(id).unwrap_or(u16::MAX))
     }
     /// The server's own `MessageBus`.
     pub(super) fn bus(&self) -> Bus {
@@ -84,14 +86,15 @@ impl Context<'_> {
             unsafe { slot.call(self.serv.raw(), self.bus().buffer().cast()) };
         }
     }
-    /// The context's event, for the ops that run with one.
-    pub(super) fn event(&self) -> &Event {
-        // SAFETY: the ops reading it run with the context's live event.
-        unsafe { &*self.event }
-    }
     pub(super) fn event_socket(&self) -> *mut c_void {
-        self.event().socket_ptr()
+        // SAFETY: the context's live event.
+        unsafe { (*self.event).socket_ptr() }.cast()
     }
+}
+
+/// This thread's timer, or null.
+fn timer() -> *mut c_void {
+    swoole_rs_corebase::thread_timer()
 }
 
 /// The ops on native objects.
@@ -100,9 +103,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_POOL_CREATE => create_pool(ctx),
         OP_CREATE_PIPE_BUFFERS => sign(crate::master_ops::create_pipe_buffers(ctx.server())),
         OP_RUN_SINGLE_WORKER => {
-            let pool = ctx.server().workers().event_pool;
-            // SAFETY: its live event pool, which has a worker.
-            let worker = unsafe { (*pool).workers() };
+            let worker = crate::shared::ServerShared::of(ctx.server())
+                .event_pool()
+                .workers();
             swoole_rs_process::worker_globals::set_current_worker(worker);
             let mut ctx = over(ctx.serv, worker);
             sign(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN))
@@ -119,9 +122,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_STOP_ASYNC => {
-            let worker = ctx.other(u64::from(ctx.reactor_handle().fields().id));
-            // SAFETY: one of the live server's workers.
-            let worker = unsafe { Worker::new(worker) };
+            let worker = ctx.other(u64::from(ctx.reactor_handle().fields().id))?;
             crate::event_worker_ops::stop_async_worker(ctx.server(), worker);
             0
         }
@@ -129,9 +130,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let me = swoole_rs_process::worker_globals::current_worker();
             // SAFETY: as above.
             let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
-            // SAFETY: worker 0, live.
-            let pipe = unsafe { (*ctx.other(0)).pipe_master };
-            let pipe = crate::objects::socket(pipe);
+            let pipe = crate::objects::socket(ctx.other(0)?.pipe_master());
             crate::commands::call_command_handler(ctx.server(), ctx.bus(), id, pipe);
             0
         }
@@ -145,9 +144,17 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             ctx.bus().pop();
             0
         }
-        OP_TIMER_DETACHED => u64::from(crate::objects::timer_detached()),
+        OP_TIMER_DETACHED => {
+            let timer = timer();
+            // SAFETY: this thread's live timer.
+            u64::from(
+                !timer.is_null()
+                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
+            )
+        }
         OP_TIMER_REINIT => {
-            crate::objects::timer_reinit(false);
+            // SAFETY: this thread's live timer.
+            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
             0
         }
         OP_PORT_ADD => {
@@ -184,9 +191,8 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             sign(reactor.add(pipe_master, EVENT_READ))
         }
         OP_TASK_PIPE_NONBLOCK => {
-            let pool = ctx.server().task_pool();
-            // SAFETY: its live task pool, whose worker `arg` is.
-            let worker = unsafe { &*pool }.worker(usize::try_from(arg).ok()?)?;
+            let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
+            let worker = pool.worker(usize::try_from(arg).ok()?)?;
             set_nonblock(socket(worker.pipe_master())?);
             0
         }

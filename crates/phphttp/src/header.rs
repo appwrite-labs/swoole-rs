@@ -59,7 +59,7 @@ pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
 /// MINIT (from the response class's): find the array properties' slots.
 pub(crate) fn minit(class: &Class) {
     for (slot, name) in OFFSETS.iter().zip([c"header", c"cookie", c"trailer"]) {
-        slot.store(class.property_offset(name), Relaxed);
+        slot.store(crate::parse::property_offset(class, name), Relaxed);
     }
 }
 

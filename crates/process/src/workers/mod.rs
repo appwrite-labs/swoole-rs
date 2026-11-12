@@ -90,10 +90,9 @@ pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) ->
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::log::{last_error, set_last_error};
-    // SAFETY: crates/reactor's and crates/timer's functions, under their upstream
-    // symbols. Declarations, since crates/reactor (and through it crates/timer)
-    // depends on this crate. Each is a safe Rust function there, taking no pointer
-    // and acting on the calling thread's event loop or timer, so it is safe here.
+    // SAFETY: crates/reactor's and crates/timer's safe functions, under their
+    // upstream symbols and signatures. Declarations, since crates/reactor (and
+    // through it crates/timer) depends on this crate.
     unsafe extern "C-unwind" {
         #[link_name = "_Z17swoole_event_initi"]
         safe fn swoole_event_init(flags: c_int) -> c_int;

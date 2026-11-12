@@ -17,24 +17,6 @@ pub(crate) fn socket<'a>(socket: *mut c_void) -> Option<Socket<'a>> {
     unsafe { Socket::from_ptr(socket.cast()) }
 }
 
-/// `f` over this thread's timer (`SwooleTG.timer`), or `None` while it has none.
-fn thread_timer<R>(f: impl FnOnce(&swoole_rs_timer::Owner) -> R) -> Option<R> {
-    let timer = swoole_rs_corebase::thread_timer().cast::<swoole_rs_timer::Owner>();
-    // SAFETY: null, or this thread's live timer, which only this thread frees; the
-    // two callers below don't.
-    unsafe { timer.as_ref() }.map(f)
-}
-
-/// Whether this thread has a timer that no reactor drives.
-pub(crate) fn timer_detached() -> bool {
-    thread_timer(|timer| swoole_rs_timer::owner_reactor(timer).is_null()).unwrap_or(false)
-}
-
-/// `SwooleTG.timer->reinit(manually_trigger)`; nothing while the thread has no timer.
-pub(crate) fn timer_reinit(manually_trigger: bool) {
-    thread_timer(|timer| swoole_rs_timer::owner_reinit(timer, manually_trigger));
-}
-
 /// `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the thread
 /// bus's own end of the worker's `pipe`.
 pub(crate) fn in_worker_bus(

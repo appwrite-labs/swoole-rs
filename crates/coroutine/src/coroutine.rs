@@ -24,7 +24,11 @@ const STACK_MIN: usize = 64 * 1024;
 const STACK_MAX: usize = 16 * 1024 * 1024;
 const STACK_ALIGNMENT: usize = 4 * 1024;
 
-pub type SwapCallback = Option<unsafe extern "C" fn(*mut c_void)>;
+/// A C function over its data, `void (*)(void *)`: a coroutine's entry, a
+/// swap callback, a timer's callback or the bailout callback.
+pub type Routine = unsafe extern "C" fn(*mut c_void);
+
+pub type SwapCallback = Option<Routine>;
 
 /// One coroutine. `native` is the `swoole::Coroutine` record that starts with it.
 #[repr(C)]
@@ -49,6 +53,23 @@ pub struct Coroutine {
 }
 
 impl Coroutine {
+    /// A record before [`Scheduler::register`] seeds it.
+    pub const IDLE: Self = Self {
+        native: ptr::null_mut(),
+        cid: 0,
+        state: STATE_INIT,
+        resume_code: RC_OK,
+        task: ptr::null_mut(),
+        cancel_fn: ptr::null_mut(),
+        origin: ptr::null_mut(),
+        first_child: ptr::null_mut(),
+        prev_sibling: ptr::null_mut(),
+        next_sibling: ptr::null_mut(),
+        init_msec: 0,
+        switch_usec: 0,
+        execute_usec: 0,
+    };
+
     /// Its execution time in microseconds up to `now`.
     #[must_use]
     pub fn execute_usec(&self, now: c_long) -> c_long {
@@ -56,7 +77,7 @@ impl Coroutine {
             .wrapping_add(self.execute_usec)
     }
 
-    /// Canceled, from the canceler once it can no longer fail.
+    /// Canceled, before its canceler runs.
     pub fn mark_canceled(&mut self) {
         self.cancel_fn = ptr::null_mut();
         self.resume_code = RC_CANCELED;
@@ -68,11 +89,10 @@ impl Coroutine {
     }
 }
 
-/// A cancelable yield's cancel function: `call(native, data)` copies the
-/// yield's closure out of `data`, marks the coroutine canceled
-/// ([`Coroutine::mark_canceled`]), then runs the copy, which wakes it and
-/// returns whether it did. The copy keeps the call off the yield's frame, which
-/// the wake may end.
+/// A cancelable yield's cancel function: once the coroutine is marked canceled
+/// ([`Coroutine::mark_canceled`]), `call(co, data)` copies the yield's closure
+/// out of `data` and runs the copy, which wakes it and returns whether it did.
+/// The copy keeps the call off the yield's frame, which the wake may end.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Canceler {
@@ -90,12 +110,12 @@ pub struct Hooks {
     /// Switches into the coroutine; returns once it yields or ends, and whether it ended.
     pub swap_in: unsafe extern "C" fn(*mut c_void) -> bool,
     /// Switches out of the coroutine, back to whatever last switched in.
-    pub swap_out: unsafe extern "C" fn(*mut c_void),
+    pub swap_out: Routine,
     /// Frees an ended coroutine's record (and its stack).
-    pub destroy: unsafe extern "C" fn(*mut c_void),
+    pub destroy: Routine,
     /// The bailout callback (upstream's `on_bailout`), which PHP's longjmps out
     /// of, and its data; set while the scheduler bails out.
-    pub bailout: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub bailout: Option<Routine>,
     pub bailout_data: *mut c_void,
     /// `SW_CORO_TIME`'s clock in microseconds; null without it.
     pub clock: Option<extern "C" fn() -> c_long>,
@@ -148,20 +168,14 @@ impl Scheduler {
             co.write(Coroutine {
                 native,
                 cid: self.last_cid,
-                state: STATE_INIT,
-                resume_code: RC_OK,
-                task: ptr::null_mut(),
-                cancel_fn: ptr::null_mut(),
-                origin: ptr::null_mut(),
-                first_child: ptr::null_mut(),
-                prev_sibling: ptr::null_mut(),
-                next_sibling: ptr::null_mut(),
                 init_msec,
                 switch_usec: now,
-                execute_usec: 0,
+                ..Coroutine::IDLE
             });
         }
-        self.insert(self.last_cid, co);
+        if let Some(co) = NonNull::new(co) {
+            self.insert(self.last_cid, Co(co));
+        }
         let count = self.count() as u64;
         if count > self.peak_num {
             self.peak_num = count;
@@ -199,13 +213,13 @@ impl Scheduler {
 /// Coroutines linked from a live one (its origin, children and siblings) are
 /// live too, since a close unlinks them first. Each access borrows it for one
 /// closure, so no reference to one spans a hook, which may change it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Co(NonNull<Coroutine>);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Co(NonNull<Coroutine>);
 
 impl Co {
     /// # Safety
     /// `co` is null or a live coroutine, which stays live while the handle is used.
-    unsafe fn of(co: *mut Coroutine) -> Option<Self> {
+    pub(crate) unsafe fn of(co: *mut Coroutine) -> Option<Self> {
         NonNull::new(co).map(Self)
     }
 
@@ -214,13 +228,27 @@ impl Co {
         NonNull::new(co).map(Self)
     }
 
-    fn ptr(self) -> *mut Coroutine {
+    /// `co`, which is the running coroutine of `s` (live while it runs): upstream
+    /// asserts a yield is the running coroutine's, and this aborts otherwise.
+    pub(crate) fn running(s: Sched, co: *mut Coroutine) -> Self {
+        match Self::current(s) {
+            Some(current) if current.ptr() == co => current,
+            _ => std::process::abort(),
+        }
+    }
+
+    /// The running coroutine of `s`, live while it runs.
+    pub(crate) fn current(s: Sched) -> Option<Self> {
+        Self::link(s.with(|s| s.current))
+    }
+
+    pub(crate) fn ptr(self) -> *mut Coroutine {
         self.0.as_ptr()
     }
 
     /// The coroutine, borrowed for `f`, which neither switches nor reaches
     /// this coroutine through another handle.
-    fn with<R>(self, f: impl FnOnce(&mut Coroutine) -> R) -> R {
+    pub(crate) fn with<R>(self, f: impl FnOnce(&mut Coroutine) -> R) -> R {
         // SAFETY: a live coroutine; the borrow ends with `f`.
         f(unsafe { &mut *self.ptr() })
     }
@@ -236,7 +264,7 @@ fn raw(co: Option<Co>) -> *mut Coroutine {
 
 /// A live scheduler, borrowed one closure at a time like [`Co`].
 #[derive(Clone, Copy)]
-struct Sched(NonNull<Scheduler>);
+pub(crate) struct Sched(NonNull<Scheduler>);
 
 impl Sched {
     /// # Safety
@@ -245,8 +273,13 @@ impl Sched {
         NonNull::new(s).map(Self)
     }
 
+    /// This thread's scheduler, live for the thread's life.
+    pub(crate) fn this() -> Self {
+        Self(crate::scheduler::this())
+    }
+
     /// The scheduler, borrowed for `f`, which runs no hook or callback.
-    fn with<R>(self, f: impl FnOnce(&mut Scheduler) -> R) -> R {
+    pub(crate) fn with<R>(self, f: impl FnOnce(&mut Scheduler) -> R) -> R {
         // SAFETY: a live scheduler; the borrow ends with `f`.
         f(unsafe { &mut *self.0.as_ptr() })
     }
@@ -391,7 +424,7 @@ fn switch_in(s: Sched, co: Co) {
 }
 
 /// `co` (current, or the outermost while bailing out) yields to its origin.
-fn yield_(s: Sched, co: Co) {
+pub(crate) fn yield_(s: Sched, co: Co) {
     let (hooks, [on_yield, _, _]) = effects(s);
     co.with(|co| {
         co.state = STATE_WAITING;
@@ -420,109 +453,87 @@ fn start(s: Sched, co: Co, resuming: bool) {
     switch_in(s, co);
 }
 
-/// The operations' handles, none for a null pointer.
+/// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
+/// runs until it first yields or ends. Returns its id.
+#[cfg(any(test, feature = "upstream-symbols"))]
+pub(crate) fn run(s: Sched, co: Co) -> c_long {
+    let cid = co.with(|co| co.cid);
+    start(s, co, false);
+    cid
+}
+
+/// `Coroutine::resume`: refused while bailing out; otherwise the resume
+/// callback sees the old current, then `co` runs until it yields or ends.
+pub(crate) fn resume(s: Sched, co: Co) {
+    let on_resume = s.with(|s| {
+        debug_assert!(s.current != co.ptr(), "the current coroutine cannot resume");
+        (!s.bailout).then_some(s.on_resume)
+    });
+    let Some(on_resume) = on_resume else {
+        return;
+    };
+    co.with(|co| co.state = STATE_RUNNING);
+    notify(on_resume, co);
+    start(s, co, true);
+}
+
+/// `Coroutine::yield(CancelFunc *)`: as [`yield_`] with a cancel function (a
+/// [`Canceler`]) set until it is resumed.
+pub(crate) fn yield_cancelable(s: Sched, co: Co, cancel_fn: *mut c_void) {
+    co.with(|co| co.cancel_fn = cancel_fn);
+    yield_(s, co);
+    // Live again once resumed.
+    co.with(|co| co.cancel_fn = ptr::null_mut());
+}
+
+/// `Coroutine::bailout`, once the callback is set: marks the scheduler, and
+/// inside a coroutine yields the one closest to the main context, which
+/// switches there directly and never returns.
+pub(crate) fn bailout(s: Sched) {
+    let current = s.with(|s| {
+        s.bailout = true;
+        s.current
+    });
+    let Some(mut co) = Co::link(current) else {
+        return;
+    };
+    while let Some(origin) = co.origin() {
+        co = origin;
+    }
+    yield_(s, co);
+}
+
+/// [`resume`], for C.
 ///
 /// # Safety
-/// As for the operations.
-unsafe fn handles(s: *mut Scheduler, co: *mut Coroutine) -> Option<(Sched, Co)> {
-    // SAFETY: forwarded.
-    let s = unsafe { Sched::of(s) }?;
-    // SAFETY: forwarded.
-    Some((s, unsafe { Co::of(co) }?))
-}
-
-macro_rules! operation {
-    ($(#[$doc:meta])* fn $name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block) => {
-        $(#[$doc])*
-        /// # Safety
-        /// Pointer arguments are live and aligned, and not borrowed elsewhere for
-        /// the call; coroutines are linked only to live coroutines.
-        pub unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
+/// `s` and `co` are null or live, and not borrowed elsewhere for the call; `co`
+/// is suspended.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
+    // SAFETY: as the caller promises.
+    let Some(s) = (unsafe { Sched::of(s) }) else {
+        return;
     };
-}
-
-operation! {
-    /// `Coroutine::run`: the current coroutine becomes `co`'s origin and `co`
-    /// runs until it first yields or ends. Returns its id.
-    fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
-        // SAFETY: forwarded.
-        let Some((s, co)) = (unsafe { handles(s, co) }) else {
-            return -1;
-        };
-        let cid = co.with(|co| co.cid);
-        start(s, co, false);
-        cid
+    // SAFETY: as the caller promises.
+    if let Some(co) = unsafe { Co::of(co) } {
+        resume(s, co);
     }
 }
 
-operation! {
-    /// `Coroutine::resume`: refused while bailing out; otherwise the resume
-    /// callback sees the old current, then `co` runs until it yields or ends.
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-        // SAFETY: forwarded.
-        let Some((s, co)) = (unsafe { handles(s, co) }) else {
-            return;
-        };
-        let on_resume = s.with(|s| {
-            debug_assert!(s.current != co.ptr(), "the current coroutine cannot resume");
-            (!s.bailout).then_some(s.on_resume)
-        });
-        let Some(on_resume) = on_resume else {
-            return;
-        };
-        co.with(|co| co.state = STATE_RUNNING);
-        notify(on_resume, co);
-        start(s, co, true);
-    }
-}
-
-operation! {
-    /// `Coroutine::yield`: waiting, with a clean resume code; the yield callback
-    /// runs, control returns to `co`'s origin, and this returns once resumed.
-    #[unsafe(no_mangle)]
-    fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
-        // SAFETY: forwarded.
-        if let Some((s, co)) = unsafe { handles(s, co) } {
-            yield_(s, co);
-        }
-    }
-}
-
-operation! {
-    /// `Coroutine::yield(CancelFunc *)`: as [`swr_v1_coroutine_yield`] with a
-    /// cancel function (a [`Canceler`]) set until it is resumed.
-    fn swr_v1_coroutine_yield_cancelable(s: *mut Scheduler, co: *mut Coroutine, cancel_fn: *mut c_void) {
-        // SAFETY: forwarded.
-        let Some((s, co)) = (unsafe { handles(s, co) }) else {
-            return;
-        };
-        co.with(|co| co.cancel_fn = cancel_fn);
-        yield_(s, co);
-        // Live again once resumed.
-        co.with(|co| co.cancel_fn = ptr::null_mut());
-    }
-}
-
-operation! {
-    /// `Coroutine::bailout`, once the callback is set: marks the scheduler, and
-    /// inside a coroutine yields the one closest to the main context, which
-    /// switches there directly and never returns.
-    fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
-        // SAFETY: forwarded.
-        let Some(s) = (unsafe { Sched::of(s) }) else {
-            return;
-        };
-        let current = s.with(|s| {
-            s.bailout = true;
-            s.current
-        });
-        let Some(mut co) = Co::link(current) else {
-            return;
-        };
-        while let Some(origin) = co.origin() {
-            co = origin;
-        }
+/// `Coroutine::yield`: waiting, with a clean resume code; the yield callback
+/// runs, control returns to `co`'s origin, and this returns once resumed.
+///
+/// # Safety
+/// `s` is null or live, and `co` null or its running coroutine; neither is
+/// borrowed elsewhere for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
+    // SAFETY: as the caller promises.
+    let Some(s) = (unsafe { Sched::of(s) }) else {
+        return;
+    };
+    // SAFETY: as the caller promises.
+    if let Some(co) = unsafe { Co::of(co) } {
         yield_(s, co);
     }
 }
@@ -531,6 +542,21 @@ operation! {
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    // The operations over raw pointers, as the cases drive them.
+    unsafe fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
+        unsafe { run(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
+    }
+    unsafe fn swr_v1_coroutine_yield_cancelable(
+        s: *mut Scheduler,
+        co: *mut Coroutine,
+        cancel_fn: *mut c_void,
+    ) {
+        unsafe { yield_cancelable(Sched::of(s).unwrap(), Co::of(co).unwrap(), cancel_fn) }
+    }
+    unsafe fn swr_v1_coroutine_bailout(s: *mut Scheduler) {
+        unsafe { super::bailout(Sched::of(s).unwrap()) }
+    }
 
     thread_local! {
         /// What the test hooks saw, in order.

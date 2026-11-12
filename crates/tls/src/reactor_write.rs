@@ -195,7 +195,7 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn close(&self) -> c_int {
-        // Its fields' address, which computing reads nothing.
+        // The flush's live reactor.
         let fields = ReactorPrepared::of(self.reactor).fields;
         // SAFETY: `reactor->close`, set at construction.
         let Some(close) = (unsafe { (*fields).close }) else {

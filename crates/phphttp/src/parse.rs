@@ -5,7 +5,7 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Slot, State};
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
@@ -17,9 +17,10 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
-    swr_zend_http_treat_data, swr_zend_http_upload, zend_string, zval,
+    swr_zend_http_property_offset, swr_zend_http_treat_data, swr_zend_http_upload, zend_string,
+    zval,
 };
-use swoole_rs_zend::{Owned, OwnedArray, Value, ZStr, ZString, string};
+use swoole_rs_zend::{Class, Owned, OwnedArray, Value, ZStr, ZString, string};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -285,8 +286,19 @@ pub(crate) fn minit(codecs: u32) {
         c"header",
         c"fd",
     ]) {
-        slot.store(crate::request::REQUEST.property_offset(name), Relaxed);
+        slot.store(property_offset(&crate::request::REQUEST, name), Relaxed);
     }
+}
+
+/// The slot of `class`'s declared property `name` (`OBJ_PROP`'s offset), 0
+/// when it declares none.
+/// # Panics
+/// The class is not registered.
+pub(crate) fn property_offset(class: &Class, name: &CStr) -> u32 {
+    let ce = class.entry();
+    assert!(!ce.is_null(), "a registered class");
+    // SAFETY: a registered class; the lookup only reads its property table.
+    unsafe { swr_zend_http_property_offset(ce, name.as_ptr(), name.count_bytes()) }
 }
 
 /// `Swoole\Http\Request`'s declared `fd` slot.
@@ -340,7 +352,7 @@ fn stringl(bytes: &[u8]) -> Owned {
     Owned::string(ZString::new(bytes))
 }
 
-fn estrndup(bytes: &[u8]) -> *mut c_char {
+pub(crate) fn estrndup(bytes: &[u8]) -> *mut c_char {
     // SAFETY: the bytes, copied into request memory.
     unsafe { swr_zend_http_estrndup(bytes.as_ptr().cast(), bytes.len()) }
 }
@@ -349,8 +361,7 @@ fn estrndup(bytes: &[u8]) -> *mut c_char {
 fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
     // SAFETY: a fresh request-memory string and a live array.
     if !unsafe { swr_zend_http_treat_data(arg, estrndup(bytes), array) } {
-        // SAFETY: reads an INI value.
-        let limit = unsafe { swr_zend_http_max_input_vars() };
+        let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
             format_args!(
@@ -358,6 +369,19 @@ fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
             ),
         );
     }
+}
+
+/// `PG(max_input_vars)`.
+fn max_input_vars() -> i64 {
+    // SAFETY: reads an INI value, on the request's thread.
+    unsafe { swr_zend_http_max_input_vars() }
+}
+
+/// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows.
+fn add_upload(state: &mut State, path: &[u8]) {
+    let tmpfiles = property(state, Property::TmpFiles);
+    // SAFETY: the request's `tmpfiles` array and the path's bytes, which it copies.
+    unsafe { swr_zend_http_upload(tmpfiles, path.as_ptr().cast(), path.len()) };
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
@@ -888,8 +912,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
     let length = value_.len();
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
-    // SAFETY: reads a PHP INI global.
-    let max_input_vars = unsafe { swr_zend_http_max_input_vars() };
+    let max_input_vars = max_input_vars();
     if i64::from(state.parse.input_var_num) > max_input_vars {
         host::notice(&format!(
             "Input variables exceeded {max_input_vars}. To increase the limit change max_input_vars in php.ini"
@@ -990,9 +1013,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
         upload_bytes(state, b"tmp_name", value_);
         upload_long(state, b"error", UPLOAD_FILE_READY);
         upload_long(state, b"size", path_size(value_));
-        let tmpfiles = property(state, Property::TmpFiles);
-        // SAFETY: the request's `tmpfiles` array and the path's bytes.
-        unsafe { swr_zend_http_upload(tmpfiles, value_.as_ptr().cast(), value_.len()) };
+        add_upload(state, value_);
     }
     0
 }
@@ -1098,9 +1119,7 @@ fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_i
     }
     *upload = fp;
     upload_bytes(state, b"tmp_name", &path);
-    let tmpfiles = property(state, Property::TmpFiles);
-    // SAFETY: the request's `tmpfiles` array and the path's bytes.
-    unsafe { swr_zend_http_upload(tmpfiles, path.as_ptr().cast(), path.len()) };
+    add_upload(state, &path);
     0
 }
 

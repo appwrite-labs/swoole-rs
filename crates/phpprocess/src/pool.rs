@@ -8,17 +8,16 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{c_int, c_void},
+    ffi::{CString, c_int, c_void},
     ptr,
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_process::process_pool::{PoolRef, RecvData};
-use swoole_rs_process::worker_record::Worker;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::{
     methods,
-    pool::swr_v1_process_pool_ipc_listener,
     process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
     signal::swoole_signal_isset,
     worker_record,
@@ -714,26 +713,18 @@ fn listen(call: &Call) {
     let unix = address
         .get(..6)
         .is_some_and(|head| head.eq_ignore_ascii_case(b"unix:/"));
-    // The argument string is NUL-terminated in place; a unix path skips "unix:".
-    let host_ptr = address.as_ptr().wrapping_add(if unix { 5 } else { 0 });
+    // The address up to its first NUL, as C reads it; a unix path skips "unix:".
+    let host = address.get(if unix { 5 } else { 0 }..).unwrap_or_default();
+    let host =
+        CString::new(host.split(|&byte| byte == 0).next().unwrap_or_default()).unwrap_or_default();
     let kind = if unix { SOCK_UNIX_STREAM } else { SOCK_TCP };
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's int port and backlog"
     )]
-    // SAFETY: a created pool and a NUL-terminated address.
-    let listened = unsafe {
-        methods::listen(
-            pool,
-            kind,
-            host_ptr.cast(),
-            port as c_int,
-            backlog as c_int,
-            swoole_rs_tls::upstream::make_server_socket,
-        )
-    };
-    // SAFETY: the pool's IPC state.
-    let socket = swr_v1_process_pool_ipc_listener(unsafe { &*record(pool).ipc() });
+    let listened =
+        methods::listen_socket(record(pool), kind, &host, port as c_int, backlog as c_int);
+    let socket = record(pool).ipc_listener();
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
         socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
@@ -942,14 +933,15 @@ fn get_process(call: &Call) {
         None => {
             let object = class.create_object();
             // A worker C++ allocates, as the Process object frees it.
-            let worker = crate::worker::new();
+            let mut copy = WorkerRecord::boxed();
             #[expect(
                 clippy::cast_sign_loss,
                 clippy::cast_possible_truncation,
                 reason = "a checked worker id"
             )]
-            // SAFETY: the running pool and its worker `id`; the Process object takes the copy.
-            let pipe = unsafe { worker_record::copy_for_process(pool, id as usize, worker.cast()) };
+            let pipe = worker_record::copy_for_process(record(pool), id as usize, &mut copy);
+            // The Process object takes the copy.
+            let worker = Box::into_raw(copy).cast::<c_void>();
             if let Some(props) = object.props(Some(class)) {
                 props.long(c"id", current_id);
                 props.long(c"pid", i64::from(worker_pid(worker)));

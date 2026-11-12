@@ -27,19 +27,34 @@ pub fn request_option(key: &[u8], capabilities: u32) -> i32 {
 /// Capabilities: bit0 zlib, bit1 Brotli, bit2 Zstd. Return native method 0..4.
 #[must_use]
 pub fn compression(encoding: &[u8], capabilities: u32) -> i32 {
-    const METHODS: [(u32, i32, &[u8]); 4] = [
-        (2, 3, b"br"),
-        (1, 1, b"gzip"),
-        (1, 2, b"deflate"),
-        (4, 4, b"zstd"),
+    // (found bit, capability, native method, token), in order of preference.
+    const METHODS: [(u32, u32, i32, &[u8]); 4] = [
+        (1, 2, 3, b"br"),
+        (2, 1, 1, b"gzip"),
+        (4, 1, 2, b"deflate"),
+        (8, 4, 4, b"zstd"),
     ];
+    // One pass: a token can only start at its first byte, which no other token shares.
+    let mut found = 0;
+    for (at, byte) in encoding.iter().enumerate() {
+        let (bit, token): (u32, &[u8]) = match byte {
+            b'b' => (1, b"br"),
+            b'g' => (2, b"gzip"),
+            b'd' => (4, b"deflate"),
+            b'z' => (8, b"zstd"),
+            _ => continue,
+        };
+        if encoding
+            .get(at..)
+            .is_some_and(|rest| rest.starts_with(token))
+        {
+            found |= bit;
+        }
+    }
     METHODS
         .iter()
-        .find(|&&(capability, _, token)| {
-            capabilities & capability != 0
-                && encoding.windows(token.len()).any(|window| window == token)
-        })
-        .map_or(0, |&(_, method, _)| method)
+        .find(|&&(bit, capability, _, _)| found & bit != 0 && capabilities & capability != 0)
+        .map_or(0, |&(_, _, method, _)| method)
 }
 
 /// The encoding label, or `None` for unknown/uncompiled methods.
@@ -80,5 +95,58 @@ pub fn body_prefix(body: &[u8], beginning: bool) -> usize {
             .count()
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compression;
+
+    /// The definition: the first of br, gzip, deflate and zstd that the build has
+    /// and that occurs anywhere in the header.
+    fn by_substring(encoding: &[u8], capabilities: u32) -> i32 {
+        let methods: [(u32, i32, &[u8]); 4] = [
+            (2, 3, b"br"),
+            (1, 1, b"gzip"),
+            (1, 2, b"deflate"),
+            (4, 4, b"zstd"),
+        ];
+        methods
+            .iter()
+            .find(|&&(capability, _, token)| {
+                capabilities & capability != 0
+                    && encoding.windows(token.len()).any(|window| window == token)
+            })
+            .map_or(0, |&(_, method, _)| method)
+    }
+
+    #[test]
+    fn compression_prefers_as_the_substring_search() {
+        let headers: [&[u8]; 14] = [
+            b"",
+            b"identity",
+            b"gzip, deflate, br, zstd",
+            b"zstd, deflate",
+            b"deflate;q=0",
+            b"GZIP",
+            b"xbrx",
+            b"b",
+            b"gzi",
+            b"ggzip",
+            b"deflatdeflate",
+            b"zstzstd",
+            b"bbr",
+            b"gzipdeflatebrzstd",
+        ];
+        for header in headers {
+            for capabilities in 0..8 {
+                assert_eq!(
+                    compression(header, capabilities),
+                    by_substring(header, capabilities),
+                    "{:?} with {capabilities}",
+                    String::from_utf8_lossy(header)
+                );
+            }
+        }
     }
 }

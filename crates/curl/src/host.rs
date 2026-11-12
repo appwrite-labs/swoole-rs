@@ -10,7 +10,7 @@ use std::io::Write;
 use std::ptr;
 use swoole_rs_coroutine::{Coroutine, RC_CANCELED, scheduler};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
-use swoole_rs_reactor::{Socket, SocketRecord, event_api, reactor_upstream::prepared};
+use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
@@ -191,10 +191,8 @@ unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {
 /// # Safety
 /// The event loop is available and `multi` outlives the deferral.
 pub(crate) unsafe fn defer(multi: *const Multi) {
-    // SAFETY: per the caller, `SwooleTG.reactor` is live.
-    let fields = unsafe { prepared(swoole_rs_corebase::thread_reactor()) }.fields;
-    // SAFETY: the live reactor's fields.
-    unsafe { swoole_rs_reactor::defer(fields, deferred, multi.cast_mut().cast(), None) };
+    // SAFETY: `deferred` takes the multi, which outlives the deferral as the caller promises.
+    unsafe { swoole_rs_reactor::swoole_event_defer(deferred, multi.cast_mut().cast()) };
 }
 
 /// `swoole_curl_multi_new`: a multi for `curl_multi_init`.

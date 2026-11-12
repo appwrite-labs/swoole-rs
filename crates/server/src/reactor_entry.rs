@@ -8,10 +8,7 @@ use core::ffi::{c_int, c_long, c_void};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{
-    RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ,
-    RUN_REACTOR_THREAD_MAIN, RUN_RT_PIPE_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_SHUTDOWN,
-};
+use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE, RUN_THREAD_SHUTDOWN};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
@@ -61,18 +58,6 @@ fn int(value: i64) -> c_int {
 pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     // SAFETY: per the caller.
     unsafe { view::Server::from_raw(reactor.fields().ptr) }
-}
-
-/// A context over a server's reactor and `reactor->ptr`, its server.
-///
-/// # Safety
-/// `reactor` is a live server `Reactor` on its own thread, whose `ptr` is the live
-/// `Server` for `'a`.
-pub(crate) unsafe fn reactor_context<'a>(reactor: *mut c_void) -> ReactorContext<'a> {
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
-    // SAFETY: per the caller.
-    ReactorContext::new(unsafe { server(reactor) }, Some(reactor))
 }
 
 /// A context over the reactor, `reactor->ptr` (a reactor thread's server) and the event.
@@ -144,7 +129,9 @@ pub unsafe extern "C-unwind" fn close_connection(
     socket: *mut SocketRecord,
 ) -> c_int {
     // SAFETY: per the caller.
-    let mut ctx = unsafe { reactor_context(reactor) };
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
     // SAFETY: per the caller.
     ctx.sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
     run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
@@ -156,7 +143,9 @@ pub unsafe extern "C-unwind" fn close_connection(
 /// `thread` is the live `ReactorThread` that `reactor` belongs to.
 pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
     // SAFETY: per the caller.
-    let mut ctx = unsafe { reactor_context(reactor) };
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: per the caller.
+    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
     ctx.thread = thread;
     run(RUN_THREAD_SHUTDOWN, 0, &mut ctx);
 }
@@ -188,7 +177,7 @@ pub(crate) unsafe fn thread_init(
 )]
 pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     run(
-        RUN_INIT_REACTOR,
+        crate::ops::RUN_INIT_REACTOR,
         0,
         &mut ReactorContext::new(serv, Some(reactor)),
     );
@@ -198,7 +187,7 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
 #[must_use]
 pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
     let mut ctx = ReactorContext::new(serv, None);
-    int(run(RUN_START_REACTOR_THREADS, 0, &mut ctx))
+    int(run(crate::ops::RUN_START_REACTOR_THREADS, 0, &mut ctx))
 }
 
 /// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
@@ -206,7 +195,7 @@ pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
 pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
     let mut ctx = ReactorContext::new(serv, None);
     let id = i64::from(reactor_id).cast_unsigned();
-    run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
+    run(crate::ops::RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
@@ -301,5 +290,5 @@ pub unsafe extern "C-unwind" fn dispatch_task(
 /// `void Server::join_reactor_thread()`, in the server's master.
 pub fn join_reactor_thread(serv: view::Server<'_>) {
     let mut ctx = ReactorContext::new(serv, None);
-    run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
+    run(crate::ops::RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

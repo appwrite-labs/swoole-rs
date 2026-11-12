@@ -20,7 +20,6 @@ use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, tra
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, vector_all};
 use core::ffi::{CStr, c_int, c_void};
-use core::ptr::null_mut;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, strerror};
@@ -97,7 +96,7 @@ pub extern "C" fn error_event_callback(_: Running<'_>, event: &mut Event) -> c_i
 struct Accepting {
     socket: Co,
     timeout: f64,
-    conn: *mut SocketRecord,
+    conn: Option<Box<SocketRecord>>,
 }
 
 impl Setup for Accepting {
@@ -117,11 +116,14 @@ impl Setup for Accepting {
     }
 
     fn call(&mut self, _: c_int) -> c_int {
-        self.conn = self
+        let conn = self
             .socket
             .net(SocketFields::accept)
             .unwrap_or(core::ptr::null_mut());
-        if self.conn.is_null() { -1 } else { 0 }
+        // SAFETY: null, or `SocketFields::accept`'s new heap record, which nothing
+        // else holds.
+        self.conn = (!conn.is_null()).then(|| unsafe { Box::from_raw(conn) });
+        if self.conn.is_none() { -1 } else { 0 }
     }
 }
 
@@ -304,23 +306,18 @@ impl Co {
         let mut state = Accepting {
             socket: self,
             timeout,
-            conn: null_mut(),
+            conn: None,
         };
         if !swr_v1_hook_accept(&mut state) {
             return None;
         }
-        // SAFETY: the connection the listening socket accepted.
-        Some(unsafe { self.adopt(state.conn) })
+        state.conn.map(|conn| self.adopt(conn))
     }
 
     /// `new Socket(conn, server)`: the accepting constructor, then the server's TLS
     /// context shared with the new socket.
-    ///
-    /// # Safety
-    /// `conn` is a live accepted `network::Socket` the new socket takes.
-    pub(crate) unsafe fn adopt(self, conn: *mut SocketRecord) -> Self {
-        // SAFETY: as the caller promises.
-        let client = unsafe { crate::co_socket::accepted(self, conn) };
+    pub(crate) fn adopt(self, conn: Box<SocketRecord>) -> Self {
+        let client = crate::co_socket::accepted(self, conn);
         client.share_tls(self);
         client
     }
@@ -651,10 +648,10 @@ impl Co {
     pub unsafe fn recvmsg(self, msg: *mut libc::msghdr, flags: c_int) -> isize {
         uring!(self, |ops| ops.io(
             ring::RECVMSG,
-            null_mut(),
+            core::ptr::null_mut(),
             0,
             msg.cast(),
-            null_mut(),
+            core::ptr::null_mut(),
             flags
         ));
         let fd = self.sock_fd();
@@ -670,10 +667,10 @@ impl Co {
     pub unsafe fn sendmsg(self, msg: *const libc::msghdr, flags: c_int) -> isize {
         uring!(self, |ops| ops.io(
             ring::SENDMSG,
-            null_mut(),
+            core::ptr::null_mut(),
             0,
             msg.cast_mut().cast(),
-            null_mut(),
+            core::ptr::null_mut(),
             flags
         ));
         let fd = self.sock_fd();
@@ -778,7 +775,7 @@ mod tests {
         fn drop(&mut self) {
             unsafe {
                 SocketRecord::free(self.record().socket);
-                crate::co_socket::swr_v1_hook_co_socket_fini(&raw mut (*self.0).record);
+                (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }
         }

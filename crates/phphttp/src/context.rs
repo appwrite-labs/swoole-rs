@@ -16,7 +16,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::string;
 use swoole_rs_zend::{
-    Class, Owned, Value,
+    Owned, Value,
     bailout::{self, Bailout},
     host::Then,
     sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zend_string, zval},
@@ -81,8 +81,11 @@ impl Ctx {
 static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
 
 /// MINIT, once `Swoole\Http\Response` is registered.
-pub(crate) fn response_minit(class: &Class) {
-    RESPONSE_FD.store(class.property_offset(c"fd"), Relaxed);
+pub(crate) fn response_minit() {
+    RESPONSE_FD.store(
+        parse::property_offset(&crate::response::RESPONSE, c"fd"),
+        Relaxed,
+    );
 }
 
 /// The class of a context's object.
@@ -193,9 +196,12 @@ pub(crate) fn co_socket(state: &State) -> bool {
     !state.zsocket.is_null()
 }
 
-/// The coroutine socket a context is bound to, or None when a server sends for it.
-fn socket(state: &State) -> Option<co::Co> {
-    // SAFETY: a context bound to a coroutine socket keeps it, live, in `private_data`.
+/// The coroutine socket the context is bound to, which outlives the borrow
+/// of its state (the context holds the socket's object), or None for a
+/// server's context.
+pub(crate) fn socket(state: &State) -> Option<co::Co> {
+    // SAFETY: `bind`'s contract: a socket-bound context's `private_data` is
+    // the live socket of the object it holds.
     co_socket(state).then(|| unsafe { co::Co::of(state.private_data) })
 }
 
@@ -228,7 +234,6 @@ pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> boo
 /// `ctx->sendfile`.
 pub(crate) fn sendfile(mut ctx: Ctx, file: *mut zend_string, offset: i64, length: usize) -> bool {
     let state = ctx.state();
-    let fd = state.fd;
     if let Some(socket) = socket(state) {
         // SAFETY: a live, NUL-terminated file name.
         let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
@@ -236,7 +241,7 @@ pub(crate) fn sendfile(mut ctx: Ctx, file: *mut zend_string, offset: i64, length
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
-        server_methods::sendfile(server(state), fd, name, offset, length)
+        server_methods::sendfile(server(state), state.fd, name, offset, length)
     }
 }
 

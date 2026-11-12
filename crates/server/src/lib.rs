@@ -13,6 +13,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+pub use base_factory::SendData;
 pub use commands::{CommandCallback, CommandHandler};
 pub use server_methods::{
     swr_v1_server_add_command, swr_v1_server_command, swr_v1_server_command_result,
@@ -267,11 +268,13 @@ pub(crate) unsafe fn run_method(
         // Outside `run`'s match, with the state known and no reactor context, so
         // each op an accept or a send makes folds to its answer (#2964, #3335).
         (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
-        (ops::RUN_ST_SEND, _) => state::send(
-            &mut native,
-            core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0)),
-        )
-        .map(i64::from),
+        (ops::RUN_ST_SEND, _) => {
+            let send = core::ptr::with_exposed_provenance::<base_factory::SendData>(
+                usize::try_from(arg).unwrap_or(0),
+            );
+            // SAFETY: `server_methods::send` lends the live `SendData` it built for the call.
+            state::send(&mut native, unsafe { &*send }).map(i64::from)
+        }
         _ => run(&mut native, operation, arg),
     }
     .unwrap_or(SW_ERR)

@@ -189,10 +189,11 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
-        OP_TASK_POOL_WORKER_NUM => {
-            // SAFETY: the server's live task pool.
-            u64::from(unsafe { (*ctx.workers().task_pool).worker_num() })
-        }
+        OP_TASK_POOL_WORKER_NUM => u64::from(
+            crate::shared::ServerShared::of(ctx.server())
+                .task_pool()
+                .worker_num(),
+        ),
         OP_INIT_REACTOR => {
             crate::reactor_entry::init_reactor(serv, ctx.reactor_handle());
             0
@@ -287,7 +288,8 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {
-            let fd = ctx.event().fd();
+            // SAFETY: the context's live event.
+            let fd = unsafe { (*ctx.event).fd() };
             let conn = server.at(fd);
             let active = conn.as_ref().is_some_and(|c| c.active != 0);
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);

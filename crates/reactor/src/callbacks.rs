@@ -6,6 +6,7 @@
 //! a plain function or a built-in. A walk re-reads each slot as it reaches it, so a
 //! callback that sets a later key is seen, one it erases is not, and an earlier key it
 //! sets waits for the next walk.
+use crate::Running;
 use crate::reactor_state::ReactorState;
 use std::ffi::{c_int, c_void};
 
@@ -111,34 +112,31 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
     callbacks.set_exit(EXIT_CONDITION_DEFAULT, Some(Exit::Default));
 }
 
-/// `Reactor::execute_end_callbacks(timed_out)`.
-///
-/// # Safety
-/// `owner` is live and no reference to it is held: a callback may change it.
-pub(crate) unsafe fn execute_end(owner: *mut ReactorState, timed_out: bool) {
-    // SAFETY: as the caller promises.
+/// `Reactor::execute_end_callbacks(timed_out)`. A callback may change the reactor, which
+/// no reference to its state is held across.
+pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
+    let owner = reactor.state();
+    // SAFETY: the handle's live state; a single field write.
     unsafe { (*owner).fields.timed_out = timed_out };
     // Its fields' address, without a borrow: each borrow ends before a callback runs.
     let fields = owner
         .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
         .cast::<crate::ReactorFields>();
     for slot in 0..END_SLOTS {
-        // SAFETY: as above; the copy is read before the callback runs.
+        // SAFETY: the handle's live state; the copy is read before the callback runs.
         let Some(end) = (unsafe { (*owner).callbacks.end.get(slot).copied().flatten() }) else {
             continue;
         };
         match end {
             End::Call(call) => call(),
-            // SAFETY: as the caller promises.
-            End::Defer => unsafe { crate::deferred::run_defer(owner) },
+            End::Defer => crate::deferred::run_defer(reactor),
             // SAFETY: a single field read.
             End::Idle => run_task(unsafe { (*fields).idle_task }),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
             End::TryExit => {
                 // SAFETY: a single field read.
                 let wait_exit = unsafe { (*fields).wait_exit };
-                // SAFETY: as the caller promises.
-                if wait_exit && unsafe { if_exit(owner) } {
+                if wait_exit && if_exit(reactor) {
                     // SAFETY: a single field write.
                     unsafe { (*fields).running = false };
                 }
@@ -173,12 +171,10 @@ fn malloc_trim(last: &mut libc::time_t) {
 }
 
 /// `Reactor::if_exit()`: each exit condition in key order over the registered socket
-/// count, until one refuses.
-///
-/// # Safety
-/// As [`execute_end`].
-pub(crate) unsafe fn if_exit(owner: *mut ReactorState) -> bool {
-    // SAFETY: as the caller promises; the borrow ends here.
+/// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
+pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
+    let owner = reactor.state();
+    // SAFETY: the handle's live state; the borrow ends here.
     let mut event_num = unsafe { (*owner).registry.count() };
     for slot in 0..EXIT_SLOTS {
         // SAFETY: as above; the copy is read before the condition runs.
@@ -284,9 +280,8 @@ pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c
     unsafe(export_name = "_ZN6swoole7Reactor7if_exitEv")
 )]
 pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
-    let owner = reactor.cast::<ReactorState>();
-    // SAFETY: the live reactor's state.
-    unsafe { if_exit(owner) }
+    // SAFETY: as the caller promises, on the thread that runs it.
+    if_exit(unsafe { Running::new(reactor) })
 }
 
 /// `int Reactor::wait()`: the loop over the state's backend, the future task before
@@ -299,24 +294,23 @@ pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
     unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
 )]
 pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
-    fn begin(reactor: *mut c_void) {
-        let fields = crate::ReactorPrepared::of(reactor).fields;
-        // SAFETY: its fields; a single read.
-        run_task(unsafe { (*fields).future_task });
-    }
-    fn end(reactor: *mut c_void, timed_out: bool) {
-        let owner = reactor.cast::<ReactorState>();
-        // SAFETY: its state, which no reference holds.
-        unsafe { execute_end(owner, timed_out) };
+    // SAFETY: as the caller promises, on the thread that runs it.
+    wait(unsafe { Running::new(reactor) })
+}
+
+/// `Reactor::wait()` of the reactor `reactor` names.
+pub(crate) fn wait(reactor: Running<'_>) -> c_int {
+    fn begin(reactor: Running<'_>) {
+        let owner = reactor.state();
+        // SAFETY: the handle's live state; a single read.
+        run_task(unsafe { (*owner).fields.future_task });
     }
     let ops = crate::WaitOps {
         reactor,
         begin,
-        end,
+        end: execute_end,
     };
-    let owner = reactor.cast::<ReactorState>();
-    // SAFETY: the live reactor's state, with an open backend.
-    if unsafe { crate::wait_loop::wait(owner, &ops) } < 0 {
+    if crate::wait_loop::wait(&ops) < 0 {
         -1
     } else {
         0
@@ -326,6 +320,7 @@ pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactor_state::tests::running;
     use std::cell::{Cell, RefCell};
 
     thread_local! {
@@ -392,8 +387,8 @@ mod tests {
     #[test]
     fn end_callbacks_run_in_key_order() {
         with_state(|owner| unsafe {
-            assert!(if_exit(owner));
-            execute_end(owner, false);
+            assert!(if_exit(running(owner)));
+            execute_end(running(owner), false);
             assert!(!(*owner).fields.timed_out);
             assert!(!swr_v1_reactor_isset_exit(&*owner, 1));
             assert!(!callbacks().set_exit(1, None));
@@ -403,14 +398,14 @@ mod tests {
             set_end(5, end5);
             set_end(1, end1);
             set_end(3, end3);
-            execute_end(owner, true);
+            execute_end(running(owner), true);
             assert_eq!(take(), [1, 3, 5]);
             set_end(3, end99);
-            execute_end(owner, true);
+            execute_end(running(owner), true);
             assert_eq!(take(), [1, 99, 5]);
             swr_v1_reactor_set_end(&mut *owner, 3, None);
             swr_v1_reactor_set_end(&mut *owner, 7, None);
-            execute_end(owner, true);
+            execute_end(running(owner), true);
             assert_eq!(take(), [1, 5]);
         });
     }
@@ -423,7 +418,7 @@ mod tests {
             set_end(1, end_mutating);
             set_end(3, end3);
             set_end(5, end99);
-            execute_end(owner, false);
+            execute_end(running(owner), false);
             assert_eq!(take(), [1, 2, 99]);
             assert!(!(*owner).fields.timed_out);
         });
@@ -466,18 +461,18 @@ mod tests {
             set_exit(1, exit1);
             set_exit(2, exit2);
             assert!(swr_v1_reactor_isset_exit(&*owner, 2));
-            assert!(!if_exit(owner));
+            assert!(!if_exit(running(owner)));
             assert_eq!(take(), [1, 2]);
             assert!(callbacks().set_exit(2, None));
             assert!(!callbacks().set_exit(2, None));
             assert!(!swr_v1_reactor_isset_exit(&*owner, 2));
-            assert!(if_exit(owner));
+            assert!(if_exit(running(owner)));
             assert_eq!(take(), [1, 3]);
         });
-        with_state(|owner| unsafe {
+        with_state(|owner| {
             set_exit(1, exit_mutating);
             set_exit(3, refuse);
-            assert!(if_exit(owner));
+            assert!(if_exit(running(owner)));
             assert_eq!(take(), [1, 3]);
         });
     }
@@ -493,17 +488,17 @@ mod tests {
         with_state(|owner| unsafe {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
-            assert!(if_exit(owner));
+            assert!(if_exit(running(owner)));
             crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4), None);
-            assert!(!if_exit(owner));
+            assert!(!if_exit(running(owner)));
             (*fields).idle_task.callback = Some(record);
             (*fields).idle_task.data = std::ptr::without_provenance_mut(6);
             (*fields).running = true;
-            execute_end(owner, false);
+            execute_end(running(owner), false);
             assert_eq!(take(), [4, 6]);
             assert!((*fields).running);
             (*fields).wait_exit = true;
-            execute_end(owner, false);
+            execute_end(running(owner), false);
             assert!(!(*fields).running);
             (*fields).running = true;
             let mut socket = crate::SocketRecord::with_fd(3, 0);
@@ -511,8 +506,8 @@ mod tests {
                 crate::reactor_state::tests::record(owner, &raw mut socket, 0, 512),
                 0
             );
-            assert!(!if_exit(owner));
-            execute_end(owner, false);
+            assert!(!if_exit(running(owner)));
+            execute_end(running(owner), false);
             assert!((*fields).running);
             assert_eq!(take(), [6, 6]);
         });

@@ -86,32 +86,9 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     );
 }
 
-/// `Server::init_ipc_max_size()`.
-///
-/// # Safety
-/// `serv` is not started.
-pub unsafe fn init_ipc_max_size(serv: view::Server<'_>) {
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    unsafe { serv.config_mut() }.ipc_max_size =
-        swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
-}
-
-/// `Server::destroy_task_workers()`: free the task results, then destroy the task pool.
-///
-/// # Safety
-/// `serv` is shutting down.
-pub unsafe fn destroy_task_workers(serv: view::Server<'_>) {
-    // SAFETY: the server is shutting down on this thread, with no other reference to the field.
-    unsafe { serv.config_mut() }.task_results.free();
-    swoole_rs_process::methods::destroy(serv.task_pool_ref());
-}
-
 /// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
 /// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
-///
-/// # Safety
-/// `serv` is a live `Server` and `worker` one of its workers.
-pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
+pub fn create_worker(serv: view::Server<'_>, worker: &mut WorkerRecord) {
     let size = u32::try_from(size_of::<SharedMutex>()).unwrap_or(u32::MAX);
     let lock = swoole_rs_memory::members::pool::alloc(size);
     // SAFETY: null, or `size` fresh bytes, aligned by the pool, which the global pool
@@ -123,11 +100,9 @@ pub unsafe fn create_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) {
     if lock.init() != 0 {
         std::process::abort();
     }
-    // SAFETY: per the caller.
-    let worker = unsafe { &mut *worker };
     worker.lock = Some(lock);
     if !worker.pipe_object.is_null() {
-        // SAFETY: per the caller; the worker's live pipe.
+        // SAFETY: the live server, and the live pipe of its worker.
         unsafe { crate::server_methods::store_pipe_fd(serv.raw(), worker.pipe_object) };
     }
 }
@@ -140,36 +115,30 @@ pub fn destroy_worker(worker: &mut WorkerRecord) {
     }
 }
 
-/// `Server::create_event_workers()`.
-///
-/// # Safety
-/// `serv` is being created, with its worker arrays.
+/// `Server::create_event_workers()`, once the server has its worker arrays.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe fn create_event_workers(serv: view::Server<'_>) -> bool {
+pub fn create_event_workers(serv: view::Server<'_>) -> bool {
     let count = serv.config().worker_num;
     for id in 0..count {
         // `get_worker(uint16_t)`, as the C++ loop called it.
         let id = u16::try_from(id & 0xffff).unwrap_or_default();
-        let worker = serv.worker(id);
-        // SAFETY: one of the server's event workers.
-        unsafe { create_worker(serv, worker) };
+        // SAFETY: null past the last, else one of the server's live event workers.
+        if let Some(worker) = unsafe { serv.worker(id).as_mut() } {
+            create_worker(serv, worker);
+        }
     }
     true
 }
 
 /// `Server::create_user_workers()`: copy the added user workers into shared
-/// memory (no process is forked) and give each its lock.
-///
-/// # Safety
-/// `serv` is in the manager's startup.
+/// memory (no process is forked) and give each its lock. `config` is the server's.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
+pub fn create_user_workers(serv: view::Server<'_>, config: &mut crate::ServerConfig) -> bool {
     let size = size_of::<WorkerRecord>();
-    let count = serv.user_worker_num();
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    let config = unsafe { serv.config_mut() };
+    let pending = serv.registry().pending();
+    let count = pending.len();
     config.user_workers = swoole_rs_memory::members::Shm::calloc(count, size);
     let copies = config.user_workers.as_ptr().cast::<WorkerRecord>();
     if copies.is_null() {
@@ -177,18 +146,18 @@ pub unsafe fn create_user_workers(serv: view::Server<'_>) -> bool {
         log::sys_warning(c"Server::create_user_workers", m);
         return false;
     }
-    let pending = serv.registry().pending().as_ptr();
-    for index in 0..count {
-        // SAFETY: `count` live worker pointers.
-        let worker = unsafe { pending.wrapping_add(index).read() }.cast::<WorkerRecord>();
-        // SAFETY: the caller's live worker.
+    for (index, &worker) in pending.iter().enumerate() {
+        let worker = worker.cast::<WorkerRecord>();
+        // SAFETY: a live worker `add_worker` added, which outlives the server.
         let record = unsafe { worker.read() };
         // SAFETY: its slot in the fresh shared array of `count` records.
         unsafe { copies.wrapping_add(index).write(record) };
-        // SAFETY: per the caller.
-        unsafe { create_worker(serv, worker) };
-        // SAFETY: the caller's live worker.
-        unsafe { Worker::new(worker).set_kind(SW_USER_WORKER) };
+        // SAFETY: as above; nothing else borrows it during the call.
+        let Some(worker) = (unsafe { worker.as_mut() }) else {
+            continue;
+        };
+        create_worker(serv, worker);
+        Worker::from(worker).set_kind(SW_USER_WORKER);
     }
     true
 }

@@ -3,17 +3,17 @@
 //! coroutines by id, from creation until close, kept in the scheduler itself so
 //! no lookup goes through a thread-local. Lists run newest first, the order
 //! upstream's map iterates in while its buckets keep one coroutine each.
-use crate::coroutine::{Coroutine, STATE_END, STATE_INIT, STATE_RUNNING, STATE_WAITING, Scheduler};
+use crate::coroutine::{Co, STATE_END, STATE_INIT, STATE_RUNNING, STATE_WAITING, Scheduler};
 use core::ffi::{c_char, c_long, c_void};
 use core::ptr;
 
 /// The registry behind [`Scheduler::live`], allocated with the first coroutine:
 /// entries sorted by id (ids come in rising order, so an insert appends), with a
-/// removed coroutine's entry nulled until half the entries are null. Lookups are
+/// removed coroutine's entry emptied until half the entries are. Lookups are
 /// a binary search over one allocation; a `BTreeMap` cost a node per coroutine.
 #[derive(Debug, Default)]
 pub struct Live {
-    entries: Vec<(c_long, *mut Coroutine)>,
+    entries: Vec<(c_long, Option<Co>)>,
     count: usize,
 }
 
@@ -23,9 +23,9 @@ impl Live {
         self.entries.partition_point(|&(id, _)| id < cid)
     }
 
-    fn get(&self, cid: c_long) -> Option<*mut Coroutine> {
+    fn get(&self, cid: c_long) -> Option<Co> {
         match self.entries.get(self.at(cid)) {
-            Some(&(id, co)) if id == cid && !co.is_null() => Some(co),
+            Some(&(id, co)) if id == cid => co,
             _ => None,
         }
     }
@@ -36,16 +36,16 @@ impl Scheduler {
         self.live.as_deref()
     }
 
-    pub(crate) fn insert(&mut self, cid: c_long, co: *mut Coroutine) {
+    pub(crate) fn insert(&mut self, cid: c_long, co: Co) {
         let live = self.live.get_or_insert_default();
         let at = live.at(cid);
         match live.entries.get_mut(at) {
             Some(entry) if entry.0 == cid => {
-                live.count += usize::from(entry.1.is_null());
-                entry.1 = co;
+                live.count += usize::from(entry.1.is_none());
+                entry.1 = Some(co);
             }
             _ => {
-                live.entries.insert(at, (cid, co));
+                live.entries.insert(at, (cid, Some(co)));
                 live.count += 1;
             }
         }
@@ -59,14 +59,14 @@ impl Scheduler {
         let Some(entry) = live
             .entries
             .get_mut(at)
-            .filter(|e| e.0 == cid && !e.1.is_null())
+            .filter(|e| e.0 == cid && e.1.is_some())
         else {
             return;
         };
-        entry.1 = ptr::null_mut();
+        entry.1 = None;
         live.count -= 1;
         if live.count * 2 <= live.entries.len() {
-            live.entries.retain(|e| !e.1.is_null());
+            live.entries.retain(|e| e.1.is_some());
         }
     }
 
@@ -85,20 +85,19 @@ impl Scheduler {
     }
 
     /// The newest live coroutine older than `before`, with its id.
-    fn older(&self, before: c_long) -> Option<(c_long, *mut Coroutine)> {
+    fn older(&self, before: c_long) -> Option<(c_long, Co)> {
         let live = self.live()?;
         live.entries
             .get(..live.at(before))?
             .iter()
             .rev()
-            .find(|e| !e.1.is_null())
-            .copied()
+            .find_map(|&(cid, co)| Some((cid, co?)))
     }
 }
 
-fn native(co: *mut Coroutine) -> *mut c_void {
-    // SAFETY: registered coroutines are live until their close removes them.
-    unsafe { (*co).native }
+/// A registered coroutine's facade: live until its close removes it.
+fn native(co: Co) -> *mut c_void {
+    co.with(|co| co.native)
 }
 
 /// `print_list`'s state label.
@@ -153,8 +152,7 @@ impl Scheduler {
         let mut before = c_long::MAX;
         while let Some((cid, co)) = self.older(before) {
             before = cid;
-            // SAFETY: registered coroutines are live.
-            let state = unsafe { (*co).state };
+            let state = co.with(|co| co.state);
             let Some(label) = state_label(state) else {
                 std::process::abort();
             };
@@ -168,7 +166,12 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coroutine::tests::scheduler;
+    use crate::coroutine::{Coroutine, tests::scheduler};
+
+    fn co(co: &mut Coroutine) -> Co {
+        // SAFETY: the cases' coroutines outlive their registration.
+        unsafe { Co::of(co) }.unwrap()
+    }
 
     fn coroutine(native: usize, state: i32) -> Coroutine {
         // SAFETY: all-zero is a valid Coroutine (null pointers, zero scalars).
@@ -189,9 +192,9 @@ mod tests {
         unsafe {
             assert_eq!((*sp).count(), 0);
             assert!((*sp).get(1).is_null());
-            (*sp).insert(1, &raw mut a);
-            (*sp).insert(2, &raw mut b);
-            (*sp).insert(3, &raw mut c);
+            (*sp).insert(1, co(&mut a));
+            (*sp).insert(2, co(&mut b));
+            (*sp).insert(3, co(&mut c));
             assert_eq!((*sp).count(), 3);
             assert_eq!((*sp).get(2) as usize, 0xb0);
             assert!((*sp).get(4).is_null());
@@ -225,8 +228,8 @@ mod tests {
         let mut s = scheduler();
         let mut a = coroutine(0, STATE_WAITING);
         let mut b = coroutine(0, STATE_RUNNING);
-        s.insert(7, &raw mut a);
-        s.insert(9, &raw mut b);
+        s.insert(7, co(&mut a));
+        s.insert(9, co(&mut b));
         let mut text = [0u8; 64];
         // SAFETY: a fresh temporary stream, read back and closed here.
         let n = unsafe {

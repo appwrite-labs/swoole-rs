@@ -8,7 +8,7 @@
 use crate::co_socket::Co;
 use crate::offload::{AsyncEvent, AsyncOps, Handler, hook_async};
 use crate::wait_event::native::{coroutine_yield_ex, current};
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_clients::dns::DnsSocket;
 use swoole_rs_clients::resolver::{self, Request};
@@ -35,12 +35,6 @@ pub(crate) fn park_for(timeout: f64) -> bool {
     unsafe { coroutine_yield_ex(co.cast(), timeout) }
 }
 
-/// `co->resume()`.
-pub(crate) unsafe extern "C" fn resume(co: *mut c_void) {
-    // SAFETY: a coroutine parked in `coroutine::async`.
-    unsafe { swoole_rs_coroutine::resume(co) };
-}
-
 extern "C" fn last_error() -> c_int {
     log::last_error()
 }
@@ -51,7 +45,7 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     dispatch: crate::async_threads::dispatch,
     park,
     park_for,
-    resume,
+    resume: swoole_rs_coroutine::resume,
     last_error,
 };
 
@@ -222,24 +216,4 @@ pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
         .iter()
         .map(|address| resolver::c_name(address))
         .collect()
-}
-
-/// [`dns_lookup`] for the hooks system cases: each address through `push(list, ..)`.
-///
-/// # Safety
-/// `domain` is NUL-terminated; `push` accepts `list`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_dns_lookup(
-    domain: *const c_char,
-    family: c_int,
-    timeout: f64,
-    push: unsafe extern "C" fn(*mut c_void, *const c_char),
-    list: *mut c_void,
-) {
-    // SAFETY: as the caller promises.
-    let name = unsafe { CStr::from_ptr(domain) };
-    for address in dns_lookup(name.to_bytes(), family, timeout) {
-        // SAFETY: a NUL-terminated address `push` copies.
-        unsafe { push(list, address.as_ptr()) };
-    }
 }

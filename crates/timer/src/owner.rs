@@ -31,7 +31,7 @@ pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node:
 /// `swoole::TimerDestructor`: `void (*)(TimerNode *)`.
 type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
 /// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
-pub type Plain = unsafe extern "C-unwind" fn(data: *mut c_void);
+pub type Plain = swoole_rs_reactor::DeferCall;
 /// `abandon_selection`'s pending Zend bailout.
 pub type Bailout = unsafe extern "C-unwind" fn();
 /// `TimerNode::TYPE_PHP`.
@@ -84,9 +84,9 @@ impl TimerNode {
         }
     }
 
-    /// A node whose callback is `plain(data)`.
+    /// A node whose callback is `plain(data)`, which `Owner::select` calls directly.
     pub(crate) fn plain(plain: Plain, data: *mut c_void) -> Self {
-        let mut node = Self::new(Some(call_plain), data);
+        let mut node = Self::new(None, data);
         node.plain = Some(plain);
         node
     }
@@ -118,16 +118,6 @@ impl TimerNode {
             round: self.round,
             removed: self.removed,
         }
-    }
-}
-
-/// A `TimerNode::plain` node's callback.
-unsafe extern "C-unwind" fn call_plain(_timer: *mut c_void, node: *mut TimerNode) {
-    // SAFETY: the running node.
-    let node = unsafe { &*node };
-    if let Some(plain) = node.plain {
-        // SAFETY: the caller's function of its data.
-        unsafe { plain(node.data) };
     }
 }
 
@@ -177,7 +167,7 @@ pub struct Owner {
 impl Owner {
     /// `new Timer(manually_trigger)`.
     pub(crate) fn create(manually_trigger: bool) -> *mut Owner {
-        let timer = Box::into_raw(Box::new(Owner {
+        let timer = Box::new(Owner {
             reactor: Cell::new(std::ptr::null_mut()),
             queue: RefCell::default(),
             owner_pid: std::process::id().cast_signed(),
@@ -186,10 +176,9 @@ impl Owner {
             pending_bailout: Cell::new(None),
             base_time: absolute_msec(),
             next_msec: Cell::new(-1),
-        }));
-        // SAFETY: just allocated.
-        unsafe { &*timer }.init(manually_trigger);
-        timer
+        });
+        timer.init(manually_trigger);
+        Box::into_raw(timer)
     }
 
     pub(crate) fn relative_msec(&self) -> i64 {
@@ -239,7 +228,7 @@ impl Owner {
         self.backend.set(backend);
         if backend == REACTOR {
             self.reactor.set(reactor);
-            attach(reactor);
+            attach();
         } else if backend != MANUAL {
             let alarm = swoole_rs_reactor::signal_upstream::Handler::new(alarm);
             _ = swoole_rs_reactor::signal_upstream::set(libc::SIGALRM, alarm, false);
@@ -297,10 +286,16 @@ impl Owner {
         }
     }
 
-    pub(crate) fn add(&self, msec: c_long, persistent: bool, node: TimerNode) -> *mut TimerNode {
+    /// The added node and its id, or none.
+    pub(crate) fn add(
+        &self,
+        msec: c_long,
+        persistent: bool,
+        node: TimerNode,
+    ) -> Option<(*mut TimerNode, c_long)> {
         if msec <= 0 {
             warning(c"add", format_args!("msec value[{msec}] is invalid"));
-            return std::ptr::null_mut();
+            return None;
         }
         let msec = swr_v1_timer_add_delay(msec, persistent);
         let node = Box::into_raw(Box::new(node));
@@ -316,7 +311,7 @@ impl Owner {
             );
             // SAFETY: the node was never handed to the queue.
             drop(unsafe { Box::from_raw(node) });
-            return std::ptr::null_mut();
+            return None;
         }
         let node = apply(&view);
         let next = swr_v1_timer_rearm_after_add(self.next_msec.get(), msec);
@@ -324,7 +319,7 @@ impl Owner {
             self.set(next);
             self.next_msec.set(next);
         }
-        node
+        Some((node, view.id))
     }
 
     /// Whether `id` was removed.
@@ -416,13 +411,21 @@ impl Owner {
             }
             check(status);
             let node = apply(&view);
-            // SAFETY: the node the queue just selected.
-            let node_ref = unsafe { &*node };
-            if !node_ref.removed
-                && let Some(callback) = node_ref.callback
-            {
-                // SAFETY: the node's own callback, of this timer and the node.
-                unsafe { callback(std::ptr::from_ref(self).cast_mut().cast(), node) };
+            // SAFETY: the node the queue just selected; the copies are read before it runs.
+            let TimerNode {
+                plain,
+                callback,
+                data,
+                ..
+            } = *unsafe { &*node };
+            if view.removed == 0 {
+                if let Some(plain) = plain {
+                    // SAFETY: the node's function of its own data.
+                    unsafe { plain(data) };
+                } else if let Some(callback) = callback {
+                    // SAFETY: the node's own callback, of this timer and the node.
+                    unsafe { callback(std::ptr::from_ref(self).cast_mut().cast(), node) };
+                }
             }
             self.complete(view.id);
         }
@@ -478,14 +481,12 @@ impl Owner {
     }
 }
 
-/// Hooks this thread's timer to `reactor`, the thread's: select after each loop
+/// Hooks this thread's timer to the thread's reactor: select after each loop
 /// round, keep the loop while a timer is pending, and free the timer with it.
-fn attach(reactor: *mut c_void) {
+fn attach() {
     swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
     swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
-    // SAFETY: `reactor` is the thread's, whose destroy queue this is; `destroyed`
-    // takes it back.
-    unsafe { event_api::on_destroy_with(destroyed, reactor) };
+    event_api::on_destroy(destroyed);
 }
 
 /// The exit condition: no timer is pending.
@@ -494,15 +495,13 @@ extern "C-unwind" fn idle(_event_num: &mut usize) -> bool {
 }
 
 /// The reactor's destroy callback: frees this thread's timer, closing a
-/// selection a bailout left.
-unsafe extern "C-unwind" fn destroyed(reactor: *mut c_void) {
+/// selection a bailout left. `swoole_event_free` destroys the thread's reactor
+/// before it clears it, so the thread's reactor is the one being destroyed.
+extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let Some(timer) = crate::wrapper::current() else {
         return;
     };
-    // The reactor being destroyed, which `attach` registered.
-    let fields = ReactorPrepared::of(reactor).fields;
-    // SAFETY: its live fields.
-    if unsafe { (*fields).bailout } {
+    if event_api::swoole_event_bailed_out() {
         timer.abandon(None);
     }
     crate::wrapper::swoole_timer_free();
@@ -614,10 +613,10 @@ mod tests {
                     log.events.push(label.to_ascii_lowercase());
                 }),
             }));
-            let node = self
+            let (node, _) = self
                 .timer()
-                .add(1000, repeat, TimerNode::new(Some(call), hooks.cast()));
-            assert!(!node.is_null(), "add failed");
+                .add(1000, repeat, TimerNode::new(Some(call), hooks.cast()))
+                .expect("add failed");
             unsafe { (*node).exec_msec = 0 };
             self.timer().update(unsafe { &*node });
             unsafe { (*node).destructor = Some(destruct) };

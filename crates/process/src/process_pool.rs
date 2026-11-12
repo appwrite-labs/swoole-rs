@@ -15,6 +15,7 @@ use crate::task_file::Packed;
 use crate::worker_record::Worker;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use std::sync::atomic::AtomicU32;
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -154,6 +155,28 @@ impl PoolRecord {
     /// `workers` holds the pool's `worker_num` records, live as long as the pool.
     pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
         self.workers = workers;
+    }
+
+    /// `f` over the pool's IPC state; `None` before `create`.
+    pub(crate) fn with_ipc<R>(&self, f: impl FnOnce(&mut PoolIpc) -> R) -> Option<R> {
+        // SAFETY: `ipc` is crate-private: null, or the state `create` made until
+        // `destroy` frees it. Only these calls borrow it, none across a callback, so
+        // nothing else borrows it while `f` runs.
+        unsafe { self.ipc.as_mut() }.map(f)
+    }
+
+    /// The pool's stream listener (a native socket), or null.
+    #[must_use]
+    pub fn ipc_listener(&self) -> *mut c_void {
+        self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc))
+            .unwrap_or(ptr::null_mut())
+    }
+
+    /// The stream connection being served (a native socket), or null.
+    #[must_use]
+    pub fn ipc_connection(&self) -> *mut c_void {
+        self.with_ipc(|ipc| crate::pool::pool_ipc_connection(ipc))
+            .unwrap_or(ptr::null_mut())
     }
 
     /// The registry `create` made, or null.
@@ -697,6 +720,7 @@ setters!(
     worker_num / set_worker_num: u32,
     max_request / set_max_request: u32,
     max_request_grace / set_max_request_grace: u32,
+    scheduler_warning / set_scheduler_warning: u8,
     workers / set_workers: *mut WorkerRecord,
     pipes / set_pipes: *mut c_void,
     registry / set_registry: *mut WorkerRegistry,
@@ -732,32 +756,25 @@ impl<H: PoolHost> Pool<H> {
 
     /// The worker at `index`, which must be below `worker_num`.
     fn worker_at(&self, index: u32) -> Worker<'_> {
-        assert!(index < self.worker_num(), "worker {index} out of range");
-        // SAFETY: one of the `worker_num` records `create` allocated, live for the pool's lifetime.
-        unsafe { Worker::new(self.worker(index)) }
+        let worker = self.record().worker(index as usize);
+        assert!(worker.is_some(), "worker {index} out of range");
+        worker.unwrap_or_else(|| unreachable!())
     }
 
-    /// The pool's `worker_num` records.
-    fn worker_records(&self) -> &[WorkerRecord] {
-        if self.workers().is_null() {
-            return &[];
-        }
-        // SAFETY: `create` allocates `worker_num` records, live for the pool's lifetime.
-        unsafe { std::slice::from_raw_parts(self.workers(), self.worker_num() as usize) }
-    }
-
-    /// The pool's IPC state, or none before `create` makes it. The borrow of the
-    /// pool lasts as long as the state's, so no operation runs meanwhile.
-    fn ipc_state(&mut self) -> Option<&mut PoolIpc> {
-        // SAFETY: null, or the box `create` made, live until `destroy` clears the
-        // field; only this operation's thread reaches it, through `self`.
-        unsafe { self.ipc().as_mut() }
+    /// The live pool this runs over.
+    fn record(&self) -> &PoolRecord {
+        // SAFETY: `p` is the live pool this runs over.
+        unsafe { &*self.p }
     }
 
     /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
     fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
-        // SAFETY: `p` is the live pool this runs over.
-        unsafe { &*self.p }.with_registry(f)
+        self.record().with_registry(f)
+    }
+
+    /// `f` over the pool's IPC state ([`PoolRecord::with_ipc`]).
+    fn with_ipc<R>(&self, f: impl FnOnce(&mut PoolIpc) -> R) -> Option<R> {
+        self.record().with_ipc(f)
     }
 
     /// `get_worker_by_pid`: the pool's worker at `pid`, or null.
@@ -890,8 +907,8 @@ impl<H: PoolHost> Pool<H> {
     fn start_check(&mut self) -> i64 {
         if self.ipc_mode() == IPC_SOCKET
             && self
-                .ipc_state()
-                .is_none_or(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
+                .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
+                .unwrap_or(true)
         {
             self.op(LOG_MUST_LISTEN, 0);
             return SW_ERR;
@@ -1133,9 +1150,7 @@ impl<H: PoolHost> Pool<H> {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 let size = self.max_packet_size();
-                if let Some(ipc) = self.ipc_state() {
-                    pool_ipc_prepare(ipc, size);
-                }
+                self.with_ipc(|ipc| pool_ipc_prepare(ipc, size));
                 self.op(OP_PIPE_HANDLER, 0);
             } else {
                 self.op(OP_PIPE_HANDLER, 1);
@@ -1251,73 +1266,106 @@ impl<H: PoolHost> Pool<H> {
     }
 
     /// `ProcessPool::push_message(type, data, length)`.
-    fn push(&mut self, kind: u8, data: *const u8, length: usize) -> i64 {
+    fn push(&mut self, kind: u8, data: &[u8]) -> i64 {
         if self.message_box().is_null() {
             return SW_ERR;
         }
         let size = self.h.event_size();
-        assert!(length < size - EVENT_DATA, "the message fits in EventData");
-        let mut message = vec![0u64; size.div_ceil(8)];
-        // The DataHead's length and type share the word at `EVENT_LEN`: the length
-        // in its first four bytes, the type in its seventh.
-        const {
-            assert!(
-                EVENT_LEN.is_multiple_of(8) && EVENT_TYPE == EVENT_LEN + 6,
-                "DataHead's len and type lie in one word"
-            );
-        };
-        let [a, b, c, d] = u32::try_from(length).unwrap_or(u32::MAX).to_ne_bytes();
-        if let Some(word) = message.get_mut(EVENT_LEN / 8) {
-            *word = u64::from_ne_bytes([a, b, c, d, 0, 0, kind, 0]);
+        assert!(
+            data.len() < size - EVENT_DATA,
+            "the message fits in EventData"
+        );
+        let mut bytes = vec![0u8; size.next_multiple_of(8)];
+        let len = u32::try_from(data.len()).unwrap_or(u32::MAX).to_ne_bytes();
+        let fields = [
+            (EVENT_TYPE, &[kind][..]),
+            (EVENT_LEN, &len),
+            (EVENT_DATA, data),
+        ];
+        for (at, field) in fields {
+            if let Some(to) = bytes.get_mut(at..at + field.len()) {
+                to.copy_from_slice(field);
+            }
         }
-        let bytes = message.as_mut_ptr().cast::<u8>();
-        // SAFETY: the caller's `length` bytes fit in the data field (asserted).
-        unsafe { ptr::copy_nonoverlapping(data, bytes.wrapping_add(EVENT_DATA), length) };
-        self.push_message(bytes)
+        // The message box copies the event out of 8-aligned words, as `EventData` is.
+        let message: Vec<u64> = bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_ne_bytes(*word))
+            .collect();
+        self.push_message(message.as_ptr().cast())
     }
 
     /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
-    /// listener, or a worker's pipe or queue.
-    fn dispatch(&mut self, event: *mut u8, worker_id: *mut c_int, blocking: bool) -> i64 {
-        // SAFETY: the caller's EventData.
-        let size =
-            unsafe { event.wrapping_add(EVENT_LEN).cast::<u32>().read_unaligned() } + HEAD_SIZE;
+    /// listener, or a worker's pipe or queue (scheduled when `*worker_id` is
+    /// negative). An `event` shorter than its head's length is refused.
+    fn dispatch(&mut self, event: &[u8], worker_id: &mut c_int, blocking: bool) -> i64 {
+        let Some(&len) = event.get(EVENT_LEN..).and_then(<[u8]>::first_chunk) else {
+            return SW_ERR;
+        };
+        let size = u32::from_ne_bytes(len).saturating_add(HEAD_SIZE);
+        let Some(event) = event.get(..size as usize) else {
+            return SW_ERR;
+        };
         if self.use_socket() != 0 {
-            // SAFETY: the caller's EventData holds `size` bytes.
-            let data = unsafe { std::slice::from_raw_parts(event, size as usize) };
-            let ipc = self.ipc_state();
-            let sent = crate::pool::swr_v1_process_pool_ipc_send(ipc.as_deref(), data, blocking);
+            let send = |ipc: Option<&PoolIpc>| {
+                crate::pool::swr_v1_process_pool_ipc_send(ipc, event, blocking)
+            };
+            let sent = self
+                .with_ipc(|ipc| send(Some(ipc)))
+                .unwrap_or_else(|| send(None));
             return if sent { SW_OK } else { SW_ERR };
         }
-        let p = self.p;
-        let round_id = p
-            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
-            .cast::<u32>();
-        let warning = p
-            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, scheduler_warning))
-            .cast::<u8>();
+        if *worker_id < 0 {
+            *worker_id = if self.schedule_by_sysvmsg() {
+                0
+            } else {
+                self.schedule().cast_signed()
+            };
+        }
         let Some(native) = self.h.native() else {
             return SW_ERR;
         };
-        // SAFETY: the pool's records, counter and flag; the caller's event and out-pointer.
+        let workers = |index| {
+            u32::try_from(index)
+                .ok()
+                .filter(|&index| index < self.worker_num())
+                .map(|index| self.worker_at(index))
+        };
+        // SAFETY: the pool's own records, and their pipes.
         let sent = unsafe {
             crate::pool::pool_dispatch(
                 native,
-                p.cast(),
-                self.workers(),
-                self.worker_num(),
+                self.p.cast(),
+                workers,
                 self.start_id(),
-                round_id,
-                warning,
-                self.schedule_by_sysvmsg(),
                 self.use_msgqueue() != 0,
                 worker_id,
                 event,
-                size,
                 blocking,
             )
         };
         if sent { SW_OK } else { SW_ERR }
+    }
+
+    /// `ProcessPool::schedule`: the next idle worker, round robin; the last one
+    /// tried, with the scheduler warning set, when all are busy.
+    fn schedule(&mut self) -> u32 {
+        let round = self
+            .p
+            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
+            .cast::<u32>();
+        // SAFETY: the live pool's aligned counter, which other processes update
+        // atomically.
+        let round = unsafe { AtomicU32::from_ptr(round) };
+        let (target, warning) = crate::pool::pool_schedule(self.worker_num(), round, |target| {
+            crate::pool::idle(self.worker_at(target))
+        });
+        if warning {
+            self.set_scheduler_warning(1);
+        }
+        target
     }
 
     /// `ProcessPool::destroy`.
@@ -1392,10 +1440,14 @@ impl<H: PoolHost> Reap for Pool<H> {
             return RELOAD_NONE;
         }
         self.set_reload_init(false);
-        let task = Pool::reload_task(self);
-        // SAFETY: null, or the reload `reload` started, live until `drop_reload_task`.
-        if let Some(task) = unsafe { task.as_mut() } {
-            task.add_workers(self.worker_records());
+        let workers: Vec<_> = (0..self.worker_num() as usize)
+            .filter_map(|i| self.record().worker(i))
+            .map(|worker| (worker.pid(), worker.id()))
+            .collect();
+        if let Some(task) = self.active_reload() {
+            for (pid, id) in workers {
+                task.add(pid, id);
+            }
         }
         RELOAD_KILL_ONE
     }
@@ -1417,20 +1469,17 @@ impl<H: PoolHost> Reap for Pool<H> {
 }
 
 /// Run `f` over the pool with the native side.
-///
-/// # Safety
-/// `pool` is a live `ProcessPool`.
-unsafe fn with<T>(
+fn with<T>(
     native: &dyn PoolNative,
-    pool: *mut PoolRecord,
+    pool: PoolRef<'_>,
     f: impl FnOnce(&mut Pool<Native<'_>>) -> T,
 ) -> T {
     let mut pool = Pool {
         h: Native {
             native,
-            pool: pool.cast(),
+            pool: pool.raw().cast(),
         },
-        p: pool,
+        p: pool.raw(),
     };
     f(&mut pool)
 }
@@ -1447,39 +1496,29 @@ pub fn swr_v1_process_pool_create(
     key: c_int,
     mode: u8,
 ) -> i64 {
-    // SAFETY: a live pool.
-    unsafe { with(native, pool.raw(), |p| p.create(worker_num, key, mode)) }
+    with(native, pool, |p| p.create(worker_num, key, mode))
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
-///
-/// # Safety
-/// `pool` a live `ProcessPool`; `data` holds `length` bytes.
-pub unsafe fn swr_v1_process_pool_push(
+pub fn swr_v1_process_pool_push(
     native: &dyn PoolNative,
-    pool: *mut PoolRecord,
+    pool: PoolRef<'_>,
     kind: u8,
-    data: *const u8,
-    length: usize,
+    data: &[u8],
 ) -> i64 {
-    // SAFETY: as the caller guarantees.
-    unsafe { with(native, pool, |p| p.push(kind, data, length)) }
+    with(native, pool, |p| p.push(kind, data))
 }
 
-/// `ProcessPool::dispatch` (`blocking`: `dispatch_sync`) of the `EventData` at `event`.
-///
-/// # Safety
-/// `pool` a live `ProcessPool`; `event` an `EventData`
-/// and `worker_id` writable.
-pub unsafe fn swr_v1_process_pool_dispatch_event(
+/// `ProcessPool::dispatch` (`blocking`: `dispatch_sync`) of the `EventData` at the
+/// start of `event`.
+pub fn swr_v1_process_pool_dispatch_event(
     native: &dyn PoolNative,
-    pool: *mut PoolRecord,
-    event: *mut u8,
-    worker_id: *mut c_int,
+    pool: PoolRef<'_>,
+    event: &[u8],
+    worker_id: &mut c_int,
     blocking: bool,
 ) -> i64 {
-    // SAFETY: as the caller guarantees.
-    unsafe { with(native, pool, |p| p.dispatch(event, worker_id, blocking)) }
+    with(native, pool, |p| p.dispatch(event, worker_id, blocking))
 }
 
 /// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).
@@ -1500,17 +1539,15 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
 /// one): the C++ method's return value, or [`RAISE`].
 ///
 /// # Safety
-/// `pool` a live `ProcessPool`; `worker` null or
-/// one of its workers.
+/// `worker` is null or one of the pool's workers.
 pub unsafe fn pool_run_op(
     native: &dyn PoolNative,
-    pool: *mut PoolRecord,
+    pool: PoolRef<'_>,
     worker: *mut WorkerRecord,
     operation: u32,
     arg: u64,
 ) -> i64 {
-    // SAFETY: as the caller guarantees.
-    unsafe { with(native, pool, |p| p.run(worker, operation, arg)) }
+    with(native, pool, |p| p.run(worker, operation, arg))
 }
 
 impl<H: PoolHost> Pool<H> {
@@ -1943,10 +1980,10 @@ mod tests {
     fn push_message_needs_a_message_box_then_wakes_the_master() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        assert_eq!(pool.push(1, b"ab".as_ptr(), 2), SW_ERR);
+        assert_eq!(pool.push(1, b"ab"), SW_ERR);
         record(&mut pool).message_box = ptr::dangling_mut();
         pool.h.answers.insert(OP_BOX_PUSH, -1);
-        assert_eq!(pool.push(1, b"ab".as_ptr(), 2), SW_ERR);
+        assert_eq!(pool.push(1, b"ab"), SW_ERR);
         assert_eq!(ops(&pool), [OP_BOX_PUSH]);
     }
 
@@ -1971,10 +2008,7 @@ mod tests {
         let mut worker_id = -1;
         // Blocking, then over a stream (upstream's async dispatch).
         for blocking in [true, false] {
-            assert_eq!(
-                pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, blocking),
-                SW_OK
-            );
+            assert_eq!(pool.dispatch(&event, &mut worker_id, blocking), SW_OK);
             let mut received = Vec::new();
             listener
                 .accept()
@@ -1996,10 +2030,7 @@ mod tests {
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc = ipc;
         for blocking in [true, false] {
-            assert_eq!(
-                pool.dispatch(event.as_mut_ptr(), &raw mut worker_id, blocking),
-                SW_ERR
-            );
+            assert_eq!(pool.dispatch(&event, &mut worker_id, blocking), SW_ERR);
         }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.

@@ -648,8 +648,10 @@ pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
     if table.is_null() {
         return table;
     }
-    // SAFETY: the pool's blocks are 8-aligned; `size_of::<Table>()` writable bytes.
-    if unsafe { !Table::init(table, rows, conflict, php_hash, table_warning, table_error) } {
+    // SAFETY: the pool's fresh block: 8-aligned, `size_of::<Table>()` writable bytes
+    // nothing else references.
+    let slot = unsafe { &mut *table.cast::<mem::MaybeUninit<Table>>() };
+    if !Table::init(slot, rows, conflict, php_hash, table_warning, table_error) {
         return ptr::null_mut();
     }
     table

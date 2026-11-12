@@ -21,7 +21,7 @@ use crate::ops::{
 };
 use crate::records::ConnectionRecord;
 use crate::view;
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{DataHead, hook, log};
 
 /// What an operation acts on besides the server.
 #[repr(C)]
@@ -159,13 +159,19 @@ pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
     unsafe { run(RUN_SIGNAL, i64::from(signo).cast_unsigned(), &mut ctx) };
 }
 
+/// `SW_GLOBAL_HOOK_BEFORE_SERVER_CREATE`.
+const HOOK_BEFORE_SERVER_CREATE: c_int = 10;
+
 /// `Server::create()`: `SW_ERR` once created, else the hook and then startup's create.
 #[must_use]
 pub fn create(serv: view::Server<'_>) -> c_int {
     if !serv.config().factory_.is_null() {
         return -1;
     }
-    serv.call_hook(view::ServerHook::BeforeCreate);
+    if hook::swoole_isset_hook(HOOK_BEFORE_SERVER_CREATE) {
+        // SAFETY: the hook's callbacks take the server.
+        unsafe { hook::swoole_call_hook(HOOK_BEFORE_SERVER_CREATE, serv.raw()) };
+    }
     c_int::narrow(run_on(serv, RUN_CREATE, 0))
 }
 
@@ -211,21 +217,20 @@ pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) 
 /// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on.
 ///
 /// # Safety
-/// `reactor` is the server's reactor and `conn` one of its connections.
+/// `reactor` is the reactor of `conn`, one of `serv`'s live connections.
 pub unsafe fn connection_incoming(
     serv: view::Server<'_>,
     reactor: *mut c_void,
-    conn: *mut ConnectionRecord,
+    conn: &mut ConnectionRecord,
 ) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let record = unsafe { &*conn };
+    let record = &*conn;
     let mut ctx = NativeContext::new(serv.raw());
     ctx.reactor = reactor;
     ctx.port = serv
         .port_by_server_fd(record.server_fd)
         .map_or(ptr::null_mut(), view::Port::raw);
     ctx.sock = record.socket;
-    ctx.conn = conn.cast();
+    ctx.conn = ptr::from_mut(conn).cast();
     // SAFETY: as the caller guarantees.
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
 }
@@ -521,12 +526,15 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
 /// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`.
 ///
 /// # Safety
-/// `serv` is a live `Server`; `send` a live `SendData`.
-pub unsafe fn send_to_connection(serv: *mut c_void, send: *const c_void) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let header = unsafe { &*send.cast::<SendData>() };
-    let mut ctx = NativeContext::new(serv);
-    ctx.send = send.cast_mut();
+/// `send`'s data is live for the call.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub unsafe fn send_to_connection(serv: view::Server<'_>, send: &SendData) -> c_int {
+    let header = send;
+    let mut ctx = NativeContext::new(serv.raw());
+    ctx.send = ptr::from_ref(send).cast_mut().cast();
     ctx.session_id = header.info.fd;
     ctx.data = header.data.cast();
     ctx.length = header.info.len;
@@ -616,6 +624,15 @@ pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
     run_on(serv, RUN_NATIVE_OP, crate::ops::OP_REACTOR_BARRIER.into());
 }
 
+/// Runs the native op `op` over `ctx`, which holds its operands.
+///
+/// # Safety
+/// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
+unsafe fn native_op(op: u32, ctx: &mut NativeContext) -> bool {
+    // SAFETY: as the caller guarantees.
+    unsafe { run(RUN_NATIVE_OP, op.into(), ctx) != 0 }
+}
+
 /// `Server::get_package_max_length(conn)`, over one of `serv`'s connections.
 #[must_use]
 pub fn package_max_length(serv: view::Server<'_>, conn: &ConnectionRecord) -> u32 {
@@ -638,7 +655,7 @@ pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
     ctx.session_id = session_id;
     ctx.number = CLOSE_ACTIVELY | if reset { CLOSE_RESET } else { 0 };
     // SAFETY: the live server.
-    unsafe { run(RUN_NATIVE_OP, OP_FACTORY_END.into(), &mut ctx) != 0 }
+    unsafe { native_op(OP_FACTORY_END, &mut ctx) }
 }
 
 /// `Server::notify(conn, event)`: the factory hears `event` for `conn`.
@@ -658,7 +675,7 @@ pub fn notify(serv: view::Server<'_>, conn: &ConnectionRecord, event: c_int) -> 
     let mut ctx = NativeContext::new(serv.raw());
     ctx.object = (&raw mut head).cast();
     // SAFETY: the live server; the head lives for the call.
-    unsafe { run(RUN_NATIVE_OP, OP_FACTORY_NOTIFY.into(), &mut ctx) != 0 }
+    unsafe { native_op(OP_FACTORY_NOTIFY, &mut ctx) }
 }
 
 /// `SW_SERVER_EVENT_PIPE_MESSAGE` (server.cc asserts it).
@@ -682,7 +699,7 @@ pub unsafe extern "C" fn send_pipe_message(
     // `EventData::size()`: the head and its payload.
     ctx.length = 40 + head.len;
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_NATIVE_OP, OP_PIPE_TO_WORKER.into(), &mut ctx) != 0 }
+    unsafe { native_op(OP_PIPE_TO_WORKER, &mut ctx) }
 }
 
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
@@ -947,7 +964,7 @@ mod tests {
                 data: data.cast_const().cast(),
             };
             let task_at = (&raw mut task).cast::<c_void>();
-            assert_eq!(send_to_connection(serv, task_at), -1, "SW_ERR");
+            assert_eq!(send_to_connection(server(), &task), -1, "SW_ERR");
             assert_eq!(
                 sent(),
                 (RUN_SC_SEND, 2, sv, task_at.addr(), 0x80, 5, 13, 0, 0),
