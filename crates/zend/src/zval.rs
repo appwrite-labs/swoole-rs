@@ -16,12 +16,12 @@ use crate::{
         swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
         swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
         swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
-        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
-        swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
-        zend_class_entry, zend_double_to_str, zend_hash_add_new, zend_hash_index_add,
-        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string,
-        zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_read_property,
+        swr_zend_try_symtable_update, swr_zend_zval_value_name, swr_zval_is_true,
+        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_double_to_str,
+        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
+        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
+        zend_string, zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -194,6 +194,41 @@ impl Value {
         let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
         // SAFETY: null, or a slot of the object, which the borrow keeps alive.
         unsafe { Self::from_ptr(slot) }
+    }
+
+    /// `zend_read_property(scope, object, name, silent)` of an object, in
+    /// `zend_try`: a copy of the property `scope` sees (the object's own class
+    /// for None), or the value a `__get` returned. None for no object.
+    /// # Errors
+    /// The bailout a `__get` raised, trapped.
+    pub fn read_property(
+        &self,
+        scope: Option<&crate::Class>,
+        name: &CStr,
+    ) -> Result<Option<Owned>, bailout::Bailout> {
+        let Some(object) = self.object() else {
+            return Ok(None);
+        };
+        let scope = scope.map_or_else(|| self.class(), |scope| Some(scope.entry()));
+        let rv = Owned::default();
+        let mut found = ptr::null_mut();
+        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
+        // reads `name`, and writes `rv` (undefined, this frame's) or nothing.
+        bailout::trapped(unsafe {
+            swr_zend_try_read_property(
+                scope.unwrap_or(ptr::null_mut()),
+                object,
+                name.as_ptr(),
+                name.count_bytes(),
+                rv.as_ptr(),
+                &raw mut found,
+            )
+        })?;
+        if found == rv.as_ptr() {
+            return Ok(Some(rv));
+        }
+        // SAFETY: null, or a property slot of the object, which the borrow keeps alive.
+        Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
     }
 
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
