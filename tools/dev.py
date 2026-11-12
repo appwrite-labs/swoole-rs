@@ -633,6 +633,16 @@ def docker(arguments):
         subprocess.run(['docker', 'build', '-t', image, str(ROOT / '.devcontainer')], check=True)
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                                           cwd=ROOT, text=True).strip())
+    # A commit made inside runs this worktree's hooks (core.hooksPath may name a host path
+    # that isn't mounted, and git skips a missing hooks directory silently), as the host's user.
+    config = {'core.hooksPath': '.githooks'}
+    for key in ['user.name', 'user.email']:
+        value = subprocess.run(['git', 'config', key], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        if value:
+            config[key] = value
+    git_config = [f'GIT_CONFIG_COUNT={len(config)}']
+    for index, (key, value) in enumerate(config.items()):
+        git_config += [f'GIT_CONFIG_KEY_{index}={key}', f'GIT_CONFIG_VALUE_{index}={value}']
     architecture = os.uname().machine
     mounts = [ROOT, common] if not common.is_relative_to(ROOT) else [ROOT]
     # Linux builds live in target/docker/<arch>/, seen inside at their usual paths, so
@@ -647,6 +657,7 @@ def docker(arguments):
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
                '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
+               *[part for variable in git_config for part in ('-e', variable)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 
