@@ -526,45 +526,26 @@ fn set_option(
 fn meta_data(stream: *mut php_stream, socket: &Socket, data: *mut zval) {
     // SAFETY: Zend lends `stream_get_meta_data`'s result array for the call.
     let data = unsafe { ArrayMut::from_ptr(data) };
-    let ssl = socket.ssl();
-    if !ssl.is_null() {
-        data.insert(b"crypto", crypto(ssl).into_owned());
+    if let Some(session) = socket.ssl_session() {
+        let protocol: &[u8] = match session.version {
+            0x304 => b"TLSv1.3",
+            0x303 => b"TLSv1.2",
+            0x302 => b"TLSv1.1",
+            0x301 => b"TLSv1",
+            0x300 => b"SSLv3",
+            _ => b"UNKNOWN",
+        };
+        let mut crypto = OwnedArray::default();
+        crypto.insert_bytes(b"protocol", Some(protocol));
+        crypto.insert_bytes(b"cipher_name", Some(session.cipher_name.to_bytes()));
+        crypto.insert_long(b"cipher_bits", session.cipher_bits.into());
+        crypto.insert_bytes(b"cipher_version", Some(session.cipher_version.to_bytes()));
+        data.insert(b"crypto", crypto.into_owned());
     }
     data.insert_bool(b"timed_out", socket.error() == libc::ETIMEDOUT);
     // SAFETY: a live stream.
     data.insert_bool(b"eof", unsafe { (*stream).eof() } != 0);
     data.insert_bool(b"blocked", true);
-}
-
-/// The `crypto` metadata of a live connection.
-fn crypto(ssl: *mut openssl_sys::SSL) -> OwnedArray {
-    // SAFETY: a live connection.
-    let protocol: &[u8] = match unsafe { openssl_sys::SSL_version(ssl) } {
-        0x304 => b"TLSv1.3",
-        0x303 => b"TLSv1.2",
-        0x302 => b"TLSv1.1",
-        0x301 => b"TLSv1",
-        0x300 => b"SSLv3",
-        _ => b"UNKNOWN",
-    };
-    // SAFETY: a live connection; OpenSSL takes a null cipher below.
-    let cipher = unsafe { openssl_sys::SSL_get_current_cipher(ssl) };
-    // SAFETY: as above.
-    let bits = unsafe { openssl_sys::SSL_CIPHER_get_bits(cipher, ptr::null_mut()) };
-    // SAFETY: as above.
-    let name = unsafe { openssl_sys::SSL_CIPHER_get_name(cipher) };
-    // SAFETY: as above.
-    let version = unsafe { openssl_sys::SSL_CIPHER_get_version(cipher) };
-    // SAFETY: OpenSSL's cipher names and versions are static and NUL-terminated.
-    let name = unsafe { CStr::from_ptr(name) };
-    // SAFETY: as above.
-    let version = unsafe { CStr::from_ptr(version) };
-    let mut crypto = OwnedArray::default();
-    crypto.insert_bytes(b"protocol", Some(protocol));
-    crypto.insert_bytes(b"cipher_name", Some(name.to_bytes()));
-    crypto.insert_long(b"cipher_bits", bits.into());
-    crypto.insert_bytes(b"cipher_version", Some(version.to_bytes()));
-    crypto
 }
 
 /// `PHP_STREAM_OPTION_XPORT_API`.

@@ -17,7 +17,7 @@ use swoole_rs_zend::{
     sys::{
         IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL,
         ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_dval_to_lval_safe,
-        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_type_error, zend_ulong,
+        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_ulong,
         zend_use_resource_as_offset,
     },
 };
@@ -281,8 +281,7 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
         _ => {
             // Both of upstream's errors, in its order.
             call.argument_type_error(1, c"Illegal offset type");
-            // SAFETY: in a handler; Zend copies the message.
-            unsafe { zend_type_error(c"%s".as_ptr(), c"Illegal offset type".as_ptr()) };
+            swoole_rs_zend::type_error(c"Illegal offset type");
             None
         }
     }

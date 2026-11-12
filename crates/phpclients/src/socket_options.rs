@@ -127,7 +127,7 @@ fn size(value: &Value) -> Result<i64, Stop> {
     let Some(string) = value.str() else {
         return long(value);
     };
-    string.parse_quantity().or_else(|error| {
+    string.parse_quantity().or_else(|(_, error)| {
         let message = [
             b"failed to parse '".as_slice(),
             string.c_str().to_bytes(),

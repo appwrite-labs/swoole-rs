@@ -14,7 +14,7 @@ use swoole_rs_hooks::stdio::{
 };
 use swoole_rs_phpruntime::co;
 use swoole_rs_websocket_ffi::frame_api::get_package_length;
-use swoole_rs_zend::{Array, Call, Owned, Value};
+use swoole_rs_zend::{Array, Owned, Value};
 
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
 /// the message it is assembling. Framing is crates/phphttp's, which depends
@@ -37,9 +37,9 @@ pub trait WebSocket {
         code: i64,
         compress: bool,
     ) -> c_int;
-    /// `websocket::recv_frame` on `socket` into the call's return slot; a
-    /// bailout it defers is the handler's to raise.
-    fn recv(&self, socket: Co, call: &Call, timeout: f64);
+    /// `websocket::recv_frame` on `socket`: the frame for the call's return
+    /// slot; a bailout it defers is the handler's to raise.
+    fn recv(&self, socket: Co, timeout: f64) -> Owned;
 }
 
 static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();

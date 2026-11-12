@@ -667,15 +667,15 @@ impl ZStr {
 
     /// `zend_ini_parse_quantity`: an ini quantity ("64M").
     /// # Errors
-    /// Zend's message when the string does not parse.
-    pub fn parse_quantity(&self) -> Result<zend_long, ZString> {
+    /// What Zend parsed before the string stopped parsing, and its message.
+    pub fn parse_quantity(&self) -> Result<zend_long, (zend_long, ZString)> {
         let mut error = ptr::null_mut();
         // SAFETY: a live string; Zend writes a new error string or leaves null.
         let size = unsafe { zend_ini_parse_quantity(self.as_ptr(), &raw mut error) };
         if error.is_null() {
             Ok(size)
         } else {
-            Err(ZString(error))
+            Err((size, ZString(error)))
         }
     }
 }

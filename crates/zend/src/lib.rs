@@ -38,7 +38,10 @@ pub use call::{Call, Invalid, kind, type_of};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, class_name, unset_property_deny};
 pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown};
-pub use error::{E_ERROR, E_WARNING, Message, report, throw_exception, zend_error};
+pub use error::{
+    E_ERROR, E_WARNING, Message, report, throw_error, throw_exception, type_error, type_name,
+    zend_error,
+};
 pub use function::create_object_deny;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, property,

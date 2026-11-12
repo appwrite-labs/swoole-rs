@@ -3,13 +3,13 @@
 //! become shared tables, containers and thread resources are shared by
 //! reference, and sockets by a duplicated descriptor.
 use crate::{array::Array, barrier, classes, host, queue::Queue, request};
-use std::{cmp::Ordering, ffi::c_int, ptr, sync::Arc};
+use std::{cmp::Ordering, ffi::c_int, sync::Arc};
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
     Call, Owned, Value as ZValue, ZString, bailout, numeric,
     sys::{
         IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
-        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp, zend_throw_error,
+        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp,
     },
 };
 
@@ -371,8 +371,8 @@ impl Item {
             p if p == pair(IS_OBJECT, IS_NULL) => 1,
             p if p == pair(IS_NULL, IS_OBJECT) => -1,
             _ => {
-                // SAFETY: a sort Zend runs inside a request; Zend copies the message.
-                unsafe { zend_throw_error(ptr::null_mut(), c"Unsupported operand types".as_ptr()) };
+                // A sort Zend runs inside a handler.
+                swoole_rs_zend::throw_error(c"Unsupported operand types");
                 1
             }
         }

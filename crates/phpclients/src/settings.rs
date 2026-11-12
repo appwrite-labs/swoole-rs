@@ -4,14 +4,14 @@
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::{c_int, c_void};
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::{
     Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval,
-    sys::{self, zend_ini_parse_quantity, zval_ptr_dtor},
+    sys::{self, zval_ptr_dtor},
 };
 
 /// `SW_DATA_EOF_MAXLEN`.
@@ -101,12 +101,8 @@ fn parse_to_size(value: &Zval) -> i64 {
     let Some(string) = value.str() else {
         return value.long();
     };
-    let mut error = ptr::null_mut();
-    // SAFETY: a live string; Zend writes an error string or leaves null.
-    let size = unsafe { zend_ini_parse_quantity(string.as_ptr(), &raw mut error) };
-    if !error.is_null() {
-        // SAFETY: Zend's new error string, released on drop.
-        let error = unsafe { ZString::from_raw(error) };
+    // Upstream reports the failure and still applies what Zend parsed.
+    string.parse_quantity().unwrap_or_else(|(size, error)| {
         let text = c_text(string.bytes());
         let reason = c_text(error.bytes());
         report(
@@ -114,8 +110,8 @@ fn parse_to_size(value: &Zval) -> i64 {
             E_ERROR,
             &format!("failed to parse '{text}' to size, Error: {reason}"),
         );
-    }
-    size
+        size
+    })
 }
 
 /// What `%s` prints of `bytes`: up to the first NUL.

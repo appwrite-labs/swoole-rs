@@ -331,6 +331,14 @@ impl Socket {
         self.with_record(std::ptr::null_mut(), |record| record.ssl().cast())
     }
 
+    /// The connection's negotiated protocol and cipher, None without an SSL.
+    pub(crate) fn ssl_session(&self) -> Option<swoole_rs_tls::upstream::Session> {
+        let session = self
+            .co()
+            .with_network(swoole_rs_tls::upstream::socket_ssl_session);
+        session.flatten()
+    }
+
     pub(crate) fn ssl_handshake(&self) -> bool {
         self.co().ssl_handshake()
     }

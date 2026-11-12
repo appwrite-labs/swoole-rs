@@ -70,7 +70,9 @@ fn clamp(timeout: f64) -> f64 {
 fn size(value: &Value) -> Result<i64, (&ZStr, ZString)> {
     match value.str() {
         None => Ok(long(value)),
-        Some(string) => string.parse_quantity().map_err(|error| (string, error)),
+        Some(string) => string
+            .parse_quantity()
+            .map_err(|(_, error)| (string, error)),
     }
 }
 

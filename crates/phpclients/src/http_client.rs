@@ -1075,17 +1075,14 @@ impl Client {
         let Some(ws) = &self.ws else {
             return call.set_bool(false);
         };
-        ws.recv(socket, call, timeout);
-        let value = call.return_value();
+        let frame = ws.recv(socket, timeout);
+        let kind = frame.kind();
+        let empty = frame.bytes().is_some_and(<[u8]>::is_empty);
+        call.set_owned(frame);
         if bailout::pending() {
             return;
         }
-        // SAFETY: the return slot recv_frame filled, live for the handler.
-        let Some(frame) = (unsafe { Value::from_ptr(value) }) else {
-            return;
-        };
-        let kind = frame.kind();
-        if frame.bytes().is_some_and(<[u8]>::is_empty) {
+        if empty {
             self.close(true);
             return;
         }

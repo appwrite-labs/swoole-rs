@@ -194,7 +194,7 @@ unsafe fn call_alias(
     // SAFETY: Zend reads `count_bytes()` bytes.
     let function = unsafe { swr_zend_function_find(alias.as_ptr(), alias.count_bytes()) };
     if function.is_null() {
-        crate::typed::throw(&crate::typed::message(&[
+        swoole_rs_zend::throw_error(&crate::typed::message(&[
             b"The function `",
             alias.to_bytes(),
             b"` is undefined",

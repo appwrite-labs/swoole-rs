@@ -546,6 +546,11 @@ impl Call {
         self.add(|array| array.insert_long(key.to_bytes(), value));
     }
 
+    /// `add_assoc_stringl_ex(return_value, key, value)`, as [`Call::add_assoc_long`].
+    pub fn add_assoc_stringl(&self, key: &CStr, value: &[u8]) {
+        self.add(|array| array.insert_bytes(key.to_bytes(), Some(value)));
+    }
+
     /// `add_assoc_double_ex(return_value, key, value)`, as [`Call::add_assoc_long`].
     pub fn add_assoc_double(&self, key: &CStr, value: f64) {
         self.add(|array| array.insert_double(key.to_bytes(), value));

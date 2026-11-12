@@ -22,8 +22,8 @@ use swoole_rs_zend::{
     bailout::Bailout,
     string::ZBuf,
     sys::{
-        E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry,
-        zend_get_type_by_const, zend_object, zval,
+        E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zend_object,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -614,16 +614,9 @@ fn vector_count(socket: Co, array: &Array) -> Option<usize> {
 
 /// `zend_get_type_by_const(Z_TYPE_P(item))`.
 fn type_name(item: &Value) -> String {
-    #[expect(clippy::cast_possible_wrap, reason = "zval types are below 32")]
-    // SAFETY: Zend returns a static name or null.
-    let name = unsafe { zend_get_type_by_const(item.kind() as c_int) };
-    if name.is_null() {
-        return String::new();
-    }
-    // SAFETY: a static NUL-terminated name.
-    unsafe { CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned()
+    swoole_rs_zend::type_name(item.kind())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// `(array $io_vector, float $timeout = 0)`.

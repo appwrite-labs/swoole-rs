@@ -2,10 +2,11 @@
 //! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::QueueRecord;
@@ -16,7 +17,7 @@ use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        add_assoc_stringl_ex, zend_class_entry, zend_object, zend_object_handlers, zval,
+        zend_class_entry, zend_object, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -838,32 +839,9 @@ fn get_socket(call: &Call) {
     }
 }
 
-/// `add_assoc_stringl_ex(return_value, key, ...)`.
-fn add_bytes(call: &Call, key: &CStr, value: *const c_char, length: usize) {
-    // SAFETY: the return slot holds an array; Zend copies the bytes.
-    unsafe {
-        add_assoc_stringl_ex(
-            call.return_value(),
-            key.as_ptr(),
-            key.count_bytes(),
-            value,
-            length,
-        );
-    }
-}
-
 /// `Server::DISPATCH_UIDMOD` and `DISPATCH_CO_CONN_LB`.
 const DISPATCH_UIDMOD: u8 = 5;
 const DISPATCH_CO_CONN_LB: u8 = 8;
-
-/// `swoole::String`'s head: `length`, `size`, `offset`, then `str`.
-#[repr(C)]
-struct NativeString {
-    length: usize,
-    size: usize,
-    offset: libc::off_t,
-    str: *const c_char,
-}
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -895,13 +873,13 @@ fn get_client_info(call: &Call) {
     {
         call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status));
     }
-    let cert = conn.ssl_client_cert.cast::<NativeString>();
+    let cert = conn.ssl_client_cert.cast::<CppString>();
     if !cert.is_null()
         && conn.ssl_client_cert_pid == swoole_rs_process::methods::swoole_get_worker_pid()
     {
         // SAFETY: the connection's live certificate string.
         let cert = unsafe { &*cert };
-        add_bytes(call, c"ssl_client_cert", cert.str, cert.length);
+        call.add_assoc_stringl(c"ssl_client_cert", cert.view());
     }
     if let Some(server_socket) = serv.at(conn.server_fd) {
         let port = swr_v1_clients_address_port(&server_socket.info);
@@ -913,7 +891,7 @@ fn get_client_info(call: &Call) {
     let remote_port = swr_v1_clients_address_port(&conn.info);
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
     with_host(&conn.info, |ip| {
-        add_bytes(call, c"remote_ip", ip.as_ptr(), ip.count_bytes());
+        call.add_assoc_stringl(c"remote_ip", ip.to_bytes());
     });
     call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id));
     call.add_assoc_long(c"connect_time", conn.connect_time as i64);
