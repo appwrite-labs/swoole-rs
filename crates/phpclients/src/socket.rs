@@ -5,16 +5,16 @@
 //! C++ socket (`crate::native`).
 use crate::{
     constants,
-    native::{self, Co, NewSocket, Socket, Transfer},
+    native::{self, Co, NewSocket, Transfer},
 };
-use libc::{c_int, iovec};
+use libc::c_int;
 use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, CString},
-    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
@@ -22,10 +22,7 @@ use swoole_rs_zend::{
     ZString,
     bailout::Bailout,
     string::ZBuf,
-    sys::{
-        E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zend_object,
-        zval,
-    },
+    sys::{E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -656,13 +653,9 @@ fn write_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64)
             );
             return call.set_bool(false);
         }
-        vectors.push(iovec {
-            iov_base: bytes.as_ptr().cast_mut().cast(),
-            iov_len: bytes.len(),
-        });
+        vectors.push(std::io::IoSlice::new(bytes));
     }
-    // SAFETY: the writes only read the elements' bytes.
-    let (written, _, _) = unsafe { socket.vector(op, &vectors, timeout) };
+    let (written, _, _) = socket.vector(co::Vectors::Write(&vectors), op & 1 == 1, timeout);
     if written < 0 {
         call.set_bool(false);
     } else {
@@ -712,15 +705,13 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
         buffers.push(ZBuf::with_capacity(length));
     }
     let total: usize = buffers.iter().map(ZBuf::capacity).sum();
-    let vectors: Vec<iovec> = buffers
+    let mut vectors: Vec<_> = buffers
         .iter_mut()
-        .map(|buffer| iovec {
-            iov_base: buffer.as_mut_ptr().cast(),
-            iov_len: buffer.capacity(),
-        })
+        .map(|buffer| std::io::IoSliceMut::new(native::room(buffer)))
         .collect();
-    // SAFETY: unshared buffers of the listed lengths.
-    let (read, stopped, offset) = unsafe { socket.vector(op, &vectors, timeout) };
+    let (read, stopped, offset) =
+        socket.vector(co::Vectors::Read(&mut vectors), op & 1 == 1, timeout);
+    drop(vectors);
     let read = match usize::try_from(read) {
         Ok(0) => return call.set_empty_array(),
         Err(_) => return call.set_bool(false),
@@ -960,16 +951,6 @@ fn created(result: Result<Option<Owned>, Bailout>) -> Option<Owned> {
     })
 }
 
-/// The object `value` holds, carrying the reference the value gives up; null for none.
-fn into_object(value: Option<Owned>) -> *mut zend_object {
-    let Some(value) = value else {
-        return ptr::null_mut();
-    };
-    let object = value.object().unwrap_or(ptr::null_mut());
-    let _reference = value.into_zval();
-    object
-}
-
 /// `php_swoole_create_socket(type)`: a new socket object of a native Swoole
 /// socket kind, or none with `errno` or a bailout pending.
 #[must_use]
@@ -987,18 +968,17 @@ pub unsafe fn create_from_fd(fd: i32, kind: i32) -> Option<Owned> {
 }
 
 /// `php_swoole_dup_socket(fd, type)`: an object over a duplicate of `fd`,
-/// which stays the caller's; null as [`create_socket`].
+/// which stays the caller's; none as [`create_socket`].
 #[must_use]
-pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
-    into_object(created(owner::duplicate(fd, kind)))
+pub fn dup(fd: i32, kind: i32) -> Option<Owned> {
+    created(owner::duplicate(fd, kind))
 }
 
-/// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
+/// `php_swoole_get_socket(zobject)`: the object's core socket, if it is a
+/// constructed socket object.
 #[must_use]
-pub fn get_socket(value: &Value) -> Socket {
-    Sock::of(value)
-        .and_then(Sock::co)
-        .map_or(ptr::null_mut(), Co::as_ptr)
+pub fn get_socket(value: &Value) -> Option<Co> {
+    Sock::of(value).and_then(Sock::co)
 }
 
 /// The descriptor and type (`get_fd()`, `get_type()`) of the core socket a

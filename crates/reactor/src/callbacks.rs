@@ -272,30 +272,24 @@ pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c
 }
 
 /// `bool Reactor::if_exit()`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor7if_exitEv")
 )]
-pub unsafe extern "C-unwind" fn reactor_if_exit(reactor: *mut c_void) -> bool {
-    // SAFETY: as the caller promises, on the thread that runs it.
-    if_exit(unsafe { Running::new(reactor) })
+#[must_use]
+pub extern "C-unwind" fn reactor_if_exit(reactor: Running<'_>) -> bool {
+    if_exit(reactor)
 }
 
 /// `int Reactor::wait()`: the loop over the state's backend, the future task before
 /// each kernel wait and the end callbacks after it.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` with an open backend.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor4waitEv")
 )]
-pub unsafe extern "C-unwind" fn reactor_wait(reactor: *mut c_void) -> c_int {
-    // SAFETY: as the caller promises, on the thread that runs it.
-    wait(unsafe { Running::new(reactor) })
+#[must_use]
+pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
+    wait(reactor)
 }
 
 /// `Reactor::wait()` of the reactor `reactor` names.

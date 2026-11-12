@@ -1464,7 +1464,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .cast::<WorkerRecord>()
                 .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
-            let worker = unsafe { &mut *worker };
+            let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
             crate::worker_methods::destroy_worker(worker);
             0
         }
@@ -1829,8 +1829,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 Some(logger) if swr_v1_logger_is_opened(logger) => {
                     swr_v1_logger_redirect(logger, true);
                 }
-                // SAFETY: a NUL-terminated path.
-                _ => unsafe { swoole_redirect_stdout_file(c"/dev/null".as_ptr()) },
+                _ => swoole_redirect_stdout_file(c"/dev/null"),
             }
             // The master, before it starts any thread.
             sign(swoole_daemon(0, 1))
@@ -2509,13 +2508,14 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 if !sent {
                     return Some(0);
                 }
+                // SAFETY: the head and the `len` bytes after it, which nothing writes while
+                // they are sent.
+                let task = unsafe {
+                    swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
+                };
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
                     let (gs, pool) = (o.gs(), o.server().task_pool_ref());
-                    // SAFETY: the packed task, which nothing writes while it is sent.
-                    let task = unsafe {
-                        swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
-                    };
                     swoole_rs_process::task_sync::count_task(
                         &gs.tasking_num,
                         &gs.task_count,

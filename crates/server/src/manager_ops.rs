@@ -423,8 +423,7 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 ctx.worker
             };
             let worker = worker.map_or(null_mut(), Worker::raw);
-            // SAFETY: one of the task pool's workers.
-            let pid = unsafe { methods::spawn(ctx.server().task_pool_ref(), worker) };
+            let pid = methods::spawn(ctx.server().task_pool_ref(), worker);
             if op == OP_SPAWN_TASK_WORKER {
                 return Some(0);
             }

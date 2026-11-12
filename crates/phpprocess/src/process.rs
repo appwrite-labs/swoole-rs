@@ -16,12 +16,12 @@ use std::{
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Value, bailout, handlers, message,
-    set_object,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, bailout, handlers,
+    message,
     string::ZBuf,
     sys::{
-        _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zend_object_addref,
-        swr_zend_object_release, zend_get_executed_filename, zend_object, zend_string,
+        _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_get_executed_filename,
+        zend_string,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -51,8 +51,9 @@ static ROUND_ID: AtomicU32 = AtomicU32::new(0);
 /// the pool frees. Only `queue` is ever freed here, by dropping it.
 #[derive(Default)]
 struct Process {
+    /// Dropped first, as the C++ object's free releases it before the worker.
+    socket: RefCell<Option<Owned>>,
     worker: WorkerSlot,
-    socket: Cell<*mut zend_object>,
     pipe_type: Cell<c_int>,
     enable_coroutine: Cell<bool>,
     blocking: Cell<bool>,
@@ -64,16 +65,6 @@ impl Custom for Process {
     }
     fn new() -> Self {
         Self::default()
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        let socket = self.socket.get();
-        if !socket.is_null() {
-            // SAFETY: the object holds one reference to its exported socket.
-            unsafe { swr_zend_object_release(socket) };
-        }
     }
 }
 
@@ -280,10 +271,9 @@ fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pi
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
 /// as `exit` would. -1 when the callback or the event loop cannot start; a
 /// bailout pending on the way is raised here, as the closing one is.
-/// # Safety
-/// `worker` is the live worker of the Process object `this`.
-pub unsafe fn start_worker(worker: *mut c_void, this: &Value) -> c_int {
-    start_child(worker, this)
+/// `worker` is the Process object `this`'s.
+pub fn start_worker(worker: swoole_rs_process::worker_record::Worker<'_>, this: &Value) -> c_int {
+    start_child(worker.raw().cast(), this)
 }
 
 /// [`start_worker`] on `$this`.
@@ -788,19 +778,16 @@ fn export_socket(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if process.socket.get().is_null() {
+    let mut socket = process.socket.borrow_mut();
+    if socket.is_none() {
         let stream = i64::from(process.pipe_type.get()) == PIPE_TYPE_STREAM;
-        process.socket.set(host::dup_socket(pipe, stream));
-        if process.socket.get().is_null() {
-            call.set_bool(false);
-            return;
-        }
+        *socket = host::dup_socket(pipe, stream);
     }
-    let socket = process.socket.get();
-    // SAFETY: the object keeps its reference; the return value takes a new one.
-    unsafe { swr_zend_object_addref(socket) };
-    // SAFETY: as above.
-    unsafe { set_object(call.return_value(), socket) };
+    match socket.as_ref() {
+        // The object keeps its reference; the return value takes a new one.
+        Some(socket) => call.set_owned(socket.copy()),
+        None => call.set_bool(false),
+    }
 }
 
 fn push(call: &Call) {

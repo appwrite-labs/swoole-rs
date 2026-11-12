@@ -16,7 +16,6 @@ use std::{
     collections::VecDeque,
     ffi::{c_int, c_void},
     mem::ManuallyDrop,
-    ptr,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::{DataHead, log};
@@ -269,8 +268,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     // The data moves into the request's own zval.
     php_swoole_get_recv_data(server, &state.request.zdata, request);
     crate::parse::init_request_parser(ctx);
-    let conn = ptr::from_mut(conn);
-    let result = handle(server, conn, ctx, session, server_fd, &facts).and_then(|route| {
+    let result = handle(server, ctx, session, server_fd, &facts).and_then(|route| {
         if route != REQUEST {
             return context::release_objects(ctx);
         }
@@ -408,10 +406,11 @@ fn notice(message: &str) {
     log::notice(format_args!("{message}"));
 }
 
-/// Parse the request, fill `$request->server` and pick the handler.
+/// Parse the request, fill `$request->server` and pick the handler. The
+/// session's connection is looked up at each use: parsing an upgrade and the
+/// hooks write it.
 fn handle(
     server: view::Server<'_>,
-    conn: *mut ConnectionRecord,
     mut ctx: Ctx,
     session: i64,
     server_fd: c_int,
@@ -440,17 +439,18 @@ fn handle(
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive != 0);
-    addresses(
-        server,
-        // SAFETY: the request's live connection, read before the hooks run.
-        unsafe { &*conn },
-        state,
-        session,
-        facts.local_port,
-        facts.remote_port,
-        facts.loopback,
-        cache,
-    );
+    if let Some(conn) = server.by_session(session) {
+        addresses(
+            server,
+            conn,
+            state,
+            session,
+            facts.local_port,
+            facts.remote_port,
+            facts.loopback,
+            cache,
+        );
+    }
     #[expect(
         clippy::cast_possible_truncation,
         reason = "upstream's (zend_long) cast"
@@ -463,8 +463,9 @@ fn handle(
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_BEFORE_REQUEST, ctx.raw()) };
     }
     // Parsing an upgrade request sets the connection's status.
-    // SAFETY: the request's live connection.
-    let handshake = unsafe { (*conn).websocket_status } == STATUS_CONNECTION;
+    let handshake = server
+        .by_session(session)
+        .is_some_and(|conn| conn.websocket_status == STATUS_CONNECTION);
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
     let callback = php_swoole_server_get_callback(server, server_fd, kind);
     if callback.is_null() {

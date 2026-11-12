@@ -125,12 +125,39 @@ impl SocketAddress {
 }
 
 /// `swoole::PacketLength`: the bytes a length function measures, and the header
-/// length it reports.
+/// length it reports. Rust makes one only over a borrowed slice, so `buf` holds
+/// `buf_size` readable bytes; native code that passes one promises the same.
 #[repr(C)]
-pub struct PacketLength {
-    pub buf: *const u8,
-    pub buf_size: u32,
+pub struct PacketLength<'a> {
+    buf: *const u8,
+    buf_size: u32,
     pub header_len: u32,
+    data: core::marker::PhantomData<&'a [u8]>,
+}
+
+impl<'a> PacketLength<'a> {
+    /// A packet over `data` (its first `u32::MAX` bytes when longer), with no header
+    /// length yet.
+    #[must_use]
+    pub fn new(data: &'a [u8]) -> Self {
+        Self {
+            buf: data.as_ptr(),
+            buf_size: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            header_len: 0,
+            data: core::marker::PhantomData,
+        }
+    }
+
+    /// The bytes to measure.
+    #[must_use]
+    #[inline]
+    pub fn bytes(&self) -> &'a [u8] {
+        if self.buf.is_null() {
+            return &[];
+        }
+        // SAFETY: `buf` holds `buf_size` readable bytes for `'a` (the type's invariant).
+        unsafe { core::slice::from_raw_parts(self.buf, self.buf_size as usize) }
+    }
 }
 
 /// `Protocol::onPackage`: hands on one whole package, a `const RecvData *`, read from

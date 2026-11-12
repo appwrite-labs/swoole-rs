@@ -70,8 +70,6 @@ const ON_ERROR: c_int = 4;
 const ON_BUFFER_FULL: c_int = 5;
 const ON_BUFFER_EMPTY: c_int = 6;
 
-type Listener = unsafe extern "C" fn(*mut c_void, c_int, *const c_char, usize);
-
 /// crates/clients' `ClientRecord`, the head of `network::Client`, with Linux's
 /// 120-byte `network::Address`.
 #[repr(C)]
@@ -129,12 +127,6 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_listen(
-        state: *mut c_void,
-        object: *mut c_void,
-        events: u32,
-        listener: Listener,
-    );
     fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
     fn swr_v1_clients_proxy_fields(state: *const c_void, http: bool) -> *mut ProxyFields;
     fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
@@ -314,9 +306,17 @@ impl<'a> Client<'a> {
                 events |= 1 << kind;
             }
         }
-        let object = std::ptr::from_ref(self).cast_mut().cast();
-        // SAFETY: the boxed client outlives its callbacks.
-        unsafe { swr_v1_clients_listen(self.state, object, events, listener) };
+        let object = std::ptr::from_ref(self).cast::<c_void>();
+        // SAFETY: a live state.
+        let state = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
+        swoole_rs_clients::client::listen(
+            state,
+            events,
+            // SAFETY: the boxed client outlives its callbacks.
+            std::rc::Rc::new(move |kind, data, length| unsafe {
+                listener(object.cast_mut(), kind, data, length);
+            }),
+        );
     }
 
     fn on_connect(&self, body: impl FnMut(&Client<'a>) + 'a) {

@@ -1,10 +1,9 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
-use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
+use libc::{c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
-    mem::MaybeUninit,
     ptr::NonNull,
 };
 use swoole_rs_corebase::log::set_last_error;
@@ -14,7 +13,7 @@ use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::{zval, zval_ptr_dtor},
+    sys::zval,
 };
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
@@ -62,18 +61,22 @@ pub(crate) mod timeout {
     pub(crate) const ALL: i32 = 0xf;
 }
 
-/// The table's `io` operations.
+/// The sending operations: `send_sync`, `send_all`, `send` (once) and `send`.
 #[derive(Clone, Copy)]
-pub enum Io {
-    SendSync = 0,
-    RecvSync = 1,
-    SendAll = 2,
-    SendOnce = 3,
-    Recv = 4,
-    RecvOnce = 5,
-    Peek = 6,
-    Send = 7,
-    RecvAll = 8,
+pub(crate) enum SendOp {
+    Sync,
+    All,
+    Once,
+    Send,
+}
+
+/// The receiving operations: `recv_sync`, `recv`, `recv` (once) and `peek`.
+#[derive(Clone, Copy)]
+pub(crate) enum RecvOp {
+    Sync,
+    Recv,
+    Once,
+    Peek,
 }
 
 /// `SW_WAIT`.
@@ -189,41 +192,30 @@ impl Socket {
         self.co().set_err_code(code);
     }
 
-    /// One `op` transfer of `length` bytes at `buf`: the socket's Rust member, or
-    /// its `network::Socket`'s for the synchronous pair.
-    /// # Safety
-    /// `buf` holds `length` bytes (writable for the receiving operations), or
-    /// `length` is 0.
-    pub(crate) unsafe fn io(&self, op: Io, buf: *mut c_char, length: usize) -> isize {
+    /// One `op` send of `data`: the socket's Rust member, or its
+    /// `network::Socket`'s for the synchronous one.
+    pub(crate) fn send(&self, op: SendOp, data: &[u8]) -> isize {
         let socket = self.co();
-        let data = || -> &[u8] {
-            if length == 0 {
-                return &[];
-            }
-            // SAFETY: per the caller, `length` readable bytes.
-            unsafe { std::slice::from_raw_parts(buf.cast(), length) }
-        };
-        let out = || -> &mut [u8] {
-            if length == 0 {
-                return &mut [];
-            }
-            // SAFETY: per the caller, `length` writable bytes.
-            unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
-        };
         match op {
-            Io::SendSync => socket
-                .with_network(|network| send_sync(network, data(), 0))
+            SendOp::Sync => socket
+                .with_network(|network| send_sync(network, data, 0))
                 .unwrap_or(-1),
-            Io::RecvSync => socket
-                .with_network(|network| recv_sync(network, out(), 0))
+            SendOp::All => socket.send_all(data),
+            SendOp::Once => socket.send_once(data),
+            SendOp::Send => socket.send(data),
+        }
+    }
+
+    /// One `op` receive into `out`, as [`Self::send`].
+    pub(crate) fn recv(&self, op: RecvOp, out: &mut [u8]) -> isize {
+        let socket = self.co();
+        match op {
+            RecvOp::Sync => socket
+                .with_network(|network| recv_sync(network, out, 0))
                 .unwrap_or(-1),
-            Io::SendAll => socket.send_all(data()),
-            Io::SendOnce => socket.send_once(data()),
-            Io::Recv => socket.recv(out()),
-            Io::RecvOnce => socket.recv_once(out()),
-            Io::Peek => socket.peek(out()),
-            Io::Send => socket.send(data()),
-            Io::RecvAll => socket.recv_all(out()),
+            RecvOp::Recv => socket.recv(out),
+            RecvOp::Once => socket.recv_once(out),
+            RecvOp::Peek => socket.peek(out),
         }
     }
 
@@ -232,20 +224,21 @@ impl Socket {
         self.with_record(0, |record| record.catch_error(code))
     }
 
-    /// `recvfrom(buf, length, addr, addrlen)`.
-    /// # Safety
-    /// `buf` holds `length` writable bytes; `addr` holds `*addrlen` bytes.
-    pub(crate) unsafe fn recvfrom(
+    /// `recvfrom(buf, n, addr, addrlen)` into `buf` and `peer`: the bytes received
+    /// and the length of the peer's address.
+    pub(crate) fn recvfrom(
         &self,
-        buf: *mut c_char,
-        length: usize,
-        addr: *mut sockaddr,
-        addrlen: *mut socklen_t,
-    ) -> isize {
-        // SAFETY: per the caller: `length` writable bytes, any value valid.
-        let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), length) };
-        // SAFETY: per the caller.
-        unsafe { self.co().recvfrom(buf, addr, addrlen) }
+        buf: &mut [u8],
+        peer: &mut sockaddr_storage,
+    ) -> (isize, socklen_t) {
+        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
+        let mut size = size_of::<sockaddr_storage>() as socklen_t;
+        // SAFETY: the address holds `size` bytes.
+        let received = unsafe {
+            self.co()
+                .recvfrom(buf, (&raw mut *peer).cast(), &raw mut size)
+        };
+        (received, size)
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
@@ -393,10 +386,10 @@ impl Socket {
 /// The call bailed out.
 pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
-    let retval = certificate.as_ptr();
+    // The caller's bytes, copied into a new string, which drops outside the body.
+    let string = Owned::string(ZString::new(pem));
+    let (argument, retval) = (string.as_ptr(), certificate.as_ptr());
     let read = || {
-        // The caller's bytes, copied into a new string.
-        let mut string: zval = Owned::string(ZString::new(pem)).into_zval();
         let name = c"openssl_x509_read";
         // SAFETY: one live argument and the caller's writable result.
         unsafe {
@@ -404,16 +397,14 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
                 name.as_ptr(),
                 name.count_bytes(),
                 1,
-                &raw mut string,
+                argument,
                 retval,
             );
         }
         bailout::finish();
-        // SAFETY: the string this body made.
-        unsafe { zval_ptr_dtor(&raw mut string) };
     };
-    // SAFETY: the body holds the borrowed bytes, a plain zval and the slot of
-    // `certificate`, which lives outside it.
+    // SAFETY: the body holds the slots of `string` and `certificate`, which live
+    // outside it.
     unsafe { bailout::trap_with(read) }?;
     Ok(certificate)
 }
@@ -488,7 +479,6 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// What the client classes (crates/phpclients, crates/phphttp and crates/phphttp2)
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
-    pub use super::Io;
     use libc::{c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
@@ -497,7 +487,8 @@ pub mod co {
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
-    /// else by the `swSocketType` `kind`; over `fd` unless it is negative.
+    /// else by the `swSocketType` `kind`; over `fd` unless it is negative. The
+    /// caller holds the new socket, live until it frees it.
     /// # Errors
     /// The constructor bailed out.
     pub fn make(
@@ -506,14 +497,15 @@ pub mod co {
         kind: c_int,
         protocol: c_int,
         family: bool,
-    ) -> Result<Socket, Bailout> {
+    ) -> Result<Co, Bailout> {
         let mut made = std::ptr::null_mut();
         if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
             drop(super::Socket::wrap(made, true));
             return Err(Bailout);
         }
-        Ok(made)
+        // SAFETY: the socket just made, which the caller holds until it frees it.
+        Ok(unsafe { Co::of(made) })
     }
 
     /// `delete socket`.
@@ -557,23 +549,28 @@ pub mod co {
         }
     }
 
-    /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
-    /// `count` vectors, with the vector index and byte offset where it stopped.
-    /// # Safety
-    /// The vectors are valid for the operation.
+    /// What a vector operation moves: buffers `readv` fills, or bytes `writev` sends.
+    pub enum Vectors<'a, 'b> {
+        Read(&'a mut [std::io::IoSliceMut<'b>]),
+        Write(&'a [std::io::IoSlice<'b>]),
+    }
+
+    /// `readv` or `writev` over `vectors`, or with `all` `readv_all` or
+    /// `writev_all`, with the vector index and byte offset where it stopped.
     #[must_use]
-    pub unsafe fn vector(
-        socket: Co,
-        op: c_int,
-        vectors: *const iovec,
-        count: c_int,
-    ) -> (isize, c_int, usize) {
-        // SAFETY: per the caller, `count` vectors valid for the operation.
-        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, op >= 2) }) else {
+    pub fn vector(socket: Co, vectors: Vectors<'_, '_>, all: bool) -> (isize, c_int, usize) {
+        let (vectors, count, write) = match vectors {
+            Vectors::Read(read) => (read.as_ptr().cast::<iovec>(), read.len(), false),
+            Vectors::Write(written) => (written.as_ptr().cast::<iovec>(), written.len(), true),
+        };
+        let count = c_int::try_from(count).unwrap_or_else(|_| std::process::abort());
+        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so
+        // these are `count` vectors over live bytes, writable for a read.
+        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, write) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
         };
-        let result = socket.vector(&mut vector, op & 1 == 1);
+        let result = socket.vector(&mut vector, all);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }

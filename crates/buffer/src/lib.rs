@@ -25,19 +25,14 @@ mod typed;
 use std::alloc::{Layout, alloc};
 use std::collections::VecDeque;
 use std::ffi::c_void;
-use std::{mem, ptr, slice};
-pub use typed::{
-    Detached as TypedDetached, Front as TypedFront, swr_v1_buffer_typed_consume,
-    swr_v1_buffer_typed_create, swr_v1_buffer_typed_front, swr_v1_buffer_typed_pop,
-    swr_v1_buffer_typed_push,
-};
+use std::{mem, slice};
+pub use typed::{Detached as TypedDetached, Front as TypedFront};
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 const NOMEM: i32 = -3;
-const PENDING_NATIVE: i32 = -4;
 
 /// A data chunk's length: chunks hold at most `chunk_size: u32` bytes (`appendv`).
 #[expect(
@@ -46,34 +41,6 @@ const PENDING_NATIVE: i32 = -4;
 )]
 pub(crate) fn chunk_length(bytes: &[u8]) -> u32 {
     bytes.len() as u32
-}
-
-#[repr(C)]
-pub struct BufferIovec {
-    pub data: *const u8,
-    pub length: usize,
-}
-
-trait Descriptor {
-    fn data(&self) -> *const u8;
-    fn length(&self) -> usize;
-}
-impl Descriptor for BufferIovec {
-    fn data(&self) -> *const u8 {
-        self.data
-    }
-    fn length(&self) -> usize {
-        self.length
-    }
-}
-#[cfg(unix)]
-impl Descriptor for libc::iovec {
-    fn data(&self) -> *const u8 {
-        self.iov_base.cast()
-    }
-    fn length(&self) -> usize {
-        self.iov_len
-    }
 }
 
 enum Entry {
@@ -96,9 +63,10 @@ fn slice_fits<T>(count: usize) -> bool {
 }
 
 impl Buffer {
-    // No raw exported C operation is used as an internal constructor or mutates
-    // a published owner.
-    fn try_new(chunk_size: u32) -> Result<Box<Self>, i32> {
+    /// A new queue; chunk size 0 means `INT32_MAX`.
+    /// # Errors
+    /// `NOMEM` when the allocation fails.
+    pub fn create(chunk_size: u32) -> Result<Box<Self>, i32> {
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "alloc honours Layout::new::<Buffer>()"
@@ -155,18 +123,37 @@ impl Buffer {
         Ok(bytes)
     }
 
-    // Expose the contiguous export's single descriptor to the optimizer.
+    /// Copies `data` into new entries, atomically: on failure nothing changes.
+    pub fn append(&mut self, data: &[u8]) -> i32 {
+        self.appendv(std::iter::once(data), 0)
+    }
+
+    /// Queued bytes (including sent ones until their entry is popped) and entries.
+    #[must_use]
+    pub fn stats(&self) -> (u32, usize) {
+        (self.length, self.entries.len())
+    }
+
+    /// Drops the queue.
+    /// # Errors
+    /// The queue itself, unchanged, while it still holds a native token.
+    pub fn release(self: Box<Self>) -> Result<(), Box<Self>> {
+        if self
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::TypedToken(_)))
+        {
+            return Err(self);
+        }
+        Ok(())
+    }
+
+    // Expose the contiguous append's single part to the optimizer.
     #[inline(always)]
-    unsafe fn appendv<T: Descriptor>(&mut self, iov: &[T], offset: u64) -> i32 {
+    fn appendv<'a>(&mut self, parts: impl Iterator<Item = &'a [u8]> + Clone, offset: u64) -> i32 {
         let mut total = 0usize;
-        for part in iov {
-            if !slice_fits::<u8>(part.length()) {
-                return OVERFLOW;
-            }
-            if part.length() != 0 && part.data().is_null() {
-                return INVALID;
-            }
-            let Some(sum) = total.checked_add(part.length()) else {
+        for part in parts.clone() {
+            let Some(sum) = total.checked_add(part.len()) else {
                 return OVERFLOW;
             };
             total = sum;
@@ -202,13 +189,13 @@ impl Buffer {
         if self.entries.try_reserve(chunks).is_err() {
             return NOMEM;
         }
-        let mut parts = iov.iter();
+        let mut parts = parts;
         let mut part = parts.next();
         let mut skip = offset;
         while let Some(current) = part
-            && skip >= current.length()
+            && skip >= current.len()
         {
-            skip -= current.length();
+            skip -= current.len();
             part = parts.next();
         }
         let mut left = remaining;
@@ -223,23 +210,16 @@ impl Buffer {
             };
             let mut filled = 0;
             while filled < size {
-                // `remaining` counts the parts' bytes, so they outlast the copy.
                 let Some(current) = part else {
                     self.entries.truncate(old_count);
                     return INVALID;
                 };
-                let count = (current.length() - skip).min(size - filled);
-                if count != 0 {
-                    // SAFETY: `skip + count <= current.length()`, inside the descriptor's non-null,
-                    // readable data (validated above). `bytes` has room for `size` (it never
-                    // reallocates here) and is a separate allocation.
-                    bytes.extend_from_slice(unsafe {
-                        slice::from_raw_parts(current.data().wrapping_add(skip), count)
-                    });
-                }
+                let count = (current.len() - skip).min(size - filled);
+                // `bytes` has room for `size`, so this never reallocates.
+                bytes.extend_from_slice(current.get(skip..skip + count).unwrap_or_default());
                 filled += count;
                 skip += count;
-                if skip == current.length() {
+                if skip == current.len() {
                     part = parts.next();
                     skip = 0;
                 }
@@ -255,59 +235,6 @@ impl Buffer {
         }
         OK
     }
-}
-
-// Admission/output initialization stays ahead of the first allocator effect.
-fn create_buffer(chunk_size: u32, output: Option<&mut *mut Buffer>) -> i32 {
-    let Some(output) = output else {
-        return INVALID;
-    };
-    *output = ptr::null_mut();
-    match Buffer::try_new(chunk_size) {
-        Ok(owner) => {
-            *output = Box::into_raw(owner);
-            OK
-        }
-        Err(status) => status,
-    }
-}
-
-/// Drop a queue only after all native tokens have been detached.
-/// # Safety
-/// A nonnull handle must be live, uniquely owned, and issued by `swr_v1_buffer_typed_create`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_release(buffer: *mut Buffer) -> i32 {
-    if buffer.is_null() {
-        return OK;
-    }
-    // SAFETY: non-null (checked above); a live, uniquely owned handle from create.
-    let queue = unsafe { Box::from_raw(buffer) };
-    if queue
-        .entries
-        .iter()
-        .any(|e| matches!(e, Entry::TypedToken(_)))
-    {
-        // Still the caller's: the same allocation, kept.
-        Box::leak(queue);
-        return PENDING_NATIVE;
-    }
-    OK
-}
-
-/// Copy bytes atomically into new queue entries.
-/// # Safety
-/// Handle and borrowed input satisfy the frozen ABI's validity/disjointness rules.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_buffer_append(
-    buffer: Option<&mut Buffer>,
-    data: *const u8,
-    length: usize,
-) -> i32 {
-    let Some(queue) = buffer else {
-        return INVALID;
-    };
-    // SAFETY: the borrowed input follows the frozen ABI's validity rules.
-    unsafe { queue.appendv(&[BufferIovec { data, length }], 0) }
 }
 
 /// Diagnostics for the actual external C input layout; no conversion credit.
@@ -332,49 +259,45 @@ pub extern "C" fn swr_v1_buffer_iovec_layout() -> PosixIovecLayout {
 
 /// Copy actual target POSIX iovecs without allocating descriptor staging storage.
 /// # Safety
-/// Handle, target `libc::iovec` array and borrowed initialized data obey the frozen
-/// validity/disjointness/stability rules. This is not the frozen POD type. No
-/// descriptor reference survives the call; callbacks and native effects remain outside.
+/// `iov` holds `count` descriptors, each over `iov_len` readable bytes (null only when
+/// empty) that the queue doesn't hold. No descriptor reference survives the call.
 #[cfg(unix)]
 #[must_use]
 pub unsafe fn swr_v1_buffer_append_iovec(
-    buffer: Option<&mut Buffer>,
+    queue: &mut Buffer,
     iov: *const libc::iovec,
     count: usize,
     offset: i64,
 ) -> i32 {
-    let Some(queue) = buffer else {
-        return INVALID;
-    };
     if offset < 0 || (count != 0 && iov.is_null()) {
         return INVALID;
     }
     if !slice_fits::<libc::iovec>(count) {
         return OVERFLOW;
     }
-    let parts = if count == 0 {
+    let iov = if count == 0 {
         &[]
     } else {
         // SAFETY: non-null, `count` fits isize (checked above), readable descriptors.
         unsafe { slice::from_raw_parts(iov, count) }
     };
-    // SAFETY: the borrowed input follows the frozen ABI's validity rules.
-    unsafe { queue.appendv(parts, offset.unsigned_abs()) }
-}
-
-/// Read byte accounting and queue entry count.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_buffer_stats(
-    buffer: Option<&Buffer>,
-    length: Option<&mut u32>,
-    count: Option<&mut usize>,
-) -> i32 {
-    let (Some(queue), Some(length), Some(count)) = (buffer, length, count) else {
-        return INVALID;
-    };
-    *length = queue.length;
-    *count = queue.entries.len();
-    OK
+    for part in iov {
+        if !slice_fits::<u8>(part.iov_len) {
+            return OVERFLOW;
+        }
+        if part.iov_len != 0 && part.iov_base.is_null() {
+            return INVALID;
+        }
+    }
+    let parts = iov.iter().map(|part| {
+        if part.iov_len == 0 {
+            return &[][..];
+        }
+        // SAFETY: non-null with `iov_len` readable bytes (checked above and as the caller
+        // promises), which outlast the append.
+        unsafe { slice::from_raw_parts(part.iov_base.cast::<u8>(), part.iov_len) }
+    });
+    queue.appendv(parts, offset.unsigned_abs())
 }
 
 #[cfg(test)]
@@ -382,6 +305,7 @@ mod tests {
     use super::*;
     use std::alloc::{GlobalAlloc, System};
     use std::cell::Cell;
+    use std::ptr;
 
     // Failure injection affects this test thread only, including actual Vec and
     // VecDeque allocation paths. Production has no allocator wrapper or state.
@@ -424,52 +348,40 @@ mod tests {
     static ALLOCATOR: FailAllocator = FailAllocator;
 
     pub(super) struct Owned(pub(super) *mut Buffer);
-    /// A test's live queue handle, or null.
-    pub(super) fn q<'a>(buffer: *mut Buffer) -> Option<&'a mut Buffer> {
-        unsafe { buffer.as_mut() }
-    }
-    /// As [`q`], shared.
-    pub(super) fn r<'a>(buffer: *const Buffer) -> Option<&'a Buffer> {
-        unsafe { buffer.as_ref() }
-    }
     unsafe extern "C" fn keep(_: *mut c_void) {}
     impl Owned {
         pub(super) fn new(size: u32) -> Self {
-            let mut buffer = ptr::null_mut();
-            assert_eq!(swr_v1_buffer_typed_create(size, Some(&mut buffer)), OK);
-            Self(buffer)
+            Self(Box::into_raw(Buffer::create(size).unwrap()))
+        }
+        #[expect(
+            clippy::mut_from_ref,
+            reason = "the test's one live queue, each borrow used and dropped at once"
+        )]
+        fn queue(&self) -> &mut Buffer {
+            unsafe { &mut *self.0 }
         }
         pub(super) fn push(&self, token: *mut c_void) -> i32 {
-            unsafe { swr_v1_buffer_typed_push(q(self.0), 1, token, Some(keep)) }
+            unsafe { self.queue().push(1, token, Some(keep)) }
         }
-        pub(super) fn appendv(&self, iov: &[BufferIovec], offset: u64) -> i32 {
-            unsafe { (*self.0).appendv(iov, offset) }
+        pub(super) fn appendv(&self, parts: &[&[u8]], offset: u64) -> i32 {
+            self.queue().appendv(parts.iter().copied(), offset)
         }
         pub(super) fn append(&self, bytes: &[u8]) -> i32 {
-            unsafe { swr_v1_buffer_append(q(self.0), bytes.as_ptr(), bytes.len()) }
+            self.queue().append(bytes)
         }
         pub(super) fn stats(&self) -> (u32, usize) {
-            let (mut length, mut count) = (0, 0);
-            assert_eq!(
-                swr_v1_buffer_stats(r(self.0), Some(&mut length), Some(&mut count)),
-                OK
-            );
-            (length, count)
+            self.queue().stats()
         }
         pub(super) fn view(&self) -> TypedFront {
-            let mut view = TypedFront::default();
-            assert_eq!(swr_v1_buffer_typed_front(r(self.0), Some(&mut view)), OK);
-            view
+            self.queue().front().unwrap()
         }
         pub(super) fn pop(&self) -> *mut c_void {
-            let mut detached = TypedDetached::default();
-            assert_eq!(swr_v1_buffer_typed_pop(q(self.0), Some(&mut detached)), OK);
-            detached.token
+            self.queue().pop().unwrap().token()
         }
     }
     impl Drop for Owned {
         fn drop(&mut self) {
-            assert_eq!(unsafe { swr_v1_buffer_release(self.0) }, OK);
+            assert!(unsafe { Box::from_raw(self.0) }.release().is_ok());
         }
     }
 
@@ -498,7 +410,7 @@ mod tests {
                 let owned = Owned::new(chunk);
                 let status = unsafe {
                     swr_v1_buffer_append_iovec(
-                        q(owned.0),
+                        owned.queue(),
                         vectors.as_ptr(),
                         vectors.len(),
                         i64::try_from(offset).unwrap(),
@@ -529,7 +441,7 @@ mod tests {
             let front = owned.view();
             FAIL_AFTER.with(|counter| counter.set(Some(budget)));
             let status = unsafe {
-                swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), vectors.len(), 0)
+                swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), 0)
             };
             FAIL_AFTER.with(|counter| counter.set(None));
             if status == OK {
@@ -547,19 +459,21 @@ mod tests {
         assert!(succeeded);
         let owned = Owned::new(4);
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), vectors.len(), -1) },
+            unsafe {
+                swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), -1)
+            },
             INVALID
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(q(owned.0), ptr::null(), 1, 0) },
+            unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 1, 0) },
             INVALID
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(q(owned.0), ptr::null(), 0, 0) },
+            unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 0, 0) },
             OK
         );
         assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(q(owned.0), vectors.as_ptr(), usize::MAX, 0) },
+            unsafe { swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), usize::MAX, 0) },
             OVERFLOW
         );
         assert_eq!(owned.stats(), (0, 0));
@@ -569,28 +483,7 @@ mod tests {
     fn vector_offsets_empty_descriptors_and_binary_chunks() {
         let a = [0, 1, 2, 3, 4];
         let b = [255, 0, 253, 252, 251, 250];
-        let iov = [
-            BufferIovec {
-                data: ptr::null(),
-                length: 0,
-            },
-            BufferIovec {
-                data: a.as_ptr(),
-                length: a.len(),
-            },
-            BufferIovec {
-                data: ptr::null(),
-                length: 0,
-            },
-            BufferIovec {
-                data: b.as_ptr(),
-                length: b.len(),
-            },
-            BufferIovec {
-                data: ptr::null(),
-                length: 0,
-            },
-        ];
+        let iov: [&[u8]; 5] = [&[], &a, &[], &b, &[]];
         let combined: Vec<u8> = a.into_iter().chain(b).collect();
         for offset in 0..=combined.len() {
             let buffer = Owned::new(4);
@@ -644,7 +537,8 @@ mod tests {
         assert_eq!(buffer.append(b"abcdef"), OK);
         assert_eq!(buffer.push(token), OK);
         assert_eq!(buffer.append(b"g"), OK);
-        assert_eq!(unsafe { swr_v1_buffer_release(buffer.0) }, PENDING_NATIVE);
+        let kept = Box::into_raw(unsafe { Box::from_raw(buffer.0) }.release().unwrap_err());
+        assert_eq!(kept, buffer.0);
         assert_eq!(buffer.stats(), (7, 4));
         assert!(buffer.pop().is_null());
         assert!(buffer.pop().is_null());
@@ -661,49 +555,15 @@ mod tests {
     fn bad_inputs_do_not_change_state_and_outputs_follow_contract() {
         let buffer = Owned::new(4);
         assert_eq!(buffer.append(b"abc"), OK);
-        let invalid = BufferIovec {
-            data: ptr::null(),
-            length: 1,
-        };
-        assert_eq!(buffer.appendv(&[invalid], 1), INVALID);
+        assert_eq!(buffer.appendv(&[b"x"], 2), INVALID);
         assert_eq!(buffer.appendv(&[], 1), INVALID);
         assert_eq!(buffer.appendv(&[], 0), OK);
-        assert_eq!(
-            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::null(), 0) },
-            OK
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::dangling(), usize::MAX) },
-            OVERFLOW
-        );
+        assert_eq!(buffer.append(&[]), OK);
         assert_eq!(buffer.push(ptr::null_mut()), INVALID);
-        assert_eq!(swr_v1_buffer_typed_pop(q(buffer.0), None), INVALID);
         assert_eq!(buffer.stats(), (3, 1));
-        let mut view = buffer.view();
-        assert_eq!(swr_v1_buffer_typed_front(None, Some(&mut view)), INVALID);
-        assert_eq!(view.length, 0);
-        assert!(view.data.is_null());
-        let (mut length, mut count) = (123, 456);
-        assert_eq!(
-            swr_v1_buffer_stats(None, Some(&mut length), Some(&mut count)),
-            INVALID
-        );
-        assert_eq!((length, count), (123, 456));
         buffer.pop();
-        assert_eq!(
-            swr_v1_buffer_typed_front(r(buffer.0), Some(&mut view)),
-            EMPTY
-        );
-        let mut detached = TypedDetached {
-            token: ptr::dangling_mut(),
-            dispose: None,
-        };
-        assert_eq!(
-            swr_v1_buffer_typed_pop(q(buffer.0), Some(&mut detached)),
-            EMPTY
-        );
-        assert!(detached.token.is_null());
-        assert_eq!(unsafe { swr_v1_buffer_release(ptr::null_mut()) }, OK);
+        assert_eq!(buffer.queue().front().err(), Some(EMPTY));
+        assert_eq!(buffer.queue().pop().err(), Some(EMPTY));
     }
 
     #[test]
@@ -713,10 +573,7 @@ mod tests {
         unsafe {
             (*buffer.0).length = u32::MAX;
         }
-        assert_eq!(
-            unsafe { swr_v1_buffer_append(q(buffer.0), ptr::dangling(), 1) },
-            OVERFLOW
-        );
+        assert_eq!(buffer.append(b"x"), OVERFLOW);
         assert_eq!(buffer.stats(), (u32::MAX, 0));
         unsafe {
             (*buffer.0).length = 0;
@@ -775,12 +632,10 @@ mod tests {
         reason = "one scenario per allocation failure point"
     )]
     fn every_allocation_failure_is_atomic() {
-        let mut handle = ptr::dangling_mut();
         FAIL_AFTER.set(Some(0));
-        let status = swr_v1_buffer_typed_create(4, Some(&mut handle));
+        let status = Buffer::create(4).err();
         FAIL_AFTER.set(None);
-        assert_eq!(status, NOMEM);
-        assert!(handle.is_null());
+        assert_eq!(status, Some(NOMEM));
         let mut failures = 0;
         for nth in 0..32 {
             let buffer = Owned::new(4);

@@ -354,10 +354,32 @@ pub(crate) fn estrndup(bytes: &[u8]) -> *mut c_char {
     unsafe { swr_zend_http_estrndup(bytes.as_ptr().cast(), bytes.len()) }
 }
 
-/// `swoole_php_treat_data(arg, estrndup(bytes), array)`, which frees the copy.
-fn treat_data(arg: c_int, bytes: &[u8], array: *mut zval) {
-    // SAFETY: a fresh request-memory string and a live array.
-    if !unsafe { swr_zend_http_treat_data(arg, estrndup(bytes), array) } {
+/// The request's path: `on_url`'s (or the HTTP/2 `:path`'s) copy up to its
+/// query, empty before one.
+pub(crate) fn request_path(request: &crate::state::Request) -> &[u8] {
+    if request.path.is_null() {
+        return &[];
+    }
+    // SAFETY: `on_url` and `http2::Ctx::set_path` set the path to `path_len`
+    // request-memory bytes, which the context frees.
+    unsafe { std::slice::from_raw_parts(request.path.cast(), request.path_len as usize) }
+}
+
+/// Bytes copied into request memory (`estrndup`) for `swoole_php_treat_data`,
+/// which frees them. Copied first, they leave nothing borrowed or owned here
+/// while PHP parses them, which may bail out.
+struct Copied(*mut c_char);
+
+impl Copied {
+    fn of(bytes: &[u8]) -> Self {
+        Self(estrndup(bytes))
+    }
+}
+
+/// `swoole_php_treat_data(arg, text, array)`.
+fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
+    // SAFETY: a fresh request-memory string, which the call frees, and a live array.
+    if !unsafe { swr_zend_http_treat_data(arg, text, array) } {
         let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
@@ -389,7 +411,7 @@ pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
 /// `swoole_http_parse_cookie`.
 pub(crate) fn parse_cookie(array: *mut zval, bytes: &[u8]) {
     if !bytes.is_empty() {
-        treat_data(PARSE_COOKIE, bytes, array);
+        treat_data(PARSE_COOKIE, Copied::of(bytes), array);
     }
 }
 
@@ -450,7 +472,7 @@ fn url(state: &mut State, span: &[u8]) -> c_int {
     }
     add_server(state, Key::QueryString, stringl(query));
     let get = property(state, Property::Get);
-    treat_data(PARSE_STRING, query, get);
+    treat_data(PARSE_STRING, Copied::of(query), get);
     0
 }
 
@@ -628,19 +650,15 @@ fn on_headers_complete(state: &mut State) -> c_int {
     let request = &mut state.request;
     request.version =
         c_int::from(state.parser.http_major) * 100 + c_int::from(state.parser.http_minor);
-    let path_start = request.path.cast::<u8>().cast_const();
-    let path_len = request.path_len as usize;
-    let path: &[u8] = if path_start.is_null() {
-        &[]
-    } else {
-        // SAFETY: `on_url` set the path to `path_len` request-memory bytes.
-        unsafe { std::slice::from_raw_parts(path_start, path_len) }
-    };
+    let path = request_path(request);
+    let path_len = path.len();
     let ext = path
         .iter()
         .rposition(|&byte| byte == b'.')
         .map_or(path_len, |dot| dot + 1);
-    request.ext = path_start.wrapping_add(ext).cast();
+    // The URI, and path_info, which is decoded below.
+    let (uri, decoded) = (ZString::new(path), ZString::new(path));
+    request.ext = request.path.cast_const().wrapping_add(ext);
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Request::ext_len is uint32_t"
@@ -651,12 +669,10 @@ fn on_headers_complete(state: &mut State) -> c_int {
     let method = method_name(state);
     let method = Owned::string(ZString::new(method.as_bytes()));
     add_server(state, Key::RequestMethod, method);
-    add_server(state, Key::RequestUri, Owned::string(ZString::new(path)));
+    add_server(state, Key::RequestUri, Owned::string(uri));
 
-    // path_info should be decoded
-    let decoded = ZString::new(path);
-    // SAFETY: a fresh string of `path.len()` bytes, decoded in place.
-    let decoded_len = unsafe { php_url_decode(string::val(decoded.as_ptr()).cast(), path.len()) };
+    // SAFETY: a fresh string of `path_len` bytes, decoded in place.
+    let decoded_len = unsafe { php_url_decode(string::val(decoded.as_ptr()).cast(), path_len) };
     // SAFETY: the decoded bytes fit the string, which nothing else holds.
     unsafe { (*decoded.as_ptr()).len = decoded_len };
     add_server(state, Key::PathInfo, Owned::string(decoded));
@@ -726,38 +742,34 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
 }
 
 fn on_message_complete(state: &mut State) -> c_int {
-    let chunked = state
-        .parse
-        .chunked_body
-        .as_ref()
-        .map(|body| (body.as_ptr(), body.len()));
-    let content_length = chunked.map_or(state.request.body_length, |(_, length)| length);
-    if let Some((body, length)) = chunked
-        && state.mt_parser.is_some()
-    {
+    let chunked = state.parse.chunked_body.is_some();
+    if chunked && state.mt_parser.is_some() {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
-        // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
-        // SAFETY: the dechunked body, which the multipart callbacks leave alone.
-        let body = unsafe { std::slice::from_raw_parts(body, length) };
-        let prefix = body_prefix(body, true);
-        if !multipart_parse(state, body.get(prefix..).unwrap_or_default()) {
+        // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span. The body
+        // is out of the state while the parser's callbacks take it, as `http2::Ctx::multipart`'s, then back for
+        // `getContent()`.
+        let body = state.parse.chunked_body.take().unwrap_or_default();
+        let prefix = body_prefix(&body, true);
+        let parsed = multipart_parse(state, body.get(prefix..).unwrap_or_default());
+        state.parse.chunked_body = Some(body);
+        if !parsed {
             return -1;
         }
     }
     let form_source = swr_v1_httpbindings_form_source(
-        u32::from(chunked.is_some())
+        u32::from(chunked)
             | (u32::from(state.parse_body != 0) << 1)
             | (u32::from(state.request.post_form_urlencoded != 0) << 2)
             | (u32::from(state.recv_chunked != 0) << 3)
             | (u32::from(!state.request.body_at.is_null()) << 4),
     );
     match (form_source, chunked) {
-        (1, Some((body, _))) => {
+        (1, true) => {
             let post = property(state, Property::Post);
-            // SAFETY: the dechunked body.
+            let body = state.parse.chunked_body.as_deref();
             treat_data(
                 PARSE_STRING,
-                unsafe { std::slice::from_raw_parts(body, content_length) },
+                Copied::of(body.map_or(&[], Vec::as_slice)),
                 post,
             );
         }
@@ -765,11 +777,8 @@ fn on_message_complete(state: &mut State) -> c_int {
             let post = property(state, Property::Post);
             let body = state.request.body_at.cast();
             // SAFETY: the body's span of the input, which is live until the request completes.
-            treat_data(
-                PARSE_STRING,
-                unsafe { std::slice::from_raw_parts(body, state.request.body_length) },
-                post,
-            );
+            let body = unsafe { std::slice::from_raw_parts(body, state.request.body_length) };
+            treat_data(PARSE_STRING, Copied::of(body), post);
         }
         _ => {}
     }

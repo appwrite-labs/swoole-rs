@@ -110,20 +110,17 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
     ready.len()
 }
 
-/// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int
-/// $seconds, ?int $microseconds = null): int|false`.
-/// # Safety
-/// Called by Zend with a live frame and return slot.
-pub(crate) unsafe extern "C" fn stream_select(
-    frame: *mut swoole_rs_zend::sys::zend_execute_data,
-    value: *mut zval,
-) {
-    // SAFETY: per the caller.
-    let result = select(&unsafe { Call::new(frame, value) }, frame);
-    swoole_rs_zend::bailout::raise(result);
+swoole_rs_zend::handlers! {
+    zif_swoole_stream_select => stream_select;
 }
 
-fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Result<(), Bailout> {
+/// `stream_select(?array &$read, ?array &$write, ?array &$except, ?int
+/// $seconds, ?int $microseconds = null): int|false`.
+fn stream_select(call: &Call) {
+    swoole_rs_zend::bailout::defer(select(call));
+}
+
+fn select(call: &Call) -> Result<(), Bailout> {
     coroutine_check()?;
     let (mut read, mut write, mut except) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
     let (mut seconds, mut micros): (zend_long, zend_long) = (0, 0);
@@ -131,7 +128,7 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
     // SAFETY: the live frame; each output is a writable local.
     let parsed = unsafe {
         swr_zend_runtime_select_args(
-            frame,
+            call.frame(),
             &raw mut read,
             &raw mut write,
             &raw mut except,

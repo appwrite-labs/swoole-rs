@@ -52,8 +52,8 @@ use swoole_rs_zend::{
     message,
     sys::{
         swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
-        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
-        zend_register_class_alias_ex, zif_handler, zval,
+        swr_zend_stream_factory_set, zend_class_entry, zend_register_class_alias_ex, zif_handler,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -646,34 +646,21 @@ pub extern "C" fn rshutdown() {
     swoole_rs_zend::bailout::raise(disabled.map(|_| ()));
 }
 
-/// `php_swoole_get_original_handler(name, length)`.
-/// # Safety
-/// `name` points to `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z31php_swoole_get_original_handlerPKcm")
-)]
-#[must_use]
-pub unsafe extern "C" fn original_handler(name: *const c_char, length: usize) -> zif_handler {
-    // SAFETY: per the caller.
-    let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
-    functions::original_handler(name)
-}
-
-/// The handler `name` had before the first hook, or null.
+/// `php_swoole_get_original_handler`: the handler `name` had before the first
+/// hook, or null.
 #[must_use]
 pub fn original(name: &[u8]) -> zif_handler {
     functions::original_handler(name)
 }
 
+swoole_rs_zend::handlers! {
+    zif_swoole_user_func_handler => user_func_handler;
+}
+
 /// `swoole_user_func_handler`: run the function's PHP replacement (inside a
 /// coroutine) or its original handler.
-/// # Safety
-/// Called by Zend with a live frame and return slot.
-unsafe extern "C" fn user_func_handler(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: per the caller.
-    let result = functions::user_func(&unsafe { Call::new(frame, value) }, frame, value);
-    swoole_rs_zend::bailout::raise(result);
+fn user_func_handler(call: &Call) {
+    bailout::defer(functions::user_func(call));
 }
 
 #[cfg(test)]
