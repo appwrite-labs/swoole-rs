@@ -445,11 +445,28 @@ impl<'a> Server<'a> {
         self.state().task_pipe(worker_id.into())
     }
 
-    /// `Server::get_server_socket(fd)`: the listening socket at `fd`, or null.
+    /// `Server::get_server_socket(fd)`: the fd and `swSocketType` of the
+    /// listening socket at `fd`, or `None`.
     #[must_use]
-    pub fn server_socket(self, fd: c_long) -> *mut c_void {
-        self.connection_field(fd, 0, Connection::socket_ptr)
-            .unwrap_or(core::ptr::null_mut())
+    pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
+        let socket = self.connection_field(fd, 0, Connection::socket)??;
+        Some(socket.read(|s| (s.fd, s.socket_type)))
+    }
+
+    /// The fd and `swSocketType` of the server's own datagram socket of `kind`
+    /// (1 UDP, 2 UDP6, else the unix one), or `None` before one listens.
+    #[must_use]
+    pub fn dgram_socket(self, kind: u8) -> Option<(c_int, c_int)> {
+        let config = self.config();
+        let socket = match kind {
+            1 => config.udp_socket_ipv4,
+            2 => config.udp_socket_ipv6,
+            _ => config.dgram_socket,
+        };
+        // SAFETY: null, or the listening socket `master_ops` recorded, which lives as
+        // long as the server.
+        let socket = unsafe { Socket::from_ptr(socket.cast()) }?;
+        Some(socket.read(|s| (s.fd, s.socket_type)))
     }
 
     /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.
@@ -628,16 +645,6 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>
     // SAFETY: null or a pipe socket of a live worker, which its owner keeps until it
     // frees the worker.
     unsafe { Socket::from_ptr(pipe.cast()) }
-}
-
-/// A `network::Socket`'s fd and `swSocketType`.
-///
-/// # Safety
-/// `socket` is a live socket.
-pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
-    // SAFETY: per the caller.
-    let socket = unsafe { Socket::from_ptr(socket.cast()) };
-    socket.map_or((-1, 0), |socket| socket.read(|s| (s.fd, s.socket_type)))
 }
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
