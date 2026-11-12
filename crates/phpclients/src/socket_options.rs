@@ -416,11 +416,10 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     let Some(context) = socket.handle().tls_context() else {
         return Ok(true);
     };
-    let owner = context.as_ptr();
-    // SAFETY: the context `context` keeps live, which nothing else writes during the call.
-    let set = |value| unsafe { tls::set_value(owner, value) };
-    // SAFETY: as above.
-    let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
+    // SAFETY: the context `context` keeps live, which nothing else reaches during the call.
+    let owner = unsafe { tls::Lent::new(context.as_ptr()) };
+    let set = |value| owner.set_value(value);
+    let set_text = |which, text: &[u8]| owner.set_text(which, text);
     let text = |which, v: &Value| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };
     if let Some(v) = s.get(b"ssl_protocols") {
         set(tls::Value::Protocols(long(v)?));
