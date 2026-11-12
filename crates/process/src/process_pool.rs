@@ -13,7 +13,7 @@
 
 use crate::task_file::Packed;
 use crate::worker_record::Worker;
-use std::ffi::{c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
 
@@ -238,12 +238,33 @@ impl PoolRef<'_> {
     pub fn raw(self) -> *mut PoolRecord {
         self.raw
     }
+}
 
-    /// The pool's `ptr`: the object its owner hangs on it.
+impl<'a> PoolRef<'a> {
+    /// The record, for this crate's operations, which read it in place.
+    pub(crate) fn record(self) -> &'a PoolRecord {
+        // SAFETY: `new`'s contract: a live pool for `'a`.
+        unsafe { &*self.raw }
+    }
+
+    /// The pool's worker at `index`, or `None` past `worker_num`.
     #[must_use]
-    pub fn ptr(self) -> *mut c_void {
-        // SAFETY: `new`'s contract: a live pool; only the field is read.
-        unsafe { (*self.raw).ptr }
+    pub fn worker(self, index: usize) -> Option<Worker<'a>> {
+        self.record().worker(index)
+    }
+
+    /// The pool's stream listener (a native socket), or null.
+    #[must_use]
+    pub fn ipc_listener(self) -> *mut c_void {
+        self.record().ipc_listener()
+    }
+
+    /// The worker loop's receive buffer, or null before the loop allocates it.
+    #[must_use]
+    pub fn ipc_packet(self) -> *mut c_char {
+        self.record()
+            .with_ipc(crate::pool::pool_ipc_packet)
+            .unwrap_or(ptr::null_mut())
     }
 }
 
@@ -632,31 +653,59 @@ fn log(op: u32, arg: u64) {
 }
 
 /// One operation over a pool: its record and the native side.
-struct Pool<H> {
+struct Pool<'a, H> {
     h: H,
-    p: *mut PoolRecord,
+    p: PoolRef<'a>,
 }
 
+/// [`PoolRef`]'s field reads, and [`Pool`]'s over its handle. A read copies the one
+/// field out, so no reference to the record outlives it.
 macro_rules! getters {
-    ($($field:ident: $ty:ty),* $(,)?) => {
-        impl<H> Pool<H> {
+    (@get $field:ident: $ty:ty) => {
+        #[doc = concat!("The record's `", stringify!($field), "`.")]
+        #[must_use]
+        pub fn $field(self) -> $ty {
+            // SAFETY: a live pool (the handle's contract); only the field is read.
+            unsafe { (*self.raw).$field }
+        }
+    };
+    ($($field:ident: $ty:ty),* $(,)? ; $($only:ident: $only_ty:ty),* $(,)?) => {
+        impl PoolRef<'_> {
+            $(getters!(@get $field: $ty);)*
+            $(getters!(@get $only: $only_ty);)*
+        }
+        impl<H> Pool<'_, H> {
             $(
                 fn $field(&self) -> $ty {
-                    // SAFETY: `p` is the live pool for this operation; read in place.
-                    unsafe { (*self.p).$field }
+                    self.p.$field()
                 }
             )*
         }
     };
 }
 
+/// [`PoolRef`]'s field writes, and [`Pool`]'s over its handle. The fields the pool's
+/// operations trust are written only from this crate.
 macro_rules! setters {
-    ($($field:ident / $set:ident: $ty:ty),* $(,)?) => {
-        impl<H> Pool<H> {
+    (@set $vis:vis $field:ident / $set:ident: $ty:ty) => {
+        #[doc = concat!("Sets the record's `", stringify!($field), "`.")]
+        $vis fn $set(self, value: $ty) {
+            // SAFETY: a live pool (the handle's contract); only the field is written.
+            unsafe { (*self.raw).$field = value };
+        }
+    };
+    (
+        $($vis:vis $field:ident / $set:ident: $ty:ty),* ;
+        $($only:ident / $only_set:ident: $only_ty:ty),* $(,)?
+    ) => {
+        impl PoolRef<'_> {
+            $(setters!(@set $vis $field / $set: $ty);)*
+            $(setters!(@set pub $only / $only_set: $only_ty);)*
+        }
+        impl<H> Pool<'_, H> {
             $(
                 fn $set(&mut self, value: $ty) {
-                    // SAFETY: `p` is the live pool for this operation; written in place.
-                    unsafe { (*self.p).$field = value };
+                    self.p.$set(value);
                 }
             )*
         }
@@ -698,38 +747,49 @@ getters!(
     message_box: *mut c_void,
     message_bus: *mut c_void,
     reload_task: *mut ReloadTask,
+    ;
+    ptr: *mut c_void,
+    protocol_type: c_int,
+    on_task: Option<TaskFn>,
+    on_worker_error: Option<ErrorFn>,
+    scheduler_warning: u8,
+    warning_time: i64,
 );
 
 setters!(
-    running / set_running: bool,
-    reload_init / set_reload_init: bool,
-    read_message / set_read_message: bool,
-    started / set_started: bool,
-    ipc_mode / set_ipc_mode: u8,
-    protocol_type / set_protocol_type: c_int,
-    master_pid / set_master_pid: c_int,
-    max_wait_time / set_max_wait_time: u32,
-    reload_count / set_reload_count: u64,
-    reload_last_time / set_reload_last_time: i64,
-    kind / set_kind: u8,
-    start_id / set_start_id: u16,
-    use_msgqueue / set_use_msgqueue: u8,
-    use_socket / set_use_socket: u8,
-    max_packet_size / set_max_packet_size: u32,
-    msgqueue_key / set_msgqueue_key: c_int,
-    worker_num / set_worker_num: u32,
-    max_request / set_max_request: u32,
-    max_request_grace / set_max_request_grace: u32,
-    scheduler_warning / set_scheduler_warning: u8,
-    workers / set_workers: *mut WorkerRecord,
-    pipes / set_pipes: *mut c_void,
-    registry / set_registry: *mut WorkerRegistry,
-    queue / set_queue: *mut c_void,
-    ipc / set_ipc: *mut PoolIpc,
-    message_box / set_message_box: *mut c_void,
-    message_bus / set_message_bus: *mut c_void,
-    reload_task / set_reload_task: *mut ReloadTask,
-    kill_timer / set_kill_timer: Option<ArmedTimer>,
+    pub running / set_running: bool,
+    pub reload_init / set_reload_init: bool,
+    pub read_message / set_read_message: bool,
+    pub started / set_started: bool,
+    pub ipc_mode / set_ipc_mode: u8,
+    pub protocol_type / set_protocol_type: c_int,
+    pub master_pid / set_master_pid: c_int,
+    pub max_wait_time / set_max_wait_time: u32,
+    pub reload_count / set_reload_count: u64,
+    pub reload_last_time / set_reload_last_time: i64,
+    pub kind / set_kind: u8,
+    pub start_id / set_start_id: u16,
+    pub use_msgqueue / set_use_msgqueue: u8,
+    pub use_socket / set_use_socket: u8,
+    pub max_packet_size / set_max_packet_size: u32,
+    pub msgqueue_key / set_msgqueue_key: c_int,
+    pub(crate) worker_num / set_worker_num: u32,
+    pub max_request / set_max_request: u32,
+    pub max_request_grace / set_max_request_grace: u32,
+    pub scheduler_warning / set_scheduler_warning: u8,
+    pub(crate) workers / set_workers: *mut WorkerRecord,
+    pub(crate) pipes / set_pipes: *mut c_void,
+    pub(crate) registry / set_registry: *mut WorkerRegistry,
+    pub(crate) queue / set_queue: *mut c_void,
+    pub(crate) ipc / set_ipc: *mut PoolIpc,
+    pub(crate) message_box / set_message_box: *mut c_void,
+    pub(crate) message_bus / set_message_bus: *mut c_void,
+    pub(crate) reload_task / set_reload_task: *mut ReloadTask,
+    pub kill_timer / set_kill_timer: Option<ArmedTimer>
+    ;
+    warning_time / set_warning_time: i64,
+    on_worker_message / set_on_worker_message: Option<EventFn>,
+    main_loop / set_main_loop: Option<MainLoopFn>,
 );
 
 /// A native op's pointer result.
@@ -741,7 +801,7 @@ fn exited(pid: c_int, status: c_int) -> u64 {
     u64::from(pid.cast_unsigned()) | (u64::from(status.cast_unsigned()) << 32)
 }
 
-impl<H: PoolHost> Pool<H> {
+impl<H: PoolHost> Pool<'_, H> {
     fn op(&mut self, op: u32, arg: u64) -> i64 {
         self.h.op(ptr::null_mut(), op, arg)
     }
@@ -763,8 +823,7 @@ impl<H: PoolHost> Pool<H> {
 
     /// The live pool this runs over.
     fn record(&self) -> &PoolRecord {
-        // SAFETY: `p` is the live pool this runs over.
-        unsafe { &*self.p }
+        self.p.record()
     }
 
     /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
@@ -830,7 +889,7 @@ impl<H: PoolHost> Pool<H> {
         self.set_max_packet_size(packet_limit(self.use_msgqueue() != 0, SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
-            self.worker_at(index).set_pool(self.p.cast());
+            self.worker_at(index).set_pool(self.p.raw().cast());
         }
         SW_OK
     }
@@ -923,7 +982,7 @@ impl<H: PoolHost> Pool<H> {
         for index in 0..self.worker_num() {
             let worker = self.worker_at(index);
             let id = u32::from(self.start_id()) + index;
-            worker.set_pool(self.p.cast());
+            worker.set_pool(self.p.raw().cast());
             worker.set_id(id);
             worker.set_kind(self.kind());
             self.on(worker.raw(), OP_UNLIMIT_PIPES, 0);
@@ -1127,7 +1186,7 @@ impl<H: PoolHost> Pool<H> {
         };
         let pool_loop = PoolLoop {
             ipc: self.ipc(),
-            pool: self.p.cast(),
+            pool: self.p.raw().cast(),
             worker: worker.cast(),
             // SAFETY: one of the pool's records.
             worker_id: unsafe { Worker::new(worker).id() },
@@ -1337,7 +1396,7 @@ impl<H: PoolHost> Pool<H> {
         let sent = unsafe {
             crate::pool::pool_dispatch(
                 native,
-                self.p.cast(),
+                self.p.raw().cast(),
                 workers,
                 self.start_id(),
                 self.use_msgqueue() != 0,
@@ -1354,6 +1413,7 @@ impl<H: PoolHost> Pool<H> {
     fn schedule(&mut self) -> u32 {
         let round = self
             .p
+            .raw()
             .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
             .cast::<u32>();
         // SAFETY: the live pool's aligned counter, which other processes update
@@ -1401,7 +1461,7 @@ impl<H: PoolHost> Pool<H> {
     }
 }
 
-impl<H: PoolHost> Reap for Pool<H> {
+impl<H: PoolHost> Reap for Pool<'_, H> {
     fn leave_when_stopped(&self) -> bool {
         true
     }
@@ -1472,14 +1532,14 @@ impl<H: PoolHost> Reap for Pool<H> {
 fn with<T>(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
-    f: impl FnOnce(&mut Pool<Native<'_>>) -> T,
+    f: impl FnOnce(&mut Pool<'_, Native<'_>>) -> T,
 ) -> T {
     let mut pool = Pool {
         h: Native {
             native,
             pool: pool.raw().cast(),
         },
-        p: pool.raw(),
+        p: pool,
     };
     f(&mut pool)
 }
@@ -1550,7 +1610,7 @@ pub unsafe fn pool_run_op(
     with(native, pool, |p| p.run(worker, operation, arg))
 }
 
-impl<H: PoolHost> Pool<H> {
+impl<H: PoolHost> Pool<'_, H> {
     fn run(&mut self, worker: *mut WorkerRecord, operation: u32, arg: u64) -> i64 {
         let signed = arg.cast_signed();
         match operation {
@@ -1724,7 +1784,7 @@ mod tests {
             Self { record, workers }
         }
 
-        fn pool(&mut self, mut script: Script) -> Pool<Script> {
+        fn pool(&mut self, mut script: Script) -> Pool<'_, Script> {
             self.record.workers = self.workers.as_mut_ptr();
             // `create` takes the workers `OP_ALLOC_WORKERS` answers.
             let workers = self.workers.as_mut_ptr().expose_provenance().cast_signed() as i64;
@@ -1734,16 +1794,20 @@ mod tests {
             // invalidates the other.
             let p = &raw mut *self.record;
             script.record = std::ptr::NonNull::new(p);
-            Pool { h: script, p }
+            // SAFETY: the fixture's record, live as long as the fixture.
+            Pool {
+                h: script,
+                p: unsafe { PoolRef::new(p) },
+            }
         }
     }
 
-    fn record(pool: &mut Pool<Script>) -> &mut PoolRecord {
+    fn record<'a>(pool: &'a mut Pool<'_, Script>) -> &'a mut PoolRecord {
         // SAFETY: the fixture's record.
-        unsafe { &mut *pool.p }
+        unsafe { &mut *pool.p.raw() }
     }
 
-    fn ops(pool: &Pool<Script>) -> Vec<u32> {
+    fn ops(pool: &Pool<'_, Script>) -> Vec<u32> {
         pool.h.log.iter().map(|(op, _)| *op).collect()
     }
 
