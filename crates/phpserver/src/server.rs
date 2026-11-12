@@ -12,7 +12,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_server::{ConnectionRecord, SharedServer, server_methods, view};
+use swoole_rs_server::{Connection, SharedServer, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
@@ -32,8 +32,8 @@ const EVENT_PAUSE_RECV: c_int = 11;
 const EVENT_RESUME_RECV: c_int = 12;
 
 /// `conn->closed`.
-fn closed(conn: &ConnectionRecord) -> bool {
-    conn.closed.load(Ordering::Relaxed) != 0
+fn closed(conn: Connection<'_>) -> bool {
+    conn.closed().load(Ordering::Relaxed) != 0
 }
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
@@ -792,10 +792,10 @@ fn heartbeat(call: &Call) {
     // SAFETY: as above.
     while fd <= serv.counters().max_fd() {
         if let Some(conn) = serv.iterated(fd) {
-            let session_id = conn.session_id;
+            let session_id = conn.session_id();
             if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
-                    conn.close_force = 1;
+                    conn.set_close_force(1);
                     server_methods::close(serv, session_id, false);
                 }
                 call.add_next_index_long(session_id);
@@ -832,12 +832,12 @@ fn bind(call: &Call) {
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     // The connection's lock word, which every holder takes this way (`sw_spinlock`,
     // with `SW_SPINLOCK_LOOP_N`).
-    swoole_rs_utilities::swr_v1_utils_spinlock(Some(&conn.lock), cpus, 1024);
-    let bound = conn.uid == 0;
+    swoole_rs_utilities::swr_v1_utils_spinlock(Some(conn.lock()), cpus, 1024);
+    let bound = conn.uid() == 0;
     if bound {
-        conn.uid = uid;
+        conn.set_uid(uid);
     }
-    conn.lock.store(0, Ordering::Release);
+    conn.lock().store(0, Ordering::Release);
     call.set_bool(bound);
 }
 
@@ -878,48 +878,48 @@ fn get_client_info(call: &Call) {
     };
     let dispatch_mode = serv.config().dispatch_mode;
     call.set_array();
-    if conn.uid > 0 || dispatch_mode == DISPATCH_UIDMOD {
-        call.add_assoc_long(c"uid", i64::from(conn.uid));
+    if conn.uid() > 0 || dispatch_mode == DISPATCH_UIDMOD {
+        call.add_assoc_long(c"uid", i64::from(conn.uid()));
     }
-    if conn.worker_id > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
-        call.add_assoc_long(c"worker_id", i64::from(conn.worker_id));
+    if conn.worker_id() > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
+        call.add_assoc_long(c"worker_id", i64::from(conn.worker_id()));
     }
     if serv
-        .port_of_fd(conn.fd)
+        .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_websocket_protocol)
     {
-        call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status));
+        call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status()));
     }
-    let cert = conn.ssl_client_cert.cast::<CppString>();
+    let cert = conn.ssl_client_cert().cast::<CppString>();
     if !cert.is_null()
-        && conn.ssl_client_cert_pid == swoole_rs_process::methods::swoole_get_worker_pid()
+        && conn.ssl_client_cert_pid() == swoole_rs_process::methods::swoole_get_worker_pid()
     {
         // SAFETY: the connection's live certificate string.
         let cert = unsafe { &*cert };
         call.add_assoc_stringl(c"ssl_client_cert", cert.view());
     }
-    if let Some(server_socket) = serv.at(conn.server_fd) {
-        let port = swr_v1_clients_address_port(&server_socket.info);
+    if let Some(server_socket) = serv.at(conn.server_fd()) {
+        let port = swr_v1_clients_address_port(&server_socket.info());
         call.add_assoc_long(c"server_port", i64::from(port));
     }
-    call.add_assoc_long(c"server_fd", i64::from(conn.server_fd));
-    call.add_assoc_long(c"socket_fd", i64::from(conn.fd));
-    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type));
-    let remote_port = swr_v1_clients_address_port(&conn.info);
+    call.add_assoc_long(c"server_fd", i64::from(conn.server_fd()));
+    call.add_assoc_long(c"socket_fd", i64::from(conn.fd()));
+    call.add_assoc_long(c"socket_type", i64::from(conn.socket_type()));
+    let remote_port = swr_v1_clients_address_port(&conn.info());
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
-    with_host(&conn.info, |ip| {
+    with_host(&conn.info(), |ip| {
         call.add_assoc_stringl(c"remote_ip", ip.to_bytes());
     });
-    call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id));
-    call.add_assoc_long(c"connect_time", conn.connect_time as i64);
-    call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time as i32));
-    call.add_assoc_double(c"last_recv_time", conn.last_recv_time);
-    call.add_assoc_double(c"last_send_time", conn.last_send_time);
-    call.add_assoc_double(c"last_dispatch_time", conn.last_dispatch_time);
-    call.add_assoc_long(c"close_errno", i64::from(conn.close_errno));
-    let recv_queued = conn.recv_queued_bytes.load(Ordering::Relaxed);
+    call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id()));
+    call.add_assoc_long(c"connect_time", conn.connect_time() as i64);
+    call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time() as i32));
+    call.add_assoc_double(c"last_recv_time", conn.last_recv_time());
+    call.add_assoc_double(c"last_send_time", conn.last_send_time());
+    call.add_assoc_double(c"last_dispatch_time", conn.last_dispatch_time());
+    call.add_assoc_long(c"close_errno", i64::from(conn.close_errno()));
+    let recv_queued = conn.recv_queued_bytes().load(Ordering::Relaxed);
     call.add_assoc_long(c"recv_queued_bytes", i64::from(recv_queued));
-    call.add_assoc_long(c"send_queued_bytes", i64::from(conn.send_queued_bytes));
+    call.add_assoc_long(c"send_queued_bytes", i64::from(conn.send_queued_bytes()));
 }
 
 fn get_client_list(call: &Call) {
@@ -940,7 +940,7 @@ fn get_client_list(call: &Call) {
     } else {
         match serv.verified(start_session_id) {
             None => return call.set_bool(false),
-            Some(conn) => conn.fd,
+            Some(conn) => conn.fd(),
         }
     };
     let max_fd = counters.max_fd();
@@ -950,7 +950,7 @@ fn get_client_list(call: &Call) {
     call.set_array();
     for fd in start_fd + 1..=max_fd {
         if let Some(conn) = serv.iterated(fd) {
-            let session_id = conn.session_id;
+            let session_id = conn.session_id();
             if session_id <= 0 {
                 continue;
             }
@@ -991,7 +991,7 @@ fn exists(call: &Call) {
         return call.set_bool(false);
     };
     let conn = serv.verified(session_id);
-    call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing == 0));
+    call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing() == 0));
 }
 
 fn protect(call: &Call) {
@@ -1004,7 +1004,7 @@ fn protect(call: &Call) {
     };
     match serv.verified(session_id) {
         Some(conn) if !closed(conn) => {
-            conn.protect = u8::from(value);
+            conn.set_protect(u8::from(value));
             call.set_bool(true);
         }
         _ => call.set_bool(false),
@@ -1125,7 +1125,7 @@ fn valid(call: &Call) {
         let Some(conn) = server.iterated(fd) else {
             continue;
         };
-        let (session_id, server_fd) = (conn.session_id, conn.server_fd);
+        let (session_id, server_fd) = (conn.session_id(), conn.server_fd());
         if session_id <= 0 {
             continue;
         }

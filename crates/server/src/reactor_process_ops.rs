@@ -282,16 +282,16 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let fd = c_int::try_from(arg.cast_signed()).unwrap_or(-1);
             let conn = server
                 .at(fd)
-                .filter(|conn| crate::reactor_ops::valid(Some(conn)));
+                .filter(|conn| crate::reactor_ops::valid(Some(*conn)));
             let valid = conn.is_some();
-            ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
+            ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {
             let fd = ctx.event().fd();
             let conn = server.at(fd);
-            let active = conn.as_ref().is_some_and(|c| c.is_active());
-            ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);
+            let active = conn.is_some_and(crate::Connection::is_active);
+            ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
             return Some(u64::from(active));
         }
         OP_EVENT_SOCKET_REMOVED => {
@@ -315,16 +315,16 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         _ => {}
     }
     let conn = ctx.conn()?;
-    let socket = conn.socket.cast::<SocketRecord>();
+    let socket = conn.socket_ptr().cast::<SocketRecord>();
     Some(match op {
         OP_CLOSE_SESSION => {
-            crate::server_methods::close(server, conn.session_id, true);
+            crate::server_methods::close(server, conn.session_id(), true);
             0
         }
-        OP_CONN_CLOSE_QUEUED => u64::from(conn.close_queued),
+        OP_CONN_CLOSE_QUEUED => u64::from(conn.close_queued()),
         OP_SET_PEER_CLOSED => {
             // the client has closed the connection and the connection is no longer available.
-            conn.peer_closed = 1;
+            conn.set_peer_closed(1);
             0
         }
         OP_NOTIFY_CLOSE => u64::from(crate::server_methods::notify(server, conn, EVENT_CLOSE)),
@@ -333,14 +333,14 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = conn.socket()?;
             u64::from(socket.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY))
         }
-        OP_CONN_CLOSE_FORCE => u64::from(conn.close_force),
+        OP_CONN_CLOSE_FORCE => u64::from(conn.close_force()),
         OP_CLOSE_CONNECTION => {
             // SAFETY: the running reactor and the connection's session socket.
             unsafe { crate::reactor_entry::close_connection(reactor(ctx), socket) };
             0
         }
         OP_SET_CLOSE_FORCE => {
-            conn.close_force = 1;
+            conn.set_close_force(1);
             0
         }
         _ => return None,

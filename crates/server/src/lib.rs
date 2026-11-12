@@ -84,7 +84,8 @@ pub use static_config::{
 };
 
 pub use records::{
-    ConnectionRecord, ServerTables, SessionRecord, swr_v1_server_connection, swr_v1_server_session,
+    Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
+    swr_v1_server_connection, swr_v1_server_session,
 };
 
 pub use shared::{

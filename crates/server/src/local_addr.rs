@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 use swoole_rs_corebase::log;
 
 use crate::port_config::PortConfig;
-use crate::records::ConnectionRecord;
+use crate::records::Connection;
 use crate::{ServerState, view};
 
 const SW_SOCK_TCP: c_int = 1;
@@ -133,15 +133,12 @@ fn text(state: &ServerState, v6: bool, index: u16) -> &CStr {
 /// `Server::get_local_addr(conn)`: a TCP connection's local interface address, else
 /// its port's host; empty without one.
 #[must_use]
-pub fn get_local_addr<'a>(serv: view::Server<'a>, conn: &ConnectionRecord) -> &'a CStr {
-    if conn.socket_type == SW_SOCK_TCP || conn.socket_type == SW_SOCK_TCP6 {
-        return text(
-            serv.state(),
-            conn.socket_type == SW_SOCK_TCP6,
-            conn.local_addr_index,
-        );
+pub fn get_local_addr<'a>(serv: view::Server<'a>, conn: Connection<'_>) -> &'a CStr {
+    let kind = conn.socket_type();
+    if kind == SW_SOCK_TCP || kind == SW_SOCK_TCP6 {
+        return text(serv.state(), kind == SW_SOCK_TCP6, conn.local_addr_index());
     }
-    serv.port_of_server_fd(conn.server_fd)
+    serv.port_of_server_fd(conn.server_fd())
         .map_or(c"", PortConfig::host_c_str)
 }
 

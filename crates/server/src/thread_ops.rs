@@ -145,7 +145,7 @@ pub(crate) fn answer(
         }
         OP_FORCE_CLOSE => {
             let conn = ctx.connection()?;
-            conn.close_force = 1;
+            conn.set_close_force(1);
             let mut event = conn.event(0, 0);
             handle?.trigger_close(&mut event);
             0
@@ -154,10 +154,10 @@ pub(crate) fn answer(
             let fd = event_fd(ctx)?;
             // The event's fd is a listening socket's, whose slot is live.
             let conn = state.connection(fd.into(), 0)?;
-            let kind = conn.socket_type;
+            let kind = conn.socket_type();
             // `ctx.sock` is already the event's socket, the port's listening socket
             // that `OP_STORE_LISTEN` stored in this slot.
-            ctx.conn = conn;
+            ctx.conn = conn.as_ptr();
             ctx.pkt = with_thread_buffer(swoole_rs_buffer::string::CppString::as_mut_ptr).cast();
             ctx.task = SendData {
                 info: DataHead {
@@ -230,7 +230,7 @@ pub(crate) fn answer(
                 ..DataHead::default()
             };
             // arg: peer_closed, the connection is no longer available
-            ctx.connection()?.peer_closed = u8::from(arg != 0);
+            ctx.connection()?.set_peer_closed(u8::from(arg != 0));
             ctx.sock?.edit(|s| s.close_notified = 1);
             u64::from(factory::notify(state, (&raw mut head).cast()))
         }
@@ -321,7 +321,7 @@ pub(crate) fn answer(
             0
         }
         OP_RESUME_TIMER => {
-            let msec = c_long::from(ctx.connection()?.waiting_time);
+            let msec = c_long::from(ctx.connection()?.waiting_time());
             // SAFETY: `resume_data_receiving` takes the connection's socket, which
             // deletes the timer before it goes.
             let timer = unsafe {
@@ -332,7 +332,7 @@ pub(crate) fn answer(
                     ctx.sock?.as_ptr().cast(),
                 )
             };
-            ctx.connection()?.timer = timer;
+            ctx.connection()?.set_timer(timer);
             u64::from(!timer.is_null())
         }
 
@@ -488,7 +488,7 @@ pub(crate) fn answer(
             sign(unsafe { methods::connection_incoming(server, reactor, conn) })
         }
         OP_CLOSE => {
-            let socket = ctx.connection()?.socket.cast();
+            let socket = ctx.connection()?.socket_ptr().cast();
             // SAFETY: this thread's reactor and the connection's live socket.
             sign(unsafe { entry::close_connection(reactor, socket) })
         }
@@ -499,7 +499,7 @@ pub(crate) fn answer(
             let pipes = i64::from(state.tables_ref().reactor_pipe_num);
             let index = session % pipes;
             let id =
-                i64::from(ctx.connection()?.reactor_id) + index * i64::from(config().reactor_num);
+                i64::from(ctx.connection()?.reactor_id()) + index * i64::from(config().reactor_num);
             // the session id, so the reactor verifies the connection before closing it
             send_event(
                 worker_pipe(worker(server, id)?.into(), false),
@@ -534,7 +534,8 @@ pub(crate) fn answer(
             use core::sync::atomic::Ordering::SeqCst;
             let event = ptr::from_mut(ctx.event.as_deref_mut()?);
             let port = ctx.port?.raw();
-            ctx.connection()?.last_recv_time = swoole_rs_corebase::microtime();
+            ctx.connection()?
+                .set_last_recv_time(swoole_rs_corebase::microtime());
             // The event's socket, which the read may close.
             let sock = event_socket(ctx)?;
             let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
@@ -569,7 +570,7 @@ pub(crate) fn answer(
                 result |= crate::conn_io::ACTIVE
                     | flag(notified, crate::conn_io::READ_NOTIFIED)
                     | flag(
-                        max != 0 && conn.recv_queued_bytes.load(SeqCst) > max,
+                        max != 0 && conn.recv_queued_bytes().load(SeqCst) > max,
                         crate::conn_io::QUEUE_OVER,
                     );
             }

@@ -69,7 +69,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
     let state = state?;
     let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
     let socket = conn.socket()?;
-    if conn.overflow != 0
+    if conn.overflow() != 0
         || socket.read(|record| {
             record.direct_send == 0
                 || !record.ssl().is_null()
@@ -88,7 +88,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
         }
     };
     if sent.cast_unsigned() == length {
-        conn.last_send_time = microtime();
+        conn.set_last_send_time(microtime());
     }
     Some(i64::try_from(sent).unwrap_or(-1))
 }

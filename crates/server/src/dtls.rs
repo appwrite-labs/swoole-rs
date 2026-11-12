@@ -198,7 +198,7 @@ pub(crate) unsafe fn on_packet(
     // A session socket's object is its live connection.
     let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
     // SAFETY: as above; nothing else borrows it during the call.
-    let Some(conn) = (unsafe { conn.as_mut() }) else {
+    let Some(conn) = (unsafe { crate::Connection::from_ptr(conn) }) else {
         return -1;
     };
     let failed = if single_thread {
@@ -206,7 +206,7 @@ pub(crate) unsafe fn on_packet(
         let incoming = unsafe { crate::server_methods::connection_incoming(serv, reactor, conn) };
         incoming < 0
     } else {
-        let (session_id, reactor_id) = (conn.session_id, conn.reactor_id);
+        let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
         let ev = DataHead {
             kind: u8::try_from(EVENT_INCOMING).unwrap_or_default(),
             fd: session_id,

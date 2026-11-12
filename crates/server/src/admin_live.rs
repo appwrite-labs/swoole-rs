@@ -116,7 +116,7 @@ struct Live<'a> {
     config: &'a ServerConfig,
     tables: &'a ServerTables,
     sockets: Vec<*mut c_void>,
-    connections: Vec<*mut ConnectionRecord>,
+    connections: Vec<crate::Connection<'a>>,
 }
 
 impl Live<'_> {
@@ -138,10 +138,11 @@ impl Live<'_> {
         }
     }
 
-    fn connection_record(&self, index: u64) -> &ConnectionRecord {
-        let conn = nth(&self.connections, index);
-        // SAFETY: a connection collected from the live table.
-        unsafe { &*conn }
+    fn connection_record(&self, index: u64) -> crate::Connection<'_> {
+        let item = usize::try_from(index)
+            .ok()
+            .and_then(|i| self.connections.get(i));
+        item.copied().unwrap_or_else(|| std::process::abort())
     }
 }
 
@@ -209,15 +210,16 @@ impl Facts for Live<'_> {
         while fd <= gs.max_fd() {
             let conn = self.serv.at(fd);
             fd += 1;
-            let Some(conn) = conn.filter(|conn| conn.is_active() && !conn.socket.is_null()) else {
+            let Some(conn) = conn.filter(|conn| conn.is_active() && !conn.socket_ptr().is_null())
+            else {
                 continue;
             };
-            let owner = i64::from(conn.reactor_id);
+            let owner = i64::from(conn.reactor_id());
             let other_worker = || {
                 // SAFETY: this worker's live record.
                 !worker.is_null() && owner != i64::from(unsafe { &*worker }.id())
             };
-            if live(conn.socket).read(|s| s.fd_type) != FD_SESSION
+            if live(conn.socket_ptr()).read(|s| s.fd_type) != FD_SESSION
                 || (mode == MODE_PROCESS && owner != reactor_id)
                 || (mode == MODE_BASE && other_worker())
             {
@@ -230,35 +232,36 @@ impl Facts for Live<'_> {
 
     fn session(&mut self, id: i64) -> bool {
         let conn = self.serv.verified(id);
-        self.connections = conn.map(core::ptr::from_mut).into_iter().collect();
+        self.connections = conn.into_iter().collect();
         !self.connections.is_empty()
     }
 
     fn connection(&mut self, index: u64) -> Connection {
         let conn = self.connection_record(index);
-        let config = self.serv.port_of_server_fd(conn.server_fd);
+        let config = self.serv.port_of_server_fd(conn.server_fd());
         // A connection's port is live while a command runs, as `live`'s sockets are.
         let config = config.unwrap_or_else(|| std::process::abort());
         let listener = live(config.socket).read(|s| s.info);
-        let (received, sent) = live(conn.socket).read(|s| (s.total_recv_bytes, s.total_send_bytes));
+        let (received, sent) =
+            live(conn.socket_ptr()).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
-            session_id: conn.session_id,
-            reactor_id: conn.reactor_id.into(),
-            fd: conn.fd.into(),
+            session_id: conn.session_id(),
+            reactor_id: conn.reactor_id().into(),
+            fd: conn.fd().into(),
             server_port: port(&listener),
-            port: port(&conn.info),
-            overflow: conn.overflow.into(),
-            recv_queued_bytes: conn.recv_queued_bytes.load(Relaxed).into(),
-            send_queued_bytes: conn.send_queued_bytes.into(),
+            port: port(&conn.info()),
+            overflow: conn.overflow().into(),
+            recv_queued_bytes: conn.recv_queued_bytes().load(Relaxed).into(),
+            send_queued_bytes: conn.send_queued_bytes().into(),
             total_recv_bytes: received as u64,
             total_send_bytes: sent as u64,
-            uid: conn.uid.into(),
-            connect_time: conn.connect_time,
-            last_recv_time: conn.last_recv_time,
-            last_send_time: conn.last_send_time,
-            last_dispatch_time: conn.last_dispatch_time,
+            uid: conn.uid().into(),
+            connect_time: conn.connect_time(),
+            last_recv_time: conn.last_recv_time(),
+            last_send_time: conn.last_send_time(),
+            last_dispatch_time: conn.last_dispatch_time(),
             server_address: address(&listener),
-            address: address(&conn.info),
+            address: address(&conn.info()),
         }
     }
 

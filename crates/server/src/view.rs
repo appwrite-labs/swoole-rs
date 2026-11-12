@@ -6,7 +6,7 @@
 //! (`native/include/swoole_rs_server_view.h`). `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
-use crate::{ConnectionRecord, ServerConfig, ServerCounters, ServerState};
+use crate::{Connection, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -301,26 +301,26 @@ impl<'a> Server<'a> {
 
     /// `Server::get_connection_verify(session_id)`.
     #[must_use]
-    pub fn verified(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+    pub fn verified(self, session_id: i64) -> Option<Connection<'a>> {
         self.state().connection(session_id, 2)
     }
 
     /// `Server::get_connection_by_session_id(session_id)`: the session's slot,
     /// unverified.
     #[must_use]
-    pub fn by_session(self, session_id: i64) -> Option<&'a mut ConnectionRecord> {
+    pub fn by_session(self, session_id: i64) -> Option<Connection<'a>> {
         self.state().connection(session_id, 1)
     }
 
     /// `Server::get_connection_for_iterator(fd)`.
     #[must_use]
-    pub fn iterated(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+    pub fn iterated(self, fd: c_int) -> Option<Connection<'a>> {
         self.state().connection(c_long::from(fd), 4)
     }
 
     /// `Server::get_connection(fd)`.
     #[must_use]
-    pub fn at(self, fd: c_int) -> Option<&'a mut ConnectionRecord> {
+    pub fn at(self, fd: c_int) -> Option<Connection<'a>> {
         self.state().connection(c_long::from(fd), 0)
     }
 
@@ -329,9 +329,9 @@ impl<'a> Server<'a> {
         self,
         key: c_long,
         kind: u32,
-        field: impl FnOnce(&ConnectionRecord) -> T,
+        field: impl FnOnce(Connection<'a>) -> T,
     ) -> Option<T> {
-        self.state().connection(key, kind).map(|conn| field(conn))
+        self.state().connection(key, kind).map(field)
     }
 
     /// `ListenPort::get_connection_num()` of one of the server's ports.
@@ -448,14 +448,14 @@ impl<'a> Server<'a> {
     /// `Server::get_server_socket(fd)`: the listening socket at `fd`, or null.
     #[must_use]
     pub fn server_socket(self, fd: c_long) -> *mut c_void {
-        self.connection_field(fd, 0, |conn| conn.socket)
+        self.connection_field(fd, 0, Connection::socket_ptr)
             .unwrap_or(core::ptr::null_mut())
     }
 
     /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.
     #[must_use]
     pub fn port_by_fd(self, fd: c_int) -> Option<Port<'a>> {
-        let server_fd = self.connection_field(c_long::from(fd), 0, |conn| conn.server_fd)?;
+        let server_fd = self.connection_field(c_long::from(fd), 0, Connection::server_fd)?;
         self.port_by_server_fd(server_fd)
     }
 
@@ -464,7 +464,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn port_by_server_fd(self, server_fd: c_int) -> Option<Port<'a>> {
         // A listening socket's record holds its port.
-        let port = self.connection_field(c_long::from(server_fd), 0, |conn| conn.object)?;
+        let port = self.connection_field(c_long::from(server_fd), 0, Connection::object)?;
         // SAFETY: null, or one of the server's ports, which live as long as it.
         unsafe { Port::from_raw(port) }
     }
@@ -484,19 +484,19 @@ impl<'a> Server<'a> {
     /// `Server::is_healthy_connection(now, conn)`: protected, never received, or
     /// received within its port's heartbeat idle time.
     #[must_use]
-    pub fn healthy(self, now: f64, conn: &ConnectionRecord) -> bool {
-        if conn.protect != 0 || conn.last_recv_time == 0.0 {
+    pub fn healthy(self, now: f64, conn: Connection<'_>) -> bool {
+        if conn.protect() != 0 || conn.last_recv_time() == 0.0 {
             return true;
         }
         // `get_port_by_session_id`.
-        let Some(fd) = self.connection_field(conn.session_id, 1, |conn| conn.fd) else {
+        let Some(fd) = self.connection_field(conn.session_id(), 1, Connection::fd) else {
             return true;
         };
         let Some(port) = self.port_of_fd(fd) else {
             return true;
         };
         let idle = port.heartbeat_idle_time;
-        idle == 0 || conn.last_recv_time > now - f64::from(idle)
+        idle == 0 || conn.last_recv_time() > now - f64::from(idle)
     }
 
     /// `serv->ports[index]`: the `ListenPort`s in listen order, `None` past the last
@@ -612,7 +612,7 @@ pub unsafe fn socket_fd(socket: *mut c_void) -> (c_int, c_int) {
 
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
 #[must_use]
-pub fn recv_buffer(conn: &ConnectionRecord) -> *mut c_void {
+pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
     conn.socket().map_or(core::ptr::null_mut(), |socket| {
         socket.read(|s| s.recv_buffer)
     })
