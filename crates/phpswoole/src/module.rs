@@ -216,7 +216,7 @@ pub struct Families {
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
     pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,
-    pub name_resolver_remove: fn(Option<&swoole_rs_zend::Value>) -> *mut zval,
+    pub name_resolver_remove: fn(Option<&swoole_rs_zend::Value>) -> Option<swoole_rs_zend::Owned>,
     /// `swoole_socket_coro_ce` and `swoole_client_ce`, for `Swoole\Event`
     /// (crates/phpevents).
     pub socket_class: fn() -> &'static Class,
