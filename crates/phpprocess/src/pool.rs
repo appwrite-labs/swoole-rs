@@ -341,14 +341,11 @@ extern "C" fn on_signal(signo: c_int) {
 
 /// `ProcessPool::signal` in this process's worker (or null).
 fn signal(pool: Pool, signo: c_int) {
-    // SAFETY: the running pool and this process's worker (or null).
-    unsafe {
-        methods::signal(
-            handle(pool),
-            signo,
-            CURRENT_WORKER.load(Ordering::Acquire).cast(),
-        );
-    }
+    methods::signal(
+        handle(pool),
+        signo,
+        CURRENT_WORKER.load(Ordering::Acquire).cast(),
+    );
 }
 
 /// The object a pool callback belongs to, and its data.
