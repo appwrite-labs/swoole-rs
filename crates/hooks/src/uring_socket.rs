@@ -14,15 +14,11 @@ use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::IoVector;
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
-use openssl_sys as ssl;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::SocketRecord;
-
-unsafe extern "C" {
-    fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
-}
+use swoole_rs_tls::OwnedBio;
 
 const EVENT_READ: u32 = 1 << 9;
 const EVENT_WRITE: u32 = 1 << 10;
@@ -59,12 +55,8 @@ impl TlsSocket for Co {
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the
     /// peer and set as the socket's error.
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong) {
-        let mut text = [0_u8; 512];
-        // SAFETY: at most the buffer's length, NUL-terminated.
-        unsafe { ERR_error_string_n(code, text.as_mut_ptr().cast(), text.len()) };
-        let text = CStr::from_bytes_until_nul(&text).unwrap_or_default();
+        let message = swoole_rs_tls::error_string(code);
         let function = function.to_string_lossy();
-        let message = text.to_string_lossy();
         self.net(|network| {
             let (host, port) = swoole_rs_tls::upstream::peer(&network.info);
             log::notice(format_args!(
@@ -73,7 +65,7 @@ impl TlsSocket for Co {
                 swoole_rs_tls::error_reason(code)
             ));
         });
-        owned_err(self, SSL_BAD_PROTOCOL, text.to_bytes());
+        owned_err(self, SSL_BAD_PROTOCOL, message.as_bytes());
     }
 }
 
@@ -89,9 +81,9 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
         tls: Tls {
             uring,
             socket,
-            ssl: network.ssl().cast(),
-            rbio: rbio.cast(),
-            wbio: wbio.cast(),
+            ssl: swoole_rs_tls::Ssl::of_fields(network),
+            rbio,
+            wbio,
             fd: network.fd,
             read_timeout: network.timeouts.read,
             write_timeout: network.timeouts.write,
@@ -124,7 +116,7 @@ impl UringSocketOps {
     }
 
     fn ssl(&self) -> bool {
-        !self.tls.ssl.is_null()
+        self.tls.ssl.is_some()
     }
 
     fn available(&self, event: u32) -> bool {
@@ -512,22 +504,15 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     let Some(session) = socket.with_network(swoole_rs_tls::Ssl::of).flatten() else {
         return false;
     };
-    let session = session.as_ptr();
-    // SAFETY: OpenSSL's static memory BIO method.
-    let method = unsafe { ssl::BIO_s_mem() };
-    // SAFETY: as above (each call alike).
-    let rbio = unsafe { ssl::BIO_new(method) };
-    // SAFETY: as above.
-    let wbio = unsafe { ssl::BIO_new(method) };
-    // SAFETY: the live session takes both BIOs.
-    unsafe { ssl::SSL_set_bio(session, rbio, wbio) };
-    socket.with_extra(|extra| extra.bio = [rbio.cast(), wbio.cast()]);
+    let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
+        return false;
+    };
+    let (rbio, wbio) = session.set_bio(rbio, Some(wbio));
+    socket.with_extra(|extra| extra.bio = [Some(rbio), Some(wbio)]);
     if socket.ssl_is_server() {
-        // SAFETY: the live session.
-        unsafe { ssl::SSL_set_accept_state(session) };
+        session.set_accept_state();
     } else {
-        // SAFETY: the live session.
-        unsafe { ssl::SSL_set_connect_state(session) };
+        session.set_connect_state();
     }
     true
 }
@@ -535,11 +520,13 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
 /// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed
 /// (as without a session from [`tls_session`]).
 pub(crate) fn tls_step(socket: Co) -> c_int {
-    let Some(ops) = of(socket).filter(|ops| !ops.tls.ssl.is_null()) else {
+    let Some(ops) = of(socket) else {
         return -1;
     };
-    // SAFETY: the socket's live session, which `of` read from its record.
-    let rc = unsafe { ssl::SSL_do_handshake(ops.tls.ssl) };
+    let Some(session) = ops.tls.ssl else {
+        return -1;
+    };
+    let rc = session.do_handshake();
     if rc == 1 {
         return 1;
     }
@@ -588,9 +575,9 @@ mod tests {
             tls: Tls {
                 uring: &HOST,
                 socket,
-                ssl: core::ptr::null_mut(),
-                rbio: core::ptr::null_mut(),
-                wbio: core::ptr::null_mut(),
+                ssl: None,
+                rbio: None,
+                wbio: None,
                 fd,
                 read_timeout: 1.0,
                 write_timeout: 1.0,

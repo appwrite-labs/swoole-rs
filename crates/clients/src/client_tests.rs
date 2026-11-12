@@ -138,7 +138,7 @@ pub(super) mod net {
     }
 }
 pub(super) unsafe fn socket_sendfile_sync(
-    _: *mut SocketRecord,
+    _: Socket<'_>,
     _: *const c_char,
     _: i64,
     _: usize,
@@ -146,12 +146,7 @@ pub(super) unsafe fn socket_sendfile_sync(
     log("sendfile false");
     OK
 }
-pub(super) unsafe fn socket_sendfile_async(
-    _: *mut SocketRecord,
-    _: *const c_char,
-    _: i64,
-    _: usize,
-) -> c_int {
+pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
     log("sendfile true");
     OK
 }
@@ -229,7 +224,7 @@ pub(super) unsafe fn ssl_context_create(owner: *const OwnedTlsContext) -> bool {
     unsafe { swoole_rs_tls::ssl_context_create(owner) }
 }
 pub(super) unsafe fn socket_ssl_create(
-    _: *mut SocketRecord,
+    _: Socket<'_>,
     _: *const OwnedTlsContext,
     flags: c_int,
 ) -> c_int {

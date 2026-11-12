@@ -922,7 +922,6 @@ name = "swoole-rs-phpruntime"
 version = "0.1.0"
 dependencies = [
  "libc",
- "openssl-sys",
  "swoole-rs-corebase",
  "swoole-rs-error-ffi",
  "swoole-rs-hooks",

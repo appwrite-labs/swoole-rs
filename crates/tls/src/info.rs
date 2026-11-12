@@ -1,20 +1,15 @@
 //! OpenSSL info callback over the authoritative reactor Socket record. Upstream's
 //! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
-use openssl_sys::{SSL, SSL_CTX, SSL_get_ex_data, SSL_get_rbio, SSL_get_wbio};
-use std::ffi::{c_int, c_long};
+use crate::Ssl;
+use openssl_sys::{SSL, SSL_CTX};
+use std::ffi::c_int;
 use swoole_rs_reactor::Socket;
-// SAFETY: OpenSSL's declarations; openssl-sys does not bind these entry points.
+// SAFETY: OpenSSL's declaration; openssl-sys does not bind this entry point.
 unsafe extern "C" {
     pub(crate) fn SSL_CTX_set_info_callback(
         ctx: *mut SSL_CTX,
         callback: Option<unsafe extern "C" fn(*const SSL, c_int, c_int)>,
     );
-    fn BIO_int_ctrl(
-        bio: *mut openssl_sys::BIO,
-        command: c_int,
-        large: c_long,
-        integer: c_int,
-    ) -> c_long;
 }
 /// # Safety
 /// `ssl` is OpenSSL's live SSL for the call, whose connection `ex_data` (which
@@ -26,8 +21,11 @@ pub(crate) unsafe extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_
     if !renegotiating && !handshake_done {
         return;
     }
-    // SAFETY: per the caller.
-    let socket = unsafe { SSL_get_ex_data(ssl, crate::swr_v1_tls_connection_index()) };
+    // SAFETY: per the caller, live throughout its callback.
+    let Some(ssl) = (unsafe { Ssl::new(ssl.cast_mut()) }) else {
+        return;
+    };
+    let socket = ssl.ex_data(crate::swr_v1_tls_connection_index());
     // SAFETY: per the caller.
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return;
@@ -40,13 +38,11 @@ pub(crate) unsafe extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_
         });
     }
     if handshake_done && socket.read(|record| record.ssl_handshake_buffer_set) == 0 {
-        // SAFETY: the SSL remains live throughout its callback.
-        let read = unsafe { SSL_get_rbio(ssl) };
-        // SAFETY: the SSL remains live throughout its callback.
-        let write = unsafe { SSL_get_wbio(ssl) };
-        if read != write {
-            // SAFETY: the SSL owns this buffering BIO; command117 sets its write buffer.
-            unsafe { BIO_int_ctrl(write, 117, 16384, 1) };
+        let write = ssl.write_bio();
+        if ssl.read_bio() != write {
+            if let Some(write) = write {
+                write.set_write_buffer_size(16384);
+            }
             socket.edit(|record| record.ssl_handshake_buffer_set = 1);
         }
     }

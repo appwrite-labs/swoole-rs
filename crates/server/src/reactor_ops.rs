@@ -532,9 +532,7 @@ pub(crate) fn answer(
         OP_PEER_CERT => {
             let buffer = swoole_rs_corebase::thread_buffer();
             // SAFETY: a TLS socket's live record and this thread's live buffer.
-            u64::from(unsafe {
-                tls::socket_ssl_get_peer_certificate_string(o.sock()?.as_ptr(), buffer)
-            })
+            u64::from(unsafe { tls::socket_ssl_get_peer_certificate_string(o.sock()?, buffer) })
         }
         OP_SSL_VERIFY => {
             let allow_self_signed = o.ssl_fields()?.allow_self_signed != 0;

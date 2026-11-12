@@ -1,32 +1,20 @@
-//! `network::Socket`'s TLS operations, OpenSSL calls included: creating the SSL,
+//! `network::Socket`'s TLS operations over the [`Ssl`] handle: creating the SSL,
 //! handshake steps, reads and writes, host and verify checks, PEM export and error
 //! reasons, and the socket's TLS state group they set. `upstream` defines the
 //! `Socket` methods over them, errno, the last error and logs included.
+use crate::handle::{Cert, CertRef, Ssl};
+use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
-    BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, ERR_clear_error, ERR_get_error,
-    ERR_reason_error_string, PEM_write_bio_X509, SSL, SSL_CTRL_MODE, SSL_CTX, SSL_ERROR_SSL,
-    SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE, SSL_ERROR_ZERO_RETURN,
-    SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN, SSL_SENT_SHUTDOWN, SSL_accept,
-    SSL_connect, SSL_ctrl, SSL_get_error, SSL_get_shutdown, SSL_get_verify_result, SSL_new,
-    SSL_read, SSL_set_accept_state, SSL_set_connect_state, SSL_set_ex_data, SSL_set_shutdown,
-    SSL_shutdown, SSL_write, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
-    X509_check_host, X509_free,
+    SSL_CTX, SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
+    SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
+    SSL_SENT_SHUTDOWN, SSL_new, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
 };
 use std::ffi::CStr;
+use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int, c_long, c_ulong, c_void};
-use std::ptr::NonNull;
-use swoole_rs_reactor::{Socket, SocketFields};
+use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_reactor::SocketFields;
 
-// SAFETY: libssl/libcrypto's own declarations; openssl-sys binds neither.
-unsafe extern "C" {
-    fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
-    fn ERR_peek_error() -> c_ulong;
-    fn SSL_in_init(ssl: *const SSL) -> c_int;
-    fn SSL_set_quiet_shutdown(ssl: *mut SSL, mode: c_int);
-}
-
-/// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
-const BIO_CTRL_PENDING: c_int = 10;
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
 const SERVER: c_int = 1;
 const CLIENT: c_int = 2;
@@ -57,72 +45,6 @@ pub use swoole_rs_reactor::SocketTlsState as SocketTls;
 fn want(tls: &mut SocketTls, read: bool, write: bool) {
     tls.want_read = u8::from(read);
     tls.want_write = u8::from(write);
-}
-
-/// A live SSL on this thread. A socket record's is live while it is set:
-/// `Socket::ssl_create` sets it, and `ssl_close` frees it and clears it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ssl(NonNull<SSL>);
-
-impl Ssl {
-    /// # Safety
-    /// `ssl` is null or a live SSL, not freed while the handle is used.
-    #[must_use]
-    pub unsafe fn new(ssl: *mut SSL) -> Option<Self> {
-        NonNull::new(ssl).map(Self)
-    }
-
-    /// The SSL of `socket`'s record, or None without one.
-    #[must_use]
-    pub fn of(socket: Socket<'_>) -> Option<Self> {
-        socket.read(Self::of_fields)
-    }
-
-    /// The SSL of a record's fields, or None without one.
-    #[must_use]
-    pub fn of_fields(fields: &SocketFields) -> Option<Self> {
-        // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
-        // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
-        // contract) set it, and `ssl_close` takes it before freeing it.
-        unsafe { Self::new(fields.ssl().cast()) }
-    }
-
-    #[must_use]
-    pub fn as_ptr(self) -> *mut SSL {
-        self.0.as_ptr()
-    }
-
-    fn error(self, result: c_int) -> c_int {
-        // SAFETY: a live SSL, and its last I/O result.
-        unsafe { SSL_get_error(self.as_ptr(), result) }
-    }
-}
-
-/// Clears this thread's OpenSSL error queue.
-pub(crate) fn clear_errors() {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_clear_error() };
-}
-
-/// This thread's oldest queued OpenSSL error, left queued.
-pub(crate) fn peek_error() -> c_ulong {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_peek_error() }
-}
-
-/// This thread's oldest queued OpenSSL error, popped.
-pub(crate) fn pop_error() -> c_ulong {
-    // SAFETY: this thread's queue; no preconditions.
-    unsafe { ERR_get_error() }
-}
-
-/// OpenSSL's reason string for `error`, None for an unknown code.
-#[must_use]
-pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
-    // SAFETY: OpenSSL's static string table, null for an unknown code.
-    let reason = unsafe { ERR_reason_error_string(error) };
-    // SAFETY: a static NUL-terminated string when not null.
-    (!reason.is_null()).then(|| unsafe { CStr::from_ptr(reason) })
 }
 
 /// `Socket::ssl_clear_error`: clears this thread's OpenSSL error queue and the want flags.
@@ -174,46 +96,22 @@ fn classify(tls: &mut SocketTls, ssl: Ssl, n: c_int, write: bool) -> SslIoResult
     result
 }
 
-/// `Socket::ssl_recv`: `SSL_read` up to `length` bytes.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "upstream passes its size_t to SSL_read's int the same way"
-)]
-pub unsafe fn swr_v1_socket_ssl_recv(
+/// `Socket::ssl_recv`: `SSL_read` into `buffer`.
+pub fn swr_v1_socket_ssl_recv(
     tls: &mut SocketTls,
     ssl: Ssl,
-    buffer: *mut c_void,
-    length: usize,
+    buffer: &mut [impl ReadSlot],
 ) -> SslIoResult {
     clear_errors();
-    // SAFETY: the caller lends `length` writable bytes to a live SSL.
-    let n = unsafe { SSL_read(ssl.as_ptr(), buffer, length as c_int) };
+    let n = ssl.read(buffer);
     classify(tls, ssl, n, false)
 }
 
-/// `Socket::ssl_send`: `SSL_write` of `length` bytes (native code applies the DTLS
-/// chunk limit first).
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "upstream passes its size_t to SSL_write's int the same way"
-)]
-pub unsafe fn swr_v1_socket_ssl_send(
-    tls: &mut SocketTls,
-    ssl: Ssl,
-    buffer: *const c_void,
-    length: usize,
-) -> SslIoResult {
+/// `Socket::ssl_send`: `SSL_write` of `data` (native code applies the DTLS chunk
+/// limit first).
+pub fn swr_v1_socket_ssl_send(tls: &mut SocketTls, ssl: Ssl, data: &[u8]) -> SslIoResult {
     clear_errors();
-    // SAFETY: the caller lends `length` readable bytes to a live SSL.
-    let n = unsafe { SSL_write(ssl.as_ptr(), buffer, length as c_int) };
+    let n = ssl.write(data);
     classify(tls, ssl, n, true)
 }
 
@@ -247,8 +145,7 @@ impl SslHandshakeResult {
 pub fn swr_v1_socket_ssl_accept(tls: &mut SocketTls, ssl: Ssl, dtls: bool) -> SslHandshakeResult {
     want(tls, false, false);
     clear_errors();
-    // SAFETY: a live SSL.
-    let n = unsafe { SSL_accept(ssl.as_ptr()) };
+    let n = ssl.accept();
     if n == 1 {
         tls.state = STATE_READY;
         return SslHandshakeResult::returning(READY);
@@ -286,8 +183,7 @@ pub fn swr_v1_socket_ssl_accept(tls: &mut SocketTls, ssl: Ssl, dtls: bool) -> Ss
 pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeResult {
     want(tls, false, false);
     clear_errors();
-    // SAFETY: a live SSL.
-    let n = unsafe { SSL_connect(ssl.as_ptr()) };
+    let n = ssl.connect();
     if n == 1 {
         tls.state = STATE_READY;
         return SslHandshakeResult::returning(OK);
@@ -322,46 +218,11 @@ pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeR
     result
 }
 
-/// A live certificate reference this side owns, released when dropped.
-pub struct Cert(pub(crate) NonNull<X509>);
-
-impl Cert {
-    #[must_use]
-    pub fn as_ptr(&self) -> *mut X509 {
-        self.0.as_ptr()
-    }
-
-    /// `Socket::ssl_check_host`'s test: whether the certificate matches the host
-    /// `name` under `X509_check_host`.
-    #[must_use]
-    pub fn matches_host(&self, name: &[u8]) -> bool {
-        // SAFETY: the live certificate and the name's bytes.
-        let matched = unsafe {
-            X509_check_host(
-                self.as_ptr(),
-                name.as_ptr().cast(),
-                name.len(),
-                0,
-                std::ptr::null_mut(),
-            )
-        };
-        matched == 1
-    }
-}
-
-impl Drop for Cert {
-    fn drop(&mut self) {
-        // SAFETY: drops the reference this side owns.
-        unsafe { X509_free(self.as_ptr()) };
-    }
-}
-
 /// `Socket::ssl_verify`: the peer's verify result if it rejects the peer, else
 /// `X509_V_OK`. A self-signed leaf passes when `allow_self_signed`.
 #[must_use]
 pub fn swr_v1_socket_ssl_verify(ssl: Ssl, allow_self_signed: bool) -> c_long {
-    // SAFETY: a live SSL.
-    let result = unsafe { SSL_get_verify_result(ssl.as_ptr()) };
+    let result = ssl.verify_result();
     if allow_self_signed && result == c_long::from(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT) {
         return c_long::from(X509_V_OK);
     }
@@ -381,31 +242,16 @@ pub unsafe fn swr_v1_socket_ssl_pem(
     length: usize,
     consume: bool,
 ) -> c_int {
-    // SAFETY: OpenSSL's static memory BIO method.
-    let method = unsafe { BIO_s_mem() };
-    // SAFETY: a fresh BIO of that method.
-    let bio = unsafe { BIO_new(method) };
-    let written = if bio.is_null() {
-        -1
-    // SAFETY: the caller's certificate into the fresh BIO.
-    } else if unsafe { PEM_write_bio_X509(bio, cert) } == 0 {
-        -2
-    } else {
-        // SAFETY: the live BIO; BIO_pending.
-        let pending = unsafe { BIO_ctrl(bio, BIO_CTRL_PENDING, 0, std::ptr::null_mut()) };
-        let room = c_long::try_from(length).unwrap_or(c_long::MAX);
-        let count = c_int::try_from(pending.min(room)).unwrap_or(c_int::MAX);
-        // SAFETY: at most `length` bytes into the caller's buffer.
-        unsafe { BIO_read(bio, buffer.cast(), count) }
-    };
-    if !bio.is_null() {
-        // SAFETY: frees the BIO made above.
-        unsafe { BIO_free_all(bio) };
-    }
-    if consume {
-        // The reference the caller handed over, released as this side's own.
-        drop(NonNull::new(cert).map(Cert));
-    }
+    // SAFETY: the caller's live certificate.
+    let borrowed = unsafe { CertRef::new(cert) };
+    // SAFETY: the caller's reference when `consume`, which this side now owns.
+    let owned = consume.then(|| unsafe { Cert::from_raw(cert) });
+    // SAFETY: the caller lends `length` writable bytes.
+    let buffer =
+        unsafe { std::slice::from_raw_parts_mut(buffer.cast::<MaybeUninit<u8>>(), length) };
+    let written = borrowed.map_or(-2, |cert| cert.pem(buffer));
+    // The reference the caller handed over, released as this side's own.
+    drop(owned);
     written
 }
 
@@ -445,8 +291,7 @@ struct OpenSsl;
 
 impl ShutdownCalls for OpenSsl {
     fn shutdown(&mut self, ssl: Ssl) -> c_int {
-        // SAFETY: a live SSL.
-        unsafe { SSL_shutdown(ssl.as_ptr()) }
+        ssl.shutdown()
     }
     fn error(&mut self, ssl: Ssl, result: c_int) -> c_int {
         ssl.error(result)
@@ -467,15 +312,13 @@ fn shutdown(
     repaired: bool,
     calls: &mut impl ShutdownCalls,
 ) -> c_int {
-    // SAFETY: a live SSL.
-    if *closed != 0 || unsafe { SSL_in_init(ssl.as_ptr()) } != 0 {
+    if *closed != 0 || ssl.in_init() {
         return SHUTDOWN_FALSE;
     }
     // If the peer closed first, shut down quietly: sending data then makes the peer
     // reply with an RST segment.
     if quiet {
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_quiet_shutdown(ssl.as_ptr(), 1) };
+        ssl.set_quiet_shutdown();
     }
     let result = if repaired {
         clear_errors();
@@ -491,11 +334,7 @@ fn shutdown(
         (n, error)
     } else {
         // Upstream marks both directions shut first, so OpenSSL writes no alert.
-        // SAFETY: a live SSL.
-        let mode = unsafe { SSL_get_shutdown(ssl.as_ptr()) };
-        let mode = mode | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN;
-        // SAFETY: a live SSL.
-        unsafe { SSL_set_shutdown(ssl.as_ptr(), mode) };
+        ssl.set_shutdown_mode(ssl.shutdown_mode() | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN);
         let n = calls.shutdown(ssl);
         *closed = 1;
         let error = if n != 1 && peek_error() != 0 {
@@ -554,32 +393,21 @@ pub unsafe fn swr_v1_socket_ssl_new(
     let made = unsafe { SSL_new(context) };
     // SAFETY: null or the new SSL, which nothing else holds and the record now owns.
     unsafe { record.set_ssl(made.cast()) };
-    if made.is_null() {
+    // SAFETY: null or the new SSL, which the record frees only in `ssl_close`.
+    let Some(ssl) = (unsafe { Ssl::new(made) }) else {
         return 1;
-    }
-    // SAFETY: the new SSL; `SSL_set_mode` is this `SSL_ctrl`.
-    unsafe {
-        SSL_ctrl(
-            made,
-            SSL_CTRL_MODE,
-            SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
-            std::ptr::null_mut(),
-        )
     };
-    // SAFETY: the new SSL and the caller's descriptor.
-    if unsafe { SSL_set_fd(made, record.fd) } == 0 {
+    ssl.set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    if !ssl.set_fd(record.fd) {
         *error = peek_error();
         return 2;
     }
     if flags & CLIENT != 0 {
-        // SAFETY: the new SSL.
-        unsafe { SSL_set_connect_state(made) };
+        ssl.set_connect_state();
     } else if flags & SERVER != 0 {
-        // SAFETY: the new SSL.
-        unsafe { SSL_set_accept_state(made) };
+        ssl.set_accept_state();
     }
-    // SAFETY: the new SSL keeps the caller's socket pointer as opaque ex data.
-    if unsafe { SSL_set_ex_data(made, index, socket) } == 0 {
+    if !ssl.set_ex_data(index, socket) {
         return 3;
     }
     record.tls.state = 0;
@@ -616,12 +444,7 @@ mod tests {
             let (ssl, _) = client();
             let mut tls = SocketTls::default();
             let mut buffer = [0_u8; 16];
-            let read = swr_v1_socket_ssl_recv(
-                &mut tls,
-                handle(ssl),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-            );
+            let read = swr_v1_socket_ssl_recv(&mut tls, handle(ssl), &mut buffer);
             assert_eq!(
                 read,
                 SslIoResult {
@@ -632,8 +455,7 @@ mod tests {
             );
             assert_eq!((tls.want_read, tls.want_write), (1, 0));
             tls.want_write = 1;
-            let sent =
-                swr_v1_socket_ssl_send(&mut tls, handle(ssl), buffer.as_ptr().cast(), buffer.len());
+            let sent = swr_v1_socket_ssl_send(&mut tls, handle(ssl), &buffer);
             assert_eq!(sent, read, "a write also waits for the server's hello");
             assert_eq!(
                 (tls.want_read, tls.want_write),
@@ -711,7 +533,7 @@ mod tests {
         unsafe {
             let check = |cert, name: &str| {
                 let cert = Cert(std::ptr::NonNull::new(cert).unwrap());
-                if cert.matches_host(name.as_bytes()) {
+                if cert.get().matches_host(name.as_bytes()) {
                     1
                 } else {
                     2
@@ -849,12 +671,7 @@ mod tests {
             let (ssl, read) = client();
             let mut tls = SocketTls::default();
             let mut buffer = [0_u8; 16];
-            swr_v1_socket_ssl_recv(
-                &mut tls,
-                handle(ssl),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-            );
+            swr_v1_socket_ssl_recv(&mut tls, handle(ssl), &mut buffer);
             let garbage = [
                 0x16_u8, 0x03, 0x03, 0x00, 0x05, 0xff, 0xff, 0xff, 0xff, 0xff,
             ];
@@ -863,12 +680,7 @@ mod tests {
                 garbage.as_ptr().cast(),
                 c_int::try_from(garbage.len()).unwrap(),
             );
-            let result = swr_v1_socket_ssl_recv(
-                &mut tls,
-                handle(ssl),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-            );
+            let result = swr_v1_socket_ssl_recv(&mut tls, handle(ssl), &mut buffer);
             assert_eq!(
                 result,
                 SslIoResult {
@@ -904,7 +716,13 @@ mod shutdown_tests {
         ) -> c_int;
         fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
         fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
+        fn ERR_peek_error() -> std::os::raw::c_ulong;
+        fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
+        fn SSL_in_init(ssl: *const SSL) -> c_int;
     }
+
+    /// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
+    const BIO_CTRL_PENDING: c_int = 10;
 
     /// `BIO_FLAGS_SHOULD_RETRY`, behind the `BIO_should_retry` macro.
     const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
@@ -1162,14 +980,8 @@ mod shutdown_tests {
             assert!(tries.len() < 1000, "the write never completed");
             tries.push(data.clone());
             let buffer = tries.last().unwrap();
-            let sent = unsafe {
-                swr_v1_socket_ssl_send(
-                    &mut tls,
-                    Ssl::new(pair.server).unwrap(),
-                    buffer.as_ptr().cast(),
-                    buffer.len(),
-                )
-            };
+            let sent =
+                unsafe { swr_v1_socket_ssl_send(&mut tls, Ssl::new(pair.server).unwrap(), buffer) };
             if sent.value == 65536 {
                 break;
             }

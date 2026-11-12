@@ -20,6 +20,8 @@ mod context;
 #[cfg(unix)]
 pub mod event_socket;
 #[cfg(unix)]
+mod handle;
+#[cfg(unix)]
 pub mod reactor_write;
 #[cfg(unix)]
 mod socket;
@@ -29,6 +31,8 @@ pub mod socket_pair;
 pub mod upstream;
 #[cfg(unix)]
 pub use context::*;
+#[cfg(unix)]
+pub use handle::*;
 #[cfg(unix)]
 pub use socket::*;
 

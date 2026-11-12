@@ -107,10 +107,12 @@ fn send_event(sock: *mut c_void, fd: c_long, kind: u32) {
         ..DataHead::default()
     };
     let data = (&raw const head).cast();
-    // SAFETY: a live pipe socket, and the head's bytes.
-    unsafe {
-        swoole_rs_tls::upstream::socket_send_sync(sock.cast(), data, size_of::<DataHead>(), 0)
-    };
+    if let Some(sock) = crate::objects::socket(sock) {
+        // SAFETY: a live pipe socket, and the head's bytes.
+        let _ = unsafe {
+            swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
+        };
+    }
 }
 
 /// Answers `op` when it is one of this module's, else `None`, as `reactor_ops::answer`.
@@ -458,7 +460,7 @@ pub(crate) fn answer(
             0
         }
         OP_RT_SEND_FRONT => {
-            let sock = event_socket(ctx)?.as_ptr();
+            let sock = event_socket(ctx)?;
             let (front, length) = (ctx.front.cast(), ctx.front_length);
             // SAFETY: the event's live socket and the front message's bytes.
             let sent = unsafe { swoole_rs_tls::upstream::socket_send(sock, front, length, 0) };

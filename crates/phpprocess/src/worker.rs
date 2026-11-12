@@ -149,7 +149,7 @@ pub(crate) fn pipe_read(worker: *mut c_void, buffer: &mut ZBuf, blocking: bool) 
     let (data, length) = (buffer.as_mut_ptr().cast(), buffer.capacity());
     if blocking {
         // SAFETY: a live socket and `length` writable bytes.
-        unsafe { socket_read_sync(socket.as_ptr(), data, length) }
+        unsafe { socket_read_sync(socket, data, length) }
     } else {
         // SAFETY: as above.
         unsafe { libc::read(socket.fd(), data, length) }

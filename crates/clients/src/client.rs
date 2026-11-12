@@ -1249,7 +1249,7 @@ fn ssl_handshake(this: Handle) -> c_int {
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = 1);
         // SAFETY: the live socket and context.
-        if unsafe { socket_ssl_create(this.socket_ptr(), tls, SSL_CLIENT) } < 0 {
+        if unsafe { socket_ssl_create(this.socket(), tls, SSL_CLIENT) } < 0 {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return ERR;
         }
@@ -1762,14 +1762,12 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
         return ERR;
     }
     let is_async = this.flag(ASYNC);
-    let socket = this.socket_ptr();
-    let file = file.as_ptr();
+    let socket = this.socket();
     let sent = if is_async {
-        // SAFETY: the live client's socket and a NUL-terminated path.
-        unsafe { socket_sendfile_async(socket, file, offset, length) }
+        socket_sendfile_async(socket, file, offset, length)
     } else {
-        // SAFETY: as above.
-        unsafe { socket_sendfile_sync(socket, file, offset, length) }
+        // SAFETY: a NUL-terminated path.
+        unsafe { socket_sendfile_sync(socket, file.as_ptr(), offset, length) }
     };
     if sent < 0 {
         log::set_last_error(errno());
