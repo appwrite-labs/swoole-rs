@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    ffi::{CStr, CString, c_int},
+    ffi::{CString, c_int},
     ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
