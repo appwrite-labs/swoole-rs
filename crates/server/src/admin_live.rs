@@ -268,8 +268,8 @@ impl Facts for Live<'_> {
     fn thread(&mut self) -> Thread {
         let thread = self.thread_record();
         Thread {
-            id: thread.id.into(),
-            dispatch_count: thread.dispatch_count,
+            id: thread.id.get().into(),
+            dispatch_count: thread.dispatch_count.get(),
             event_num: registry().map_or(0, Registry::count) as u64,
             timer_num: swoole_rs_timer::thread_timer_count() as u64,
         }

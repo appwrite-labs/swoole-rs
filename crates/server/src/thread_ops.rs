@@ -67,9 +67,10 @@ fn out_front(ctx: &ReactorContext<'_>) -> Option<swoole_rs_buffer::TypedFront> {
     event_socket(ctx)?.read(|s| crate::reactor_ops::out_buffer(s).map(|b| front(b)))
 }
 
-/// The thread's `MessageBus`.
-fn bus_of(thread: &mut ThreadRecord) -> *mut c_void {
-    (&raw mut thread.bus).cast()
+/// The `MessageBus` of the context's thread, once an op has set it.
+fn bus_of(ctx: &ReactorContext<'_>) -> Option<*mut c_void> {
+    let thread = ctx.thread;
+    (!thread.is_null()).then(|| thread.wrapping_byte_add(core::mem::offset_of!(ThreadRecord, bus)))
 }
 
 /// The context's event's fd.
@@ -186,7 +187,7 @@ pub(crate) fn answer(
         }
         OP_PACKET_TASK => {
             let pkt = packet(ctx)?;
-            ctx.task.info.fd = if pkt.socket_type == SOCK_UDP {
+            let fd = if pkt.socket_type == SOCK_UDP {
                 let ip = pkt.socket_addr.addr.v4().sin_addr.s_addr;
                 c_long::from(ip.cast_signed())
             } else {
@@ -202,6 +203,7 @@ pub(crate) fn answer(
                 }
             };
             pkt.length = u32::try_from(arg).unwrap_or(u32::MAX);
+            ctx.task.info.fd = fd;
             let len = size_of::<DgramPacket>() as u64 + arg;
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
@@ -256,9 +258,8 @@ pub(crate) fn answer(
         }
         OP_THREAD_ENTER => {
             ctx.thread = thread(state, usize::try_from(arg).ok()?);
-            let thread = ctx.thread_record()?;
-            thread.id = int(arg);
-            swoole_rs_corebase::set_thread_message_bus(bus_of(thread));
+            ctx.thread_record()?.id.set(int(arg));
+            swoole_rs_corebase::set_thread_message_bus(bus_of(ctx)?);
             0
         }
         OP_REACTOR_THREAD_TYPE => {
@@ -266,7 +267,7 @@ pub(crate) fn answer(
             0
         }
         OP_WORKER_START | OP_WORKER_STOP => {
-            let worker = worker(server, ctx.thread_record()?.id)?;
+            let worker = worker(server, ctx.thread_record()?.id.get())?;
             if op == OP_WORKER_START {
                 call_worker_start_callback(server, worker);
             } else {
@@ -282,7 +283,7 @@ pub(crate) fn answer(
             if op == OP_THREAD0_INIT {
                 ctx.thread = thread(state, 0);
             }
-            let id = u16::try_from(ctx.thread_record()?.id).unwrap_or_default();
+            let id = u16::try_from(ctx.thread_record()?.id.get()).unwrap_or_default();
             // `ReactorThread::init(serv, reactor, id)`, over the context's thread and
             // its new reactor.
             let mut init = ReactorContext::new(server, handle);
@@ -299,7 +300,7 @@ pub(crate) fn answer(
             let joining = thread(state, usize::try_from(arg).ok()?).cast::<ThreadRecord>();
             // SAFETY: one of the server's live threads; only its field is read, as the
             // thread itself may hold its record meanwhile.
-            let notify = unsafe { (*joining).notify_pipe };
+            let notify = unsafe { (*joining).notify_pipe.get() };
             // SAFETY: null or the thread's notify pipe, which it keeps until the server
             // joins it, after this notice.
             send_event(unsafe { Socket::from_ptr(notify) }, 0, EVENT_SHUTDOWN);
@@ -316,7 +317,7 @@ pub(crate) fn answer(
                     .heartbeat_timer
                     .store(timer, core::sync::atomic::Ordering::Relaxed);
             } else {
-                ctx.thread_record()?.heartbeat_timer = timer;
+                ctx.thread_record()?.heartbeat_timer.set(timer);
             }
             0
         }
@@ -342,7 +343,7 @@ pub(crate) fn answer(
         }
         OP_RT_INIT_PIPE_SOCKETS => {
             // SAFETY: the live server and this thread's bus.
-            unsafe { methods::init_pipe_sockets(server, bus_of(ctx.thread_record()?)) };
+            unsafe { methods::init_pipe_sockets(server, bus_of(ctx)?) };
             0
         }
         OP_RT_THREAD_WORKER => {
@@ -358,7 +359,7 @@ pub(crate) fn answer(
             let thread = ctx.thread_record()?;
             let bus = thread.message_bus();
             bus.init_pipe_socket(fd);
-            thread.pipe_command = bus.pipe_fd(fd).cast();
+            thread.pipe_command.set(bus.pipe_fd(fd).cast());
             bus.rust()
                 .pipe(fd)?
                 .edit(|s| s.output.buffer_size = u32::MAX);
@@ -396,8 +397,8 @@ pub(crate) fn answer(
                 return Some(sign(-1));
             }
             // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
-            if thread.notify_pipe.is_null() {
-                thread.notify_pipe = worker.pipe_worker().cast();
+            if thread.notify_pipe.get().is_null() {
+                thread.notify_pipe.set(worker.pipe_worker().cast());
             }
             0
         }
@@ -420,7 +421,7 @@ pub(crate) fn answer(
         }
         OP_COMMAND_REQUEST => {
             let thread = ctx.thread_record()?;
-            let id = u16::try_from(thread.id).unwrap_or_default();
+            let id = u16::try_from(thread.id.get()).unwrap_or_default();
             // The bus's record of the command pipe (`thread.pipe_command`).
             let bus = thread.message_bus();
             let end = config()
@@ -590,7 +591,7 @@ pub(crate) fn answer(
 }
 
 /// The datagram `OP_PACKET_INIT` points the context at.
-fn packet<'a>(ctx: &ReactorContext<'_>) -> Option<&'a mut DgramPacket> {
+fn packet<'c>(ctx: &'c mut ReactorContext<'_>) -> Option<&'c mut DgramPacket> {
     // SAFETY: null, or this thread's buffer, which holds a packet head and its datagram.
     unsafe { ctx.pkt.cast::<DgramPacket>().as_mut() }
 }
