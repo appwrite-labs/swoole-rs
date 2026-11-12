@@ -388,17 +388,11 @@ fn rshutdown() -> Result<(), Bailout> {
     let Some(families) = swoole_rs_phpswoole::families() else {
         return Ok(());
     };
-    loop {
-        // Every PHP resolver matches `None`; each match is unlinked and returned
-        // (crates/phpclients).
-        let resolver = (families.name_resolver_remove)(None);
-        if resolver.is_null() {
-            break;
-        }
-        // SAFETY: zval_dtor of the unlinked resolver, inside a trap.
-        unsafe { bailout::trap(z::swr_zend_zval_release, resolver.cast()) }?;
-        // SAFETY: emalloc'd by the resolver's registration; nothing refers to it.
-        unsafe { z::swr_zend_efree(resolver.cast()) };
+    // Every PHP resolver matches `None`; each match is unlinked and its
+    // reference returned (crates/phpclients), released here inside `zend_try`.
+    while let Some(resolver) = (families.name_resolver_remove)(None) {
+        drop(resolver);
+        bailout::outcome(())?;
     }
     release_exit_condition()
 }

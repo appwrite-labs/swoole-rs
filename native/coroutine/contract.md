@@ -19,7 +19,7 @@ out of a callback, skips no cleanup.
 
 `crates/coroutine/src/coroutine.rs` owns two `repr(C)` records:
 `swr_v1_coroutine_scheduler` (current coroutine, last and socket-bound ids, peak
-count, stack size, the three swap callbacks, the C++ hooks, the live map, gdb's
+count, stack size, the three swap callbacks, the hooks, the live map, gdb's
 cursor, activation and the bailout mark) and `swr_v1_coroutine` (id, state,
 resume code, task, cancel function, the origin tree and timing). Rust keeps the
 scheduler in upstream's `SW_THREAD_LOCAL` scope (`thread_local!` under ZTS, a
@@ -37,9 +37,9 @@ Create, run, resume, yield (with or without a cancel function), the timed
 `yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
 resume callback still sees the old current; yield clears the resume code before
 its callback). They call back through `swr_v1_coroutine_hooks`: `swap_in` (returns
-whether the coroutine ended), `swap_out`, `destroy` (frees the record and its
-stack, or joins its thread), `bailout` (`on_bailout`, a C function and its
-data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
+whether the coroutine ended), `swap_out` and `destroy` (frees the record and its
+stack, or joins its thread), Rust functions over the live coroutine; `bailout`
+(`on_bailout`, a C function and its data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
 coroutine closes: the close callback, then `release` restores current, orphans
 the coroutines this one resumed, unlinks it from its origin and drops it from
 the live map, then `destroy`. Otherwise a set bailout mark runs the bailout

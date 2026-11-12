@@ -247,8 +247,7 @@ unsafe extern "C" {
     #[link_name = "_Z18swoole_timer_clearl"]
     fn swoole_timer_clear(timer_id: c_long) -> bool;
 
-    // The raw-bytes dispatch_sync overload and the stream listener (crates/process).
-    fn swr_v1_process_pool_ipc_send_sync(ipc: *const c_void, data: *const u8, len: u32) -> bool;
+    // The stream listener (crates/process).
     fn swr_v1_process_pool_ipc_listener(ipc: *const c_void) -> *mut c_void;
     fn swr_v1_os_msg_queue_push(queue: *const c_void, node: *const c_void, length: usize) -> bool;
     #[link_name = "_Z22swoole_set_worker_typei"]
@@ -808,10 +807,9 @@ fn tcp_raw() {
         // SAFETY: a thread of this process; the pool's IPC and `data` outlive the join.
         unsafe {
             swoole_thread_init(false);
-            let dispatch_result = if swr_v1_process_pool_ipc_send_sync(
-                ipc as *const c_void,
-                bytes as *const u8,
-                length,
+            let dispatch_result = if swoole_rs_process::pool::swr_v1_process_pool_ipc_send_sync(
+                (ipc as *const swoole_rs_process::pool::PoolIpc).as_ref(),
+                std::slice::from_raw_parts(bytes as *const u8, length as usize),
             ) {
                 SW_OK
             } else {

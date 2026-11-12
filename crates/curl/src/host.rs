@@ -54,8 +54,7 @@ pub(crate) fn install_handlers() {
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        // SAFETY: `on_event` needs only the live event of a cURL socket.
-        unsafe { event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler)) };
+        event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler));
     }
 }
 
@@ -165,8 +164,8 @@ pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
 /// # Safety
 /// `co` is a live, suspended coroutine.
 pub(crate) unsafe fn resume(co: *mut c_void) {
-    // SAFETY: per the caller; a facade starts with its Rust state.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_resume(scheduler(), co.cast()) };
+    // SAFETY: per the caller.
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {

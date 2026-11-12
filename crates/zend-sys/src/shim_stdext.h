@@ -20,7 +20,6 @@ int swr_zend_try_lookup_class(zend_string *name, zend_class_entry **ce);
 zend_execute_data *swr_zend_push_nested_call(zend_function *fn, uint32_t num_args, void *object);
 
 /* &EG(uninitialized_zval). */
-zval *swr_zend_uninitialized_zval(void);
 
 /* sapi_module.treat_data(PARSE_STRING, text, array): `text` is emalloc'd and
  * the SAPI frees it. */
