@@ -1,6 +1,7 @@
 //! A coroutine's context: its stack and the switch onto it through boost.context's
 //! fcontext (`fcontext.rs`). `AddressSanitizer` follows a stack switch only through its
-//! fiber annotations, so they run whenever the process has its runtime. With
+//! fiber annotations, so they run whenever the process has its runtime, and
+//! `ThreadSanitizer` through its own, in tools/tsan.py's build (`cfg(tsan)`). With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
 use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
@@ -30,6 +31,11 @@ pub struct Context {
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
     asan_bottom: *const c_void,
     asan_size: usize,
+    /// The context's `ThreadSanitizer` fiber, and the one that last switched it in.
+    #[cfg(tsan)]
+    tsan_fiber: *mut c_void,
+    #[cfg(tsan)]
+    tsan_caller: Cell<*mut c_void>,
     /// Set once the entry returned.
     end: Cell<bool>,
     /// The [`THREAD`] context's thread.
@@ -77,6 +83,10 @@ impl Context {
             data,
             asan_bottom: ptr::null(),
             asan_size: 0,
+            #[cfg(tsan)]
+            tsan_fiber: __tsan_create_fiber(0),
+            #[cfg(tsan)]
+            tsan_caller: Cell::new(ptr::null_mut()),
             end: Cell::new(false),
             thread: None,
         };
@@ -119,6 +129,11 @@ impl Drop for Context {
                 swr_v1_context_stack_free(self.stack.cast(), self.stack_size as usize, self.flags);
             }
         }
+        #[cfg(tsan)]
+        // SAFETY: the context's own fiber, which is not running: the context ended or never ran.
+        unsafe {
+            __tsan_destroy_fiber(self.tsan_fiber);
+        }
     }
 }
 
@@ -128,8 +143,23 @@ const SW_ERROR_MALLOC_FAIL: c_int = 501;
 type StartSwitch = unsafe extern "C" fn(*mut *mut c_void, *const c_void, usize);
 type FinishSwitch = unsafe extern "C" fn(*mut c_void, *mut *const c_void, *mut usize);
 
+// ThreadSanitizer's fiber calls. Each coroutine runs as its own fiber: TSan keeps a
+// thread's setjmp buffers in one list and, on each setjmp, drops those taken below its
+// stack pointer, so a setjmp on a coroutine stack mapped above the thread's stack would
+// drop the thread's own buffers, and a later bailout to one aborts with "can't find
+// longjmp buf" (#3400). A fiber keeps a list of its own.
+#[cfg(tsan)]
+unsafe extern "C" {
+    safe fn __tsan_get_current_fiber() -> *mut c_void;
+    safe fn __tsan_create_fiber(flags: core::ffi::c_uint) -> *mut c_void;
+    fn __tsan_destroy_fiber(fiber: *mut c_void);
+    fn __tsan_switch_to_fiber(fiber: *mut c_void, flags: core::ffi::c_uint);
+}
+
 /// `__sanitizer_{start,finish}_switch_fiber`, when `AddressSanitizer` is loaded.
 fn asan() -> Option<(StartSwitch, FinishSwitch)> {
+    #[repr(C)]
+    struct Fibers(StartSwitch, FinishSwitch);
     fn symbol(name: &std::ffi::CStr) -> *mut c_void {
         // SAFETY: dlsym with a NUL-terminated name has no other preconditions.
         unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) }
@@ -141,10 +171,10 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
         if start.is_null() || finish.is_null() {
             return None;
         }
-        // SAFETY: the sanitizer interface declares it with this signature.
-        let start = unsafe { std::mem::transmute::<*mut c_void, StartSwitch>(start) };
-        // SAFETY: as above.
-        let finish = unsafe { std::mem::transmute::<*mut c_void, FinishSwitch>(finish) };
+        // SAFETY: two non-null addresses of functions the sanitizer interface declares
+        // with these signatures, in the order of `Fibers`' fields.
+        let Fibers(start, finish) =
+            unsafe { std::mem::transmute::<[*mut c_void; 2], Fibers>([start, finish]) };
         Some((start, finish))
     })
 }
@@ -177,6 +207,12 @@ pub unsafe fn swap_in(ctx: *mut Context) -> bool {
                     ctx.stack_size as usize,
                 );
             };
+        }
+        #[cfg(tsan)]
+        {
+            ctx.tsan_caller.set(__tsan_get_current_fiber());
+            // SAFETY: the context's live fiber, which runs from the jump on.
+            unsafe { __tsan_switch_to_fiber(ctx.tsan_fiber, 0) };
         }
         ctx.fctx
     };
@@ -216,6 +252,11 @@ pub unsafe fn swap_out(ctx: *mut Context) {
             };
             // SAFETY: announces the switch back to the stack that switched in.
             unsafe { start(save, ctx.asan_bottom, ctx.asan_size) };
+        }
+        #[cfg(tsan)]
+        // SAFETY: the fiber that switched this context in, which runs from the jump on.
+        unsafe {
+            __tsan_switch_to_fiber(ctx.tsan_caller.get(), 0);
         }
         ctx.swap_fctx
     };
