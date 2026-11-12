@@ -521,6 +521,19 @@ impl<'a> Server<'a> {
     }
 }
 
+/// A setter for a field of a port's settings, which writes through the port's pointer
+/// and forms no reference to the settings.
+macro_rules! port_setter {
+    ($(#[$doc:meta])* $set:ident: $($field:ident).+: $ty:ty) => {
+        $(#[$doc])*
+        pub fn $set(self, value: $ty) {
+            // SAFETY: a live port, whose writers its server keeps apart from readers
+            // (`from_raw`); only the field is written.
+            unsafe { (*self.raw.as_ptr().cast::<PortConfig>()).$($field).+ = value };
+        }
+    };
+}
+
 /// A live `ListenPort`, borrowed for `'a`: its settings' box
 /// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
 /// reads it then allows are safe, as [`Server`]'s are.
@@ -558,6 +571,15 @@ impl<'a> Port<'a> {
         // SAFETY: a live port is its settings, with writers kept apart (`from_raw`).
         unsafe { &*self.raw.as_ptr().cast::<PortConfig>() }
     }
+
+    port_setter!(
+        /// `port->gs = gs`: the port's slot in `port_gs_list`.
+        set_gs: gs: *mut c_void
+    );
+    port_setter!(
+        /// `port->protocol.package_max_length = length`.
+        set_package_max_length: protocol.package_max_length: u32
+    );
 
     /// The port's settings, to write.
     ///
