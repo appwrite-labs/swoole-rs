@@ -92,6 +92,91 @@ impl Callable {
     pub fn cache_ptr(&self) -> *mut zend_fcall_info_cache {
         ptr::from_ref(&self.cache).cast_mut()
     }
+
+    /// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
+    /// `from_loop` `sw_zend_call_function_ex2`, which raises an uncaught
+    /// exception at once as the event loop's callbacks do: whether the call
+    /// succeeded. A `&Callable` is live for the whole call, so a slot PHP code
+    /// can replace during it lends an `Rc` clone, never a borrow of the slot.
+    /// # Errors
+    /// The callable bailed out.
+    pub fn call(
+        &self,
+        args: &mut [zval],
+        retval: Option<&crate::Value>,
+        from_loop: bool,
+    ) -> Result<bool, bailout::Bailout> {
+        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
+        let argv = args.as_mut_ptr();
+        let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
+        let mut result = false;
+        let body = || {
+            result = if from_loop {
+                // SAFETY: this live callable's cache, `argc` live arguments and a
+                // writable return slot or null; the reporter is C.
+                let called = unsafe {
+                    super::swr_v1_phphelpers_call(
+                        ptr::null_mut(),
+                        self.cache_ptr(),
+                        argc,
+                        argv,
+                        retval,
+                        true,
+                        sys::swr_zend_callable_warning,
+                    )
+                };
+                called == 0
+            } else {
+                let called = self.invoke(argc, argv, retval);
+                bailout::finish();
+                called.unwrap_or(false)
+            };
+        };
+        // SAFETY: the body owns nothing that needs a drop: it holds borrows,
+        // copies and the result slot.
+        unsafe { bailout::trap_with(body) }?;
+        Ok(result)
+    }
+
+    /// `zend::Callable::call`: whether the call succeeded, a bailout left pending.
+    fn invoke(
+        &self,
+        argc: u32,
+        argv: *mut zval,
+        retval: *mut zval,
+    ) -> Result<bool, bailout::Bailout> {
+        let mut fci = crate::EMPTY_FCI;
+        let mut temporary = crate::UNDEF;
+        fci.size = size_of::<sys::zend_fcall_info>();
+        fci.retval = if retval.is_null() {
+            &raw mut temporary
+        } else {
+            retval
+        };
+        fci.param_count = argc;
+        fci.params = argv;
+        if self.cache.function_handler.is_null() {
+            // ZVAL_COPY_VALUE of the borrowed function name.
+            fci.function_name = self.value;
+        }
+        // SAFETY: `call`'s live arguments and return storage, and this callable's
+        // cache, which its zval keeps live; no Rust borrow spans PHP reentry.
+        let result = unsafe { bailout::call(&raw mut fci, self.cache_ptr()) };
+        let success = match result {
+            Ok(success) => success,
+            Err(error) => {
+                error.defer();
+                false
+            }
+        };
+        if retval.is_null() && !bailout::pending() {
+            // SAFETY: upstream destroys its temporary return value after the call.
+            bailout::defer(unsafe {
+                bailout::trap(sys::swr_zend_zval_release, (&raw mut temporary).cast())
+            });
+        }
+        bailout::outcome(success)
+    }
 }
 
 /// # Errors
@@ -184,52 +269,6 @@ pub unsafe fn copy(handle: *const Callable) -> *mut Callable {
         copy.name = unsafe { sys::swr_zend_string_copy(copy.name) };
     }
     Box::into_raw(copy)
-}
-
-/// # Errors
-/// A native PHP leaf bailed out. No jump is resumed here; propagate the result
-/// and finish only from the outermost C-facing handler or export.
-/// # Safety
-/// A ready handle; argc initialized arguments and optional writable return slot.
-pub unsafe fn invoke(
-    handle: *mut Callable,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) -> Result<bool, bailout::Bailout> {
-    // SAFETY: the owned callback remains live; retain raw pointers across PHP reentry.
-    let cache = unsafe { &raw mut (*handle).cache };
-    let mut fci = crate::EMPTY_FCI;
-    let mut temporary = crate::UNDEF;
-    fci.size = size_of::<sys::zend_fcall_info>();
-    fci.retval = if retval.is_null() {
-        &raw mut temporary
-    } else {
-        retval
-    };
-    fci.param_count = argc;
-    fci.params = argv;
-    // SAFETY: the cache is initialized and held live by the owned callback zval.
-    if unsafe { (*cache).function_handler }.is_null() {
-        // SAFETY: copy the borrowed function-name zval, matching ZVAL_COPY_VALUE.
-        fci.function_name = unsafe { (*handle).value };
-    }
-    // SAFETY: live cache, arguments and return storage; no Rust borrow spans PHP reentry.
-    let result = unsafe { bailout::call(&raw mut fci, cache) };
-    let success = match result {
-        Ok(success) => success,
-        Err(error) => {
-            error.defer();
-            false
-        }
-    };
-    if retval.is_null() && !bailout::pending() {
-        // SAFETY: upstream destroys its temporary return value after the call.
-        bailout::defer(unsafe {
-            bailout::trap(sys::swr_zend_zval_release, (&raw mut temporary).cast())
-        });
-    }
-    bailout::outcome(success)
 }
 
 /// # Errors

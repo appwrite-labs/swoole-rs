@@ -6,7 +6,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
     mem::ManuallyDrop,
-    ptr,
+    rc::Rc,
 };
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
@@ -15,7 +15,7 @@ use swoole_rs_zend::{
     Value,
     bailout::{self, Bailout},
     kind, message,
-    sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL, zval},
+    sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -25,7 +25,7 @@ per_thread! {
     /// one that outlives it (a shutdown that bailed out) leaks with it.
     static OPTIONS: RefCell<Option<ManuallyDrop<OwnedArray>>> = RefCell::new(None);
     /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
-    static EXIT_CONDITION: Cell<*mut kept::Callable> = Cell::new(ptr::null_mut());
+    static EXIT_CONDITION: RefCell<Option<Rc<kept::Callable>>> = RefCell::new(None);
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -311,37 +311,32 @@ fn set(call: &Call) {
         host::set_dns_cache_capacity(capacity);
     }
     if let Some(condition) = array.find(b"exit_condition") {
-        bailout::raise(set_exit_condition(condition.as_ptr()));
+        bailout::raise(set_exit_condition(condition));
     }
 }
 
 /// `php_swoole_coroutine_set_exit_condition`: keep `condition` if it is
 /// callable (warning otherwise) and install or clear the reactor's user exit
 /// condition to match.
-fn set_exit_condition(condition: *mut zval) -> Result<(), Bailout> {
+fn set_exit_condition(condition: &Value) -> Result<(), Bailout> {
     release_exit_condition()?;
-    // SAFETY: a live zval; no argument name, so no exception class is read;
-    // C++'s warning reporter.
-    let handle =
-        unsafe { kept::factory(condition, ptr::null(), true, ptr::null_mut(), host::warning) }?;
-    EXIT_CONDITION.with(|c| c.set(handle));
-    host::set_exit_condition(!handle.is_null());
+    let handle = kept::Callable::new(condition)?;
+    let installed = handle.is_some();
+    drop(EXIT_CONDITION.with(|c| c.replace(handle)));
+    host::set_exit_condition(installed);
     Ok(())
 }
 
+/// Drop the exit condition, deferring its destructor's bailout.
 fn release_exit_condition() -> Result<(), Bailout> {
-    let handle = EXIT_CONDITION.with(|c| c.replace(ptr::null_mut()));
-    if handle.is_null() {
-        return Ok(());
-    }
-    // SAFETY: the kept callable, not used again.
-    unsafe { kept::release(handle) }
+    drop(EXIT_CONDITION.with(RefCell::take));
+    bailout::outcome(())
 }
 
 /// Install `Co::set`'s exit condition, if it gave one, on this thread's
 /// reactor, as `php_swoole_reactor_init` did for a new reactor.
 pub fn install_exit_condition() {
-    if !EXIT_CONDITION.with(Cell::get).is_null() {
+    if EXIT_CONDITION.with(|c| c.borrow().is_some()) {
         host::set_exit_condition(true);
     }
 }
@@ -360,15 +355,14 @@ pub(crate) extern "C-unwind" fn reactor_can_exit(_event_num: &mut usize) -> bool
 
 /// `php_swoole_coroutine_reactor_can_exit`: call the exit condition.
 fn can_exit() -> Result<bool, Bailout> {
-    let handle = EXIT_CONDITION.with(Cell::get);
-    if handle.is_null() {
+    // Its own reference: the condition may replace itself (`Co::set`).
+    let Some(handle) = EXIT_CONDITION.with(|c| c.borrow().clone()) else {
         return Ok(true);
-    }
+    };
     let mut retval = swoole_rs_zend::UNDEF;
     retval.u1.type_info = IS_NULL;
-    // SAFETY: the kept callable, no arguments and a result slot, which (as
-    // upstream's) is not released.
-    if !unsafe { kept::invoke(handle, 0, ptr::null_mut(), &raw mut retval) }? {
+    // The result slot is, as upstream's, not released.
+    if !handle.call(&mut [], Some(Value::of(&mut retval)), false)? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
     let exception = swoole_rs_zend::host::exception();

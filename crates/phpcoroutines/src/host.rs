@@ -694,6 +694,3 @@ pub(crate) fn set_exit_condition(set: bool) {
         swoole_rs_reactor::swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT);
     }
 }
-
-/// `sw_callable_warning`.
-pub(crate) use swoole_rs_zend::sys::swr_zend_callable_warning as warning;

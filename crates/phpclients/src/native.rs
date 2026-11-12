@@ -663,23 +663,6 @@ pub(crate) fn owned_callable(value: &Value) -> Result<Option<Rc<Callable>>, Bail
     Callable::new(value)
 }
 
-/// `callable->call(argv, retval)` inside `zend_try`, or as the event loop's
-/// callbacks are (`sw_zend_call_function_ex2`) with `from_loop`: whether the
-/// call succeeded.
-/// # Errors
-/// The callable bailed out.
-pub(crate) fn call(
-    callable: &Callable,
-    argv: &mut [zval],
-    retval: *mut zval,
-    from_loop: bool,
-) -> Result<bool, Bailout> {
-    let callable = ptr::from_ref(callable).cast_mut().cast();
-    // SAFETY: a callable the caller holds through the call, its live arguments,
-    // and a return slot that is null or writable.
-    unsafe { swoole_rs_phpruntime::callable_call(callable, argv, retval, from_loop) }
-}
-
 /// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether
 /// the call succeeded.
 /// # Errors
@@ -687,10 +670,11 @@ pub(crate) fn call(
 pub(crate) fn invoke(
     callable: *mut c_void,
     argv: &mut [zval],
-    retval: *mut zval,
+    retval: &mut zval,
 ) -> Result<bool, Bailout> {
-    // SAFETY: a live callable and arguments; `retval` is null or writable.
-    unsafe { swoole_rs_phpruntime::callable_call(callable, argv, retval, true) }
+    // SAFETY: a live callable `callable` made, which the caller keeps through the call.
+    let callable = unsafe { &*callable.cast::<Callable>() };
+    callable.call(argv, Some(Value::of(retval)), true)
 }
 
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
