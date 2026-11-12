@@ -350,7 +350,9 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
         2 * isize::try_from(packet.bytes().len()).unwrap()
     }
     let client = client(1, true, false);
-    Handle(client).fields().protocol.get_package_length = Some(twice);
+    Handle(client)
+        .get()
+        .edit_record(|record| record.protocol.get_package_length = Some(twice));
     assert_eq!(Handle(client).run(Op::PackageLength(b"abc")), 6);
     free(client);
     assert_eq!(taken(), ["event 2 0", "free"]);
