@@ -21,8 +21,7 @@ use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
-    bailout, message, report,
-    sys::{swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zval},
+    bailout, message, report, sys::zval,
 };
 
 /// `SWR_PHPSERVER_FACT_*`.
@@ -133,24 +132,15 @@ use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
 use swoole_rs_server::{SharedServer, admin_register};
 
-/// `instanceof_function(ce, parent)`.
-fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
-    // SAFETY: two registered classes.
-    unsafe { swr_zend_instanceof(ce, parent) }
-}
-
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject<'_>) -> c_int {
-    let ce = object.class();
-    let redis = crate::server::REDIS_SERVER.entry();
+    let value = object.value();
     let http = swoole_rs_phpswoole::families().map(|families| &families.http);
-    let websocket = http.map_or(ptr::null_mut(), |http| (http.websocket_class)());
-    let http = http.map_or(ptr::null_mut(), |http| (http.server_class)());
-    if instance_of(ce, redis) {
+    if value.instance_of(&crate::server::REDIS_SERVER) {
         KIND_REDIS
-    } else if instance_of(ce, websocket) {
+    } else if http.is_some_and(|http| value.instance_of((http.websocket_class)())) {
         KIND_WEBSOCKET
-    } else if instance_of(ce, http) {
+    } else if http.is_some_and(|http| value.instance_of((http.server_class)())) {
         KIND_HTTP
     } else {
         0
@@ -294,8 +284,7 @@ fn put(serv: view::Server<'_>, which: u32) {
 
 /// `zend_memory_usage(true)`, the admin commands' PHP memory figure.
 extern "C" fn php_memory() -> usize {
-    // SAFETY: Zend's allocator statistics, read on a PHP thread.
-    unsafe { swoole_rs_zend::sys::zend_memory_usage(true) }
+    swoole_rs_zend::memory_usage(true)
 }
 
 /// What a Server object embeds: its share in its server, none until `__construct`
@@ -379,11 +368,6 @@ impl<'a> ServerObject<'a> {
     /// The value holding the object.
     pub(crate) fn value(self) -> &'a Value {
         self.value
-    }
-
-    /// The object's class.
-    pub(crate) fn class(self) -> *mut zend_class_entry {
-        self.value.class().unwrap_or(ptr::null_mut())
     }
 
     /// The bound `Server`, or none before `__construct`.
@@ -1060,10 +1044,7 @@ fn command(call: &Call) {
         return;
     };
     if json_decode {
-        let decoded = Owned::default();
-        // SAFETY: the reply's bytes and an undefined slot this owns.
-        unsafe { swr_zend_json_decode(reply.as_ptr().cast(), reply.len(), decoded.as_ptr()) };
-        call.set_owned(decoded);
+        call.set_owned(Owned::json_decode(&reply));
     } else {
         call.set_owned(Owned::string(ZString::new(&reply)));
     }

@@ -37,7 +37,10 @@ pub use access::{key_ptr, set_key, string_of};
 pub use call::{Call, Invalid, kind, type_of};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, class_name, unset_property_deny};
-pub use descriptor::{contain, last_fatal_error, pause_shutdown, restore_shutdown};
+pub use descriptor::{
+    FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
+    restore_shutdown,
+};
 pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, throw_exception, type_error, type_name,
     zend_error,
