@@ -174,10 +174,13 @@ fn stream_event(kind: u8) -> bool {
 
 pub(crate) use swoole_rs_ossupport::pthread_self;
 
-/// This thread's buffer (`sw_tg_buffer()`), which a datagram or a certificate is read into.
-pub(crate) fn thread_buffer<'a>() -> &'a mut CppString {
-    // SAFETY: the calling thread's live buffer, which only this thread touches.
-    unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() }
+/// `f` over this thread's buffer (`sw_tg_buffer()`), which a datagram or a
+/// certificate is read into.
+pub(crate) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    swoole_rs_corebase::lend_thread_buffer(|| {
+        // SAFETY: the calling thread's live buffer, lent to `f` alone.
+        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
+    })
 }
 
 /// A socket's output buffer, or `None` without one.
@@ -545,16 +548,16 @@ pub(crate) fn answer(
         }
         OP_CERT_TASK => {
             // OP_PEER_CERT filled this thread's live buffer.
-            let buffer = &*thread_buffer();
+            let (len, data) = with_thread_buffer(|buffer| (buffer.len(), buffer.as_ptr()));
             o.ctx.task = SendData {
                 info: DataHead {
                     fd: o.sock()?.fd().into(),
                     kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
                     reactor_id: o.reactor()?.id.cast_signed(),
-                    len: u32::try_from(buffer.len()).unwrap_or(u32::MAX),
+                    len: u32::try_from(len).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: buffer.as_ptr().cast(),
+                data: data.cast(),
             };
             0
         }

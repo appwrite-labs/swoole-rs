@@ -25,7 +25,6 @@ int swr_zend_try_facade_creation_error(zend_class_entry *);
 int swr_zend_try_facade_object_dtor(zend_object *);
 #include "zend_smart_str.h"
 int swr_zend_try_facade_callable_frame(zval *, zend_object *, zend_execute_data *, uint32_t, zend_fcall_info_cache *, char **, bool *);
-int swr_zend_try_facade_callable_name(zval *, zend_object *, zend_string **);
 int swr_zend_try_facade_register_functions(const zend_function_entry *, HashTable *, int, int *);
 int swr_zend_try_facade_class_alias(const char *, size_t, zend_class_entry *, int *);
 HashTable *swr_zend_facade_compiler_functions(void);

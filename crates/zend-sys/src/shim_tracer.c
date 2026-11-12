@@ -109,15 +109,6 @@ zend_string *swr_zend_number_format(zend_long number) {
 #endif
 }
 
-zend_string *swr_zend_json_encode(zval *value) {
-    smart_str buf = {0};
-    if (php_json_encode(&buf, value, 0) == FAILURE) {
-        smart_str_free(&buf);
-        return NULL;
-    }
-    return smart_str_extract(&buf);
-}
-
 int swr_zend_try_json_encode(zval *value, zend_string **out) {
     smart_str buf = {0};
     volatile int bailed = 0;

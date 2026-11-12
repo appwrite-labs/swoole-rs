@@ -101,10 +101,13 @@ def parse_engines(values, php='php', php_extensions=()):
 
 @contextlib.contextmanager
 def server(engine, script, env=None):
-    with socket.socket() as reservation:
+    with socket.socket() as reservation, tempfile.TemporaryFile() as logs, \
+            tempfile.TemporaryDirectory(prefix='swoole-corpus-') as data:
+        # Held, not listening, until the server stops: on Linux no other bind(0) or connect()
+        # can take the port while PHP starts, and PHP's own SO_REUSEADDR bind still succeeds.
+        reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
-    with tempfile.TemporaryFile() as logs, tempfile.TemporaryDirectory(prefix='swoole-corpus-') as data:
         proc = subprocess.Popen(engine.command(script),
                                 env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data, **(env or {})},
                                 stdout=logs, stderr=logs, start_new_session=True)

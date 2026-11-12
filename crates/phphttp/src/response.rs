@@ -131,7 +131,7 @@ pub fn response_minit(args: &MinitArgs) {
     }
     crate::header::minit(&RESPONSE);
     context::response_minit();
-    crate::parse::minit(codecs);
+    crate::parse::minit(minit, codecs);
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.

@@ -3,20 +3,16 @@ use crate::{
     CONTINUE, DISPATCH, Frame, Op, offset,
     typed::{self, KeyType, Typed},
 };
-use std::{ffi::c_int, ptr};
+use std::{borrow::Cow, ffi::c_int, ptr};
 use swoole_rs_zend::{
-    Value,
+    Owned, Value,
     bailout::{self, Bailout},
     sys::{self as z, zend_execute_data, zend_op, zend_reference, zval},
     value::table,
 };
 
 unsafe extern "C" {
-    fn swr_phpstdext_undefined_cv(
-        frame: *mut zend_execute_data,
-        var: u32,
-        result: *mut *mut zval,
-    ) -> u8;
+    fn swr_phpstdext_undefined_cv(frame: *mut zend_execute_data, var: u32) -> u8;
     fn swr_phpstdext_dimension(
         frame: *mut zend_execute_data,
         table: *mut z::HashTable,
@@ -52,7 +48,7 @@ fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
 /// release the operand, once, and nothing reads the value after that.
 struct Data<'a> {
     op: Op<'a>,
-    value: &'a Value,
+    value: Cow<'a, Value>,
 }
 
 impl<'a> Data<'a> {
@@ -69,7 +65,7 @@ impl<'a> Data<'a> {
 
     /// The operand's value, until it is freed.
     fn value(&self) -> &Value {
-        self.value
+        &self.value
     }
 
     /// The operand's type (`IS_CONST`, `IS_TMP_VAR`, `IS_VAR`, `IS_CV`).
@@ -118,29 +114,18 @@ impl<'a> Data<'a> {
 }
 
 /// `get_op_data_zval_ptr_r`: Rust selects the actual operand; only an undefined
-/// CV's PHP warning is native. References intentionally remain undereferenced.
-fn operand(data: Op<'_>) -> Result<Option<&Value>, Bailout> {
+/// CV's PHP warning is native, and it reads as null (`EG(uninitialized_zval)`).
+/// References intentionally remain undereferenced.
+fn operand(data: Op<'_>) -> Result<Option<Cow<'_, Value>>, Bailout> {
     let Some(value) = data.op1() else {
         return Ok(None);
     };
     if u32::from(data.op1_type) != z::IS_CV || value.kind() != z::IS_UNDEF {
-        return Ok(Some(value));
+        return Ok(Some(Cow::Borrowed(value)));
     }
-    let mut undefined = ptr::null_mut();
     // SAFETY: Zend reads its own CV name and invokes any warning handler under a native trap.
-    leaf(unsafe {
-        swr_phpstdext_undefined_cv(data.frame.as_ptr(), offset(data.op1), &raw mut undefined)
-    })?;
-    // SAFETY: null or Zend's uninitialized zval, which lives for the request.
-    Ok(unsafe { Value::from_ptr(undefined) })
-}
-
-/// `&EG(uninitialized_zval)`: an append's key.
-fn uninitialized<'a>() -> Option<&'a Value> {
-    // SAFETY: the executor's global, for the running request.
-    let undefined = unsafe { z::swr_zend_uninitialized_zval() };
-    // SAFETY: as above; it lives for the request.
-    unsafe { Value::from_ptr(undefined) }
+    leaf(unsafe { swr_phpstdext_undefined_cv(data.frame.as_ptr(), offset(data.op1)) })?;
+    Ok(Some(Cow::Owned(Owned::null())))
 }
 
 /// `SEPARATE_ARRAY(container)`, carrying the definition to a copy.
@@ -298,9 +283,9 @@ unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
     let Some(typed) = Typed::of(array) else {
         return Ok(DISPATCH);
     };
-    let Some(key) = op.op2().or_else(uninitialized) else {
-        return Ok(DISPATCH);
-    };
+    // An append's key is null (`&EG(uninitialized_zval)`).
+    let null = Owned::null();
+    let key = op.op2().unwrap_or(&null);
     // SAFETY: per the caller, an assignment, which OP_DATA follows; only
     // `data` frees its operand.
     let Some(data) = (unsafe { Data::of(op) })? else {

@@ -611,9 +611,9 @@ impl Handle {
         n == 0 || n > 0 && self.socks5_send(n.cast_unsigned()) == n
     }
 
-    /// The HTTP proxy's CONNECT request in the shared buffer.
+    /// The HTTP proxy's CONNECT request, packed into `shared`.
     /// The host is the TLS host name when set, else the proxy's target.
-    fn http_pack(self) -> &'static [u8] {
+    fn http_pack(self, shared: &mut CppString) -> &[u8] {
         let Some(proxy) = self.proxy(Proxy::Http) else {
             return &[];
         };
@@ -624,31 +624,11 @@ impl Handle {
         } else {
             &target
         };
-        let shared = shared_buffer();
         let (at, size) = (shared.as_mut_ptr(), shared.size());
-        // SAFETY: the shared buffer's `size` bytes, which nothing else borrows.
+        // SAFETY: the buffer's `size` bytes, which `shared` borrows.
         let output = unsafe { core::slice::from_raw_parts_mut(at, size) };
         let length = swoole_rs_http_ffi::proxy_connect(proxy, host, output);
         output.get(..length).unwrap_or_default()
-    }
-
-    /// `HttpProxy::handshake` of the shared buffer (`shared`, its length set to
-    /// `length`) or of the input buffer (its length grown by `length`).
-    fn http_handshake(self, shared: bool, length: usize) -> bool {
-        let buffer = if shared {
-            shared_buffer()
-        } else {
-            self.input_mut()
-        };
-        let length = if shared {
-            length
-        } else {
-            buffer.len() + length
-        };
-        // SAFETY: the callers' recv just filled them: the shared buffer from its
-        // start, the input buffer after its content (its free tail bounds both).
-        unsafe { buffer.set_len(length) };
-        swoole_rs_http_ffi::proxy_accept(buffer.view())
     }
 
     fn set_timeout(self, timeout: f64) {
@@ -768,19 +748,22 @@ pub extern "C" fn swr_v1_clients_listen(
 
 use swoole_rs_corebase::sys::errno;
 
-/// `sw_tg_buffer()`: a sync proxy handshake reads into its whole allocation.
-fn shared_buffer() -> &'static mut CppString {
-    // SAFETY: the thread's shared String, set up by `swoole_init` before any
-    // proxied connect, and borrowed only between effects.
-    unsafe { &mut *thread_buffer().cast::<CppString>() }
+/// `f` over the thread's shared String (`sw_tg_buffer()`), which a proxy
+/// handshake packs into and a sync one reads into whole.
+fn with_shared_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    swoole_rs_corebase::lend_thread_buffer(|| {
+        // SAFETY: the thread's shared String, set up by `swoole_init` before any
+        // proxied connect, and lent to `f` alone.
+        f(unsafe { &mut *thread_buffer().cast::<CppString>() })
+    })
 }
 
-/// The shared buffer, emptied, as a sync proxy handshake's read target: the read
-/// lands at its start.
-fn shared_spare() -> &'static mut [core::mem::MaybeUninit<u8>] {
-    let shared = shared_buffer();
-    shared.clear();
-    shared.spare()
+/// `HttpProxy::handshake` of `buffer`, its length set to `length`: a recv just
+/// filled it to there (its free tail bounds the read).
+fn http_handshake(buffer: &mut CppString, length: usize) -> bool {
+    // SAFETY: as above.
+    unsafe { buffer.set_len(length) };
+    swoole_rs_http_ffi::proxy_accept(buffer.view())
 }
 
 use swoole_rs_corebase::set_errno;
@@ -1415,26 +1398,34 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return ERR;
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
-        loop {
-            let shared = shared_spare();
-            let n = recv(this, shared, 0);
-            if n > 0 && this.socks5_handshake(shared.as_ptr().cast(), n.cast_unsigned()) {
-                if this.proxy_state(Proxy::Socks5) == SOCKS5_READY {
-                    break;
+        // Each answer lands at the start of the emptied buffer.
+        let ready = with_shared_buffer(|shared| {
+            loop {
+                shared.clear();
+                let spare = shared.spare();
+                let n = recv(this, spare, 0);
+                if n <= 0 || !this.socks5_handshake(spare.as_ptr().cast(), n.cast_unsigned()) {
+                    return false;
                 }
-                continue;
+                if this.proxy_state(Proxy::Socks5) == SOCKS5_READY {
+                    return true;
+                }
             }
+        });
+        if !ready {
             return ERR;
         }
-    } else if this.proxy_state(Proxy::Http) >= 0 {
-        if send(this, this.http_pack(), 0) < 0 {
-            return ERR;
-        }
-        // After the pack, which may have grown it.
-        let n = recv(this, shared_spare(), 0);
-        if n <= 0 || !this.http_handshake(true, n.cast_unsigned()) {
-            return ERR;
-        }
+    } else if this.proxy_state(Proxy::Http) >= 0
+        && !with_shared_buffer(|shared| {
+            if send(this, this.http_pack(shared), 0) < 0 {
+                return false;
+            }
+            shared.clear();
+            let n = recv(this, shared.spare(), 0);
+            n > 0 && http_handshake(shared, n.cast_unsigned())
+        })
+    {
+        return ERR;
     }
     if this.flag(OPEN_SSL) && ssl_handshake(this) < 0 {
         return ERR;
@@ -1813,7 +1804,8 @@ fn on_read(this: Handle) -> c_int {
     let http = this.proxy_state(Proxy::Http);
     if http >= 0 && http != HTTP_PROXY_READY {
         let n = this.recv_once(this.input_mut().spare());
-        if n <= 0 || !this.http_handshake(false, n.cast_unsigned()) {
+        let input = this.input_mut();
+        if n <= 0 || !http_handshake(input, input.len() + n.cast_unsigned()) {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
             return connect_failed(this);
         }
@@ -1974,7 +1966,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
-        let request = this.http_pack().to_vec();
+        let request = with_shared_buffer(|shared| this.http_pack(shared).to_vec());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream returns the send result as an int"

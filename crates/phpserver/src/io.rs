@@ -9,7 +9,7 @@ use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{
     Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
-    sys::{IS_TRUE, zend_read_property, zval},
+    sys::{IS_TRUE, zval},
 };
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
@@ -97,24 +97,15 @@ fn get_callback(call: &Call) {
     }
     let name = call.zval(1);
     if let Some((_, property)) = call.value(1).and_then(lookup) {
-        let mut rv = std::mem::MaybeUninit::<zval>::uninit();
         // `$this`'s own class is the scope (subclasses).
-        let scope = crate::lifecycle::ServerObject::this(call).class();
-        // SAFETY: `$this`, its class and a scratch zval.
-        let value = unsafe {
-            zend_read_property(
-                scope,
-                call.this(),
-                property.as_ptr(),
-                property.count_bytes(),
-                true,
-                rv.as_mut_ptr(),
-            )
-        };
-        // SAFETY: Zend returned a live zval, which the object keeps for the call.
-        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+        match call
+            .this_value()
+            .map(|this| this.read_property(None, property))
+        {
             // `RETURN_ZVAL(property, 1, 0)`.
-            return call.set_owned(value.copy());
+            Some(Ok(Some(value))) if !value.is_null() => return call.set_owned(value),
+            Some(Err(bailout)) => return bailout.defer(),
+            _ => {}
         }
     }
     if bailout::pending() {

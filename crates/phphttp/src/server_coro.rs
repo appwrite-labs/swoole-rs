@@ -524,16 +524,11 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
     if callable {
         return Ok(Some(accept));
     }
-    let mut name = ptr::null_mut();
-    // SAFETY: as above; the name is a new string.
-    bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_name(accept.callback.as_ptr(), call.this(), &raw mut name)
-    })?;
-    // SAFETY: the new string's reference.
-    let name = unsafe { ZString::from_raw(name) };
-    let text = String::from_utf8_lossy(nul_terminated(name.bytes())).into_owned();
+    // `zend_get_callable_name_ex` of a method name on `$this`: `Class::onAccept`.
+    let class = call.class_name().unwrap_or_default().to_string_lossy();
     host::set_last_error(host::PHP_FATAL_ERROR);
-    let message = CString::new(format!("function '{text}' is not callable")).unwrap_or_default();
+    let message =
+        CString::new(format!("function '{class}::onAccept' is not callable")).unwrap_or_default();
     swoole_rs_zend::report(z::E_CORE_ERROR.cast_signed(), &message)?;
     Ok(None)
 }

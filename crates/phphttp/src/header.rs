@@ -16,9 +16,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::{
-    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, zend_string, zval,
-};
+use swoole_rs_zend::sys::{swr_zend_efree, swr_zend_emalloc, zval};
 use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
@@ -92,13 +90,6 @@ fn property(response: &Slot, which: usize) -> Option<HeldArray> {
     unsafe { Value::from_ptr(slot) }?.hold()
 }
 
-/// `swr_zend_http_string`: `zval_get_string`'s argument and result.
-#[repr(C)]
-struct Arg {
-    value: *mut zval,
-    result: *mut zend_string,
-}
-
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
 enum Text<'a> {
     Borrowed(&'a ZStr),
@@ -132,14 +123,7 @@ fn to_string(value_: &Value) -> Result<Text<'_>, bailout::Bailout> {
     if let Some(text) = value_.str() {
         return Ok(Text::Borrowed(text));
     }
-    let mut arg = Arg {
-        value: value_.as_ptr(),
-        result: ptr::null_mut(),
-    };
-    // SAFETY: a C body over a live zval and a writable result.
-    unsafe { bailout::trap(swr_zend_http_get_string, (&raw mut arg).cast())? };
-    // SAFETY: `zval_get_string`'s new reference, which the `ZString` takes.
-    Ok(Text::Owned(unsafe { ZString::from_raw(arg.result) }))
+    bailout::outcome(Text::Owned(value_.string()))
 }
 
 /// Each element of an array (`ZEND_HASH_FOREACH_KEY_VAL`): `Ok(key)` for a string
