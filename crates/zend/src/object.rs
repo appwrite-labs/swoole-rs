@@ -202,10 +202,13 @@ impl<T: Custom> Weak<T> {
     }
 
     /// The object as a zval that takes no reference (`ZVAL_OBJ` without
-    /// `GC_ADDREF`), as upstream's uncounted copies are, or `None`. Whatever
-    /// keeps the object live keeps the zval valid; [`Weak::get`] holds one.
+    /// `GC_ADDREF`), as upstream's uncounted copies are, or `None`. It costs no
+    /// reference taken and released, which [`Weak::get`]'s `Owned` does.
+    /// # Safety
+    /// The zval is used only while something else keeps the object live, and
+    /// nothing releases it: no reference comes with it.
     #[must_use]
-    pub fn zval(&self) -> Option<zval> {
+    pub unsafe fn zval(&self) -> Option<zval> {
         // SAFETY: reads the executor's object store on its thread.
         let object = unsafe { swr_zend_objects_find(self.0, T::class().handlers()) };
         (!object.is_null()).then_some(zval {

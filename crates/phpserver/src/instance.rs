@@ -56,7 +56,9 @@ pub(crate) fn server_object() -> Option<Owned> {
 pub(crate) fn server_zval() -> zval {
     let found = INSTANCE.with_borrow(|instance| {
         let (object, mark) = instance.as_ref()?;
-        Some((object.zval()?, *mark))
+        // SAFETY: the running Server object, which its server keeps live while it
+        // runs; the zval is an event's argument, read during the call, never released.
+        Some((unsafe { object.zval() }?, *mark))
     });
     let Some((mut object, mark)) = found else {
         return swoole_rs_zend::UNDEF;
