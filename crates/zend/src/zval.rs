@@ -173,6 +173,20 @@ impl Value {
         (self.kind() == IS_PTR).then(|| unsafe { self.as_ptr().cast::<*mut c_void>().read() })
     }
 
+    /// Lend what the zval holds to `edit`, with null in its place meanwhile,
+    /// then put it back and release whatever `edit` left there. The caller
+    /// holds nothing borrowed from the zval.
+    pub(crate) fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
+        let mut held = Owned::null();
+        // SAFETY: two live zvals: nothing borrows this one's content, and
+        // `held` is this frame's.
+        unsafe { self.0.get().swap(held.0.0.get()) };
+        let result = edit(&mut held);
+        // SAFETY: as above, now that `edit`'s borrow of `held` has ended.
+        unsafe { self.0.get().swap(held.0.0.get()) };
+        result
+    }
+
     /// Property writes on the object this holds, under `scope` (Zend's view of
     /// its properties; `None` for none), while it is borrowed.
     #[must_use]

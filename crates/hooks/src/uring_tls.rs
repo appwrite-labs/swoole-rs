@@ -36,9 +36,9 @@ pub trait TlsSocket: Copy {
 pub struct Tls<S> {
     pub uring: &'static Host,
     pub socket: S,
-    pub ssl: Option<Ssl>,
-    pub rbio: Option<Bio>,
-    pub wbio: Option<Bio>,
+    pub ssl: Option<Ssl<'static>>,
+    pub rbio: Option<Bio<'static>>,
+    pub wbio: Option<Bio<'static>>,
     pub fd: c_int,
     pub read_timeout: f64,
     pub write_timeout: f64,
