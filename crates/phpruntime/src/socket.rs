@@ -1,10 +1,9 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
-use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
+use libc::{c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
-    mem::MaybeUninit,
     ptr::NonNull,
 };
 use swoole_rs_corebase::log::set_last_error;
@@ -225,20 +224,21 @@ impl Socket {
         self.with_record(0, |record| record.catch_error(code))
     }
 
-    /// `recvfrom(buf, length, addr, addrlen)`.
-    /// # Safety
-    /// `buf` holds `length` writable bytes; `addr` holds `*addrlen` bytes.
-    pub(crate) unsafe fn recvfrom(
+    /// `recvfrom(buf, n, addr, addrlen)` into `buf` and `peer`: the bytes received
+    /// and the length of the peer's address.
+    pub(crate) fn recvfrom(
         &self,
-        buf: *mut c_char,
-        length: usize,
-        addr: *mut sockaddr,
-        addrlen: *mut socklen_t,
-    ) -> isize {
-        // SAFETY: per the caller: `length` writable bytes, any value valid.
-        let buf = unsafe { std::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), length) };
-        // SAFETY: per the caller.
-        unsafe { self.co().recvfrom(buf, addr, addrlen) }
+        buf: &mut [u8],
+        peer: &mut sockaddr_storage,
+    ) -> (isize, socklen_t) {
+        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
+        let mut size = size_of::<sockaddr_storage>() as socklen_t;
+        // SAFETY: the address holds `size` bytes.
+        let received = unsafe {
+            self.co()
+                .recvfrom(buf, (&raw mut *peer).cast(), &raw mut size)
+        };
+        (received, size)
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
