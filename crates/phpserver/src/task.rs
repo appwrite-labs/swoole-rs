@@ -106,9 +106,8 @@ impl TaskHost for Host<'_> {
 
     fn read_notify(&mut self) -> isize {
         let Some(pipe) = &self.pipe else { return -1 };
-        let mut notify = 0u64;
-        // SAFETY: a local of that size.
-        unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+        let mut notify = [std::mem::MaybeUninit::uninit(); size_of::<u64>()];
+        socket_pair::read_into(pipe, &mut notify)
     }
 
     fn lock(&mut self, on: bool) {
