@@ -1393,7 +1393,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if op == OP_WORKER_COROUTINES {
                 worker.coroutine_num as u64
             } else {
-                u64::from(worker.concurrency)
+                u64::from(worker.concurrency.load(SeqCst))
             }
         }
         OP_SENDFILE_NAME => {
