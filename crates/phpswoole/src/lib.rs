@@ -43,7 +43,7 @@ pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
-pub use memory::sw_zend_string_allocator;
+pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
     CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
     RSHUTDOWN_BEGIN, RSHUTDOWN_END, codecs, display_errors, enable_library, families, globals,

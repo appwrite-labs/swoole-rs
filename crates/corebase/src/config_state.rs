@@ -16,6 +16,26 @@ pub struct CoreAllocator {
     pub free: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// A `CoreAllocator` whose callbacks keep the allocator contract: `malloc`,
+/// `calloc` and `realloc` return null or a block of the size asked for, which
+/// `realloc` and `free` take back, so a message bus may adopt what they return.
+#[derive(Clone, Copy)]
+pub struct TrustedAllocator(&'static CoreAllocator);
+
+impl TrustedAllocator {
+    /// # Safety
+    /// `allocator`'s callbacks keep the allocator contract above.
+    #[must_use]
+    pub const unsafe fn new(allocator: &'static CoreAllocator) -> Self {
+        Self(allocator)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> &'static CoreAllocator {
+        self.0
+    }
+}
+
 impl CoreAllocator {
     const NONE: Self = Self {
         malloc: None,
