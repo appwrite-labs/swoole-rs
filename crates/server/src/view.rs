@@ -522,11 +522,12 @@ impl<'a> Server<'a> {
 }
 
 /// A setter for a field of a port's settings, which writes through the port's pointer
-/// and forms no reference to the settings.
+/// and forms no reference to the settings. Crate-private: only the master's startup
+/// ops call them, before any reader holds a `&PortConfig` from [`Port::config`].
 macro_rules! port_setter {
     ($(#[$doc:meta])* $set:ident: $($field:ident).+: $ty:ty) => {
         $(#[$doc])*
-        pub fn $set(self, value: $ty) {
+        pub(crate) fn $set(self, value: $ty) {
             // SAFETY: a live port, whose writers its server keeps apart from readers
             // (`from_raw`); only the field is written.
             unsafe { (*self.raw.as_ptr().cast::<PortConfig>()).$($field).+ = value };
