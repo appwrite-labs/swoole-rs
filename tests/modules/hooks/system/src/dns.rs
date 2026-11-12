@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/network/dns.cpp`, one Rust function per TEST with the
 //! same inputs and expected values. `dns_lookup` is crates/hooks' `resolve::dns_lookup`;
 //! `get_ip_by_hosts`, the DNS server and hosts-path setters and `swoole_load_resolv_conf`
-//! are the `swr_v1_clients_*` exports they were over; the name-resolver list
+//! are crates/clients' `dns` functions; the name-resolver list
 //! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
 //! are views of the resolver record, so the cases drive that record
 //! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
@@ -10,6 +10,7 @@
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::fs;
 
+use swoole_rs_clients::dns;
 use swoole_rs_corebase::{
     NameResolverContext as Context, swr_v1_core_name_resolver_add, swr_v1_core_name_resolver_remove,
 };
@@ -62,26 +63,7 @@ struct StringView {
     length: usize,
 }
 
-// As crates/clients' C declarations (and ../../../clients/client.rs) have them.
-unsafe extern "C" {
-    fn swr_v1_clients_dns_server(
-        context: *mut c_void,
-        push: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-    ) -> c_int;
-    fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int;
-}
-
 unsafe extern "C-unwind" {
-    fn swr_v1_clients_hosts_lookup(
-        domain: *const u8,
-        length: usize,
-        spaces: *const u8,
-        out: *mut c_void,
-        push: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-    ) -> bool;
-    fn swr_v1_clients_set_dns_server(server: *const u8, length: usize);
-    fn swr_v1_clients_set_hosts_path(path: *const u8, length: usize);
-
     fn swr_v1_core_resolver_create(
         family: c_int,
         socktype: c_int,
@@ -110,13 +92,6 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
     unsafe { swr_v1_clients_address_verify(family, ip.as_ptr()) }
 }
 
-unsafe extern "C" fn put_text(out: *mut c_void, text: *const u8, length: usize) {
-    // SAFETY: `out` is the caller's String; `text` holds `length` bytes.
-    let text = unsafe { std::slice::from_raw_parts(text, length) };
-    // SAFETY: as above.
-    *unsafe { &mut *out.cast::<String>() } = String::from_utf8(text.to_vec()).unwrap();
-}
-
 fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
     swoole_rs_hooks::resolve::dns_lookup(domain.to_bytes(), family, timeout)
         .into_iter()
@@ -129,39 +104,25 @@ fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
 fn hosts(domain: &CStr) -> String {
     let spaces: [u8; 256] =
         std::array::from_fn(|c| u8::from(b" \t\n\x0b\x0c\r".contains(&(c as u8))));
-    let mut address = String::new();
-    let domain = domain.to_bytes();
-    // SAFETY: the domain's bytes, 256 spaces and `put_text` into `address`.
-    unsafe {
-        swr_v1_clients_hosts_lookup(
-            domain.as_ptr(),
-            domain.len(),
-            spaces.as_ptr(),
-            (&raw mut address).cast(),
-            put_text,
-        )
-    };
-    address
+    let address = dns::hosts_lookup(domain.to_bytes(), &spaces).unwrap_or_default();
+    String::from_utf8(address).unwrap()
 }
 
 fn set_dns_server(server: &str) {
-    // SAFETY: the server's bytes.
-    unsafe { swr_v1_clients_set_dns_server(server.as_ptr(), server.len()) };
+    dns::set_dns_server(server.as_bytes());
 }
 
 /// `swoole_load_resolv_conf()`: `SwooleG.dns_resolvconf_path` is `SW_DNS_RESOLV_CONF`.
 fn load_resolv_conf_() -> bool {
-    // SAFETY: a NUL-terminated path.
-    unsafe { swr_v1_clients_load_resolv_conf(c"/etc/resolv.conf".as_ptr()) > 0 }
+    dns::load_resolv_conf(dns::RESOLV_CONF) > 0
 }
 
 /// `swoole_get_dns_server()`: the configured server, read from resolv.conf while none is.
 fn dns_server() -> (String, c_int) {
     let read = || {
-        let mut host = String::new();
-        // SAFETY: `put_text` writes `host`.
-        let port = unsafe { swr_v1_clients_dns_server((&raw mut host).cast(), put_text) };
-        (host, port)
+        let (host, port) = dns::server();
+        let host = CStr::from_bytes_until_nul(&host).unwrap();
+        (host.to_str().unwrap().to_owned(), port)
     };
     if read().0.is_empty() {
         load_resolv_conf_();
@@ -371,9 +332,7 @@ fn gethosts() {
     }
     let _unlink = Unlink;
 
-    let path = hosts_file.to_bytes();
-    // SAFETY: the path's bytes, which the callee copies.
-    unsafe { swr_v1_clients_set_hosts_path(path.as_ptr(), path.len()) };
+    dns::set_hosts_path(hosts_file.to_bytes());
 
     assert_eq!(hosts(c"localhost"), "127.0.0.1");
     assert_eq!(hosts(c"aaa.com"), "");
