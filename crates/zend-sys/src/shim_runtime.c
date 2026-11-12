@@ -5,10 +5,6 @@
 #include "shim_runtime.h"
 #include "shim.h"
 
-int swr_zend_runtime_version(void) {
-    return PHP_VERSION_ID;
-}
-
 zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_function *function,
                                                       zend_internal_arg_info *arg_info_) {
     uint32_t num_args = function->num_args + 1;

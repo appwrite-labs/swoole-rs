@@ -211,11 +211,14 @@ mod native {
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
         // The record's read String, which the packet receive fills.
         let buf = socket.with_buffer(false, CppString::as_mut_ptr);
-        let mut packet = PacketLength {
-            buf,
-            buf_size: size,
-            header_len: 0,
+        let bytes = if buf.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: its initialized prefix of `size` bytes, which nothing changes
+            // while the length function reads it.
+            unsafe { std::slice::from_raw_parts(buf, size as usize) }
         };
+        let mut packet = PacketLength::new(bytes);
         let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
         let Some(call) = callback else {
             return -1;

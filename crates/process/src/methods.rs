@@ -140,13 +140,14 @@ run_methods! {
     fn destroy() -> () = RUN_DESTROY(0);
 }
 
-/// `ProcessPool::push_message(event)`: the `EventData` at `event`.
-///
-/// # Safety
-/// `event` is an `EventData`.
+/// `ProcessPool::push_message(event)`: the `EventData` `event` heads.
 #[must_use]
-pub unsafe fn push_event(pool: PoolRef<'_>, event: *const c_void) -> c_int {
-    run(pool, RUN_PUSH_MESSAGE, event.addr() as u64)
+pub fn push_event(pool: PoolRef<'_>, event: Packed<'_>) -> c_int {
+    run(
+        pool,
+        RUN_PUSH_MESSAGE,
+        event.as_ptr().expose_provenance() as u64,
+    )
 }
 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.

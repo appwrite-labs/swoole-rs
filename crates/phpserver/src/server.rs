@@ -17,7 +17,7 @@ use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        zend_class_entry, zend_object, zend_object_handlers, zval,
+        zend_class_entry, zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -37,13 +37,12 @@ fn closed(conn: &ConnectionRecord) -> bool {
 }
 /// `SW_MAX_FIND_COUNT`.
 const MAX_FIND_COUNT: i64 = 100;
-/// `php_swoole_fatal_error(E_ERROR, "Invalid instance of %s", ...)` of a live
-/// `object`: an `E_ERROR`, which bails out and does not return, so the caller's
-/// frames own nothing a bailout would skip (as `server` and its kin).
-pub(crate) fn invalid(object: *mut zend_object) {
+/// `php_swoole_fatal_error(E_ERROR, "Invalid instance of %s", ...)` of an
+/// object of class `name`: an `E_ERROR`, which bails out and does not return,
+/// so the caller's frames own nothing a bailout would skip (as `server` and
+/// its kin).
+pub(crate) fn invalid(name: &CStr) {
     crate::set_last_error(SW_ERROR_PHP_FATAL_ERROR);
-    // SAFETY: a live object, as above.
-    let name = unsafe { swoole_rs_zend::class_name(object) };
     // SAFETY: a format with one string argument; the bailout jumps past this
     // frame and the caller's, which own nothing.
     unsafe {
@@ -54,6 +53,11 @@ pub(crate) fn invalid(object: *mut zend_object) {
             name.as_ptr(),
         );
     };
+}
+
+/// `$this`'s class name, for [`invalid`].
+pub(crate) fn this_class(call: &Call) -> &CStr {
+    call.class_name().unwrap_or_default()
 }
 
 pub(crate) static SERVER: Class = Class::new();
@@ -216,7 +220,7 @@ impl Custom for TaskData {
 /// `$this`, a `Server\Task`; an `E_ERROR`, which does not return, otherwise.
 fn task(call: &Call) -> &TaskData {
     call.custom::<TaskData>().unwrap_or_else(|| {
-        invalid(call.this());
+        invalid(this_class(call));
         // The `E_ERROR` bailed out of this frame.
         std::process::abort()
     })
@@ -239,7 +243,7 @@ pub(crate) fn task_bind(task: &Value, serv: *mut c_void, info: &DataHead) {
 pub(crate) fn task_server(call: &Call) -> *mut c_void {
     let serv = task(call).serv.get();
     if serv.is_null() {
-        invalid(call.this());
+        invalid(this_class(call));
     }
     serv
 }
@@ -586,7 +590,7 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 pub(crate) fn server(call: &Call) -> view::Server<'_> {
     let serv = crate::lifecycle::ServerObject::this(call).serv();
     if serv.is_null() {
-        invalid(call.this());
+        invalid(this_class(call));
         // The `E_ERROR` bailed out of this frame.
         std::process::abort();
     }
@@ -1077,7 +1081,7 @@ fn iterator(call: &Call) -> &Iterator {
         Some(iterator) if !iterator.serv.get().is_null() => iterator,
         // An `E_ERROR`, which does not return; the frames own nothing.
         _ => {
-            invalid(call.this());
+            invalid(this_class(call));
             std::process::abort()
         }
     }

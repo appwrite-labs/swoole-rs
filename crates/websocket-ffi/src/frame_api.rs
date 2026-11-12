@@ -132,19 +132,16 @@ macro_rules! upstream {
 upstream! {
     "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE" =>
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-    ///
-    /// # Safety
-    /// `pl.buf` covers `pl.buf_size` readable bytes.
-    pub unsafe extern "C" fn get_package_length(
+    pub extern "C" fn get_package_length(
         _protocol: *const Protocol,
         _socket: *mut std::ffi::c_void,
         pl: &mut PacketLength,
     ) -> isize {
-        if pl.buf_size < 2 {
+        let bytes = pl.bytes();
+        if bytes.len() < 2 {
             return 0;
         }
-        // SAFETY: the packet's `buf_size` readable bytes.
-        let (length, header) = frame_length(unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) });
+        let (length, header) = frame_length(bytes);
         if let Some(header) = header {
             pl.header_len = header;
         }
@@ -437,13 +434,9 @@ mod tests {
     #[test]
     fn package_length_reports_the_header() {
         let data = *b"\x82\x7e\x01\x00";
-        let mut pl = PacketLength {
-            buf: data.as_ptr(),
-            buf_size: 4,
-            header_len: 0,
-        };
+        let mut pl = PacketLength::new(&data);
         assert_eq!(
-            unsafe { get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl) },
+            get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl),
             260
         );
         assert_eq!(pl.header_len, 4);

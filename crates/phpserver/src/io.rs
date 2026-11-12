@@ -150,9 +150,7 @@ fn listen(call: &Call) {
     let Some(ls) = ls else {
         return call.set_bool(false);
     };
-    // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
-    let zport =
-        unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
+    let zport = crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls);
     // `RETVAL_ZVAL(port_object, 1, 0)`.
     call.set_owned(zport);
 }

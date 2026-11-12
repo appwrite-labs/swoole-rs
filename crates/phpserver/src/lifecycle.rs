@@ -661,14 +661,16 @@ impl<'a> Props<'a> {
 }
 
 /// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server
-/// object and appended to `$server->ports`.
-/// # Safety
-/// `object` is bound to its server, and `port` is one of its ports.
-pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
+/// object and appended to `$server->ports`; undefined unless `port` is one of
+/// the object's server's ports.
+pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
     let Some(serv) = object.server() else {
         return Owned::default();
     };
-    // SAFETY: a live server and, per the caller, one of its ports.
+    if !serv.ports().iter().any(|own| own.raw() == port.raw()) {
+        return Owned::default();
+    }
+    // SAFETY: a live server and, checked above, one of its ports.
     let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port.raw()) };
     object.property(|p| p.ports.push(port_object));
     let info = PortInfo::of(port);
@@ -693,8 +695,7 @@ fn bind(call: &Call, serv: view::Server<'_>) {
     crate::instance::set_server_object(call.this());
     object.set_serv(serv.raw());
     for &port in serv.ports() {
-        // SAFETY: `$this`, bound above, and one of its ports.
-        unsafe { add_port(object, port) };
+        add_port(object, port);
     }
     let props = Props::server(object);
     props.connections(serv, ptr::null_mut());

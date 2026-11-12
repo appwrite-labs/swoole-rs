@@ -13,7 +13,7 @@ use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::{zval, zval_ptr_dtor},
+    sys::zval,
 };
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
@@ -386,10 +386,10 @@ impl Socket {
 /// The call bailed out.
 pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
-    let retval = certificate.as_ptr();
+    // The caller's bytes, copied into a new string, which drops outside the body.
+    let string = Owned::string(ZString::new(pem));
+    let (argument, retval) = (string.as_ptr(), certificate.as_ptr());
     let read = || {
-        // The caller's bytes, copied into a new string.
-        let mut string: zval = Owned::string(ZString::new(pem)).into_zval();
         let name = c"openssl_x509_read";
         // SAFETY: one live argument and the caller's writable result.
         unsafe {
@@ -397,16 +397,14 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
                 name.as_ptr(),
                 name.count_bytes(),
                 1,
-                &raw mut string,
+                argument,
                 retval,
             );
         }
         bailout::finish();
-        // SAFETY: the string this body made.
-        unsafe { zval_ptr_dtor(&raw mut string) };
     };
-    // SAFETY: the body holds the borrowed bytes, a plain zval and the slot of
-    // `certificate`, which lives outside it.
+    // SAFETY: the body holds the slots of `string` and `certificate`, which live
+    // outside it.
     unsafe { bailout::trap_with(read) }?;
     Ok(certificate)
 }
@@ -489,7 +487,8 @@ pub mod co {
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
-    /// else by the `swSocketType` `kind`; over `fd` unless it is negative.
+    /// else by the `swSocketType` `kind`; over `fd` unless it is negative. The
+    /// caller holds the new socket, live until it frees it.
     /// # Errors
     /// The constructor bailed out.
     pub fn make(
@@ -498,14 +497,15 @@ pub mod co {
         kind: c_int,
         protocol: c_int,
         family: bool,
-    ) -> Result<Socket, Bailout> {
+    ) -> Result<Co, Bailout> {
         let mut made = std::ptr::null_mut();
         if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
             drop(super::Socket::wrap(made, true));
             return Err(Bailout);
         }
-        Ok(made)
+        // SAFETY: the socket just made, which the caller holds until it frees it.
+        Ok(unsafe { Co::of(made) })
     }
 
     /// `delete socket`.
@@ -549,23 +549,28 @@ pub mod co {
         }
     }
 
-    /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
-    /// `count` vectors, with the vector index and byte offset where it stopped.
-    /// # Safety
-    /// The vectors are valid for the operation.
+    /// What a vector operation moves: buffers `readv` fills, or bytes `writev` sends.
+    pub enum Vectors<'a, 'b> {
+        Read(&'a mut [std::io::IoSliceMut<'b>]),
+        Write(&'a [std::io::IoSlice<'b>]),
+    }
+
+    /// `readv` or `writev` over `vectors`, or with `all` `readv_all` or
+    /// `writev_all`, with the vector index and byte offset where it stopped.
     #[must_use]
-    pub unsafe fn vector(
-        socket: Co,
-        op: c_int,
-        vectors: *const iovec,
-        count: c_int,
-    ) -> (isize, c_int, usize) {
-        // SAFETY: per the caller, `count` vectors valid for the operation.
-        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, op >= 2) }) else {
+    pub fn vector(socket: Co, vectors: Vectors<'_, '_>, all: bool) -> (isize, c_int, usize) {
+        let (vectors, count, write) = match vectors {
+            Vectors::Read(read) => (read.as_ptr().cast::<iovec>(), read.len(), false),
+            Vectors::Write(written) => (written.as_ptr().cast::<iovec>(), written.len(), true),
+        };
+        let count = c_int::try_from(count).unwrap_or_else(|_| std::process::abort());
+        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so
+        // these are `count` vectors over live bytes, writable for a read.
+        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, write) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
         };
-        let result = socket.vector(&mut vector, op & 1 == 1);
+        let result = socket.vector(&mut vector, all);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }

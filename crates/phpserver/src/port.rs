@@ -17,7 +17,7 @@ use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
     message,
-    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, swr_zval_copy, zend_object, zval},
+    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -126,11 +126,10 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     if fd < 0 {
         return call.set_bool(false);
     }
-    call.set_owned(swoole_rs_phpswoole::socket_create(fd).0);
-    // SAFETY: an emalloc'd slot for the reference upstream leaks.
-    let keep = unsafe { z::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: a writable slot and the Socket just made.
-    unsafe { swr_zval_copy(keep, call.return_value()) };
+    let socket = swoole_rs_phpswoole::socket_create(fd).0;
+    // The reference upstream's `sw_zval_dup` leaks.
+    std::mem::forget(socket.copy());
+    call.set_owned(socket);
 }
 
 /// A new Port object bound to `port` and its server `serv`.
@@ -159,7 +158,8 @@ pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_serve
     // SAFETY: a live object, per the contract.
     let data = unsafe { custom_of::<PortData>(object) };
     data.and_then(PortData::port).unwrap_or_else(|| {
-        crate::server::invalid(object);
+        // Only this class's `create_object` makes the Server's Port objects.
+        crate::server::invalid(c"Swoole\\Server\\Port");
         // The `E_ERROR` above bailed out.
         std::process::abort()
     })
@@ -220,9 +220,7 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
         } else {
             ZEND_ACC_PRIVATE
         };
-        // SAFETY: the static name's `len` bytes, which hold no NUL.
-        let name = unsafe { std::slice::from_raw_parts(property.name.data, property.name.len) };
-        let name = std::ffi::CString::new(name).unwrap_or_default();
+        let name = std::ffi::CString::new(property.name).unwrap_or_default();
         match property.kind {
             PROPERTY_LONG => minit.property_long(&PORT, &name, property.value, access),
             PROPERTY_BOOL => minit.property_bool(&PORT, &name, property.value != 0, access),
@@ -244,7 +242,7 @@ fn data(call: &Call) -> &PortData {
 /// return, when the port is not bound to a server. The caller owns nothing.
 fn invalid(call: &Call) {
     // `$this` of this call; the frames above own nothing to drop.
-    crate::server::invalid(call.this());
+    crate::server::invalid(crate::server::this_class(call));
 }
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.

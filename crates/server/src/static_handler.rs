@@ -49,8 +49,7 @@ impl StaticEffects for Native {
         swoole_rs_framing::mime::exists(filename)
     }
     fn random(&self, out: &mut [u8; BOUNDARY_SIZE], count: usize) {
-        // SAFETY: `count` characters and a NUL fit.
-        unsafe { swoole_rs_corebase::swoole_random_string(out.as_mut_ptr().cast(), count) };
+        swoole_rs_corebase::swoole_random_string(out.get_mut(..=count).unwrap_or_default());
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
         swoole_rs_http::conditional(if_range, 1, mtime, 0, self)

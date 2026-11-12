@@ -876,11 +876,12 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         send_wake(session_id, true);
     }
     let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
-    let Some(conn) = server.by_session(session_id).map(ptr::from_mut) else {
+    let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    // SAFETY: the session's live connection slot.
-    if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
+    let websocket_status = conn.websocket_status;
+    let conn = ptr::from_mut(conn);
+    if websocket_status != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
         if websocket
@@ -1186,9 +1187,7 @@ pub(crate) unsafe extern "C" fn length_func(
     let owner = unsafe { (*protocol).private_data_1 };
     // SAFETY: a live handle.
     let cache = unsafe { callable::cache(owner.cast()) };
-    // SAFETY: per the caller.
-    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
-    let mut data = Owned::string(ZString::new(bytes)).into_zval();
+    let mut data = Owned::string(ZString::new(packet.bytes())).into_zval();
     let retval = Owned::default();
     let mut result = -1;
     match call_unlimited(cache, std::slice::from_mut(&mut data), retval.as_ptr()) {

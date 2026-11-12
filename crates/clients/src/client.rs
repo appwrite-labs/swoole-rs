@@ -1,6 +1,6 @@
 //! `network::Client` (upstream's `src/network/client.cc`) in Rust: its state and every
 //! operation over it, from construction to close, with its callbacks (one
-//! listener and its object), its reactor handlers, its connect timer, its TLS
+//! listener closure), its reactor handlers, its connect timer, its TLS
 //! context, its proxies and its DNS lookup. The public POD fields are
 //! [`ClientRecord`], at the state's start, so a client is also its record. The
 //! socket is the reactor's record, read and written here directly; its `object`
@@ -14,6 +14,7 @@ use core::cell::{Cell, OnceCell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
+use std::rc::Rc;
 use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::{
@@ -71,7 +72,7 @@ const DTLS: u32 = 12;
 const STREAM: u32 = 13;
 
 /// The events a [`Listener`] hears: bit `1 << event` of
-/// [`swr_v1_clients_listen`]'s mask is set for each it wants.
+/// [`listen`]'s mask is set for each it wants.
 pub const ON_CONNECT: c_int = 1;
 pub const ON_RECEIVE: c_int = 2;
 pub const ON_CLOSE: c_int = 3;
@@ -79,10 +80,11 @@ pub const ON_ERROR: c_int = 4;
 pub const ON_BUFFER_FULL: c_int = 5;
 pub const ON_BUFFER_EMPTY: c_int = 6;
 
-/// The client's callbacks: `listener(object, event, data, length)`, with the
-/// received bytes for [`ON_RECEIVE`] and the last error as `length` for [`ON_ERROR`].
-pub type Listener =
-    unsafe extern "C" fn(object: *mut c_void, event: c_int, data: *const c_char, length: usize);
+/// The client's callbacks: `listener(event, data, length)`, with `data`
+/// holding the `length` received bytes for [`ON_RECEIVE`] (lent for the call:
+/// the listener may free the client, and with it the buffer), and the last
+/// error as `length` for [`ON_ERROR`].
+pub type Listener = Rc<dyn Fn(c_int, *const c_char, usize)>;
 
 /// The socket's connect modes: `connect_async` (returns `SW_READY`, `SW_WAIT` or
 /// `SW_ERROR`), `connect_sync`, and `connect(2)`.
@@ -340,6 +342,14 @@ impl Client {
         self.record.get()
     }
 
+    /// `cli->socket`, while the client has one: a constructed client's socket
+    /// record, live until the client is destroyed (an async one's free is
+    /// deferred past its callbacks).
+    pub fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: null or the client's live socket record, as above.
+        unsafe { Socket::from_ptr(self.record().socket) }
+    }
+
     /// Edit a copy of the public record and write it back, so no reference
     /// into the record is live while `edit` runs.
     pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
@@ -407,9 +417,7 @@ impl Handle {
     }
 
     fn socket(self) -> Socket<'static> {
-        // SAFETY: a constructed client's socket record, live until the client is
-        // destroyed (an async one's free is deferred past its callbacks).
-        unsafe { Socket::from_ptr(self.socket_ptr()) }.unwrap_or_else(|| std::process::abort())
+        self.get().socket().unwrap_or_else(|| std::process::abort())
     }
 
     fn socket_type(self) -> c_int {
@@ -430,9 +438,11 @@ impl Handle {
     }
 
     /// Runs the user callback for `event`, if the listener hears it. The client
-    /// may be gone afterwards.
+    /// may be gone afterwards: the call holds its own reference to the listener.
     fn call(self, event: c_int, data: *const c_char, length: usize) {
-        let Some(listener) = self.get().listener.get().filter(|_| self.has(event)) else {
+        let held = self.get().listener.take();
+        self.get().listener.set(held.clone());
+        let Some(listener) = held.filter(|_| self.has(event)) else {
             return;
         };
         let length = if event == ON_ERROR {
@@ -440,10 +450,8 @@ impl Handle {
         } else {
             length
         };
-        let object = self.fields().object;
-        // SAFETY: the listener and its object; nothing of the client is borrowed
-        // across the call, which may release it.
-        unsafe { listener(object, event, data, length) };
+        // Nothing of the client is borrowed across the call, which may release it.
+        listener(event, data, length);
     }
 
     fn event(self, op: c_int, events: c_int) -> c_int {
@@ -727,19 +735,11 @@ pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
     }
 }
 
-/// `Client::onConnect` and the rest: `listener(object, event, ...)` for each
-/// event in `events` (`1 << ON_*`), `object` the record's.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_listen(
-    client: &Client,
-    object: *mut c_void,
-    events: u32,
-    listener: Listener,
-) {
-    let this = Handle(core::ptr::from_ref(client).cast_mut());
-    this.fields().object = object;
-    this.get().listener.set(Some(listener));
-    this.get().events.set(events);
+/// `Client::onConnect` and the rest: `listener(event, ...)` for each event in
+/// `events` (`1 << ON_*`).
+pub fn listen(client: &Client, events: u32, listener: Listener) {
+    drop(client.listener.replace(Some(listener)));
+    client.events.set(events);
 }
 
 use swoole_rs_corebase::sys::errno;
@@ -1000,17 +1000,12 @@ impl Handle {
 }
 
 /// The client protocol's length of the packet in `data`.
-#[expect(clippy::cast_possible_truncation, reason = "`(uint32_t) length`")]
 fn package_length(this: Handle, data: &[u8]) -> isize {
     let record = this.fields();
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
-    let mut packet = PacketLength {
-        buf: data.as_ptr().cast(),
-        buf_size: data.len() as u32,
-        header_len: 0,
-    };
+    let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
     unsafe {
         get(

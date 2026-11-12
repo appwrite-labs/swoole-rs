@@ -3,7 +3,7 @@
 //! reporting; and `Swoole\Client`'s `network::Client`, whose operations
 //! crates/clients runs.
 use crate::settings::php_swoole_length_func;
-use libc::{c_int, c_void, iovec, size_t, ssize_t};
+use libc::{c_int, c_void, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -68,9 +68,10 @@ pub(crate) fn make(
     protocol: c_int,
     family: bool,
 ) -> Result<NewSocket, Bailout> {
-    let socket = co::make(fd, domain, kind, protocol, family)?;
-    // SAFETY: the new socket, which nothing else holds.
-    Ok(NewSocket(unsafe { Co::new(socket) }))
+    // The new socket, which nothing else holds.
+    Ok(NewSocket(Co::from(co::make(
+        fd, domain, kind, protocol, family,
+    )?)))
 }
 
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
@@ -155,7 +156,7 @@ impl Co {
     }
 
     /// The socket's buffers are zend strings from now on.
-    pub(crate) fn use_zend_strings(self) {
+    pub fn use_zend_strings(self) {
         // SAFETY: the static zend string allocator.
         unsafe {
             self.0
@@ -366,21 +367,21 @@ impl Co {
         Some(unsafe { ZBuf::from_raw(string::from_val(packet), length) }.into_zstring())
     }
 
-    /// `readv`/`readv_all`/`writev`/`writev_all` (`op` 0..=3) over `vectors`
+    /// `readv`/`writev` over `vectors` (with `all`, `readv_all`/`writev_all`)
     /// under `timeout`; with the vector index and byte offset where it stopped.
-    /// # Safety
-    /// Each vector holds its bytes, writable for a read.
-    pub(crate) unsafe fn vector(
+    pub(crate) fn vector(
         self,
-        op: c_int,
-        vectors: &[iovec],
+        vectors: co::Vectors<'_, '_>,
+        all: bool,
         timeout: f64,
     ) -> (ssize_t, c_int, size_t) {
-        let kind = if op < 2 { TIMEOUT_READ } else { TIMEOUT_WRITE };
+        let kind = if matches!(vectors, co::Vectors::Read(_)) {
+            TIMEOUT_READ
+        } else {
+            TIMEOUT_WRITE
+        };
         let _timeout = self.timeout(timeout, kind);
-        let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
-        // SAFETY: per the caller.
-        unsafe { co::vector(self.0, op, vectors.as_ptr(), count) }
+        co::vector(self.0, vectors, all)
     }
 
     /// `sendfile(file, offset, length)` of the file named up to the first NUL,
@@ -575,8 +576,7 @@ impl Cli {
 
     /// `cli->socket`, while the client has one.
     pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
-        // SAFETY: null or a constructed client's socket, live while the client is.
-        unsafe { Net::from_ptr(self.get().record().socket) }
+        self.get().socket()
     }
 
     /// crates/clients' handle on the client.

@@ -83,7 +83,7 @@ thread_local! {
 }
 
 /// In a server worker thread, `process` becomes a copy of its server worker
-/// (shared); false elsewhere.
+/// (shared); false elsewhere, or past the server's last worker.
 pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
     with_server(|serv| serv.is_worker_thread() && share(serv, process)).unwrap_or(false)
 }
@@ -103,9 +103,10 @@ fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
         clippy::cast_possible_truncation,
         reason = "Server::get_worker takes a uint16_t"
     )]
-    let source = serv.worker(id as u16);
-    // SAFETY: the server's live worker record, distinct from `process`.
-    *process = unsafe { source.read() };
+    let Some(source) = serv.worker_record(id as u16) else {
+        return false;
+    };
+    *process = source.get();
     process.pipe_current = if user {
         process.pipe_worker
     } else {
