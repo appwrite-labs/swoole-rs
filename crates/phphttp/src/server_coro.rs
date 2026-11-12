@@ -162,11 +162,7 @@ impl HttpServer {
 
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
-        let request = &context.state().request;
-        // SAFETY: the request's path, `path_len` bytes.
-        let path = unsafe {
-            std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
-        };
+        let path = crate::parse::request_path(&context.state().request);
         let default = self.default_handler.borrow().clone();
         let is_default =
             |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
