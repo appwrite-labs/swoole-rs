@@ -2850,7 +2850,8 @@ mod tests {
     fn sendfile_name_is_copied_after_the_task_head() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        let mut buffer = [0xffu8; 64];
+        // A whole task buffer: the op may write the name anywhere after its head.
+        let mut buffer = vec![0xffu8; IPC_BUFFER_SIZE];
         ctx.buffer = buffer.as_mut_ptr().cast();
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
