@@ -263,9 +263,9 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn active(&mut self) -> bool {
-        let active = self.conn().active;
+        let active = self.conn().is_active();
         let removed = self.socket.read(|s| s.removed);
-        active != 0 && removed == 0
+        active && removed == 0
     }
 
     fn upgrade(&mut self) -> Upgrade {

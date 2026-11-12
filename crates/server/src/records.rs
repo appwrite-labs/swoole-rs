@@ -1,7 +1,7 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
 use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
 
@@ -16,7 +16,8 @@ pub struct SessionRecord {
 /// The wire connection record; native code holds a borrowed view of these fields.
 #[repr(C)]
 pub struct ConnectionRecord {
-    pub active: u8,
+    /// Read by every reactor thread (`is_valid_connection` over the fd range).
+    pub active: AtomicU8,
     pub socket_type: c_int,
     pub fd: c_int,
     pub worker_id: c_int,
@@ -62,6 +63,12 @@ pub struct ConnectionRecord {
 }
 
 impl ConnectionRecord {
+    /// Whether the slot holds a connection (`active`).
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.load(Relaxed) != 0
+    }
+
     /// The connection's session socket, or `None` before it has one or after it closes:
     /// closing frees the socket and nulls the field in one step, on the socket's thread.
     #[must_use]
@@ -237,9 +244,9 @@ impl crate::ServerState {
         let value = unsafe { &*slot };
         let found = match kind {
             BY_FD | BY_SESSION => true,
-            _ if value.active == 0 => false,
+            _ if !value.is_active() => false,
             VERIFIED | VERIFIED_TLS if session_id != key || value.session_id != key => false,
-            ITERATED if value.closed.load(core::sync::atomic::Ordering::Relaxed) != 0 => false,
+            ITERATED if value.closed.load(Relaxed) != 0 => false,
             VERIFIED_TLS | ITERATED => value.ssl == 0 || value.ssl_ready != 0,
             _ => true,
         };
@@ -344,7 +351,7 @@ pub(crate) mod tests {
             },
         ];
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
-        connections[2].active = 1;
+        connections[2].active.store(1, Relaxed);
         connections[2].session_id = 1;
         let (session_at, connection_at) = (
             (&raw mut sessions).cast::<SessionRecord>(),
@@ -377,7 +384,7 @@ pub(crate) mod tests {
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
             assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);
-            (*expected).active = 0;
+            (*expected).active.store(0, Relaxed);
             assert!(swr_v1_server_connection(&*state, 1, 2).is_null());
             free_state(state);
         }
