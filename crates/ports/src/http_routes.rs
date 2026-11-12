@@ -231,8 +231,7 @@ pub mod exports {
         match decision.action {
             Action::Reject => return -1,
             Action::Start => {
-                // SAFETY: the payload's bytes.
-                let buffer = unsafe { new_string(dispatch.data, decision.length) };
+                let buffer = new_string(payload.unwrap_or_default());
                 // SAFETY: just constructed.
                 unsafe { (*buffer).set_offset(decision.ext_flags.into()) };
                 conn.websocket_buffer = buffer.cast();

@@ -113,8 +113,8 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
         STRING_NEW if b.is_null() => {
             return new_sized_string(length, None) as u64;
         }
-        // SAFETY: `b` holds `n` bytes.
-        STRING_NEW => return unsafe { new_string(b, length) as u64 },
+        // SAFETY: `b`, not null, holds `n` bytes.
+        STRING_NEW => return new_string(unsafe { std::slice::from_raw_parts(b, length) }) as u64,
         // SAFETY: a string from `STRING_NEW`, not used again.
         STRING_FREE => unsafe { delete_string(a.cast()) },
         STRING_APPEND => {
