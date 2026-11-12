@@ -10,6 +10,7 @@ use std::{
     ffi::{CStr, c_char, c_int, c_void},
     mem::ManuallyDrop,
     ptr,
+    rc::Rc,
     sync::OnceLock,
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
@@ -1189,9 +1190,15 @@ pub(crate) unsafe extern "C" fn length_func(
     packet: &mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
-    let owner = unsafe { (*protocol).private_data_1 };
-    // SAFETY: a live handle.
-    let cache = unsafe { callable::cache(owner.cast()) };
+    let owner = unsafe { (*protocol).private_data_1 }.cast::<callable::Callable>();
+    // SAFETY: the slot's live reference (`Source::callable`), borrowed: the
+    // slot keeps it.
+    let slot = ManuallyDrop::new(unsafe { Rc::from_raw(owner) });
+    // Its own reference where the slot is this thread's, so a `set()` the
+    // callable runs drops only the slot's. A thread-mode worker reads the
+    // master's slot and leaves its count alone.
+    let held = crate::lifecycle::owns_shared().then(|| Rc::clone(&slot));
+    let cache = slot.cache_ptr();
     let mut data = Owned::string(ZString::new(packet.bytes())).into_zval();
     let retval = Owned::default();
     let mut result = -1;
@@ -1203,6 +1210,7 @@ pub(crate) unsafe extern "C" fn length_func(
     // Released first: `finish` may jump over this frame.
     drop(retval);
     dtor(&mut data);
+    drop(held);
     bailout::finish();
     result
 }
