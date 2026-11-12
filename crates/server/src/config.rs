@@ -4,7 +4,10 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
+    Ordering::Relaxed,
+};
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
 
@@ -13,53 +16,123 @@ const _: () = assert!(
     "`warning_time` mirrors C++'s `time_t`"
 );
 
+/// A value a [`Setting`] holds, and the atomic of its layout that holds it.
+pub trait Plain: Copy {
+    type Atomic;
+    fn atomic(self) -> Self::Atomic;
+    fn load(atomic: &Self::Atomic) -> Self;
+    fn store(atomic: &Self::Atomic, value: Self);
+}
+
+macro_rules! plain {
+    ($($value:ty => $atomic:ty;)*) => {$(
+        impl Plain for $value {
+            type Atomic = $atomic;
+            fn atomic(self) -> $atomic {
+                <$atomic>::new(self)
+            }
+            fn load(atomic: &$atomic) -> Self {
+                atomic.load(Relaxed)
+            }
+            fn store(atomic: &$atomic, value: Self) {
+                atomic.store(value, Relaxed);
+            }
+        }
+    )*};
+}
+
+plain! {
+    bool => AtomicBool;
+    u8 => AtomicU8;
+    u16 => AtomicU16;
+    u32 => AtomicU32;
+    u64 => AtomicU64;
+    usize => AtomicUsize;
+}
+
+/// A `double` setting, kept as its bits.
+impl Plain for f64 {
+    type Atomic = AtomicU64;
+    fn atomic(self) -> AtomicU64 {
+        AtomicU64::new(self.to_bits())
+    }
+    fn load(atomic: &AtomicU64) -> Self {
+        Self::from_bits(atomic.load(Relaxed))
+    }
+    fn store(atomic: &AtomicU64, value: Self) {
+        atomic.store(value.to_bits(), Relaxed);
+    }
+}
+
+/// A server setting: written through `&` while the server is configured and
+/// read by every thread once it runs, so an atomic, read and written relaxed.
+/// It is laid out as the value it holds, which C++'s view of the record reads.
+#[repr(transparent)]
+pub struct Setting<T: Plain>(T::Atomic);
+
+impl<T: Plain> Setting<T> {
+    pub fn new(value: T) -> Self {
+        Self(value.atomic())
+    }
+
+    #[inline]
+    pub fn get(&self) -> T {
+        T::load(&self.0)
+    }
+
+    #[inline]
+    pub fn set(&self, value: T) {
+        T::store(&self.0, value);
+    }
+}
+
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
 pub struct ServerConfig {
-    pub reactor_num: u16,
-    pub worker_num: u32,
+    pub reactor_num: Setting<u16>,
+    pub worker_num: Setting<u32>,
     pub dgram_port_num: u8,
-    pub dispatch_mode: u8,
+    pub dispatch_mode: Setting<u8>,
     /// Set and cleared by whichever thread dispatches, so an atomic.
     pub scheduler_warning: AtomicBool,
-    pub max_request: u32,
-    pub max_request_grace: u32,
+    pub max_request: Setting<u32>,
+    pub max_request_grace: Setting<u32>,
     pub udp_socket_ipv4: *mut c_void,
     pub udp_socket_ipv6: *mut c_void,
     pub dgram_socket: *mut c_void,
-    pub max_wait_time: u32,
-    pub worker_max_concurrency: u32,
-    pub daemonize: bool,
+    pub max_wait_time: Setting<u32>,
+    pub worker_max_concurrency: Setting<u32>,
+    pub daemonize: Setting<bool>,
     pub have_dgram_sock: bool,
     pub have_stream_sock: bool,
-    pub open_cpu_affinity: bool,
+    pub open_cpu_affinity: Setting<bool>,
     pub disable_notify: bool,
-    pub discard_timeout_request: bool,
-    pub http_parse_cookie: bool,
-    pub http_parse_post: bool,
-    pub http_parse_files: bool,
-    pub http_compression: bool,
-    pub websocket_compression: bool,
-    pub enable_static_handler: bool,
-    pub http_autoindex: bool,
-    pub enable_unsafe_event: bool,
-    pub enable_delay_receive: bool,
-    pub enable_reuse_port: bool,
-    pub reload_async: bool,
-    pub event_object: bool,
-    pub task_object: bool,
-    pub task_enable_coroutine: bool,
-    pub send_yield: bool,
-    pub enable_coroutine: bool,
-    pub single_thread: bool,
+    pub discard_timeout_request: Setting<bool>,
+    pub http_parse_cookie: Setting<bool>,
+    pub http_parse_post: Setting<bool>,
+    pub http_parse_files: Setting<bool>,
+    pub http_compression: Setting<bool>,
+    pub websocket_compression: Setting<bool>,
+    pub enable_static_handler: Setting<bool>,
+    pub http_autoindex: Setting<bool>,
+    pub enable_unsafe_event: Setting<bool>,
+    pub enable_delay_receive: Setting<bool>,
+    pub enable_reuse_port: Setting<bool>,
+    pub reload_async: Setting<bool>,
+    pub event_object: Setting<bool>,
+    pub task_object: Setting<bool>,
+    pub task_enable_coroutine: Setting<bool>,
+    pub send_yield: Setting<bool>,
+    pub enable_coroutine: Setting<bool>,
+    pub single_thread: Setting<bool>,
     /// Cleared by whichever thread stops the server while the others read it
     /// ([`crate::ServerState::running`]).
     pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
     pub cpu_affinity_available: Vec<c_int>,
     pub pipe_command: *mut c_void,
-    pub send_timeout: f64,
-    pub heartbeat_check_interval: u16,
+    pub send_timeout: Setting<f64>,
+    pub heartbeat_check_interval: Setting<u16>,
     /// `time_t`, reset with `scheduler_warning` by whichever thread dispatches.
     pub warning_time: AtomicI64,
     pub timezone_: libc::c_long,
@@ -68,21 +141,22 @@ pub struct ServerConfig {
     pub master_timer: AtomicPtr<c_void>,
     /// Armed by the heartbeat thread (or a single-threaded reactor), as `master_timer`.
     pub heartbeat_timer: AtomicPtr<c_void>,
-    pub output_buffer_size: u32,
-    pub input_buffer_size: u32,
-    pub max_queued_bytes: u32,
+    pub output_buffer_size: Setting<u32>,
+    pub input_buffer_size: Setting<u32>,
+    pub max_queued_bytes: Setting<u32>,
     /// Raised at start, by whichever factory starts; read through [`Self::ipc_max_size`].
     pub ipc_max_size: AtomicU32,
     pub private_data_1: *mut c_void,
     pub private_data_2: *mut c_void,
-    pub private_data_3: *mut c_void,
+    /// The `dispatch_func` callable, swapped by the thread configuring the server.
+    pub private_data_3: AtomicPtr<c_void>,
     pub private_data_4: *mut c_void,
     pub factory_: *mut c_void,
     pub manager_: *mut c_void,
-    pub task_worker_num: u32,
-    pub task_ipc_mode: u8,
-    pub task_max_request: u32,
-    pub task_max_request_grace: u32,
+    pub task_worker_num: Setting<u32>,
+    pub task_ipc_mode: Setting<u8>,
+    pub task_max_request: Setting<u32>,
+    pub task_max_request_grace: Setting<u32>,
     pub task_results: Shm,
     /// The server's worker registry, which crates/process and the manager reach
     /// through `registry`'s pointer and write through `&`; native sees only a
@@ -91,12 +165,12 @@ pub struct ServerConfig {
     pub user_workers: Shm,
     pub workers: Shm,
     pub gs: Shm,
-    pub upload_max_filesize: usize,
-    pub http_compression_level: u8,
-    pub compression_min_length: u32,
-    pub recv_buffer_allocator: *const c_void,
+    pub upload_max_filesize: Setting<usize>,
+    pub http_compression_level: Setting<u8>,
+    pub compression_min_length: Setting<u32>,
+    pub recv_buffer_allocator: AtomicPtr<c_void>,
     pub recv_buffer_size: usize,
-    pub message_queue_key: u64,
+    pub message_queue_key: Setting<u64>,
     /// `Server::Mode`, fixed by the constructor.
     pub mode_: u8,
 }
@@ -104,53 +178,53 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            reactor_num: 0,
-            worker_num: 0,
+            reactor_num: Setting::new(0),
+            worker_num: Setting::new(0),
             dgram_port_num: 0,
-            dispatch_mode: 2,
+            dispatch_mode: Setting::new(2),
             scheduler_warning: AtomicBool::new(false),
-            max_request: 0,
-            max_request_grace: 0,
+            max_request: Setting::new(0),
+            max_request_grace: Setting::new(0),
             udp_socket_ipv4: core::ptr::null_mut(),
             udp_socket_ipv6: core::ptr::null_mut(),
             dgram_socket: core::ptr::null_mut(),
-            max_wait_time: 3,
-            worker_max_concurrency: u32::MAX,
-            daemonize: false,
+            max_wait_time: Setting::new(3),
+            worker_max_concurrency: Setting::new(u32::MAX),
+            daemonize: Setting::new(false),
             have_dgram_sock: false,
             have_stream_sock: false,
-            open_cpu_affinity: false,
+            open_cpu_affinity: Setting::new(false),
             disable_notify: false,
-            discard_timeout_request: false,
-            http_parse_cookie: true,
-            http_parse_post: true,
-            http_parse_files: false,
-            http_compression: false,
-            websocket_compression: false,
-            enable_static_handler: false,
-            http_autoindex: false,
-            enable_unsafe_event: false,
-            enable_delay_receive: false,
-            enable_reuse_port: false,
-            reload_async: true,
-            event_object: false,
-            task_object: false,
-            task_enable_coroutine: false,
-            send_yield: true,
-            enable_coroutine: true,
-            single_thread: false,
+            discard_timeout_request: Setting::new(false),
+            http_parse_cookie: Setting::new(true),
+            http_parse_post: Setting::new(true),
+            http_parse_files: Setting::new(false),
+            http_compression: Setting::new(false),
+            websocket_compression: Setting::new(false),
+            enable_static_handler: Setting::new(false),
+            http_autoindex: Setting::new(false),
+            enable_unsafe_event: Setting::new(false),
+            enable_delay_receive: Setting::new(false),
+            enable_reuse_port: Setting::new(false),
+            reload_async: Setting::new(true),
+            event_object: Setting::new(false),
+            task_object: Setting::new(false),
+            task_enable_coroutine: Setting::new(false),
+            send_yield: Setting::new(true),
+            enable_coroutine: Setting::new(true),
+            single_thread: Setting::new(false),
             running: AtomicBool::new(true),
             cpu_affinity_available: Vec::new(),
             pipe_command: core::ptr::null_mut(),
-            send_timeout: 0.0,
-            heartbeat_check_interval: 0,
+            send_timeout: Setting::new(0.0),
+            heartbeat_check_interval: Setting::new(0),
             warning_time: AtomicI64::new(0),
             timezone_: 0,
             master_timer: AtomicPtr::new(core::ptr::null_mut()),
             heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
-            output_buffer_size: u32::MAX,
-            input_buffer_size: 2 * 1024 * 1024,
-            max_queued_bytes: 0,
+            output_buffer_size: Setting::new(u32::MAX),
+            input_buffer_size: Setting::new(2 * 1024 * 1024),
+            max_queued_bytes: Setting::new(0),
             ipc_max_size: AtomicU32::new(if cfg!(target_vendor = "apple") {
                 2048
             } else {
@@ -158,25 +232,25 @@ impl Default for ServerConfig {
             }),
             private_data_1: core::ptr::null_mut(),
             private_data_2: core::ptr::null_mut(),
-            private_data_3: core::ptr::null_mut(),
+            private_data_3: AtomicPtr::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: core::ptr::null_mut(),
             manager_: core::ptr::null_mut(),
-            task_worker_num: 0,
-            task_ipc_mode: 1,
-            task_max_request: 0,
-            task_max_request_grace: 0,
+            task_worker_num: Setting::new(0),
+            task_ipc_mode: Setting::new(1),
+            task_max_request: Setting::new(0),
+            task_max_request_grace: Setting::new(0),
             task_results: Shm::NULL,
             worker_registry: None,
             user_workers: Shm::NULL,
             workers: Shm::NULL,
             gs: Shm::NULL,
-            upload_max_filesize: 0,
-            http_compression_level: 0,
-            compression_min_length: 20,
-            recv_buffer_allocator: core::ptr::null(),
+            upload_max_filesize: Setting::new(0),
+            http_compression_level: Setting::new(0),
+            compression_min_length: Setting::new(20),
+            recv_buffer_allocator: AtomicPtr::default(),
             recv_buffer_size: 65_536,
-            message_queue_key: 0,
+            message_queue_key: Setting::new(0),
             mode_: 0,
         }
     }
@@ -225,13 +299,15 @@ impl ServerConfig {
         timezone: libc::c_long,
         allocator: *const c_void,
     ) {
-        self.reactor_num = u16::try_from(cpu_num.min(8)).unwrap_or(8);
-        self.worker_num = cpu_num;
+        self.reactor_num
+            .set(u16::try_from(cpu_num.min(8)).unwrap_or(8));
+        self.worker_num.set(cpu_num);
         self.timezone_ = timezone;
-        self.http_compression = true;
-        self.http_compression_level = 1;
-        self.compression_min_length = 20;
-        self.recv_buffer_allocator = allocator;
+        self.http_compression.set(true);
+        self.http_compression_level.set(1);
+        self.compression_min_length.set(20);
+        self.recv_buffer_allocator
+            .store(allocator.cast_mut(), Relaxed);
     }
 }
 
@@ -285,12 +361,12 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     let tables = state.tables_ref();
     Some(match op {
         OP_MODE => u64::from(config.mode_),
-        OP_SINGLE_THREAD => u64::from(config.single_thread),
-        OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
+        OP_SINGLE_THREAD => u64::from(config.single_thread.get()),
+        OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive.get()),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
         OP_RUNNING => u64::from(state.running()),
-        OP_LC_DAEMONIZE => u64::from(config.daemonize),
-        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
+        OP_LC_DAEMONIZE => u64::from(config.daemonize.get()),
+        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
         OP_CONNECTION_LIST => u64::from(!tables.connection_list.is_null()),
         OP_ERRNO => {
@@ -311,7 +387,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                     // SAFETY: a listed port is live, and no native callback runs while
                     // it is borrowed.
                     unsafe { port.config_mut() }.heartbeat_idle_time =
-                        config.heartbeat_check_interval.wrapping_mul(2);
+                        config.heartbeat_check_interval.get().wrapping_mul(2);
                     return Some(0);
                 }
                 OP_PORT_REMOVED => {
@@ -352,13 +428,13 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             0
         }
         OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {
-            FIELD_REACTOR_NUM => u64::from(config.reactor_num),
-            FIELD_WORKER_NUM => u64::from(config.worker_num),
-            FIELD_TASK_WORKER_NUM => u64::from(config.task_worker_num),
-            FIELD_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval),
-            FIELD_DISPATCH_MODE => u64::from(config.dispatch_mode),
-            FIELD_UNSAFE_EVENT => u64::from(config.enable_unsafe_event),
-            FIELD_TASK_IPC_MODE => u64::from(config.task_ipc_mode),
+            FIELD_REACTOR_NUM => u64::from(config.reactor_num.get()),
+            FIELD_WORKER_NUM => u64::from(config.worker_num.get()),
+            FIELD_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
+            FIELD_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval.get()),
+            FIELD_DISPATCH_MODE => u64::from(config.dispatch_mode.get()),
+            FIELD_UNSAFE_EVENT => u64::from(config.enable_unsafe_event.get()),
+            FIELD_TASK_IPC_MODE => u64::from(config.task_ipc_mode.get()),
             FIELD_CPU_NUM => u64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
             _ => 0,
         },
@@ -369,20 +445,24 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             let value = arg >> 8;
             match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
                 FIELD_REACTOR_NUM => {
-                    config.reactor_num =
-                        u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default();
+                    config
+                        .reactor_num
+                        .set(u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default());
                 }
                 FIELD_WORKER_NUM => {
-                    config.worker_num =
-                        u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default();
+                    config
+                        .worker_num
+                        .set(u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default());
                 }
                 FIELD_TASK_WORKER_NUM => {
-                    config.task_worker_num =
-                        u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default();
+                    config
+                        .task_worker_num
+                        .set(u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default());
                 }
                 FIELD_HEARTBEAT_INTERVAL => {
-                    config.heartbeat_check_interval =
-                        u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default();
+                    config
+                        .heartbeat_check_interval
+                        .set(u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default());
                 }
                 _ => {}
             }
@@ -404,8 +484,8 @@ mod tests {
         unsafe {
             let config = (*state).config();
             (*config).init_defaults(16, 3600, core::ptr::null());
-            assert_eq!((*config).worker_num, 16);
-            assert_eq!((*config).reactor_num, 8);
+            assert_eq!((*config).worker_num.get(), 16);
+            assert_eq!((*config).reactor_num.get(), 8);
             assert_eq!((*config).timezone_, 3600);
             assert_eq!(
                 native_fact(&*state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
@@ -413,7 +493,7 @@ mod tests {
             );
             let encoded = (19 << 8) | u64::from(FIELD_WORKER_NUM);
             assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
-            assert_eq!((*config).worker_num, 19);
+            assert_eq!((*config).worker_num.get(), 19);
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
             assert!(!(*state).running());
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
@@ -453,7 +533,7 @@ mod tests {
             for &port in &ports {
                 (*state).push_port(port.cast());
             }
-            (*(*state).config()).heartbeat_check_interval = 5;
+            (*(*state).config()).heartbeat_check_interval.set(5);
             assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(2));
             assert_eq!((*ports[1]).object_id, 2);
             assert_eq!(native_fact(&*state, OP_PORT_STREAM, 0), Some(1));

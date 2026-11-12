@@ -95,7 +95,7 @@ fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
         let config = serv.config();
         let id = USER_WORKER_ID.get();
         USER_WORKER_ID.set(id + 1);
-        id + config.worker_num + config.task_worker_num
+        id + config.worker_num.get() + config.task_worker_num.get()
     };
     #[expect(
         clippy::cast_possible_truncation,
@@ -128,7 +128,7 @@ pub(crate) fn worker_base() -> u32 {
             reason = "worker counts fit a uint32_t"
         )]
         let users = users as u32;
-        config.worker_num + config.task_worker_num + users
+        config.worker_num.get() + config.task_worker_num.get() + users
     })
     .unwrap_or(1)
 }
@@ -240,14 +240,14 @@ pub(crate) fn callable_defer_free(callable: Callable) {
 }
 
 /// `php_swoole_is_enable_coroutine()`: the running server's
-/// `Server::is_enable_coroutine()`, else `SwooleG.enable_coroutine`.
+/// `Server::is_enable_coroutine()`, else `SwooleG.enable_coroutine.get()`.
 #[unsafe(export_name = "php_swoole_is_enable_coroutine")]
 #[must_use]
 pub extern "C" fn enable_coroutine() -> bool {
     with_server(|serv| match methods::swoole_get_worker_type() {
         TASK_WORKER => task_coroutine(serv),
         MANAGER => false,
-        _ => serv.config().enable_coroutine,
+        _ => serv.config().enable_coroutine.get(),
     })
     .unwrap_or_else(|| swoole_rs_corebase::swr_v1_core_enable_coroutine())
 }
@@ -291,7 +291,7 @@ pub(crate) fn signal_set(signo: c_int, handler: Handler, safety: bool) {
 
 /// The running server's `task_enable_coroutine`.
 fn task_coroutine(serv: view::Server<'_>) -> bool {
-    serv.config().task_enable_coroutine
+    serv.config().task_enable_coroutine.get()
 }
 
 /// `Server::is_sync_process()` of the running server.

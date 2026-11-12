@@ -198,12 +198,14 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let config = ctx.config();
     match op {
-        OP_TASK_IPC_MODE => return Some(u64::from(config.task_ipc_mode)),
-        OP_TASK_ENABLE_COROUTINE => return Some(u64::from(config.task_enable_coroutine)),
-        OP_TASK_WORKER_NUM => return Some(u64::from(config.task_worker_num)),
+        OP_TASK_IPC_MODE => return Some(u64::from(config.task_ipc_mode.get())),
+        OP_TASK_ENABLE_COROUTINE => return Some(u64::from(config.task_enable_coroutine.get())),
+        OP_TASK_WORKER_NUM => return Some(u64::from(config.task_worker_num.get())),
         OP_MODE => return Some(u64::from(config.mode_)),
         OP_ALL_CORE_WORKER_NUM => {
-            return Some(u64::from(config.worker_num) + u64::from(config.task_worker_num));
+            return Some(
+                u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get()),
+            );
         }
         OP_EXCEEDED_MAX_REQUEST => return Some(u64::from(ctx.worker().exceeded_max_request())),
         OP_SET_SYSVMSG => ctx.pool().set_schedule_by_sysvmsg(true),

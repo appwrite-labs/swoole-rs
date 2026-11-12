@@ -383,7 +383,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let reactor_id = if u64::from(o.config().mode_) == MODE_BASE {
                 swoole_rs_process::methods::swoole_get_worker_id() as u8
             } else {
-                (fd % c_int::from(o.config().reactor_num)) as u8
+                (fd % c_int::from(o.config().reactor_num.get())) as u8
             };
             o.ctx.reactor_id = reactor_id;
             // The fd's last connection, closed on a reactor thread, published the slot with
@@ -566,15 +566,15 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CLEAR_SEND_YIELD => {
-            config().send_yield = false;
+            o.config().send_yield.set(false);
             0
         }
         OP_CLEAR_MAX_QUEUED => {
-            config().max_queued_bytes = 0;
+            o.config().max_queued_bytes.set(0);
             0
         }
         OP_SEND_TIMEOUT_MIN => {
-            config().send_timeout = 0.001;
+            o.config().send_timeout.set(0.001);
             0
         }
         OP_STREAM_PORT => {
@@ -602,19 +602,19 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 clippy::cast_possible_truncation,
                 reason = "C++'s uint16_t reactor_num"
             )]
-            let reactors = o.config().worker_num as u16;
-            config().reactor_num = reactors;
+            let reactors = o.config().worker_num.get() as u16;
+            o.config().reactor_num.set(reactors);
             0
         }
         OP_HTTP_DEFAULTS => {
             // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
             let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
-            if o.config().enable_static_handler && strings(0, 1) == 0 {
+            if o.config().enable_static_handler.get() && strings(0, 1) == 0 {
                 strings(0, 3);
                 strings(0, 2);
             }
             if strings(2, 1) != 0 && strings(2, 0) != 0 {
-                config().http_compression = true;
+                o.config().http_compression.set(true);
             }
             0
         }
@@ -647,20 +647,23 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(ready)
         }
         OP_ALLOC_CONNECTION_NUMS => {
-            let cells = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            let cells = Shm::calloc(o.config().worker_num.get() as usize, ATOMIC_SIZE);
             let ready = !cells.is_null();
             counters().connection_nums = cells;
             u64::from(ready)
         }
         OP_ALLOC_WORKERS => {
-            let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let workers = Shm::calloc(
+                o.config().worker_num.get() as usize,
+                size_of::<WorkerRecord>(),
+            );
             let ready = !workers.is_null();
             config().workers = workers;
             u64::from(ready)
         }
         OP_ALLOC_TASK_RESULTS => {
             let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
-            let results = Shm::calloc(o.config().worker_num as usize, size);
+            let results = Shm::calloc(o.config().worker_num.get() as usize, size);
             let ready = !results.is_null();
             config().task_results = results;
             u64::from(ready)
@@ -718,7 +721,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let Some(gs) = port_counters(arg) else {
                 return Some(0);
             };
-            let cells = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            let cells = Shm::calloc(o.config().worker_num.get() as usize, ATOMIC_SIZE);
             let ready = !cells.is_null();
             gs.connection_nums = cells;
             u64::from(ready)
@@ -887,7 +890,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         LOG_ALLOC_WORKERS => {
             let (workers, size) = (
-                o.config().worker_num.cast_signed(),
+                o.config().worker_num.get().cast_signed(),
                 size_of::<swoole_rs_process::worker_record::WorkerRecord>(),
             );
             let m = format_args!("sw_shm_calloc({workers}, {size}) for workers failed");
@@ -903,21 +906,21 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_REACTOR_NUM => {
-            let (now, max) = (o.config().reactor_num, cpus * 4);
+            let (now, max) = (o.config().reactor_num.get(), cpus * 4);
             let m =
                 format_args!("reactor_num == {now}, Too many threads, reset to max value {max}");
             log::warning(c"Server::create", m);
             0
         }
         LOG_WORKER_NUM => {
-            let (now, max) = (o.config().worker_num.cast_signed(), cpus * 1000);
+            let (now, max) = (o.config().worker_num.get().cast_signed(), cpus * 1000);
             let m =
                 format_args!("worker_num == {now}, Too many processes, reset to max value {max}");
             log::warning(c"Server::create", m);
             0
         }
         LOG_TASK_WORKER_NUM => {
-            let (now, max) = (o.config().task_worker_num.cast_signed(), cpus * 1000);
+            let (now, max) = (o.config().task_worker_num.get().cast_signed(), cpus * 1000);
             let m = format_args!(
                 "task_worker_num == {now}, Too many processes, reset to max value {max}"
             );
@@ -931,7 +934,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         LOG_ALLOC_TASK_RESULTS => {
             let (workers, size) = (
-                o.config().worker_num.cast_signed(),
+                o.config().worker_num.get().cast_signed(),
                 swoole_rs_corebase::constants::SW_IPC_MAX_SIZE,
             );
             let m = format_args!("sw_shm_calloc({workers}, {size}) for task_result failed");
@@ -946,7 +949,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 CB_BUFFER_EMPTY => "onBufferEmpty",
                 _ => return Some(0),
             };
-            let mode = o.config().dispatch_mode;
+            let mode = o.config().dispatch_mode.get();
             let m = format_args!("cannot set '{event}' event when using dispatch_mode={mode}");
             error(
                 SW_LOG_WARNING,
@@ -1195,7 +1198,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_BASE_ALLOC_NUMS | LOG_BASE_ALLOC_PORT_NUMS => {
-            let size = o.config().worker_num as usize * ATOMIC_SIZE;
+            let size = o.config().worker_num.get() as usize * ATOMIC_SIZE;
             let what = if op == LOG_BASE_ALLOC_NUMS {
                 "gs"
             } else {
@@ -1234,7 +1237,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.server().event_pool_ref().set_read_message(true);
             0
         }
-        OP_SEND_TIMEOUT => o.config().send_timeout.to_bits(),
+        OP_SEND_TIMEOUT => o.config().send_timeout.get().to_bits(),
         OP_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
         OP_ST_TIMER => u64::from(match arg {
             0 => !o.config().master_timer.load(Relaxed).is_null(),
@@ -1674,8 +1677,8 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     o.ctx.sock = conn.socket_ptr();
     let config = o.config();
     debug_assert!(
-        config.single_thread
-            || i64::from(conn.fd()) % i64::from(config.reactor_num)
+        config.single_thread.get()
+            || i64::from(conn.fd()) % i64::from(config.reactor_num.get())
                 == i64::from(swoole_rs_corebase::thread_id()),
         "a connection is sent to on its own reactor thread"
     );
@@ -1693,7 +1696,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     send_flags(o)
         | send::FOUND
         | bit(cfg!(feature = "halfclose"), send::HALFCLOSE)
-        | bit(config.send_yield, send::SEND_YIELD)
+        | bit(config.send_yield.get(), send::SEND_YIELD)
         | bit(out_empty, send::OUT_EMPTY)
         | bit(direct_send, send::DIRECT_SEND)
         | (u64::from(o.ctx.length) << 32)
@@ -2112,7 +2115,7 @@ extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
     let serv = FORCED_EXIT_SERVER.load(Relaxed);
     // SAFETY: the server that is shutting down, live until its loop exits.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
-    let max_wait_time = state.config_ref().max_wait_time;
+    let max_wait_time = state.config_ref().max_wait_time.get();
     let now = swoole_rs_corebase::time_now();
     if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
         error(
@@ -2350,14 +2353,14 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { task_pool.write_bytes(0, 1) };
             #[expect(clippy::cast_possible_truncation, reason = "C++'s key_t conversion")]
             let key = if arg == IPC_MSGQUEUE {
-                config.message_queue_key as c_int
+                config.message_queue_key.get() as c_int
             } else {
                 0
             };
             #[expect(clippy::cast_possible_truncation, reason = "an swIPCMode")]
             let created = pool::create(
                 o.server().task_pool_ref(),
-                config.task_worker_num,
+                config.task_worker_num.get(),
                 key,
                 arg as c_int,
             );
@@ -2367,10 +2370,10 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let task_pool = o.server().task_pool_ref();
             pool::set_max_request(
                 task_pool,
-                config.task_max_request,
-                config.task_max_request_grace,
+                config.task_max_request.get(),
+                config.task_max_request_grace.get(),
             );
-            pool::set_start_id(task_pool, config.worker_num.cast_signed());
+            pool::set_start_id(task_pool, config.worker_num.get().cast_signed());
             pool::set_type(task_pool, SW_TASK_WORKER);
             0
         }
@@ -2785,18 +2788,18 @@ mod tests {
         // own outlives an op.
         unsafe {
             let config = (*state).config();
-            (*config).send_timeout = 2.5;
-            (*config).worker_num = 6;
+            (*config).send_timeout.set(2.5);
+            (*config).worker_num.set(6);
             assert_eq!(
                 answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT, 0),
                 Some(2.5f64.to_bits())
             );
             answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT_MIN, 0);
-            assert_eq!((*config).send_timeout, 0.001);
+            assert_eq!((*config).send_timeout.get(), 0.001);
             answer(&raw mut ctx, None, &*state, OP_CLEAR_SEND_YIELD, 0);
-            assert!(!(*config).send_yield);
+            assert!(!(*config).send_yield.get());
             answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
-            assert_eq!((*config).reactor_num, 6);
+            assert_eq!((*config).reactor_num.get(), 6);
             (*config).scheduler_warning.store(true, Relaxed);
             answer(&raw mut ctx, None, &*state, OP_WARNING_RESET, 7 << 1);
             assert!(!(*config).scheduler_warning.load(Relaxed));
@@ -2854,7 +2857,7 @@ mod tests {
         // SAFETY: a fresh state; every pointer the ops write is checked and freed below.
         unsafe {
             let config = &mut *(*state).config();
-            config.worker_num = 3;
+            config.worker_num.set(3);
             config.gs = Shm::calloc(1, size_of::<ServerCounters>());
             let gs = config.gs.as_ptr().cast::<ServerCounters>();
             gs.write(ServerCounters::default());

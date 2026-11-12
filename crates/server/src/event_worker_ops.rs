@@ -114,17 +114,19 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INFO_FD => ctx.info().fd.cast_unsigned(),
         OP_INFO_LEN => u64::from(ctx.info().len),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
-        OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request),
+        OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request.get()),
         OP_WORKER_ID => u64::from(ctx.worker().id()),
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
-        OP_ALL_CORE_WORKER_NUM => u64::from(config.worker_num) + u64::from(config.task_worker_num),
-        OP_WORKER_NUM => u64::from(config.worker_num),
-        OP_REACTOR_NUM => u64::from(config.reactor_num),
-        OP_RELOAD_ASYNC => u64::from(config.reload_async),
-        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
+        OP_ALL_CORE_WORKER_NUM => {
+            u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get())
+        }
+        OP_WORKER_NUM => u64::from(config.worker_num.get()),
+        OP_REACTOR_NUM => u64::from(config.reactor_num.get()),
+        OP_RELOAD_ASYNC => u64::from(config.reload_async.get()),
+        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
         OP_CO_DISPATCH => u64::from(
-            config.dispatch_mode == DISPATCH_CO_CONN_LB
-                || config.dispatch_mode == DISPATCH_CO_REQ_LB,
+            config.dispatch_mode.get() == DISPATCH_CO_CONN_LB
+                || config.dispatch_mode.get() == DISPATCH_CO_REQ_LB,
         ),
         OP_CURRENT_WORKER_ID => u64::from(swoole_get_worker_id()),
         OP_WORKER_EXISTS => {
@@ -215,7 +217,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CPU_AFFINITY =>
         {
             #[cfg(target_os = "linux")]
-            if ctx.config().open_cpu_affinity {
+            if ctx.config().open_cpu_affinity.get() {
                 set_cpu_affinity(ctx.config(), ctx.worker().id());
             }
         }

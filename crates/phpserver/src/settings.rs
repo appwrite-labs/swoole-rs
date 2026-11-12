@@ -83,8 +83,7 @@ mod field {
 
 /// `serv->reload_async = true` (`on_before_start` with coroutines on).
 pub(crate) fn set_reload_async(serv: view::Server<'_>) {
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    unsafe { serv.config_mut() }.reload_async = true;
+    serv.config().reload_async.set(true);
 }
 
 /// The Server field `id` (`field::*`), read as C++ reads it.
@@ -94,16 +93,16 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
     match id {
         f::STARTED => i64::from(serv.is_started()),
         f::WORKER_THREAD => i64::from(serv.is_worker_thread()),
-        f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency),
+        f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency.get()),
         f::MAX_CONCURRENCY => i64::from(
             serv.counters()
                 .max_concurrency
                 .load(core::sync::atomic::Ordering::Relaxed),
         ),
-        f::ENABLE_COROUTINE => i64::from(config.enable_coroutine),
-        f::DISPATCH_MODE => i64::from(config.dispatch_mode),
-        f::TASK_IPC_MODE => i64::from(config.task_ipc_mode),
-        f::TASK_ENABLE_COROUTINE => i64::from(config.task_enable_coroutine),
+        f::ENABLE_COROUTINE => i64::from(config.enable_coroutine.get()),
+        f::DISPATCH_MODE => i64::from(config.dispatch_mode.get()),
+        f::TASK_IPC_MODE => i64::from(config.task_ipc_mode.get()),
+        f::TASK_ENABLE_COROUTINE => i64::from(config.task_enable_coroutine.get()),
         f::CPU_NUM => i64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
         f::GLOBAL_ENABLE_COROUTINE => i64::from(swoole_rs_corebase::swr_v1_core_enable_coroutine()),
         f::PATH_MAX => i64::from(libc::PATH_MAX),
@@ -125,46 +124,43 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
 
 /// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
 ///
-/// # Safety
-/// `serv` has not started.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "C++'s implicit conversions of the int64_t setting to each field's type"
 )]
-unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
+fn apply(serv: view::Server<'_>, id: u32, v: i64) {
     use field as f;
-    // SAFETY: the server has not started, per the caller; nothing else holds its config.
-    let c = unsafe { serv.config_mut() };
+    let c = serv.config();
     let on = v != 0;
     // `0` is unlimited for both concurrency limits.
     let limit = if v as u32 == 0 { u32::MAX } else { v as u32 };
     match id {
-        f::DAEMONIZE => c.daemonize = on,
-        f::REACTOR_NUM => c.reactor_num = v as u16,
-        f::SINGLE_THREAD => c.single_thread = on,
-        f::WORKER_NUM => c.worker_num = v as u32,
-        f::MAX_WAIT_TIME => c.max_wait_time = v as u32,
-        f::MAX_QUEUED_BYTES => c.max_queued_bytes = v as u32,
+        f::DAEMONIZE => c.daemonize.set(on),
+        f::REACTOR_NUM => c.reactor_num.set(v as u16),
+        f::SINGLE_THREAD => c.single_thread.set(on),
+        f::WORKER_NUM => c.worker_num.set(v as u32),
+        f::MAX_WAIT_TIME => c.max_wait_time.set(v as u32),
+        f::MAX_QUEUED_BYTES => c.max_queued_bytes.set(v as u32),
         f::MAX_CONCURRENCY => serv
             .counters()
             .max_concurrency
             .store(limit, core::sync::atomic::Ordering::Relaxed),
-        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit,
-        f::ENABLE_COROUTINE => c.enable_coroutine = on,
-        f::DISPATCH_MODE => c.dispatch_mode = v as u8,
-        f::SEND_YIELD => c.send_yield = on,
-        f::DISCARD_TIMEOUT_REQUEST => c.discard_timeout_request = on,
-        f::ENABLE_UNSAFE_EVENT => c.enable_unsafe_event = on,
-        f::ENABLE_DELAY_RECEIVE => c.enable_delay_receive = on,
-        f::ENABLE_REUSE_PORT => c.enable_reuse_port = on,
-        f::TASK_OBJECT => c.task_object = on,
-        f::EVENT_OBJECT => c.event_object = on,
-        f::TASK_ENABLE_COROUTINE => c.task_enable_coroutine = on,
-        f::TASK_WORKER_NUM => c.task_worker_num = v as u32,
-        f::TASK_IPC_MODE => c.task_ipc_mode = v as u8,
-        f::TASK_MAX_REQUEST => c.task_max_request = v as u32,
-        f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
+        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency.set(limit),
+        f::ENABLE_COROUTINE => c.enable_coroutine.set(on),
+        f::DISPATCH_MODE => c.dispatch_mode.set(v as u8),
+        f::SEND_YIELD => c.send_yield.set(on),
+        f::DISCARD_TIMEOUT_REQUEST => c.discard_timeout_request.set(on),
+        f::ENABLE_UNSAFE_EVENT => c.enable_unsafe_event.set(on),
+        f::ENABLE_DELAY_RECEIVE => c.enable_delay_receive.set(on),
+        f::ENABLE_REUSE_PORT => c.enable_reuse_port.set(on),
+        f::TASK_OBJECT => c.task_object.set(on),
+        f::EVENT_OBJECT => c.event_object.set(on),
+        f::TASK_ENABLE_COROUTINE => c.task_enable_coroutine.set(on),
+        f::TASK_WORKER_NUM => c.task_worker_num.set(v as u32),
+        f::TASK_IPC_MODE => c.task_ipc_mode.set(v as u8),
+        f::TASK_MAX_REQUEST => c.task_max_request.set(v as u32),
+        f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace.set(v as u32),
         f::MAX_CONNECTION => server_methods::set_max_connection(serv, v as u32),
         f::START_SESSION_ID => {
             let round = v.min(i64::from(u32::MAX));
@@ -172,24 +168,24 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
                 .session_round
                 .store(round, core::sync::atomic::Ordering::Relaxed);
         }
-        f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
-        f::MAX_REQUEST => c.max_request = v as u32,
-        f::MAX_REQUEST_GRACE => c.max_request_grace = v as u32,
-        f::RELOAD_ASYNC => c.reload_async = on,
-        f::OPEN_CPU_AFFINITY => c.open_cpu_affinity = on,
-        f::HTTP_PARSE_COOKIE => c.http_parse_cookie = on,
-        f::HTTP_PARSE_POST => c.http_parse_post = on,
-        f::HTTP_PARSE_FILES => c.http_parse_files = on,
-        f::HTTP_COMPRESSION => c.http_compression = on,
-        f::HTTP_COMPRESSION_LEVEL => c.http_compression_level = v as u8,
-        f::COMPRESSION_MIN_LENGTH => c.compression_min_length = v as u32,
-        f::WEBSOCKET_COMPRESSION => c.websocket_compression = on,
-        f::UPLOAD_MAX_FILESIZE => c.upload_max_filesize = v as usize,
-        f::ENABLE_STATIC_HANDLER => c.enable_static_handler = on,
-        f::HTTP_AUTOINDEX => c.http_autoindex = on,
-        f::INPUT_BUFFER_SIZE => c.input_buffer_size = v as u32,
-        f::OUTPUT_BUFFER_SIZE => c.output_buffer_size = v as u32,
-        f::MESSAGE_QUEUE_KEY => c.message_queue_key = v as u64,
+        f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval.set(v as u16),
+        f::MAX_REQUEST => c.max_request.set(v as u32),
+        f::MAX_REQUEST_GRACE => c.max_request_grace.set(v as u32),
+        f::RELOAD_ASYNC => c.reload_async.set(on),
+        f::OPEN_CPU_AFFINITY => c.open_cpu_affinity.set(on),
+        f::HTTP_PARSE_COOKIE => c.http_parse_cookie.set(on),
+        f::HTTP_PARSE_POST => c.http_parse_post.set(on),
+        f::HTTP_PARSE_FILES => c.http_parse_files.set(on),
+        f::HTTP_COMPRESSION => c.http_compression.set(on),
+        f::HTTP_COMPRESSION_LEVEL => c.http_compression_level.set(v as u8),
+        f::COMPRESSION_MIN_LENGTH => c.compression_min_length.set(v as u32),
+        f::WEBSOCKET_COMPRESSION => c.websocket_compression.set(on),
+        f::UPLOAD_MAX_FILESIZE => c.upload_max_filesize.set(v as usize),
+        f::ENABLE_STATIC_HANDLER => c.enable_static_handler.set(on),
+        f::HTTP_AUTOINDEX => c.http_autoindex.set(on),
+        f::INPUT_BUFFER_SIZE => c.input_buffer_size.set(v as u32),
+        f::OUTPUT_BUFFER_SIZE => c.output_buffer_size.set(v as u32),
+        f::MESSAGE_QUEUE_KEY => c.message_queue_key.set(v as u64),
         _ => unreachable!("not a Server field: {id}"),
     }
 }
@@ -233,8 +229,7 @@ impl<'a> Settings<'a> {
     }
 
     fn set(&self, id: u32, value: i64) {
-        // SAFETY: a live server, not started (set() checked).
-        unsafe { apply(self.serv, id, value) };
+        apply(self.serv, id, value);
     }
 
     pub(crate) fn long(value: &Value) -> Result<i64, Stop> {
@@ -421,8 +416,7 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     if let Some(value) = s.get(c"send_timeout") {
         let v = value.double();
         checked()?;
-        // SAFETY: the live server being configured; nothing else holds its config.
-        unsafe { s.server().config_mut() }.send_timeout = v;
+        s.server().config().send_timeout.set(v);
     }
     s.clamped(c"dispatch_mode", f::DISPATCH_MODE, 0, i64::from(u8::MAX))?;
     match s.get(c"send_yield") {

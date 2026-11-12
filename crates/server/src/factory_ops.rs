@@ -186,7 +186,10 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv.raw();
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
-        for (manager, count) in [(false, c_int::from(config.reactor_num) + 1), (true, 2)] {
+        for (manager, count) in [
+            (false, c_int::from(config.reactor_num.get()) + 1),
+            (true, 2),
+        ] {
             let barrier = crate::server_object::barrier(ctx.server(), manager);
             if init {
                 swoole_rs_locks::barrier_init(barrier, manager, count);
@@ -201,7 +204,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_DELETE_REACTOR_THREADS => {
             // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
             unsafe {
-                ThreadRecord::delete_array(tables.reactor_threads, config.reactor_num.into());
+                ThreadRecord::delete_array(tables.reactor_threads, config.reactor_num.get().into());
             }
             0
         }
@@ -246,7 +249,8 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             info.server_fd = low16(swoole_get_worker_id().cast_signed());
             // `serv->get_reactor_pipe_socket(info.fd, info.reactor_id)`.
             let pipes = i64::from(tables.reactor_pipe_num);
-            let id = i64::from(info.reactor_id) + (info.fd % pipes) * i64::from(config.reactor_num);
+            let id = i64::from(info.reactor_id)
+                + (info.fd % pipes) * i64::from(config.reactor_num.get());
             // The worker serving that reactor's pipe, if the server has it.
             let Some(worker) = ctx.worker_at(worker_id(id.cast_unsigned())) else {
                 return Some(0);
@@ -272,12 +276,12 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
     let send = || &ctx.send().info;
     Some(match op {
         OP_MODE => u64::from(config.mode_),
-        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
-        OP_WORKER_NUM => u64::from(config.worker_num),
-        OP_OUTPUT_BUFFER_SIZE => u64::from(config.output_buffer_size),
-        OP_SEND_YIELD => u64::from(config.send_yield),
+        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
+        OP_WORKER_NUM => u64::from(config.worker_num.get()),
+        OP_OUTPUT_BUFFER_SIZE => u64::from(config.output_buffer_size.get()),
+        OP_SEND_YIELD => u64::from(config.send_yield.get()),
         OP_HASH_DISPATCH => u64::from(matches!(
-            config.dispatch_mode,
+            config.dispatch_mode.get(),
             DISPATCH_FDMOD | DISPATCH_IPMOD | DISPATCH_CO_CONN_LB
         )),
         OP_SEND_TYPE => u64::from(send().kind),
@@ -497,7 +501,8 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
-            tables_mut().reactor_threads = new_reactor_threads(ctx.state(), config.reactor_num);
+            tables_mut().reactor_threads =
+                new_reactor_threads(ctx.state(), config.reactor_num.get());
             0
         }
         OP_ALLOC_CONNECTIONS => {
@@ -518,7 +523,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SET_REACTOR_PIPE_NUM => {
-            let num = config.worker_num / u32::from(config.reactor_num);
+            let num = config.worker_num.get() / u32::from(config.reactor_num.get());
             tables_mut().reactor_pipe_num = u16::try_from(num & 0xffff).unwrap_or_default();
             0
         }

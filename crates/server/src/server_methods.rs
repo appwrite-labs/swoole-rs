@@ -526,7 +526,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
     // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
     let pipes = i64::from(state.tables_ref().reactor_pipe_num);
     let index = session_id % pipes;
-    let id = i64::from(conn.reactor_id()) + index * i64::from(config.reactor_num);
+    let id = i64::from(conn.reactor_id()) + index * i64::from(config.reactor_num.get());
     let id = u16::try_from(id).unwrap_or(u16::MAX);
     serv.worker_pipe(id, false)
         .is_some_and(|pipe| pipe.take_kernel_nobufs())
@@ -1095,8 +1095,8 @@ mod tests {
             (*config).gs =
                 swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
             (*config).workers = naming(&mut workers);
-            (*config).worker_num = 4;
-            (*config).reactor_num = 2;
+            (*config).worker_num.set(4);
+            (*config).reactor_num.set(2);
             let tables = &mut *(*state).tables();
             tables.connection_list = naming(&mut connections);
             tables.max_connection = 4;

@@ -244,7 +244,7 @@ fn fact(serv: view::Server<'_>, id: u32) -> bool {
 fn number(serv: view::Server<'_>, id: u32) -> i64 {
     let c = serv.config();
     // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
-    let hash_dispatch = matches!(c.dispatch_mode, 2 | 4 | 8);
+    let hash_dispatch = matches!(c.dispatch_mode.get(), 2 | 4 | 8);
     match id {
         fact::MODE => i64::from(c.mode_),
         fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),
@@ -253,17 +253,17 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::SHUTDOWN => i64::from(serv.counters().shutdown.load(Ordering::Relaxed) != 0),
         fact::MASTER => i64::from(crate::server::worker_type() == crate::server::MASTER),
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
-        fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine),
-        fact::SEND_YIELD => i64::from(c.send_yield),
+        fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
+        fact::SEND_YIELD => i64::from(c.send_yield.get()),
         fact::HAS_ON_CLOSE => {
             // SAFETY: a live server.
             i64::from(serv.has_callback(swoole_rs_server::callbacks::CB_CLOSE))
         }
-        fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event),
+        fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event.get()),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
-        fact::WORKER_NUM => i64::from(c.worker_num),
-        fact::TASK_WORKER_NUM => i64::from(c.task_worker_num),
-        fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size),
+        fact::WORKER_NUM => i64::from(c.worker_num.get()),
+        fact::TASK_WORKER_NUM => i64::from(c.task_worker_num.get()),
+        fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size.get()),
         fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         // SAFETY: a live server.
         fact::MAX_CONNECTION => i64::from(serv.max_connection()),
@@ -500,11 +500,11 @@ impl ServerData {
             return;
         };
         if owns_shared() {
-            // SAFETY: freeing the object on the one thread that owns the config's slots.
-            let dispatch = std::mem::replace(
-                &mut unsafe { server.config_mut() }.private_data_3,
-                ptr::null_mut(),
-            );
+            // Freed on the one thread that owns the config's slots.
+            let dispatch = server
+                .config()
+                .private_data_3
+                .swap(ptr::null_mut(), Ordering::Relaxed);
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
         let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);
@@ -802,10 +802,8 @@ fn construct(call: &Call) {
     let share = SharedServer::new(c_int::try_from(mode).unwrap_or_default());
     let server = share.view();
     if mode == MODE_BASE {
-        // SAFETY: nothing else holds the new server's config yet.
-        let config = unsafe { server.config_mut() };
-        config.reactor_num = 1;
-        config.worker_num = 1;
+        server.config().reactor_num.set(1);
+        server.config().worker_num.set(1);
     }
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         if server_methods::add_systemd_socket(server) <= 0 {
@@ -1404,7 +1402,7 @@ pub fn php_swoole_server_send_yield(
             return Ok(false);
         };
         waiters.borrow_mut().push_back((token, co));
-        let timeout = server.config().send_timeout;
+        let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
         if !swoole_rs_phpcoroutines::suspend_for(timeout) {
             waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);

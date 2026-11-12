@@ -428,8 +428,7 @@ impl Source for Zend<'_> {
     }
 
     fn single_thread(&self) {
-        // SAFETY: the live server being configured; nothing else holds its config.
-        unsafe { self.settings.server().config_mut() }.single_thread = true;
+        self.settings.server().config().single_thread.set(true);
     }
 
     fn length_func(&self) -> GetPackageLength {

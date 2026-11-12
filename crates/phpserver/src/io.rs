@@ -310,7 +310,8 @@ fn send_message(call: &Call) {
         return call.set_bool(false);
     }
     let config = serv.config();
-    let core_worker_num = i64::from(config.worker_num) + i64::from(config.task_worker_num);
+    let core_worker_num =
+        i64::from(config.worker_num.get()) + i64::from(config.task_worker_num.get());
     if worker_id < 0 || worker_id >= core_worker_num {
         #[expect(
             clippy::cast_possible_truncation,
@@ -344,7 +345,7 @@ fn send_message(call: &Call) {
 
 fn finish(call: &Call) {
     let Some(serv) = running(call) else { return };
-    if serv.config().task_enable_coroutine {
+    if serv.config().task_enable_coroutine.get() {
         // An `E_ERROR`: its bailout waits for the handler's last step.
         fatal(
             E_ERROR,

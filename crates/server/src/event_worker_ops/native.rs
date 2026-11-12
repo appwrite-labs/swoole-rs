@@ -562,7 +562,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
     let pipes = c_long::from(ctx.tables().reactor_pipe_num);
     let id = c_long::from(head.reactor_id)
-        + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num);
+        + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num.get());
     let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
         return -1;
     };
