@@ -68,7 +68,8 @@ pub struct PoolRecord {
     pub on_worker_message: Option<EventFn>,
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
-    pub round_id: u32,
+    /// The round robin's next worker, which other processes update atomically.
+    pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
     pub(crate) pipes: *mut c_void,
     // `worker_num` and the pointers from `workers` on are crate-private, like
@@ -1359,13 +1360,7 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::schedule`: the next idle worker, round robin; the last one
     /// tried, with the scheduler warning set, when all are busy.
     fn schedule(&mut self) -> u32 {
-        let round = self
-            .p
-            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
-            .cast::<u32>();
-        // SAFETY: the live pool's aligned counter, which other processes update
-        // atomically.
-        let round = unsafe { AtomicU32::from_ptr(round) };
+        let round = &self.record().round_id;
         let (target, warning) = crate::pool::pool_schedule(self.worker_num(), round, |target| {
             crate::pool::idle(self.worker_at(target))
         });
