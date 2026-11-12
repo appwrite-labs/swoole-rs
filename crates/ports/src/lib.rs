@@ -149,9 +149,8 @@ const EVENTS: &[(&[u8], &[u8])] = &[
 ];
 /// Complete immutable PHP Port declaration metadata. Names share the existing
 /// event catalog; no Zend pointer or mutable class/property registry enters Rust.
-#[repr(C)]
 pub struct PortsProperty {
-    pub name: PortsSpan,
+    pub name: &'static [u8],
     pub value: i64,
     pub kind: u32,
     pub private: u32,
@@ -179,20 +178,14 @@ pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
             (name, kind, value, 0)
         } else {
             return PortsProperty {
-                name: PortsSpan {
-                    data: std::ptr::null(),
-                    len: 0,
-                },
+                name: b"",
                 value: 0,
                 kind: 0,
                 private: 0,
             };
         };
     PortsProperty {
-        name: PortsSpan {
-            data: name.as_ptr(),
-            len: name.len(),
-        },
+        name,
         value,
         kind,
         private,

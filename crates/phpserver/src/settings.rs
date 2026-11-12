@@ -12,7 +12,7 @@ use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
-    sys::{swr_zend_callable_warning, swr_zend_try_facade_update},
+    sys::swr_zend_callable_warning,
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -468,14 +468,8 @@ fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
 /// (uncounted, as upstream's `server_object->init_arguments = *ztmp`).
 fn thread_options(s: &Settings, this: ServerObject) -> Step {
     if let Some(value) = s.get(c"bootstrap") {
-        let (ce, object) = (this.class(), this.raw());
-        // SAFETY: `$this` of its class and a live value, which the property
-        // copies; the shim traps a bailout.
-        let bailed = unsafe {
-            swr_zend_try_facade_update(ce, object, c"bootstrap".as_ptr(), 9, value.as_ptr())
-        };
-        if bailed != 0 {
-            bailout::Bailout.defer();
+        crate::lifecycle::Props::own(this).set(c"bootstrap", value);
+        if bailout::pending() {
             return Err(Stop);
         }
     }

@@ -881,11 +881,12 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         send_wake(session_id, true);
     }
     let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
-    let Some(conn) = server.by_session(session_id).map(ptr::from_mut) else {
+    let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    // SAFETY: the session's live connection slot.
-    if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
+    let websocket_status = conn.websocket_status;
+    let conn = ptr::from_mut(conn);
+    if websocket_status != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
         if websocket
