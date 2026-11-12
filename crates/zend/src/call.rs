@@ -167,8 +167,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn class_name(&self) -> Option<&CStr> {
-        // SAFETY: the frame holds `$this` for the call, and its class outlives it.
-        Some(unsafe { crate::class_name(self.this_object()?) })
+        self.this_value()?.class_name()
     }
 
     /// Property writes on `$this` under `scope` (`None` for none), or None

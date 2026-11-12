@@ -52,8 +52,8 @@ fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
 /// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
 /// raised from the handler, which owns nothing.
 fn port_call(call: &Call, method: &[u8], args: &[&Value]) -> Owned {
-    let mut port = crate::lifecycle::ServerObject::this(call).port(0);
-    match Value::of(&mut port).call_method(Some(&crate::PORT), method, args) {
+    let port = crate::lifecycle::ServerObject::this(call).port(0);
+    match port.call_method(Some(&crate::PORT), method, args) {
         Ok(result) => result,
         Err(bailout) => {
             bailout.defer();

@@ -151,7 +151,9 @@ pub(crate) fn invoke(
 fn failed(event: &str) -> Called {
     set_last_error(SW_ERROR_PHP_RUNTIME_NOTICE);
     if crate::server::display_errors() {
-        let name = crate::lifecycle::class(ServerObject::running());
+        let held = ServerObject::running();
+        let object = held.as_deref().and_then(ServerObject::of);
+        let name = object.map(crate::lifecycle::class).unwrap_or_default();
         let text = message!("{name}->{event} handler error");
         if report(E_WARNING, text.as_cstr()).is_err() {
             return Called::Bailout;
@@ -240,7 +242,7 @@ fn prepare_worker(server: view::Server<'_>) {
 /// that takes no reference.
 #[must_use]
 pub fn zserv() -> zval {
-    ServerObject::running().zval()
+    crate::instance::server_zval()
 }
 
 pub(crate) fn dtor(value: &mut zval) {
@@ -468,18 +470,29 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
     let Some((event, helper_name, coroutine)) = lifecycle(kind) else {
         return false;
     };
+    // An event with no server object to hand PHP (the object is being freed,
+    // which shuts down a server still running) calls nothing.
+    if ServerObject::running().is_none() {
+        return false;
+    }
     let cb = crate::lifecycle::callback(kind);
     let facts = facts(server);
     let mut args = [zserv(), long_zval(worker_id)];
-    let props = Props::server(ServerObject::running());
-    if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
-        props.long(c"master_pid", facts.master_pid);
-        props.long(c"manager_pid", facts.manager_pid);
+    {
+        // The running server's object, held only for these writes.
+        let held = ServerObject::running();
+        let props = Props::running(held.as_deref());
+        if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
+            props.long(c"master_pid", facts.master_pid);
+            props.long(c"manager_pid", facts.manager_pid);
+        }
+        if kind == ON_WORKER_START {
+            props.long(c"worker_id", worker_id);
+            props.bool(c"taskworker", facts.task_worker);
+            props.long(c"worker_pid", i64::from(std::process::id()));
+        }
     }
     if kind == ON_WORKER_START {
-        props.long(c"worker_id", worker_id);
-        props.bool(c"taskworker", facts.task_worker);
-        props.long(c"worker_pid", i64::from(std::process::id()));
         prepare_worker(server);
     }
     let argc = if matches!(kind, ON_WORKER_START | ON_WORKER_STOP | ON_WORKER_EXIT) {
@@ -946,11 +959,11 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     let id = i64::from(worker.id());
     let config = server.config();
-    let server_object = crate::lifecycle::ServerObject::running();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
         let index = id - i64::from(config.worker_num) - i64::from(config.task_worker_num);
         let index = usize::try_from(index).unwrap_or(usize::MAX);
-        let process = server_object.user_process(index);
+        let process = ServerObject::with_running(|object| object.user_process(index));
+        let process = process.unwrap_or(ptr::null_mut());
         // A user worker: just the message bus allocator.
         prepare_worker(server);
         process
@@ -966,15 +979,19 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
         props.long(c"id", id);
     }
     let gs = server.counters();
-    let props = Props::server(server_object);
-    props.long(
-        c"master_pid",
-        i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
-    );
-    props.long(
-        c"manager_pid",
-        i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
-    );
+    {
+        // The running server's object, held only for these writes.
+        let held = ServerObject::running();
+        let props = Props::running(held.as_deref());
+        props.long(
+            c"master_pid",
+            i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
+        );
+        props.long(
+            c"manager_pid",
+            i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
+        );
+    }
     if let Some(process) = process {
         // This frame owns nothing that needs a drop, as the process exits through a
         // bailout.

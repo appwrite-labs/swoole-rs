@@ -158,11 +158,8 @@ struct Connection {
 pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
     let server = php_swoole_server_of(object);
     if server.is_none() {
-        // SAFETY: a live object, which the value holds; its class outlives it.
-        let name = object
-            .object()
-            .map(|object| unsafe { swoole_rs_zend::class_name(object) });
-        let name = name.map(CStr::to_string_lossy).unwrap_or_default();
+        let name = object.class_name().map(CStr::to_string_lossy);
+        let name = name.unwrap_or_default();
         let message = format!("Invalid instance of {name}");
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = std::ffi::CString::new(message).unwrap_or_default();

@@ -357,15 +357,17 @@ fn set(call: &Call) {
 
 /// `$this->ports[0]->set($settings)` (Port's own method), then the merge into
 /// `$this->setting`.
-fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
-    let mut port = this.port(0);
-    drop(Value::of(&mut port).call_method(Some(&crate::PORT), b"set", &[settings])?);
+fn finish(this: ServerObject<'_>, settings: &Value) -> Result<(), bailout::Bailout> {
+    drop(
+        this.port(0)
+            .call_method(Some(&crate::PORT), b"set", &[settings])?,
+    );
     crate::lifecycle::Props::server(this).merge(c"setting", settings);
     bailout::outcome(())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.
-fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
+fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     use field as f;
     // php_swoole_set_global_option, _coroutine_option and _aio_option; the
     // first defers its fatal error for a size that does not parse.
@@ -462,9 +464,8 @@ fn options(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
     http(s, this)
 }
 
-/// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object
-/// (uncounted, as upstream's `server_object->init_arguments = *ztmp`).
-fn thread_options(s: &Settings, this: ServerObject) -> Step {
+/// `bootstrap` into `$this->bootstrap`, and `init_arguments` kept on the object.
+fn thread_options(s: &Settings, this: ServerObject<'_>) -> Step {
     if let Some(value) = s.get(c"bootstrap") {
         crate::lifecycle::Props::own(this).set(c"bootstrap", value);
         if bailout::pending() {
@@ -472,8 +473,6 @@ fn thread_options(s: &Settings, this: ServerObject) -> Step {
         }
     }
     if let Some(value) = s.get(c"init_arguments") {
-        // SAFETY: a live value.
-        let value = unsafe { value.as_ptr().read() };
         this.set_init_arguments(value);
     }
     Ok(())
@@ -624,7 +623,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
 }
 
 /// The HTTP, buffer, queue and thread options, and the final checks.
-fn http(s: &Settings, this: ServerObject) -> Result<bool, Stop> {
+fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     use field as f;
     s.flag(c"http_parse_cookie", f::HTTP_PARSE_COOKIE);
     s.flag(c"http_parse_post", f::HTTP_PARSE_POST);

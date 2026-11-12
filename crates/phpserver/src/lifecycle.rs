@@ -5,13 +5,12 @@
 //! `addCommand` and `command`.
 use crate::{
     callable::Callable,
-    server::{SERVER, ServerData, fatal, running, server},
+    server::{SERVER, fatal, running, server},
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::{HashMap, VecDeque},
     ffi::{CStr, CString, c_int, c_void},
-    marker::PhantomData,
     ptr,
     rc::{Rc, Weak},
     sync::atomic::Ordering,
@@ -21,13 +20,9 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
-    ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
-    class_name, message, report,
-    sys::{
-        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_NULL, IS_OBJECT_EX,
-        swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zend_object,
-        zend_object_std_dtor, zend_value, zval,
-    },
+    ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
+    bailout, message, report,
+    sys::{swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zval},
 };
 
 /// `SWR_PHPSERVER_FACT_*`.
@@ -145,7 +140,7 @@ fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> 
 }
 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
-fn kind(object: ServerObject) -> c_int {
+fn kind(object: ServerObject<'_>) -> c_int {
     let ce = object.class();
     let redis = crate::server::REDIS_SERVER.entry();
     let http = swoole_rs_phpswoole::families().map(|families| &families.http);
@@ -220,8 +215,8 @@ type SendWaiters = HashMap<i64, Waiters>;
 
 /// What upstream's `ServerProperty` held.
 pub(crate) struct Property {
-    /// The Port objects, borrowed from `$server->ports`.
-    ports: Vec<*mut zend_object>,
+    /// The Port objects, each held by a reference of its own.
+    ports: Vec<Owned>,
     /// Server-level callbacks by type.
     callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
@@ -241,9 +236,9 @@ impl Default for Property {
     /// destructors into tests that have no PHP.
     fn default() -> Self {
         Self {
-            ports: Vec::new(),
             send_waiters: SendWaiters::default(),
             send_token: 0,
+            ports: const { Vec::new() },
             callbacks: [const { None }; CALLBACKS],
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
@@ -303,114 +298,145 @@ extern "C" fn php_memory() -> usize {
     unsafe { swoole_rs_zend::sys::zend_memory_usage(true) }
 }
 
-/// A live Server object, which `create` made, for as long as the handle is used:
-/// its `ServerData` and the `Property` `create` boxed. Each method borrows them
-/// only for its own body, and `property`'s closures call nothing that reaches them.
+/// What a Server object embeds: its share in its server, none until `__construct`
+/// binds one, what upstream's `ServerProperty` held, and the `init_arguments`
+/// setting, null until `set()` gives one. Methods, and PHP code they run, share
+/// it, so each field is a cell borrowed only for one access.
+pub(crate) struct ServerData {
+    serv: OnceCell<SharedServer>,
+    property: RefCell<Property>,
+    init_arguments: RefCell<Owned>,
+    /// What `instance::set_server_object` marked the object with when it became
+    /// its thread's running one; 0 for an object that never was.
+    mark: Cell<u64>,
+}
+
+impl Custom for ServerData {
+    fn class() -> &'static CustomClass<Self> {
+        &SERVER
+    }
+
+    /// An unbound server.
+    fn new() -> Self {
+        Self {
+            serv: OnceCell::new(),
+            property: RefCell::default(),
+            init_arguments: RefCell::new(Owned::null()),
+            mark: Cell::new(0),
+        }
+    }
+    const DESTRUCTS: bool = true;
+
+    /// Once the object's last reference went, its releases run here, while it
+    /// is still live: PHP code they run (a user process's destructor, say) can
+    /// reach the object through a `Connection\Iterator`, as upstream's can. An
+    /// object destructed at shutdown while something still holds it keeps what
+    /// it has until it is freed.
+    fn destruct(&self, last: bool) {
+        if last {
+            self.release();
+        }
+    }
+}
+
+/// A Server object and its data, for as long as the value holding it is borrowed.
 #[derive(Clone, Copy)]
-pub(crate) struct ServerObject(*mut zend_object);
+pub(crate) struct ServerObject<'a> {
+    value: &'a Value,
+    data: &'a ServerData,
+}
 
-impl ServerObject {
-    /// A Server method's `$this`: the Server class's methods run on its live objects.
-    pub(crate) fn this(call: &Call) -> Self {
-        Self(call.this())
+impl<'a> ServerObject<'a> {
+    /// A Server method's `$this`: the Server class's methods run on its objects.
+    /// Anything else is an `E_ERROR`, which does not return; the frames own nothing.
+    pub(crate) fn this(call: &'a Call) -> Self {
+        call.this_value().and_then(Self::of).unwrap_or_else(|| {
+            crate::server::invalid(crate::server::this_class(call));
+            // The `E_ERROR` bailed out of this frame.
+            std::process::abort()
+        })
     }
 
-    /// The running server's object (`php_swoole_server_zval_ptr`), which
-    /// outlives its running server.
-    pub(crate) fn running() -> Self {
-        Self(crate::instance::server_object())
+    /// The running server's object (`php_swoole_server_zval_ptr`) with a
+    /// reference of its own, for [`ServerObject::of`]; none before one is bound
+    /// and once it is being freed.
+    pub(crate) fn running() -> Option<Owned> {
+        crate::instance::server_object()
     }
 
-    /// The Server object `value` holds, if it is one: only [`create`] makes
-    /// objects with the Server class's handlers. The value keeps it live.
-    pub(crate) fn of(value: &Value) -> Option<Self> {
-        value.object_of(&SERVER).map(Self)
+    /// `f` over the running server's object, if there is one.
+    pub(crate) fn with_running<R>(f: impl FnOnce(ServerObject<'_>) -> R) -> Option<R> {
+        let held = Self::running()?;
+        Some(f(ServerObject::of(&held)?))
     }
 
-    pub(crate) fn raw(self) -> *mut zend_object {
-        self.0
+    /// The Server object `value` holds, if it is one.
+    pub(crate) fn of(value: &'a Value) -> Option<Self> {
+        let data = value.custom()?;
+        Some(Self { value, data })
     }
 
-    /// The object as a zval that takes no reference (`ZVAL_OBJ` without
-    /// `GC_ADDREF`), as upstream's `*zserv` copies are; undefined for no object.
-    /// The handle keeps the object live while the zval is used.
-    pub(crate) fn zval(self) -> zval {
-        object_zval(self.0)
+    /// The value holding the object.
+    pub(crate) fn value(self) -> &'a Value {
+        self.value
     }
 
     /// The object's class.
     pub(crate) fn class(self) -> *mut zend_class_entry {
-        let mut this = self.zval();
-        Value::of(&mut this).class().unwrap_or(ptr::null_mut())
+        self.value.class().unwrap_or(ptr::null_mut())
     }
 
-    /// The object's data, borrowed only by the method that asks for it.
-    fn data<'a>(self) -> &'a mut ServerData {
-        // SAFETY: a live Server object, which Rust allocates as `Object<ServerData>`;
-        // each method's borrow ends with its body.
-        unsafe { Object::<ServerData>::data(self.0) }
-    }
-
-    /// The bound `Server`, or none before `__construct`, borrowed for as long as
-    /// the handle is: the handle's contract keeps the object, and so its share, live.
-    pub(crate) fn server(&self) -> Option<view::Server<'_>> {
-        self.data().serv.as_ref().map(SharedServer::view)
+    /// The bound `Server`, or none before `__construct`.
+    pub(crate) fn server(self) -> Option<view::Server<'a>> {
+        self.data.serv.get().map(SharedServer::view)
     }
 
     /// [`ServerObject::server`] of a Server method's `$this`, which the call holds.
     pub(crate) fn this_server(call: &Call) -> Option<view::Server<'_>> {
-        Self::this(call)
-            .data()
+        call.custom::<ServerData>()?
             .serv
-            .as_ref()
+            .get()
             .map(SharedServer::view)
     }
 
     /// [`ServerObject::server`] of the Server object `value` holds, if it is one.
-    pub(crate) fn server_of(value: &Value) -> Option<view::Server<'_>> {
-        Self::of(value)?
-            .data()
-            .serv
-            .as_ref()
-            .map(SharedServer::view)
+    pub(crate) fn server_of(value: &'a Value) -> Option<view::Server<'a>> {
+        Self::of(value)?.server()
     }
 
     /// A share in the bound `Server`, for an object that names it.
     pub(crate) fn share(self) -> Option<SharedServer> {
-        self.data().serv.clone()
+        self.data.serv.get().cloned()
     }
 
-    /// The object's own share, which leaves it unbound.
-    fn take_serv(self) -> Option<SharedServer> {
-        self.data().serv.take()
+    /// The running object's mark (`instance::set_server_object`); 0 without one.
+    pub(crate) fn mark(self) -> u64 {
+        self.data.mark.get()
     }
 
+    pub(crate) fn set_mark(self, mark: u64) {
+        self.data.mark.set(mark);
+    }
+
+    /// `__construct` binds the object to its server, once.
     fn set_serv(self, serv: SharedServer) {
-        self.data().serv = Some(serv);
+        self.data.serv.get_or_init(|| serv);
     }
 
-    /// `init_arguments` as the object holds it (no reference taken).
-    pub(crate) fn init_arguments(self) -> zval {
-        self.data().init_arguments
+    /// `init_arguments`, with a reference of its own; null without one.
+    pub(crate) fn init_arguments(self) -> Owned {
+        self.data.init_arguments.borrow().copy()
     }
 
-    pub(crate) fn set_init_arguments(self, value: zval) {
-        self.data().init_arguments = value;
-    }
-
-    /// The property `create` boxed, which leaves the object without one (`free`'s,
-    /// last); none once taken.
-    fn take_property(self) -> Option<Box<Property>> {
-        self.data().property.take()
+    /// Keep `value` as `init_arguments`; the one it replaces is released after
+    /// the borrow ends, since releasing it can run PHP code.
+    pub(crate) fn set_init_arguments(self, value: &Value) {
+        drop(self.data.init_arguments.replace(value.copy()));
     }
 
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
-        // `create` set the property and only `free` takes it, last.
-        let Some(property) = self.data().property.as_deref_mut() else {
-            std::process::abort()
-        };
-        f(property)
+        f(&mut self.data.property.borrow_mut())
     }
 
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
@@ -444,14 +470,16 @@ impl ServerObject {
         true
     }
 
-    /// The Port object at `index` (`property->ports.at(index)`) as an uncounted
-    /// zval, undefined for none: `add_port` keeps each in `$server->ports`, which
-    /// holds it while the Server object lives.
-    pub(crate) fn port(self, index: usize) -> zval {
-        object_zval(
-            self.property(|p| p.ports.get(index).copied())
-                .unwrap_or(ptr::null_mut()),
-        )
+    /// The Port object at `index` (`property->ports.at(index)`), with a
+    /// reference of its own; undefined for none.
+    pub(crate) fn port(self, index: usize) -> Owned {
+        self.property(|p| p.ports.get(index).map(|port| port.copy()))
+            .unwrap_or_default()
+    }
+
+    /// The Port objects, each with a reference of its own.
+    fn ports(self) -> Vec<Owned> {
+        self.property(|p| p.ports.iter().map(|port| port.copy()).collect())
     }
 
     /// The user process at `index`, or null.
@@ -461,38 +489,10 @@ impl ServerObject {
     }
 }
 
-/// `ZVAL_OBJ(object)` without `GC_ADDREF`, undefined for null; only for an
-/// object a [`ServerObject`] (or its property) keeps live while the zval is used.
-fn object_zval(object: *mut zend_object) -> zval {
-    if object.is_null() {
-        return swoole_rs_zend::UNDEF;
-    }
-    zval {
-        value: zend_value { obj: object },
-        u1: _zval_struct__bindgen_ty_1 {
-            type_info: IS_OBJECT_EX,
-        },
-        u2: _zval_struct__bindgen_ty_2 { next: 0 },
-    }
-}
-
 /// `server_object->get_callback(kind)`: the callable, a reference the call holds, or none.
 pub(crate) fn callback(kind: c_int) -> Option<Callable> {
-    ServerObject::running().callback(usize::try_from(kind).unwrap_or(CALLBACKS))
-}
-
-/// The Server class's `create_object`.
-/// # Safety
-/// Zend creates an object of the Server class or a subclass.
-pub(crate) unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: per the caller; all-zero `ServerData` is an unbound server.
-    let object = unsafe { Object::<ServerData>::create(&SERVER, ce) };
-    // SAFETY: the object just created.
-    let data = unsafe { Object::<ServerData>::data(object) };
-    data.property = Some(Box::default());
-    // ZVAL_NULL(&init_arguments)
-    data.init_arguments.u1.type_info = IS_NULL;
-    object
+    let kind = usize::try_from(kind).unwrap_or(CALLBACKS);
+    ServerObject::with_running(|object| object.callback(kind)).flatten()
 }
 
 /// Whether this thread releases the callables stored on the native server and its
@@ -505,59 +505,67 @@ pub(crate) fn owns_shared() -> bool {
     swoole_rs_corebase::thread_kind() != THREAD_WORKER
 }
 
-/// The Server class's `free_obj`.
-/// # Safety
-/// Zend frees a Server object.
-pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
-    bailout::finish_after(|| {
-        // A share of its own in the object's server, which outlives the object's.
-        let handle = ServerObject(object);
-        let share = handle.share();
-        if let Some(server) = share.as_ref().map(SharedServer::view) {
-            if owns_shared() {
-                // SAFETY: freeing the object on the one thread that owns the config's slots.
-                let dispatch = std::mem::replace(
-                    &mut unsafe { server.config_mut() }.private_data_3,
-                    ptr::null_mut(),
-                );
-                bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
-            }
-            // Each out of the object before it drops: the destructors can run PHP code
-            // that reaches the object (a `Connection\Iterator` calls its methods), so
-            // its data is borrowed per access, and the property stays until the end.
-            drop(handle.property(|p| std::mem::take(&mut p.callbacks)));
-            // `sw_zval_free`: each copy's reference goes.
-            drop(handle.property(|p| std::mem::take(&mut p.user_processes)));
-            for port in handle.property(|p| p.ports.clone()) {
-                // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
-                unsafe { crate::port::deref(port) };
-            }
-            drop(handle.take_serv());
+impl ServerData {
+    /// `php_swoole_server_free_object`'s releases: the `dispatch_func` callable,
+    /// the callbacks, the user processes, the ports' links and the commands.
+    /// Each goes out of the object before it drops, since its destructor can
+    /// run PHP code that reaches the object (a `Connection\Iterator` calls the
+    /// server's methods). Nothing the second time.
+    fn release(&self) {
+        let Some(server) = self.serv.get().map(SharedServer::view) else {
+            return;
+        };
+        if owns_shared() {
+            // SAFETY: freeing the object on the one thread that owns the config's slots.
+            let dispatch = std::mem::replace(
+                &mut unsafe { server.config_mut() }.private_data_3,
+                ptr::null_mut(),
+            );
+            bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        // The commands' callables go with it.
-        drop(handle.take_property());
-        // SAFETY: the object Zend is freeing.
-        unsafe { zend_object_std_dtor(object) };
-        if let Some(share) = share {
-            let server = share.view();
-            if fact(server, fact::MASTER) {
-                crate::thread::free_setting(server);
-                // Its shutdown callbacks run now, while they can reach this object.
-                // The server is deleted with its last share: here, unless a Port,
-                // an iterator or a task PHP still holds names it.
-                server_methods::destroy_running(server);
-            } else if owns_shared() {
-                // Never started, or a base-mode start returned: upstream keeps it to the
-                // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
-                let orphan = !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null();
-                kept().push((share, orphan));
-            }
-            // A worker thread's share in the master's server just goes.
+        let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);
+        drop(callbacks);
+        // `sw_zval_free`: each copy's reference goes.
+        let processes = std::mem::take(&mut self.property.borrow_mut().user_processes);
+        drop(processes);
+        let ports = std::mem::take(&mut self.property.borrow_mut().ports);
+        for port in ports {
+            crate::port::release(&port);
         }
-    });
+        let commands = std::mem::take(&mut self.property.borrow_mut().commands);
+        drop(commands);
+    }
 }
 
-/// The shares [`free`] leaves to [`php_swoole_server_mshutdown`], and those a failed
+impl Drop for ServerData {
+    /// The rest of `php_swoole_server_free_object`, before Zend releases the
+    /// object's properties: what [`Custom::destruct`] left (it is skipped for an
+    /// object PHP never destructs), then the object's share in its server. The
+    /// object is no longer the running one, so the callbacks this runs find none.
+    fn drop(&mut self) {
+        self.release();
+        let Some(share) = self.serv.take() else {
+            return;
+        };
+        let server = share.view();
+        if fact(server, fact::MASTER) {
+            crate::thread::free_setting(server);
+            // Its shutdown callbacks run now, as they did before the delete. The
+            // server is deleted with its last share: when Zend releases this
+            // object's ports and iterator, unless PHP still holds a Port, an
+            // iterator or a task that names it.
+            server_methods::destroy_running(server);
+        } else if owns_shared() {
+            // Never started, or a base-mode start returned: upstream keeps it to the
+            // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
+            let orphan = !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null();
+            kept().push((share, orphan));
+        }
+        // A worker thread's share in the master's server just goes.
+    }
+}
+
+/// The shares a freed Server object leaves to [`php_swoole_server_mshutdown`], and those a failed
 /// `__construct` never bound: upstream keeps their servers, as `SwooleG.server` too.
 /// Each is true when MSHUTDOWN deletes its server.
 fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
@@ -580,32 +588,31 @@ pub extern "C" fn php_swoole_server_mshutdown() {
     }
 }
 
-/// A live object and a class declaring the properties written, for as long as
-/// the handle is used; one [`Props::init`] makes borrows the zval holding it.
-/// Zend copies every name and value.
+/// Property writes on an object, under a class that sees them, while the value
+/// holding the object is borrowed; nothing is written for a value that holds
+/// none. Zend copies every name and value.
 #[derive(Clone, Copy)]
-pub(crate) struct Props<'a>(
-    *mut zend_class_entry,
-    *mut zend_object,
-    PhantomData<&'a zval>,
-);
+pub(crate) struct Props<'a>(Option<swoole_rs_zend::Props<'a>>);
 
-impl Props<'static> {
+impl<'a> Props<'a> {
     /// A Server object, under the Server class.
-    pub(crate) fn server(object: ServerObject) -> Self {
-        Self(SERVER.entry(), object.raw(), PhantomData)
+    pub(crate) fn server(object: ServerObject<'a>) -> Self {
+        Self(object.value.props(Some(&SERVER)))
+    }
+
+    /// The running server's object `held` holds, under the Server class.
+    pub(crate) fn running(held: Option<&'a Value>) -> Self {
+        Self(held.and_then(|held| held.props(Some(&SERVER))))
     }
 
     /// A Server object, under its own class.
-    pub(crate) fn own(object: ServerObject) -> Self {
-        Self(object.class(), object.raw(), PhantomData)
+    pub(crate) fn own(object: ServerObject<'a>) -> Self {
+        Self(object.value.props(None).map(swoole_rs_zend::Props::own))
     }
-}
 
-impl<'a> Props<'a> {
     /// The object `value` holds, under its own class, for as long as `value` is borrowed.
     fn of_value(value: &'a Value) -> Option<Self> {
-        Some(Self(value.class()?, value.object()?, PhantomData))
+        Some(Self(Some(value.props(None)?.own())))
     }
 
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
@@ -613,44 +620,56 @@ impl<'a> Props<'a> {
     /// instantiates every registered data class.
     pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
         *target = class.create_object().into_zval();
-        let object = Value::of(target).object().unwrap_or(ptr::null_mut());
-        Self(class.entry(), object, PhantomData)
+        Self(Value::of(target).props(Some(class)))
     }
 
     /// The same handle as crates/zend's, whose writes defer a bailout.
-    fn zend(self) -> swoole_rs_zend::Props<'a> {
-        // SAFETY: the handle's live object and class.
-        unsafe { swoole_rs_zend::Props::new(self.0, self.1) }
+    fn zend(self) -> Option<swoole_rs_zend::Props<'a>> {
+        self.0
     }
 
     pub(crate) fn long(self, name: &CStr, value: i64) {
-        self.zend().long(name, value);
+        if let Some(props) = self.0 {
+            props.long(name, value);
+        }
     }
 
     pub(crate) fn double(self, name: &CStr, value: f64) {
-        self.zend().value(name, &Owned::double(value));
+        if let Some(props) = self.0 {
+            props.value(name, &Owned::double(value));
+        }
     }
 
     pub(crate) fn string(self, name: &CStr, value: &CStr) {
-        self.zend().bytes(name, value.to_bytes());
+        if let Some(props) = self.0 {
+            props.bytes(name, value.to_bytes());
+        }
     }
 
     pub(crate) fn bytes(self, name: &CStr, value: &[u8]) {
-        self.zend().bytes(name, value);
+        if let Some(props) = self.0 {
+            props.bytes(name, value);
+        }
     }
 
     pub(crate) fn bool(self, name: &CStr, value: bool) {
-        self.zend().bool(name, value);
+        if let Some(props) = self.0 {
+            props.bool(name, value);
+        }
     }
 
     /// The property takes a copy of a live value.
     pub(crate) fn set(self, name: &CStr, value: &Value) {
-        self.zend().value(name, value);
+        if let Some(props) = self.0 {
+            props.value(name, value);
+        }
     }
 
     /// `set()`'s `php_array_merge` of `settings` into the array property `name`.
     pub(crate) fn merge(self, name: &CStr, settings: &Value) {
-        self.zend().merge(name, settings);
+        if let Some(props) = self.0 {
+            props.merge(name, settings);
+        }
     }
 
     pub(crate) fn value(self, name: &CStr, value: &mut zval) {
@@ -678,7 +697,7 @@ impl<'a> Props<'a> {
 /// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server
 /// object and appended to `$server->ports`; undefined unless `port` is one of
 /// the object's server's ports.
-pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
+pub(crate) fn add_port(object: ServerObject<'_>, port: view::Port<'_>) -> Owned {
     let Some(serv) = object.share() else {
         return Owned::default();
     };
@@ -690,17 +709,18 @@ pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
     {
         return Owned::default();
     }
-    let (zport, port_object) = crate::port::new_object(serv.clone(), port);
-    object.property(|p| p.ports.push(port_object));
+    let zport = crate::port::new_object(serv.clone(), port);
+    let kept = zport.copy();
+    object.property(|p| p.ports.push(kept));
     let info = PortInfo::of(port);
     if let Some(props) = Props::of_value(&zport) {
         props.port_info(&info, Some(info.fd));
     }
     let copy = zport.copy();
     // The Server object's `ports`, which its class declares.
-    Props::own(object)
-        .zend()
-        .edit_array(c"ports", |ports| ports.push(zport));
+    if let Some(props) = Props::own(object).zend() {
+        props.edit_array(c"ports", |ports| ports.push(zport));
+    }
     if let Some(props) = Props::of_value(&copy) {
         props.connections(serv, port.raw());
     }
@@ -710,7 +730,7 @@ pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, share: &SharedServer) {
     let object = ServerObject::this(call);
-    crate::instance::set_server_object(call.this());
+    crate::instance::set_server_object(object);
     object.set_serv(share.clone());
     let serv = share.view();
     for &port in serv.ports() {
@@ -731,11 +751,9 @@ fn exception(call: &Call, message: &CStr, code: i64) {
 
 use crate::server::set_last_error;
 
-pub(crate) fn class(object: ServerObject) -> String {
-    // SAFETY: a live object.
-    unsafe { class_name(object.raw()) }
-        .to_string_lossy()
-        .into_owned()
+pub(crate) fn class(object: ServerObject<'_>) -> String {
+    let name = object.value().class_name().unwrap_or_default();
+    name.to_string_lossy().into_owned()
 }
 
 fn construct(call: &Call) {
@@ -1077,7 +1095,7 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 }
 
 /// `ServerObject::register_callback`.
-fn register_callback(object: ServerObject, serv: view::Server<'_>) {
+fn register_callback(object: ServerObject<'_>, serv: view::Server<'_>) {
     put(serv, install::CONTROL);
     if object.callback(ON_TASK).is_some() {
         put(serv, install::TASK);
@@ -1090,9 +1108,8 @@ fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     }
 }
 
-fn port_facts<'a>(object: *mut zend_object) -> PortFacts<'a> {
-    // SAFETY: a bound Port object.
-    let port = unsafe { crate::port::bound_port(object) };
+fn port_facts(object: &Value) -> PortFacts<'_> {
+    let port = crate::port::bound_port(object);
     let c = port.config();
     let owner = c.ssl_context.as_deref();
     PortFacts {
@@ -1141,7 +1158,7 @@ fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
 
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
-fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop> {
+fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Stop> {
     if server_methods::create(serv) < 0 {
         // The calling thread's `sw_error`.
         let reason = last_error_message();
@@ -1163,13 +1180,12 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
     let kind = kind(object);
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
-    let ports = object.property(|p| p.ports.clone());
+    let ports = object.ports();
     let mut find_http_port = false;
     // `$this`'s `setting`, which its class declares, until its last write. Only
     // fatal errors are raised meanwhile, and they run no PHP code.
-    let edited = Props::own(object)
-        .zend()
-        .edit_array(c"setting", |settings| {
+    let edited = Props::own(object).zend().and_then(|props| {
+        props.edit_array(c"setting", |settings| {
             for (key, id) in [
                 (c"worker_num", fact::WORKER_NUM),
                 (c"task_worker_num", fact::TASK_WORKER_NUM),
@@ -1183,7 +1199,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
             if has_key(settings, c"admin_server") {
                 put(serv, install::ADMIN_COMMANDS);
             }
-            let Some(&first) = ports.first() else {
+            let Some(first) = ports.first() else {
                 return Ok(false);
             };
             let primary = port_facts(first);
@@ -1231,7 +1247,8 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
                 put(serv, install::RECEIVE);
             }
             Ok(true)
-        });
+        })
+    });
     let Some(edited) = edited else {
         // A pending bailout reports itself; otherwise PHP code left a non-array there.
         if bailout::pending() {
@@ -1242,15 +1259,12 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     if !edited? {
         return Ok(());
     }
-    let mut zthis = object.zval();
     // A reference of its own: `$port->set()` may replace the property.
-    let Some(setting) = Value::of(&mut zthis).property(c"setting").map(Value::copy) else {
+    let Some(setting) = object.value().property(c"setting").map(Value::copy) else {
         return Ok(());
     };
     let setting: &Value = &setting;
-    for index in 1..ports.len() {
-        let mut zport = object.port(index);
-        let zport = Value::of(&mut zport);
+    for zport in ports.iter().skip(1) {
         // The Port class declares `setting`.
         if zport.property(c"setting").is_some_and(Value::is_null) {
             // `$port->set($setting)`, Port's own method.
@@ -1258,7 +1272,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
             trapped(set.is_err())?;
         }
     }
-    for &zport in &ports {
+    for zport in &ports {
         let port = port_facts(zport);
         if port.dgram && !port.ssl && !isset(serv, port.port, ON_PACKET) {
             return stop(E_ERROR, c"require onPacket callback");
@@ -1396,13 +1410,18 @@ pub fn php_swoole_server_send_yield(
         return Ok(false);
     }
     loop {
-        let (waiters, token) = ServerObject::running().property(|p| {
-            p.send_token += 1;
-            (
-                Rc::clone(p.send_waiters.entry(session_id).or_default()),
-                p.send_token,
-            )
+        let queued = ServerObject::with_running(|object| {
+            object.property(|p| {
+                p.send_token += 1;
+                (
+                    Rc::clone(p.send_waiters.entry(session_id).or_default()),
+                    p.send_token,
+                )
+            })
         });
+        let Some((waiters, token)) = queued else {
+            return Ok(false);
+        };
         waiters.borrow_mut().push_back((token, co));
         let timeout = server.config().send_timeout;
         // `onBufferEmpty` or `onClose` wakes it.
@@ -1424,13 +1443,15 @@ pub fn php_swoole_server_send_yield(
 /// wait; never dropped implicitly, so a frame that holds them owns nothing a
 /// bailout would skip.
 pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Waiters>> {
-    ServerObject::running()
+    ServerObject::with_running(|object| {
         // Without waiters, skip hashing the key: SipHash is most of an onClose (#2964).
-        .property(|p| {
+        object.property(|p| {
             let waiters = &mut p.send_waiters;
             (!waiters.is_empty()).then(|| waiters.remove(&session_id))?
         })
-        .map(std::mem::ManuallyDrop::new)
+    })
+    .flatten()
+    .map(std::mem::ManuallyDrop::new)
 }
 
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
