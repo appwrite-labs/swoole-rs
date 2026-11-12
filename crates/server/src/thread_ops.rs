@@ -6,7 +6,7 @@
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
-use crate::objects::socket;
+use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
@@ -83,13 +83,13 @@ fn port_config<'a>(ctx: &ReactorContext<'a>) -> Option<&'a crate::port_config::P
 }
 
 /// The context event's socket.
-fn event_socket<'a>(ctx: &ReactorContext<'_>) -> Option<Socket<'a>> {
-    socket(ctx.event.as_deref()?.socket_ptr())
+fn event_socket<'c>(ctx: &'c ReactorContext<'_>) -> Option<Socket<'c>> {
+    ctx.event.as_deref()?.socket()
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
-fn pipe_socket<'a>(thread: &ThreadRecord, sock: *mut c_void) -> Option<Socket<'a>> {
-    socket(thread.message_bus().pipe_socket(socket(sock)?))
+fn pipe_socket<'b>(bus: &'b crate::objects::Bus, pipe: Option<Socket<'_>>) -> Option<Socket<'b>> {
+    bus.pipe_socket(pipe?)
 }
 
 /// The server's worker `id`, if it has one.
@@ -100,14 +100,14 @@ fn worker<'a>(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<&'a mut W
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
-fn send_event(sock: *mut c_void, fd: c_long, kind: u32) {
+fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
     let head = DataHead {
         fd,
         kind: u8::try_from(kind).unwrap_or(u8::MAX),
         ..DataHead::default()
     };
     let data = (&raw const head).cast();
-    if let Some(sock) = crate::objects::socket(sock) {
+    if let Some(sock) = sock {
         // SAFETY: a live pipe socket, and the head's bytes.
         let _ = unsafe {
             swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
@@ -156,7 +156,8 @@ pub(crate) fn answer(
             // The event's fd is a listening socket's, whose slot is live.
             let conn = state.connection(fd.into(), 0)?;
             let kind = conn.socket_type;
-            ctx.sock = socket(conn.socket.cast());
+            // `ctx.sock` is already the event's socket, the port's listening socket
+            // that `OP_STORE_LISTEN` stored in this slot.
             ctx.conn = conn;
             ctx.pkt = with_thread_buffer(swoole_rs_buffer::string::CppString::as_mut_ptr).cast();
             ctx.task = SendData {
@@ -300,9 +301,9 @@ pub(crate) fn answer(
             // SAFETY: one of the server's live threads; only its field is read, as the
             // thread itself may hold its record meanwhile.
             let notify = unsafe { (*joining).notify_pipe };
-            if !notify.is_null() {
-                send_event(notify.cast(), 0, EVENT_SHUTDOWN);
-            }
+            // SAFETY: null or the thread's notify pipe, which it keeps until the server
+            // joins it, after this notice.
+            send_event(unsafe { Socket::from_ptr(notify) }, 0, EVENT_SHUTDOWN);
             0
         }
         OP_REACTOR_THREAD_ENTRY => reactor_thread_entry as *const () as u64,
@@ -346,20 +347,23 @@ pub(crate) fn answer(
         OP_RT_THREAD_WORKER => {
             let worker = worker(server, reactor_id()?)?;
             crate::worker_methods::init_event_worker(server, (&mut *worker).into());
+            let bus = ctx.thread_record()?.message_bus();
             sign(add_read(pipe_socket(
-                ctx.thread_record()?,
-                worker.pipe_worker,
+                &bus,
+                worker_pipe(worker.into(), false),
             )));
             0
         }
         OP_RT_PIPE_COMMAND => {
             // The server's live command pipe.
-            let fd = socket(config().command_pipe()?.worker_socket.cast())?.fd();
+            let fd = config().command_pipe()?.worker_end()?.fd();
             let thread = ctx.thread_record()?;
             let bus = thread.message_bus();
             bus.init_pipe_socket(fd);
             thread.pipe_command = bus.pipe_fd(fd).cast();
-            socket(thread.pipe_command.cast())?.edit(|s| s.output.buffer_size = u32::MAX);
+            bus.rust()
+                .pipe(fd)?
+                .edit(|s| s.output.buffer_size = u32::MAX);
             0
         }
         OP_RT_BUS_SETUP => {
@@ -384,7 +388,8 @@ pub(crate) fn answer(
                 return Some(sign(-1));
             };
             let thread = ctx.thread_record()?;
-            let sock = pipe_socket(thread, worker.pipe_master);
+            let bus = thread.message_bus();
+            let sock = pipe_socket(&bus, worker_pipe((&mut *worker).into(), true));
             if op == OP_WORKER_PIPE_UNREAD {
                 handle?.interest(sock?, 4, 0);
                 return Some(0);
@@ -418,8 +423,13 @@ pub(crate) fn answer(
         OP_COMMAND_REQUEST => {
             let thread = ctx.thread_record()?;
             let id = u16::try_from(thread.id).unwrap_or_default();
-            let pipe = socket(thread.pipe_command.cast());
-            crate::commands::call_command_handler(server, thread.message_bus(), id, pipe);
+            // The bus's record of the command pipe (`thread.pipe_command`).
+            let bus = thread.message_bus();
+            let end = config()
+                .command_pipe()
+                .and_then(swoole_rs_tls::socket_pair::SocketPair::worker_end);
+            let pipe = end.and_then(|end| bus.pipe_socket(end));
+            crate::commands::call_command_handler(server, bus, id, pipe);
             0
         }
         OP_COMMAND_RESPONSE | OP_PIPE_SEND => {
@@ -491,7 +501,7 @@ pub(crate) fn answer(
                 i64::from(ctx.connection()?.reactor_id) + index * i64::from(config().reactor_num);
             // the session id, so the reactor verifies the connection before closing it
             send_event(
-                worker(server, id)?.pipe_worker,
+                worker_pipe(worker(server, id)?.into(), false),
                 session,
                 crate::ops::EVENT_CLOSE_FORCE,
             );
@@ -633,8 +643,8 @@ unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
 
 /// `ReactorThread_resume_data_receiving`: the timer of a paused session socket.
 unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
-    // The timer's live session socket, whose object is its connection.
-    let Some(socket) = socket(sock) else {
+    // SAFETY: the timer's live session socket, whose object is its connection.
+    let Some(socket) = (unsafe { Socket::from_ptr(sock.cast()) }) else {
         return;
     };
     // SAFETY: the server whose socket's timer this is, live while its reactor runs

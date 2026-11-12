@@ -213,19 +213,16 @@ fn create() -> *mut AsyncThreads {
         pipe: unix_socket(false, libc::SOCK_STREAM),
         pool: None,
     });
-    let pipe = &threads.pipe;
-    if pipe.master_socket.is_null() || pipe.worker_socket.is_null() {
+    let (Some(read), Some(write)) = (threads.pipe.worker_end(), threads.pipe.master_end()) else {
         drop(&mut threads.pipe);
         log::set_last_error(SYSTEM_CALL_FAIL);
         return ptr::null_mut();
-    }
-    let (read, write) = (pipe.worker_socket, pipe.master_socket);
+    };
     for end in [read, write] {
-        // SAFETY: both ends are live sockets.
-        unsafe { (*end).fields.fd_type = FD_AIO };
+        end.edit(|end| end.fd_type = FD_AIO);
     }
     // SAFETY: a live socket on the thread's reactor.
-    unsafe { swoole_event_add(read, EVENT_READ) };
+    unsafe { swoole_event_add(read.as_ptr(), EVENT_READ) };
     on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_AIO_TASK, pending);
     threads.pool = Some(Pool::acquire(
@@ -236,7 +233,7 @@ fn create() -> *mut AsyncThreads {
         swr_v1_core_aio_max_wait_time(),
         swr_v1_core_aio_max_idle_time(),
     ));
-    swr_v1_core_set_aio_default_socket(write.cast());
+    swr_v1_core_set_aio_default_socket(write.as_ptr().cast());
     let threads = Box::into_raw(threads);
     set_thread_async_threads(threads.cast());
     threads

@@ -442,7 +442,6 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
     };
     // SAFETY: the source worker's live notify pipe.
     let notify_pipe = || unsafe { &*ctx.state().task_pipe(ctx.source().into()) };
-    let master_socket = || notify_pipe().master_socket;
     Some(match op {
         OP_OPEN_RESULT_FILE => {
             let flags = libc::O_APPEND | libc::O_WRONLY;
@@ -484,11 +483,11 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         }
         OP_NOTIFY_WOULD_BLOCK => {
             let error = errno();
-            let socket = crate::objects::socket(master_socket().cast())?;
+            let socket = notify_pipe().master_end()?;
             u64::from(socket.catch_error(error) == SW_WAIT)
         }
         OP_WAIT_NOTIFY_WRITABLE => {
-            let socket = crate::objects::socket(master_socket().cast())?;
+            let socket = notify_pipe().master_end()?;
             signed(socket.wait_event(-1, SW_EVENT_WRITE))
         }
         _ => return None,

@@ -292,13 +292,16 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(active));
         }
         OP_EVENT_SOCKET_REMOVED => {
-            let socket = crate::objects::socket(ctx.event_socket())?;
+            let socket = ctx.event().socket()?;
             return Some(u64::from(socket.read(|s| s.removed)));
         }
         OP_CLOSE_EVENT_SOCKET => {
             // SAFETY: the running reactor and the event's session socket.
             let closed = unsafe {
-                crate::reactor_entry::close_connection(reactor(ctx), ctx.event_socket().cast())
+                crate::reactor_entry::close_connection(
+                    reactor(ctx),
+                    ctx.event().socket_ptr().cast(),
+                )
             };
             return Some(sign(closed));
         }
@@ -324,7 +327,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_NOTIFY_CLOSE => u64::from(crate::server_methods::notify(server, conn, EVENT_CLOSE)),
         OP_CONN_HEALTHY => u64::from(server.healthy(ctx.now, conn)),
         OP_CONN_SSL_PENDING => {
-            let socket = crate::objects::socket(socket.cast())?;
+            let socket = conn.socket()?;
             u64::from(socket.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY))
         }
         OP_CONN_CLOSE_FORCE => u64::from(conn.close_force),

@@ -97,7 +97,11 @@ fn event_context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorConte
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
-    int(run(RUN_PACKET_RECEIVED, 0, &mut context(reactor, event)))
+    int(run(
+        RUN_PACKET_RECEIVED,
+        0,
+        &mut event_context(reactor, event),
+    ))
 }
 
 /// `ReactorThread_onClose`: the peer closed.

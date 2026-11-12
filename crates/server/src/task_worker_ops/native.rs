@@ -17,7 +17,7 @@ use swoole_rs_process::workers::ops::{
 };
 
 use super::{Context, TaskPool};
-use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, socket};
+use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, worker_pipe};
 
 /// `SW_FD_PIPE`.
 const SW_FD_PIPE: c_int = 3;
@@ -80,23 +80,24 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             ))
         }
         OP_LISTEN_TASK_PIPE => {
-            let pipe = in_worker_bus(ctx.state(), ctx.config(), ctx.worker().pipe_worker());
-            let pipe = socket(pipe)?;
-            set_nonblock(pipe);
-            let reactor = Reactor::thread();
-            reactor.fields().ptr = ctx.pool().raw.cast();
-            reactor.add(pipe, EVENT_READ);
-            reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
+            let pipe = worker_pipe(ctx.worker(), false);
+            in_worker_bus(ctx.state(), ctx.config(), pipe, |pipe| {
+                set_nonblock(pipe);
+                let reactor = Reactor::thread();
+                reactor.fields().ptr = ctx.pool().raw.cast();
+                reactor.add(pipe, EVENT_READ);
+                reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
+            })?;
             0
         }
         OP_UNLIMIT_BUS_PIPES => {
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
             let server = ctx.server;
             for pipe in [server.worker_pipe(id, false), server.worker_pipe(id, true)] {
-                let pipe = pipe.map_or(core::ptr::null_mut(), |pipe| pipe.as_ptr().cast());
-                if let Some(pipe) = socket(in_worker_bus(ctx.state(), ctx.config(), pipe)) {
+                let unlimit = |pipe: swoole_rs_reactor::Socket<'_>| {
                     pipe.edit(|pipe| pipe.output.buffer_size = u32::MAX);
-                }
+                };
+                in_worker_bus(ctx.state(), ctx.config(), pipe, unlimit);
             }
             0
         }
