@@ -8,9 +8,9 @@ use crate::{
     server::{SERVER, ServerData, fatal, running, server},
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr,
     rc::Rc,
@@ -23,8 +23,8 @@ use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry,
-        zend_object, zend_object_std_dtor, zval,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zend_object,
+        zend_object_std_dtor, zval,
     },
 };
 
@@ -907,33 +907,35 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     }
 }
 
-/// `command()`'s wait: the reply lands in `return_value`.
+/// `command()`'s wait, which it shares with the reply's callback: the reply
+/// lands in `reply`, the call's return value once it resumes.
 struct Wait {
-    return_value: *mut zval,
+    reply: RefCell<Owned>,
     json_decode: bool,
     coroutine: Coroutine,
-    replied: bool,
+    replied: Cell<bool>,
 }
 
-/// The command's reply (`Server::Command::Callback`): into `return_value`, then
-/// the waiting coroutine resumes, if it has yielded yet.
-fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
+/// The command's reply (`Server::Command::Callback`): into `reply`, then the
+/// waiting coroutine resumes, if it has yielded yet.
+fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
-        let (message, length) = (message.as_ptr().cast::<c_char>(), message.len());
-        // SAFETY: `command`'s `Wait`, live until this has run: it yields until then.
-        let wait = unsafe { &mut *wait };
-        if wait.json_decode {
-            // SAFETY: the reply's bytes and the call's return slot.
-            unsafe { swr_zend_json_decode(message, length, wait.return_value) };
+        let reply = if wait.json_decode {
+            let decoded = Owned::default();
+            // SAFETY: the reply's bytes and an undefined slot this owns.
+            unsafe {
+                swr_zend_json_decode(message.as_ptr().cast(), message.len(), decoded.as_ptr());
+            }
+            decoded
         } else {
-            // SAFETY: as above.
-            unsafe { swr_zval_stringl(wait.return_value, message, length) };
-        }
+            Owned::string(ZString::new(message))
+        };
+        drop(wait.reply.replace(reply));
         if wait.coroutine.is_suspending() == Some(true) {
             // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
             unsafe { wait.coroutine.wake(false) };
         } else {
-            wait.replied = true;
+            wait.replied.set(true);
         }
     }
 }
@@ -962,18 +964,18 @@ fn command(call: &Call) {
     let Some(coroutine) = Coroutine::current() else {
         return;
     };
-    let mut wait = Wait {
-        return_value: call.return_value(),
+    let wait = Rc::new(Wait {
+        reply: RefCell::default(),
         json_decode,
         coroutine,
-        replied: false,
-    };
+        replied: Cell::new(false),
+    });
     let data = encoded.bytes();
     #[expect(
         clippy::arc_with_non_send_sync,
         reason = "the server's callback table, like upstream's, holds this coroutine's wait"
     )]
-    let callback = std::sync::Arc::new(command_done(&raw mut wait));
+    let callback = std::sync::Arc::new(command_done(Rc::clone(&wait)));
     // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
     let [low, high, ..] = process_id.to_le_bytes();
     let process_id = u32::from(u16::from_le_bytes([low, high]));
@@ -982,16 +984,16 @@ fn command(call: &Call) {
             .try_into()
             .unwrap_or_default(),
     );
-    // `wait` outlives the command: its callback runs before the yield below returns.
     let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback);
     drop(encoded);
     if !sent {
         return call.set_bool(false);
     }
-    if !wait.replied {
+    if !wait.replied.get() {
         // `command_done` resumes it.
         swoole_rs_phpcoroutines::suspend();
     }
+    call.set_owned(wait.reply.take());
 }
 
 /// `php_swoole_error(E_WARNING, ...)`: a notice-coded warning, shown when
