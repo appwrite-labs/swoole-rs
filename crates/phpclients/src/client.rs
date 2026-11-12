@@ -300,7 +300,7 @@ fn construct(call: &Call) {
     let Ok(kind) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    if !check_type(kind) {
+    if !check_type(kind, "Swoole\\Coroutine\\Client") {
         return call.set_bool(false);
     }
     swoole_rs_phpruntime::check_reactor();
