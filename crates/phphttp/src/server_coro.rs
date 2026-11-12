@@ -447,10 +447,9 @@ fn construct(call: &Call) {
         }
         if ssl {
             // ssl_check_context runs once the user has set the protocols.
-            // SAFETY: nothing else borrows `settings` while one key is added.
-            if let Some(settings) = unsafe { props.array(c"settings") } {
+            props.edit_array(c"settings", |settings| {
                 settings.insert_bool(b"open_ssl", true);
-            }
+            });
         }
         if ssl {
             let _enabled = socket.enable_ssl();
@@ -548,8 +547,8 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(mut accept) = accept_callable(call)? else {
         return Ok(None);
     };
-    // SAFETY: `settings` is only read from here on.
-    let Some(settings) = (unsafe { props.array(c"settings") }) else {
+    // A reference of its own: reading a setting (`__toString`) can run PHP code.
+    let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
     // SAFETY: a live socket and the settings array.

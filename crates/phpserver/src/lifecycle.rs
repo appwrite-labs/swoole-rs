@@ -673,11 +673,10 @@ pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
         props.port_info(&info, Some(info.fd));
     }
     let copy = zport.copy();
-    // SAFETY: the Server object's `ports`, which its class declares; nothing
-    // else borrows it, and no PHP code runs, while the Port is appended.
-    if let Some(ports) = unsafe { Props::own(object).zend().array(c"ports") } {
-        ports.push(zport);
-    }
+    // The Server object's `ports`, which its class declares.
+    Props::own(object)
+        .zend()
+        .edit_array(c"ports", |ports| ports.push(zport));
     if let Some(props) = Props::of_value(&copy) {
         props.connections(serv, port.raw());
     }
@@ -1040,7 +1039,7 @@ pub(crate) fn runtime_warning(text: &CStr) {
 /// Stop: an `E_ERROR` or a trapped bailout is pending.
 struct Stop;
 
-fn stop(level: i32, text: &CStr) -> Result<(), Stop> {
+fn stop<T>(level: i32, text: &CStr) -> Result<T, Stop> {
     fatal(level, text);
     Err(Stop)
 }
@@ -1138,80 +1137,93 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     put(serv, install::ALLOCATORS);
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
-    // SAFETY: `$this`'s `setting`, which its class declares; nothing else borrows
-    // it, and no PHP code runs, until its last write below.
-    let Some(settings) = (unsafe { Props::own(object).zend().array(c"setting") }) else {
+    let kind = kind(object);
+    let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
+    let ports = object.property(|p| p.ports.clone());
+    let mut find_http_port = false;
+    // `$this`'s `setting`, which its class declares, until its last write. Only
+    // fatal errors are raised meanwhile, and they run no PHP code.
+    let edited = Props::own(object)
+        .zend()
+        .edit_array(c"setting", |settings| {
+            for (key, id) in [
+                (c"worker_num", fact::WORKER_NUM),
+                (c"task_worker_num", fact::TASK_WORKER_NUM),
+                (c"output_buffer_size", fact::OUTPUT_BUFFER_SIZE),
+                (c"max_connection", fact::MAX_CONNECTION),
+            ] {
+                if !has_key(settings, key) {
+                    settings.insert_long(key.to_bytes(), number(serv, id));
+                }
+            }
+            if has_key(settings, c"admin_server") {
+                put(serv, install::ADMIN_COMMANDS);
+            }
+            let Some(&first) = ports.first() else {
+                return Ok(false);
+            };
+            let primary = port_facts(first);
+            if kind == KIND_REDIS {
+                settings.insert_bool(b"open_redis_protocol", true);
+                settings.insert_bool(b"open_http_protocol", false);
+                settings.insert_bool(b"open_mqtt_protocol", false);
+                settings.insert_bool(b"open_eof_check", false);
+                settings.insert_bool(b"open_length_check", false);
+                protocols(primary.port, REDIS, true);
+                put(serv, install::REDIS_RECEIVE);
+            } else if http_server {
+                if kind == KIND_WEBSOCKET {
+                    if !isset(serv, primary.port, ON_MESSAGE) {
+                        return stop(E_ERROR, c"require onMessage callback");
+                    }
+                } else if !isset(serv, primary.port, ON_REQUEST) {
+                    return stop(E_ERROR, c"require onRequest callback");
+                }
+                settings.insert_bool(b"open_http_protocol", true);
+                settings.insert_bool(b"open_mqtt_protocol", false);
+                settings.insert_bool(b"open_eof_check", false);
+                settings.insert_bool(b"open_length_check", false);
+                let mut flags = HTTP;
+                if primary.protocols & HTTP2 != 0 {
+                    settings.insert_bool(b"open_http2_protocol", true);
+                    flags |= HTTP2;
+                }
+                if primary.protocols & WEBSOCKET != 0 || kind == KIND_WEBSOCKET {
+                    settings.insert_bool(b"open_websocket_protocol", true);
+                    flags |= WEBSOCKET;
+                }
+                protocols(primary.port, flags, true);
+                find_http_port = true;
+                put(serv, install::HTTP_RECEIVE);
+            } else {
+                if primary.dgram && !primary.ssl && !isset(serv, primary.port, ON_PACKET) {
+                    return stop(E_ERROR, c"require onPacket callback");
+                }
+                if ((primary.dgram && primary.ssl) || primary.stream)
+                    && !isset(serv, primary.port, ON_RECEIVE)
+                {
+                    return stop(E_ERROR, c"require onReceive callback");
+                }
+                put(serv, install::RECEIVE);
+            }
+            Ok(true)
+        });
+    let Some(edited) = edited else {
         // A pending bailout reports itself; otherwise PHP code left a non-array there.
         if bailout::pending() {
             return Err(Stop);
         }
         return stop(E_ERROR, c"Swoole\\Server::$setting must be an array");
     };
-    for (key, id) in [
-        (c"worker_num", fact::WORKER_NUM),
-        (c"task_worker_num", fact::TASK_WORKER_NUM),
-        (c"output_buffer_size", fact::OUTPUT_BUFFER_SIZE),
-        (c"max_connection", fact::MAX_CONNECTION),
-    ] {
-        if !has_key(settings, key) {
-            settings.insert_long(key.to_bytes(), number(serv, id));
-        }
+    if !edited? {
+        return Ok(());
     }
-    if has_key(settings, c"admin_server") {
-        put(serv, install::ADMIN_COMMANDS);
-    }
-    let kind = kind(object);
-    let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
-    let ports = object.property(|p| p.ports.clone());
-    let Some(&first) = ports.first() else {
+    let mut zthis = object.zval();
+    // A reference of its own: `$port->set()` may replace the property.
+    let Some(setting) = Value::of(&mut zthis).property(c"setting").map(Value::copy) else {
         return Ok(());
     };
-    let primary = port_facts(first);
-    let mut find_http_port = false;
-    if kind == KIND_REDIS {
-        settings.insert_bool(b"open_redis_protocol", true);
-        settings.insert_bool(b"open_http_protocol", false);
-        settings.insert_bool(b"open_mqtt_protocol", false);
-        settings.insert_bool(b"open_eof_check", false);
-        settings.insert_bool(b"open_length_check", false);
-        protocols(primary.port, REDIS, true);
-        put(serv, install::REDIS_RECEIVE);
-    } else if http_server {
-        if kind == KIND_WEBSOCKET {
-            if !isset(serv, primary.port, ON_MESSAGE) {
-                return stop(E_ERROR, c"require onMessage callback");
-            }
-        } else if !isset(serv, primary.port, ON_REQUEST) {
-            return stop(E_ERROR, c"require onRequest callback");
-        }
-        settings.insert_bool(b"open_http_protocol", true);
-        settings.insert_bool(b"open_mqtt_protocol", false);
-        settings.insert_bool(b"open_eof_check", false);
-        settings.insert_bool(b"open_length_check", false);
-        let mut flags = HTTP;
-        if primary.protocols & HTTP2 != 0 {
-            settings.insert_bool(b"open_http2_protocol", true);
-            flags |= HTTP2;
-        }
-        if primary.protocols & WEBSOCKET != 0 || kind == KIND_WEBSOCKET {
-            settings.insert_bool(b"open_websocket_protocol", true);
-            flags |= WEBSOCKET;
-        }
-        protocols(primary.port, flags, true);
-        find_http_port = true;
-        put(serv, install::HTTP_RECEIVE);
-    } else {
-        if primary.dgram && !primary.ssl && !isset(serv, primary.port, ON_PACKET) {
-            return stop(E_ERROR, c"require onPacket callback");
-        }
-        if ((primary.dgram && primary.ssl) || primary.stream)
-            && !isset(serv, primary.port, ON_RECEIVE)
-        {
-            return stop(E_ERROR, c"require onReceive callback");
-        }
-        put(serv, install::RECEIVE);
-    }
-    let setting: &Value = settings;
+    let setting: &Value = &setting;
     for index in 1..ports.len() {
         let mut zport = object.port(index);
         let zport = Value::of(&mut zport);
@@ -1277,7 +1289,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
         && fact(serv, fact::THREAD_MODE)
-        && let Err(bailout) = crate::thread::copy_setting(settings)
+        && let Err(bailout) = crate::thread::copy_setting(setting)
     {
         bailout.defer();
         return Err(Stop);
