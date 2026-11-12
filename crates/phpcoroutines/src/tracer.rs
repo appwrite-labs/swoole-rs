@@ -14,18 +14,18 @@ use std::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
     hash::BuildHasherDefault,
     io::Write,
-    mem,
-    ptr::{self, NonNull},
+    mem::{self, ManuallyDrop},
+    ptr,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
     Call, Owned, OwnedArray, Value, ZString, bailout, handlers,
     string::bytes,
     sys::{
-        self as z, swr_zend_json_encode, swr_zend_mm_observe, swr_zend_mm_observer,
-        swr_zend_mm_unobserve, swr_zend_number_format, swr_zend_string_release,
-        swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
-        zend_observer_fcall_handlers, zend_string, zval,
+        self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
+        swr_zend_number_format, swr_zend_string_release, swr_zend_tracer_lineno,
+        swr_zend_try_write, zend_execute_data, zend_long, zend_observer_fcall_handlers,
+        zend_string, zval,
     },
 };
 
@@ -88,8 +88,8 @@ struct Leaks {
     /// Live allocations per site.
     counters: HashMap<Vec<u8>, u32, Hasher>,
     /// The first backtrace of each site that reached the threshold, released at
-    /// RSHUTDOWN (a plain zval, so `Leaks` has no drop glue that needs PHP).
-    backtraces: HashMap<Vec<u8>, zval, Hasher>,
+    /// RSHUTDOWN (held manually, so `Leaks` has no drop glue that needs PHP).
+    backtraces: HashMap<Vec<u8>, ManuallyDrop<Owned>, Hasher>,
     rounds: usize,
     threshold: zend_long,
 }
@@ -206,7 +206,7 @@ impl Leaks {
     fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
         if let Some(at) = at {
             let trace = backtrace(BACKTRACE_IGNORE_ARGS);
-            self.backtraces.insert(at, trace.into_zval());
+            self.backtraces.insert(at, ManuallyDrop::new(trace));
         }
     }
 
@@ -341,9 +341,7 @@ fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
                 .borrow()
                 .backtraces
                 .get(&at)
-                // SAFETY: a kept backtrace, live until RSHUTDOWN.
-                .and_then(|trace| unsafe { Value::from_ptr(trace) })
-                .and_then(trace_to_string)
+                .and_then(|trace| trace_to_string(trace))
         });
         if let Some(trace) = trace {
             write(trace.bytes())?;
@@ -494,10 +492,8 @@ fn trace_json() -> Option<ZString> {
         metadata.insert_bytes(b"version", Some(b"0.17.1".as_slice()));
         metadata.insert_bool(b"overflow", false);
         json.insert_value(b"viztracer_metadata", &metadata);
-        // SAFETY: a live array of strings and numbers: no user code runs.
-        let encoded = NonNull::new(unsafe { swr_zend_json_encode(json.as_ptr()) })?;
-        // SAFETY: the encoder's new string.
-        Some(unsafe { ZString::from_raw(encoded.as_ptr()) })
+        // An array of strings and numbers: no user code runs, so nothing bails out.
+        json.json_encode().unwrap_or_default()
     })
 }
 
@@ -727,9 +723,8 @@ pub extern "C" fn tracer_rshutdown() {
         unhook();
     }
     let traces = LEAKS.with(|leaks| mem::take(&mut leaks.borrow_mut().backtraces));
-    for (_, mut trace) in traces {
-        // SAFETY: a kept backtrace array.
-        unsafe { z::zval_ptr_dtor(&raw mut trace) };
+    for trace in traces.into_values() {
+        drop(ManuallyDrop::into_inner(trace));
     }
     profiling_clear();
 }

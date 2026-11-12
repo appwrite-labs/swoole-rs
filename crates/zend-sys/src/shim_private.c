@@ -81,12 +81,6 @@ int swr_zend_try_facade_callable_frame(zval *value, zend_object *object, zend_ex
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_callable_name(zval *value, zend_object *object, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_get_callable_name_ex(value, object); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 
 int swr_zend_try_facade_register_functions(const zend_function_entry *entries, HashTable *table, int type, int *result) {
     volatile int bailed = 0;

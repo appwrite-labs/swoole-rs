@@ -141,11 +141,6 @@ unsafe extern "C" {
     fn swr_v1_clients_watermark(state: *mut c_void, high: bool) -> *mut u32;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-    fn swr_v1_clients_dns_server(
-        context: *mut c_void,
-        push: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-    ) -> c_int;
-    fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int;
     fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
     fn swr_v1_tls_owner_free(owner: *const c_void);
@@ -988,27 +983,17 @@ fn build_dns_query(domain: &str) -> Vec<u8> {
     query
 }
 
-unsafe extern "C" fn push_host(context: *mut c_void, text: *const u8, length: usize) {
-    // SAFETY: `dns_server` passes its String; Rust passes `length` bytes.
-    unsafe {
-        *context.cast::<String>() =
-            String::from_utf8_lossy(std::slice::from_raw_parts(text, length)).into_owned();
-    }
-}
-
 /// `swoole_get_dns_server()`: the configured server, loading resolv.conf when unset.
 fn dns_server() -> (String, c_int) {
-    let mut host = String::new();
-    // SAFETY: `push_host` writes `host`.
-    let mut port = unsafe { swr_v1_clients_dns_server((&raw mut host).cast(), push_host) };
-    if host.is_empty() {
-        // SAFETY: a NUL-terminated path, then as above.
-        unsafe {
-            swr_v1_clients_load_resolv_conf(SW_DNS_RESOLV_CONF.as_ptr());
-            port = swr_v1_clients_dns_server((&raw mut host).cast(), push_host);
-        }
+    let read = || {
+        let (host, port) = swoole_rs_clients::dns::server();
+        let host = CStr::from_bytes_until_nul(&host).unwrap();
+        (host.to_string_lossy().into_owned(), port)
+    };
+    if read().0.is_empty() {
+        let _ = swoole_rs_clients::dns::load_resolv_conf(SW_DNS_RESOLV_CONF);
     }
-    (host, port)
+    read()
 }
 
 fn sendto() {

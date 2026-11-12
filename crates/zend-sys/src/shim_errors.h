@@ -41,4 +41,8 @@ int swr_zend_try_ptr_dtor(zval *value);
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value);
 int swr_zend_try_hash_clean(HashTable *table);
 int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value);
+/* zend_read_property(scope, object, name, length, 1, rv): a subclass's __get
+ * runs PHP. *out is the property, or rv; NULL after a bailout. */
+int swr_zend_try_read_property(zend_class_entry *scope, zend_object *object, const char *name,
+                               size_t length, zval *rv, zval **out);
 #endif
