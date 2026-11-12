@@ -591,8 +591,7 @@ pub(crate) fn unhook() {
 
 /// `\Swoole\Coroutine\deadlock_check()`, inside `zend_try`.
 pub(crate) fn deadlock_check() -> Result<(), bailout::Bailout> {
-    // SAFETY: the library's global function, with no arguments.
-    unsafe { swoole_rs_zend::host::named_call(b"\\Swoole\\Coroutine\\deadlock_check", &mut []) }
+    swoole_rs_zend::host::named_call(b"\\Swoole\\Coroutine\\deadlock_check", &[])
 }
 
 /// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook, when set.

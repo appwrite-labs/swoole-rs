@@ -123,22 +123,26 @@ pub(crate) fn context(native: *mut c_void) -> *mut Context {
     native.cast::<Coroutine>().wrapping_add(1).cast()
 }
 
-/// Switches into the record `native`: whether its coroutine ended.
-unsafe extern "C" fn swap_in(native: *mut c_void) -> bool {
-    // SAFETY: the scheduler passes a live record whose coroutine has not ended.
+/// Switches into `co`'s record: whether its coroutine ended.
+fn swap_in(co: Co) -> bool {
+    let native = co.with(|co| co.native);
+    // SAFETY: the scheduler passes a live coroutine that has not ended, which
+    // its `Native` record starts with.
     unsafe { context::swap_in(context(native)) }
 }
 
-/// Switches out of the running record `native`.
-unsafe extern "C" fn swap_out(native: *mut c_void) {
-    // SAFETY: the scheduler passes the running record.
+/// Switches out of the running `co`'s record.
+fn swap_out(co: Co) {
+    let native = co.with(|co| co.native);
+    // SAFETY: the scheduler passes the running coroutine, which its record starts with.
     unsafe { context::swap_out(context(native)) };
 }
 
-/// Frees the ended record `native` and its stack (upstream's `delete`).
-unsafe extern "C" fn destroy(native: *mut c_void) {
-    // SAFETY: the scheduler passes an ended, released record, allocated by
-    // facade.rs's `swr_v1_coroutine_create` and freed once.
+/// Frees the ended `co`'s record and its stack (upstream's `delete`).
+fn destroy(co: Co) {
+    let native = co.with(|co| co.native);
+    // SAFETY: the scheduler passes an ended, released coroutine whose record
+    // facade.rs's `swr_v1_coroutine_create` boxed; it is freed once, here.
     drop(unsafe { Box::from_raw(native.cast::<Native>()) });
 }
 

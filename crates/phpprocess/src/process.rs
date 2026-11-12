@@ -280,10 +280,9 @@ fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pi
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
 /// as `exit` would. -1 when the callback or the event loop cannot start; a
 /// bailout pending on the way is raised here, as the closing one is.
-/// # Safety
-/// `worker` is the live worker of the Process object `this`.
-pub unsafe fn start_worker(worker: *mut c_void, this: &Value) -> c_int {
-    start_child(worker, this)
+/// `worker` is the Process object `this`'s.
+pub fn start_worker(worker: swoole_rs_process::worker_record::Worker<'_>, this: &Value) -> c_int {
+    start_child(worker.raw().cast(), this)
 }
 
 /// [`start_worker`] on `$this`.
