@@ -79,6 +79,18 @@ pub fn current_worker() -> *mut WorkerRecord {
     with_globals(|globals| globals.worker.load(Relaxed))
 }
 
+/// `f` over `SwooleWG.worker`, or `None` while this thread runs no worker. The
+/// handle lives only for the call: `f` can't keep it.
+pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -> Option<R> {
+    // SAFETY: the slot holds a loan of the record the worker loop this thread runs
+    // was given by the pool or server that owns it, which keeps it until it frees
+    // its workers after the loop ends. `worker_global_stopped` frees only
+    // `worker_copy`, a separate allocation, so stopping during `f` leaves the
+    // lent record live. The loop orders the field writes made through the handle.
+    let worker = unsafe { crate::worker_record::Worker::from_raw(current_worker()) };
+    worker.as_ref().map(f)
+}
+
 /// `SwooleWG.worker = worker`.
 pub fn set_current_worker(worker: *mut WorkerRecord) {
     with_globals(|globals| globals.worker.store(worker, Relaxed));
@@ -222,6 +234,20 @@ mod tests {
             assert!((*thread_globals()).worker_copy.load(Relaxed).is_null());
             assert!((*thread_globals()).worker.load(Relaxed).is_null());
         }
+    }
+
+    #[test]
+    fn a_worker_stopped_during_with_current_stays_readable() {
+        let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
+        unsafe { Worker::new(&raw mut worker).set_id(7) };
+        worker_global_detach(unsafe { Worker::new(&raw mut worker) });
+        let id = with_current(|current| {
+            // Frees the detached copy and clears the slot, not the lent record.
+            worker_global_stopped();
+            current.id()
+        });
+        assert_eq!(id, Some(7));
+        assert!(with_current(|_| ()).is_none());
     }
 
     #[test]

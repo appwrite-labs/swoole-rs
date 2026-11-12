@@ -17,7 +17,6 @@ use swoole_rs_process::command::{
     LOG_NOT_WORKER_0, LOG_TOO_LARGE, LOG_UNKNOWN, LOG_UNSUPPORTED_MODE, LOG_UNSUPPORTED_TYPE,
     TO_MASTER, route,
 };
-use swoole_rs_process::worker_record::Worker;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use {crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead, swoole_rs_reactor::Socket};
 
@@ -235,7 +234,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
-    let worker = swoole_rs_process::worker_globals::current_worker();
+    let worker_id = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
     let input = CommandInput {
         started,
         found: found.is_some(),
@@ -243,12 +242,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         base_mode: mode == MODE_BASE,
         master: swoole_rs_process::methods::swoole_get_worker_type() == SW_MASTER,
         accepted_types: found.map_or(0, |(_, types)| types),
-        worker_id: if mode == MODE_BASE && !worker.is_null() {
-            // SAFETY: this process's current worker.
-            unsafe { Worker::new(worker).id() }
-        } else {
-            0
-        },
+        worker_id: worker_id.filter(|_| mode == MODE_BASE).unwrap_or(0),
         process_id: send.process_id,
         process_type: send.process_type,
         reactor_num: field(h, FIELD_REACTOR_NUM)?,
