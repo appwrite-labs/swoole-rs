@@ -138,6 +138,24 @@ impl Callable {
         Ok(result)
     }
 
+    /// `sw_zend_function_max_num_args` of the resolved function: unbounded for a
+    /// variadic one, and 0 for none.
+    #[must_use]
+    pub fn max_num_args(&self) -> u32 {
+        let function = self.cache.function_handler;
+        if function.is_null() {
+            return 0;
+        }
+        // SAFETY: the function the cache resolved, which this callable's zval keeps
+        // live; every kind of `zend_function` starts with `common`.
+        let common = unsafe { &*function.cast::<sys::_zend_function__bindgen_ty_1>() };
+        if common.fn_flags & sys::ZEND_ACC_VARIADIC != 0 {
+            u32::MAX
+        } else {
+            common.num_args
+        }
+    }
+
     /// `zend::Callable::call`: whether the call succeeded, a bailout left pending.
     fn invoke(
         &self,
@@ -231,24 +249,6 @@ unsafe fn create(value: *mut zval, report: Report) -> Result<Box<Callable>, bail
         return Err(bailout::Bailout);
     }
     Ok(state)
-}
-
-/// # Errors
-/// A native PHP leaf bailed out. No jump is resumed here; propagate the result
-/// and finish only from the outermost C-facing handler or export.
-/// # Safety
-/// A live handle, consumed exactly once. Cleanup may run PHP destructors.
-pub unsafe fn release(handle: *mut Callable) -> Result<(), bailout::Bailout> {
-    // SAFETY: ownership returns to Rust, including its zval and diagnostic string.
-    drop(unsafe { Box::from_raw(handle) });
-    bailout::outcome(())
-}
-
-/// # Safety
-/// A live initialized handle. The caller borrows its cache until free.
-pub unsafe fn cache(handle: *mut Callable) -> *mut zend_fcall_info_cache {
-    // SAFETY: a live stable Box; no Rust reference escapes this operation.
-    unsafe { &raw mut (*handle).cache }
 }
 
 /// # Errors

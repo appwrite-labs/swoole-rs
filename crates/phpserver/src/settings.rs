@@ -5,15 +5,10 @@ use crate::lifecycle::ServerObject;
 use crate::server::{display_errors, fatal, server, set_last_error};
 use std::{
     ffi::{CStr, CString, c_int},
-    ptr,
     sync::atomic::Ordering,
 };
 use swoole_rs_server::{ServerConfig, server_methods, view};
-use swoole_rs_zend::host::callable;
-use swoole_rs_zend::{
-    Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
-    sys::swr_zend_callable_warning,
-};
+use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
@@ -448,26 +443,18 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         None => s.set(f::SEND_YIELD, s.fact(f::ENABLE_COROUTINE)),
     }
     if let Some(value) = s.get(c"dispatch_func") {
-        // SAFETY: a live setting; `sw_callable_create`, whose bailouts stay deferred.
-        let created = unsafe {
-            callable::factory(
-                value.as_ptr(),
-                ptr::null(),
-                true,
-                ptr::null_mut(),
-                swr_zend_callable_warning,
-            )
-        };
-        let set = created.and_then(|handle| {
-            if handle.is_null() {
-                return Ok(());
-            }
-            // SAFETY: a live server, not started.
-            unsafe { crate::dispatch::set_dispatch_func(s.serv, handle) }
-        });
-        if set.is_err() {
-            bailout::defer(set);
+        // `sw_callable_create`, whose bailouts stay deferred.
+        let created = crate::callable::create(value);
+        if checked().is_err() {
+            drop(created);
             return Err(Stop);
+        }
+        if let Some(callable) = created {
+            let set = crate::dispatch::set_dispatch_func(s.serv, callable);
+            if set.is_err() {
+                bailout::defer(set);
+                return Err(Stop);
+            }
         }
     }
     workers(s)?;
