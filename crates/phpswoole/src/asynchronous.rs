@@ -11,6 +11,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ffi::CStr,
+    hash::{BuildHasherDefault, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
 use swoole_rs_corebase::{
@@ -38,9 +39,32 @@ struct Cached {
     expires: i64,
 }
 
+/// FNV-1a. The cache holds the script's own domains, as upstream's `std::hash` map
+/// does, so it needs no `SipHash` keys, and with the cache off every lookup hashes twice.
+struct Fnv(u64);
+
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
 thread_local! {
     /// `request_cache_map`, keyed by the domain's bytes.
-    static CACHE: RefCell<HashMap<Vec<u8>, Cached>> = RefCell::new(HashMap::new());
+    static CACHE: RefCell<HashMap<Vec<u8>, Cached, BuildHasherDefault<Fnv>>> =
+        RefCell::default();
 }
 
 fn truthy(value: &Value) -> bool {
@@ -213,7 +237,13 @@ fn dns_lookup(call: &Call) {
     let now = swoole_rs_timer::absolute_msec();
     #[expect(clippy::cast_possible_truncation, reason = "C's (int64_t) conversion")]
     let expires = now + (refresh * 1000.0) as i64;
-    CACHE.with_borrow_mut(|cache| cache.insert(name.to_vec(), Cached { address, expires }));
+    let entry = Cached { address, expires };
+    CACHE.with_borrow_mut(|cache| match cache.get_mut(name) {
+        Some(cached) => *cached = entry,
+        None => {
+            cache.insert(name.to_vec(), entry);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -227,6 +257,14 @@ mod tests {
         assert_eq!(bounded(0, 0), 0);
         assert_eq!(bounded(8, 1), 8);
         assert_eq!(bounded(i64::MAX, 1), u32::MAX);
+    }
+
+    #[test]
+    fn fnv_is_fnv1a_64() {
+        use std::hash::Hasher;
+        let mut hash = super::Fnv::default();
+        hash.write(b"a");
+        assert_eq!(hash.finish(), 0xaf63_dc4c_8601_ec8c);
     }
 
     #[test]
