@@ -6,17 +6,17 @@ use crate::parse::CAPABILITIES;
 use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
+use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
     CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER, TRANSFER_ENCODING,
     encoding, response_header, swr_v1_httpbindings_codec, swr_v1_httpbindings_codec_level,
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::{swr_zend_efree, swr_zend_emalloc, zval};
+use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
@@ -468,25 +468,6 @@ pub(crate) fn trailer<R>(
     })
 }
 
-extern "C" fn zalloc(_: *mut c_void, items: u32, size: u32) -> *mut c_void {
-    // `safe_emalloc(items, size, 0)`; an overflow fails the allocation.
-    let Some(bytes) = (items as usize).checked_mul(size as usize) else {
-        return ptr::null_mut();
-    };
-    // SAFETY: PHP's request allocator.
-    unsafe { swr_zend_emalloc(bytes) }
-}
-
-unsafe extern "C" fn zfree(_: *mut c_void, address: *mut c_void) {
-    // SAFETY: memory `zalloc` returned.
-    unsafe { swr_zend_efree(address) };
-}
-
-/// zlib allocating from PHP's request allocator, as upstream's `php_zlib_alloc`.
-// SAFETY: `zalloc` returns null or `items * size` bytes of emalloc'd memory,
-// which `zfree` efrees.
-pub(crate) const ZEND_ZLIB: Allocator = unsafe { Allocator::new(zalloc, zfree) };
-
 fn compress_warning(message: &str) {
     host::log(0, 0, c"Context::compress", message);
 }
@@ -546,7 +527,7 @@ fn zlib(state: &mut State, input: &[u8], method: i32, level: i32) -> Result<Vec<
     let level = swr_v1_httpbindings_codec_level(method, level, 0, 0);
     // zlib's clamp lands in -1..=9, which fits int8_t.
     state.compression_level = i8::try_from(level).unwrap_or(-1);
-    match deflate(input, bound(input.len()), window_bits, level, ZEND_ZLIB) {
+    match deflate(input, bound(input.len()), window_bits, level) {
         Ok(out) => Ok(out),
         Err(Failure::Init(status)) => Err(format!("deflateInit2() failed, Error: [{status}]")),
         Err(Failure::Deflate(status)) => Err(format!("deflate() failed, Error: [{status}]")),

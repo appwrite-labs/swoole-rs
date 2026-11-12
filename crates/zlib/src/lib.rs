@@ -16,8 +16,8 @@ pub use libz_sys::{
     Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 use libz_sys::{
-    Z_DEFAULT_STRATEGY, Z_DEFLATED, alloc_func, deflate, deflateBound, deflateEnd, deflateInit2_,
-    free_func, inflate, inflateEnd, inflateInit2_, uInt, uLong, z_stream, z_streamp, zlibVersion,
+    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, deflateBound, deflateEnd, deflateInit2_, deflateReset,
+    inflate, inflateEnd, inflateInit2_, uInt, uLong, z_stream, z_streamp, zlibVersion,
 };
 
 /// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
@@ -42,30 +42,6 @@ unsafe extern "C" fn c_free(_: *mut c_void, address: *mut c_void) {
     unsafe { free(address) };
 }
 
-/// The `zalloc`/`zfree` pair a stream allocates with.
-#[derive(Clone, Copy)]
-pub struct Allocator {
-    alloc: alloc_func,
-    free: free_func,
-}
-
-impl Allocator {
-    /// The C allocator.
-    pub const MALLOC: Self = Self {
-        alloc: c_alloc,
-        free: c_free,
-    };
-
-    /// # Safety
-    /// `alloc(opaque, items, size)` returns null or `items * size` writable bytes,
-    /// and `free(opaque, address)` releases any address `alloc` returned, for as
-    /// long as a stream made with the pair lives.
-    #[must_use]
-    pub const unsafe fn new(alloc: alloc_func, free: free_func) -> Self {
-        Self { alloc, free }
-    }
-}
-
 /// What one [`Stream::run`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
@@ -82,7 +58,7 @@ pub struct Stream {
     deflate: bool,
 }
 
-fn fresh(allocator: Allocator) -> z_stream {
+fn fresh() -> z_stream {
     z_stream {
         next_in: null_mut(),
         avail_in: 0,
@@ -92,8 +68,8 @@ fn fresh(allocator: Allocator) -> z_stream {
         total_out: 0,
         msg: null_mut(),
         state: null_mut(),
-        zalloc: allocator.alloc,
-        zfree: allocator.free,
+        zalloc: c_alloc,
+        zfree: c_free,
         opaque: null_mut(),
         data_type: 0,
         adler: 0,
@@ -115,7 +91,7 @@ impl Stream {
     /// # Errors
     /// zlib's status when it is not `Z_OK`.
     pub fn inflate(window_bits: c_int) -> Result<Self, c_int> {
-        let mut z = Box::new(fresh(Allocator::MALLOC));
+        let mut z = Box::new(fresh());
         // SAFETY: a fresh stream with its allocator, the running version and the struct's size.
         let status = unsafe { inflateInit2_(&raw mut *z, window_bits, version(), size()) };
         // Only an initialised stream becomes a `Stream`, which `drop` ends.
@@ -127,13 +103,8 @@ impl Stream {
     /// `deflateInit2(level, Z_DEFLATED, window_bits, mem_level, Z_DEFAULT_STRATEGY)`.
     /// # Errors
     /// zlib's status when it is not `Z_OK`.
-    pub fn deflate(
-        level: c_int,
-        window_bits: c_int,
-        mem_level: c_int,
-        allocator: Allocator,
-    ) -> Result<Self, c_int> {
-        let mut z = Box::new(fresh(allocator));
+    pub fn deflate(level: c_int, window_bits: c_int, mem_level: c_int) -> Result<Self, c_int> {
+        let mut z = Box::new(fresh());
         // SAFETY: as in `inflate`.
         let status = unsafe {
             deflateInit2_(
@@ -189,6 +160,13 @@ impl Stream {
             status,
             written: used(avail_out, self.z.avail_out),
         }
+    }
+
+    /// `deflateReset`: the deflate stream as `deflateInit2` left it, keeping its
+    /// level, window and memory. zlib's status.
+    pub fn reset(&mut self) -> c_int {
+        // SAFETY: an initialised deflate stream (zlib refuses an inflate one).
+        unsafe { deflateReset(&raw mut *self.z) }
     }
 
     /// `deflateBound` for `length` input bytes.
