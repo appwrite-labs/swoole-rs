@@ -845,7 +845,11 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
     let zheader = property(ctx, ResponseArray::Header);
-    if zheader.is_none_or(|zheader| zheader.find(b"content-type").is_none()) {
+    let typed = zheader
+        .as_ref()
+        .and_then(|zheader| zheader.array())
+        .is_some_and(|zheader| zheader.find(b"content-type").is_some());
+    if !typed {
         ctx.set_header(b"content-type", content_type);
     }
     let body = Body {
@@ -1146,7 +1150,8 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
 
 /// The request header `key` as a string, if it has one.
 fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
-    string_of(&ctx.entry(Value::Header, key)?)
+    let entry = ctx.entry(Value::Header, key)?;
+    string_of(&entry)
 }
 
 fn read_u32(at: *const u8) -> u32 {
