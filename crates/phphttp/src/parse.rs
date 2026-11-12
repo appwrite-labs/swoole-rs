@@ -377,9 +377,9 @@ impl Copied {
 }
 
 /// `swoole_php_treat_data(arg, text, array)`.
-fn treat_data(arg: c_int, text: Copied, array: *mut zval) {
+fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
     // SAFETY: a fresh request-memory string, which the call frees, and a live array.
-    if !unsafe { swr_zend_http_treat_data(arg, text.0, array) } {
+    if !unsafe { swr_zend_http_treat_data(arg, text, array) } {
         let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
@@ -757,7 +757,7 @@ fn on_message_complete(state: &mut State) -> c_int {
         }
     }
     let form_source = swr_v1_httpbindings_form_source(
-        u32::from(chunked.is_some())
+        u32::from(chunked)
             | (u32::from(state.parse_body != 0) << 1)
             | (u32::from(state.request.post_form_urlencoded != 0) << 2)
             | (u32::from(state.recv_chunked != 0) << 3)
