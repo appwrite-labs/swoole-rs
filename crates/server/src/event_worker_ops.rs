@@ -51,7 +51,7 @@ struct Context<'a> {
     reactor: crate::reactor_handle::Reactor,
     conn: *mut ConnectionRecord,
     status: *const c_void,
-    socket: *mut c_void,
+    socket: Option<swoole_rs_reactor::Socket<'a>>,
 }
 
 impl<'a> Context<'a> {
@@ -249,8 +249,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let conn = ctx.conn()?;
     Some(match op {
         OP_CONN_READABLE => {
-            let removed =
-                crate::objects::socket(conn.socket).is_none_or(|s| s.read(|s| s.removed != 0));
+            let removed = conn.socket().is_none_or(|s| s.read(|s| s.removed != 0));
             u64::from(conn.peer_closed == 0 && !removed)
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id),

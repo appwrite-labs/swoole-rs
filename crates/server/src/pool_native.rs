@@ -17,7 +17,7 @@ use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use swoole_rs_process::worker_record::Worker as Record;
 
-use crate::objects::socket;
+use crate::objects::{Reactor, worker_pipe};
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_corebase::CoreAllocator;
@@ -48,8 +48,7 @@ use swoole_rs_process::process_pool::{
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_reactor::event_api::{
-    swoole_event_add, swoole_event_del, swoole_event_is_available, swoole_event_set_handler,
-    swoole_event_write,
+    swoole_event_is_available, swoole_event_set_handler, swoole_event_write,
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
@@ -95,9 +94,21 @@ pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
 /// the callback was registered with.
 type Pool<'a> = PoolRef<'a>;
 
-/// A live socket's fd, or -1 for none.
-fn fd(socket: *mut c_void) -> c_int {
-    crate::objects::socket(socket).map_or(-1, Socket::fd)
+/// A socket's fd, or -1 for none.
+fn fd(socket: Option<Socket<'_>>) -> c_int {
+    socket.map_or(-1, Socket::fd)
+}
+
+/// The pool's stream listener, or `None` without one.
+fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
+    // SAFETY: null, or the listening socket the pool's IPC owns until the pool frees it.
+    unsafe { Socket::from_ptr(pool.ipc_listener().cast()) }
+}
+
+/// The socket a hook works on, or `None`.
+fn call_socket(c: &PoolCall) -> Option<Socket<'_>> {
+    // SAFETY: null, or the live native socket the call holds (`PoolCall::socket`).
+    unsafe { Socket::from_ptr(c.socket().cast()) }
 }
 
 fn errno() -> c_int {
@@ -125,8 +136,8 @@ fn bus_of(pool: Pool<'_>) -> crate::objects::Bus {
 }
 
 /// `MessageBus::read(sock)`.
-fn bus_read(pool: Pool<'_>, sock: *mut c_void) -> isize {
-    socket(sock).map_or(-1, |sock| bus_of(pool).read(sock))
+fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
+    sock.map_or(-1, |sock| bus_of(pool).read(sock))
 }
 
 /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
@@ -314,7 +325,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     };
     let packet = pool.ipc_packet();
     let size = pool.max_packet_size() as usize;
-    let fd = fd(event.socket_ptr().cast());
+    let fd = fd(event.socket());
     // SAFETY: the packet buffer holds `max_packet_size` bytes.
     let n = unsafe { libc::read(fd, packet.cast(), size) };
     if n < 0 && errno() != libc::EINTR {
@@ -336,7 +347,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
 extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some(pool) = LOOP_POOL.get()
-        && bus_read(pool, event.socket_ptr()) > 0
+        && bus_read(pool, event.socket()) > 0
     {
         bus_deliver(pool);
     }
@@ -459,7 +470,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         OP_NEW_PIPE => new_pipe(pool, worker),
         OP_SNDBUF => {
             let mut size: c_int = 0;
-            let fd = fd(worker.pipe_master());
+            let fd = fd(worker_pipe(worker, true));
             let failed = swoole_rs_corebase::sys::getsockopt_int(
                 fd,
                 libc::SOL_SOCKET,
@@ -469,8 +480,8 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
             if failed != 0 { -1 } else { i64::from(size) }
         }
         OP_UNLIMIT_PIPES => {
-            for end in [worker.pipe_worker(), worker.pipe_master()] {
-                if let Some(end) = socket(end) {
+            for master in [false, true] {
+                if let Some(end) = worker_pipe(worker, master) {
                     end.edit(|end| end.output.buffer_size = u32::MAX);
                 }
             }
@@ -491,10 +502,10 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         }
         OP_REMOVE_PIPE => {
             // arg: only when the pipe is still in the reactor.
-            let pipe = worker.pipe_worker();
-            if arg == 0 || socket(pipe).is_some_and(|pipe| pipe.read(|pipe| pipe.removed == 0)) {
-                // SAFETY: the worker's pipe, in this thread's loop.
-                unsafe { swoole_event_del(pipe.cast()) };
+            if let Some(pipe) = worker_pipe(worker, false)
+                && (arg == 0 || pipe.read(|pipe| pipe.removed == 0))
+            {
+                Reactor::thread().del(pipe);
             }
             0
         }
@@ -506,15 +517,14 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
             0
         }
         OP_DONT_RESTART => {
-            if let Some(pipe) = socket(worker.pipe_worker()) {
+            if let Some(pipe) = worker_pipe(worker, false) {
                 pipe.edit(|pipe| pipe.dont_restart = 1);
             }
             0
         }
         OP_ADD_PIPE => {
-            let pipe = worker.pipe_worker().cast();
-            // SAFETY: the worker's pipe, in this thread's loop.
-            i64::from(unsafe { swoole_event_add(pipe, EVENT_READ) })
+            let add = |pipe| Reactor::thread().add(pipe, EVENT_READ);
+            i64::from(worker_pipe(worker, false).map_or(-1, add))
         }
         OP_PUSH_STOP => i64::from(push_stop(pool, worker.pid(), worker.id() as u16)),
         OP_WORKER_ERROR => {
@@ -719,8 +729,7 @@ impl PoolNative for Native {
     }
 
     fn accept(&self, c: &mut PoolCall) {
-        let listener = c.pool().ipc_listener();
-        let socket = socket(listener.cast()).map_or(ptr::null_mut(), |listener| {
+        let socket = ipc_listener(c.pool()).map_or(ptr::null_mut(), |listener| {
             listener.edit(swoole_rs_reactor::SocketFields::accept)
         });
         // SAFETY: null, or the connection the listener just accepted, which the pool frees.
@@ -733,7 +742,7 @@ impl PoolNative for Native {
             let (data, length, flags) = (c.data(), c.length(), c.flags());
             // SAFETY: the call's connection and buffer.
             let recv = |socket| unsafe { socket_recv_sync(socket, data, length, flags) };
-            socket(c.socket()).map_or(-1, recv)
+            call_socket(c).map_or(-1, recv)
         });
     }
 
@@ -742,7 +751,7 @@ impl PoolNative for Native {
             let (data, length) = (c.data(), c.length());
             // SAFETY: the call's connection and bytes.
             let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
-            socket(c.socket()).map_or(-1, send)
+            call_socket(c).map_or(-1, send)
         });
     }
 
@@ -753,7 +762,7 @@ impl PoolNative for Native {
 
     fn pipe_read(&self, c: &mut PoolCall) {
         io(c, |c| {
-            let Some(pipe) = c.worker().and_then(|worker| socket(worker.pipe_worker())) else {
+            let Some(pipe) = c.worker().and_then(|worker| worker_pipe(worker, false)) else {
                 return -1;
             };
             let next = swoole_timer_get_next_msec();
@@ -769,7 +778,7 @@ impl PoolNative for Native {
         io(c, |c| {
             let next = swoole_timer_get_next_msec();
             c.worker()
-                .and_then(|worker| socket(worker.pipe_worker()))
+                .and_then(|worker| worker_pipe(worker, false))
                 .map_or(-1, |pipe| {
                     pipe.wait_event(next as c_int, EVENT_READ) as isize
                 })
@@ -779,7 +788,7 @@ impl PoolNative for Native {
     fn bus_read(&self, c: &mut PoolCall) {
         io(c, |c| {
             c.worker()
-                .map_or(-1, |worker| bus_read(c.pool(), worker.pipe_worker()))
+                .map_or(-1, |worker| bus_read(c.pool(), worker_pipe(worker, false)))
         });
     }
 
@@ -829,7 +838,7 @@ impl PoolNative for Native {
                 let (data, length) = (c.data(), c.length());
                 // SAFETY: the worker's pipe and the call's bytes.
                 let send = |pipe| unsafe { socket_send_sync(pipe, data, length, 0) };
-                socket(c.socket()).map_or(-1, send)
+                call_socket(c).map_or(-1, send)
             }
         });
     }
@@ -848,14 +857,13 @@ impl PoolNative for Native {
                 log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
             }
             WARN_ACCEPT => {
-                let listener = pool.ipc_listener();
                 log::sys_warning(
                     origin,
-                    format_args!("[Worker#{id}] accept({}) failed", fd(listener.cast())),
+                    format_args!("[Worker#{id}] accept({}) failed", fd(ipc_listener(pool))),
                 );
             }
             WARN_READ => {
-                let fd = worker.map_or(-1, |worker| fd(worker.pipe_worker()));
+                let fd = fd(worker.and_then(|worker| worker_pipe(worker, false)));
                 log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
             }
             WARN_BAD_PACKET => log::error_log(
