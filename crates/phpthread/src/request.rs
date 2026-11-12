@@ -203,6 +203,11 @@ pub(crate) fn main_request() -> (Option<CString>, c_int, Option<Box<[u8]>>) {
     (request.path.clone(), request.argc, request.argv.clone())
 }
 
+/// The main thread's script path, which its RINIT kept.
+pub(crate) fn main_path() -> Option<CString> {
+    request().path.clone()
+}
+
 /// The main thread's RSHUTDOWN: release what RINIT kept.
 pub(crate) fn release() {
     let mut request = request();

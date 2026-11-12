@@ -4,8 +4,7 @@
 use crate::lifecycle::{MODE_THREAD, Props, ServerObject};
 use std::{
     cell::Cell,
-    ffi::{CStr, c_char, c_int, c_void},
-    ptr,
+    ffi::{c_int, c_void},
     sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
 use swoole_rs_corebase::Thread;
@@ -15,7 +14,6 @@ use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_thread_main_request, zend_fcall_info},
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -125,15 +123,10 @@ pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Resul
             .map_or(&[][..], string_of)
             .to_vec()
     };
-    if bootstrap().is_empty() {
-        let (mut path, mut argc): (*const c_char, c_int) = (ptr::null(), 0);
-        // SAFETY: two writable out-parameters.
-        unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
-        if !path.is_null() {
-            // SAFETY: the request's NUL-terminated script.
-            let path = unsafe { CStr::from_ptr(path) };
-            Props::own(object).string(c"bootstrap", path);
-        }
+    if bootstrap().is_empty()
+        && let Some(path) = swoole_rs_phpthread::main_script()
+    {
+        Props::own(object).string(c"bootstrap", &path);
     }
     let bootstrap = bootstrap();
     let argv = init_arguments(object)?;
@@ -157,29 +150,18 @@ fn init_arguments(object: ServerObject<'_>) -> Result<Option<Arguments>, Bailout
     if callable.is_null() {
         return Ok(None);
     }
-    let result = Owned::default();
-    let mut fci = swoole_rs_zend::EMPTY_FCI;
-    fci.size = size_of::<zend_fcall_info>();
-    // The call's own reference, released after it.
-    fci.function_name = callable.into_zval();
-    fci.retval = result.as_ptr();
-    // SAFETY: `call_user_function(NULL, nullptr, &init_arguments, &result, 0, nullptr)`.
-    let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
-    crate::dispatch::dtor(&mut fci.function_name);
-    called?;
+    let result = callable.call()?;
     result.array().map(Arguments::copy).transpose()
 }
 
 /// The thread starter: this `ThreadFactory` thread becomes a PHP thread running
 /// the bootstrap script, whose `start()` runs `run(context)`.
-unsafe fn start_thread(thread: *mut c_void, run: WorkerMain, context: *mut c_void) {
+fn start_thread(thread: &Thread, run: WorkerMain, context: *mut c_void) {
     MAIN.set(Some((run, context)));
     // `prepare` set it before the server started threads; `release` clears it
     // once `start()` returned, after every thread ended.
     let start = START.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(start) = start else { return };
-    // SAFETY: the factory's live `swoole::Thread` for this thread.
-    let thread = unsafe { &*thread.cast::<Thread>() };
     // SAFETY: the factory's new OS thread, before anything of PHP's.
     unsafe {
         swoole_rs_phpthread::run(

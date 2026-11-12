@@ -416,7 +416,7 @@ fn body<H: Host>(h: &mut H, arg: u64) {
 pub type WorkerMain = unsafe extern "C" fn(*mut c_void);
 
 /// What runs a thread-mode worker thread's body on its `swoole::Thread`.
-pub type WorkerThreadStart = unsafe fn(*mut c_void, WorkerMain, *mut c_void);
+pub type WorkerThreadStart = fn(&Thread, WorkerMain, *mut c_void);
 
 static WORKER_THREAD_START: Mutex<Option<WorkerThreadStart>> = Mutex::new(None);
 
@@ -437,8 +437,8 @@ pub unsafe fn worker_thread_start(thread: *mut c_void, run: WorkerMain, context:
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     match start {
-        // SAFETY: per the caller.
-        Some(start) => unsafe { start(thread, run, context) },
+        // SAFETY: per the caller, the thread's live `swoole::Thread`.
+        Some(start) => start(unsafe { &*thread.cast::<Thread>() }, run, context),
         // SAFETY: per the caller.
         None => unsafe { run(context) },
     }
