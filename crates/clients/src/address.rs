@@ -59,11 +59,14 @@ fn assign_with(
     port: c_int,
     resolve: impl FnOnce(c_int, &CStr) -> Result<[u8; 16], c_int>,
 ) -> c_int {
-    let (Ok(name), Some((&0, bytes))) = (CStr::from_bytes_until_nul(host), host.split_last())
-    else {
+    let Some((&0, bytes)) = host.split_last() else {
         return BAD_HOST_ADDR;
     };
+    // Only a host that is no IP literal of the family needs the name.
     swoole_rs_corebase::net_address::assign(address, length, kind, bytes, port, |family| {
+        let Ok(name) = CStr::from_bytes_until_nul(host) else {
+            return Err(BAD_HOST_ADDR);
+        };
         let mut address = [0; 16];
         if parse_ip(family, name, &mut address) {
             return Ok(address);

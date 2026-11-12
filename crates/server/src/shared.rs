@@ -147,12 +147,18 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
     }
 }
 
-/// Initializes a new shared allocation's server counter prefix.
+/// Initializes a new shared allocation's server counter prefix, and returns it.
 ///
 /// # Safety
-/// `counters` is fresh writable storage with `ServerCounters` size/alignment and no readers.
-pub unsafe fn swr_v1_server_shared_init(storage: *mut core::ffi::c_void) {
-    let counters = storage.cast::<ServerCounters>();
+/// `storage` is fresh writable storage with `ServerCounters` size/alignment and no
+/// readers, mapped for as long as the returned counters are used.
+#[must_use]
+pub unsafe fn swr_v1_server_shared_init(
+    storage: *mut core::ffi::c_void,
+) -> &'static ServerCounters {
+    // SAFETY: per the caller, fresh storage of the right size and alignment that
+    // nothing else reads yet, mapped for as long as the counters are used.
+    let counters = unsafe { &mut *storage.cast::<core::mem::MaybeUninit<ServerCounters>>() };
     let value = ServerCounters::default();
     value
         .pipe_packet_msg_id
@@ -162,8 +168,7 @@ pub unsafe fn swr_v1_server_shared_init(storage: *mut core::ffi::c_void) {
         max_concurrency: u32::MAX,
         ..value
     };
-    // SAFETY: initialization owns this new shared prefix exclusively.
-    unsafe { counters.write(value) };
+    counters.write(value)
 }
 
 /// Reads and updates the shared record, ending every borrow before host callbacks.
@@ -340,11 +345,10 @@ mod tests {
             let gs = swoole_rs_memory::members::Shm::calloc(1, 4096);
             let mapping = gs.as_ptr();
             assert!(!mapping.is_null());
-            swr_v1_server_shared_init(mapping);
-            let counters = mapping.cast::<ServerCounters>();
-            assert_eq!((*counters).max_concurrency, u32::MAX);
-            assert_eq!((*counters).pipe_packet_msg_id.load(Ordering::Relaxed), 1);
-            (*counters).concurrency.store(7, Ordering::Relaxed);
+            let counters = swr_v1_server_shared_init(mapping);
+            assert_eq!(counters.max_concurrency, u32::MAX);
+            assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
+            counters.concurrency.store(7, Ordering::Relaxed);
             let state = swr_v1_server_state_new();
             (*(*state).config()).gs = gs;
             let pid = libc::fork();

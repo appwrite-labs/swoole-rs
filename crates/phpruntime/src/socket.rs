@@ -1,7 +1,12 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
 use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
-use std::{ffi::CStr, mem::MaybeUninit, ptr::NonNull};
+use std::{
+    borrow::Cow,
+    ffi::{CStr, CString},
+    mem::MaybeUninit,
+    ptr::NonNull,
+};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
@@ -170,10 +175,8 @@ impl Socket {
     }
 
     /// `errMsg`, if set.
-    pub(crate) fn message(&self) -> Option<&CStr> {
-        let message = self.co().err_msg();
-        // SAFETY: errMsg is null or a NUL-terminated string the socket keeps.
-        (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) })
+    pub(crate) fn message(&self) -> Option<CString> {
+        self.co().err_message()
     }
 
     /// `set_err(code)`.
@@ -302,7 +305,7 @@ impl Socket {
     }
 
     /// `get_err()`: `swoole_strerror(errCode)`.
-    pub(crate) fn strerror(&self) -> &'static CStr {
+    pub(crate) fn strerror(&self) -> Cow<'static, CStr> {
         strerror(self.error())
     }
 
@@ -473,9 +476,8 @@ pub use swoole_rs_phpswoole::check_reactor;
 
 /// `swoole_strerror(code)`.
 #[must_use]
-pub fn strerror(code: i32) -> &'static CStr {
-    // SAFETY: Swoole's static message table or strerror's text.
-    unsafe { CStr::from_ptr(swoole_rs_error_ffi::swoole_strerror(code)) }
+pub fn strerror(code: i32) -> Cow<'static, CStr> {
+    swoole_rs_error::strerror_text(code, swoole_rs_corebase::sys::strerror)
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine Swoole raises a fatal

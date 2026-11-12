@@ -105,10 +105,18 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
     registry: *const crate::worker_registry::WorkerRegistry,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
-    // SAFETY: these are the canonical ordered event records and their live count.
+    // SAFETY: these are the canonical ordered event records and their live count:
+    // the first with this pid, in array order, reading the pid slots raw writes reach.
     let worker = unsafe {
-        crate::worker_record::swr_v1_worker_array_lookup(view.event_workers, view.event_count, pid)
-    };
+        crate::worker_registry::find_array(
+            view.event_workers.cast(),
+            view.event_count,
+            size_of::<WorkerRecord>(),
+            core::mem::offset_of!(WorkerRecord, pid),
+            pid,
+        )
+    }
+    .cast::<WorkerRecord>();
     if !worker.is_null() {
         return worker;
     }
