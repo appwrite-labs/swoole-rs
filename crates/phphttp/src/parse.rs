@@ -669,12 +669,13 @@ fn on_headers_complete(state: &mut State) -> c_int {
     0
 }
 
-/// Swoole's `microtime()`.
-/// `$request->server`'s `request_time` and `request_time_float`.
+/// `$request->server`'s `request_time` (`time(nullptr)`) and `request_time_float`
+/// (`swoole::microtime()`).
 pub(crate) fn request_times(state: &mut State) {
     let now = swoole_rs_corebase::time_now();
     add_server(state, Key::RequestTime, Owned::long(now));
-    add_server(state, Key::RequestTimeFloat, Owned::double(microtime()));
+    let float = swoole_rs_corebase::microtime();
+    add_server(state, Key::RequestTimeFloat, Owned::double(float));
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
@@ -686,17 +687,6 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
             Owned::string(protocol.to_owned()),
         );
     }
-}
-
-/// `gettimeofday`'s seconds and microseconds, as upstream's `microtime()` adds them.
-fn microtime() -> f64 {
-    let Some(now) = swoole_rs_corebase::sys::clock_gettime(libc::CLOCK_REALTIME) else {
-        return 0.0;
-    };
-    let micros = u32::try_from(now.tv_nsec / 1000).unwrap_or(0);
-    #[expect(clippy::cast_precision_loss, reason = "as upstream's (double) casts")]
-    let seconds = now.tv_sec as f64 + (f64::from(micros) / 1_000_000.0);
-    seconds
 }
 
 fn on_body(state: &mut State, span: &[u8]) -> c_int {
