@@ -495,6 +495,13 @@ impl Owner {
     /// Rust frame (`panic = "abort"`), as an uncaught one would.
     pub(crate) fn select(&self) {
         let now = self.relative_msec();
+        // Most loop turns find no timer due.
+        let idle = self.queue.borrow_mut().select_idle(now);
+        if let Some(delay) = idle {
+            self.next_msec.set(delay);
+            self.set(delay);
+            return;
+        }
         let begin = self.queue.borrow_mut().begin(now);
         if begin == BUSY || begin == CLOSING {
             return;

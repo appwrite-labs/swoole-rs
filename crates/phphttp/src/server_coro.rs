@@ -1106,7 +1106,6 @@ fn http2(conn: &Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
             fd,
             context,
             max_body_size,
-            true,
             Box::new(move |ctx, http1| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
