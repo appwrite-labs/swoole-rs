@@ -321,7 +321,8 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     if mode == crate::MODE_PROCESS {
         let thread = thread(state, usize::from(reactor_id)).cast::<ThreadRecord>();
         // SAFETY: the connection's live reactor thread.
-        unsafe { (*thread).dispatch_count += 1 };
+        let count = unsafe { &(*thread).dispatch_count };
+        count.set(count.get() + 1);
     }
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.dispatch_count.fetch_add(1, SeqCst);

@@ -5,7 +5,6 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
-use swoole_rs_deflate::Allocator;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
@@ -396,7 +395,7 @@ pub fn ws_inflate(bytes: &[u8]) {
         return;
     };
     let level = c_int::from(level % 11) - 1;
-    let compressed = swoole_rs_deflate::message(data, level, Allocator::MALLOC)
+    let compressed = swoole_rs_deflate::message(data, level)
         .unwrap_or_else(|failure| panic!("deflate at {level}: {failure:?}"));
     assert_eq!(
         swoole_rs_inflate::message(&compressed).as_deref(),
@@ -430,14 +429,8 @@ pub fn http_inflate(bytes: &[u8]) {
     let _ = decoder().decode(body);
     let _ = in_chunks(decoder(), body, lengths);
     let level = c_int::from(mode >> 3) % 10;
-    let stream = swoole_rs_deflate::compress(
-        body,
-        2 * body.len() + 64,
-        window_bits,
-        level,
-        Allocator::MALLOC,
-    )
-    .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
+    let stream = swoole_rs_deflate::compress(body, 2 * body.len() + 64, window_bits, level)
+        .unwrap_or_else(|failure| panic!("compress {window_bits} at {level}: {failure:?}"));
     assert_eq!(decoder().decode(&stream), Some(body), "one call");
     // The raw retry is the first chunk's alone: a raw stream whose first two bytes
     // read as a zlib header, or whose first chunk is shorter, fails in pieces.

@@ -100,15 +100,14 @@ fn pool_free(pool: Pool) {
 
 /// `SwooleWG.worker`'s status, and its request count once idle again.
 fn worker_busy(busy: bool) {
-    let worker = swoole_rs_process::worker_globals::current_worker();
-    // SAFETY: this process's worker.
-    let worker = unsafe { Worker::new(worker) };
-    if busy {
-        worker.set_status(WORKER_BUSY);
-    } else {
-        worker.add_request_count();
-        worker.set_status(WORKER_IDLE);
-    }
+    swoole_rs_process::worker_globals::with_current(|worker| {
+        if busy {
+            worker.set_status(WORKER_BUSY);
+        } else {
+            worker.add_request_count();
+            worker.set_status(WORKER_IDLE);
+        }
+    });
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.

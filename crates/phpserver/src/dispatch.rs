@@ -193,30 +193,13 @@ fn coroutine_enabled(server: view::Server<'_>) -> bool {
     }
 }
 
-/// `serv->get_worker_message_bus()`: this thread's in thread mode, else the server's.
-pub(crate) fn message_bus(server: view::Server<'_>) -> *mut c_void {
-    if i64::from(server.config().mode_) == crate::lifecycle::MODE_THREAD {
-        swoole_rs_corebase::thread_message_bus()
-    } else {
-        server.message_bus()
-    }
-}
-
-/// `set_allocator(sw_zend_string_allocator())` on `bus`, a `MessageBus`: its Rust
-/// bus, then its allocator.
-fn bus_uses_zend_strings(bus: *mut c_void) {
-    let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-    // SAFETY: a live `MessageBus`, whose allocator only this thread reads meanwhile.
-    unsafe { (*bus.cast::<[*const c_void; 2]>())[1] = allocator };
-}
-
 /// `SWR_PHPSERVER_INSTALL_ALLOCATORS`: the server's message bus, and its receive
 /// buffers in base and thread mode, allocate Zend strings.
 pub(crate) fn use_zend_strings(server: view::Server<'_>) {
-    bus_uses_zend_strings(server.message_bus());
+    let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+    server.set_bus_allocator(false, swoole_rs_phpswoole::zend_string_allocator());
     let config = server.config();
     if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
-        let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
         config
             .recv_buffer_allocator
             .store(allocator.cast_mut(), Relaxed);
@@ -233,7 +216,7 @@ fn prepare_worker(server: view::Server<'_>) {
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
-    bus_uses_zend_strings(message_bus(server));
+    server.set_bus_allocator(true, swoole_rs_phpswoole::zend_string_allocator());
 }
 
 /// The running server's object zval, as a callback's first argument: a copy
