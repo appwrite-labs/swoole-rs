@@ -23,8 +23,9 @@ use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry,
-        zend_object, zend_object_std_dtor, zval,
+        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_NULL, IS_OBJECT_EX,
+        swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry, zend_object,
+        zend_object_std_dtor, zend_value, zval,
     },
 };
 
@@ -316,8 +317,7 @@ impl ServerObject {
     /// The running server's object (`php_swoole_server_zval_ptr`), which
     /// outlives its running server.
     pub(crate) fn running() -> Self {
-        let mut zserv = crate::dispatch::zserv();
-        Self(Value::of(&mut zserv).object().unwrap_or(ptr::null_mut()))
+        Self(crate::instance::server_object())
     }
 
     /// The Server object `value` holds, if it is one: only [`create`] makes
@@ -330,10 +330,26 @@ impl ServerObject {
         self.0
     }
 
+    /// The object as a zval that takes no reference (`ZVAL_OBJ` without
+    /// `GC_ADDREF`), as upstream's `*zserv` copies are; undefined for no object.
+    /// The handle keeps the object live while the zval is used.
+    pub(crate) fn zval(self) -> zval {
+        if self.0.is_null() {
+            return swoole_rs_zend::UNDEF;
+        }
+        zval {
+            value: zend_value { obj: self.0 },
+            u1: _zval_struct__bindgen_ty_1 {
+                type_info: IS_OBJECT_EX,
+            },
+            u2: _zval_struct__bindgen_ty_2 { next: 0 },
+        }
+    }
+
     /// The object's class.
     pub(crate) fn class(self) -> *mut zend_class_entry {
-        // SAFETY: a live object.
-        unsafe { (*self.0).ce }
+        let mut this = self.zval();
+        Value::of(&mut this).class().unwrap_or(ptr::null_mut())
     }
 
     /// The object's data, borrowed only by the method that asks for it.
@@ -659,8 +675,7 @@ pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Own
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
 fn bind(call: &Call, serv: view::Server<'_>) {
     let object = ServerObject::this(call);
-    // *php_swoole_server_zval_ptr(serv) = *zserv
-    crate::dispatch::set_server_zval(call.this_zval());
+    crate::instance::set_server_object(call.this());
     object.set_serv(serv.raw());
     for &port in serv.ports() {
         // SAFETY: `$this`, bound above, and one of its ports.

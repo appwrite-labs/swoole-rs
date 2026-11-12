@@ -8,11 +8,10 @@ use crate::port::PortProperty;
 use crate::server::THREAD;
 use std::os::unix::ffi::OsStrExt;
 use std::{
-    cell::UnsafeCell,
+    cell::Cell,
     ffi::{CStr, CString, c_int, c_long, c_void},
-    mem::MaybeUninit,
     ptr,
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{
@@ -23,31 +22,38 @@ use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_recor
 use swoole_rs_server::{event_worker_ops, server_methods, view};
 use swoole_rs_zend::{
     Value, bailout, string,
-    sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
+    sys::{
+        swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zend_object, zval,
+    },
     value::{empty_string, set_str},
 };
 
-/// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: one per
-/// process, or one per thread under `SW_THREAD`.
-struct Instance(UnsafeCell<MaybeUninit<zval>>);
-
-// SAFETY: written only by the thread that constructs the Server and read by the
-// PHP threads after it, as upstream's global was.
-unsafe impl Sync for Instance {}
-
-static INSTANCE: Instance = Instance(UnsafeCell::new(MaybeUninit::zeroed()));
+/// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
+/// server's object, held without a reference as upstream's zval was; one per
+/// process, or one per thread under `SW_THREAD`. Null until bound.
+static INSTANCE: AtomicPtr<zend_object> = AtomicPtr::new(ptr::null_mut());
 
 thread_local! {
-    static THREAD_INSTANCE: Instance = const { Instance(UnsafeCell::new(MaybeUninit::zeroed())) };
+    static THREAD_INSTANCE: Cell<*mut zend_object> = const { Cell::new(ptr::null_mut()) };
 }
 
-/// `php_swoole_server_zval_ptr`: the running server's object zval (`IS_UNDEF` until bound).
+/// `Z_OBJ_P(php_swoole_server_zval_ptr())`: the running server's object, or null
+/// before one is bound.
 #[must_use]
-pub fn php_swoole_server_zval_ptr() -> *mut zval {
+pub(crate) fn server_object() -> *mut zend_object {
     if THREAD.load(Ordering::Relaxed) {
-        THREAD_INSTANCE.with(|slot| slot.0.get().cast())
+        THREAD_INSTANCE.get()
     } else {
-        INSTANCE.0.get().cast()
+        INSTANCE.load(Ordering::Relaxed)
+    }
+}
+
+/// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
+pub(crate) fn set_server_object(object: *mut zend_object) {
+    if THREAD.load(Ordering::Relaxed) {
+        THREAD_INSTANCE.set(object);
+    } else {
+        INSTANCE.store(object, Ordering::Relaxed);
     }
 }
 
