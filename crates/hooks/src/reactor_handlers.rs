@@ -63,22 +63,16 @@ pub fn swr_v1_hook_init_reactor(mut set: impl FnMut(c_int, c_int, Handler)) {
 /// `static void System::init_reactor(Reactor *reactor)`: the handlers above, waking
 /// coroutines through the thread's deferred queue, then the async-thread pipe's (and
 /// `io_uring`'s) completions.
-///
-/// # Safety
-/// `reactor` is the calling thread's live `Reactor`.
 #[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE")]
-pub unsafe extern "C" fn system_init_reactor(reactor: *mut c_void) {
+pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
     let mut set = |fd_type, events, handler| {
-        // SAFETY: the caller's live reactor.
-        unsafe {
-            swoole_rs_reactor::reactor_upstream::reactor_set_handler(
-                reactor,
-                fd_type,
-                events,
-                Some(handler),
-            );
-        }
+        swoole_rs_reactor::reactor_upstream::reactor_set_handler(
+            reactor,
+            fd_type,
+            events,
+            Some(handler),
+        );
     };
     swr_v1_hook_init_reactor(&mut set);
     set(

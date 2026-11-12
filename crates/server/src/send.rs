@@ -94,7 +94,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
 }
 
 /// `send_now`'s TLS call, never made: it sends only on sockets without an SSL.
-unsafe extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
+extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
     -1
 }
 

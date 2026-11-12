@@ -6,6 +6,9 @@
 use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int};
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
@@ -24,13 +27,16 @@ use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZSt
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
     parser: MultipartParser,
-    fp: *mut libc::FILE,
+    fp: Option<Upload>,
 }
+
+/// The upload file being written, buffered as upstream's `fdopen` stream was.
+type Upload = BufWriter<File>;
 
 /// The multipart parser's callbacks: the context and the current upload's stream.
 struct Parts<'a> {
     state: &'a mut State,
-    fp: &'a mut *mut libc::FILE,
+    fp: &'a mut Option<Upload>,
 }
 
 unsafe extern "C" {
@@ -720,19 +726,20 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
 }
 
 fn on_message_complete(state: &mut State) -> c_int {
-    let chunked = state
-        .parse
-        .chunked_body
-        .as_ref()
-        .map(|body| (body.as_ptr(), body.len()));
-    let content_length = chunked.map_or(state.request.body_length, |(_, length)| length);
-    if let Some((body, length)) = chunked
+    // Out of the state while the callbacks below take it, then back for `getContent()`.
+    let chunked = state.parse.chunked_body.take();
+    let result = message_complete(state, chunked.as_deref().map(Vec::as_slice));
+    state.parse.chunked_body = chunked;
+    result
+}
+
+/// `on_message_complete` over the dechunked body, if the request was chunked.
+fn message_complete(state: &mut State, chunked: Option<&[u8]>) -> c_int {
+    if let Some(body) = chunked
         && state.mt_parser.is_some()
     {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
         // receive boundaries, so parse the dechunked body in one pass here instead of parsing each span.
-        // SAFETY: the dechunked body, which the multipart callbacks leave alone.
-        let body = unsafe { std::slice::from_raw_parts(body, length) };
         let prefix = body_prefix(body, true);
         if !multipart_parse(state, body.get(prefix..).unwrap_or_default()) {
             return -1;
@@ -746,14 +753,9 @@ fn on_message_complete(state: &mut State) -> c_int {
             | (u32::from(!state.request.body_at.is_null()) << 4),
     );
     match (form_source, chunked) {
-        (1, Some((body, _))) => {
+        (1, Some(body)) => {
             let post = property(state, Property::Post);
-            // SAFETY: the dechunked body.
-            treat_data(
-                PARSE_STRING,
-                unsafe { std::slice::from_raw_parts(body, content_length) },
-                post,
-            );
+            treat_data(PARSE_STRING, body, post);
         }
         (2, _) => {
             let post = property(state, Property::Post);
@@ -804,7 +806,7 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
     };
     state.mt_parser = Some(Box::new(Multipart {
         parser: MultipartParser::new(boundary),
-        fp: ptr::null_mut(),
+        fp: None,
     }));
     state.parse.form_data = Some(Box::new(Vec::with_capacity(BUFFER_SIZE_STD)));
     true
@@ -1025,22 +1027,16 @@ fn path_size(path: &[u8]) -> i64 {
 }
 
 /// `swoole::file_get_size(fp)`: flushed, and only for a regular file.
-fn file_size(fp: *mut libc::FILE) -> i64 {
-    // SAFETY: an open stream.
-    unsafe { libc::fflush(fp) };
-    // SAFETY: as above.
-    let fd = unsafe { libc::fileno(fp) };
-    match swoole_rs_corebase::sys::fstat(fd) {
-        Some(status) if status.st_mode & libc::S_IFMT == libc::S_IFREG => status.st_size,
+fn file_size(upload: &mut Upload) -> i64 {
+    // Upstream ignores fflush's result: a failure leaves the size what reached the file.
+    upload.flush().unwrap_or_default();
+    match upload.get_ref().metadata() {
+        Ok(meta) if meta.is_file() => i64::try_from(meta.len()).unwrap_or(-1),
         _ => -1,
     }
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn part_data(state: &mut State, upload: &mut *mut libc::FILE, data: &[u8]) -> c_int {
+fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) -> c_int {
     if state.parse.form_data_name.is_some() {
         state
             .parse
@@ -1049,20 +1045,15 @@ fn part_data(state: &mut State, upload: &mut *mut libc::FILE, data: &[u8]) -> c_
             .extend_from_slice(data);
         return 0;
     }
-    let fp = *upload;
-    if fp.is_null() {
+    let Some(file) = upload else {
         return 0;
-    }
-    // SAFETY: an open stream and the parser's span.
-    let written = unsafe { libc::fwrite(data.as_ptr().cast(), 1, data.len(), fp) };
-    if written != data.len() {
+    };
+    if let Err(error) = file.write_all(data) {
         upload_long(state, b"error", UPLOAD_CANT_WRITE);
-        // SAFETY: the stream, closed once.
-        unsafe { libc::fclose(fp) };
-        *upload = ptr::null_mut();
+        *upload = None;
         host::log(
             0,
-            -errno(),
+            -error.raw_os_error().unwrap_or(0),
             c"multipart_body_on_data",
             "write upload file failed",
         );
@@ -1070,7 +1061,7 @@ fn part_data(state: &mut State, upload: &mut *mut libc::FILE, data: &[u8]) -> c_
     0
 }
 
-fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
+fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) -> c_int {
     if state.parse.input_name.is_none() {
         return 0;
     }
@@ -1087,24 +1078,15 @@ fn part_headers_complete(state: &mut State, upload: &mut *mut libc::FILE) -> c_i
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return 0;
     }
-    // SAFETY: a descriptor this function owns.
-    let fp = unsafe { libc::fdopen(fd, c"wb+".as_ptr()) };
-    if fp.is_null() {
-        upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
-        let mut message = b"fopen(".to_vec();
-        message.extend_from_slice(&path);
-        message.push(b')');
-        message.extend_from_slice(b" failed");
-        host::log(0, -errno(), c"multipart_body_on_header_complete", message);
-        return 0;
-    }
-    *upload = fp;
+    // SAFETY: the descriptor create_tmpfile just opened, which nothing else owns.
+    let file = unsafe { File::from_raw_fd(fd) };
+    *upload = Some(BufWriter::new(file));
     upload_bytes(state, b"tmp_name", &path);
     add_upload(state, &path);
     0
 }
 
-fn part_data_end(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
+fn part_data_end(state: &mut State, upload: &mut Option<Upload>) -> c_int {
     if let Some(name) = state.parse.form_data_name.take() {
         let post = property(state, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
@@ -1123,12 +1105,8 @@ fn part_data_end(state: &mut State, upload: &mut *mut libc::FILE) -> c_int {
     let Some(input_name) = state.parse.input_name.take() else {
         return 0;
     };
-    let fp = *upload;
-    if !fp.is_null() {
-        upload_long(state, b"size", file_size(fp));
-        // SAFETY: the stream, closed once.
-        unsafe { libc::fclose(fp) };
-        *upload = ptr::null_mut();
+    if let Some(mut file) = upload.take() {
+        upload_long(state, b"size", file_size(&mut file));
     }
     let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);
