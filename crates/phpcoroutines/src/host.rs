@@ -3,7 +3,7 @@
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
 use std::ffi::{CStr, c_int, c_long, c_void};
-use swoole_rs_coroutine::{RC_CANCELED, Scheduler};
+use swoole_rs_coroutine::RC_CANCELED;
 use swoole_rs_zend::{
     E_ERROR, bailout,
     sys::{swr_zend_callable, zend_execute_data, zval},
@@ -113,10 +113,6 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
     if swoole_rs_phpswoole::display_errors() || level == E_ERROR {
         bailout::defer(swoole_rs_zend::report(level, message));
     }
-}
-
-fn scheduler() -> *mut Scheduler {
-    swoole_rs_coroutine::scheduler()
 }
 
 /// The Rust state `co` starts with.
@@ -361,8 +357,8 @@ pub fn counts() -> (usize, u64) {
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a
 /// bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
-    // SAFETY: this thread's scheduler and a live coroutine.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_resume(scheduler(), state(co)) };
+    // SAFETY: callers pass a live, suspended coroutine.
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 /// A coroutine by id, the handle other crates hold. A coroutine's record is
