@@ -45,9 +45,8 @@ use crate::ops::{
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
     OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR,
-    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY,
-    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING,
-    OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT,
+    OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
@@ -255,10 +254,6 @@ impl<'a> Objects<'a> {
     fn reactor(&self) -> crate::reactor_handle::Reactor {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
-    }
-    fn worker(&self) -> &mut WorkerRecord {
-        // SAFETY: the ops reading it run with a live worker as the context's object.
-        unsafe { &mut *self.ctx.object.cast::<WorkerRecord>() }
     }
     /// The live `SendData` the send path lends.
     fn send(&self) -> &SendData {
@@ -1238,24 +1233,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 u64::from(worker.concurrency)
             }
-        }
-        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency),
-        OP_ST_W_CONCURRENCY_CAS => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t) arg")]
-            let expected = arg as u32;
-            // SAFETY: the worker's aligned `sw_atomic_t`, shared with other processes.
-            let cell =
-                unsafe { core::sync::atomic::AtomicU32::from_ptr(&raw mut o.worker().concurrency) };
-            // `sw_atomic_value_cmp_set`: the value before, swapped or not.
-            let before = cell.compare_exchange(expected, 0, SeqCst, SeqCst);
-            u64::from(before.unwrap_or_else(|value| value))
-        }
-        OP_ST_W_RESET_COUNTS => {
-            let worker = o.worker();
-            worker.request_count = 0;
-            worker.response_count = 0;
-            worker.dispatch_count = 0;
-            0
         }
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
@@ -2794,30 +2771,6 @@ mod tests {
         }
         assert_eq!(ctx.length, 5);
         assert_eq!(ctx.data, data[3..].as_ptr().cast());
-    }
-
-    #[test]
-    fn concurrency_swap_returns_the_value_before_like_sw_atomic_value_cmp_set() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: every WorkerRecord field is a pointer or integer; zero is valid.
-        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        worker.concurrency = 3;
-        ctx.object = (&raw mut worker).cast();
-        // SAFETY: the context's worker is live above.
-        unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
-            crate::state::free_state(state);
-        }
     }
 
     #[test]
