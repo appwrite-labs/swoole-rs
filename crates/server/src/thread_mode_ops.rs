@@ -346,9 +346,12 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
         OP_CREATE_USER_WORKERS => {
-            // SAFETY: `ThreadFactory::start`, before it starts a thread; `config`
-            // isn't read across the call.
-            u64::from(create_user_workers(serv, unsafe { serv.config_mut() }))
+            let workers = create_user_workers(serv);
+            let created = !workers.is_null();
+            // SAFETY: `ThreadFactory::start`, before it starts a thread; `config` isn't
+            // read after the write.
+            unsafe { serv.config_mut() }.user_workers = workers;
+            u64::from(created)
         }
         OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
