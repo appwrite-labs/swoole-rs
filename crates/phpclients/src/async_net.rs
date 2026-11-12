@@ -121,14 +121,6 @@ fn callback(data: &net::Data, slot: usize) -> Option<Rc<Callable>> {
     callable
 }
 
-/// `php_swoole_client_async_free_object`: free every callback, all of them
-/// even when a destructor bails out (each drop defers its bailout).
-pub(crate) fn free_callbacks(object: Obj) {
-    for slot in &object.data().callbacks {
-        drop(slot.take());
-    }
-}
-
 /// Call `callable` with `argv`: whether the call succeeded.
 fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
     native::call(callable, argv, ptr::null_mut(), true)
