@@ -89,10 +89,9 @@ pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
 
 /// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
 fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
-    // SAFETY: a live `ListenPort`, whose property link only this thread touches.
-    let config = unsafe { port?.config_mut() };
+    let config = port?.config();
     let property =
-        crate::server::port_property(config.object_id, &mut config.ptr, ptr::null_mut(), false);
+        crate::server::port_property(config.object_id, &config.ptr, ptr::null_mut(), false);
     // SAFETY: null, or the property its Port object holds while the port lives.
     unsafe { property.cast::<PortProperty>().as_ref() }
 }

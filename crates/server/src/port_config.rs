@@ -1,5 +1,6 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
 use core::ffi::{CStr, c_int, c_void};
+use core::sync::atomic::AtomicPtr;
 use std::sync::OnceLock;
 
 use swoole_rs_corebase::StringSlot;
@@ -90,7 +91,8 @@ pub struct PortConfig {
     pub kernel_socket_recv_buffer_size: c_int,
     pub kernel_socket_send_buffer_size: c_int,
     pub gs: *mut c_void,
-    pub ptr: *mut c_void,
+    /// The Port object's property, which phpserver links and reads through `&`.
+    pub ptr: AtomicPtr<c_void>,
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: u8,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
@@ -215,7 +217,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: 0,
             kernel_socket_send_buffer_size: 0,
             gs: core::ptr::null_mut(),
-            ptr: core::ptr::null_mut(),
+            ptr: AtomicPtr::new(core::ptr::null_mut()),
             websocket_frames: 0,
             websocket_protocol: None,
             host: Box::default(),

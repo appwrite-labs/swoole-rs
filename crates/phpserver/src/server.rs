@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
@@ -114,15 +114,15 @@ thread_local! {
 /// thread has none for.
 pub(crate) fn port_property(
     object_id: u16,
-    slot: &mut *mut c_void,
+    slot: &AtomicPtr<c_void>,
     property: *mut c_void,
     set: bool,
 ) -> *mut c_void {
     if !THREAD.load(Ordering::Relaxed) {
         if set {
-            *slot = property;
+            slot.store(property, Ordering::Relaxed);
         }
-        return *slot;
+        return slot.load(Ordering::Relaxed);
     }
     let index = usize::from(object_id);
     PORT_PROPERTIES.with_borrow_mut(|properties| {
