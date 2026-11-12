@@ -33,6 +33,10 @@ pub struct SocketPair {
     pub worker_socket: *mut SocketRecord,
 }
 
+// SAFETY: a pair owns its two socket records (`open` makes them, `drop` frees them),
+// and neither is tied to the thread that made it.
+unsafe impl Send for SocketPair {}
+
 const _: () = assert!(
     size_of::<SocketPair>() == 40,
     "SWR_SOCKET_PAIR_RECORD_FIELDS on LP64"

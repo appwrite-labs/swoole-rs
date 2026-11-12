@@ -386,10 +386,10 @@ impl<'a> Server<'a> {
         unsafe { PoolRef::new(self.task_pool().wrapping_add(1)) }
     }
 
-    /// The server's worker registry, which `ServerState` boxed for the server's life.
+    /// The server's worker registry, which its configuration owns for the server's life.
     #[must_use]
     pub fn registry(self) -> &'a WorkerRegistry {
-        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        let registry = self.config().registry();
         // SAFETY: the server's live registry, whose writers the server's own
         // synchronization keeps apart from readers (`registry_mut`).
         unsafe { &*registry }
@@ -402,7 +402,7 @@ impl<'a> Server<'a> {
     /// reads it (only the master configures it, and only the manager tracks pids).
     #[must_use]
     pub unsafe fn registry_mut(self) -> &'a mut WorkerRegistry {
-        let registry = self.config().worker_registry.cast::<WorkerRegistry>();
+        let registry = self.config().registry();
         // SAFETY: per the caller; the registry lives as long as the server.
         unsafe { &mut *registry }
     }

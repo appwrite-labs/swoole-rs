@@ -23,9 +23,9 @@ const SW_USER_WORKER: u8 = 5;
 #[must_use]
 pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
     let workers = serv.workers();
-    let registry = serv.config().worker_registry;
+    let registry = serv.config().registry();
     // SAFETY: the server's live arrays and registry.
-    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry.cast(), pid) }
+    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry, pid) }
 }
 
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
