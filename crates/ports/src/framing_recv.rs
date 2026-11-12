@@ -140,7 +140,7 @@ fn paused(socket: &SocketFields) -> bool {
     }
     // SAFETY: a session socket's object is its live connection.
     let conn = unsafe { &*socket.object.cast::<ConnectionRecord>() };
-    conn.active != 0
+    conn.is_active()
         && conn.closed.load(Ordering::Relaxed) == 0
         && (conn.closing | conn.close_actively | conn.close_queued | conn.close_reset)
             | (conn.close_force | conn.peer_closed)

@@ -232,14 +232,9 @@ mod tests {
 
     // Upstream's bodies, transcribed: socket.cc's shutdown, cancel, close,
     // connect(addr) and check_liveness.
-    fn state<'a>(s: Co) -> &'a mut SocketState {
-        unsafe { &mut *s.state() }
-    }
-
     fn upstream_shutdown(s: Co, mut how: c_int, sys: Sys) -> bool {
         set_err(s, 0);
-        let state = s.state();
-        let flags = unsafe { &mut (*state).flags };
+        let flags = s.with_state(|state| state.flags);
         let connected = flags.connected && !s.is_closed();
         let mut error = 0;
         if !connected || how == libc::SHUT_RD && flags.read || how == libc::SHUT_WR && flags.write {
@@ -255,15 +250,17 @@ mod tests {
                 if error == libc::ENOTCONN {
                     how = libc::SHUT_RDWR;
                 }
-                let flags = unsafe { &mut (*state).flags };
-                match how {
-                    libc::SHUT_RD => flags.read = true,
-                    libc::SHUT_WR => flags.write = true,
-                    _ => (flags.read, flags.write) = (true, true),
-                }
-                if flags.read && flags.write {
-                    flags.connected = false;
-                }
+                s.with_state(|state| {
+                    let flags = &mut state.flags;
+                    match how {
+                        libc::SHUT_RD => flags.read = true,
+                        libc::SHUT_WR => flags.write = true,
+                        _ => (flags.read, flags.write) = (true, true),
+                    }
+                    if flags.read && flags.write {
+                        flags.connected = false;
+                    }
+                });
                 return true;
             }
         }
@@ -272,13 +269,14 @@ mod tests {
     }
 
     fn upstream_cancel(s: Co, event: u32) -> bool {
-        if state(s).bound_co(event).is_null() {
+        if s.with_state(|state| state.bound_co(event).is_null()) {
             return false;
         }
         if event == READ || event == WRITE {
             set_err(s, libc::ECANCELED);
+            let co = s.with_state(|state| state.co(event));
             // SAFETY: the coroutine bound for `event`, parked in its wait on `s`.
-            unsafe { (NATIVE.resume)(state(s).co(event)) };
+            unsafe { (NATIVE.resume)(co) };
             true
         } else {
             set_err(s, libc::EINVAL);
@@ -291,10 +289,10 @@ mod tests {
             set_err(s, libc::EBADF);
             return false;
         }
-        if state(s).flags.connected {
+        if s.with_state(|state| state.flags.connected) {
             upstream_shutdown(s, libc::SHUT_RDWR, sys);
         }
-        if state(s).bound_co(READ | WRITE).is_null() {
+        if s.with_state(|state| state.bound_co(READ | WRITE).is_null()) {
             s.set_sock_fd(-1);
             crate::socket_extra::run_close_hook(s);
             true
@@ -342,7 +340,7 @@ mod tests {
             }
             timer.stop();
         }
-        state(s).flags.connected = true;
+        s.with_state(|state| state.flags.connected = true);
         unsafe { (*s.socket()).get_name() };
         set_err(s, 0);
         true
@@ -616,7 +614,7 @@ mod tests {
                         })));
                     }
                     let result = close(s, FAKE);
-                    let bound = !state(s).bound_co(READ | WRITE).is_null();
+                    let bound = !s.with_state(|state| state.bound_co(READ | WRITE).is_null());
                     if mode != 0 && !bound && !s.is_closed() {
                         log(format!("close-again:{}", close(s, FAKE)));
                     }
