@@ -6,7 +6,7 @@ use crate::{
     stream::{raise, seconds},
 };
 use libc::{c_char, c_int, c_long};
-use std::ffi::CStr;
+use std::{ffi::CStr, net::Ipv6Addr};
 use swoole_rs_zend::{
     E_WARNING,
     bailout::Bailout,
@@ -15,10 +15,6 @@ use swoole_rs_zend::{
 };
 
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, swoole_coroutine_socket};
-
-unsafe extern "C" {
-    fn inet_pton(family: c_int, source: *const c_char, destination: *mut libc::c_void) -> c_int;
-}
 
 /// `STREAM_SOCKOP_SO_BROADCAST`, `STREAM_SOCKOP_TCP_NODELAY`.
 const SO_BROADCAST: c_long = 1 << 2;
@@ -78,14 +74,11 @@ fn connect(host: &CStr, port: u16, options: &Options) -> Result<c_int, Bailout> 
         )?;
         return Ok(-1);
     }
-    let mut address = [0u8; 16];
-    // SAFETY: a NUL-terminated host and room for an IPv6 address.
-    let ipv6 = unsafe { inet_pton(libc::AF_INET6, host.as_ptr(), address.as_mut_ptr().cast()) };
-    let domain = if ipv6 == 1 {
-        libc::AF_INET6
-    } else {
-        libc::AF_INET
-    };
+    // `inet_pton(AF_INET6, host)`: the same textual forms.
+    let ipv6 = host
+        .to_str()
+        .is_ok_and(|host| host.parse::<Ipv6Addr>().is_ok());
+    let domain = if ipv6 { libc::AF_INET6 } else { libc::AF_INET };
     let fd = swoole_coroutine_socket(domain, libc::SOCK_STREAM, 0);
     if fd < 0 {
         return Ok(-1);

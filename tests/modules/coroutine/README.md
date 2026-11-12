@@ -17,7 +17,7 @@ case binary with the crates and system.py's static libswoole.a (the pin's thirdp
 | `coroutine_async_file.async_file` | `coroutine_async_file.async_file`: `AsyncFile` left the build (nothing called it), so the case makes the hooked call each member made, with the TEST's inputs and expected values |
 
 The facade's getters are field reads over crates/coroutine's record, its operations
-the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
+crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
 `Coroutine::bailout` take a function and its data (`swoole_coroutine_create`,
 `swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage, so
 tests/modules/hooks/system/fixture.cc wraps it. The repo-owned

@@ -62,18 +62,22 @@ pub(crate) mod timeout {
     pub(crate) const ALL: i32 = 0xf;
 }
 
-/// The table's `io` operations.
+/// The sending operations: `send_sync`, `send_all`, `send` (once) and `send`.
 #[derive(Clone, Copy)]
-pub enum Io {
-    SendSync = 0,
-    RecvSync = 1,
-    SendAll = 2,
-    SendOnce = 3,
-    Recv = 4,
-    RecvOnce = 5,
-    Peek = 6,
-    Send = 7,
-    RecvAll = 8,
+pub(crate) enum SendOp {
+    Sync,
+    All,
+    Once,
+    Send,
+}
+
+/// The receiving operations: `recv_sync`, `recv`, `recv` (once) and `peek`.
+#[derive(Clone, Copy)]
+pub(crate) enum RecvOp {
+    Sync,
+    Recv,
+    Once,
+    Peek,
 }
 
 /// `SW_WAIT`.
@@ -189,41 +193,30 @@ impl Socket {
         self.co().set_err_code(code);
     }
 
-    /// One `op` transfer of `length` bytes at `buf`: the socket's Rust member, or
-    /// its `network::Socket`'s for the synchronous pair.
-    /// # Safety
-    /// `buf` holds `length` bytes (writable for the receiving operations), or
-    /// `length` is 0.
-    pub(crate) unsafe fn io(&self, op: Io, buf: *mut c_char, length: usize) -> isize {
+    /// One `op` send of `data`: the socket's Rust member, or its
+    /// `network::Socket`'s for the synchronous one.
+    pub(crate) fn send(&self, op: SendOp, data: &[u8]) -> isize {
         let socket = self.co();
-        let data = || -> &[u8] {
-            if length == 0 {
-                return &[];
-            }
-            // SAFETY: per the caller, `length` readable bytes.
-            unsafe { std::slice::from_raw_parts(buf.cast(), length) }
-        };
-        let out = || -> &mut [u8] {
-            if length == 0 {
-                return &mut [];
-            }
-            // SAFETY: per the caller, `length` writable bytes.
-            unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
-        };
         match op {
-            Io::SendSync => socket
-                .with_network(|network| send_sync(network, data(), 0))
+            SendOp::Sync => socket
+                .with_network(|network| send_sync(network, data, 0))
                 .unwrap_or(-1),
-            Io::RecvSync => socket
-                .with_network(|network| recv_sync(network, out(), 0))
+            SendOp::All => socket.send_all(data),
+            SendOp::Once => socket.send_once(data),
+            SendOp::Send => socket.send(data),
+        }
+    }
+
+    /// One `op` receive into `out`, as [`Self::send`].
+    pub(crate) fn recv(&self, op: RecvOp, out: &mut [u8]) -> isize {
+        let socket = self.co();
+        match op {
+            RecvOp::Sync => socket
+                .with_network(|network| recv_sync(network, out, 0))
                 .unwrap_or(-1),
-            Io::SendAll => socket.send_all(data()),
-            Io::SendOnce => socket.send_once(data()),
-            Io::Recv => socket.recv(out()),
-            Io::RecvOnce => socket.recv_once(out()),
-            Io::Peek => socket.peek(out()),
-            Io::Send => socket.send(data()),
-            Io::RecvAll => socket.recv_all(out()),
+            RecvOp::Recv => socket.recv(out),
+            RecvOp::Once => socket.recv_once(out),
+            RecvOp::Peek => socket.peek(out),
         }
     }
 
@@ -488,7 +481,6 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// What the client classes (crates/phpclients, crates/phphttp and crates/phphttp2)
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
-    pub use super::Io;
     use libc::{c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
