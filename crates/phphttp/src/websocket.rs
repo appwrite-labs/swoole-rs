@@ -1024,8 +1024,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             fd,
         )?;
     } else {
-        // SAFETY: a coroutine-socket context's live socket.
-        unsafe { swoole_rs_phpclients::websocket_protocol(context.state().private_data) };
+        swoole_rs_phpclients::websocket_protocol(&context.state().zsocket);
     }
     let state = context.state();
     state.response.status = 101;
