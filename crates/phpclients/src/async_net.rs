@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use libc::{c_char, c_int};
-use std::{ffi::CStr, ptr, rc::Rc};
+use std::{ffi::CStr, rc::Rc};
 use swoole_rs_clients::client::{
     self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
     SSL_STATE_WAIT_STREAM,
@@ -123,7 +123,7 @@ fn callback(data: &net::Data, slot: usize) -> Option<Rc<Callable>> {
 
 /// Call `callable` with `argv`: whether the call succeeded.
 fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
-    native::call(callable, argv, ptr::null_mut(), true)
+    callable.call(argv, None, true)
 }
 
 fn object_zval(object: Obj) -> zval {
