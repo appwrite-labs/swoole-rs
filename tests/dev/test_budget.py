@@ -40,6 +40,8 @@ pub(crate) fn slot(&self, index: usize) -> Option<&mut u8> {}
 fn edit(&mut self) -> &mut u8 {}
 fn pick<'a>(slots: &'a mut [u8]) -> &'a mut u8 {}
 fn with(field: fn(&mut Record) -> &mut u8) {}
+fn unit(_: ()) -> &'static mut u8 {}
+fn hooked(hook: fn(&mut u8), pair: (u8, u8)) -> &'static mut u8 {}
 '''
 
 
@@ -61,8 +63,9 @@ class Budget(unittest.TestCase):
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
                 'bools': {'one': 2}, 'caches': {'one': 2}, 'unforbidden': {'one': 1},
-                # fields and slot; edit and pick lend a `&mut` they were given, and with's is a parameter type.
-                'mints': {'one': 2},
+                # fields, slot, unit and hooked; edit and pick lend a `&mut` they were given, and
+                # with's is a parameter type.
+                'mints': {'one': 4},
             })
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):

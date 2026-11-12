@@ -44,9 +44,12 @@ KINDS = {
     'lists': re.compile(r'\b(?:LinkedList|VecDeque)\b'),
     'bools': re.compile(r'Vec<bool>|\[bool;'),
     'caches': re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?(?:static|struct|enum|type)\s+\w*(?i:cache)'),
-    # A one-line safe signature with no `&mut` parameter returning `&mut` or `Option<&mut>`.
+    # A one-line safe signature with no `&mut` parameter returning `&mut` or `Option<&mut>`. A
+    # parameter's own parentheses (`()`, a tuple, `fn(&mut T) -> &mut U`) nest one level, and a
+    # `&mut` inside them is not a parameter to lend from.
     'mints': re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?fn\s+\w+(?:<[^>]*>)?"
-                        r"\((?:(?!&\s*(?:'\w+\s+)?mut\b)[^)])*\)\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
+                        r"\((?:(?!&\s*(?:'\w+\s+)?mut\b)[^()]|\([^()]*\))*\)"
+                        r"\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
 }
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
