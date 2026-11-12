@@ -163,6 +163,7 @@ fn set_offset(n: &mut impl Connection, value: u64) {
 }
 
 /// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
+#[inline(always)]
 pub(crate) fn readable(kind: u32, n: &mut impl Connection) -> i32 {
     match kind {
         ON_READ_RAW => raw(n),
@@ -214,6 +215,7 @@ fn raw(n: &mut impl Connection) -> i32 {
 }
 
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
+#[inline(always)]
 fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> i32 {
     n.use_recv_buffer();
     if n.receive(framing) < 0 {
