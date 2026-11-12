@@ -13,34 +13,6 @@ pub struct AddressPlan {
     pub port: i32,
 }
 
-/// `strtol(text, nullptr, 10)` cast to `int`, as `sw_atoi` reads the port: leading
-/// whitespace, an optional sign, then digits, saturating at the `long` range.
-fn atoi(text: &[u8]) -> i32 {
-    let mut rest = text
-        .iter()
-        .skip_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
-        .peekable();
-    let negative = rest.next_if(|&&byte| byte == b'-').is_some();
-    if !negative {
-        rest.next_if(|&&byte| byte == b'+');
-    }
-    let mut value: i64 = 0;
-    for &byte in rest.take_while(|byte| byte.is_ascii_digit()) {
-        let digit = i64::from(byte - b'0');
-        value = if negative {
-            value.saturating_mul(10).saturating_sub(digit)
-        } else {
-            value.saturating_mul(10).saturating_add(digit)
-        };
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's static_cast<int>(long)"
-    )]
-    let port = value as i32;
-    port
-}
-
 /// The plan of `name`.
 #[must_use]
 pub fn parse(name: &[u8]) -> AddressPlan {
@@ -61,7 +33,7 @@ pub fn parse(name: &[u8]) -> AddressPlan {
             status: 0,
             host_offset: 1,
             host_length: close,
-            port: atoi(port),
+            port: swoole_rs_corebase::atoi(port),
         };
     }
     match name
@@ -72,7 +44,7 @@ pub fn parse(name: &[u8]) -> AddressPlan {
             status: 0,
             host_offset: 0,
             host_length: colon,
-            port: atoi(name.get(colon + 1..).unwrap_or_default()),
+            port: swoole_rs_corebase::atoi(name.get(colon + 1..).unwrap_or_default()),
         },
         None => failed(2),
     }
