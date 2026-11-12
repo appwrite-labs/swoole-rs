@@ -1,9 +1,11 @@
 # The services upstream's PHPTs expect, as in its scripts/docker-compose.yml, published on
 # localhost under the host names its tests/include/config.php uses on CI (httpbin at
 # http://httpbin:80; .github/actions/phpt-env maps them). services.py picks a run's.
+# An image with no version tag is pinned by digest: `latest` of golang-h2demo was arm64
+# only for a while on 2026-11-12, and every shard on an amd64 runner failed (#3382).
 services:
   httpbin:
-    image: kennethreitz/httpbin
+    image: kennethreitz/httpbin@sha256:599fe5e5073102dbb0ee3dbb65f049dab44fa9fc251f6835c9990f8fb196a72b
     ports: ['80:80']
   pgsql:
     image: postgres:14
@@ -26,21 +28,21 @@ services:
     healthcheck: {test: redis-cli ping, interval: 2s, retries: 30}
   # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
   golang-h2demo:
-    image: phpswoole/golang-h2demo
+    image: phpswoole/golang-h2demo@sha256:5c3dcdc96f665c9dc85fa052fc37614a3b370bde6f155658d737465576c41a76
     ports: ['4430:4430']
   # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
   # image now refuses to start without credentials unless REQUIRE_AUTH is off.
   tinyproxy:
-    image: kalaksi/tinyproxy
+    image: kalaksi/tinyproxy@sha256:fafafc7079ca29c6704564de1353f61d038f2166f09b01d4e460e8e499bf6b57
     ports: ['8888:8888']
   socks5:
-    image: serjs/go-socks5-proxy
+    image: serjs/go-socks5-proxy@sha256:0af522996f402c03ecd985a87997158eabeb28935365e3a384df37eafcf740ea
     environment:
       REQUIRE_AUTH: 'false'
     ports: ['1080:1080']
   # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
   ftp:
-    image: teezily/ftpd
+    image: teezily/ftpd@sha256:df03353fb57e0f0e9bd16d7f84a70196b595b25e4247e118843a36f2600af9c8
     environment:
       FTP_USER: admin
       FTP_PASSWORD: admin
@@ -49,7 +51,7 @@ services:
     ports: ['21:21', '65000-65009:65000-65009']
   # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
   firebirdsql:
-    image: firebirdsql/firebird
+    image: firebirdsql/firebird@sha256:1529560400fc7847f015c57fc9d70729c44d9a9d8f9000df19c5ce1950b4c202
     environment:
       FIREBIRD_ROOT_PASSWORD: root
       FIREBIRD_USER: test
@@ -60,7 +62,7 @@ services:
   # Serves freepdb1, the service ORACLE_TNS names; the image's own healthcheck.sh
   # reports healthy once the database opens (a minute or two).
   oracle:
-    image: gvenzl/oracle-free:slim
+    image: gvenzl/oracle-free:slim@sha256:6d61d267a3b978c24c5ac1790e62e927416a0aec446bd86e4b3a1527562757bd
     environment:
       ORACLE_PASSWORD: oracle
     ports: ['1521:1521']
