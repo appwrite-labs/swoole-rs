@@ -353,8 +353,8 @@ fn set(call: &Call) {
 fn finish(this: ServerObject, settings: &Value) -> Result<(), bailout::Bailout> {
     let mut port = this.port(0);
     drop(Value::of(&mut port).call_method(Some(&crate::PORT), b"set", &[settings])?);
-    crate::port::merge_setting(crate::server::SERVER.entry(), this.raw(), settings.as_ptr())
-        .map(|_| ())
+    crate::lifecycle::Props::server(this).merge(c"setting", settings);
+    bailout::outcome(())
 }
 
 /// The options, in upstream's order. `Ok(false)`: return false.

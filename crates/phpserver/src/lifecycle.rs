@@ -630,6 +630,11 @@ impl<'a> Props<'a> {
         self.zend().value(name, value);
     }
 
+    /// `set()`'s `php_array_merge` of `settings` into the array property `name`.
+    pub(crate) fn merge(self, name: &CStr, settings: &Value) {
+        self.zend().merge(name, settings);
+    }
+
     pub(crate) fn value(self, name: &CStr, value: &mut zval) {
         self.set(name, Value::of(value));
     }
@@ -1276,11 +1281,11 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     if !swoole_rs_phpswoole::enable_library() {
         return Ok(());
     }
-    let mut zserv = [crate::dispatch::zserv()];
-    // SAFETY: the server's object zval.
-    let called = unsafe {
-        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::onBeforeStart", &mut zserv)
-    };
+    let mut zserv = crate::dispatch::zserv();
+    let called = swoole_rs_zend::host::named_call(
+        br"\Swoole\Server\Helper::onBeforeStart",
+        &[Value::of(&mut zserv)],
+    );
     trapped(called.is_err())
 }
 
