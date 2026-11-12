@@ -2,7 +2,7 @@
 //! `ZSTR_VAL` of `zend_string`s, so a received message becomes a PHP string
 //! without a copy.
 use std::ffi::c_void;
-use swoole_rs_corebase::CoreAllocator;
+use swoole_rs_corebase::{CoreAllocator, TrustedAllocator};
 use swoole_rs_zend::{
     string::{self, from_val, val},
     sys::swr_zend_string_release,
@@ -17,8 +17,10 @@ static ZEND_STRING_ALLOCATOR: CoreAllocator = CoreAllocator {
 
 /// The allocator `sw_zend_string_allocator()` returns, for Rust callers.
 #[must_use]
-pub fn zend_string_allocator() -> &'static CoreAllocator {
-    &ZEND_STRING_ALLOCATOR
+pub fn zend_string_allocator() -> TrustedAllocator {
+    // SAFETY: each callback hands out or takes back the value of a Zend string
+    // of the size asked for, or null when the allocation fails.
+    unsafe { TrustedAllocator::new(&ZEND_STRING_ALLOCATOR) }
 }
 
 /// `const swoole::Allocator *sw_zend_string_allocator()`.
