@@ -64,6 +64,72 @@ pub struct TimerNode {
     plain: Option<Plain>,
     /// A `TimerNode::php` node's destructor of its data.
     plain_drop: Option<Plain>,
+    /// A [`TimerNode::closure`] node's callback.
+    closure: Option<Closure>,
+}
+
+pub(crate) use closure::Closure;
+
+/// A `Copy` callback of at most two words, held in its node: no allocation, and
+/// nothing to free when the node goes.
+mod closure {
+    use std::mem::{MaybeUninit, align_of, size_of};
+
+    type Env = MaybeUninit<[usize; 2]>;
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct Closure {
+        call: fn(&Env),
+        env: Env,
+    }
+
+    impl Closure {
+        pub(crate) fn new<F: Fn() + Copy + 'static>(f: F) -> Self {
+            const {
+                assert!(
+                    size_of::<F>() <= size_of::<Env>() && align_of::<F>() <= align_of::<Env>(),
+                    "a timer closure holds at most two words"
+                );
+            };
+            let mut env = Env::uninit();
+            // SAFETY: `F` fits `Env`'s size and alignment, as asserted above.
+            unsafe { env.as_mut_ptr().cast::<F>().write(f) };
+            Self {
+                call: call::<F>,
+                env,
+            }
+        }
+
+        pub(crate) fn run(&self) {
+            (self.call)(&self.env);
+        }
+    }
+
+    /// Only [`Closure::new`] pairs `call::<F>` with an env, one that holds an `F`.
+    fn call<F: Fn()>(env: &Env) {
+        // SAFETY: `env` holds the `F` `Closure::new` wrote, and `F` is `Copy`.
+        let f = unsafe { &*env.as_ptr().cast::<F>() };
+        f();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Closure;
+        use std::cell::Cell;
+
+        thread_local! {
+            static RAN: Cell<usize> = const { Cell::new(0) };
+        }
+
+        #[test]
+        fn a_copy_runs_the_two_words_it_captured() {
+            let (tens, ones) = (3usize, 4usize);
+            let closure = Closure::new(move || RAN.set(tens * 10 + ones));
+            let copy = closure;
+            copy.run();
+            assert_eq!(RAN.get(), 34);
+        }
+    }
 }
 
 impl TimerNode {
@@ -81,7 +147,15 @@ impl TimerNode {
             destructor: None,
             plain: None,
             plain_drop: None,
+            closure: None,
         }
+    }
+
+    /// A node whose callback is `f`, which `Owner::select` calls directly.
+    pub(crate) fn closure(f: Closure) -> Self {
+        let mut node = Self::new(None, std::ptr::null_mut());
+        node.closure = Some(f);
+        node
     }
 
     /// A node whose callback is `plain(data)`, which `Owner::select` calls directly.
@@ -140,6 +214,7 @@ extern "C" fn alarm(_signo: c_int) {
 /// What a node calls, copied out of it so that no borrow of it spans a call.
 #[derive(Clone, Copy)]
 struct Calls {
+    closure: Option<Closure>,
     plain: Option<Plain>,
     callback: Option<Callback>,
     data: *mut c_void,
@@ -161,6 +236,7 @@ fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed != 0;
     let calls = Calls {
+        closure: node_ref.closure,
         plain: node_ref.plain,
         callback: node_ref.callback,
         data: node_ref.data,
@@ -433,7 +509,9 @@ impl Owner {
             // The node the queue just selected; the copies are read before it runs.
             let (node, calls) = applied(&view);
             if view.removed == 0 {
-                if let Some(plain) = calls.plain {
+                if let Some(closure) = calls.closure {
+                    closure.run();
+                } else if let Some(plain) = calls.plain {
                     // SAFETY: the node's function of its own data.
                     unsafe { plain(calls.data) };
                 } else if let Some(callback) = calls.callback {
