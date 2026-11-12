@@ -10,7 +10,7 @@ use crate::{
         zend_memory_usage,
     },
 };
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr;
 
 impl Value {
@@ -134,27 +134,15 @@ pub fn restore_shutdown(was: bool) {
     unsafe { swr_zend_event_restore_shutdown(u8::from(was)) };
 }
 
-struct Slot<T> {
-    body: fn() -> T,
-    out: Option<T>,
-}
-
-/// # Safety
-/// `arg` is `contain`'s slot.
-unsafe extern "C" fn run<T: Copy>(arg: *mut c_void) {
-    // SAFETY: as above, borrowed for this call.
-    let slot = unsafe { &mut *arg.cast::<Slot<T>>() };
-    slot.out = Some((slot.body)());
-}
-
 /// `body()` inside `zend_try`. A bailout jumps over `body` and what it calls,
 /// as over any frame below one that raises it ([`bailout::finish`]), so those
 /// frames own nothing that needs a drop when PHP may bail out.
 /// # Errors
 /// `body` bailed out.
 pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
-    let mut slot = Slot { body, out: None };
-    // SAFETY: `run` writes the slot, which outlives the trap and owns nothing to drop.
-    unsafe { bailout::trap(run::<T>, (&raw mut slot).cast()) }?;
-    slot.out.ok_or(Bailout)
+    let mut out = None;
+    // SAFETY: the closure holds a function pointer and a borrow of `out`, a
+    // `Copy` value: nothing to drop. `body`'s frames are its caller's (above).
+    unsafe { bailout::trap_with(|| out = Some(body())) }?;
+    out.ok_or(Bailout)
 }

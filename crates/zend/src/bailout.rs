@@ -6,9 +6,8 @@ use crate::{
     Invalid,
     sys::{
         swr_zend_guard_pending, swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try,
-        swr_zend_try_call, swr_zend_try_call_method, swr_zend_try_report, swr_zend_try_report_code,
-        swr_zend_try_report_flag, zend_class_entry, zend_fcall_info, zend_fcall_info_cache,
-        zend_object, zval,
+        swr_zend_try_call, swr_zend_try_report, swr_zend_try_report_code, zend_fcall_info,
+        zend_fcall_info_cache, zval,
     },
 };
 use std::ffi::{CStr, c_char, c_int, c_void};
@@ -190,24 +189,6 @@ pub unsafe fn report_code(
     trapped(unsafe { swr_zend_try_report_code(Some(report), code, flag, message.as_ptr()) })
 }
 
-/// [`report`] of a reporter that takes the level and a flag.
-/// # Errors
-/// A user error handler bailed out.
-/// # Safety
-/// As [`report`].
-pub unsafe fn report_flag(
-    report: unsafe extern "C" fn(c_int, bool, *const c_char),
-    level: c_int,
-    flag: bool,
-    message: &CStr,
-) -> Result<(), Bailout> {
-    if pending() {
-        return Err(Bailout);
-    }
-    // SAFETY: as in `report`.
-    trapped(unsafe { swr_zend_try_report_flag(Some(report), level, flag, message.as_ptr()) })
-}
-
 /// Run `body(arg)` inside `zend_try`.
 /// # Errors
 /// `body` bailed out; Zend's state is as `zend_catch` leaves it.
@@ -267,47 +248,6 @@ pub unsafe fn call(
         return Err(Bailout);
     }
     Ok(result != 0)
-}
-
-/// `zend_call_method(object, scope, NULL, method, ...)` with `args` (at most
-/// two) inside `zend_try`. A null `scope` is the object's class; otherwise the
-/// method is `scope`'s, called on `object`. A null `retval` discards the result.
-/// Nothing is called while a bailout is pending, as [`call`].
-/// # Errors
-/// The method bailed out, or a bailout is pending.
-/// # Safety
-/// `object` is a live object, `scope` null or its class or an ancestor,
-/// `retval` null or writable and `args` live zvals.
-pub unsafe fn call_method(
-    object: *mut zend_object,
-    scope: *mut zend_class_entry,
-    method: &[u8],
-    retval: *mut zval,
-    args: &[*mut zval],
-) -> Result<(), Bailout> {
-    debug_assert!(
-        args.len() <= 2,
-        "zend_call_method takes at most two arguments"
-    );
-    if pending() {
-        return Err(Bailout);
-    }
-    let arg = |n: usize| args.get(n).copied().unwrap_or(core::ptr::null_mut());
-    #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
-    let argc = args.len() as u32;
-    // SAFETY: per the caller; Zend runs in the C shim's frame.
-    trapped(unsafe {
-        swr_zend_try_call_method(
-            object,
-            scope,
-            method.as_ptr().cast(),
-            method.len(),
-            retval,
-            argc,
-            arg(0),
-            arg(1),
-        )
-    })
 }
 
 /// `Z_PARAM_FUNC` of a passed argument (1-based).

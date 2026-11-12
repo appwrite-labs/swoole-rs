@@ -9,7 +9,7 @@ use swoole_rs_zend::{
     Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount, zend_function},
+    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount, zend_internal_function},
 };
 
 handlers! {
@@ -63,10 +63,9 @@ fn implicit_fn(call: &Call) {
             call.set_bool(false);
             return;
         };
-        // SAFETY: a function table's values point at its live functions.
-        let function = unsafe { &*function.cast::<zend_function>() };
-        // SAFETY: upstream reads every function as internal.
-        let handler = unsafe { function.internal_function.handler };
+        // SAFETY: a function table's values point at its live functions, each
+        // of which upstream reads as internal.
+        let handler = unsafe { (*function.cast::<zend_internal_function>()).handler };
         let address = handler.map_or(std::ptr::null(), |handler| handler as *const c_void);
         // SAFETY: C's stdout, as upstream's printf.
         unsafe { libc::printf(c"zif_handler=%p\n".as_ptr(), address) };

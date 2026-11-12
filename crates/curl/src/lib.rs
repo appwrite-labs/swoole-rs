@@ -180,8 +180,8 @@ impl Multi {
     fn del_timer(&self) {
         let timer = self.timer.get();
         if !timer.is_null() && host::timer_available() {
-            // SAFETY: a timer this multi added and still holds.
-            unsafe { host::timer_del(timer) };
+            // SAFETY: a timer this multi added and still holds, pending on this thread.
+            unsafe { host::timer_del(timer.cast()) };
             self.timer.set(ptr::null_mut());
         }
     }

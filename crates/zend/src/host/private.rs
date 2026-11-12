@@ -50,11 +50,9 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
         // SAFETY: reread the function after releasing the object, as the
         // original does; a resolved cache holds a live function handler.
         let handler = unsafe { (*cache).function_handler };
-        // SAFETY: every Zend function initializes its common prefix.
-        let function = unsafe { handler.read() };
-        // SAFETY: as above.
-        let common = unsafe { function.common };
-        if common.fn_flags & sys::ZEND_ACC_CLOSURE != 0 {
+        // SAFETY: every Zend function begins with its initialized common prefix.
+        let flags = unsafe { (*handler.cast::<sys::_zend_function__bindgen_ty_1>()).fn_flags };
+        if flags & sys::ZEND_ACC_CLOSURE != 0 {
             // SAFETY: the closure flag makes Zend's version-dependent closure
             // object projection valid.
             let closure = unsafe { sys::swr_zend_facade_closure(handler) };

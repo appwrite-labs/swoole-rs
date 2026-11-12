@@ -78,6 +78,20 @@ impl Class {
         self.entry.load(Ordering::Acquire)
     }
 
+    /// `ZSTR_VAL(ce->name)`: the name the class registered under (up to a
+    /// NUL); None before MINIT registers it.
+    #[must_use]
+    pub fn name(&self) -> Option<&CStr> {
+        let entry = self.entry();
+        if entry.is_null() {
+            return None;
+        }
+        // SAFETY: a registered class, which lives for the process.
+        let name = unsafe { (*entry).name };
+        // SAFETY: a class name is a NUL-terminated zend_string its class keeps.
+        Some(unsafe { CStr::from_ptr(text(name)) })
+    }
+
     /// `object_init_ex` of this class, then its `__construct(args)` (Swoole's
     /// `sw_zend_call_method_with_N_params`, at most two): the new object.
     /// # Errors

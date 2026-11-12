@@ -1,7 +1,6 @@
-//! `network::Socket`'s per-request reads and writes as whole operations, syscall
-//! included: `recv`, `send` and `peek` with their EINTR and `dont_restart` rules,
-//! and `catch_error`'s errno classification. A TLS socket passes its OpenSSL call
-//! (`ssl_recv`, `ssl_send`, `SSL_peek`), which this loop drives.
+//! `network::Socket`'s I/O pieces shared by its reads and writes: the TLS call a
+//! record's `recv`, `send` and `peek` (`socket_methods.rs`) drive, their EINTR test,
+//! `catch_error`'s errno classification and `ssl_sendfile`.
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
@@ -11,104 +10,6 @@ pub type TlsIo =
 
 pub(crate) fn interrupted() -> bool {
     Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-}
-
-/// `Socket::recv`: recv(2), or `tls` reads until `length` bytes when the socket is
-/// nonblocking or `MSG_WAITALL` is set. Retried on EINTR unless `dont_restart`;
-/// errno is left as the last call set it.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for its socket.
-#[must_use]
-pub unsafe fn socket_recv(
-    fd: c_int,
-    buffer: *mut c_void,
-    length: usize,
-    flags: c_int,
-    nonblock: bool,
-    dont_restart: bool,
-    tls: Option<(TlsIo, *mut c_void)>,
-) -> isize {
-    loop {
-        let total = match tls {
-            Some((read, socket)) => {
-                let mut total: isize = 0;
-                while total.cast_unsigned() < length {
-                    // SAFETY: `total < length`, so the rest of the caller's buffer starts in bounds.
-                    let rest = unsafe { buffer.cast::<u8>().add(total.cast_unsigned()) };
-                    // SAFETY: the caller's TLS read for this socket, into the rest of its buffer.
-                    let read = unsafe { read(socket, rest.cast(), length - total.cast_unsigned()) };
-                    if read <= 0 {
-                        if total == 0 {
-                            total = read;
-                        }
-                        break;
-                    }
-                    total += read;
-                    if !(nonblock || flags & libc::MSG_WAITALL != 0) {
-                        break;
-                    }
-                }
-                total
-            }
-            // SAFETY: the caller lends `length` writable bytes.
-            None => unsafe { libc::recv(fd, buffer, length, flags) },
-        };
-        if !(total < 0 && interrupted() && !dont_restart) {
-            return total;
-        }
-    }
-}
-
-/// `Socket::send`: send(2) or one `tls` write, retried on EINTR unless `dont_restart`.
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes; `tls`, when given, is valid for its socket.
-#[must_use]
-pub unsafe fn socket_send(
-    fd: c_int,
-    buffer: *const c_void,
-    length: usize,
-    flags: c_int,
-    dont_restart: bool,
-    tls: Option<(TlsIo, *mut c_void)>,
-) -> isize {
-    loop {
-        let sent = match tls {
-            // SAFETY: the caller's TLS write for this socket; it only reads the buffer.
-            Some((write, socket)) => unsafe { write(socket, buffer.cast_mut(), length) },
-            // SAFETY: the caller lends `length` readable bytes.
-            None => unsafe { libc::send(fd, buffer, length, flags) },
-        };
-        if !(sent < 0 && interrupted() && !dont_restart) {
-            return sent;
-        }
-    }
-}
-
-/// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes; `tls`, when given, is valid for its socket.
-#[must_use]
-pub unsafe fn socket_peek(
-    fd: c_int,
-    buffer: *mut c_void,
-    length: usize,
-    flags: c_int,
-    tls: Option<(TlsIo, *mut c_void)>,
-) -> isize {
-    loop {
-        let peeked = match tls {
-            // SAFETY: the caller's SSL_peek for this socket, into its buffer.
-            Some((peek, socket)) => unsafe { peek(socket, buffer, length) },
-            // SAFETY: the caller lends `length` writable bytes.
-            None => unsafe { libc::recv(fd, buffer, length, flags | libc::MSG_PEEK) },
-        };
-        if !(peeked < 0 && interrupted()) {
-            return peeked;
-        }
-    }
 }
 
 /// `SW_ERROR_SSL_BAD_CLIENT` and `SW_ERROR_SSL_RESET` (native asserts them).
@@ -238,6 +139,11 @@ mod tests {
         fds
     }
 
+    thread_local! {
+        /// The bytes [`record_tls_in_pieces`] has left on this thread.
+        static LEFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
     unsafe extern "C" fn tls_in_pieces(
         socket: *mut c_void,
         buffer: *mut c_void,
@@ -254,72 +160,68 @@ mod tests {
         n.cast_signed()
     }
 
+    /// [`tls_in_pieces`] for a record's read, whose socket is the record: the counter
+    /// is this thread's [`LEFT`].
+    unsafe extern "C" fn record_tls_in_pieces(
+        _socket: *mut c_void,
+        buffer: *mut c_void,
+        length: usize,
+    ) -> isize {
+        LEFT.with(|left| unsafe { tls_in_pieces(left.as_ptr().cast(), buffer, length) })
+    }
+
+    unsafe extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
+        unreachable!("plain sockets never take the TLS call")
+    }
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn plain_send_recv_and_peek() {
-        let [a, b] = pair();
+        use crate::{Socket, SocketRecord, socket_record_peek, socket_record_recv};
+        use crate::{socket_record_send, steady_ms};
+        let [mut a, mut b] = pair().map(|fd| SocketRecord::with_fd(fd, 0));
+        let (a, b) = (Socket::new(&mut a), Socket::new(&mut b));
         // SAFETY: local buffers, no TLS.
         unsafe {
             assert_eq!(
-                socket_send(b, b"hello".as_ptr().cast(), 5, 0, false, None),
+                socket_record_send(b, b"hello".as_ptr().cast(), 5, 0, no_tls, steady_ms),
                 5
             );
             let mut buffer = [0_u8; 8];
-            assert_eq!(socket_peek(a, buffer.as_mut_ptr().cast(), 8, 0, None), 5);
             assert_eq!(
-                socket_recv(a, buffer.as_mut_ptr().cast(), 8, 0, false, false, None),
+                socket_record_peek(a, buffer.as_mut_ptr().cast(), 8, 0, no_tls),
+                5
+            );
+            assert_eq!(
+                socket_record_recv(a, buffer.as_mut_ptr().cast(), 8, 0, no_tls, steady_ms),
                 5
             );
             assert_eq!(&buffer[..5], b"hello");
-            libc::close(a);
-            libc::close(b);
+            libc::close(a.fd());
+            libc::close(b.fd());
         }
     }
 
     #[test]
     fn tls_reads_accumulate_only_when_nonblocking_or_waitall() {
+        use crate::{Socket, SocketRecord, socket_record_recv, steady_ms};
         let mut buffer = [0_u8; 8];
-        let mut left: usize = 7;
-        let socket = (&raw mut left).cast::<c_void>();
-        // SAFETY: local buffer and counter; the stub reads within them.
-        unsafe {
-            assert_eq!(
-                socket_recv(
-                    -1,
-                    buffer.as_mut_ptr().cast(),
-                    8,
-                    0,
-                    false,
-                    false,
-                    Some((tls_in_pieces, socket))
-                ),
-                2
-            );
-            assert_eq!(
-                socket_recv(
-                    -1,
-                    buffer.as_mut_ptr().cast(),
-                    8,
-                    0,
-                    true,
-                    false,
-                    Some((tls_in_pieces, socket))
-                ),
-                5
-            );
-            assert_eq!(
-                socket_recv(
-                    -1,
-                    buffer.as_mut_ptr().cast(),
-                    8,
-                    0,
-                    true,
-                    false,
-                    Some((tls_in_pieces, socket))
-                ),
-                0
-            );
-        }
+        LEFT.set(7);
+        let mut record = SocketRecord::with_fd(-1, 0);
+        // SAFETY: the stub never reads the `SSL`; the record is forgotten, not freed.
+        unsafe { record.set_ssl(std::ptr::dangling_mut()) };
+        let socket = Socket::new(&mut record);
+        let mut recv = |nonblock: bool| {
+            socket.edit(|record| record.output.nonblock = u8::from(nonblock));
+            let at = buffer.as_mut_ptr().cast();
+            // SAFETY: local buffer; the stub writes within it.
+            unsafe { socket_record_recv(socket, at, 8, 0, record_tls_in_pieces, steady_ms) }
+        };
+        assert_eq!(recv(false), 2);
+        assert_eq!(recv(true), 5);
+        assert_eq!(recv(true), 0);
+        // SAFETY: the dangling `SSL` goes before anything could free it.
+        socket.edit(|record| unsafe { record.set_ssl(std::ptr::null_mut()) });
     }
 
     #[test]

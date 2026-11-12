@@ -43,6 +43,9 @@ impl Drop for Datagram {
 
 pub struct DtlsSession {
     socket: *mut SocketRecord,
+    /// The socket as a handle, once `swr_v1_tls_dtls_init`'s caller has promised it
+    /// live for as long as the session.
+    live: Cell<Option<Socket<'static>>>,
     listened: Cell<bool>,
     peek: Cell<bool>,
     queue: RefCell<VecDeque<Datagram>>,
@@ -74,6 +77,7 @@ pub struct DtlsReadView {
 pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
     Box::into_raw(Box::new(DtlsSession {
         socket,
+        live: Cell::new(None),
         listened: Cell::new(false),
         peek: Cell::new(false),
         queue: RefCell::new(VecDeque::new()),
@@ -213,17 +217,16 @@ pub unsafe fn swr_v1_tls_dtls_control(
         };
     }
     if tag == 5 {
-        if !ptrval.is_null() {
-            // SAFETY: the enclosing native Session retains its live network socket.
-            if let Some(socket) = unsafe { Socket::from_ptr(owner.socket) } {
-                let address = socket.read(|record| record.info.addr);
-                // SAFETY: native's peer destination is writable for the exact native address union.
-                unsafe {
-                    ptrval
-                        .cast::<swoole_rs_reactor::AddressStorage>()
-                        .write_unaligned(address);
-                };
-            }
+        if !ptrval.is_null()
+            && let Some(socket) = owner.live.get()
+        {
+            let address = socket.read(|record| record.info.addr);
+            // SAFETY: native's peer destination is writable for the exact native address union.
+            unsafe {
+                ptrval
+                    .cast::<swoole_rs_reactor::AddressStorage>()
+                    .write_unaligned(address);
+            };
         }
         return crate::ControlPlan {
             result: 1,
@@ -328,8 +331,7 @@ unsafe fn session_of<'a>(bio: &DtlsBio) -> &'a DtlsSession {
 unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
     // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
-    // SAFETY: a live session, whose socket is a live record.
-    let Some(socket) = (unsafe { Socket::from_ptr(session.socket) }) else {
+    let Some(socket) = session.live.get() else {
         return -1;
     };
     let fd = socket.fd();
@@ -421,17 +423,19 @@ fn methods() -> *mut BIO_METHOD {
 /// to the socket and reads the session's datagram queue.
 ///
 /// # Safety
-/// `owner` is live, its socket a live record, and `context` the session's live `SSLContext`.
+/// `owner` is live, its socket null or a live record that stays one until the session
+/// is freed, and `context` the session's live `SSLContext`.
 pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     owner: *mut DtlsSession,
     context: *const crate::OwnedTlsContext,
 ) -> bool {
     // SAFETY: as the caller promises.
-    let socket = unsafe { (*owner).socket };
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+    let session = unsafe { &*owner };
+    // SAFETY: as the caller promises, for as long as the session.
+    let Some(socket) = (unsafe { Socket::from_ptr(session.socket) }) else {
         return false;
     };
+    session.live.set(Some(socket));
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return false;
     }
@@ -474,8 +478,8 @@ pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
     if owner.listened() {
         return false;
     }
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(owner.socket) }) else {
+    // The socket `swr_v1_tls_dtls_init` took; a session it never set up has no SSL.
+    let Some(socket) = owner.live.get() else {
         return false;
     };
     crate::clear_errors();

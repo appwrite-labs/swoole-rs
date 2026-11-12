@@ -63,12 +63,23 @@ impl Call {
     /// thrown, or a `__toString` bailed out (deferred).
     #[inline]
     pub fn str_or_long(&self, n: u32) -> Result<Option<Result<i64, *mut zend_string>>, Invalid> {
+        Ok(self
+            .zstr_or_long(n)?
+            .map(|parsed| parsed.map_err(ZStr::as_ptr)))
+    }
+
+    /// [`Call::str_or_long`], its string borrowed for the call: the frame
+    /// keeps it alive (a coerced value replaces the argument).
+    /// # Errors
+    /// As [`Call::str_or_long`].
+    #[inline]
+    pub fn zstr_or_long(&self, n: u32) -> Result<Option<Result<i64, &ZStr>>, Invalid> {
         if !self.passed_arg(n) {
             return Ok(None);
         }
         let arg = self.arg_value(n);
         if let Some(string) = arg.str() {
-            return Ok(Some(Err(string.as_ptr())));
+            return Ok(Some(Err(string)));
         }
         if let Some(long) = arg.as_long() {
             return Ok(Some(Ok(long)));
@@ -89,11 +100,14 @@ impl Call {
             return Err(Invalid);
         }
         if parsed {
-            return Ok(Some(if string.is_null() {
-                Ok(long)
-            } else {
-                Err(string)
-            }));
+            if string.is_null() {
+                return Ok(Some(Ok(long)));
+            }
+            // Zend left the string it converted the argument to (`string`) in
+            // the argument's slot, which keeps it for the call.
+            if let Some(string) = arg.str() {
+                return Ok(Some(Err(string)));
+            }
         }
         Err(Self::wrong(
             n,

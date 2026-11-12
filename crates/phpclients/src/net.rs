@@ -1269,11 +1269,13 @@ pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
         warn(ErrorKind::Fatal, "SSL has been enabled");
         return false;
     }
-    let Some(owner) = conn.cli.handle().enable_ssl() else {
+    if conn.cli.handle().enable_ssl().is_none() {
         return false;
-    };
-    if let Some(zset) = settings(Obj::this(call)) {
-        crate::settings::apply_ssl(owner, zset);
+    }
+    // A reference of this call's own to the new context.
+    let owner = conn.cli.get().tls_context().cloned();
+    if let (Some(owner), Some(zset)) = (owner, settings(Obj::this(call))) {
+        crate::settings::apply_ssl(&owner, zset);
     }
     true
 }

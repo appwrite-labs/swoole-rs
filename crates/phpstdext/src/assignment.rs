@@ -89,13 +89,11 @@ impl Data<'_> {
     }
 
     /// Publish `element` as `op`'s result, then free the operand.
-    /// # Safety
-    /// `element` is a live zval.
-    unsafe fn publish(self, op: Op, element: *const zval) -> Result<(), Bailout> {
+    fn publish(self, op: Op, element: &Value) -> Result<(), Bailout> {
         if let Some(result) = op.result() {
-            // SAFETY: per the caller; a retained copy of the actual
+            // SAFETY: two live zvals; a retained copy of the actual
             // post-operation element.
-            unsafe { z::swr_zval_copy(result.as_ptr(), element) };
+            unsafe { z::swr_zval_copy(result.as_ptr(), element.as_ptr()) };
         }
         self.free()
     }
@@ -202,6 +200,8 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
         return data.abandon(op);
     };
     let target = element.referent();
+    // The reference whose typed property sources Zend must verify, if any.
+    let mut typed_reference = ptr::null_mut();
     if element.kind() == z::IS_REFERENCE {
         // SAFETY: a reference zval holds `ref`, at offset 0.
         let reference = unsafe { element.as_ptr().cast::<*mut zend_reference>().read() };
@@ -209,23 +209,29 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
         let sources = unsafe { (*reference).sources };
         // SAFETY: Zend tests the source-list union through its pointer member too.
         if !unsafe { sources.ptr }.is_null() {
-            // SAFETY: the native typed-reference operation preserves PHP source
-            // verification and strict types.
-            leaf(unsafe {
-                swr_phpstdext_typed_ref(op.frame.as_ptr(), reference, value.as_ptr(), op.at)
-            })?;
-            // SAFETY: the reference's live value slot.
-            return unsafe { data.publish(op, target) };
+            typed_reference = reference;
         }
     }
-    if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
-        // A rejected operation follows the original temporary/result cleanup path.
-        return data.abandon(op);
+    if typed_reference.is_null() {
+        if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
+            // A rejected operation follows the original temporary/result cleanup path.
+            return data.abandon(op);
+        }
+        // SAFETY: Zend applies the exact current opcode to the live element and value.
+        leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
+    } else {
+        // SAFETY: the native typed-reference operation preserves PHP source
+        // verification and strict types.
+        leaf(unsafe {
+            swr_phpstdext_typed_ref(op.frame.as_ptr(), typed_reference, value.as_ptr(), op.at)
+        })?;
     }
-    // SAFETY: Zend applies the exact current opcode to the live element and value.
-    leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
-    // SAFETY: the element's live slot, or its reference's.
-    unsafe { data.publish(op, target) }
+    // SAFETY: the element's live slot, or its reference's, after the operation.
+    let Some(target) = (unsafe { Value::from_ptr(target) }) else {
+        // Never: a referent is not null.
+        return data.abandon(op);
+    };
+    data.publish(op, target)
 }
 
 /// # Safety

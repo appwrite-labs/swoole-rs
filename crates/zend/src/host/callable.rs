@@ -1,8 +1,7 @@
 //! Long-lived callbacks own their zval, callable cache and diagnostic name together.
 use crate::{
-    bailout, kind, string,
-    sys::{self, zend_fcall_info_cache, zend_string, zval},
-    type_of,
+    Value, ZStr, ZString, bailout, kind,
+    sys::{self, zend_fcall_info_cache, zval},
 };
 use std::{
     ffi::{CStr, CString, c_char},
@@ -17,7 +16,7 @@ pub type Report = unsafe extern "C" fn(*const c_char);
 pub struct Callable {
     value: zval,
     cache: zend_fcall_info_cache,
-    name: *mut zend_string,
+    name: Option<ZString>,
 }
 
 fn deferred(bailed: i32) -> bool {
@@ -35,10 +34,7 @@ impl Drop for Callable {
         bailout::defer(unsafe {
             bailout::trap(sys::swr_zend_zval_release, (&raw mut self.value).cast())
         });
-        if !self.name.is_null() {
-            // SAFETY: the diagnostic string is an independent owned reference.
-            unsafe { sys::swr_zend_string_release(self.name) };
-        }
+        // The diagnostic string, an independent owned reference, goes next.
     }
 }
 
@@ -183,16 +179,16 @@ impl Callable {
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
 /// # Safety
-/// `value` is a live callable candidate. `report` is C/C++ and may report a PHP warning.
-unsafe fn create(value: *mut zval, report: Report) -> Result<Box<Callable>, bailout::Bailout> {
+/// `report` is C/C++ and may report a PHP warning.
+unsafe fn create(value: &Value, report: Report) -> Result<Box<Callable>, bailout::Bailout> {
     let mut state = Box::new(Callable {
         value: crate::UNDEF,
         cache: crate::EMPTY_FCC,
-        name: ptr::null_mut(),
+        name: None,
     });
     let mut truth = false;
     // SAFETY: a live candidate; the C shim traps any user-code bailout.
-    if deferred(unsafe { sys::swr_zend_try_facade_truth(value, &raw mut truth) }) {
+    if deferred(unsafe { sys::swr_zend_try_facade_truth(value.as_ptr(), &raw mut truth) }) {
         drop(state);
         return Err(bailout::Bailout);
     }
@@ -200,21 +196,22 @@ unsafe fn create(value: *mut zval, report: Report) -> Result<Box<Callable>, bail
         let mut valid = false;
         // SAFETY: the cache is writable and the candidate is live.
         let failed = deferred(unsafe {
-            sys::swr_zend_try_facade_callable(value, &raw mut state.cache, &raw mut valid)
+            sys::swr_zend_try_facade_callable(value.as_ptr(), &raw mut state.cache, &raw mut valid)
         });
         if !failed {
+            let mut name = std::ptr::null_mut();
             // SAFETY: get the diagnostic name even for an invalid callable, as upstream does.
-            deferred(unsafe { sys::swr_zend_try_facade_name(value, &raw mut state.name) });
+            deferred(unsafe { sys::swr_zend_try_facade_name(value.as_ptr(), &raw mut name) });
+            // SAFETY: null (the shim bailed out), or the owned Zend string it produced.
+            state.name = (!name.is_null()).then(|| unsafe { ZString::from_raw(name) });
         }
         if !bailout::pending() {
             if valid {
-                // SAFETY: this new owner's initially undefined slot takes a shallow value copy.
-                state.value = unsafe { value.read() };
-                // SAFETY: retain the successfully resolved candidate for this independent owner.
-                unsafe { sys::swr_zval_try_addref(&raw mut state.value) };
+                // This new owner's initially undefined slot takes the successfully
+                // resolved candidate, with a reference of its own.
+                state.value = value.copy().into_zval();
             } else {
-                // SAFETY: callable_name is an owned Zend string produced by the shim.
-                let name = unsafe { string::bytes(state.name) };
+                let name = state.name.as_deref().map_or(&[][..], ZStr::bytes);
                 let message = [b"function '".as_slice(), name, b"' is not callable"].concat();
                 let text = message.split(|byte| *byte == 0).next().unwrap_or_default();
                 let message = CString::new(text).unwrap_or_default();
@@ -266,22 +263,25 @@ pub unsafe fn factory(
 ) -> Result<*mut Callable, bailout::Bailout> {
     // SAFETY: the caller supplies null or the NUL-terminated argument name.
     let name = (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes());
-    if let Some(name) = name {
-        // SAFETY: a non-null candidate is a live initialized zval.
-        if value.is_null() || unsafe { type_of(value) } == sys::IS_NULL {
-            if !allow_null {
-                let message = [name, b" must be of type callable, null given"].concat();
-                let message = CString::new(message).unwrap_or_default();
-                // SAFETY: a registered exception class; Zend copies the message.
-                deferred(unsafe {
-                    sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505)
-                });
-            }
-            return bailout::outcome(ptr::null_mut());
+    // SAFETY: null, or the caller's live candidate, borrowed for this call.
+    let candidate = unsafe { Value::from_ptr(value) };
+    if let Some(name) = name
+        && candidate.is_none_or(Value::is_null)
+    {
+        if !allow_null {
+            let message = [name, b" must be of type callable, null given"].concat();
+            let message = CString::new(message).unwrap_or_default();
+            // SAFETY: a registered exception class; Zend copies the message.
+            deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
         }
+        return bailout::outcome(ptr::null_mut());
     }
-    // SAFETY: the candidate and native reporter satisfy callable_new's contract.
-    let handle = unsafe { create(value, report) }?;
+    // The caller's candidate; without a name it is never null.
+    let Some(candidate) = candidate else {
+        return bailout::outcome(ptr::null_mut());
+    };
+    // SAFETY: the native reporter satisfies callable_new's contract.
+    let handle = unsafe { create(candidate, report) }?;
     // The owned value is initialized, even for a failed resolution.
     if kind(&handle.value) != sys::IS_UNDEF {
         return Ok(Box::into_raw(handle));
@@ -291,7 +291,7 @@ pub unsafe fn factory(
     bailout::outcome(())?;
     if let Some(name) = name {
         // SAFETY: Zend returns a static type name for a live candidate.
-        let kind = unsafe { sys::zend_zval_type_name(value) };
+        let kind = unsafe { sys::zend_zval_type_name(candidate.as_ptr()) };
         // SAFETY: Zend returned a static NUL-terminated type name.
         let kind = unsafe { CStr::from_ptr(kind) }.to_bytes();
         let message = [name, b" must be of type callable, ", kind, b" given"].concat();

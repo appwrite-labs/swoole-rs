@@ -305,8 +305,7 @@ pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
 #[must_use]
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]
 pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
-    // SAFETY: calloc has no preconditions.
-    unsafe { libc::calloc(count, size) }
+    crate::sys::calloc(count, size)
 }
 
 /// `void *sw_realloc(void *, size_t)`.

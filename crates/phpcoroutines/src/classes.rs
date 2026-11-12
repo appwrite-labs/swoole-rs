@@ -18,7 +18,7 @@ use swoole_rs_zend::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
         swr_zend_error_reporting, swr_zend_exit_status, zend_class_entry, zend_execute_data,
-        zend_read_property, zend_string, zend_throw_exception,
+        zend_string, zend_throw_exception,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -237,16 +237,15 @@ swoole_rs_zend::handlers! {
 /// `(string|int $status = 0)`.
 fn exit(call: &Call) {
     let flags = exit_flags();
-    let Ok(status) = call.arity(0, 1).and_then(|()| call.str_or_long(1)) else {
+    let Ok(status) = call.arity(0, 1).and_then(|()| call.zstr_or_long(1)) else {
         return;
     };
-    let (message, code): (*mut zend_string, i64) = match status {
-        Some(Err(message)) => (message, 0),
-        Some(Ok(code)) => (ptr::null_mut(), code),
-        None => (ptr::null_mut(), 0),
+    // The string argument, which the frame holds for the call, or the code.
+    let (message, code): (Option<&ZStr>, i64) = match status {
+        Some(Err(message)) => (Some(message), 0),
+        Some(Ok(code)) => (None, code),
+        None => (None, 0),
     };
-    // SAFETY: null, or the string argument, which the frame holds for the call.
-    let message = unsafe { ZStr::from_ptr(message) };
     if flags != 0 {
         match message {
             // The property takes a reference to the string.
@@ -263,26 +262,15 @@ fn exit(call: &Call) {
 
 /// `SW_RETURN_PROPERTY(name)` of `$this`.
 fn property(call: &Call, name: &CStr) {
-    // `$this` and its class, which the frame holds for the call.
-    let this = call.this_value();
-    let Some((this, scope)) = this.and_then(|this| Some((this.object()?, this.class()?))) else {
-        return;
-    };
-    // The read's scratch slot.
-    let mut scratch = swoole_rs_zend::UNDEF;
-    // SAFETY: a live object, read in its own class's scope.
-    let value = unsafe {
-        zend_read_property(
-            scope,
-            this,
-            name.as_ptr(),
-            name.count_bytes(),
-            false,
-            &raw mut scratch,
-        )
-    };
-    // SAFETY: the property's live value.
-    unsafe { call.set_copy(value) };
+    // Read in `$this`'s own class's scope; a bailout stays pending.
+    match call
+        .this_value()
+        .map(|this| this.read_property_loud(None, name))
+    {
+        Some(Ok(Some(value))) => call.set_owned(value),
+        Some(Err(bailout)) => bailout.defer(),
+        Some(Ok(None)) | None => {}
+    }
 }
 
 /// `ExitException::getFlags()`.

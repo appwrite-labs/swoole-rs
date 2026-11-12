@@ -38,7 +38,7 @@ fn owned_new(source: &[libc::iovec]) -> Result<Box<ReactorIov>, i32> {
     // Moving the vector into the owner leaves its buffer, and these pointers, in place.
     let original = descriptors.as_mut_ptr();
     let iterator = original.wrapping_add(source.len());
-    crate::owner::try_owner(|| ReactorIov {
+    swoole_rs_buffer::try_box(|| ReactorIov {
         fields: ReactorIovFields {
             original,
             count: signed_count,

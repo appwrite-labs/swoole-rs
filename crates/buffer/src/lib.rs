@@ -25,6 +25,7 @@ mod typed;
 use std::alloc::{Layout, alloc};
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::{mem, slice};
 pub use typed::{Detached as TypedDetached, Front as TypedFront};
 
@@ -62,37 +63,42 @@ fn slice_fits<T>(count: usize) -> bool {
     count <= (isize::MAX as usize) / mem::size_of::<T>()
 }
 
+/// `Box::new(initialize())`, or `None` when the allocation fails. The storage is
+/// allocated before `initialize` runs, so a refused allocation builds no value.
+pub fn try_box<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
+    if size_of::<T>() == 0 {
+        return Some(Box::new(initialize()));
+    }
+    // SAFETY: `T` is not zero-sized (handled above); null is handled below.
+    let pointer = unsafe { alloc(Layout::new::<T>()) }.cast::<MaybeUninit<T>>();
+    if pointer.is_null() {
+        return None;
+    }
+    // SAFETY: a non-null global allocation with `T`'s layout; `MaybeUninit` needs no init.
+    let mut owner = unsafe { Box::from_raw(pointer) };
+    owner.write(initialize());
+    // SAFETY: initialized by the `write` just above.
+    Some(unsafe { owner.assume_init() })
+}
+
 impl Buffer {
     /// A new queue; chunk size 0 means `INT32_MAX`.
     /// # Errors
     /// `NOMEM` when the allocation fails.
     pub fn create(chunk_size: u32) -> Result<Box<Self>, i32> {
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "alloc honours Layout::new::<Buffer>()"
-        )]
-        // SAFETY: `Buffer` is not zero-sized; null is handled below.
-        let handle = unsafe { alloc(Layout::new::<Self>()) }.cast::<Self>();
-        if handle.is_null() {
-            return Err(NOMEM);
-        }
-        // SAFETY: a fresh, non-null allocation with `Buffer`'s layout.
-        unsafe {
-            handle.write(Self {
-                entries: VecDeque::new(),
-                recycled: Vec::new(),
-                recycled_bytes: 0,
-                chunk_size: if chunk_size == 0 {
-                    i32::MAX as u32
-                } else {
-                    chunk_size
-                },
-                length: 0,
-                cursor: typed::Cursor::default(),
-            });
-        };
-        // SAFETY: a global allocation with `Box`'s layout, initialized above.
-        Ok(unsafe { Box::from_raw(handle) })
+        try_box(|| Self {
+            entries: VecDeque::new(),
+            recycled: Vec::new(),
+            recycled_bytes: 0,
+            chunk_size: if chunk_size == 0 {
+                i32::MAX as u32
+            } else {
+                chunk_size
+            },
+            length: 0,
+            cursor: typed::Cursor::default(),
+        })
+        .ok_or(NOMEM)
     }
 
     // Limit idle retention to 64 KiB and 64 descriptors per queue. Recycling is

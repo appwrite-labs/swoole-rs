@@ -144,8 +144,7 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
         warn(4);
     }
     if !root.is_empty() {
-        // SAFETY: a valid C string.
-        if unsafe { libc::chroot(root.as_ptr()) } == 0 {
+        if swoole_rs_corebase::sys::chroot(root) == 0 {
             if swoole_rs_corebase::sys::chdir(c"/") < 0 {
                 warn(5);
             }

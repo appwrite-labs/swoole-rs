@@ -54,8 +54,6 @@ pub use callbacks::*;
 mod handlers;
 pub use handlers::*;
 
-mod owner;
-
 mod wait;
 pub use wait::*;
 

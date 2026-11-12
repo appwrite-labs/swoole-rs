@@ -40,8 +40,8 @@ fn putenv(call: &Call) {
     let mut environ = ENVIRON.lock().unwrap_or_else(PoisonError::into_inner);
     let set = store(&mut environ, key, stored, assignment.is_none());
     if set && key.eq_ignore_ascii_case(b"TZ") {
-        // SAFETY: TZ changed; under the environment lock.
-        unsafe { tzset() };
+        // TZ changed; under the environment lock.
+        tzset();
     }
     drop(environ);
     // SAFETY: taken above.
@@ -72,7 +72,8 @@ fn store(environ: &mut Table, key: &[u8], stored: CString, unset: bool) -> bool 
 }
 
 unsafe extern "C" {
-    fn tzset();
+    /// libc's `tzset`: no arguments, and it only reads the environment.
+    safe fn tzset();
 }
 
 #[cfg(test)]

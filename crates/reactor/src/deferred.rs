@@ -108,7 +108,7 @@ pub unsafe extern "C" fn swr_v1_reactor_deferred_push(
 /// `destroy_callbacks`, which hold null or a queue from this module.
 fn push(slot: &mut *mut ReactorDeferred, task: Task) -> i32 {
     if slot.is_null() {
-        let Some(owner) = crate::owner::try_owner(ReactorDeferred::default) else {
+        let Some(owner) = swoole_rs_buffer::try_box(ReactorDeferred::default) else {
             return -2;
         };
         *slot = Box::into_raw(owner);

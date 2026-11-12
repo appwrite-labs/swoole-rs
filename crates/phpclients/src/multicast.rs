@@ -16,6 +16,7 @@ use std::{
     ptr,
     str::FromStr,
 };
+use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, setsockopt, zeroed};
 use swoole_rs_zend::{
     Array, Call, Value, bailout, report,
@@ -260,40 +261,45 @@ fn resolve6(s: Sock, host: &CStr) -> Result<Option<in6_addr>, Stop> {
     Ok(address)
 }
 
-/// `php_set_inet46_addr`: an address of the socket's domain.
-fn inet46(s: Sock, host: &[u8]) -> Result<Option<libc::sockaddr_storage>, Stop> {
-    let storage = if s.domain == libc::AF_INET {
+/// `php_set_inet46_addr`: an address of the socket's domain, with its family, in
+/// zeroed storage.
+fn inet46(s: Sock, host: &[u8]) -> Result<Option<AddressStorage>, Stop> {
+    let mut storage: AddressStorage = zeroed();
+    if s.domain == libc::AF_INET {
         let Some(address) = inet4(s, host)? else {
             return Ok(None);
         };
         let mut sin: sockaddr_in = zeroed();
         sin.sin_addr = address;
-        stored(sin, libc::AF_INET)
+        sin.sin_family = family(libc::AF_INET);
+        storage.inet_v4 = sin;
     } else if s.domain == libc::AF_INET6 {
-        let Some(sin6) = inet6(s, host)? else {
+        let Some(mut sin6) = inet6(s, host)? else {
             return Ok(None);
         };
-        stored(sin6, libc::AF_INET6)
+        sin6.sin6_family = family(libc::AF_INET6);
+        storage.inet_v6 = sin6;
     } else {
         warn(b"IP address used in the context of an unexpected type of socket")?;
         return Ok(None);
-    };
+    }
     Ok(Some(storage))
 }
 
-/// A socket address of `domain` in a zeroed `sockaddr_storage`.
-fn stored<T: swoole_rs_corebase::sys::Pod>(address: T, domain: c_int) -> libc::sockaddr_storage {
+/// `address` in a zeroed `sockaddr_storage`, as the RFC 3678 requests carry it.
+#[cfg(not(target_vendor = "apple"))]
+fn stored(address: &AddressStorage) -> libc::sockaddr_storage {
     const {
         assert!(
-            size_of::<T>() <= size_of::<libc::sockaddr_storage>(),
+            size_of::<AddressStorage>() <= size_of::<libc::sockaddr_storage>(),
             "a sockaddr fits"
         );
     }
     let mut storage: libc::sockaddr_storage = zeroed();
-    let at = ptr::from_mut(&mut storage).cast::<T>();
-    // SAFETY: a sockaddr_storage has room for `T`, as checked above, at any alignment.
-    unsafe { at.write_unaligned(address) };
-    storage.ss_family = family(domain);
+    let at = ptr::from_mut(&mut storage).cast::<AddressStorage>();
+    // SAFETY: a sockaddr_storage has room for the address, as checked above, at any
+    // alignment.
+    unsafe { at.write_unaligned(*address) };
     storage
 }
 
@@ -302,7 +308,7 @@ fn family(domain: c_int) -> libc::sa_family_t {
 }
 
 /// `php_get_address_from_array`.
-fn address(s: Sock, table: &Array, key: &CStr) -> Result<Option<libc::sockaddr_storage>, Stop> {
+fn address(s: Sock, table: &Array, key: &CStr) -> Result<Option<AddressStorage>, Stop> {
     let Some(value) = table.find(key.to_bytes()) else {
         warn(&[b"no key \"", key.to_bytes(), b"\" passed in optval"].concat())?;
         return Ok(None);
@@ -363,20 +369,20 @@ fn change(
     s: Sock,
     level: c_int,
     name: c_int,
-    group: &libc::sockaddr_storage,
-    source: Option<&libc::sockaddr_storage>,
+    group: &AddressStorage,
+    source: Option<&AddressStorage>,
     index: c_uint,
 ) -> Result<c_int, Stop> {
     Ok(if let Some(source) = source {
         let mut request: libc::group_source_req = zeroed();
         request.gsr_interface = index;
-        request.gsr_group = *group;
-        request.gsr_source = *source;
+        request.gsr_group = stored(group);
+        request.gsr_source = stored(source);
         setsockopt(s.fd, level, name, &request)
     } else {
         let mut request: libc::group_req = zeroed();
         request.gr_interface = index;
-        request.gr_group = *group;
+        request.gr_group = stored(group);
         setsockopt(s.fd, level, name, &request)
     })
 }
@@ -388,12 +394,11 @@ fn change(
     s: Sock,
     level: c_int,
     name: c_int,
-    group: &libc::sockaddr_storage,
-    _source: Option<&libc::sockaddr_storage>,
+    group: &AddressStorage,
+    _source: Option<&AddressStorage>,
     index: c_uint,
 ) -> Result<c_int, Stop> {
     let join = name == libc::IP_ADD_MEMBERSHIP;
-    let group = ptr::from_ref(group);
     if s.kind == libc::AF_INET {
         let interface = if index == 0 {
             in_addr {
@@ -406,8 +411,8 @@ fn change(
             address
         };
         let request = libc::ip_mreq {
-            // SAFETY: the group as the sockaddr_in upstream reads.
-            imr_multiaddr: unsafe { group.cast::<sockaddr_in>().read() }.sin_addr,
+            // The group as the sockaddr_in upstream reads, whatever the domain stored.
+            imr_multiaddr: group.v4().sin_addr,
             imr_interface: interface,
         };
         let name = if join {
@@ -418,8 +423,8 @@ fn change(
         Ok(setsockopt(s.fd, level, name, &request))
     } else if s.kind == libc::AF_INET6 {
         let request = libc::ipv6_mreq {
-            // SAFETY: as above, as a sockaddr_in6.
-            ipv6mr_multiaddr: unsafe { group.cast::<sockaddr_in6>().read() }.sin6_addr,
+            // As above, as a sockaddr_in6.
+            ipv6mr_multiaddr: group.v6().sin6_addr,
             ipv6mr_interface: index,
         };
         let name = if join {

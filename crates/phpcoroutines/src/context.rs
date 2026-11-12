@@ -25,7 +25,7 @@ use swoole_rs_zend::sys::{
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
     zend_object, zend_observer_fiber_destroy_notify, zend_observer_fiber_init_notify,
-    zend_observer_fiber_switch_notify, zval, zval_ptr_dtor,
+    zend_observer_fiber_switch_notify, zend_op_array, zval, zval_ptr_dtor,
 };
 
 /// Upstream's `INVALID_PTR`: a destroyed context object, or an unusable fiber
@@ -424,13 +424,12 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
     let handler = ctx.with(|context| context.call.fcc.function_handler);
-    // SAFETY: a resolved callable's handler.
-    let function = unsafe { &*handler };
-    // SAFETY: every zend_function starts with its type.
-    if !fiber.is_null() && unsafe { function.type_ } == USER_FUNCTION {
+    // SAFETY: a resolved callable's handler; every zend_function starts with
+    // its type, a byte.
+    if !fiber.is_null() && unsafe { handler.cast::<u8>().read() } == USER_FUNCTION {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
-        // SAFETY: a user function's op array.
-        frame.opline = unsafe { function.op_array.opcodes };
+        // SAFETY: a user function is its op array.
+        frame.opline = unsafe { (*handler.cast::<zend_op_array>()).opcodes };
         frame.func = handler;
         // SAFETY: the frame outlives the notification.
         let previous = unsafe { swr_zend_coroutine_set_frame(&raw mut frame) };

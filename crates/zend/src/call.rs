@@ -30,16 +30,6 @@ pub fn kind(value: &zval) -> u32 {
     unsafe { value.u1.type_info & 0xff }
 }
 
-/// `Z_TYPE_P`.
-/// # Safety
-/// `value` is a live zval.
-#[must_use]
-#[inline]
-pub unsafe fn type_of(value: *const zval) -> u32 {
-    // SAFETY: per the caller.
-    kind(unsafe { &*value })
-}
-
 /// The arguments did not parse; Zend has raised the error (or a user error
 /// handler bailed out of a coercion's deprecation, which is deferred).
 #[derive(Debug)]
@@ -126,10 +116,10 @@ impl Call {
         let Some(this) = self.this_object() else {
             return false;
         };
-        // SAFETY: the frame's live `$this`.
-        let header = unsafe { (*this).gc.u };
-        // SAFETY: a refcounted header always sets `type_info`.
-        unsafe { header.type_info & IS_OBJ_DESTRUCTOR_CALLED != 0 }
+        // SAFETY: the frame's live `$this`, which begins with its refcounted
+        // header's two `u32`s: the refcount, then `gc.u.type_info`.
+        let [_, type_info] = unsafe { this.cast::<[u32; 2]>().read() };
+        type_info & IS_OBJ_DESTRUCTOR_CALLED != 0
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,
@@ -323,9 +313,9 @@ impl Call {
         let arg = self.arg_value(n);
         let mut out = ptr::null_mut();
         if coerce(swr_zend_try_parse_str, arg, &mut out, n)? {
-            // SAFETY: Zend left the converted string in the argument slot,
+            // Zend left the converted string (`out`) in the argument slot,
             // which keeps it for the call.
-            if let Some(string) = unsafe { ZStr::from_ptr(out) } {
+            if let Some(string) = arg.str() {
                 return Ok(string);
             }
         }
@@ -478,8 +468,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn value(&self, n: u32) -> Option<&crate::Value> {
-        // SAFETY: a passed argument lives for the call, or null.
-        unsafe { crate::Value::from_ptr(self.zval(n)) }
+        self.passed_arg(n).then(|| self.arg_value(n))
     }
 
     /// The return slot (`return_value`).
@@ -591,22 +580,8 @@ impl Call {
         name: &[u8],
         value: &Value,
     ) -> Result<(), crate::bailout::Bailout> {
-        let Some(this) = self.this_object() else {
-            return Ok(());
-        };
-        let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        // SAFETY: the frame's live `$this`, a registered class or null and a
-        // live value; Zend copies the name and the value.
-        let bailed = unsafe {
-            crate::sys::swr_zend_try_facade_update(
-                scope,
-                this,
-                name.as_ptr().cast(),
-                name.len(),
-                value.as_ptr(),
-            )
-        };
-        crate::bailout::trapped(bailed)
+        self.props(scope)
+            .map_or(Ok(()), |props| props.update_trapped(name, value))
     }
 
     /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:

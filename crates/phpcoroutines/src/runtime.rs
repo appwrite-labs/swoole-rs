@@ -117,10 +117,9 @@ pub(crate) fn create(
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     }
-    // SAFETY: a resolved callable's handler.
-    let function = unsafe { &*handler };
-    // SAFETY: every zend_function starts with its type.
-    let kind = unsafe { function.type_ };
+    // SAFETY: a resolved callable's handler; every zend_function starts with
+    // its type, a byte.
+    let kind = unsafe { handler.cast::<u8>().read() };
     if kind != context::USER_FUNCTION && kind != context::INTERNAL_FUNCTION {
         host::fatal_error(E_ERROR, message!("invalid function type {kind}").as_cstr());
         return Ok(ERR_INVALID);

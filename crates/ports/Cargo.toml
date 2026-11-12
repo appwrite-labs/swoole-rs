@@ -32,7 +32,6 @@ swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-locale = { path = "../locale" }
 swoole-rs-framing = { path = "../framing" }
 swoole-rs-http2 = { path = "../http2" }
-openssl-sys = "=0.9.117"
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }

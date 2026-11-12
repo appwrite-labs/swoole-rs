@@ -4,7 +4,7 @@
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
-use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode, free};
+use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
@@ -276,13 +276,15 @@ pub(crate) extern "C" fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
 #[unsafe(export_name = "_Z17swoole_timer_freev")]
 pub extern "C-unwind" fn swoole_timer_free() {
     let timer = timer();
-    if timer.is_null() {
+    let Some(live) = current() else {
         swoole_print_backtrace();
         log::warning(c"swoole_timer_free", format_args!("timer is not available"));
         return;
-    }
-    // SAFETY: the timer swoole_timer_create made, freed once.
-    unsafe { free(timer) };
+    };
+    live.destroy();
+    // SAFETY: this thread's timer, `Owner::create`'s allocation, which
+    // swoole_timer_create published; destroyed above, borrowed no more and freed once.
+    drop(unsafe { Box::from_raw(timer) });
     publish(std::ptr::null_mut());
 }
 

@@ -135,12 +135,8 @@ pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
     })
 }
 
-/// # Safety
-/// `timer` is pending.
-pub(crate) unsafe fn timer_del(timer: *mut c_void) {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
-}
+/// `swoole_timer_del` of a pending timer [`timer_add`] returned.
+pub(crate) use swoole_rs_timer::swoole_timer_del as timer_del;
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {
@@ -157,12 +153,8 @@ pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
     !swoole_rs_coroutine::yield_resumed(code) && code == RC_CANCELED
 }
 
-/// # Safety
-/// `co` is a live, suspended coroutine.
-pub(crate) unsafe fn resume(co: *mut c_void) {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_coroutine::resume(co) };
-}
+/// `co->resume()` of a live, suspended coroutine.
+pub(crate) use swoole_rs_coroutine::resume;
 
 unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {
     // SAFETY: the multi waits on the deferral it queued.

@@ -3,25 +3,27 @@
 //! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
-use crate::handle::CText;
+use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
     BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE,
-    SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTX,
-    SSL_CTX_free, SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust,
-    SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN,
-    SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
-    SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1,
-    SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK,
-    SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio,
-    SSL_select_next_proto, X509_STORE_CTX,
+    SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
+    SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, SSL_CTX, SSL_CTX_free, SSL_CTX_set_alpn_protos,
+    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM,
+    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
+    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
+    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
+    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
+    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::marker::{PhantomData, PhantomPinned};
+use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::ReadSlot;
 
 // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them, or
 // (`SSL_CTX_set0_tmp_dh_pkey`) only over OpenSSL 3 headers, which the fuzz image,
@@ -79,6 +81,13 @@ unsafe extern "C" {
     safe fn SSL_new(ctx: Option<&SslCtx>) -> *mut SSL;
     /// `Ctrl`'s commands: `GroupsList` parses `text`, and the others read only `value`.
     safe fn SSL_CTX_ctrl(ctx: &SslCtx, command: Ctrl, value: c_long, text: CText<'_>) -> c_long;
+    /// `ServernameCallback`, the one command, takes a callback of its type, which
+    /// OpenSSL calls with the live, non-null SSL whose client hello it is reading.
+    safe fn SSL_CTX_callback_ctrl(
+        ctx: &SslCtx,
+        command: CallbackCtrl,
+        callback: Option<ServernameCallback>,
+    ) -> c_long;
     /// Library initialization, with default settings when given none.
     safe fn OPENSSL_init_ssl(options: u64, settings: Option<&InitSettings>) -> c_int;
 }
@@ -120,6 +129,12 @@ impl SslCtx {
         ptr::from_ref(self).cast_mut().cast()
     }
 
+    /// `SSL_CTX_set_tlsext_servername_callback`: `callback` chooses among contexts
+    /// by the name a client sends.
+    pub fn set_servername_callback(&self, callback: ServernameCallback) {
+        SSL_CTX_callback_ctrl(self, CallbackCtrl::ServernameCallback, Some(callback));
+    }
+
     /// `SSL_CTX_ctrl` for a command that reads only its integer.
     fn ctrl(&self, command: Ctrl, value: c_long) -> c_long {
         SSL_CTX_ctrl(self, command, value, c"".into())
@@ -136,6 +151,17 @@ enum Ctrl {
     ReadAhead = SSL_CTRL_SET_READ_AHEAD,
     SessionCacheMode = SSL_CTRL_SET_SESS_CACHE_MODE,
     GroupsList = SSL_CTRL_SET_GROUPS_LIST,
+}
+
+/// OpenSSL's servername callback: the handshake's live SSL, its alert slot and the
+/// context's servername argument (null unless set).
+pub type ServernameCallback = extern "C" fn(Ssl<'_>, *mut c_int, *mut c_void) -> c_int;
+
+/// The `SSL_CTX_callback_ctrl` command behind `SSL_CTX_set_tlsext_servername_callback`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum CallbackCtrl {
+    ServernameCallback = SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
 }
 
 /// One reference to an `SSL_CTX`, released on drop. A clone takes another.
@@ -531,10 +557,9 @@ impl Method<'_> {
             }
         }
         if protocols & DTLS != 0 {
-            // SAFETY: a live context; plain functions.
-            unsafe { set_cookie_generate_cb(raw, Some(generate_cookie)) };
-            // SAFETY: as above.
-            unsafe { set_cookie_verify_cb(raw, Some(verify_cookie)) };
+            set_cookie_generate_cb(ctx, Some(generate_cookie));
+            // SAFETY: OpenSSL calls the verifier with the cookie's bytes and their count.
+            unsafe { set_cookie_verify_cb(ctx, Some(verify_cookie)) };
         }
         let capath = self.with(c"SSLContext::set_capath").set_capath();
         if config.verify_peer {
@@ -655,16 +680,21 @@ pub(crate) unsafe fn copy_password(
     length
 }
 
-type GenerateCookie = unsafe extern "C" fn(*mut SSL, *mut c_uchar, *mut c_uint) -> c_int;
-type VerifyCookie = unsafe extern "C" fn(*mut SSL, *const c_uchar, c_uint) -> c_int;
+/// The buffer OpenSSL lends a cookie generator: `DTLS1_COOKIE_LENGTH` bytes.
+type CookieBuffer = [MaybeUninit<u8>; 255];
+type GenerateCookie = extern "C" fn(Ssl<'_>, &mut CookieBuffer, &mut MaybeUninit<c_uint>) -> c_int;
+type VerifyCookie = unsafe extern "C" fn(Ssl<'_>, *const c_uchar, c_uint) -> c_int;
 
-// SAFETY: libssl's declarations, retyped so the callbacks can be `unsafe fn`s;
-// openssl-sys types them safe.
+// SAFETY: libssl's declarations, with the callbacks retyped as what OpenSSL calls
+// them with: the live, non-null SSL that is listening or shaking hands and, for the
+// generator, its `DTLS1_COOKIE_LENGTH`-byte cookie buffer and length slot (neither
+// initialized), lent for the call. Storing a generator, which is a safe function of exactly those, is
+// `safe`; a verifier reads the raw cookie it is lent, so storing one is not.
 unsafe extern "C" {
     #[link_name = "SSL_CTX_set_cookie_generate_cb"]
-    fn set_cookie_generate_cb(ctx: *mut SSL_CTX, callback: Option<GenerateCookie>);
+    safe fn set_cookie_generate_cb(ctx: &SslCtx, callback: Option<GenerateCookie>);
     #[link_name = "SSL_CTX_set_cookie_verify_cb"]
-    fn set_cookie_verify_cb(ctx: *mut SSL_CTX, callback: Option<VerifyCookie>);
+    fn set_cookie_verify_cb(ctx: &SslCtx, callback: Option<VerifyCookie>);
 }
 
 /// Copies `N` bytes of `bytes` at `at`.
@@ -675,20 +705,14 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
         .unwrap_or([0; N])
 }
 
-/// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address.
-/// # Safety
-/// OpenSSL's cookie callback: `ssl` is live, `cookie` holds `DTLS1_COOKIE_LENGTH`
-/// (255) bytes and `cookie_length` is writable.
-unsafe extern "C" fn generate_cookie(
-    ssl: *mut SSL,
-    cookie: *mut c_uchar,
-    cookie_length: *mut c_uint,
-) -> c_int {
-    let secret = [(ssl as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
+/// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address,
+/// into `cookie` with its length in `cookie_length`.
+fn cookie_of(ssl: Ssl<'_>, cookie: &mut [impl ReadSlot; 255], cookie_length: &mut c_uint) -> c_int {
+    let secret = [(ssl.as_ptr() as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
     let mut peer = [0u8; size_of::<libc::sockaddr_storage>()];
-    // SAFETY: OpenSSL's live SSL, in its cookie callback.
-    let wbio = unsafe { SSL_get_wbio(ssl) };
-    // SAFETY: `BIO_dgram_get_peer`, which copies at most a sockaddr_storage.
+    let wbio = ssl.write_bio().map_or(ptr::null_mut(), Bio::as_ptr);
+    // SAFETY: `BIO_dgram_get_peer` on the SSL's write BIO (OpenSSL answers a null one
+    // itself), which copies at most a sockaddr_storage.
     unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, peer.as_mut_ptr().cast()) };
     let family = libc::sa_family_t::from_ne_bytes(field(
         &peer,
@@ -708,8 +732,8 @@ unsafe extern "C" fn generate_cookie(
     };
     let data = [&port[..], address].concat();
     let sha1 = EVP_sha1();
-    // SAFETY: `HMAC` over local buffers into OpenSSL's cookie buffer, which holds
-    // more than EVP_MAX_MD_SIZE bytes, and its length slot.
+    // SAFETY: `HMAC` over local buffers into the cookie buffer, whose 255 bytes are
+    // more than EVP_MAX_MD_SIZE, and its length slot.
     let digest = unsafe {
         HMAC(
             sha1,
@@ -717,24 +741,38 @@ unsafe extern "C" fn generate_cookie(
             32,
             data.as_ptr(),
             data.len(),
-            cookie,
+            cookie.as_mut_ptr().cast(),
             cookie_length,
         )
     };
     c_int::from(!digest.is_null())
 }
 
+/// OpenSSL's cookie generator: [`cookie_of`] into the buffer it lends, the length
+/// set when there is a cookie.
+extern "C" fn generate_cookie(
+    ssl: Ssl<'_>,
+    cookie: &mut CookieBuffer,
+    cookie_length: &mut MaybeUninit<c_uint>,
+) -> c_int {
+    let mut length = 0;
+    let made = cookie_of(ssl, cookie, &mut length);
+    if made != 0 {
+        cookie_length.write(length);
+    }
+    made
+}
+
 /// # Safety
 /// OpenSSL's cookie callback: `ssl` is live and `cookie` holds `cookie_length` bytes.
 unsafe extern "C" fn verify_cookie(
-    ssl: *mut SSL,
+    ssl: Ssl<'_>,
     cookie: *const c_uchar,
     cookie_length: c_uint,
 ) -> c_int {
     let mut expected = [0u8; 255];
     let mut length: c_uint = 0;
-    // SAFETY: the caller's live SSL; a local 255-byte buffer and length.
-    unsafe { generate_cookie(ssl, expected.as_mut_ptr(), &raw mut length) };
+    cookie_of(ssl, &mut expected, &mut length);
     if cookie_length != length {
         return 0;
     }
