@@ -44,8 +44,13 @@ impl WorkerRecord {
     /// `new Worker()`: a zeroed record (no pipe, no queue, id 0, pid 0).
     #[must_use]
     pub fn boxed() -> Box<Self> {
+        Box::new(Self::empty())
+    }
+
+    /// A zeroed record, by value.
+    fn empty() -> Self {
         let null = core::ptr::null_mut();
-        Box::new(Self {
+        Self {
             pid: 0,
             id: 0,
             pool: null,
@@ -70,7 +75,7 @@ impl WorkerRecord {
             pipe_worker: null,
             pipe_current: null,
             ptr: null,
-        })
+        }
     }
 
     /// Makes the record `pool`'s worker `id`, of `kind`.
@@ -220,11 +225,26 @@ impl Worker<'_> {
         self.raw
     }
 
-    /// A copy of the whole record.
+    /// A copy of the whole record. Its bytes are copied around the status, which
+    /// its worker may be storing meanwhile, and the status is loaded atomically.
     #[must_use]
     pub fn get(self) -> WorkerRecord {
-        // SAFETY: `new`'s contract: a live record, read once by value.
-        unsafe { self.raw.read() }
+        let mut copy = WorkerRecord::empty();
+        let (from, to) = (self.raw.cast::<u8>(), (&raw mut copy).cast::<u8>());
+        let status = core::mem::offset_of!(WorkerRecord, status);
+        let after = status + size_of::<AtomicU8>();
+        // SAFETY: `new`'s contract: a live record, whose bytes before the status are
+        // copied into `copy`'s, a separate record of the same layout.
+        unsafe { to.copy_from_nonoverlapping(from, status) };
+        // SAFETY: as above, the bytes after the status, to the record's end.
+        unsafe {
+            to.wrapping_add(after).copy_from_nonoverlapping(
+                from.wrapping_add(after),
+                size_of::<WorkerRecord>() - after,
+            );
+        };
+        *copy.status.get_mut() = self.status();
+        copy
     }
 
     field!(
@@ -538,6 +558,30 @@ mod tests {
             Worker::new(&raw mut record).set_status(2);
             assert_eq!(Worker::new(&raw const record).status(), 2);
         }
+    }
+
+    #[test]
+    fn get_copies_every_field_around_the_status() {
+        let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
+        record.pid = 41;
+        record.id = 7;
+        record.kind = 3;
+        record.msgqueue_mode = 2;
+        record.ptr = core::ptr::dangling_mut();
+        let worker = unsafe { Worker::new(&raw mut record) };
+        worker.set_status(1);
+        let copy = worker.get();
+        assert_eq!(
+            (
+                copy.pid,
+                copy.id,
+                copy.status.into_inner(),
+                copy.kind,
+                copy.msgqueue_mode,
+                copy.ptr
+            ),
+            (41, 7, 1, 3, 2, record.ptr)
+        );
     }
 
     #[test]
