@@ -11,7 +11,7 @@ use std::{
     ptr,
     sync::OnceLock,
 };
-use swoole_rs_clients::address::{address_string, swr_v1_clients_address_port};
+use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
@@ -810,42 +810,35 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
         length,
     } = unsafe { dgram.read_unaligned() };
     let info = &request.info;
-    let addr = &socket_addr.addr;
-    let (address, port) = match socket_type {
-        UDP => {
-            // SAFETY: a UDP packet's sender is IPv4.
-            let sin = unsafe { addr.inet_v4 };
-            let address = address_string(libc::AF_INET, &sin.sin_addr.s_addr.to_ne_bytes());
-            (address, i64::from(u16::from_be(sin.sin_port)))
-        }
-        UDP6 => {
-            // SAFETY: a UDP6 packet's sender is IPv6.
-            let sin6 = unsafe { addr.inet_v6 };
-            let address = address_string(libc::AF_INET6, &sin6.sin6_addr.s6_addr);
-            (address, i64::from(u16::from_be(sin6.sin6_port)))
-        }
-        // SAFETY: a unix datagram's sender is a path, in this frame's copy.
-        UNIX_DGRAM => (unsafe { (&raw const addr.un.sun_path) }.cast(), -1),
-        _ => (ptr::null(), -1),
+    // The sender, of the packet's socket type: an IP address and port, or a path.
+    let sender = SocketAddress {
+        kind: socket_type,
+        ..socket_addr
+    };
+    let port = if matches!(socket_type, UDP | UDP6) {
+        i64::from(swr_v1_clients_address_port(&sender))
+    } else {
+        -1
     };
     let data = packet.wrapping_add(size_of::<DgramPacket>()).cast::<u8>();
-    let sender = Packet {
-        // SAFETY: the datagram's `length` bytes follow its head.
-        data: unsafe { std::slice::from_raw_parts(data, length as usize) },
-        // SAFETY: null, or the sender's NUL-terminated text (this thread's
-        // scratch or this frame's copy), unchanged until the call returns.
-        address: (!address.is_null()).then(|| unsafe { CStr::from_ptr(address) }),
-        port,
-        server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
-            i64::from(swr_v1_clients_address_port(&sock.info))
-        }),
-    };
-    relay(on_packet(
-        server,
-        &sender,
-        c_int::from(info.server_fd),
-        info.time,
-    ));
+    // SAFETY: the datagram's `length` bytes follow its head.
+    let data = unsafe { std::slice::from_raw_parts(data, length as usize) };
+    with_host(&sender, |address| {
+        let sender = Packet {
+            data,
+            address: matches!(socket_type, UDP | UDP6 | UNIX_DGRAM).then_some(address),
+            port,
+            server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
+                i64::from(swr_v1_clients_address_port(&sock.info))
+            }),
+        };
+        relay(on_packet(
+            server,
+            &sender,
+            c_int::from(info.server_fd),
+            info.time,
+        ));
+    });
     SW_OK
 }
 
