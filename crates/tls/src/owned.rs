@@ -256,7 +256,8 @@ pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
         callback: slot_password,
     };
     // SAFETY: local configuration, stable string slots and a live password binding.
-    let ctx = unsafe { create_context(&mut config, Some(password)) };
+    let ctx = unsafe { create_context(&mut config, Some(password)) }
+        .map_or(std::ptr::null_mut(), crate::SslContext::into_raw);
     if !ctx.is_null() {
         // SAFETY: the new context; each of its sessions registers its canonical network
         // socket (`info`'s contract) before callbacks run.

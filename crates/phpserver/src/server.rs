@@ -699,8 +699,8 @@ fn stats(call: &Call) {
         load(&gs.pipe_packet_msg_id),
         i64::from(gs.concurrency.load(Ordering::Relaxed)),
         gs.session_round,
-        i64::from(gs.min_fd),
-        i64::from(gs.max_fd),
+        i64::from(gs.min_fd()),
+        i64::from(gs.max_fd()),
     ];
     call.set_array();
     for (key, value) in STATS.into_iter().zip(values) {
@@ -771,9 +771,9 @@ fn heartbeat(call: &Call) {
     let now = microtime();
     // `foreach_connection`: `max_fd` is read afresh for each fd.
     // SAFETY: a live server.
-    let mut fd = serv.counters().min_fd;
+    let mut fd = serv.counters().min_fd();
     // SAFETY: as above.
-    while fd <= serv.counters().max_fd {
+    while fd <= serv.counters().max_fd() {
         if let Some(conn) = serv.iterated(fd) {
             let session_id = conn.session_id;
             if session_id > 0 && !serv.healthy(now, conn) {
@@ -919,14 +919,14 @@ fn get_client_list(call: &Call) {
     }
     let counters = serv.counters();
     let start_fd = if start_session_id == 0 {
-        counters.min_fd
+        counters.min_fd()
     } else {
         match serv.verified(start_session_id) {
             None => return call.set_bool(false),
             Some(conn) => conn.fd,
         }
     };
-    let max_fd = counters.max_fd;
+    let max_fd = counters.max_fd();
     if start_fd >= max_fd {
         return call.set_bool(false);
     }
@@ -1090,12 +1090,14 @@ fn iterator_construct(call: &Call) {
 fn rewind(call: &Call) {
     let iterator = iterator(call);
     iterator.index.set(0);
-    iterator.current_fd.set(iterator.server().counters().min_fd);
+    iterator
+        .current_fd
+        .set(iterator.server().counters().min_fd());
 }
 
 fn valid(call: &Call) {
     let iterator = iterator(call);
-    let max_fd = iterator.server().counters().max_fd;
+    let max_fd = iterator.server().counters().max_fd();
     let port = iterator.port();
     for fd in iterator.current_fd.get()..=max_fd {
         let Some(conn) = iterator.server().iterated(fd) else {
