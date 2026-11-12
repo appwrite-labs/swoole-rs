@@ -463,7 +463,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
 /// `websocket::message_compress(.., Z_DEFAULT_COMPRESSION)`, warning as it did.
 fn compress(data: &[u8]) -> Option<Vec<u8>> {
     use swoole_rs_deflate::{MessageFailure, message};
-    match message(data, -1, crate::header::ZEND_ZLIB) {
+    match message(data, -1) {
         Ok(compressed) => Some(compressed),
         Err(MessageFailure::Init(status)) => {
             host::fatal(&format!("deflateInit2() failed, Error: [{status}]"));

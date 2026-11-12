@@ -1,12 +1,12 @@
 //! HTTP response body compression with zlib, as `swoole::http::Context::compress`
 //! did it: one `deflate(Z_FINISH)` of the whole body into a buffer sized by
-//! upstream's bound, with the caller's allocator (PHP's request allocator in
-//! the server).
+//! upstream's bound. A thread keeps its last stream and resets it for the next
+//! body, so zlib's 268 KiB of state is allocated once, with malloc.
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
 use std::ffi::c_int;
 
-pub use swoole_rs_zlib::Allocator;
 use swoole_rs_zlib::{
     CHUNK, Stream, Z_BUF_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
@@ -39,6 +39,27 @@ pub fn bound(length: usize) -> usize {
     scaled + 10 + 8 + 4 + 1
 }
 
+thread_local! {
+    /// The thread's last stream with its level and window bits, which the next
+    /// body or message of the same kind resets instead of allocating its own.
+    static KEPT: RefCell<Option<(c_int, c_int, Stream)>> = const { RefCell::new(None) };
+}
+
+/// A fresh deflate stream at `level` with `window_bits`: the thread's kept one
+/// when it matches, reset; else a new one. Taken for the call, so a stream that
+/// fails is dropped and one that ends well goes back with [`keep`].
+fn stream(level: c_int, window_bits: c_int) -> Result<Stream, c_int> {
+    let kept = KEPT.take().and_then(|(kept_level, kept_bits, mut stream)| {
+        ((kept_level, kept_bits) == (level, window_bits) && stream.reset() == Z_OK)
+            .then_some(stream)
+    });
+    kept.map_or_else(|| Stream::deflate(level, window_bits, MEM_LEVEL), Ok)
+}
+
+fn keep(level: c_int, window_bits: c_int, stream: Stream) {
+    KEPT.set(Some((level, window_bits, stream)));
+}
+
 /// Deflate `data` at `level` with `window_bits` (`GZIP` or `DEFLATE`) into at
 /// most `capacity` bytes ([`bound`] for upstream's), which zlib writes without
 /// their being zeroed first.
@@ -49,10 +70,8 @@ pub fn compress(
     capacity: usize,
     window_bits: c_int,
     level: c_int,
-    allocator: Allocator,
 ) -> Result<Vec<u8>, Failure> {
-    let mut stream =
-        Stream::deflate(level, window_bits, MEM_LEVEL, allocator).map_err(Failure::Init)?;
+    let mut stream = stream(level, window_bits).map_err(Failure::Init)?;
     let (mut data, mut out) = (data, Vec::with_capacity(capacity));
     loop {
         // One Z_FINISH over the whole body, as upstream; a body past zlib's
@@ -63,7 +82,10 @@ pub fn compress(
             Z_NO_FLUSH
         };
         match stream.run_into(&mut data, &mut out, flush).status {
-            Z_STREAM_END => return Ok(out),
+            Z_STREAM_END => {
+                keep(level, window_bits, stream);
+                return Ok(out);
+            }
             Z_OK if flush == Z_NO_FLUSH => {}
             status => return Err(Failure::Deflate(status)),
         }
@@ -87,19 +109,14 @@ pub enum MessageFailure {
 /// # Errors
 /// `deflateInit2` failed, or deflate did not end in `Z_BUF_ERROR` with at
 /// least the 4-byte tail written.
-pub fn message(
-    mut data: &[u8],
-    level: c_int,
-    allocator: Allocator,
-) -> Result<Vec<u8>, MessageFailure> {
+pub fn message(mut data: &[u8], level: c_int) -> Result<Vec<u8>, MessageFailure> {
     /// `SW_ZLIB_ENCODING_RAW`.
     const RAW: c_int = -0xf;
     let level = match level {
         0 => -1,
         level => level.min(9),
     };
-    let mut stream =
-        Stream::deflate(level, RAW, MEM_LEVEL, allocator).map_err(MessageFailure::Init)?;
+    let mut stream = stream(level, RAW).map_err(MessageFailure::Init)?;
     let mut max = stream.deflate_bound(data.len());
     let mut out = Vec::new();
     let result = loop {
@@ -122,6 +139,7 @@ pub fn message(
     if result != Z_BUF_ERROR || out.len() < 4 {
         return Err(MessageFailure::Deflate);
     }
+    keep(level, RAW, stream);
     out.truncate(out.len() - 4);
     Ok(out)
 }
@@ -130,11 +148,9 @@ pub fn message(
 mod tests {
     use super::*;
 
-    const MALLOC: Allocator = Allocator::MALLOC;
-
     fn round_trip(window_bits: c_int) {
         let data = b"hello hello hello hello swoole ".repeat(40);
-        let out = compress(&data, bound(data.len()), window_bits, 1, MALLOC).unwrap();
+        let out = compress(&data, bound(data.len()), window_bits, 1).unwrap();
         let length = out.len();
         assert!(length < data.len(), "compressible input shrinks");
         if window_bits == GZIP {
@@ -160,7 +176,7 @@ mod tests {
             b"Hello".to_vec(),
             b"swoole websocket ".repeat(5000),
         ] {
-            let compressed = message(&data, 0, MALLOC).unwrap();
+            let compressed = message(&data, 0).unwrap();
             assert!(
                 !compressed.ends_with(&[0, 0, 0xff, 0xff]),
                 "the sync flush tail is dropped"
@@ -173,11 +189,32 @@ mod tests {
     #[test]
     fn rfc_7692_hello_compresses_as_in_its_example() {
         // RFC 7692 section 7.2.3.1: "Hello" with no context takeover.
-        let compressed = message(b"Hello", -1, MALLOC).unwrap();
+        let compressed = message(b"Hello", -1).unwrap();
         assert_eq!(
             compressed,
             [0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00],
             "the RFC's bytes"
+        );
+    }
+
+    #[test]
+    fn a_kept_stream_compresses_as_a_new_one() {
+        let (body, other) = (b"swoole ".repeat(300), b"hello ".repeat(50));
+        let gzip = |data: &[u8]| compress(data, bound(data.len()), GZIP, 6).unwrap();
+        let first = gzip(&body);
+        // The same kind again, another body between, then one after a failure
+        // and one after a stream of another kind took the slot.
+        assert_eq!(gzip(&body), first, "reset");
+        gzip(&other);
+        assert_eq!(gzip(&body), first, "after another body");
+        assert!(compress(&body, 4, GZIP, 6).is_err(), "too small");
+        assert_eq!(gzip(&body), first, "after a failed one");
+        message(&other, -1).unwrap();
+        assert_eq!(gzip(&body), first, "after a message's raw stream");
+        assert_eq!(
+            message(b"Hello", -1).unwrap(),
+            [0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00],
+            "and a message after a body"
         );
     }
 
@@ -191,10 +228,7 @@ mod tests {
     fn a_full_buffer_fails_like_upstream() {
         let data = vec![7u8; 1000];
         assert!(
-            matches!(
-                compress(&data, 4, GZIP, 1, MALLOC),
-                Err(Failure::Deflate(_))
-            ),
+            matches!(compress(&data, 4, GZIP, 1), Err(Failure::Deflate(_))),
             "Z_BUF_ERROR or Z_OK, not Z_STREAM_END"
         );
     }
