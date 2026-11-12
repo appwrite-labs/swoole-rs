@@ -10,7 +10,7 @@ use crate::{
         strerror, type_property, warn, warn_sys,
     },
 };
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{ffi::CStr, ptr, rc::Rc};
 use swoole_rs_clients::client::{
     self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
@@ -221,22 +221,6 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
     }
 }
 
-/// An event `network::Client` raised on an async client's object; a PHP
-/// bailout is re-raised as the last step.
-/// # Safety
-/// `object` is the live client object `connect()` bound; `data` holds
-/// `length` bytes for [`ON_RECEIVE`].
-unsafe extern "C" fn async_event(
-    object: *mut c_void,
-    kind: c_int,
-    data: *const c_char,
-    length: usize,
-) {
-    // SAFETY: per the caller.
-    let object = unsafe { Obj::new(object.cast()) };
-    bailout::raise(event(object, kind, data, length));
-}
-
 /// `__construct(int $type)`.
 fn construct(call: &Call) {
     let Ok(kind) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
@@ -375,7 +359,16 @@ fn connect(call: &Call) {
             }
         }
     }
-    state::swr_v1_clients_listen(fresh.cli.get(), object.as_ptr().cast(), events, async_event);
+    // The events `network::Client` raises on the object; a PHP bailout is
+    // re-raised as the last step.
+    let zobject = object.as_ptr();
+    let listener = move |kind, data, length| {
+        // SAFETY: `connect()` holds the object (`hold`) until its connection is
+        // released, and only then does the client stop raising events.
+        let object = unsafe { Obj::new(zobject) };
+        bailout::raise(event(object, kind, data, length));
+    };
+    state::listen(fresh.cli.get(), events, Rc::new(listener));
     net::this(call).set_conn(Some(fresh.clone()));
     hold(object);
 
