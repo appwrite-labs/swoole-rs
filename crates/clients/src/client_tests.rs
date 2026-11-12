@@ -164,7 +164,10 @@ pub(super) unsafe extern "C-unwind" fn swoole_event_write(
     }
 }
 /// crates/tls's `Reactor::_writable_callback`.
-pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut swoole_rs_reactor::Event) -> c_int {
+pub(super) fn writable_callback(
+    _: swoole_rs_reactor::Running<'_>,
+    _: &mut swoole_rs_reactor::Event,
+) -> c_int {
     log("writable");
     OK
 }

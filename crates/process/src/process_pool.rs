@@ -68,7 +68,8 @@ pub struct PoolRecord {
     pub on_worker_message: Option<EventFn>,
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
-    pub round_id: u32,
+    /// The round robin's next worker, which other processes update atomically.
+    pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
     pub(crate) pipes: *mut c_void,
     // `worker_num` and the pointers from `workers` on are crate-private, like
@@ -149,6 +150,16 @@ impl PoolRecord {
         Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
     }
 
+    /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
+    #[must_use]
+    pub fn own(&self, raw: *const WorkerRecord) -> Option<Worker<'_>> {
+        let offset = raw.addr().checked_sub(self.workers.addr())?;
+        if offset % size_of::<WorkerRecord>() != 0 {
+            return None;
+        }
+        self.worker(offset / size_of::<WorkerRecord>())
+    }
+
     /// Sets `workers`.
     ///
     /// # Safety
@@ -220,7 +231,17 @@ impl<'a> From<&'a mut PoolRecord> for PoolRef<'a> {
     }
 }
 
-impl PoolRef<'_> {
+impl<'a> PoolRef<'a> {
+    /// The pool's worker at `raw` ([`PoolRecord::own`]), or `None` when `raw` is
+    /// none of its records.
+    #[must_use]
+    pub fn worker_of(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
+        // SAFETY: `new`'s contract: a live pool for `'a`, whose records live as long
+        // (`set_workers`); the borrow only reads `workers` and `worker_num`.
+        let record: &'a PoolRecord = unsafe { &*self.raw };
+        record.own(raw)
+    }
+
     /// The pool at `raw`.
     ///
     /// # Safety
@@ -1359,13 +1380,7 @@ impl<H: PoolHost> Pool<H> {
     /// `ProcessPool::schedule`: the next idle worker, round robin; the last one
     /// tried, with the scheduler warning set, when all are busy.
     fn schedule(&mut self) -> u32 {
-        let round = self
-            .p
-            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
-            .cast::<u32>();
-        // SAFETY: the live pool's aligned counter, which other processes update
-        // atomically.
-        let round = unsafe { AtomicU32::from_ptr(round) };
+        let round = &self.record().round_id;
         let (target, warning) = crate::pool::pool_schedule(self.worker_num(), round, |target| {
             crate::pool::idle(self.worker_at(target))
         });
@@ -1554,6 +1569,18 @@ pub unsafe fn pool_run_op(
     operation: u32,
     arg: u64,
 ) -> i64 {
+    with(native, pool, |p| p.run(worker, operation, arg))
+}
+
+/// [`pool_run_op`] over `worker`, one of the pool's ([`PoolRef::worker_of`]), or none.
+pub(crate) fn run_op(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker: Option<Worker<'_>>,
+    operation: u32,
+    arg: u64,
+) -> i64 {
+    let worker = worker.map_or(ptr::null_mut(), Worker::raw);
     with(native, pool, |p| p.run(worker, operation, arg))
 }
 
