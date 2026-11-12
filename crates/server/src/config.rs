@@ -4,7 +4,13 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_memory::members::Shm;
+
+const _: () = assert!(
+    size_of::<libc::time_t>() == size_of::<AtomicI64>(),
+    "`warning_time` mirrors C++'s `time_t`"
+);
 
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
@@ -13,7 +19,8 @@ pub struct ServerConfig {
     pub worker_num: u32,
     pub dgram_port_num: u8,
     pub dispatch_mode: u8,
-    pub scheduler_warning: bool,
+    /// Set and cleared by whichever thread dispatches, so an atomic.
+    pub scheduler_warning: AtomicBool,
     pub max_request: u32,
     pub max_request_grace: u32,
     pub udp_socket_ipv4: *mut c_void,
@@ -44,20 +51,27 @@ pub struct ServerConfig {
     pub send_yield: bool,
     pub enable_coroutine: bool,
     pub single_thread: bool,
-    pub running: bool,
+    /// Cleared by whichever thread stops the server while the others read it
+    /// ([`crate::ServerState::running`]).
+    pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
     pub cpu_affinity_available: Vec<c_int>,
     pub pipe_command: *mut c_void,
     pub send_timeout: f64,
     pub heartbeat_check_interval: u16,
-    pub warning_time: libc::time_t,
+    /// `time_t`, reset with `scheduler_warning` by whichever thread dispatches.
+    pub warning_time: AtomicI64,
     pub timezone_: libc::c_long,
-    pub master_timer: *mut c_void,
-    pub heartbeat_timer: *mut c_void,
+    /// Armed and deleted by the master (or a base-mode worker) after its threads
+    /// start, so an atomic; only that thread uses the node.
+    pub master_timer: AtomicPtr<c_void>,
+    /// Armed by the heartbeat thread (or a single-threaded reactor), as `master_timer`.
+    pub heartbeat_timer: AtomicPtr<c_void>,
     pub output_buffer_size: u32,
     pub input_buffer_size: u32,
     pub max_queued_bytes: u32,
-    pub ipc_max_size: u32,
+    /// Raised at start, by whichever factory starts; read through [`Self::ipc_max_size`].
+    pub ipc_max_size: AtomicU32,
     pub private_data_1: *mut c_void,
     pub private_data_2: *mut c_void,
     pub private_data_3: *mut c_void,
@@ -103,7 +117,7 @@ impl Default for ServerConfig {
             worker_num: 0,
             dgram_port_num: 0,
             dispatch_mode: 2,
-            scheduler_warning: false,
+            scheduler_warning: AtomicBool::new(false),
             max_request: 0,
             max_request_grace: 0,
             udp_socket_ipv4: core::ptr::null_mut(),
@@ -134,23 +148,23 @@ impl Default for ServerConfig {
             send_yield: true,
             enable_coroutine: true,
             single_thread: false,
-            running: true,
+            running: AtomicBool::new(true),
             cpu_affinity_available: Vec::new(),
             pipe_command: core::ptr::null_mut(),
             send_timeout: 0.0,
             heartbeat_check_interval: 0,
-            warning_time: 0,
+            warning_time: AtomicI64::new(0),
             timezone_: 0,
-            master_timer: core::ptr::null_mut(),
-            heartbeat_timer: core::ptr::null_mut(),
+            master_timer: AtomicPtr::new(core::ptr::null_mut()),
+            heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
             output_buffer_size: u32::MAX,
             input_buffer_size: 2 * 1024 * 1024,
             max_queued_bytes: 0,
-            ipc_max_size: if cfg!(target_vendor = "apple") {
+            ipc_max_size: AtomicU32::new(if cfg!(target_vendor = "apple") {
                 2048
             } else {
                 8192
-            },
+            }),
             private_data_1: core::ptr::null_mut(),
             private_data_2: core::ptr::null_mut(),
             private_data_3: core::ptr::null_mut(),
@@ -178,6 +192,19 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// `serv->ipc_max_size`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn ipc_max_size(&self) -> u32 {
+        self.ipc_max_size.load(Relaxed)
+    }
+
+    /// `Server::init_ipc_max_size()`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn init_ipc_max_size(&self) {
+        let size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+        self.ipc_max_size.store(size, Relaxed);
+    }
+
     /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self
@@ -254,16 +281,14 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     ) {
         return None;
     }
-    // SAFETY: no native callback runs during this leaf record access.
-    let config = unsafe { &mut *state.config() };
-    // SAFETY: no native callback runs during this leaf table access.
-    let tables = unsafe { &mut *state.tables() };
+    let config = state.config_ref();
+    let tables = state.tables_ref();
     Some(match op {
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(state.running()),
         OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
@@ -306,19 +331,24 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             }
         }
         OP_SET_MAX_CONNECTION => {
-            tables.max_connection = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            let max = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            // SAFETY: `Server::create`, before any thread or process starts; `tables`
+            // isn't read after the write.
+            unsafe { &mut *state.tables() }.max_connection = max;
             0
         }
         OP_ACCEPT_TIMER_CLEAR => {
-            tables.enable_accept_timer = core::ptr::null_mut();
+            tables
+                .enable_accept_timer
+                .store(core::ptr::null_mut(), Relaxed);
             0
         }
         OP_SET_RUNNING => {
-            config.running = arg != 0;
+            state.set_running(arg != 0);
             0
         }
         OP_SET_WARNING => {
-            config.scheduler_warning = true;
+            config.scheduler_warning.store(true, Relaxed);
             0
         }
         OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {
@@ -333,6 +363,9 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             _ => 0,
         },
         OP_SET_FIELD => {
+            // SAFETY: `Server::create`'s and `start`'s checks, before any thread or
+            // process starts; `config` isn't read across the write.
+            let config = unsafe { &mut *state.config() };
             let value = arg >> 8;
             match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
                 FIELD_REACTOR_NUM => {
@@ -382,7 +415,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
             assert_eq!((*config).worker_num, 19);
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
-            assert!(!(*config).running);
+            assert!(!(*state).running());
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
             free_state(state);
         }

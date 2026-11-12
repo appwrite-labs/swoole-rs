@@ -6,14 +6,15 @@ use crate::{
     parse::{self, CAPABILITIES},
 };
 use std::{
+    cell::Cell,
     ffi::{CStr, c_int},
     sync::{OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
-    HeldArray, Owned,
-    bailout::Bailout,
+    HeldArray, Owned, ZString,
+    bailout::{self, Bailout},
     sys::{swr_zend_treat_string, zval},
 };
 
@@ -81,10 +82,10 @@ pub struct Server {
     pub goaway: fn(Ctx, i64, &[u8]) -> bool,
     /// `RST_STREAM` with the stream id and error code.
     pub reset: fn(Ctx, u32, u32),
-    /// A connection's session (fd, default context, max body size, whether a
-    /// coroutine server's, and the handler of each finished request). The
-    /// context outlives the session.
-    pub session_new: fn(i64, Ctx, u32, bool, Handler),
+    /// A coroutine server connection's session (fd, default context, max
+    /// body size, and the handler of each finished request). The context
+    /// outlives the session.
+    pub session_new: fn(i64, Ctx, u32, Handler),
     /// One whole frame, at the start of the bytes, for the session of an fd;
     /// `SW_ERR` on failure.
     pub session_receive: fn(i64, &[u8]) -> c_int,
@@ -108,6 +109,61 @@ pub(crate) fn server() -> Option<&'static Server> {
     SERVER.get().copied()
 }
 
+/// A server connection's settings context ([`Ctx::server_context`]), which no
+/// object or stream holds: it goes when this drops (`delete default_ctx`),
+/// with its session, and no copy of [`ServerCtx::ctx`] is used after.
+pub struct ServerCtx(Ctx);
+
+impl ServerCtx {
+    #[must_use]
+    pub const fn ctx(&self) -> Ctx {
+        self.0
+    }
+}
+
+impl Drop for ServerCtx {
+    fn drop(&mut self) {
+        // SAFETY: `server_context`'s, live until this one release.
+        unsafe { free(self.0) };
+    }
+}
+
+/// An HTTP/2 stream's hold on its context ([`Ctx::stream_context`]), let go
+/// when this drops (`~Stream`): the context is complete by then, and goes once
+/// its request and response objects have. A request that never reached its
+/// handler (reset, or its connection closed, first) also releases those
+/// objects, which only the context holds; a bailout in a destructor is deferred.
+pub struct StreamCtx {
+    ctx: Ctx,
+    dispatched: Cell<bool>,
+}
+
+impl StreamCtx {
+    #[must_use]
+    pub const fn ctx(&self) -> Ctx {
+        self.ctx
+    }
+
+    /// The request goes to its handler, which releases its objects.
+    pub fn dispatch(&self) {
+        self.dispatched.set(true);
+    }
+}
+
+impl Drop for StreamCtx {
+    fn drop(&mut self) {
+        let mut ctx = self.ctx;
+        // Ended first, so the response's release answers nothing.
+        ctx.state().end = 1;
+        if !self.dispatched.get() {
+            bailout::defer(context::release_objects(ctx));
+        }
+        ctx.state().stream_id = 0;
+        // SAFETY: `stream_context`'s, live until the stream's one release.
+        unsafe { free(ctx) };
+    }
+}
+
 /// `f` of the response's `Date` value, cached per second.
 pub fn date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
     header::date(f)
@@ -127,10 +183,38 @@ impl Ctx {
         crate::response::set_header_bytes(self, key, value);
     }
 
+    /// `$request->header` and `$request->server`, made unless they exist: a
+    /// header block makes both, whatever it holds.
+    pub fn header_arrays(mut self) {
+        let state = self.state();
+        parse::property(state, parse::Property::Header);
+        parse::property(state, parse::Property::Server);
+    }
+
+    /// `add_assoc_str_ex` on `$request->server` or `header` (made on first
+    /// use): the array takes `value` under `key`. Nothing for another `which`.
+    pub fn insert(mut self, which: Value, key: &[u8], value: ZString) {
+        let state = self.state();
+        let property = match which {
+            Value::Server => parse::Property::Server,
+            Value::Header => parse::Property::Header,
+            _ => return,
+        };
+        parse::property(state, property);
+        let request = &mut state.request;
+        let slot = if matches!(which, Value::Server) {
+            &mut request.zserver
+        } else {
+            &mut request.zheader
+        };
+        if let Some(array) = slot.array_mut() {
+            array.insert(key, Owned::string(value));
+        }
+    }
+
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
     /// use), or the response object.
-    #[must_use]
-    pub fn value(mut self, which: Value) -> *mut zval {
+    fn value(mut self, which: Value) -> *mut zval {
         let state = self.state();
         let property = match which {
             Value::Response => return state.response.zobject.ptr,
@@ -159,10 +243,8 @@ impl Ctx {
     }
 
     /// `$request->post` from the whole body (`PARSE_STRING`).
-    pub fn treat_post(mut self) {
-        let data = self.state().request.h2_data.take();
-        self.treat_query(Value::Post, data.as_deref().map_or(&[], Vec::as_slice));
-        self.state().request.h2_data = data;
+    pub fn treat_post(self) {
+        self.treat(Value::Post, None);
     }
 
     /// The `key` entry of `$request->server`, `header`, `get`, `post` or
@@ -296,42 +378,11 @@ impl Ctx {
         self.state().fd
     }
 
-    /// `~Stream`: the stream lets go of its context, which is complete. A
-    /// request that never reached its handler (reset, or its connection
-    /// closed, first) also releases the request and response objects, which
-    /// only the context holds.
-    /// # Safety
-    /// A stream's context, released once; no copy of the handle is used after.
-    /// # Errors
-    /// A destructor bailed out.
-    pub unsafe fn release_stream(mut self, dispatched: bool) -> Result<(), Bailout> {
-        // Ended first, so the response's release answers nothing.
-        self.state().end = 1;
-        let released = if dispatched {
-            Ok(())
-        } else {
-            context::release_objects(self)
-        };
-        self.state().stream_id = 0;
-        // SAFETY: per the caller.
-        unsafe { free(self) };
-        released
-    }
-
     /// The static handler answers the request: no server hook counts it.
     pub fn unhook(mut self) {
         let state = self.state();
         state.before_request = 0;
         state.after_response = 0;
-    }
-
-    /// `delete default_ctx`: a server connection's settings context, which no
-    /// object or stream holds, goes with its session.
-    /// # Safety
-    /// Nothing else references the context, and no copy of the handle is used after.
-    pub unsafe fn release_default(self) {
-        // SAFETY: per the caller.
-        unsafe { free(self) };
     }
 
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
@@ -343,7 +394,7 @@ impl Ctx {
     /// A server connection's settings context (`default_ctx`): the server's
     /// settings, for session `fd`, kept alive and counted by the request hooks.
     #[must_use]
-    pub fn server_context(server: view::Server<'_>, fd: i64) -> Self {
+    pub fn server_context(server: view::Server<'_>, fd: i64) -> ServerCtx {
         let mut ctx = context::alloc();
         context::init(ctx.state(), server);
         let state = ctx.state();
@@ -351,13 +402,13 @@ impl Ctx {
         state.http2 = 1;
         state.keepalive = 1;
         state.before_request = 1;
-        ctx
+        ServerCtx(ctx)
     }
 
     /// A stream's context: a copy of this settings context's, with its request
     /// and response objects and the request's `streamId`.
     #[must_use]
-    pub fn stream_context(mut self, fd: i64, stream_id: u32) -> Self {
+    pub fn stream_context(mut self, fd: i64, stream_id: u32) -> StreamCtx {
         let mut ctx = context::context_new(fd);
         context::copy_settings(ctx.state(), self.state());
         let state = ctx.state();
@@ -367,7 +418,10 @@ impl Ctx {
         if let Some(request) = state.request.zobject.props() {
             request.long(c"streamId", i64::from(stream_id));
         }
-        ctx
+        StreamCtx {
+            ctx,
+            dispatched: Cell::new(false),
+        }
     }
 
     /// `ctx->request.path`: the `:path` up to its query.
@@ -388,10 +442,19 @@ impl Ctx {
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into
     /// the request's `which` array.
     pub fn treat_query(self, which: Value, query: &[u8]) {
+        self.treat(which, Some(query));
+    }
+
+    /// `PARSE_STRING` of `query`, or of the request body for `None`, into the
+    /// request's `which` array.
+    fn treat(mut self, which: Value, query: Option<&[u8]>) {
         let array = self.value(which);
-        // The query's bytes, copied into request memory the SAPI frees.
-        let text = parse::estrndup(query);
-        // SAFETY: a fresh copy and the request's live array.
+        let body = self.state().request.h2_data.as_deref();
+        // The bytes, copied into request memory the SAPI frees.
+        let text = parse::estrndup(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
+        // SAFETY: a fresh copy and the request's live array. Neither the state
+        // nor anything this frame owns is held while PHP parses it, which may
+        // bail out.
         unsafe { swr_zend_treat_string(text, array) };
     }
 }

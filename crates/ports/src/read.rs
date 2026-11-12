@@ -77,7 +77,7 @@ pub(crate) trait Connection {
     /// Hands on `length` bytes from the buffer's start; the connection's request is
     /// read afresh afterwards. Negative closes the connection.
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64;
-    /// `conn->active && !socket->removed`.
+    /// `!socket->removed && conn->active`: a closed connection's slot is not read.
     fn active(&mut self) -> bool;
     fn upgrade(&mut self) -> Upgrade;
     /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
@@ -163,6 +163,7 @@ fn set_offset(n: &mut impl Connection, value: u64) {
 }
 
 /// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
+#[inline(always)]
 pub(crate) fn readable(kind: u32, n: &mut impl Connection) -> i32 {
     match kind {
         ON_READ_RAW => raw(n),
@@ -214,6 +215,7 @@ fn raw(n: &mut impl Connection) -> i32 {
 }
 
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
+#[inline(always)]
 fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> i32 {
     n.use_recv_buffer();
     if n.receive(framing) < 0 {

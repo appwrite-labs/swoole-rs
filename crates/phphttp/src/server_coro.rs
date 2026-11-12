@@ -162,11 +162,7 @@ impl HttpServer {
 
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
-        let request = &context.state().request;
-        // SAFETY: the request's path, `path_len` bytes.
-        let path = unsafe {
-            std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
-        };
+        let path = crate::parse::request_path(&context.state().request);
         let default = self.default_handler.borrow().clone();
         let is_default =
             |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
@@ -1068,7 +1064,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
-            if !call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, false, NO_THEN)? {
+            if !call_handler(&callable, &mut args, false, NO_THEN)? {
                 host::notice("handler error");
             }
         } else {
@@ -1110,7 +1106,6 @@ fn http2(conn: &Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
             fd,
             context,
             max_body_size,
-            true,
             Box::new(move |ctx, http1| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
@@ -1179,7 +1174,7 @@ fn http2_request(
     let mut args = objects(context);
     let mut result = Ok(());
     if let Some(callable) = callable {
-        match call_handler(Rc::as_ptr(&callable).cast_mut(), &mut args, true, NO_THEN) {
+        match call_handler(&callable, &mut args, true, NO_THEN) {
             Err(bailout) => result = Err(bailout),
             Ok(false) => {
                 let stream_id = context.state().stream_id;

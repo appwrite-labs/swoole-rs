@@ -342,6 +342,14 @@ impl Client {
         self.record.get()
     }
 
+    /// `cli->socket`, while the client has one: a constructed client's socket
+    /// record, live until the client is destroyed (an async one's free is
+    /// deferred past its callbacks).
+    pub fn socket(&self) -> Option<Socket<'_>> {
+        // SAFETY: null or the client's live socket record, as above.
+        unsafe { Socket::from_ptr(self.record().socket) }
+    }
+
     /// Edit a copy of the public record and write it back, so no reference
     /// into the record is live while `edit` runs.
     pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
@@ -409,9 +417,7 @@ impl Handle {
     }
 
     fn socket(self) -> Socket<'static> {
-        // SAFETY: a constructed client's socket record, live until the client is
-        // destroyed (an async one's free is deferred past its callbacks).
-        unsafe { Socket::from_ptr(self.socket_ptr()) }.unwrap_or_else(|| std::process::abort())
+        self.get().socket().unwrap_or_else(|| std::process::abort())
     }
 
     fn socket_type(self) -> c_int {
@@ -1207,7 +1213,7 @@ fn ssl_handshake(this: Handle) -> c_int {
         .tls
         .get()
         .map_or(core::ptr::null(), TlsContext::as_ptr);
-    if this.tls_fields().context.is_null() {
+    if this.tls_fields().context.is_none() {
         this.tls_fields().http_v2 = u8::from(this.fields().http2);
         // SAFETY: the client's live context.
         if !unsafe { ssl_context_create(tls) } {

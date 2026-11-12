@@ -3,7 +3,7 @@
 //! context. Each method fills the context the way its C++ forward did and runs over
 //! it in Rust.
 
-use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
 
@@ -24,12 +24,12 @@ use crate::records::ConnectionRecord;
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
 
-/// What an operation acts on besides the server.
-#[repr(C)]
-pub struct NativeContext {
+/// What an operation acts on besides the server. The borrowed fields live for `'a`,
+/// the call.
+pub struct NativeContext<'a> {
     pub(crate) serv: *mut c_void,
     pub(crate) reactor: *mut c_void,
-    pub(crate) event: *mut c_void,
+    pub(crate) event: Option<&'a swoole_rs_reactor::Event>,
     pub(crate) port: *mut c_void,
     pub(crate) sock: *mut c_void,
     pub(crate) conn: *mut c_void,
@@ -39,20 +39,20 @@ pub struct NativeContext {
     pub(crate) data: *const c_void,
     pub(crate) length: u32,
     pub(crate) session_id: c_long,
-    pub(crate) buffer: *mut c_char,
+    pub(crate) buffer: Option<&'a mut SendfileBuffer>,
     pub(crate) offset: i64,
     pub(crate) socket_type: c_int,
-    pub(crate) host: *const c_char,
+    pub(crate) host: Option<&'a CStr>,
     pub(crate) number: c_int,
     pub(crate) object: *mut c_void,
 }
 
-impl NativeContext {
+impl NativeContext<'_> {
     pub(crate) fn new(serv: *mut c_void) -> Self {
         Self {
             serv,
             reactor: ptr::null_mut(),
-            event: ptr::null_mut(),
+            event: None,
             port: ptr::null_mut(),
             sock: ptr::null_mut(),
             conn: ptr::null_mut(),
@@ -62,10 +62,10 @@ impl NativeContext {
             data: ptr::null(),
             length: 0,
             session_id: 0,
-            buffer: ptr::null_mut(),
+            buffer: None,
             offset: 0,
             socket_type: 0,
-            host: ptr::null(),
+            host: None,
             number: 0,
             object: ptr::null_mut(),
         }
@@ -76,7 +76,7 @@ impl NativeContext {
 ///
 /// # Safety
 /// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
-unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext) -> i64 {
+unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
     #[cfg(not(test))]
     let run = crate::run_method;
     #[cfg(test)]
@@ -261,7 +261,7 @@ pub(crate) extern "C" fn accept_connection(
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor.as_ptr();
     ctx.server_fd = event.fd();
-    ctx.event = ptr::from_mut(event).cast();
+    ctx.event = Some(event);
     // SAFETY: the server reactor's live server, and its event.
     c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
 }
@@ -319,9 +319,9 @@ pub fn add_port<'a>(
 ) -> Option<view::Port<'a>> {
     let mut ctx = NativeContext::new(serv.raw());
     ctx.socket_type = socket_type;
-    ctx.host = host.as_ptr();
+    ctx.host = Some(host);
     ctx.number = port;
-    // SAFETY: the live server and the host, which lives for the call.
+    // SAFETY: the live server.
     if unsafe { run(RUN_ADD_PORT, 0, &mut ctx) } == 0 {
         return None;
     }
@@ -538,7 +538,7 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]
-struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
+pub(crate) struct SendfileBuffer(pub(crate) [u8; IPC_BUFFER_SIZE]);
 
 /// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the name's
 /// length narrowed to `uint32_t`, as upstream's callers do. The task copies the name up to
@@ -569,9 +569,9 @@ pub fn sendfile(
     ctx.session_id = session_id;
     ctx.data = name.as_ptr().cast();
     ctx.length = l_file;
-    ctx.buffer = buffer.0.as_mut_ptr().cast();
+    ctx.buffer = Some(&mut buffer);
     ctx.offset = offset;
-    // SAFETY: the live server; the name and the buffer live for the call.
+    // SAFETY: the live server; the name lives for the call.
     unsafe { run(RUN_SENDFILE, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
@@ -750,7 +750,7 @@ mod tests {
     /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
     static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
-    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext) -> i64 {
+    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: *mut NativeContext<'_>) -> i64 {
         // SAFETY: the methods pass their own live context.
         let ctx = unsafe { &mut *ctx };
         SEEN.lock()
@@ -763,7 +763,7 @@ mod tests {
                 ctx.sock.addr(),
                 ctx.object.addr(),
                 ctx.number,
-                ctx.host.addr(),
+                ctx.host.map_or(0, |host| host.as_ptr().addr()),
             ));
         if op == RUN_SENDFILE {
             // SAFETY: sendfile lends a terminated name.
@@ -772,12 +772,10 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = name.to_bytes().to_vec();
         }
-        let task_length = if ctx.buffer.is_null() {
-            0
-        } else {
-            // SAFETY: sendfile's buffer starts with a `SendfileTask`.
-            unsafe { ctx.buffer.add(8).cast::<usize>().read_unaligned() }
-        };
+        // sendfile's buffer starts with a `SendfileTask`, its length at 8.
+        let task_length = ctx.buffer.as_ref().map_or(0, |buffer| {
+            usize::from_ne_bytes(buffer.0[8..16].try_into().unwrap_or_default())
+        });
         SENT.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((

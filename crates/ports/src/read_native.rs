@@ -56,6 +56,9 @@ struct Read<'a> {
 ///
 /// # Safety
 /// The reactor's readable event on a live connection of the live `port`.
+// Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
+// frame reads, measures and dispatches where five did (#3335).
+#[inline(always)]
 pub(crate) unsafe fn on_read(
     reactor: *mut c_void,
     port: *mut c_void,
@@ -119,6 +122,11 @@ impl Read<'_> {
         // SAFETY: the current buffer is live once a receive buffer or request made it
         // current; only calls on `self`, which the borrow excludes, touch it.
         unsafe { &mut *self.buffer }
+    }
+
+    /// `socket->removed`: out of the reactor, as a close leaves it.
+    fn removed(&self) -> bool {
+        self.socket.read(|s| s.removed) != 0
     }
 
     fn config(&self) -> &ServerConfig {
@@ -224,7 +232,7 @@ impl Connection for Read<'_> {
         release
     }
 
-    #[inline]
+    #[inline(always)]
     fn receive(&mut self, framing: Framing) -> i64 {
         match framing {
             Framing::Length if self.frames => self.framed::<Frames>(MODE_LENGTH),
@@ -264,16 +272,25 @@ impl Connection for Read<'_> {
         }
         // SAFETY: as above, on the live server.
         let result = unsafe { dispatch_request(self.server, proto, self.socket, rdata) };
-        // The connection, which dispatch may have given a new request.
-        self.request = self.conn().object.cast();
+        // The connection, which dispatch may have given a new request, unless the
+        // request callback closed it ([`Connection::active`]).
+        self.request = if self.removed() {
+            ptr::null_mut()
+        } else {
+            self.conn().object.cast()
+        };
         i64::from(result)
     }
 
+    /// The socket first: a request callback that runs inline (base and thread mode) may
+    /// close the connection, which removes the socket. The socket outlives this handler
+    /// (its free and close(fd) are deferred to the loop), but the slot doesn't: the
+    /// master's accept of the fd reuses it, ordered after the close's own writes to it
+    /// (`closed`'s Release) and not after reads this thread makes later, so after a
+    /// close the slot is left alone.
     #[inline]
     fn active(&mut self) -> bool {
-        let active = self.conn().is_active();
-        let removed = self.socket.read(|s| s.removed);
-        active && removed == 0
+        !self.removed() && self.conn().is_active()
     }
 
     fn upgrade(&mut self) -> Upgrade {

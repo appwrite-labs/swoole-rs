@@ -130,17 +130,19 @@ mod tests {
         let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let mut request = SocketFileRequest::open(&name, 2).unwrap();
         let fd = request.descriptor();
+        let file = |fd| {
+            let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+            (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some((stat.st_dev, stat.st_ino))
+        };
+        let opened = file(fd);
+        assert!(opened.is_some());
         assert_eq!(request.check(0), 0);
         assert_eq!(request.fields().end, 6);
         assert_eq!(request.length(), 4);
         drop(request);
-        unsafe {
-            assert_eq!(libc::fcntl(fd, libc::F_GETFD), -1);
-        }
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
+        // Closed: a test running in parallel may reuse the number at once, but
+        // then it names another file.
+        assert_ne!(file(fd), opened);
         std::fs::remove_file(path).unwrap();
     }
 

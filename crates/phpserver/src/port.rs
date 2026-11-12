@@ -34,12 +34,10 @@ pub struct PortProperty {
 }
 
 impl PortProperty {
-    /// `callbacks[kind]`, or null.
-    pub(crate) fn callback(&self, kind: c_int) -> *mut c_void {
-        usize::try_from(kind)
-            .ok()
-            .and_then(|kind| Some(self.callbacks.get(kind)?.borrow().as_ref()?.as_raw()))
-            .unwrap_or(ptr::null_mut())
+    /// `callbacks[kind]`: the callable, a reference the call holds, or none.
+    pub(crate) fn callback(&self, kind: c_int) -> Option<Callable> {
+        let slot = self.callbacks.get(usize::try_from(kind).ok()?)?;
+        slot.borrow().clone()
     }
 }
 
@@ -158,7 +156,8 @@ pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_serve
     // SAFETY: a live object, per the contract.
     let data = unsafe { custom_of::<PortData>(object) };
     data.and_then(PortData::port).unwrap_or_else(|| {
-        crate::server::invalid(object);
+        // Only this class's `create_object` makes the Server's Port objects.
+        crate::server::invalid(c"Swoole\\Server\\Port");
         // The `E_ERROR` above bailed out.
         std::process::abort()
     })
@@ -181,10 +180,12 @@ fn take(slot: &mut *mut c_void) -> *mut c_void {
 
 /// Free a callable already out of its slot: a destructor this runs may reach
 /// the slot again, or leave a bailout pending.
-fn free_callable(callable: *mut c_void) {
+pub(crate) fn free_callable(callable: *mut c_void) {
     if !callable.is_null() {
-        // SAFETY: a callable created for this port, owned by no slot now.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
+        // SAFETY: the reference `Source::callable` gave the slot, owned by no slot now.
+        drop(unsafe {
+            std::rc::Rc::from_raw(callable.cast::<swoole_rs_zend::host::callable::Callable>())
+        });
     }
 }
 
@@ -241,7 +242,7 @@ fn data(call: &Call) -> &PortData {
 /// return, when the port is not bound to a server. The caller owns nothing.
 fn invalid(call: &Call) {
     // `$this` of this call; the frames above own nothing to drop.
-    crate::server::invalid(call.this());
+    crate::server::invalid(crate::server::this_class(call));
 }
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.
@@ -297,7 +298,7 @@ fn on(call: &Call) {
     if swoole_rs_zend::bailout::pending() {
         return;
     }
-    let Some(callable) = Callable::create(cb) else {
+    let Some(callable) = crate::callable::create(cb) else {
         return call.set_bool(false);
     };
     // A nested on() stored its callable, and the property, after this one's

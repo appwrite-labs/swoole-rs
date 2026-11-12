@@ -6,7 +6,7 @@
 use crate::native::UNCONSTRUCTED;
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{cell::UnsafeCell, ffi::c_void, mem::ManuallyDrop, ptr};
+use std::{cell::UnsafeCell, ffi::c_void, mem::ManuallyDrop};
 use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
@@ -261,22 +261,9 @@ fn call_method(
     method: &[u8],
     arg: Option<&Value>,
 ) -> Result<ManuallyDrop<Owned>, bailout::Bailout> {
-    let retval = ManuallyDrop::new(Owned::default());
-    let Some(object) = object.object() else {
-        return Ok(retval);
-    };
-    let arg = arg.map(Value::as_ptr);
-    // SAFETY: a live object under its own class, a slot this owns and a live argument.
-    unsafe {
-        bailout::call_method(
-            object,
-            ptr::null_mut(),
-            method,
-            retval.as_ptr(),
-            arg.as_slice(),
-        )
-    }?;
-    Ok(retval)
+    object
+        .call_method(None, method, arg.as_slice())
+        .map(ManuallyDrop::new)
 }
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver` (the

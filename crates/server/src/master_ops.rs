@@ -45,9 +45,8 @@ use crate::ops::{
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SESSION_BIND, OP_SESSION_CLAIM,
     OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SET_NODELAY, OP_SET_RCVBUF, OP_SET_SNDBUF,
     OP_SIGNAL_FD, OP_SIGRTMIN, OP_SOCK_FD, OP_SOCK_SSL, OP_SPIN_LOCK, OP_SPIN_UNLOCK, OP_SSL_CLEAR,
-    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_ST_W_CONCURRENCY,
-    OP_ST_W_CONCURRENCY_CAS, OP_ST_W_RESET_COUNTS, OP_STATE, OP_STREAM_PORT, OP_TASKING,
-    OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
+    OP_ST_ABORT_COUNT, OP_ST_ROOT_PATH, OP_ST_SOCK_OBJECT, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT,
+    OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME,
     OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
@@ -82,7 +81,6 @@ use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
-use swoole_rs_process::process_pool::PoolRecord;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
@@ -154,7 +152,7 @@ fn sign(value: impl Into<i64>) -> u64 {
 
 /// The context's objects, each null when the op doesn't use it.
 struct Objects<'a> {
-    ctx: &'a mut NativeContext,
+    ctx: &'a mut NativeContext<'a>,
     /// The context's server, which the ops reading it run with.
     server: Option<crate::view::Server<'a>>,
     state: &'a ServerState,
@@ -169,13 +167,11 @@ impl<'a> Objects<'a> {
     fn server(&self) -> crate::view::Server<'a> {
         self.server.unwrap_or_else(|| std::process::abort())
     }
-    fn config(&self) -> &mut crate::ServerConfig {
-        // SAFETY: a live server's config, written only under its own synchronization.
-        unsafe { &mut *self.state.config() }
+    fn config(&self) -> &crate::ServerConfig {
+        self.state.config_ref()
     }
-    fn tables(&self) -> &mut crate::ServerTables {
-        // SAFETY: as `config`.
-        unsafe { &mut *self.state.tables() }
+    fn tables(&self) -> &crate::ServerTables {
+        self.state.tables_ref()
     }
     fn gs(&self) -> &mut ServerCounters {
         let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
@@ -213,10 +209,7 @@ impl<'a> Objects<'a> {
     /// `OP_ACCEPT`: the accepting event's listening socket accepts into the context's
     /// socket, and its port becomes the context's; whether it did.
     fn accept(&mut self) -> bool {
-        // SAFETY: the accepting event.
-        let listener = unsafe { (*self.ctx.event.cast::<swoole_rs_reactor::Event>()).socket_ptr() };
-        // SAFETY: its live listening socket.
-        let listener = unsafe { Socket::from_ptr(listener.cast()) };
+        let listener = self.ctx.event.and_then(swoole_rs_reactor::Event::socket);
         // The listener's object is its port.
         let (port, socket) = listener.map_or((core::ptr::null_mut(), core::ptr::null_mut()), |l| {
             l.edit(|l| (l.object, l.accept()))
@@ -257,36 +250,17 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
-    /// `serv->get_task_worker_pool()`.
-    fn task_pool(&self) -> *mut PoolRecord {
-        self.server().task_pool()
-    }
-    /// The server's live task pool.
-    fn task_pool_record(&self) -> &mut PoolRecord {
-        // SAFETY: the pools live in the server's shared counters for its life.
-        unsafe { &mut *self.task_pool() }
-    }
-    /// `serv->get_event_worker_pool()`, right after the task pool.
-    fn event_pool(&self) -> &mut PoolRecord {
-        // SAFETY: as `task_pool`; the server's live event pool.
-        unsafe { &mut *self.task_pool().wrapping_add(1) }
-    }
-    fn worker(&self) -> &mut WorkerRecord {
-        // SAFETY: the ops reading it run with a live worker as the context's object.
-        unsafe { &mut *self.ctx.object.cast::<WorkerRecord>() }
-    }
     /// The live `SendData` the send path lends.
     fn send(&self) -> &SendData {
         // SAFETY: the ops reading it run with a live send in the context.
         unsafe { &*self.ctx.send.cast::<SendData>() }
     }
-    /// The NUL-terminated host `add_port` lends.
+    /// The host `add_port` lends, or an empty one.
     fn host(&self) -> &CStr {
-        // SAFETY: the ops reading it run with a live host in the context.
-        unsafe { CStr::from_ptr(self.ctx.host) }
+        self.ctx.host.unwrap_or_default()
     }
     /// The bytes of the NUL-terminated string the ops reading it pass as data.
-    fn data_bytes(&self) -> &[u8] {
+    fn data_bytes(&self) -> &'a [u8] {
         // SAFETY: the ops reading it pass a NUL-terminated string.
         unsafe { CStr::from_ptr(self.ctx.data.cast()) }.to_bytes()
     }
@@ -299,10 +273,22 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it pass a NUL-terminated string.
         unsafe { text(self.ctx.data.cast()) }
     }
-    /// `SendfileTask::filename` in the context's buffer.
+    /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
     fn filename(&self) -> std::borrow::Cow<'_, str> {
-        // SAFETY: the buffer is a `SendfileTask`, whose name follows its 16-byte head.
-        unsafe { text(self.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE)) }
+        let name = self
+            .ctx
+            .buffer
+            .as_ref()
+            .map(|buffer| &buffer.0[SENDFILE_TASK_SIZE..]);
+        name.and_then(|name| CStr::from_bytes_until_nul(name).ok())
+            .map_or("".into(), CStr::to_string_lossy)
+    }
+    /// `Server::sendfile`'s task buffer, which the ops using it run with.
+    fn buffer(&mut self) -> &mut [u8; IPC_BUFFER_SIZE] {
+        match self.ctx.buffer.as_deref_mut() {
+            Some(buffer) => &mut buffer.0,
+            None => std::process::abort(),
+        }
     }
 }
 
@@ -312,11 +298,12 @@ impl<'a> Objects<'a> {
 /// `ctx` is the live context for the running operation, `server` its server (the
 /// ops reading it run with one) and `state` that server's; the objects each op
 /// reads are live, as for master.cc's case, and the server is at the point of its
-/// life where it makes `op`. The [`Objects`] made from them carry this proof to
-/// each stage below.
+/// life where it makes `op`: [`configure`]'s ops only while the master is the
+/// server's only thread. The [`Objects`] made from them carry this proof to each
+/// stage below.
 #[inline(always)]
 pub(crate) unsafe fn answer<'a>(
-    ctx: *mut NativeContext,
+    ctx: *mut NativeContext<'a>,
     server: Option<crate::view::Server<'a>>,
     state: &'a ServerState,
     op: u32,
@@ -548,12 +535,211 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
+/// The ops that write the configuration and tables, each of which runs only while
+/// the master is the server's only thread: `Server::create` (`OP_ALLOC_SESSIONS`,
+/// `OP_ALLOC_PORT_GS`, `OP_HTTP_DEFAULTS`, `OP_ALLOC_WORKERS`, `OP_CREATE_FACTORY`,
+/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
+/// `OP_STREAM_PORT`, `OP_ST_PIPE_COMMAND_NEW`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
+/// `OP_CLEAR_SEND_YIELD`, `OP_CLEAR_MAX_QUEUED`, `OP_SEND_TIMEOUT_MIN`), and `destroy`
+/// once the factory has joined its threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
+/// `OP_DESTROY_TASK_WORKERS`, `OP_FREE_SERVER`); else `None`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one arm per op, as master.cc's switch was"
+)]
+fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    // SAFETY: no other thread runs (above), and each arm's write through it is its
+    // last config access, so no other reference to the config is used meanwhile.
+    let config = || unsafe { &mut *o.state.config() };
+    // SAFETY: as `config`, for the tables.
+    let tables = || unsafe { &mut *o.state.tables() };
+    let mode = || u64::from(o.config().mode_);
+    Some(match op {
+        OP_SET_DISABLE_NOTIFY => {
+            config().disable_notify = true;
+            0
+        }
+        OP_CLEAR_SEND_YIELD => {
+            config().send_yield = false;
+            0
+        }
+        OP_CLEAR_MAX_QUEUED => {
+            config().max_queued_bytes = 0;
+            0
+        }
+        OP_SEND_TIMEOUT_MIN => {
+            config().send_timeout = 0.001;
+            0
+        }
+        OP_STREAM_PORT => {
+            config().have_stream_sock = true;
+            0
+        }
+        OP_DGRAM_PORT => {
+            let fd = o.port_fd();
+            let port = o.port();
+            let socket = port.socket;
+            let size = port.socket_buffer_size.cast_unsigned();
+            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+            let config = config();
+            config.have_dgram_sock = true;
+            config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
+            match arg {
+                2 => config.udp_socket_ipv4 = socket,
+                4 => config.udp_socket_ipv6 = socket,
+                _ => config.dgram_socket = socket,
+            }
+            0
+        }
+        OP_BASE_REACTORS => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "C++'s uint16_t reactor_num"
+            )]
+            let reactors = o.config().worker_num as u16;
+            config().reactor_num = reactors;
+            0
+        }
+        OP_HTTP_DEFAULTS => {
+            // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
+            let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
+            if o.config().enable_static_handler && strings(0, 1) == 0 {
+                strings(0, 3);
+                strings(0, 2);
+            }
+            if strings(2, 1) != 0 && strings(2, 0) != 0 {
+                config().http_compression = true;
+            }
+            0
+        }
+        OP_ALLOC_SESSIONS => {
+            let list = Shm::calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
+            let ready = !list.is_null();
+            tables().session_list = list;
+            u64::from(ready)
+        }
+        OP_ALLOC_PORT_GS => {
+            let count = o.tables().ports().len();
+            let shm = Shm::calloc(count, size_of::<PortCounters>());
+            let list = shm.as_ptr().cast::<PortCounters>();
+            tables().port_gs_list = shm;
+            if list.is_null() {
+                return Some(0);
+            }
+            for index in 0..count {
+                o.port_at(index as u64)?.gs = list.wrapping_add(index).cast();
+            }
+            1
+        }
+        OP_ALLOC_CONNECTIONS => {
+            // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
+            let size = size_of::<ConnectionRecord>();
+            let list = Shm::calloc_private(o.tables().max_connection as usize, size);
+            let ready = !list.is_null();
+            tables().connection_list = list;
+            u64::from(ready)
+        }
+        OP_ALLOC_WORKERS => {
+            let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
+            let ready = !workers.is_null();
+            config().workers = workers;
+            u64::from(ready)
+        }
+        OP_ALLOC_TASK_RESULTS => {
+            let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
+            let results = Shm::calloc(o.config().worker_num as usize, size);
+            let ready = !results.is_null();
+            config().task_results = results;
+            u64::from(ready)
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        OP_CREATE_FACTORY if mode() == MODE_PROCESS => {
+            use swoole_rs_process::workers::ops::RUN_CREATE_PROCESS_FACTORY;
+            let made = crate::factory_ops::run_server(o.server(), RUN_CREATE_PROCESS_FACTORY);
+            let factory =
+                core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0));
+            config().factory_ = factory;
+            u64::from(!factory.is_null())
+        }
+        OP_CREATE_FACTORY if mode() != MODE_PROCESS => {
+            let factory = if mode() == MODE_BASE {
+                crate::server_methods::create_base_factory(o.server())
+            } else {
+                let factory = thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
+                core::ptr::with_exposed_provenance_mut(usize::try_from(factory).unwrap_or(0))
+            };
+            config().factory_ = factory;
+            u64::from(!factory.is_null())
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_TASK_PIPE => {
+            let ready = o.state.push_task_pipe();
+            if !ready {
+                config().task_results.free();
+            }
+            u64::from(ready)
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_ST_PIPE_COMMAND_NEW => {
+            use swoole_rs_tls::socket_pair::{drop, unix_socket};
+            let mut built = Box::new(unix_socket(false, libc::SOCK_DGRAM));
+            if built.master_socket.is_null() || built.worker_socket.is_null() {
+                drop(&mut built);
+                return Some(0);
+            }
+            config().pipe_command = Box::into_raw(built).cast();
+            1
+        }
+        // `Server::destroy_base_factory()`: the connection list and the connection counts.
+        OP_DESTROY_FACTORY if arg == MODE_BASE => {
+            tables().connection_list.free();
+            o.gs().connection_nums.free();
+            for index in 0..o.tables().ports().len() {
+                if let Some(gs) = o.port_at(index as u64).and_then(|port| port.counters()) {
+                    gs.connection_nums.free();
+                }
+            }
+            0
+        }
+        OP_FREE_USER_WORKERS => {
+            config().user_workers.free();
+            0
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_DESTROY_TASK_WORKERS => {
+            // `Server::destroy_task_workers()`: free the task results, then destroy the task pool.
+            config().task_results.free();
+            swoole_rs_process::methods::destroy(o.server().task_pool_ref());
+            0
+        }
+        #[cfg(all(feature = "upstream-symbols", not(test)))]
+        crate::ops::OP_FREE_SERVER => {
+            let lists = tables();
+            lists.session_list.free();
+            lists.port_gs_list.free();
+            let config = config();
+            config.workers.free();
+            let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
+            if !factory.is_null() {
+                // SAFETY: `delete factory_`: nothing names the factory afterwards.
+                unsafe { crate::factory::delete(factory) };
+            }
+            swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
+            0
+        }
+        _ => return None,
+    })
+}
+
 /// The other ops of master.cc's switch; then [`forwarded`].
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per op, as master.cc's switch was"
 )]
 fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+    if let Some(done) = configure(o, op, arg) {
+        return Some(done);
+    }
     let state = o.state;
     let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
@@ -1006,60 +1192,32 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         // arg 1 (bit 0 for the reset) names the task pool's.
-        OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning),
-        OP_WARNING_TIME if arg == 0 => sign(o.config().warning_time),
+        OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning.load(Relaxed)),
+        OP_WARNING_TIME if arg == 0 => sign(o.config().warning_time.load(Relaxed)),
         OP_WARNING_RESET if arg & 1 == 0 => {
-            o.config().scheduler_warning = false;
-            o.config().warning_time = (arg >> 1).cast_signed() as libc::time_t;
+            o.config().scheduler_warning.store(false, Relaxed);
+            let now = (arg >> 1).cast_signed();
+            o.config().warning_time.store(now, Relaxed);
             0
         }
-        OP_WARNING => u64::from(o.task_pool_record().scheduler_warning),
-        OP_WARNING_TIME => sign(o.task_pool_record().warning_time),
+        OP_WARNING => u64::from(o.server().task_pool_ref().scheduler_warning()),
+        OP_WARNING_TIME => sign(o.server().task_pool_ref().warning_time()),
         OP_WARNING_RESET => {
-            let pool = o.task_pool_record();
-            pool.scheduler_warning = 0;
-            pool.warning_time = (arg >> 1).cast_signed();
+            let pool = o.server().task_pool_ref();
+            pool.set_scheduler_warning(0);
+            pool.set_warning_time((arg >> 1).cast_signed());
             0
         }
         OP_SIGNAL_READ_MESSAGE => {
-            o.event_pool().read_message = true;
-            0
-        }
-        OP_SET_DISABLE_NOTIFY => {
-            o.config().disable_notify = true;
-            0
-        }
-        OP_CLEAR_SEND_YIELD => {
-            o.config().send_yield = false;
-            0
-        }
-        OP_CLEAR_MAX_QUEUED => {
-            o.config().max_queued_bytes = 0;
+            o.server().event_pool_ref().set_read_message(true);
             0
         }
         OP_SEND_TIMEOUT => o.config().send_timeout.to_bits(),
-        OP_SEND_TIMEOUT_MIN => {
-            o.config().send_timeout = 0.001;
-            0
-        }
         OP_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
-        OP_STREAM_PORT => {
-            o.config().have_stream_sock = true;
-            0
-        }
-        OP_BASE_REACTORS => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "C++'s uint16_t reactor_num"
-            )]
-            let reactors = o.config().worker_num as u16;
-            o.config().reactor_num = reactors;
-            0
-        }
         OP_ST_TIMER => u64::from(match arg {
-            0 => !o.config().master_timer.is_null(),
-            1 => !o.config().heartbeat_timer.is_null(),
-            _ => !o.tables().enable_accept_timer.is_null(),
+            0 => !o.config().master_timer.load(Relaxed).is_null(),
+            1 => !o.config().heartbeat_timer.load(Relaxed).is_null(),
+            _ => !o.tables().enable_accept_timer.load(Relaxed).is_null(),
         }),
         OP_SET_MASTER_PID => {
             o.gs().master_pid = std::process::id().cast_signed();
@@ -1165,22 +1323,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 &size,
             ))
         }
-        OP_DGRAM_PORT => {
-            let fd = o.port_fd();
-            let port = o.port();
-            let socket = port.socket;
-            let size = port.socket_buffer_size.cast_unsigned();
-            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
-            let config = o.config();
-            config.have_dgram_sock = true;
-            config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
-            match arg {
-                2 => config.udp_socket_ipv4 = socket,
-                4 => config.udp_socket_ipv6 = socket,
-                _ => config.dgram_socket = socket,
-            }
-            0
-        }
         OP_SC_SET => {
             let read = if arg & 1 != 0 { SW_EVENT_READ } else { 0 };
             let write = if arg & 2 != 0 { SW_EVENT_WRITE } else { 0 };
@@ -1251,44 +1393,22 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if op == OP_WORKER_COROUTINES {
                 worker.coroutine_num as u64
             } else {
-                u64::from(worker.concurrency)
+                u64::from(worker.concurrency.load(SeqCst))
             }
-        }
-        OP_ST_W_CONCURRENCY => u64::from(o.worker().concurrency),
-        OP_ST_W_CONCURRENCY_CAS => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t) arg")]
-            let expected = arg as u32;
-            // SAFETY: the worker's aligned `sw_atomic_t`, shared with other processes.
-            let cell =
-                unsafe { core::sync::atomic::AtomicU32::from_ptr(&raw mut o.worker().concurrency) };
-            // `sw_atomic_value_cmp_set`: the value before, swapped or not.
-            let before = cell.compare_exchange(expected, 0, SeqCst, SeqCst);
-            u64::from(before.unwrap_or_else(|value| value))
-        }
-        OP_ST_W_RESET_COUNTS => {
-            let worker = o.worker();
-            worker.request_count = 0;
-            worker.response_count = 0;
-            worker.dispatch_count = 0;
-            0
         }
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
-            let name = o.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE);
-            let room = IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE;
-            // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes from its head, which
-            // nothing else reads or writes meanwhile.
-            let field = unsafe { core::slice::from_raw_parts_mut(name.cast::<u8>(), room) };
+            let source = o.data_bytes();
+            let (_, field) = o.buffer().split_at_mut(SENDFILE_TASK_SIZE);
             // The name, cut to leave room for its NUL, then the NUL. One copy: a loop
             // over the bytes costs the static handler about 800 instructions a file.
-            let source = o.data_bytes();
-            let (name_bytes, _) = source.split_at(source.len().min(room - 1));
+            let (name_bytes, _) = source.split_at(source.len().min(field.len() - 1));
             let (target, rest) = field.split_at_mut(name_bytes.len());
             target.copy_from_slice(name_bytes);
             if let Some(nul) = rest.first_mut() {
                 *nul = 0;
             }
-            name.expose_provenance() as u64
+            field.as_ptr().expose_provenance() as u64
         }
         // Lifecycle effects over process-wide state Rust owns: hooks, the
         // worker globals, the master reactor and the server's shared allocations.
@@ -1305,7 +1425,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SIGNAL_ACTIVE => {
-            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running)
+            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.state.running())
         }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
@@ -1325,39 +1445,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             reactor.set_handler(SW_FD_STREAM_SERVER, SW_EVENT_READ, accept);
             0
         }
-        OP_FREE_USER_WORKERS => {
-            o.config().user_workers.free();
-            0
-        }
-        OP_ALLOC_SESSIONS => {
-            o.tables().session_list = Shm::calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
-            u64::from(!o.tables().session_list.is_null())
-        }
-        OP_ALLOC_PORT_GS => {
-            let ports = o.tables().ports();
-            o.tables().port_gs_list = Shm::calloc(ports.len(), size_of::<PortCounters>());
-            let list = o.tables().port_gs_list.as_ptr().cast::<PortCounters>();
-            if list.is_null() {
-                return Some(0);
-            }
-            for index in 0..ports.len() {
-                o.port_at(index as u64)?.gs = list.wrapping_add(index).cast();
-            }
-            1
-        }
-        OP_ALLOC_WORKERS => {
-            let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
-            let ready = !workers.is_null();
-            o.config().workers = workers;
-            u64::from(ready)
-        }
-        OP_ALLOC_TASK_RESULTS => {
-            let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
-            let results = Shm::calloc(o.config().worker_num as usize, size);
-            let ready = !results.is_null();
-            o.config().task_results = results;
-            u64::from(ready)
-        }
         OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
         op => return forwarded(o, op, arg),
     })
@@ -1367,13 +1454,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// `Server` methods crates/server defines that it forwarded to; then [`lifecycle`].
 fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
-        OP_ALLOC_CONNECTIONS => {
-            // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
-            let size = size_of::<ConnectionRecord>();
-            let max = o.tables().max_connection as usize;
-            o.tables().connection_list = Shm::calloc_private(max, size);
-            u64::from(!o.tables().connection_list.is_null())
-        }
         OP_PORT_MAX_LENGTH | OP_PORT_MIN_LENGTH => {
             let protocol = &mut o.port_at(arg)?.protocol;
             if op == OP_PORT_MIN_LENGTH {
@@ -1452,19 +1532,9 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_STOP_SINGLE_WORKER => {
-            o.event_pool().running = false;
+            o.server().event_pool_ref().set_running(false);
             stop_single_worker(o.server());
             0
-        }
-        OP_CREATE_FACTORY if u64::from(o.config().mode_) != MODE_PROCESS => {
-            let factory = if u64::from(o.config().mode_) == MODE_BASE {
-                crate::server_methods::create_base_factory(o.server())
-            } else {
-                let factory = thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
-                core::ptr::with_exposed_provenance_mut(usize::try_from(factory).unwrap_or(0))
-            };
-            o.config().factory_ = factory;
-            u64::from(!factory.is_null())
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_INIT_TASK_WORKERS => {
@@ -1483,7 +1553,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             crate::worker_methods::destroy_worker(worker);
             0
         }
-        OP_DESTROY_FACTORY if arg == MODE_BASE => destroy_base_factory(o),
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {
             thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
             0
@@ -1498,18 +1567,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             gs.connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
             u64::from(!gs.connection_nums.is_null())
-        }
-        OP_HTTP_DEFAULTS => {
-            // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
-            let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
-            if o.config().enable_static_handler && strings(0, 1) == 0 {
-                strings(0, 3);
-                strings(0, 2);
-            }
-            if strings(2, 1) != 0 && strings(2, 0) != 0 {
-                o.config().http_compression = true;
-            }
-            0
         }
         op => return effects(o, op, arg),
     })
@@ -1719,12 +1776,11 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live `UnixSocket`.
             let pair = unsafe { &*o.ctx.object.cast::<SocketPair>() };
             let end = if arg == 0 {
-                pair.master_socket
+                pair.master_end()
             } else {
-                pair.worker_socket
+                pair.worker_end()
             };
-            // SAFETY: a ready pair's live end.
-            sign(unsafe { Socket::from_ptr(end) }?.fd())
+            sign(end?.fd())
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
@@ -1734,8 +1790,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 } else {
                     (crate::reactor_handle::Reactor::thread(), 2, 0)
                 };
-                // SAFETY: the pipe's live end.
-                if let Some(master) = unsafe { Socket::from_ptr(pipe.master_socket) } {
+                if let Some(master) = pipe.master_end() {
                     reactor.change(master, kind, events);
                 }
             }
@@ -1778,14 +1833,14 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ST_TIMER_DEL => {
+            let null = core::ptr::null_mut();
             let node = match arg {
-                0 => &mut o.config().master_timer,
-                1 => &mut o.config().heartbeat_timer,
-                _ => &mut o.tables().enable_accept_timer,
+                0 => o.config().master_timer.swap(null, Relaxed),
+                1 => o.config().heartbeat_timer.swap(null, Relaxed),
+                _ => o.tables().enable_accept_timer.swap(null, Relaxed),
             };
-            // SAFETY: null or one of this thread's live timer nodes.
-            unsafe { swoole_timer_del((*node).cast()) };
-            *node = core::ptr::null_mut();
+            // SAFETY: null or one of this thread's live timer nodes, forgotten above.
+            unsafe { swoole_timer_del(node.cast()) };
             0
         }
         OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
@@ -1866,7 +1921,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tick = crate::server_methods::master_timer_tick;
             // SAFETY: `tick` takes the server, which outlives the master's timer.
             let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
-            o.config().master_timer = node;
+            o.config().master_timer.store(node, Relaxed);
             u64::from(!node.is_null())
         }
         OP_MASTER_START => {
@@ -1931,8 +1986,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_DISPATCH_FUNC, CB_SHUTDOWN};
     use crate::ops::{
         OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_DISPATCH_FUNC, OP_FORCE_CLOSE,
-        OP_FORCED_EXIT, OP_FREE_SERVER, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN,
-        OP_PORT_CLOSE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
+        OP_FORCED_EXIT, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE,
+        OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
     };
     /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
     const EXIT_CONDITION_FORCED_TERMINATION: c_int = 8;
@@ -1974,7 +2029,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let timer = unsafe {
                 swoole_rs_timer::swr_v1_timer_add_plain(ACCEPT_RETRY_MSEC, false, retry, serv)
             };
-            o.tables().enable_accept_timer = timer;
+            o.tables().enable_accept_timer.store(timer, Relaxed);
             u64::from(!timer.is_null())
         }
         OP_FORCED_EXIT => {
@@ -2011,20 +2066,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ON_SHUTDOWN => {
             o.state.callbacks.call_server(CB_SHUTDOWN, o.server());
-            0
-        }
-        OP_FREE_SERVER => {
-            let tables = o.tables();
-            let config = o.config();
-            tables.session_list.free();
-            tables.port_gs_list.free();
-            config.workers.free();
-            let factory = core::mem::replace(&mut config.factory_, core::ptr::null_mut());
-            if !factory.is_null() {
-                // SAFETY: `delete factory_`: nothing names the factory afterwards.
-                unsafe { crate::factory::delete(factory) };
-            }
-            swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
             0
         }
         OP_JOIN_REACTOR_THREADS => {
@@ -2206,9 +2247,13 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
-            let task = o.ctx.buffer.cast::<SendfileTask>();
-            // SAFETY: `Server::sendfile`'s buffer, which starts with its task.
-            unsafe { (*task).offset = o.ctx.offset };
+            // `SendfileTask::offset`, the head of `Server::sendfile`'s buffer.
+            let offset: libc::off_t = o.ctx.offset;
+            let buffer = o.buffer();
+            if let Some(head) = buffer.first_chunk_mut() {
+                *head = offset.to_ne_bytes();
+            }
+            let data = buffer.as_ptr().cast();
             let head = u32::try_from(size_of::<SendfileTask>()).unwrap_or(0);
             let mut send = SendData {
                 info: DataHead {
@@ -2217,7 +2262,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     len: head + o.ctx.length + 1,
                     ..DataHead::default()
                 },
-                data: o.ctx.buffer,
+                data,
             };
             u64::from(factory_finish(o, &mut send))
         }
@@ -2243,11 +2288,17 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     let socket = if u64::from(o.config().mode_) == MODE_THREAD {
         bus.pipe_socket(pipe)
     } else {
-        pipe.as_ptr().cast()
+        Some(pipe)
+    };
+    let Some(socket) = socket else {
+        return 0;
     };
     let mut info = send.info;
     // SAFETY: a live pipe socket and the send it writes.
-    u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, send.data.cast()) })
+    u64::from(unsafe {
+        bus.rust()
+            .send(socket.as_ptr(), &mut info, send.data.cast())
+    })
 }
 
 /// `serv->factory_->finish(send)`.
@@ -2263,14 +2314,11 @@ fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
 fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::factory_ops as process;
     use crate::ops::{
-        OP_DESTROY_TASK_WORKERS, OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY,
-        OP_PIPE_TO_WORKER, OP_TASK_PIPE, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
-        OP_TASK_POOL_SETUP,
+        OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY, OP_PIPE_TO_WORKER,
+        OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP,
     };
     use swoole_rs_process::methods as pool;
-    use swoole_rs_process::workers::ops::{
-        RUN_CREATE_PROCESS_FACTORY, RUN_DESTROY_PROCESS_FACTORY,
-    };
+    use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
     /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
     const IPC_MSGQUEUE: u64 = 2;
     const SW_TASK_WORKER: c_int = 4;
@@ -2280,25 +2328,13 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = o.ctx.serv;
     let config = o.config();
     Some(match op {
-        OP_CREATE_FACTORY => {
-            let made = process::run_server(o.server(), RUN_CREATE_PROCESS_FACTORY);
-            config.factory_ =
-                core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0));
-            u64::from(!config.factory_.is_null())
-        }
         OP_DESTROY_FACTORY => {
             // The live server, whose process factory shutdown destroys.
             process::run_server(o.server(), RUN_DESTROY_PROCESS_FACTORY);
             0
         }
-        OP_DESTROY_TASK_WORKERS => {
-            // `Server::destroy_task_workers()`: free the task results, then destroy the task pool.
-            o.config().task_results.free();
-            swoole_rs_process::methods::destroy(o.server().task_pool_ref());
-            0
-        }
         OP_TASK_POOL_CREATE => {
-            let task_pool = o.task_pool();
+            let task_pool = o.server().task_pool();
             // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
             unsafe { task_pool.write_bytes(0, 1) };
             #[expect(clippy::cast_possible_truncation, reason = "C++'s key_t conversion")]
@@ -2330,14 +2366,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASK_POOL_LISTEN => {
             // SAFETY: the NUL-terminated path `arg` lends.
             let file = unsafe { CStr::from_ptr(ptr_of(arg)) };
-            sign(pool_listen(o.task_pool_record(), file, 2048))
-        }
-        OP_TASK_PIPE => {
-            let ready = o.state.push_task_pipe();
-            if !ready {
-                config.task_results.free();
-            }
-            u64::from(ready)
+            sign(pool_listen(o.server().task_pool_ref(), file, 2048))
         }
         OP_FACTORY_SHUTDOWN => {
             crate::factory::shutdown(o.state);
@@ -2393,7 +2422,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         EVENT_COMMAND_REQUEST, OP_ADD_RECV_TIMER, OP_MANAGER_BARRIER, OP_PORT_IMPORT, OP_PORT_NEW,
         OP_PORT_SOCKET, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
-        OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
+        OP_ST_CMD_SEND,
     };
     use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
@@ -2543,7 +2572,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     .unwrap_or(false)
                 } else {
                     let pool = o.server().event_pool_ref();
-                    swoole_rs_process::methods::push_event(pool, task) >= 0
+                    let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
+                    swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0
                 };
                 return Some(u64::from(sent));
             }
@@ -2572,16 +2602,6 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     .send(pipe.cast(), &mut task.info, task.data.cast())
             })
         }
-        OP_ST_PIPE_COMMAND_NEW => {
-            use swoole_rs_tls::socket_pair::{drop, unix_socket};
-            let mut built = Box::new(unix_socket(false, libc::SOCK_DGRAM));
-            if built.master_socket.is_null() || built.worker_socket.is_null() {
-                drop(&mut built);
-                return Some(0);
-            }
-            o.config().pipe_command = Box::into_raw(built).cast();
-            1
-        }
         _ => return None,
     })
 }
@@ -2590,7 +2610,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
     let state = serv.state();
-    let size = state.config_ref().ipc_max_size;
+    let size = state.config_ref().ipc_max_size();
     if state.message_bus().alloc_buffer(size as usize) {
         0
     } else {
@@ -2662,19 +2682,6 @@ pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
     ops(&mut o, crate::ops::OP_FREE_SERVER, 0);
 }
 
-/// `Server::destroy_base_factory()`: the connection list and the connection counts.
-fn destroy_base_factory(o: &Objects<'_>) -> u64 {
-    let tables = o.tables();
-    tables.connection_list.free();
-    o.gs().connection_nums.free();
-    for index in 0..tables.ports().len() {
-        if let Some(gs) = o.port_at(index as u64).and_then(|port| port.counters()) {
-            gs.connection_nums.free();
-        }
-    }
-    0
-}
-
 #[cfg(target_os = "linux")]
 fn sigrtmin() -> u64 {
     sign(libc::SIGRTMIN())
@@ -2689,7 +2696,7 @@ fn sigrtmin() -> u64 {
 mod tests {
     use super::*;
 
-    fn context() -> NativeContext {
+    fn context<'a>() -> NativeContext<'a> {
         NativeContext::new(core::ptr::null_mut())
     }
 
@@ -2778,9 +2785,9 @@ mod tests {
             assert!(!(*config).send_yield);
             answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
             assert_eq!((*config).reactor_num, 6);
-            (*config).scheduler_warning = true;
+            (*config).scheduler_warning.store(true, Relaxed);
             answer(&raw mut ctx, None, &*state, OP_WARNING_RESET, 7 << 1);
-            assert!(!(*config).scheduler_warning);
+            assert!(!(*config).scheduler_warning.load(Relaxed));
             assert_eq!(
                 answer(&raw mut ctx, None, &*state, OP_WARNING_TIME, 0),
                 Some(7)
@@ -2793,7 +2800,7 @@ mod tests {
     fn host_size_counts_the_nul_and_advance_moves_the_data() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        ctx.host = c"0.0.0.0".as_ptr();
+        ctx.host = Some(c"0.0.0.0");
         let data = [0u8; 8];
         ctx.data = data.as_ptr().cast();
         ctx.length = 8;
@@ -2811,43 +2818,20 @@ mod tests {
     }
 
     #[test]
-    fn concurrency_swap_returns_the_value_before_like_sw_atomic_value_cmp_set() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: every WorkerRecord field is a pointer or integer; zero is valid.
-        let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        worker.concurrency = 3;
-        ctx.object = (&raw mut worker).cast();
-        // SAFETY: the context's worker is live above.
-        unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 2),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 3);
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_W_CONCURRENCY_CAS, 3),
-                Some(3)
-            );
-            assert_eq!((*ctx.object.cast::<WorkerRecord>()).concurrency, 0);
-            crate::state::free_state(state);
-        }
-    }
-
-    #[test]
     fn sendfile_name_is_copied_after_the_task_head() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
         // A whole task buffer: the op may write the name anywhere after its head.
-        let mut buffer = vec![0xffu8; IPC_BUFFER_SIZE];
-        ctx.buffer = buffer.as_mut_ptr().cast();
+        let mut buffer = crate::server_methods::SendfileBuffer([0xff; IPC_BUFFER_SIZE]);
+        let at = buffer.0.as_ptr().wrapping_add(16).addr() as u64;
+        ctx.buffer = Some(&mut buffer);
         ctx.data = c"/tmp/a".as_ptr().cast();
         // SAFETY: the context's buffer and name are live above.
         let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
         unsafe { crate::state::free_state(state) };
-        assert_eq!(name, Some(buffer.as_ptr().wrapping_add(16).addr() as u64));
-        assert_eq!(&buffer[16..23], b"/tmp/a\0");
+        assert_eq!(name, Some(at));
+        assert_eq!(&buffer.0[16..23], b"/tmp/a\0");
     }
 
     #[test]

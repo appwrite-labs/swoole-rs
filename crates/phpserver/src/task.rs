@@ -10,11 +10,12 @@ use crate::dispatch::{dtor, handler_error, invoke, set_last_error, undef, zserv}
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     ffi::{CStr, c_int, c_void},
     mem::{ManuallyDrop, MaybeUninit},
     ptr,
+    rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
 use swoole_rs_buffer::string::CppString;
@@ -33,7 +34,7 @@ use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value,
     bailout::Bailout,
     long_zval, message, report,
-    sys::{swr_zend_unserialize, swr_zval_stringl, zval, zval_ptr_dtor},
+    sys::{swr_zend_unserialize, swr_zval_stringl, zval},
 };
 
 /// `SW_TASK_*` flags.
@@ -214,14 +215,14 @@ impl EventData {
 }
 
 /// Upstream's `TaskCo`: a coroutine waiting in `taskwait` (`list` empty) or
-/// `taskCo`/`taskWaitMulti` for results written into `result`.
+/// `taskCo`/`taskWaitMulti` for results written into `result`, which becomes
+/// the call's return value. The waiting call owns it; the pending table refers to it.
 struct TaskCo {
     co: Coroutine,
-    result: *mut zval,
-    list: Vec<i64>,
-    count: u32,
-    /// `taskCo` fills timed-out results with false; `taskWaitMulti` leaves them unset.
-    fill_false: bool,
+    result: RefCell<Owned>,
+    /// Set once every task is sent, as upstream.
+    list: RefCell<Vec<i64>>,
+    count: Cell<u32>,
 }
 
 /// One server's pending tasks.
@@ -229,7 +230,8 @@ struct TaskCo {
 struct Pending {
     /// Never freed with the table: a thread exits after Zend shut down.
     callbacks: HashMap<i64, ManuallyDrop<Callable>>,
-    coroutines: HashMap<i64, *mut TaskCo>,
+    /// The waiting call owns each.
+    coroutines: HashMap<i64, Weak<TaskCo>>,
 }
 
 thread_local! {
@@ -435,7 +437,7 @@ fn task(call: &Call) {
         flag(&mut buf, NOREPLY);
     } else if let Some(callback) = callback {
         flag(&mut buf, CALLBACK);
-        let Some(cb) = Callable::create(callback) else {
+        let Some(cb) = crate::callable::create(callback) else {
             return call.set_bool(false);
         };
         // A replaced callable is freed once the table is no longer borrowed.
@@ -503,21 +505,22 @@ fn taskwait(call: &Call) {
         return;
     };
     flag(&mut buf, NONBLOCK | COROUTINE);
-    let mut task_co = TaskCo {
+    let task_co = Rc::new(TaskCo {
         co,
-        result: call.return_value(),
-        list: Vec::new(),
-        count: 1,
-        fill_false: false,
-    };
+        result: RefCell::default(),
+        list: RefCell::default(),
+        count: Cell::new(1),
+    });
     if !dispatch(serv, &mut buf, &mut dst) {
         return call.set_bool(false);
     }
-    pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
+    pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
     // onFinish resumes it.
     let done = swoole_rs_phpcoroutines::suspend_for(timeout);
     pending(serv, |p| p.coroutines.remove(&id));
-    if !done {
+    if done {
+        call.set_owned(task_co.result.take());
+    } else {
         call.set_bool(false);
     }
 }
@@ -592,18 +595,12 @@ fn task_co(call: &Call, fill_false: bool) {
     let Some(co) = Coroutine::current() else {
         return;
     };
-    let result = call.return_value();
-    call.set_array();
-    // SAFETY: the array this call made; `onFinish` writes it only while this
-    // coroutine waits, after this borrow's last use.
-    let array = unsafe { ArrayMut::from_ptr(result) };
-    let mut task_co = TaskCo {
+    let task_co = Rc::new(TaskCo {
         co,
-        result,
-        list: Vec::new(),
-        count: 0,
-        fill_false,
-    };
+        result: RefCell::new(OwnedArray::default().into_owned()),
+        list: RefCell::default(),
+        count: Cell::new(0),
+    });
     let mut list = Vec::with_capacity(n_task as usize);
     for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
         let index = list.len() as u64;
@@ -622,37 +619,37 @@ fn task_co(call: &Call, fill_false: bool) {
             }
         }
         if dispatched {
-            pending(serv, |p| p.coroutines.insert(id, &raw mut task_co));
+            pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
         } else {
-            array.update_index(index, Owned::bool(false));
+            if let Some(array) = task_co.result.borrow_mut().array_mut() {
+                array.update_index(index, Owned::bool(false));
+            }
             n_task -= 1;
         }
         list.push(id);
     }
     if n_task == 0 {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
-        // SAFETY: the array this call made.
-        unsafe { zval_ptr_dtor(result) };
         return call.set_bool(false);
     }
-    task_co.list = list;
-    task_co.count = n_task;
+    task_co.list.replace(list);
+    task_co.count.set(n_task);
     // onFinish resumes it.
-    if swoole_rs_phpcoroutines::suspend_for(timeout) {
-        return;
-    }
-    // SAFETY: the array this call made, which `onFinish` no longer writes.
-    let array = unsafe { ArrayMut::from_ptr(result) };
-    for j in 0..n_task as usize {
-        if array.array().and_then(|a| a.index(j as u64)).is_none() {
-            if task_co.fill_false {
-                array.update_index(j as u64, Owned::bool(false));
-            }
-            if let Some(&id) = task_co.list.get(j) {
-                pending(serv, |p| p.coroutines.remove(&id));
+    if !swoole_rs_phpcoroutines::suspend_for(timeout)
+        && let Some(array) = task_co.result.borrow_mut().array_mut()
+    {
+        for j in 0..n_task as usize {
+            if array.array().and_then(|a| a.index(j as u64)).is_none() {
+                if fill_false {
+                    array.update_index(j as u64, Owned::bool(false));
+                }
+                if let Some(&id) = task_co.list.borrow().get(j) {
+                    pending(serv, |p| p.coroutines.remove(&id));
+                }
             }
         }
     }
+    call.set_owned(task_co.result.take());
 }
 
 fn pack_method(call: &Call) {
@@ -745,13 +742,15 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         4
     };
     let retval = Owned::default();
-    let cb = crate::lifecycle::callback(ON_TASK);
-    let outcome = match invoke(
-        cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        retval.as_ptr(),
-        facts.task_coroutine,
-    ) {
+    let called = crate::lifecycle::callback(ON_TASK).map_or(Ok(false), |cb| {
+        invoke(
+            &cb,
+            args.get_mut(..argc).unwrap_or_default(),
+            retval.as_ptr(),
+            facts.task_coroutine,
+        )
+    });
+    let outcome = match called {
         Ok(false) => handler_error("onTask"),
         called => called.map(drop),
     };
@@ -788,19 +787,22 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     }
     let mut data = data.into_zval();
     let cb = if flags & CALLBACK != 0 {
-        let cb = pending(server, |p| p.callbacks.get(&id).map(|cb| cb.as_raw()));
+        // Its own reference: the callback may replace the pending entry.
+        let cb = pending(server, |p| {
+            p.callbacks.get(&id).map(|cb| Callable::clone(cb))
+        });
         if cb.is_none() {
             flags &= !CALLBACK;
         }
-        cb.unwrap_or(ptr::null_mut())
+        cb
     } else {
         crate::lifecycle::callback(ON_FINISH)
     };
-    if cb.is_null() {
+    let Some(cb) = cb else {
         let outcome = event_warning(c"require 'onFinish' callback");
         dtor(&mut data);
         return outcome.map(|()| SW_ERR);
-    }
+    };
     let facts = facts(server);
     let mut args = [zserv, undef(), undef()];
     let argc = if facts.event_object {
@@ -816,7 +818,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         3
     };
     let outcome = match invoke(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
         facts.enable_coroutine,
@@ -838,7 +840,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
 /// A coroutine task's result: into `taskwait`'s return value, or at its index
 /// in `taskCo`'s array; the waiting coroutine resumes once all arrived.
 fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout> {
-    let Some(task_co) = pending(server, |p| p.coroutines.get(&id).copied()) else {
+    let Some(task_co) = pending(server, |p| p.coroutines.get(&id).and_then(Weak::upgrade)) else {
         log::error_log(
             SW_LOG_WARNING,
             SW_ERROR_TASK_TIMEOUT,
@@ -847,19 +849,15 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
         );
         return Ok(());
     };
-    // SAFETY: the waiting coroutine's live TaskCo, unregistered before it ends.
-    let task_co = unsafe { &*task_co };
-    let (co, result, index, total, single) = (
-        task_co.co,
-        task_co.result,
-        task_co.list.iter().position(|&t| t == id),
-        task_co.count,
-        task_co.list.is_empty(),
-    );
+    let (index, single) = {
+        let list = task_co.list.borrow();
+        (list.iter().position(|&t| t == id), list.is_empty())
+    };
     if single {
         // ZVAL_COPY_VALUE: the result takes the value.
-        // SAFETY: the waiting call's return slot.
-        unsafe { result.write(data.into_zval()) };
+        drop(task_co.result.replace(data));
+        let co = task_co.co;
+        drop(task_co);
         // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
         unsafe { co.wake(false) };
         return Ok(());
@@ -868,11 +866,14 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
         let text = message!("task[{id}] is invalid");
         return event_warning(text.as_cstr());
     };
-    // SAFETY: the waiting call's result array, which it leaves alone while it waits.
-    let array = unsafe { ArrayMut::from_ptr(result) };
-    array.update_index(index as u64, data);
+    if let Some(array) = task_co.result.borrow_mut().array_mut() {
+        array.update_index(index as u64, data);
+    }
     pending(server, |p| p.coroutines.remove(&id));
-    if array.array().map_or(0, Array::count) == total {
+    let arrived = task_co.result.borrow().array().map_or(0, Array::count);
+    let (co, all) = (task_co.co, arrived == task_co.count.get());
+    drop(task_co);
+    if all {
         // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
         unsafe { co.wake(false) };
     }
@@ -892,13 +893,18 @@ mod tests {
 
     #[test]
     fn pending_tasks_are_per_server() {
-        let (mut x, mut y) = (0u64, 0u64);
-        let (a, b) = ((&raw mut x).cast::<TaskCo>(), (&raw mut y).cast::<TaskCo>());
-        pending_at(a as usize, |p| p.coroutines.insert(7, a));
+        let (a, b) = (0x1000, 0x2000);
+        // An all-zero callable (an undefined zval, an empty cache), never called
+        // or dropped.
+        let callable: Callable = unsafe { std::rc::Rc::new_zeroed().assume_init() };
+        let callable = ManuallyDrop::new(callable);
+        let raw = std::rc::Rc::as_ptr(&callable);
+        pending_at(a, |p| p.callbacks.insert(7, callable));
         assert_eq!(
-            pending_at(b as usize, |p| p.coroutines.get(&7).copied()),
+            pending_at(b, |p| p.callbacks.get(&7).map(|c| std::rc::Rc::as_ptr(c))),
             None
         );
-        assert_eq!(pending_at(a as usize, |p| p.coroutines.remove(&7)), Some(a));
+        let removed = pending_at(a, |p| p.callbacks.remove(&7));
+        assert_eq!(removed.map(|c| std::rc::Rc::as_ptr(&c)), Some(raw));
     }
 }

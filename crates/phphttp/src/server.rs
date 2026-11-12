@@ -310,18 +310,17 @@ pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 /// # Errors
 /// It bailed out.
 pub(crate) fn call_handler(
-    callable: *mut Callable,
+    callable: &Callable,
     args: &mut [zval],
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
-    // SAFETY: a live handle.
-    let cache = unsafe { swoole_rs_zend::host::callable::cache(callable) };
-    // SAFETY: a resolved cache and the two arguments; the coroutine leaf,
-    // `then` and the reporter run inside C traps.
+    // SAFETY: the resolved cache of a callable the caller holds through the
+    // call, and the arguments; the coroutine leaf, `then` and the reporter run
+    // inside C traps.
     let called = unsafe {
         swoole_rs_zend::host::function_call(
-            cache,
+            callable.cache_ptr(),
             u32::try_from(args.len()).unwrap_or(0),
             args.as_mut_ptr(),
             std::ptr::null_mut(),
@@ -347,11 +346,10 @@ pub(crate) fn call_port(
     kind: c_int,
     args: &mut [zval],
 ) -> Result<Option<bool>, bailout::Bailout> {
-    let callback = php_swoole_server_get_callback(server, server_fd, kind);
-    if callback.is_null() {
+    let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return Ok(None);
-    }
-    call_handler(callback.cast(), args, enable_coroutine(server), NO_THEN).map(Some)
+    };
+    call_handler(&callback, args, enable_coroutine(server), NO_THEN).map(Some)
 }
 
 /// `http_server_process_request`: the handler with the request's objects,
@@ -359,10 +357,14 @@ pub(crate) fn call_port(
 /// the call's own trap.
 fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = ctx.state();
-    let callback = state.callback.cast();
+    // Its own reference: the handler may replace the server's.
+    let callback = state.callback.clone();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     let mut release = context::Release::new(ctx);
-    match call_handler(callback, &mut args, coroutine, release.then()) {
+    let called = callback.map_or(Ok(false), |callback| {
+        call_handler(&callback, &mut args, coroutine, release.then())
+    });
+    match called {
         // The objects stay held, as upstream's jump skipped their release.
         Err(bailout) if !release.begun() => return Err(bailout),
         Err(bailout) => bailout.defer(),
@@ -467,17 +469,16 @@ fn handle(
         .by_session(session)
         .is_some_and(|conn| conn.websocket_status == STATUS_CONNECTION);
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
-    let callback = php_swoole_server_get_callback(server, server_fd, kind);
-    if callback.is_null() {
+    let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         if handshake {
             websocket::handshake_open(ctx)?;
         } else {
             websocket::request(ctx);
         }
         return Ok(DONE);
-    }
+    };
     let state = ctx.state();
-    state.callback = callback;
+    state.callback = Some(callback);
     if handshake {
         websocket::upgrading(server, session);
         state.upgrade = 1;
@@ -583,10 +584,13 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         }
     }
     let state = ctx.state();
-    let callback = state.callback.cast();
+    let callback = state.callback.clone();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     let mut release = context::Release::new(ctx);
-    match call_handler(callback, &mut args, facts.coroutine, release.then()) {
+    let called = callback.map_or(Ok(false), |callback| {
+        call_handler(&callback, &mut args, facts.coroutine, release.then())
+    });
+    match called {
         // As in `call`.
         Err(bailout) if !release.begun() => return Err(bailout),
         Err(bailout) => bailout.defer(),
@@ -618,8 +622,8 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
 
 /// The counters of the worker serving requests, for one admission or release.
 struct Worker {
-    /// `Worker::concurrency`.
-    concurrency: &'static mut u32,
+    /// `Worker::concurrency`, which the master resets as it retires the worker.
+    concurrency: &'static AtomicU32,
     /// `ServerGS::concurrency`, shared by every worker.
     server_concurrency: &'static AtomicU32,
     max_concurrency: u32,
@@ -636,9 +640,9 @@ fn worker() -> Option<Worker> {
         return None;
     }
     Some(Worker {
-        // SAFETY: the current worker's live record, whose counter only this
-        // thread writes, and only through this short-lived borrow.
-        concurrency: unsafe { &mut (*current).concurrency },
+        // SAFETY: the current worker's live record; the borrow covers only its
+        // atomic counter.
+        concurrency: unsafe { &(*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency,
         shutdown: swoole_rs_process::methods::worker_is_shutdown(),
@@ -660,8 +664,7 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
-    *worker.concurrency += 1;
-    if *worker.concurrency > worker.max_concurrency {
+    if worker.concurrency.fetch_add(1, SeqCst) >= worker.max_concurrency {
         QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
         return false;
     }
@@ -684,7 +687,7 @@ pub(crate) fn release_request() {
         return;
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
-    *worker.concurrency = worker.concurrency.wrapping_sub(1);
+    worker.concurrency.fetch_sub(1, SeqCst);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         let reactor = swoole_rs_reactor::event_api::swr_v1_event_reactor();
         // SAFETY: the thread's live reactor, which begins with its prepared state.

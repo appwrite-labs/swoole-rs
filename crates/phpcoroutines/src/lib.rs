@@ -60,7 +60,7 @@ mod classes;
 pub use classes::*;
 mod context;
 mod host;
-pub use host::{Coroutine, counts, in_coroutine, park, sleep, suspend, suspend_for};
+pub use host::{Coroutine, Waiter, counts, in_coroutine, sleep, suspend, suspend_for};
 mod methods;
 pub use methods::*;
 mod runtime;

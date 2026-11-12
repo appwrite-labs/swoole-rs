@@ -51,7 +51,7 @@ struct Context<'a> {
     reactor: crate::reactor_handle::Reactor,
     conn: *mut ConnectionRecord,
     status: *const c_void,
-    socket: *mut c_void,
+    socket: Option<swoole_rs_reactor::Socket<'a>>,
 }
 
 impl<'a> Context<'a> {
@@ -105,7 +105,9 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FACTORY_END => u64::from(crate::factory::end(ctx.state(), ctx.info().fd, 0)),
         OP_MODE => u64::from(config.mode_),
         OP_SIGNAL_LIVE => u64::from(
-            swoole_rs_corebase::swr_v1_core_running() && !ctx.worker.is_null() && config.running,
+            swoole_rs_corebase::swr_v1_core_running()
+                && !ctx.worker.is_null()
+                && ctx.state().running(),
         ),
         OP_EXCEEDED_MAX_REQUEST => u64::from(ctx.worker().exceeded_max_request()),
         OP_INFO_TYPE => u64::from(ctx.info().kind),
@@ -247,8 +249,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let conn = ctx.conn()?;
     Some(match op {
         OP_CONN_READABLE => {
-            let removed =
-                crate::objects::socket(conn.socket).is_none_or(|s| s.read(|s| s.removed != 0));
+            let removed = conn.socket().is_none_or(|s| s.read(|s| s.removed != 0));
             u64::from(conn.peer_closed == 0 && !removed)
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id),

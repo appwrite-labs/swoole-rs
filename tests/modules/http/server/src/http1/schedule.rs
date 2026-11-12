@@ -5,6 +5,7 @@
 
 use super::*;
 use std::collections::BTreeSet;
+use std::sync::atomic::Ordering::Relaxed;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
@@ -336,9 +337,11 @@ fn schedule_10() {
     test_worker_schedule(
         DISPATCH_CONCURRENT_LB,
         // SAFETY: the live record's field.
-        |worker| unsafe { (*worker.raw()).concurrency } as usize,
+        |worker| unsafe { &(*worker.raw()).concurrency }.load(Relaxed) as usize,
         // SAFETY: as above.
-        |worker, value| unsafe { (*worker.raw()).concurrency = u32::try_from(value).unwrap() },
+        |worker, value| {
+            unsafe { &(*worker.raw()).concurrency }.store(u32::try_from(value).unwrap(), Relaxed);
+        },
     );
 }
 

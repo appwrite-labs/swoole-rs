@@ -449,15 +449,7 @@ impl<'a> Server<'a> {
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
     #[must_use]
     pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Socket<'a>> {
-        let worker = self.worker_record(id)?;
-        let pipe = if master {
-            worker.pipe_master()
-        } else {
-            worker.pipe_worker()
-        };
-        // SAFETY: null or a pipe socket of one of the server's live workers, which the
-        // server keeps until it frees its workers.
-        unsafe { Socket::from_ptr(pipe.cast()) }
+        worker_pipe(self.worker_record(id)?, master)
     }
 
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
@@ -614,6 +606,20 @@ impl<'a> Port<'a> {
     pub fn fd(self) -> c_int {
         self.with_socket(|socket| socket.fd()).unwrap_or(-1)
     }
+}
+
+/// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
+/// it has none.
+#[must_use]
+pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>> {
+    let pipe = if master {
+        worker.pipe_master()
+    } else {
+        worker.pipe_worker()
+    };
+    // SAFETY: null or a pipe socket of a live worker, which its owner keeps until it
+    // frees the worker.
+    unsafe { Socket::from_ptr(pipe.cast()) }
 }
 
 /// A `network::Socket`'s fd and `swSocketType`.

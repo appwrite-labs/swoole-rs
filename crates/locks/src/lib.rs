@@ -644,8 +644,10 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
         tv_sec: timeout as time_t,
         tv_nsec: ((timeout - (timeout as time_t) as f64) * 1000.0 * 1000.0 * 1000.0) as c_long,
     };
+    // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with
+    // EAGAIN; its token is still in the word, so the result alone doesn't decide.
     // SAFETY: `a` is a live futex word; the timeout is null or the live `duration`.
-    let result = unsafe {
+    unsafe {
         syscall(
             SYS_futex,
             a.as_ptr(),
@@ -660,9 +662,8 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
             0,
         )
     };
-    if result == 0
-        && a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+    if a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
     {
         0
     } else {

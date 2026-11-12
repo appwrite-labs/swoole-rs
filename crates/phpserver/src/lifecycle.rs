@@ -8,23 +8,24 @@ use crate::{
     server::{SERVER, ServerData, fatal, running, server},
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
+use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_NULL, IS_OBJECT_EX,
-        swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry, zend_object,
+        swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zend_object,
         zend_object_std_dtor, zend_value, zval,
     },
 };
@@ -334,16 +335,7 @@ impl ServerObject {
     /// `GC_ADDREF`), as upstream's `*zserv` copies are; undefined for no object.
     /// The handle keeps the object live while the zval is used.
     pub(crate) fn zval(self) -> zval {
-        if self.0.is_null() {
-            return swoole_rs_zend::UNDEF;
-        }
-        zval {
-            value: zend_value { obj: self.0 },
-            u1: _zval_struct__bindgen_ty_1 {
-                type_info: IS_OBJECT_EX,
-            },
-            u2: _zval_struct__bindgen_ty_2 { next: 0 },
-        }
+        object_zval(self.0)
     }
 
     /// The object's class.
@@ -400,15 +392,9 @@ impl ServerObject {
         f(property)
     }
 
-    /// `get_callback(kind)`: a callable, or null.
-    fn callback(self, kind: usize) -> *mut c_void {
-        self.property(|p| {
-            p.callbacks
-                .get(kind)
-                .and_then(Option::as_ref)
-                .map(Callable::as_raw)
-        })
-        .unwrap_or(ptr::null_mut())
+    /// `get_callback(kind)`: the callable, a reference the call holds, or none.
+    fn callback(self, kind: usize) -> Option<Callable> {
+        self.property(|p| p.callbacks.get(kind).and_then(Option::clone))
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
@@ -425,7 +411,7 @@ impl ServerObject {
         if bailout::pending() {
             return false;
         }
-        let Some(callable) = Callable::create(callable) else {
+        let Some(callable) = crate::callable::create(callable) else {
             return false;
         };
         // A nested on() (from the old callable's destructor) stored its callable,
@@ -437,10 +423,14 @@ impl ServerObject {
         true
     }
 
-    /// The Port object at `index` (`property->ports.at(index)`), or null.
-    pub(crate) fn port_at(self, index: usize) -> *mut zend_object {
-        self.property(|p| p.ports.get(index).copied())
-            .unwrap_or(ptr::null_mut())
+    /// The Port object at `index` (`property->ports.at(index)`) as an uncounted
+    /// zval, undefined for none: `add_port` keeps each in `$server->ports`, which
+    /// holds it while the Server object lives.
+    pub(crate) fn port(self, index: usize) -> zval {
+        object_zval(
+            self.property(|p| p.ports.get(index).copied())
+                .unwrap_or(ptr::null_mut()),
+        )
     }
 
     /// The user process at `index`, or null.
@@ -450,8 +440,23 @@ impl ServerObject {
     }
 }
 
-/// `server_object->get_callback(kind)`: a callable, or null.
-pub(crate) fn callback(kind: c_int) -> *mut c_void {
+/// `ZVAL_OBJ(object)` without `GC_ADDREF`, undefined for null; only for an
+/// object a [`ServerObject`] (or its property) keeps live while the zval is used.
+fn object_zval(object: *mut zend_object) -> zval {
+    if object.is_null() {
+        return swoole_rs_zend::UNDEF;
+    }
+    zval {
+        value: zend_value { obj: object },
+        u1: _zval_struct__bindgen_ty_1 {
+            type_info: IS_OBJECT_EX,
+        },
+        u2: _zval_struct__bindgen_ty_2 { next: 0 },
+    }
+}
+
+/// `server_object->get_callback(kind)`: the callable, a reference the call holds, or none.
+pub(crate) fn callback(kind: c_int) -> Option<Callable> {
     ServerObject::running().callback(usize::try_from(kind).unwrap_or(CALLBACKS))
 }
 
@@ -651,14 +656,16 @@ impl<'a> Props<'a> {
 }
 
 /// `php_swoole_server_add_port`: a Port object for `port`, kept by the Server
-/// object and appended to `$server->ports`.
-/// # Safety
-/// `object` is bound to its server, and `port` is one of its ports.
-pub(crate) unsafe fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
+/// object and appended to `$server->ports`; undefined unless `port` is one of
+/// the object's server's ports.
+pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
     let Some(serv) = object.server() else {
         return Owned::default();
     };
-    // SAFETY: a live server and, per the caller, one of its ports.
+    if !serv.ports().iter().any(|own| own.raw() == port.raw()) {
+        return Owned::default();
+    }
+    // SAFETY: a live server and, checked above, one of its ports.
     let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port.raw()) };
     object.property(|p| p.ports.push(port_object));
     let info = PortInfo::of(port);
@@ -683,8 +690,7 @@ fn bind(call: &Call, serv: view::Server<'_>) {
     crate::instance::set_server_object(call.this());
     object.set_serv(serv.raw());
     for &port in serv.ports() {
-        // SAFETY: `$this`, bound above, and one of its ports.
-        unsafe { add_port(object, port) };
+        add_port(object, port);
     }
     let props = Props::server(object);
     props.connections(serv, ptr::null_mut());
@@ -867,18 +873,19 @@ fn add_command(call: &Call) {
         fatal(E_WARNING, c"only support worker/task_worker process");
         return call.set_bool(false);
     }
-    let Some(callable) = call.value(3).and_then(Callable::create) else {
+    let Some(callable) = call.value(3).and_then(crate::callable::create) else {
         return call.set_bool(false);
     };
-    let handle = callable.as_raw();
-    // The property keeps the callable for the server's life.
+    // The property keeps the callable for the server's life; the command table
+    // may outlive it.
+    let handle = Rc::downgrade(&callable);
     #[expect(
         clippy::arc_with_non_send_sync,
         reason = "the server's command table, like upstream's, holds PHP callables"
     )]
     let handler = std::sync::Arc::new(
         move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
-            command_run(handle, message, reply);
+            command_run(&handle, message, reply);
         },
     );
     // Upstream's `(int) types`.
@@ -893,13 +900,17 @@ fn add_command(call: &Call) {
 
 /// A command handler (`Server::Command::Handler`): `callable($server, $message)`'s
 /// string, or upstream's JSON errors, into `reply`. A bailout is raised last, from
-/// this frame. `callable` is a live command callable.
-fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
+/// this frame. A callable its server already released fails the call.
+fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
     let mut send = |text: &[u8]| reply.extend_from_slice(text);
+    let Some(callable) = callable.upgrade() else {
+        send(br#"{"data": "failed to call function", "code": -1}"#);
+        return;
+    };
     let message = Owned::string(ZString::new(message)).into_zval();
     let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
+    let called = crate::dispatch::invoke(&callable, &mut args, retval.as_ptr(), false);
     // The message string made above.
     crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {
@@ -922,38 +933,32 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     };
     // Released first: a bailout jumps over this frame.
     drop(retval);
+    drop(callable);
     if bailed {
         bailout::raise(Err(bailout::Bailout));
     }
 }
 
-/// `command()`'s wait: the reply lands in `return_value`.
+/// `command()`'s wait, which it shares with the reply's callback: the reply's
+/// bytes, which become the call's return value once it resumes. Only Rust
+/// memory: the server's callback table may keep the callback, and so this,
+/// past the request (a master-handled command's stays until shutdown).
 struct Wait {
-    return_value: *mut zval,
-    json_decode: bool,
+    reply: RefCell<Option<Vec<u8>>>,
     coroutine: Coroutine,
-    replied: bool,
+    replied: Cell<bool>,
 }
 
-/// The command's reply (`Server::Command::Callback`): into `return_value`, then
-/// the waiting coroutine resumes, if it has yielded yet.
-fn command_done(wait: *mut Wait) -> impl Fn(&[u8]) {
+/// The command's reply (`Server::Command::Callback`): into `reply`, then the
+/// waiting coroutine resumes, if it has yielded yet.
+fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
-        let (message, length) = (message.as_ptr().cast::<c_char>(), message.len());
-        // SAFETY: `command`'s `Wait`, live until this has run: it yields until then.
-        let wait = unsafe { &mut *wait };
-        if wait.json_decode {
-            // SAFETY: the reply's bytes and the call's return slot.
-            unsafe { swr_zend_json_decode(message, length, wait.return_value) };
-        } else {
-            // SAFETY: as above.
-            unsafe { swr_zval_stringl(wait.return_value, message, length) };
-        }
+        wait.reply.replace(Some(message.to_vec()));
         if wait.coroutine.is_suspending() == Some(true) {
             // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
             unsafe { wait.coroutine.wake(false) };
         } else {
-            wait.replied = true;
+            wait.replied.set(true);
         }
     }
 }
@@ -982,18 +987,17 @@ fn command(call: &Call) {
     let Some(coroutine) = Coroutine::current() else {
         return;
     };
-    let mut wait = Wait {
-        return_value: call.return_value(),
-        json_decode,
+    let wait = Rc::new(Wait {
+        reply: RefCell::default(),
         coroutine,
-        replied: false,
-    };
+        replied: Cell::new(false),
+    });
     let data = encoded.bytes();
     #[expect(
         clippy::arc_with_non_send_sync,
         reason = "the server's callback table, like upstream's, holds this coroutine's wait"
     )]
-    let callback = std::sync::Arc::new(command_done(&raw mut wait));
+    let callback = std::sync::Arc::new(command_done(Rc::clone(&wait)));
     // Upstream's `(uint16_t) process_id` and `(ProcessType) process_type`.
     let [low, high, ..] = process_id.to_le_bytes();
     let process_id = u32::from(u16::from_le_bytes([low, high]));
@@ -1002,15 +1006,25 @@ fn command(call: &Call) {
             .try_into()
             .unwrap_or_default(),
     );
-    // `wait` outlives the command: its callback runs before the yield below returns.
     let sent = swr_v1_server_command(serv, process_id, process_type, name, data, callback);
     drop(encoded);
     if !sent {
         return call.set_bool(false);
     }
-    if !wait.replied {
+    if !wait.replied.get() {
         // `command_done` resumes it.
         swoole_rs_phpcoroutines::suspend();
+    }
+    let Some(reply) = wait.reply.take() else {
+        return;
+    };
+    if json_decode {
+        let decoded = Owned::default();
+        // SAFETY: the reply's bytes and an undefined slot this owns.
+        unsafe { swr_zend_json_decode(reply.as_ptr().cast(), reply.len(), decoded.as_ptr()) };
+        call.set_owned(decoded);
+    } else {
+        call.set_owned(Owned::string(ZString::new(&reply)));
     }
 }
 
@@ -1042,10 +1056,10 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 /// `ServerObject::register_callback`.
 fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     put(serv, install::CONTROL);
-    if !object.callback(ON_TASK).is_null() {
+    if object.callback(ON_TASK).is_some() {
         put(serv, install::TASK);
     }
-    if !object.callback(ON_PIPE_MESSAGE).is_null() {
+    if object.callback(ON_PIPE_MESSAGE).is_some() {
         put(serv, install::PIPE_MESSAGE);
     }
     if fact(serv, fact::SEND_YIELD) && fact(serv, fact::UNSAFE_EVENTS) {
@@ -1149,7 +1163,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     let kind = kind(object);
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
     let ports = object.property(|p| p.ports.clone());
-    let Some((&first, others)) = ports.split_first() else {
+    let Some(&first) = ports.first() else {
         return Ok(());
     };
     let primary = port_facts(first);
@@ -1197,21 +1211,14 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         }
         put(serv, install::RECEIVE);
     }
-    let setting = settings.as_ptr();
-    for &port_object in others {
-        // SAFETY: a live Port object; the Port class declares `setting`.
-        if unsafe { swoole_rs_zend::property(port_object, c"setting") }.is_null() {
+    let setting: &Value = settings;
+    for index in 1..ports.len() {
+        let mut zport = object.port(index);
+        let zport = Value::of(&mut zport);
+        // The Port class declares `setting`.
+        if zport.property(c"setting").is_some_and(Value::is_null) {
             // `$port->set($setting)`, Port's own method.
-            // SAFETY: the live Port object, its class and the server's settings.
-            let set = unsafe {
-                bailout::call_method(
-                    port_object,
-                    crate::PORT.entry(),
-                    b"set",
-                    ptr::null_mut(),
-                    &[setting],
-                )
-            };
+            let set = zport.call_method(Some(&crate::PORT), b"set", &[setting]);
             trapped(set.is_err())?;
         }
     }

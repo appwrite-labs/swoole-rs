@@ -79,13 +79,11 @@ impl<'a> Context<'a> {
     fn state(&self) -> &'a crate::ServerState {
         self.serv.state()
     }
-    fn config(&self) -> &'a mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.serv.config_mut() }
+    fn config(&self) -> &'a crate::ServerConfig {
+        self.serv.config()
     }
-    fn tables(&self) -> &'a mut crate::ServerTables {
-        // SAFETY: its tables, written by the master before its threads and workers start.
-        unsafe { &mut *self.state().tables() }
+    fn tables(&self) -> &'a crate::ServerTables {
+        self.state().tables_ref()
     }
     fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
         self.server().workers()
@@ -206,10 +204,6 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     };
     let send = || (ctx.send().info, ctx.send().data);
     Some(match op {
-        OP_NEW_REACTOR_THREADS => {
-            tables.reactor_threads = new_reactor_threads(state, config.reactor_num);
-            0
-        }
         OP_DELETE_REACTOR_THREADS => {
             // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
             unsafe {
@@ -221,8 +215,8 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_DESTROY_BARRIERS => barriers(false),
         OP_NEW_PROCESS_FACTORY => crate::factory::new(serv, None).expose_provenance() as u64,
         OP_DESTROY_MESSAGE_BOX => {
-            // A shared mapping crates/server's new_message_box made.
-            crate::pool_native::free_message_box(ctx.workers().event_pool);
+            // The event pool's box, which the pool forgets as it frees it.
+            swoole_rs_process::methods::free_message_box(ctx.server().event_pool_ref());
             0
         }
         OP_CREATE_WORKER_PIPE => u64::from(
@@ -233,7 +227,8 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WRITE_TO_WORKER => {
             // The worker the factory scheduled, and its pipe, if the server has them.
             let pipe = ctx.worker_at(worker_id(arg));
-            let Some(pipe) = pipe.and_then(|worker| crate::objects::socket(worker.pipe_master))
+            let Some(pipe) =
+                pipe.and_then(|worker| crate::objects::worker_pipe(worker.into(), true))
             else {
                 return Some(0);
             };
@@ -244,10 +239,12 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
             let bus = unsafe { &*thread }.message_bus();
-            let socket = bus.pipe_socket(pipe);
+            let Some(socket) = bus.pipe_socket(pipe) else {
+                return Some(0);
+            };
             let (mut info, data) = send();
             // SAFETY: the live pipe, and the data sent.
-            u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
+            u64::from(unsafe { bus.rust().send(socket.as_ptr(), &mut info, data.cast()) })
         }
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();
@@ -493,6 +490,10 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The server's setup and teardown: connections, the manager and the task workers.
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (tables, config) = (ctx.tables(), ctx.config());
+    // SAFETY: only the arms below that `create_process_factory` and
+    // `destroy_process_factory` run call it, while the master is the server's only
+    // thread, and each as its arm's last tables access.
+    let tables_mut = || unsafe { &mut *ctx.state().tables() };
     let gs = ctx.server().counters();
     let task_worker_pid = || {
         let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
@@ -501,10 +502,16 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     };
     let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {
+        OP_NEW_REACTOR_THREADS => {
+            tables_mut().reactor_threads = new_reactor_threads(ctx.state(), config.reactor_num);
+            0
+        }
         OP_ALLOC_CONNECTIONS => {
             let size = size_of::<ConnectionRecord>();
-            tables.connection_list = Shm::calloc(tables.max_connection as usize, size);
-            u64::from(!tables.connection_list.is_null())
+            let list = Shm::calloc(tables.max_connection as usize, size);
+            let ready = !list.is_null();
+            tables_mut().connection_list = list;
+            u64::from(ready)
         }
         LOG_ALLOC_CONNECTIONS => {
             let (max, size) = (tables.max_connection, size_of::<ConnectionRecord>());
@@ -513,12 +520,12 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FREE_CONNECTIONS => {
-            tables.connection_list.free();
+            tables_mut().connection_list.free();
             0
         }
         OP_SET_REACTOR_PIPE_NUM => {
             let num = config.worker_num / u32::from(config.reactor_num);
-            tables.reactor_pipe_num = u16::try_from(num & 0xffff).unwrap_or_default();
+            tables_mut().reactor_pipe_num = u16::try_from(num & 0xffff).unwrap_or_default();
             0
         }
         OP_HAS_MESSAGE_BOX => {
@@ -526,8 +533,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(!pool.message_box().is_null())
         }
         OP_INIT_IPC_MAX_SIZE => {
-            // `Server::init_ipc_max_size()`.
-            ctx.config().ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+            ctx.config().init_ipc_max_size();
             0
         }
         OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),

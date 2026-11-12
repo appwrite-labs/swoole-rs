@@ -20,7 +20,6 @@ use openssl_sys::{
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::marker::{PhantomData, PhantomPinned};
-use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -110,10 +109,17 @@ enum Ctrl {
 pub struct SslContext(&'static SslCtx);
 
 impl SslContext {
-    /// Gives the reference up, to an owner that releases it with `SSL_CTX_free`.
+    /// Another reference, None when OpenSSL fails to take one: `clone` without the
+    /// panic.
     #[must_use]
-    pub fn into_raw(self) -> *mut SSL_CTX {
-        ManuallyDrop::new(self).as_ptr()
+    pub fn try_clone(&self) -> Option<Self> {
+        (SSL_CTX_up_ref(self) == 1).then(|| Self(self.0))
+    }
+
+    /// A fresh `TLS_method` context, for tests.
+    #[cfg(test)]
+    pub(crate) fn tls() -> Self {
+        SSL_CTX_new(TLS_method()).unwrap()
     }
 }
 

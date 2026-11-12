@@ -12,7 +12,8 @@ use crate::{
         swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
         swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
         zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
-        zend_value, zend_wrong_parameter_error, zend_wrong_parameters_count_error, zval,
+        zend_value, zend_wrong_parameter_class_error, zend_wrong_parameter_error,
+        zend_wrong_parameters_count_error, zval,
     },
 };
 use std::{ffi::CStr, ptr};
@@ -419,6 +420,14 @@ impl Call {
         unsafe { held.release() };
         // SAFETY: as above; the slot takes over the value.
         unsafe { slot.write(value.into_zval()) };
+    }
+
+    /// `Z_PARAM_OBJECT_OF_CLASS`'s report of argument `n` (1-based), which is
+    /// no instance of the class registered as `name`.
+    #[cold]
+    pub fn wrong_class(&self, n: u32, name: &CStr, arg: &Value) {
+        // SAFETY: from a handler, as Zend's macro reports it.
+        unsafe { zend_wrong_parameter_class_error(n, name.as_ptr(), arg.as_ptr()) };
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
