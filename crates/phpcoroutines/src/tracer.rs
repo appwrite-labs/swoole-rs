@@ -11,7 +11,7 @@ use crate::{context, host::now_us, runtime};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_long, c_void},
     hash::BuildHasherDefault,
     io::Write,
     mem::{self, ManuallyDrop},
@@ -47,11 +47,6 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 
 fn config() -> Option<&'static Config> {
     CONFIG.get()
-}
-
-unsafe extern "C" {
-    /// Swoole's stdout stream (crates/corebase's C shim).
-    fn sw_printf(format: *const c_char, ...) -> c_int;
 }
 
 fn leak_detection() -> bool {
@@ -637,9 +632,8 @@ fn blocking_end(func: Func<'_>) {
     if let Some(text) = &trace_text {
         message.extend_from_slice(until_nul(text.bytes()));
     }
-    message.push(0);
-    // SAFETY: a NUL-terminated message.
-    unsafe { sw_printf(c"%s".as_ptr(), message.as_ptr()) };
+    // `sw_printf("%s")`, which stops at a NUL.
+    swoole_rs_corebase::sw_print(until_nul(&message));
     // SAFETY: our reference.
     unsafe { swr_zend_string_release(duration) };
 }
