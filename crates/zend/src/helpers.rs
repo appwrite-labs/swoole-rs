@@ -3,8 +3,9 @@
 use crate::{
     Value,
     sys::{
-        module_registry, php_time, swr_zend_property_slot, zend_class_entry, zend_fcall_info,
-        zend_fcall_info_cache, zend_hash_str_find, zend_object, zval,
+        module_registry, php_time, swr_zend_property_not_null, swr_zend_property_slot,
+        zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object,
+        zval,
     },
 };
 use std::ffi::CStr;
@@ -69,6 +70,17 @@ pub unsafe fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
     let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
     // SAFETY: a live slot, never null.
     unsafe { &*slot.cast::<Value>() }
+}
+
+/// `sw_zend_read_property_not_null_ex`: the property unless it is null.
+/// # Safety
+/// As [`property`].
+#[must_use]
+pub unsafe fn property_not_null<'a>(object: *mut zend_object, name: &CStr) -> Option<&'a Value> {
+    // SAFETY: per the caller.
+    let found = unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
+    // SAFETY: null or a live property.
+    unsafe { Value::from_ptr(found) }
 }
 
 /// `zend_update_property(scope, object, name, value)`: the property takes a copy.

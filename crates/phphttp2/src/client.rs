@@ -28,8 +28,8 @@ use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
     sys::{
-        ZEND_ACC_PUBLIC, swr_zend_http_build_query, swr_zend_instanceof, zend_class_entry,
-        zend_object, zend_wrong_parameter_class_error,
+        ZEND_ACC_PUBLIC, swr_zend_instanceof, zend_class_entry, zend_object,
+        zend_wrong_parameter_class_error,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -630,15 +630,7 @@ impl Client {
                 continue;
             };
             let value = value.string();
-            // SAFETY: the value's bytes; Zend returns a new string.
-            let encoded = unsafe {
-                swoole_rs_zend::sys::php_url_encode(
-                    value.bytes().as_ptr().cast(),
-                    value.bytes().len(),
-                )
-            };
-            // SAFETY: the reference php_url_encode returned.
-            let encoded = unsafe { ZString::from_raw(encoded) };
+            let encoded = ZString::url_encode(value.bytes());
             set.add(b"cookie", &[key, b"=", encoded.bytes()]);
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
@@ -1104,14 +1096,11 @@ fn media_kind(value: &[u8]) -> u32 {
 /// None after `http_build_query failed`.
 fn body_bytes(data: &Value) -> Option<ZString> {
     if data.array().is_some() {
-        // SAFETY: an array zval.
-        let query = unsafe { swr_zend_http_build_query(data.as_ptr()) };
-        if query.is_null() {
+        let query = data.http_build_query();
+        if query.is_none() {
             warn(c"http_build_query failed");
-            return None;
         }
-        // SAFETY: the reference the builder returned.
-        return Some(unsafe { ZString::from_raw(query) });
+        return query;
     }
     Some(data.string())
 }

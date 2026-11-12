@@ -12,14 +12,16 @@ use crate::{
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
         swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
-        swr_zend_object_properties, swr_zend_property_slot, swr_zend_separate_array,
-        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_property_slot,
+        swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
+        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
+        swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
+        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
         swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref, zend_array_count,
-        zend_class_entry, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        zend_class_entry, zend_double_to_str, zend_hash_add_new, zend_hash_index_add,
+        zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string,
+        zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
     value,
 };
@@ -293,6 +295,36 @@ impl Value {
         ZString(out)
     }
 
+    /// `http_build_query($value)` (RFC 1738): None for a value that is no array or
+    /// object, or one with nothing to encode.
+    #[must_use]
+    pub fn http_build_query(&self) -> Option<ZString> {
+        // SAFETY: a live zval; Zend returns null or a new string.
+        let query = unsafe { swr_zend_http_build_query(self.as_ptr()) };
+        (!query.is_null()).then(|| ZString(query))
+    }
+
+    /// `serialize($value)`: None when it produced nothing.
+    /// # Errors
+    /// The bailout a `__serialize` raised, trapped.
+    pub fn serialize(&self) -> Result<Option<ZString>, bailout::Bailout> {
+        let mut bailed = false;
+        // SAFETY: a live zval; the shim traps a bailout and returns null or a new string.
+        let serialized = unsafe { swr_zend_serialize(self.as_ptr(), &raw mut bailed) };
+        bailout::trapped(bailed.into())?;
+        Ok((!serialized.is_null()).then(|| ZString(serialized)))
+    }
+
+    /// `json_encode($value)`: None when the encoder failed.
+    /// # Errors
+    /// The bailout a `jsonSerialize` raised, trapped.
+    pub fn json_encode(&self) -> Result<Option<ZString>, bailout::Bailout> {
+        let mut encoded = ptr::null_mut();
+        // SAFETY: a live zval; the shim traps a bailout and writes null or a new string.
+        bailout::trapped(unsafe { swr_zend_try_json_encode(self.as_ptr(), &raw mut encoded) })?;
+        Ok((!encoded.is_null()).then(|| ZString(encoded)))
+    }
+
     /// `Z_STRVAL_P`/`Z_STRLEN_P` of a string.
     #[must_use]
     #[inline]
@@ -397,6 +429,13 @@ impl Array {
     pub fn count(&self) -> u32 {
         // SAFETY: a live table.
         unsafe { zend_array_count(self.as_ptr()) }
+    }
+
+    /// `zend_trace_to_string(trace, false)`: a backtrace array as an exception prints it.
+    #[must_use]
+    pub fn trace_to_string(&self) -> ZString {
+        // SAFETY: a live table; Zend returns a new string.
+        ZString(unsafe { zend_trace_to_string(self.as_ptr(), false) })
     }
 
     /// `zend_array_is_list`.
@@ -680,6 +719,13 @@ impl ZString {
     pub fn url_encode(bytes: &[u8]) -> Self {
         // SAFETY: Zend reads the bytes and returns a new string.
         Self(unsafe { php_url_encode(bytes.as_ptr().cast(), bytes.len()) })
+    }
+
+    /// `zend_double_to_str`: `value` as PHP prints a float.
+    #[must_use]
+    pub fn from_double(value: f64) -> Self {
+        // SAFETY: Zend returns a new string.
+        Self(unsafe { zend_double_to_str(value) })
     }
 
     /// `php_format_date`: `timestamp` as `date()` (`local`) or `gmdate()`

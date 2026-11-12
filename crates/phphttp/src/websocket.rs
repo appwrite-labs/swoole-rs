@@ -1190,9 +1190,10 @@ pub(crate) fn accept(mut context: Ctx) {
     };
     let mut accepted = false;
     if offered && !state.request.zobject.ptr.is_null() {
-        // SAFETY: the request's live `header` array zval.
-        let header = unsafe { Value::from_ptr(state.request.zheader.ptr) };
-        let text = header
+        let text = state
+            .request
+            .zheader
+            .get()
             .and_then(Value::array)
             .and_then(|header| header.find(b"sec-websocket-extensions"))
             .and_then(Value::bytes);
