@@ -25,6 +25,7 @@ use std::{
     collections::BTreeMap,
     ffi::{c_int, c_long, c_void},
     ptr,
+    rc::Rc,
 };
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_curl_sys::{
@@ -33,10 +34,9 @@ use swoole_rs_curl_sys::{
     CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, curl_easy_getinfo, curl_easy_reset,
-    curl_easy_setopt, curl_multi_add_handle, curl_multi_assign, curl_multi_cleanup,
-    curl_multi_info_read, curl_multi_init, curl_multi_remove_handle, curl_multi_setopt,
-    curl_multi_socket_action, curl_multi_timeout, curl_multi_timer_callback, curl_socket_callback,
-    curl_socket_t,
+    curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read,
+    curl_multi_init, curl_multi_remove_handle, curl_multi_setopt, curl_multi_socket_action,
+    curl_multi_timeout, curl_multi_timer_callback, curl_socket_callback, curl_socket_t,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
@@ -60,7 +60,9 @@ pub struct Handle {
     easy_multi: *mut Multi,
 }
 
-/// `swoole::curl::Socket`: one socket curl asked to watch.
+/// `swoole::curl::Socket`: one socket curl asked to watch. The multi's map
+/// owns it, and the selector's copies keep one it removes while curl runs;
+/// the reactor socket carries its address until it is freed.
 struct Socket {
     multi: *const Multi,
     /// The reactor's `network::Socket`, freed when curl removes it.
@@ -83,13 +85,12 @@ pub struct Multi {
     defer_callback: Cell<bool>,
     /// Freed while a deferred wake-up was queued: the wake-up frees it.
     released: Cell<bool>,
-    /// The selector: a timeout to report to curl, sockets with events (a
-    /// set, in arrival order), and sockets curl removed while it ran.
+    /// The selector: a timeout to report to curl and sockets with events (a
+    /// set, in arrival order).
     timer_callback: Cell<bool>,
-    executing: Cell<bool>,
-    active: RefCell<Vec<*mut Socket>>,
-    release: RefCell<Vec<*mut Socket>>,
-    sockets: RefCell<BTreeMap<curl_socket_t, *mut Socket>>,
+    /// The sockets curl watches, by fd: what `curl_multi_assign` would carry.
+    sockets: RefCell<BTreeMap<curl_socket_t, Rc<Socket>>>,
+    active: RefCell<Vec<Rc<Socket>>>,
 }
 
 /// `Multi::get_event`: curl's poll action as reactor events.
@@ -129,10 +130,10 @@ fn select_bits(revents: i16) -> c_int {
     bitmask
 }
 
-fn insert(set: &RefCell<Vec<*mut Socket>>, socket: *mut Socket) {
+fn insert(set: &RefCell<Vec<Rc<Socket>>>, socket: &Rc<Socket>) {
     let mut set = set.borrow_mut();
-    if !set.contains(&socket) {
-        set.push(socket);
+    if !set.iter().any(|member| Rc::ptr_eq(member, socket)) {
+        set.push(Rc::clone(socket));
     }
 }
 
@@ -151,10 +152,8 @@ impl Multi {
             defer_callback: Cell::new(false),
             released: Cell::new(false),
             timer_callback: Cell::new(false),
-            executing: Cell::new(false),
-            active: RefCell::new(Vec::new()),
-            release: RefCell::new(Vec::new()),
             sockets: RefCell::new(BTreeMap::new()),
+            active: RefCell::new(Vec::new()),
         }));
         let on_socket: curl_socket_callback = handle_socket;
         let on_timer: curl_multi_timer_callback = handle_timeout;
@@ -195,13 +194,6 @@ impl Multi {
         (result, timeout_ms)
     }
 
-    /// `curl_multi_assign`: `socket` is what curl's socket callback gets for `sockfd`.
-    fn assign(&self, sockfd: curl_socket_t, socket: *mut Socket) -> CURLMcode {
-        // SAFETY: this multi's handle, live until `swr_v1_curl_multi_free`; curl
-        // stores the pointer and never reads through it.
-        unsafe { curl_multi_assign(self.handle, sockfd, socket.cast()) }
-    }
-
     fn set_timer(&self) {
         self.on_timeout(self.timeout(0).1);
     }
@@ -225,67 +217,50 @@ impl Multi {
     }
 
     /// `Multi::set_event`.
-    fn set_event(&self, socket: *mut Socket, sockfd: curl_socket_t, action: c_int) -> c_int {
+    fn set_event(&self, sockfd: curl_socket_t, action: c_int) -> c_int {
         if !host::event_available() {
             return -1;
         }
         host::install_handlers();
-        let socket = if socket.is_null() {
-            let reactor = host::ReactorSocket::new(sockfd);
-            let socket = Box::into_raw(Box::new(Socket {
+        let known = self.sockets.borrow().get(&sockfd).cloned();
+        let socket = known.unwrap_or_else(|| {
+            let socket = Rc::new(Socket {
                 multi: self,
-                socket: reactor,
+                socket: host::ReactorSocket::new(sockfd),
                 bitmask: Cell::new(0),
                 sockfd: Cell::new(0),
                 action: Cell::new(0),
                 deleted: Cell::new(false),
-            }));
-            if self.assign(sockfd, socket) != CURLM_OK {
-                // SAFETY: made above, and never registered.
-                unsafe { reactor.free() };
-                // SAFETY: boxed above; curl does not hold it.
-                drop(unsafe { Box::from_raw(socket) });
-                return -1;
-            }
-            // The reactor socket carries the box it reports.
-            reactor.set_object(socket.cast());
-            self.sockets.borrow_mut().insert(sockfd, socket);
+            });
+            // The reactor socket carries the socket it reports.
             socket
-        } else {
+                .socket
+                .set_object(Rc::as_ptr(&socket).cast_mut().cast());
+            self.sockets.borrow_mut().insert(sockfd, Rc::clone(&socket));
             socket
-        };
-        // SAFETY: a socket this multi made and has not freed.
-        let curl_socket = unsafe { &*socket };
-        curl_socket.sockfd.set(sockfd);
-        curl_socket.action.set(action);
+        });
+        socket.sockfd.set(sockfd);
+        socket.action.set(action);
         let events = events(action);
-        if curl_socket.socket.events() == 0 {
-            curl_socket.socket.add(events)
+        if socket.socket.events() == 0 {
+            socket.socket.add(events)
         } else {
-            curl_socket.socket.set(events)
+            socket.socket.set(events)
         }
     }
 
     /// `Multi::del_event`.
-    fn del_event(&self, socket: *mut Socket, sockfd: curl_socket_t) -> c_int {
-        self.sockets.borrow_mut().remove(&sockfd);
-        self.assign(sockfd, ptr::null_mut());
-        if socket.is_null() {
+    fn del_event(&self, sockfd: curl_socket_t) -> c_int {
+        let Some(socket) = self.sockets.borrow_mut().remove(&sockfd) else {
             return ERR;
-        }
-        self.active.borrow_mut().retain(|&active| active != socket);
-        // SAFETY: a socket this multi made and has not freed.
-        let curl_socket = unsafe { &*socket };
-        // SAFETY: that socket's reactor socket, which nothing uses afterwards.
-        unsafe { curl_socket.socket.free() };
-        if self.executing.get() {
-            curl_socket.deleted.set(true);
-            insert(&self.release, socket);
-        } else {
-            // SAFETY: the box `set_event` made; curl let go of it above and the
-            // selector holds no copy.
-            drop(unsafe { Box::from_raw(socket) });
-        }
+        };
+        self.active
+            .borrow_mut()
+            .retain(|active| !Rc::ptr_eq(active, &socket));
+        // SAFETY: the socket's reactor socket, which nothing uses afterwards: it
+        // is out of the map, and the selector skips a deleted socket.
+        unsafe { socket.socket.free() };
+        socket.deleted.set(true);
         OK
     }
 
@@ -312,12 +287,10 @@ impl Multi {
     /// `Multi::selector_prepare`: put back in the reactor the sockets a
     /// waiter-less event took out of it.
     fn selector_prepare(&self) {
-        let sockets: Vec<*mut Socket> = self.sockets.borrow().values().copied().collect();
+        let sockets: Vec<Rc<Socket>> = self.sockets.borrow().values().cloned().collect();
         for socket in sockets {
-            // SAFETY: a socket in this multi's map.
-            let curl_socket = unsafe { &*socket };
-            if curl_socket.socket.removed() {
-                curl_socket.socket.add(events(curl_socket.action.get()));
+            if socket.socket.removed() {
+                socket.socket.add(events(socket.action.get()));
             }
         }
     }
@@ -384,10 +357,9 @@ impl Multi {
             .sockets
             .borrow()
             .iter()
-            .map(|(&fd, &socket)| libc::pollfd {
+            .map(|(&fd, socket)| libc::pollfd {
                 fd,
-                // SAFETY: a socket in this multi's map.
-                events: poll_events(events(unsafe { (*socket).action.get() })),
+                events: poll_events(events(socket.action.get())),
                 revents: 0,
             })
             .collect();
@@ -402,15 +374,13 @@ impl Multi {
             };
         }
         for fd in fds.iter().filter(|fd| fd.revents != 0) {
-            let Some(&socket) = self.sockets.borrow().get(&fd.fd) else {
+            let Some(socket) = self.sockets.borrow().get(&fd.fd).cloned() else {
                 continue;
             };
-            // SAFETY: a socket in this multi's map.
-            let curl_socket = unsafe { &*socket };
-            curl_socket
+            socket
                 .bitmask
-                .set(curl_socket.bitmask.get() | select_bits(fd.revents));
-            insert(&self.active, socket);
+                .set(socket.bitmask.get() | select_bits(fd.revents));
+            insert(&self.active, &socket);
         }
         CURLM_OK
     }
@@ -448,35 +418,27 @@ impl Multi {
     /// `Multi::selector_finish`: report the timeout and the sockets' events.
     fn selector_finish(&self) -> CURLMcode {
         self.del_timer();
-        self.executing.set(true);
         let mut result = CURLM_OK;
         if self.timer_callback.replace(false) {
             result = self.socket_action(CURL_SOCKET_TIMEOUT, 0);
         }
         while result == CURLM_OK && !self.active.borrow().is_empty() {
-            // curl may remove sockets while it runs: work on a copy.
+            // curl may remove sockets while it runs: work on a copy, which
+            // keeps what it removes until the loop moves past it.
             let active = std::mem::take(&mut *self.active.borrow_mut());
             for socket in active {
-                // SAFETY: freeing waits for `release` while executing.
-                let curl_socket = unsafe { &*socket };
-                if curl_socket.deleted.get() {
+                if socket.deleted.get() {
                     continue;
                 }
-                let bitmask = curl_socket.bitmask.replace(0);
-                let action = self.socket_action(curl_socket.sockfd.get(), bitmask);
+                let bitmask = socket.bitmask.replace(0);
+                let action = self.socket_action(socket.sockfd.get(), bitmask);
                 if action != CURLM_OK {
                     result = action;
                     break;
                 }
             }
         }
-        self.executing.set(false);
         self.active.borrow_mut().clear();
-        for socket in std::mem::take(&mut *self.release.borrow_mut()) {
-            // SAFETY: the box `set_event` made, deleted while executing; nothing
-            // references it now.
-            drop(unsafe { Box::from_raw(socket) });
-        }
         result
     }
 
@@ -527,8 +489,11 @@ impl Multi {
             }
             return;
         }
-        if let Some(socket) = socket {
-            insert(&self.active, ptr::from_ref(socket).cast_mut());
+        // The map's copy: the reactor reports only the sockets in it.
+        if let Some(socket) =
+            socket.and_then(|socket| self.sockets.borrow().get(&socket.sockfd.get()).cloned())
+        {
+            insert(&self.active, &socket);
         }
         if self.defer_callback.replace(true) {
             return;
@@ -544,15 +509,13 @@ unsafe extern "C" fn handle_socket(
     sockfd: curl_socket_t,
     action: c_int,
     userp: *mut c_void,
-    socketp: *mut c_void,
+    _socketp: *mut c_void,
 ) -> c_int {
     // SAFETY: the multi this callback was set on.
     let multi = unsafe { &*userp.cast::<Multi>() };
     match action {
-        CURL_POLL_IN | CURL_POLL_OUT | CURL_POLL_INOUT => {
-            multi.set_event(socketp.cast(), sockfd, action)
-        }
-        CURL_POLL_REMOVE => multi.del_event(socketp.cast(), sockfd),
+        CURL_POLL_IN | CURL_POLL_OUT | CURL_POLL_INOUT => multi.set_event(sockfd, action),
+        CURL_POLL_REMOVE => multi.del_event(sockfd),
         _ => std::process::abort(),
     }
 }
@@ -586,6 +549,9 @@ pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
         this.del_timer();
         // SAFETY: its handle; the callbacks it runs still find the multi.
         unsafe { curl_multi_cleanup(this.handle) };
+        // As upstream's `delete multi`, the sockets curl didn't remove stay:
+        // a reactor socket may still carry one's address.
+        std::mem::forget(this.sockets.take());
     }
     // SAFETY: per the caller.
     drop(unsafe { Box::from_raw(multi) });
