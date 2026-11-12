@@ -2524,13 +2524,14 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 if !sent {
                     return Some(0);
                 }
+                // SAFETY: the head and the `len` bytes after it, which nothing writes while
+                // they are sent.
+                let task = unsafe {
+                    swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
+                };
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
                     let (gs, pool) = (o.gs(), o.server().task_pool_ref());
-                    // SAFETY: the packed task, which nothing writes while it is sent.
-                    let task = unsafe {
-                        swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
-                    };
                     swoole_rs_process::task_sync::count_task(
                         &gs.tasking_num,
                         &gs.task_count,
@@ -2543,10 +2544,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     .unwrap_or(false)
                 } else {
                     let pool = o.server().event_pool_ref();
-                    // SAFETY: the message.
-                    unsafe {
-                        swoole_rs_process::methods::push_event(pool, (&raw const buf).cast()) >= 0
-                    }
+                    swoole_rs_process::methods::push_event(pool, task) >= 0
                 };
                 return Some(u64::from(sent));
             }
