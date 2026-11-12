@@ -4,7 +4,7 @@
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
 use crate::callable::Callable;
-use crate::lifecycle::{ServerData, ServerObject};
+use crate::lifecycle::ServerObject;
 use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
