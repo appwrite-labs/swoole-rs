@@ -39,7 +39,7 @@ pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, ClassEntry, class_name, unset_property_deny};
 pub use descriptor::{
     FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
-    restore_shutdown,
+    restore_shutdown, with_unlimited_stack,
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, type_error, type_name, zend_error,

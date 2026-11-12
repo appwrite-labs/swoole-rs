@@ -328,9 +328,10 @@ impl Client {
     fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
         // The string argument's reference, released when it drops.
         let data = Owned::string(ZString::new(data));
-        // The object outlives its client, so the call; it is borrowed for the
-        // call as upstream's `ZVAL_OBJ`.
-        let mut args = [object_zval(self.object), data.zval()];
+        // SAFETY: the object outlives its client, so the call; it is borrowed
+        // for the call as upstream's `ZVAL_OBJ`.
+        let this = unsafe { object_zval(self.object) };
+        let mut args = [this, data.copy_value()];
         match callable.call(&mut args, None, false) {
             Ok(true) => 0,
             Ok(false) => 1,

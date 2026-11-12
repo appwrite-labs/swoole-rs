@@ -40,7 +40,7 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
     // The call borrows the string, released when `data` drops.
     let data = Owned::string(ZString::new(bytes));
     let mut retval = long_zval(0);
-    let called = native::invoke(callable, &mut [data.zval()], &mut retval);
+    let called = native::invoke(callable, &mut [data.copy_value()], &mut retval);
     match called {
         Err(bailout) => {
             bailout.defer();

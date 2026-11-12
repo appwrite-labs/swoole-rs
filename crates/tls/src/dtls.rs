@@ -177,6 +177,8 @@ pub fn swr_v1_tls_dtls_read(
             retry: 1,
         };
     };
+    // No more than `buffer` holds, so a datagram is never popped uncopied.
+    let requested = requested.min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
     let plan = crate::read_plan(0, front.length(), requested, u8::from(peek));
     if let Ok(length) = usize::try_from(plan.length) {
         if let (Some(out), Some(source)) = (buffer.get_mut(..length), front.payload().get(..length))

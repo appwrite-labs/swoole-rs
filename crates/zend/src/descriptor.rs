@@ -6,8 +6,8 @@ use crate::{
     sys::{
         IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_property,
         swr_zend_event_restore_shutdown, swr_zend_event_socket_fd, swr_zend_instanceof,
-        swr_zend_last_fatal_error, swr_zend_stream_from_zval, swr_zend_stream_select_fd, zend_long,
-        zend_memory_usage,
+        swr_zend_last_fatal_error, swr_zend_stack_restore, swr_zend_stack_unlimit,
+        swr_zend_stream_from_zval, swr_zend_stream_select_fd, zend_long, zend_memory_usage,
     },
 };
 use std::ffi::{CStr, CString, c_char, c_int};
@@ -132,6 +132,18 @@ pub fn pause_shutdown() -> bool {
 pub fn restore_shutdown(was: bool) {
     // SAFETY: as above.
     unsafe { swr_zend_event_restore_shutdown(u8::from(was)) };
+}
+
+/// `f()` with the executor's stack limit lifted, as `HOOK_PHP_CALL_STACK` does
+/// for a call from a stack that isn't the VM's, such as a reactor thread's.
+pub fn with_unlimited_stack<R>(f: impl FnOnce() -> R) -> R {
+    let mut saved = [ptr::null_mut(); 2];
+    // SAFETY: two writable slots for the executor's limit and base.
+    unsafe { swr_zend_stack_unlimit(saved.as_mut_ptr()) };
+    let result = f();
+    // SAFETY: what `swr_zend_stack_unlimit` saved.
+    unsafe { swr_zend_stack_restore(saved.as_ptr()) };
+    result
 }
 
 /// `body()` inside `zend_try`. A bailout jumps over `body` and what it calls,

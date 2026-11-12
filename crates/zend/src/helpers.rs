@@ -130,8 +130,11 @@ pub fn long_zval(value: i64) -> zval {
 /// `object` for a call's argument array, which borrows the object from an owner
 /// that outlives the call (Zend copies each argument, with a reference, into
 /// the frame it calls). Nothing here reads the object.
+///
+/// # Safety
+/// `object` is live for as long as the zval is used: a call reads it.
 #[must_use]
-pub fn object_zval(object: *mut zend_object) -> zval {
+pub unsafe fn object_zval(object: *mut zend_object) -> zval {
     zval {
         value: crate::sys::zend_value { obj: object },
         u1: crate::sys::_zval_struct__bindgen_ty_1 {

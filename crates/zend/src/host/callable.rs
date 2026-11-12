@@ -151,7 +151,7 @@ impl Callable {
         fci.params = argv;
         if self.cache.function_handler.is_null() {
             // ZVAL_COPY_VALUE of the borrowed function name.
-            fci.function_name = self.value.zval();
+            fci.function_name = self.value.copy_value();
         }
         // SAFETY: `call`'s live arguments and return storage, and this callable's
         // cache, which its zval keeps live; no Rust borrow spans PHP reentry.

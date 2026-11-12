@@ -194,8 +194,8 @@ impl Callable {
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> bool {
         let mut argv = [swoole_rs_zend::UNDEF; 2];
         for (slot, arg) in argv.iter_mut().zip(args) {
-            // SAFETY: a live zval, copied bitwise; the copy is never released.
-            *slot = unsafe { arg.as_ptr().read() };
+            // Copied bitwise; the copy is never released.
+            *slot = arg.copy_value();
         }
         let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
         let cache = self.0.cache_ptr();

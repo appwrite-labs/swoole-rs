@@ -546,24 +546,24 @@ impl Value {
         Some(unsafe { &*self.payload::<Array>() })
     }
 
+    /// `ZVAL_COPY_VALUE`: the same bits, without a reference of their own, for
+    /// a slot that must not outlive this value or release it.
+    #[must_use]
+    #[inline]
+    pub fn copy_value(&self) -> zval {
+        // SAFETY: a live zval, read while borrowed.
+        unsafe { self.as_ptr().read() }
+    }
+
     /// `ZVAL_COPY`: the same value with a reference of its own.
     #[must_use]
     #[inline]
     pub fn copy(&self) -> Owned {
-        let owned = Owned(Self(UnsafeCell::new(self.zval())));
-        // SAFETY: a live zval; the copy carries the reference this adds.
+        // The copy carries the reference it adds below.
+        let owned = Owned(Self(UnsafeCell::new(self.copy_value())));
+        // SAFETY: as above.
         unsafe { swr_zval_try_addref(owned.as_ptr()) };
         owned
-    }
-
-    /// `ZVAL_COPY_VALUE`: the zval's two words, with no reference of their own,
-    /// as a call's argument array lends a value its owner keeps (and releases)
-    /// itself. What it points to is only good while this value is.
-    #[must_use]
-    #[inline]
-    pub fn zval(&self) -> zval {
-        // SAFETY: a live zval, which is plain data.
-        unsafe { self.as_ptr().read() }
     }
 }
 
