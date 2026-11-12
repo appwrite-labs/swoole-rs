@@ -220,7 +220,8 @@ impl Host for Native<'_, '_> {
     // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
     #[inline(always)]
     fn state(&mut self) -> Effect<&ServerState> {
-        Ok(self.state.unwrap_or(&NO_STATE))
+        // Lazily: naming `NO_STATE` checks its `LazyLock`.
+        Ok(self.state.unwrap_or_else(|| &NO_STATE))
     }
 }
 

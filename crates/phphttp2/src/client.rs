@@ -27,7 +27,7 @@ use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_wrong_parameter_class_error},
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -491,8 +491,7 @@ impl Client {
             0 => {}
             2 => {
                 socket.set_err_code(QUEUE_FULL);
-                // SAFETY: a static message.
-                unsafe { socket.set_err_msg(c"the send queue is full, try again later".as_ptr()) };
+                socket.set_static_err_msg(c"the send queue is full, try again later");
                 self.io_error(socket);
                 return false;
             }
@@ -1222,13 +1221,10 @@ fn this(call: &Call) -> Option<&Client> {
 /// `http2_client_coro_get_client`: the constructed client; a fatal error if not.
 fn client(call: &Call) -> Option<&Client> {
     let Some(client) = this(call) else {
-        // SAFETY: a fatal error; the frames it may longjmp across own nothing.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
-                c"must call constructor first",
-            );
-        };
+        swoole_rs_zend::bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+            swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int,
+            c"must call constructor first",
+        ));
         return None;
     };
     client.reap();
@@ -1373,9 +1369,7 @@ fn request_arg(call: &Call) -> Option<Request<'_>> {
     if arg.instance_of(&REQUEST) {
         return Some(Request::new(arg));
     }
-    // SAFETY: from a handler, as Zend's macro reports it, with the name the
-    // class is registered under.
-    unsafe { zend_wrong_parameter_class_error(1, REQUEST_NAME.as_ptr(), arg.as_ptr()) };
+    call.wrong_class(1, REQUEST_NAME, arg);
     None
 }
 
