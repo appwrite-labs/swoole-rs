@@ -1213,7 +1213,7 @@ fn ssl_handshake(this: Handle) -> c_int {
         .tls
         .get()
         .map_or(core::ptr::null(), TlsContext::as_ptr);
-    if this.tls_fields().context.is_null() {
+    if this.tls_fields().context.is_none() {
         this.tls_fields().http_v2 = u8::from(this.fields().http2);
         // SAFETY: the client's live context.
         if !unsafe { ssl_context_create(tls) } {
