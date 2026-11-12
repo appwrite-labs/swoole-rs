@@ -7,7 +7,7 @@ use openssl_sys::{
     BIO, BIO_METHOD, BIO_clear_flags, BIO_get_data, BIO_meth_free, BIO_meth_new,
     BIO_meth_set_create__fixed_rust, BIO_meth_set_ctrl__fixed_rust,
     BIO_meth_set_destroy__fixed_rust, BIO_meth_set_read__fixed_rust,
-    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init, SSL,
+    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init,
     SSL_set_bio,
 };
 use std::collections::VecDeque;
@@ -251,7 +251,6 @@ unsafe extern "C" {
     fn BIO_get_new_index() -> c_int;
     fn BIO_get_shutdown(bio: *mut BIO) -> c_int;
     fn BIO_set_shutdown(bio: *mut BIO, shutdown: c_int);
-    fn DTLSv1_listen(ssl: *mut SSL, peer: *mut c_void) -> c_int;
 }
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
@@ -419,7 +418,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     }
     let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
     // SAFETY: as the caller promises.
-    if unsafe { crate::upstream::socket_ssl_create(socket.as_ptr(), context, server) } < 0 {
+    if unsafe { crate::upstream::socket_ssl_create(socket, context, server) } < 0 {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
@@ -453,12 +452,11 @@ pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
     let Some(socket) = (unsafe { socket_of(owner) }) else {
         return false;
     };
-    crate::socket::clear_errors();
+    crate::clear_errors();
     let Some(ssl) = crate::Ssl::of(socket) else {
         return false;
     };
-    // SAFETY: the record's live SSL.
-    let result = unsafe { DTLSv1_listen(ssl.as_ptr(), ptr::null_mut()) };
+    let result = ssl.dtls_listen();
     if swr_v1_tls_dtls_listen(owner, result) != 0 {
         return true;
     }

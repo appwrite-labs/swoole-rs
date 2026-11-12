@@ -185,6 +185,17 @@ impl<'a> Socket<'a> {
         })
     }
 
+    /// The socket of a record this side holds alone for `'a` (one on the caller's
+    /// frame, say). Its `ssl` is null or owned, which only the unsafe
+    /// [`SocketFields::set_ssl`] can change.
+    #[must_use]
+    pub fn new(record: &'a mut SocketRecord) -> Self {
+        Self {
+            record: NonNull::from(record),
+            _live: PhantomData,
+        }
+    }
+
     /// The record's borrow count, which no closure's reference covers.
     fn borrows(self) -> &'a AtomicU32 {
         // SAFETY: live for 'a (from_ptr); the reference covers only the count, which
