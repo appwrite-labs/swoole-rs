@@ -19,10 +19,10 @@ use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZString, bailout,
     sys::{
-        ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find, swr_zend_runtime_call_handler,
-        swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
-        swr_zend_runtime_instanceof, swr_zend_runtime_parent, swr_zend_runtime_set_parent,
-        swr_zend_runtime_unsupported, swr_zend_runtime_version, swr_zend_try_lookup_class,
+        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
+        swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
+        swr_zend_runtime_free_arginfo, swr_zend_runtime_instanceof, swr_zend_runtime_parent,
+        swr_zend_runtime_set_parent, swr_zend_runtime_unsupported, swr_zend_try_lookup_class,
         zend_class_entry, zend_execute_data, zend_fcall_info, zend_function,
         zend_internal_arg_info, zend_string, zif_handler, zval,
     },
@@ -236,11 +236,6 @@ fn enable(name: &CStr) {
     }
 }
 
-fn php_version() -> i32 {
-    // SAFETY: a constant.
-    unsafe { swr_zend_runtime_version() }
-}
-
 /// `PHPCoroutine::disable_unsafe_function` and `enable_unsafe_function`.
 pub(crate) fn unsafe_functions(disable: bool) {
     const UNSAFE: [&CStr; 6] = [
@@ -254,7 +249,7 @@ pub(crate) fn unsafe_functions(disable: bool) {
     // HTTP wrapper response headers are request-global; Swoole does not
     // isolate them per coroutine.
     const HEADERS: &CStr = c"http_get_last_response_headers";
-    let headers = php_version() >= 80400;
+    let headers = PHP_VERSION_ID >= 80400;
     for name in UNSAFE {
         if disable {
             self::disable(name, Some(swr_zend_runtime_disabled));
@@ -282,7 +277,7 @@ pub(crate) fn start() {
             ptr::null_mut(),
         );
     }
-    if php_version() >= 80400 {
+    if PHP_VERSION_ID >= 80400 {
         hook(c"exit", Some(zif_swoole_exit), ptr::null_mut());
     }
 }
@@ -290,7 +285,7 @@ pub(crate) fn start() {
 /// RINIT on another thread before PHP 8.3: functions were copied per thread,
 /// so set the main thread's hooked handlers and arginfo again.
 pub(crate) fn copy_to_thread() {
-    if php_version() >= 80300 {
+    if PHP_VERSION_ID >= 80300 {
         return;
     }
     let table = table();

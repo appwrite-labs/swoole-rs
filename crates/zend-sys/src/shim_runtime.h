@@ -5,8 +5,6 @@
 #define SWOOLE_RS_ZEND_SHIM_RUNTIME_H
 #include "php.h"
 
-/* PHP_VERSION_ID. */
-int swr_zend_runtime_version(void);
 /* Swoole's copy_arginfo: a persistent copy of a function's arginfo (and the
  * return slot before it) with its class-name types duplicated. */
 zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_function *function,
