@@ -191,13 +191,8 @@ extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: u
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `swr_v1_timer_add_plain_sec`: logs, adds nothing.
-pub(super) unsafe fn swr_v1_timer_add_plain_sec(
-    timeout: f64,
-    _: bool,
-    _: unsafe extern "C-unwind" fn(*mut c_void),
-    _: *mut c_void,
-) -> *mut c_void {
+/// crates/timer's `add_fn_sec`: logs, adds nothing.
+pub(super) fn add_fn_sec(timeout: f64, _: bool, _: impl Fn() + Copy + 'static) -> *mut c_void {
     log(format!("timer {timeout}"));
     core::ptr::without_provenance_mut(1)
 }
@@ -575,7 +570,7 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     Handle(client).set(ACTIVE, true);
     set_proxy(client, true);
     assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
-    unsafe { on_timeout(client.cast()) };
+    on_timeout(Handle(client));
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(
         taken(),

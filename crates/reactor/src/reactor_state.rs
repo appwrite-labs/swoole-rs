@@ -519,18 +519,12 @@ pub(crate) fn kernel_wait(
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
             *entries = count;
-            // SAFETY: poll initializes revents in the first count valid records.
-            unsafe {
-                libc::poll(
-                    snapshot.entries(),
-                    libc::nfds_t::from(count.unsigned_abs()),
-                    if deferred {
-                        0
-                    } else {
-                        owner.fields.timeout_msec
-                    },
-                )
-            }
+            let timeout = if deferred {
+                0
+            } else {
+                owner.fields.timeout_msec
+            };
+            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
