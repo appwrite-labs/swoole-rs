@@ -87,8 +87,8 @@ impl HttpServer {
     fn new(socket: Co) -> Self {
         Self {
             socket,
-            // SAFETY: the listening socket, which the server frees in its drop.
-            listener: unsafe { swoole_rs_phpclients::Co::new(socket.this()) },
+            // The listening socket, which the server frees in its drop.
+            listener: swoole_rs_phpclients::Co::from(socket),
             handlers: RefCell::new(Vec::new()),
             default_handler: RefCell::new(None),
             running: Cell::new(true),
@@ -428,8 +428,7 @@ fn construct(call: &Call) {
             bailout::Bailout.defer();
             return None;
         };
-        // SAFETY: the new socket, which the server owns until it drops.
-        let socket = unsafe { Co::of(socket) };
+        // The server owns the new socket until it drops.
         if data.0.set(HttpServer::new(socket)).is_err() {
             return None;
         }

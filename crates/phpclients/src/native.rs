@@ -68,9 +68,10 @@ pub(crate) fn make(
     protocol: c_int,
     family: bool,
 ) -> Result<NewSocket, Bailout> {
-    let socket = co::make(fd, domain, kind, protocol, family)?;
-    // SAFETY: the new socket, which nothing else holds.
-    Ok(NewSocket(unsafe { Co::new(socket) }))
+    // The new socket, which nothing else holds.
+    Ok(NewSocket(Co::from(co::make(
+        fd, domain, kind, protocol, family,
+    )?)))
 }
 
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
