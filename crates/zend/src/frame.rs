@@ -4,7 +4,7 @@ use crate::{
     Call, Invalid, bailout,
     sys::{swr_zval_stringl, zend_array, zend_execute_data, zval},
 };
-use std::mem::{MaybeUninit, offset_of};
+use std::mem::MaybeUninit;
 
 impl Call {
     /// `Z_PARAM_LONG_OR_NULL` of argument `n`: `None` when null or not passed.
@@ -52,10 +52,9 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn this_zval(&self) -> *mut zval {
-        // Only the field's address is taken.
-        self.frame
-            .wrapping_byte_add(offset_of!(zend_execute_data, This))
-            .cast()
+        let frame: *mut zend_execute_data = self.frame;
+        // SAFETY: a live frame; only the field's address is taken.
+        unsafe { &raw mut (*frame).This }
     }
 
     /// `RETVAL_STRINGL`: a copy of `bytes`.
