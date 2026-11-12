@@ -19,9 +19,7 @@ const CHUNK: usize = 1 << 16;
 pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
     crate::wait_event::native::current();
     let mut pid = 0;
-    // SAFETY: a NUL-terminated command and a writable pid.
-    let fd =
-        unsafe { swoole_rs_corebase::swoole_shell_exec(command.as_ptr(), &raw mut pid, errors) };
+    let fd = swoole_rs_corebase::swoole_shell_exec(command, &mut pid, errors);
     if fd < 0 {
         swoole_rs_corebase::log::sys_warning(
             c"exec",
