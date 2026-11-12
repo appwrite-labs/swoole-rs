@@ -523,7 +523,9 @@ mod tests {
         record.concurrency = AtomicU32::new(3);
         record.request_count = 7;
         record.response_count = 8;
-        record.dispatch_count = 9;
+        record.dispatch_count = 8;
+        unsafe { Worker::new(&raw mut record) }.count_dispatch();
+        assert_eq!(record.dispatch_count, 9);
         let total = core::sync::atomic::AtomicU32::new(7);
         unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
         assert_eq!(
