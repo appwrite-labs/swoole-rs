@@ -80,8 +80,8 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     swr_v1_worker_init(worker);
     let config = serv.config();
     swoole_rs_process::methods::worker_set_max_request(
-        config.max_request,
-        config.max_request_grace,
+        config.max_request.get(),
+        config.max_request_grace.get(),
     );
 }
 
@@ -120,7 +120,7 @@ pub fn destroy_worker(worker: Worker<'_>) {
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn create_event_workers(serv: view::Server<'_>) -> bool {
-    let count = serv.config().worker_num;
+    let count = serv.config().worker_num.get();
     for id in 0..count {
         // `get_worker(uint16_t)`, as the C++ loop called it.
         let id = u16::try_from(id & 0xffff).unwrap_or_default();
@@ -188,7 +188,7 @@ mod tests {
         let other = worker.wrapping_add(1);
         unsafe { worker.write(*WorkerRecord::boxed()) };
         unsafe { other.write(*WorkerRecord::boxed()) };
-        unsafe { serv.config_mut() }.worker_num = 2;
+        unsafe { serv.config_mut() }.worker_num.set(2);
         unsafe { serv.config_mut() }.workers = workers;
         unsafe { (*worker).set_pid(79) };
         unsafe { (*other).set_pid(79) };

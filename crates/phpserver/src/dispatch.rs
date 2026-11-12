@@ -11,7 +11,7 @@ use std::{
     mem::ManuallyDrop,
     ptr,
     rc::Rc,
-    sync::OnceLock,
+    sync::{OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
@@ -176,8 +176,8 @@ fn facts(server: view::Server<'_>) -> Facts {
     Facts {
         master_pid: i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
         manager_pid: i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
-        event_object: config.event_object,
-        enable_coroutine: config.enable_coroutine,
+        event_object: config.event_object.get(),
+        enable_coroutine: config.enable_coroutine.get(),
         coroutine: coroutine_enabled(server),
         enable_library: swoole_rs_phpswoole::enable_library(),
         task_worker,
@@ -187,9 +187,9 @@ fn facts(server: view::Server<'_>) -> Facts {
 fn coroutine_enabled(server: view::Server<'_>) -> bool {
     let config = server.config();
     match crate::server::worker_type() {
-        crate::server::TASK_WORKER => config.task_enable_coroutine,
+        crate::server::TASK_WORKER => config.task_enable_coroutine.get(),
         crate::server::MANAGER => false,
-        _ => config.enable_coroutine,
+        _ => config.enable_coroutine.get(),
     }
 }
 
@@ -214,10 +214,12 @@ fn bus_uses_zend_strings(bus: *mut c_void) {
 /// buffers in base and thread mode, allocate Zend strings.
 pub(crate) fn use_zend_strings(server: view::Server<'_>) {
     bus_uses_zend_strings(server.message_bus());
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    let config = unsafe { server.config_mut() };
+    let config = server.config();
     if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
-        config.recv_buffer_allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        config
+            .recv_buffer_allocator
+            .store(allocator.cast_mut(), Relaxed);
     }
 }
 
@@ -226,7 +228,7 @@ pub(crate) fn use_zend_strings(server: view::Server<'_>) {
 fn prepare_worker(server: view::Server<'_>) {
     let config = server.config();
     if crate::server::worker_type() == crate::server::TASK_WORKER
-        && !config.task_enable_coroutine
+        && !config.task_enable_coroutine.get()
         && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
@@ -684,10 +686,10 @@ extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c
 }
 
 extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Packed<'_>) {
-    let mut data = undef();
-    let (unpacked, mut bailed) = match crate::task::decode(message, &raw mut data) {
-        Ok(unpacked) => (unpacked, false),
-        Err(Bailout) => (false, true),
+    let (mut data, unpacked, mut bailed) = match crate::task::decode(message) {
+        Ok(Some((data, done))) => (data.into_zval(), done, false),
+        Ok(None) => (undef(), false, false),
+        Err(Bailout) => (undef(), false, true),
     };
     if unpacked {
         let info = message.head();
@@ -711,12 +713,12 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     };
     let config = server.config();
     let mut args = [zserv(), undef(), undef(), undef()];
-    let argc = receive_args(server, request, config.event_object, &mut args);
+    let argc = receive_args(server, request, config.event_object.get(), &mut args);
     let called = invoke(
         &cb,
         args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
-        config.enable_coroutine,
+        config.enable_coroutine.get(),
     );
     relay(called.map_or(true, |succeeded| {
         receive_done(
@@ -865,7 +867,7 @@ pub fn php_swoole_server_on_close(server: view::Server<'_>, info: &DataHead) {
 fn close(server: view::Server<'_>, info: &DataHead) {
     let session_id = info.fd;
     let config = server.config();
-    if config.enable_coroutine && config.send_yield {
+    if config.enable_coroutine.get() && config.send_yield.get() {
         send_wake(session_id, true);
     }
     let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
@@ -916,7 +918,7 @@ extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) 
 }
 
 extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead) {
-    if server.config().send_yield {
+    if server.config().send_yield.get() {
         send_wake(info.fd, false);
     }
     relay(on_buffer(
@@ -934,7 +936,8 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     let id = i64::from(worker.id());
     let config = server.config();
     let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
-        let index = id - i64::from(config.worker_num) - i64::from(config.task_worker_num);
+        let index =
+            id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         let process = ServerObject::with_running(|object| object.user_process(index));
         let process = process.unwrap_or(ptr::null_mut());
@@ -1039,11 +1042,10 @@ pub(crate) unsafe fn set_dispatch_func(
     server: view::Server<'_>,
     handle: *mut callable::Callable,
 ) -> Result<(), Bailout> {
-    // SAFETY: the server is configured on this thread, with no other reference to the field.
-    let config = unsafe { server.config_mut() };
-    let previous = std::mem::replace(&mut config.private_data_3, handle.cast());
+    let config = server.config();
+    let previous = config.private_data_3.swap(handle.cast(), Relaxed);
     server.set_callback(Callback::DispatchFunc(on_dispatch));
-    config.single_thread = true;
+    config.single_thread.set(true);
     release_dispatch_func(previous)
 }
 
@@ -1113,7 +1115,7 @@ extern "C" fn on_dispatch(
 ) -> c_int {
     let config = server.config();
     // SAFETY: as above.
-    let cache = unsafe { callable::cache(config.private_data_3.cast()) };
+    let cache = unsafe { callable::cache(config.private_data_3.load(Relaxed).cast()) };
     // Its live object, copied without a reference as upstream.
     let zserv = zserv();
     let session = match conn {
@@ -1149,7 +1151,7 @@ extern "C" fn on_dispatch(
         }
         Ok(true) if !retval.is_null() => {
             let id = retval.long();
-            if id >= i64::from(config.worker_num) {
+            if id >= i64::from(config.worker_num.get()) {
                 let text = message!("invalid target worker-id[{id}]");
                 crate::server::fatal(E_WARNING, text.as_cstr());
             } else {

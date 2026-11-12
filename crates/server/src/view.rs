@@ -246,9 +246,9 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn is_single_worker(self) -> bool {
         let config = self.config();
-        config.worker_num == 1
-            && config.task_worker_num == 0
-            && config.max_request == 0
+        config.worker_num.get() == 1
+            && config.task_worker_num.get() == 0
+            && config.max_request.get() == 0
             && self.user_worker_num() == 0
     }
 
@@ -287,7 +287,7 @@ impl<'a> Server<'a> {
         if cells.is_null() {
             return total.load(Ordering::Relaxed) as usize;
         }
-        (0..self.config().worker_num as usize)
+        (0..self.config().worker_num.get() as usize)
             .map(|i| {
                 // SAFETY: the server's records hold one cell per event worker.
                 let cell = unsafe { &*cells.wrapping_add(i) };
@@ -403,8 +403,8 @@ impl<'a> Server<'a> {
             task_pool,
             event_workers: config.workers.as_ptr().cast(),
             user_workers: config.user_workers.as_ptr().cast(),
-            event_count: config.worker_num,
-            task_count: config.task_worker_num,
+            event_count: config.worker_num.get(),
+            task_count: config.task_worker_num.get(),
             user_count: self.user_worker_num(),
         }
     }
@@ -667,7 +667,7 @@ mod tests {
         config.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         config.mode_ = 1;
-        config.worker_num = 1;
+        config.worker_num.set(1);
         let mut factory = 0u8;
         config.factory_ = (&raw mut factory).cast();
         let own = std::process::id().cast_signed();
@@ -683,15 +683,15 @@ mod tests {
         config.mode_ = 2;
         assert!(!serv.ran_its_single_worker_here(), "process mode");
         config.mode_ = 1;
-        config.worker_num = 2;
+        config.worker_num.set(2);
         assert!(
             !serv.ran_its_single_worker_here(),
             "a manager and two workers"
         );
-        config.worker_num = 1;
-        config.task_worker_num = 1;
+        config.worker_num.set(1);
+        config.task_worker_num.set(1);
         assert!(!serv.ran_its_single_worker_here(), "a task worker");
-        config.task_worker_num = 0;
+        config.task_worker_num.set(0);
         config.factory_ = core::ptr::null_mut();
         config.gs.free();
         unsafe { crate::state::free_state(state) };
@@ -710,13 +710,13 @@ mod tests {
         counters.connection_num.store(99, Ordering::Relaxed);
         let mut port = PortConfig::boxed(0);
         port.gs = (&raw mut counters).cast();
-        unsafe { serv.config_mut() }.worker_num = 2;
+        unsafe { serv.config_mut() }.worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
         let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
         counters.connection_nums = crate::records::tests::naming(&mut cells);
         port.gs = (&raw mut counters).cast();
         assert_eq!(serv.port_connections(&port), 8);
-        unsafe { serv.config_mut() }.worker_num = 0;
+        unsafe { serv.config_mut() }.worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
         port.gs = core::ptr::null_mut();
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");

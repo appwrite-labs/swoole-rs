@@ -129,7 +129,7 @@ fn is_stream(kind: c_int) -> bool {
 
 /// Whether listening ports may use `SO_REUSEPORT` (`enable_reuse_port` on Linux).
 fn reuse_port(config: &crate::ServerConfig) -> bool {
-    cfg!(target_os = "linux") && config.enable_reuse_port
+    cfg!(target_os = "linux") && config.enable_reuse_port.get()
 }
 
 /// The facts and effects on the server and its ports.
@@ -144,9 +144,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let stream = |port: crate::view::Port<'_>| is_stream(port.config().r#type);
     Some(match op {
         OP_SET_SINGLE_THREAD => {
-            // SAFETY: `create_reactor_processes`, in the master before it forks or
-            // starts a thread, and `config` isn't read across the write.
-            unsafe { serv.config_mut() }.single_thread = true;
+            serv.config().single_thread.set(true);
             0
         }
         OP_HAVE_STREAM_SOCK => u64::from(config.have_stream_sock),
@@ -190,8 +188,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             crate::server_methods::store_listen_socket(ctx.server());
             0
         }
-        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
-        OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode == TASK_IPC_UNIXSOCK),
+        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
+        OP_TASK_IPC_UNIXSOCK => u64::from(config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK),
         OP_TASK_POOL_WORKER_NUM => u64::from(
             crate::shared::ServerShared::of(ctx.server())
                 .task_pool()
@@ -227,7 +225,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             config.master_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
-        OP_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval),
+        OP_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval.get()),
         OP_REACTOR_WAIT => sign(ctx.reactor_handle().wait()),
         OP_MINFD => sign(ctx.counters().min_fd()),
         OP_MAXFD => sign(ctx.counters().max_fd()),

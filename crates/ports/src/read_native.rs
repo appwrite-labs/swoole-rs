@@ -143,6 +143,7 @@ impl Read<'_> {
         let allocator = self
             .config()
             .recv_buffer_allocator
+            .load(Ordering::Relaxed)
             .cast::<swoole_rs_buffer::string::Allocator>();
         // SAFETY: the server's allocator, null or live.
         let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
@@ -343,12 +344,12 @@ impl Connection for Read<'_> {
     }
 
     fn uploads(&mut self) -> bool {
-        self.config().upload_max_filesize > 0
+        self.config().upload_max_filesize.get() > 0
     }
 
     #[inline]
     fn static_handler(&mut self) -> bool {
-        self.config().enable_static_handler
+        self.config().enable_static_handler.get()
     }
 
     fn serve_static(&mut self) -> bool {
@@ -407,7 +408,7 @@ impl Connection for Read<'_> {
 
     fn init_multipart(&mut self) -> bool {
         let dir = self.server.upload_tmp_dir();
-        let max = self.config().upload_max_filesize;
+        let max = self.config().upload_max_filesize.get();
         let ok = self.request().init_multipart_parser(dir.as_bytes(), max);
         self.buffer = self.request().buffer.cast();
         ok

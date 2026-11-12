@@ -321,7 +321,7 @@ fn write_facts(o: &mut Objects<'_, '_>) -> u64 {
     o.ctx.port = o.port_by_fd(fd);
     if o.mode() == crate::MODE_PROCESS {
         debug_assert_eq!(
-            Some(fd % c_int::from(o.config().reactor_num)),
+            Some(fd % c_int::from(o.config().reactor_num.get())),
             o.reactor().map(|reactor| c_int::from(reactor.id())),
             "a reactor thread writes only its own fds"
         );
@@ -373,9 +373,12 @@ fn peer_close_facts(o: &mut Objects<'_, '_>) -> u64 {
         | flag(conn.close_queued() != 0, cn::CLOSE_QUEUED)
         | flag(notified, cn::CLOSE_NOTIFIED)
         | flag(o.mode() == crate::MODE_PROCESS, cn::PROCESS)
-        | flag(matches!(config.dispatch_mode, 2 | 4 | 8), cn::HASH_DISPATCH)
+        | flag(
+            matches!(config.dispatch_mode.get(), 2 | 4 | 8),
+            cn::HASH_DISPATCH,
+        )
         | flag(dispatch_func, cn::DISPATCH_FUNC)
-        | flag(config.enable_coroutine, cn::COROUTINE)
+        | flag(config.enable_coroutine.get(), cn::COROUTINE)
         | flag(conn.ssl() != 0, cn::CONN_SSL)
         | flag(conn.close_errno() != 0, cn::CLOSE_ERRNO)
         | flag(conn.close_force() != 0, cn::CLOSE_FORCE)
@@ -561,8 +564,8 @@ pub(crate) fn answer(
         // SAFETY: the datagram server's connection, whose object is its live port.
         OP_PORT_DTLS => u64::from(unsafe { port_config::of(o.conn()?.object()) }.is_dtls()),
         OP_REACTOR_ID => u64::from(o.reactor()?.id()),
-        OP_REACTOR_NUM => u64::from(o.config().reactor_num),
-        OP_WORKER_NUM => u64::from(o.config().worker_num),
+        OP_REACTOR_NUM => u64::from(o.config().reactor_num.get()),
+        OP_WORKER_NUM => u64::from(o.config().worker_num.get()),
         OP_CONN_AT | OP_CC_VALID => {
             let conn = o.state.connection(c_long::from(int(arg)), 0);
             if !valid(conn) {
@@ -599,9 +602,9 @@ pub(crate) fn answer(
         OP_PIPE_TYPE => u64::from(o.resp()?.kind),
         OP_PIPE_FD => sign(o.resp()?.fd),
         OP_MICROTIME => microtime().to_bits(),
-        OP_QUEUE_FULL => {
-            u64::from(o.conn()?.recv_queued_bytes().load(SeqCst) > o.config().max_queued_bytes)
-        }
+        OP_QUEUE_FULL => u64::from(
+            o.conn()?.recv_queued_bytes().load(SeqCst) > o.config().max_queued_bytes.get(),
+        ),
         OP_WAITING_TIME => u64::from(o.conn()?.waiting_time()),
         OP_SET_WAITING_TIME => {
             o.conn()?
@@ -623,7 +626,7 @@ pub(crate) fn answer(
             0
         }
         OP_RT_FRONT_CONN_CLOSED => u64::from(o.conn()?.closed().load(SeqCst)),
-        OP_RT_DISCARD_TIMEOUT => u64::from(o.config().discard_timeout_request),
+        OP_RT_DISCARD_TIMEOUT => u64::from(o.config().discard_timeout_request.get()),
         OP_SERVER => u64::try_from(o.ctx.serv.raw().expose_provenance()).unwrap_or(0),
         OP_RT_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
         OP_WR_WAIT => {
@@ -812,7 +815,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_MASTER_REACTOR_ID => {
             // a special id for the master thread
-            let id = o.config().reactor_num;
+            let id = o.config().reactor_num.get();
             o.reactor()?.set_id(id);
             swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
             0
@@ -951,7 +954,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_DTLS_ACCEPT => {
             let (serv, reactor) = (o.ctx.serv, o.handle()?.ptr());
-            let (single_thread, close) = (o.config().single_thread, o.reactor()?.close());
+            let (single_thread, close) = (o.config().single_thread.get(), o.reactor()?.close());
             let (port, pkt) = (o.conn()?.object(), o.ctx.pkt.cast());
             // SAFETY: the context's live server and reactor, the DTLS port the packet
             // arrived on and the packet received, `arg` bytes.

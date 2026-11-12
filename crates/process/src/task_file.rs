@@ -3,7 +3,7 @@
 //! (`File::read_all`: pread from offset 0, retrying EINTR/EAGAIN, stopping at EOF or
 //! another error) and unlinks the file unless the task is only peeked;
 //! `Server::task_dump` prints it.
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_int, c_void};
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::os::fd::AsRawFd;
@@ -381,13 +381,16 @@ impl<'a> Packed<'a> {
             .unwrap_or_default()
     }
 
-    /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes and
-    /// length, read into `buffer` from its temporary file if it has one, and the
-    /// task's `ext_flags`; `None` (warned) if that file can't be read.
-    pub fn unpack(self, buffer: &mut CppString) -> Option<(*const c_char, usize, u16)> {
+    /// `Server::task_unpack(task, buffer, &packet)`: the payload's bytes, read
+    /// into `buffer` from its temporary file if it has one, and the task's
+    /// `ext_flags`; `None` (warned) if that file can't be read.
+    pub fn unpack<'b>(self, buffer: &'b mut CppString) -> Option<(&'b [u8], u16)>
+    where
+        'a: 'b,
+    {
         let (payload, flags) = (self.payload(), self.head().ext_flags);
         if flags & TMPFILE == 0 {
-            return Some((payload.as_ptr().cast(), payload.len(), flags));
+            return Some((payload, flags));
         }
         let pkg = PacketTask::read(payload);
         if buffer.size() < pkg.length {
@@ -420,7 +423,7 @@ impl<'a> Packed<'a> {
         }
         // SAFETY: the read filled the buffer's first `pkg.length` bytes.
         unsafe { buffer.set_len(pkg.length) };
-        Some((str.cast_const().cast(), pkg.length, flags))
+        Some((buffer.view(), flags))
     }
 }
 
@@ -457,8 +460,7 @@ mod tests {
         let task = super::Packed::from_bytes(&bytes[1..]).unwrap();
         assert_eq!((task.head().fd, task.head().len), (7, 3));
         let mut string = swoole_rs_buffer::string::CppString::EMPTY;
-        let (data, length, flags) = task.unpack(&mut string).unwrap();
-        let payload = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+        let (payload, flags) = task.unpack(&mut string).unwrap();
         assert_eq!((payload, flags), (&b"abc"[..], 0));
         assert!(super::Packed::from_bytes(&bytes[1..bytes.len() - 1]).is_none());
         assert!(super::Packed::from_bytes(&bytes[1..17]).is_none());
@@ -630,11 +632,11 @@ mod tests {
             assert!(head.time > 0.0);
             assert_eq!(swr_v1_core_current_task_id(), 42);
             let mut string = empty_string();
-            let (data, length, _) = unsafe { Packed::from_raw(event.cast()) }
+            let (data, _) = unsafe { Packed::from_raw(event.cast()) }
                 .unpack(&mut string)
                 .unwrap();
-            assert_eq!(length, 5);
-            assert_eq!(data, unsafe { (*event).data.as_ptr() }.cast());
+            assert_eq!(data.len(), 5);
+            assert_eq!(data.as_ptr(), unsafe { (*event).data.as_ptr() }.cast());
             assert!(string.as_ptr().is_null());
         }
 
@@ -657,13 +659,13 @@ mod tests {
             let path = pkg.path().to_str().unwrap().to_owned();
             assert!(path.starts_with("/tmp/swoole.task."));
             let mut string = empty_string();
-            let (bytes, length, _) = unsafe { Packed::from_raw(event.cast()) }
+            let (read, _) = unsafe { Packed::from_raw(event.cast()) }
                 .unpack(&mut string)
                 .unwrap();
-            assert_eq!((string.len(), string.size(), length), (9000, 9000, 9000));
-            assert_eq!(bytes, string.as_ptr().cast());
-            let read = unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), 9000) };
             assert_eq!(read, data.as_slice());
+            let read = read.as_ptr();
+            assert_eq!(read, string.as_ptr());
+            assert_eq!((string.len(), string.size()), (9000, 9000));
             assert!(!std::path::Path::new(&path).exists());
             // A second unpack finds no file.
             assert!(

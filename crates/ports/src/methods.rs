@@ -159,7 +159,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     let reuse_port = cfg!(target_os = "linux")
         && !serv.is_null()
         // SAFETY: the port's live server.
-        && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port;
+        && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port.get();
     if !config.socket.is_null() {
         if !reuse_port {
             return 0;
@@ -749,7 +749,7 @@ mod tests {
         let config = port_config::swr_v1_port_config_new(1000);
         if reuse_port {
             let server = Box::leak(Box::<swoole_rs_server::ServerConfig>::default());
-            server.enable_reuse_port = true;
+            server.enable_reuse_port.set(true);
             let head: &mut [*mut c_void; 2] =
                 Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
             unsafe { (*config).protocol.private_data_2 = head.as_mut_ptr().cast() };

@@ -30,7 +30,7 @@ const THREAD_REACTOR: u8 = 2;
 pub fn admin_register(serv: view::Server<'_>, php_memory: extern "C" fn() -> usize) {
     PHP_MEMORY.get_or_init(|| php_memory);
     let config = serv.config();
-    let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread;
+    let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread.get();
     for (index, (name, types)) in commands(event_workers).enumerate() {
         let handler = Arc::new(
             move |serv: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
@@ -150,9 +150,9 @@ impl Facts for Live<'_> {
     fn pipe_workers(&mut self, task: bool) -> u64 {
         let config = self.config;
         u64::from(if task {
-            config.task_worker_num
+            config.task_worker_num.get()
         } else {
-            config.worker_num
+            config.worker_num.get()
         })
     }
 
@@ -293,7 +293,7 @@ impl Facts for Live<'_> {
         };
         let bus_size = bus.rust().memory_size();
         let user_workers = self.serv.user_worker_num();
-        let workers = u64::from(config.worker_num) + u64::from(config.task_worker_num);
+        let workers = u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get());
         let workers = workers + user_workers as u64;
         let global = swoole_rs_memory::members::pool::memory_size();
         let buffer = swoole_rs_corebase::thread_buffer();

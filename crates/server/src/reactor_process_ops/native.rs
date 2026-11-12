@@ -188,7 +188,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ADD_HEARTBEAT_TIMER => {
-            let msec = c_long::from(ctx.config().heartbeat_check_interval) * 1000;
+            let msec = c_long::from(ctx.config().heartbeat_check_interval.get()) * 1000;
             let reactor = ctx.reactor_handle().ptr();
             // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
             let node =
@@ -219,22 +219,22 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
     // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
     unsafe { pool.write_bytes(0, 1) };
     let pool_ref = ctx.server().event_pool_ref();
-    if swoole_rs_process::methods::create(pool_ref, config.worker_num, 0, IPC_UNIXSOCK) < 0 {
+    if swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, IPC_UNIXSOCK) < 0 {
         return SW_ERR;
     }
     swoole_rs_process::methods::set_max_request(
         pool_ref,
-        config.max_request,
-        config.max_request_grace,
+        config.max_request.get(),
+        config.max_request_grace.get(),
     );
     // SAFETY: as above.
     let record = unsafe { &mut *pool };
     record.ptr = ctx.serv.raw();
-    record.max_wait_time = config.max_wait_time;
+    record.max_wait_time = config.max_wait_time.get();
     record.use_msgqueue = 0;
     record.main_loop = Some(main_loop);
     record.on_worker_not_found = Some(worker_not_found);
-    let count = config.worker_num as usize;
+    let count = config.worker_num.get() as usize;
     // SAFETY: the pool's and the server's worker arrays, `count` records each.
     unsafe { core::ptr::copy_nonoverlapping(record.workers(), workers.event_workers, count) };
     // SAFETY: the server's `count` (`worker_num`) event worker records, which live

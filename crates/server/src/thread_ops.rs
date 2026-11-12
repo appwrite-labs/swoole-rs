@@ -308,7 +308,7 @@ pub(crate) fn answer(
         OP_REACTOR_THREAD_ENTRY => reactor_thread_entry as *const () as u64,
         OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
         OP_HEARTBEAT_TIMER | OP_RT_HEARTBEAT_TIMER => {
-            let msec = c_long::from(config().heartbeat_check_interval) * 1000;
+            let msec = c_long::from(config().heartbeat_check_interval.get()) * 1000;
             // SAFETY: `heartbeat_check` takes the reactor, which outlives its timers.
             let timer = unsafe { swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor) };
             if op == OP_HEARTBEAT_TIMER {
@@ -496,8 +496,8 @@ pub(crate) fn answer(
             let session = arg.cast_signed();
             let pipes = i64::from(state.tables_ref().reactor_pipe_num);
             let index = session % pipes;
-            let id =
-                i64::from(ctx.connection()?.reactor_id()) + index * i64::from(config().reactor_num);
+            let id = i64::from(ctx.connection()?.reactor_id())
+                + index * i64::from(config().reactor_num.get());
             // the session id, so the reactor verifies the connection before closing it
             send_event(
                 worker_pipe(worker(server, id)?, false),
@@ -563,7 +563,7 @@ pub(crate) fn answer(
             let mut result = u64::from(retval.cast_unsigned());
             let conn = ctx.connection()?;
             if conn.is_active() {
-                let max = config().max_queued_bytes;
+                let max = config().max_queued_bytes.get();
                 let flag = |set: bool, bit: u64| if set { bit } else { 0 };
                 result |= crate::conn_io::ACTIVE
                     | flag(notified, crate::conn_io::READ_NOTIFIED)
@@ -619,7 +619,7 @@ unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
     swoole_rs_corebase::signal_block_all();
     // SAFETY: the live server.
     let server = unsafe { view::Server::from_raw(serv) };
-    let reactors = server.state().config_ref().reactor_num;
+    let reactors = server.state().config_ref().reactor_num.get();
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
     swoole_rs_corebase::set_thread(kind, swoole_rs_corebase::thread_id());
