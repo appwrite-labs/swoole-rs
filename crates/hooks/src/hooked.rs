@@ -57,7 +57,19 @@ fn hooked(fd: c_int) -> Option<(&'static Host, Co)> {
 
 /// A socket this module made or the map let go of, which nothing else holds:
 /// dropping it deletes it.
-struct Owned(Co);
+pub(crate) struct Owned(Co);
+
+impl Owned {
+    /// `new SocketImpl(domain, type, protocol)`, which only the result holds.
+    pub(crate) fn open(domain: c_int, kind: c_int, protocol: c_int) -> Self {
+        Self((SOCKETS.open)(domain, kind, protocol))
+    }
+
+    /// The socket, live while this is.
+    pub(crate) const fn socket(&self) -> Co {
+        self.0
+    }
+}
 
 impl Drop for Owned {
     fn drop(&mut self) {

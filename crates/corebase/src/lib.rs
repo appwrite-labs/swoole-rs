@@ -47,10 +47,10 @@ pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
     DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
-    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_hex2dec,
-    swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
-    swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
-    swoole_system_random, swr_v1_core_format_result,
+    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
+    swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any, swoole_random_int,
+    swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
+    swr_v1_core_format_result,
 };
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
@@ -409,15 +409,18 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
     }
 }
 
-/// Preserve native prefix, locale, signed-char and `size_t` wrap semantics.
+/// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode:
+/// native prefix, locale, signed-char and `size_t` wrap semantics.
 /// # Safety
 /// Input is a valid NUL-terminated C string.
 /// Bytes passed to toupper must satisfy the original host's ctype precondition.
-pub unsafe fn swr_v1_corebase_hex_mode(
-    input: *const c_char,
-    parsed: &mut usize,
-    native_char_signed: u8,
-) -> c_ulong {
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_Z14swoole_hex2decPKcPm")
+)]
+pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize) -> c_ulong {
+    // The compiler's plain `char` signedness, as the C++ facade saw it.
+    let native_char_signed = c_char::MIN != 0;
     let mut current = input;
     let mut value = 0_usize;
     // `current` walks the caller's NUL-terminated string and stops at the first non-digit
@@ -434,7 +437,7 @@ pub unsafe fn swr_v1_corebase_hex_mode(
             (byte - b'0') as usize
         } else {
             // C passes the char as the host's (un)signed char would promote it.
-            let input = if native_char_signed != 0 {
+            let input = if native_char_signed {
                 c_int::from(byte.cast_signed())
             } else {
                 c_int::from(byte)
@@ -442,7 +445,7 @@ pub unsafe fn swr_v1_corebase_hex_mode(
             // SAFETY: the caller guarantees the host ctype precondition for these bytes.
             let upper = unsafe { toupper(input) };
             let low = upper.to_le_bytes()[0];
-            let byte = if native_char_signed != 0 {
+            let byte = if native_char_signed {
                 c_int::from(low.cast_signed())
             } else {
                 c_int::from(low)

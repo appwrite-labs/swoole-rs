@@ -30,14 +30,13 @@ pub extern "C" fn sw_zend_string_allocator() -> *const c_void {
     (&raw const ZEND_STRING_ALLOCATOR).cast()
 }
 
-unsafe extern "C" fn malloc(size: usize) -> *mut c_void {
+extern "C" fn malloc(size: usize) -> *mut c_void {
     val(string::alloc(size)).cast()
 }
 
 /// Upstream zeroes the first `size` bytes, not `nmemb * size`.
 unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
-    // SAFETY: Zend's allocator.
-    let memory = unsafe { malloc(nmemb.wrapping_mul(size)) };
+    let memory = malloc(nmemb.wrapping_mul(size));
     if !memory.is_null() {
         // SAFETY: as upstream: a buffer of `nmemb * size` bytes.
         unsafe { memory.cast::<u8>().write_bytes(0, size) };

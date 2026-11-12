@@ -13,13 +13,12 @@ use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::zval,
 };
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
 unsafe extern "C" {
-    /// crates/phpevents.
-    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
+    /// crates/phpevents: safe as crates/phpcoroutines declares it, over a live value.
+    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
 /// `new SocketImpl(...)` inside `zend_try`, since the constructor's warnings can
@@ -462,8 +461,7 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 /// The warning's error handler bailed out.
 pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
     let mut fd = -1;
-    // SAFETY: a live zval, borrowed for the call.
-    let convert = || fd = unsafe { php_swoole_convert_to_fd(value.as_ptr()) };
+    let convert = || fd = php_swoole_convert_to_fd(Some(value));
     // SAFETY: the body holds a copy and the result slot.
     unsafe { bailout::trap_with(convert) }?;
     Ok(fd)
@@ -590,20 +588,4 @@ pub mod co {
 
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;
-
-    /// `set_dtor`: `hook(arg, socket)` runs once as the socket is destroyed.
-    /// # Safety
-    /// `hook` may be called with `arg` until then.
-    pub unsafe fn close_hook(
-        socket: Co,
-        hook: unsafe extern "C" fn(*mut c_void, *mut c_void),
-        arg: *mut c_void,
-    ) {
-        swoole_rs_hooks::socket_extra::set_close_hook(
-            socket,
-            // SAFETY: per the caller, `hook` takes `arg` and the socket until it goes,
-            // which is when this runs.
-            Box::new(move |owner| unsafe { hook(arg, owner) }),
-        );
-    }
 }

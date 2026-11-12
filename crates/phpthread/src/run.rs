@@ -122,8 +122,8 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
 }
 
 /// After the script: an `exit()` the thread's reactor has not seen stops it,
-/// then the thread-exit mark is cleared.
-unsafe extern "C" fn epilogue(_start: *mut c_void) {
+/// then the thread-exit mark is cleared. It never reads its argument.
+extern "C" fn epilogue(_start: *mut c_void) {
     // SAFETY: pure reads of this thread's state.
     if unsafe { swr_zend_guard_pending() } != 0 {
         swoole_rs_reactor::event_api::swoole_event_bail_out();

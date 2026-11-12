@@ -34,9 +34,6 @@ pub extern "C" fn sw_php_exit(status: c_int) {
     }
 }
 
-/// `SwooleG.fatal_error`, which exits the process or bails out of a thread.
-type FatalError = unsafe extern "C" fn(code: c_int, format: *const c_char, ...);
-
 fn implicit_fn(call: &Call) {
     let Ok(name) = call.arity(1, 2).and_then(|()| call.string(1, b"")) else {
         return;
@@ -45,13 +42,8 @@ fn implicit_fn(call: &Call) {
     let arg = call.value(2);
     let is = |candidate: &[u8]| name.eq_ignore_ascii_case(candidate);
     if is(b"fatal_error") {
-        let hook = swoole_rs_corebase::swr_v1_core_fatal_error();
-        if !hook.is_null() {
-            // SAFETY: MINIT stored php_swoole.cc's `fatal_error` there.
-            let fatal: FatalError = unsafe { std::mem::transmute::<*mut c_void, FatalError>(hook) };
-            // SAFETY: it never returns; nothing here needs a drop.
-            unsafe { fatal(SW_ERROR_FOR_TEST as c_int, c"test".as_ptr()) };
-        }
+        // SAFETY: the hook MINIT stored never returns; nothing here needs a drop.
+        unsafe { swoole_rs_corebase::fatal_error(SW_ERROR_FOR_TEST as c_int, c"test") };
         // SAFETY: a literal format with no conversions.
         unsafe { php_printf(c"never be executed here\n".as_ptr()) };
     } else if is(b"bailout") {

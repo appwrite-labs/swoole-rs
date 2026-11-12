@@ -3,18 +3,15 @@
 //! `Reactor` members of base.cc that are whole Rust operations. Each receives the
 //! `Reactor`, which begins with its prepared Rust state. With `upstream-symbols`
 //! they are defined under their upstream (Itanium) symbols.
+use crate::SocketRecord;
 use crate::handlers::Handler;
 use crate::socket_upstream::swr_v1_reactor_log;
-use crate::{ReactorPrepared, SocketRecord};
 use std::ffi::{c_int, c_void};
 
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
 /// when none is set.
 pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> c_int {
-    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
-    // SAFETY: the handle's live handler tables, which no reference holds; a copy of the
-    // error default.
-    let Some(handler) = (unsafe { (*handlers).defaults[1] }) else {
+    let Some(handler) = reactor.handlers().fallback(1) else {
         return -1;
     };
     handler(reactor, event)
@@ -80,9 +77,7 @@ pub extern "C" fn reactor_set_handler(
     event: c_int,
     handler: Option<Handler>,
 ) {
-    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
-    // SAFETY: the handle's live handler tables, which no reference holds.
-    let set = unsafe { &mut *handlers }.set(fd_type, event, handler);
+    let set = reactor.handlers().set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }
 
@@ -97,7 +92,5 @@ pub extern "C" fn reactor_isset_handler(
     fd_type: c_int,
     event: c_int,
 ) -> bool {
-    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
-    // SAFETY: the handle's live handler tables, which no reference holds.
-    unsafe { &*handlers }.isset(fd_type, event)
+    reactor.handlers().isset(fd_type, event)
 }

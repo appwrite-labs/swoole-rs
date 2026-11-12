@@ -26,7 +26,7 @@ use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
 #[cfg(not(test))]
 use swoole_rs_corebase::thread_buffer;
-use swoole_rs_corebase::{ProxyState, ResolverRequest, log, swr_v1_core_proxy_free};
+use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::swoole_event_write;
@@ -192,9 +192,10 @@ unsafe extern "C" {
         parg: *mut c_void,
     ) -> libc::c_long;
     /// `Socks5Proxy::admit`: 0 (logged) when a credential is too long, 2 when
-    /// both are set, else 1.
+    /// both are set, else 1. A length check over two scalars, which
+    /// crates/protocols-ffi defines as a safe fn.
     #[link_name = "_ZN6swoole11Socks5Proxy5admitEmm"]
-    fn socks5_admit(user_length: usize, password_length: usize) -> c_int;
+    safe fn socks5_admit(user_length: usize, password_length: usize) -> c_int;
     /// `Socks5Proxy::pack_negotiate_request()` into the proxy's buffer. A
     /// `Socks5Proxy` is its owner pointer.
     #[link_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv"]
@@ -317,9 +318,10 @@ pub struct Client {
     events: Cell<u32>,
     /// The `SSLContext`, none while TLS is off.
     tls: OnceCell<TlsContext>,
-    /// The proxies, null when unset.
-    socks5: Cell<*mut ProxyState>,
-    http_proxy: Cell<*mut ProxyState>,
+    /// The proxies, which the client owns: each a nullable pointer, as C++'s
+    /// `Socks5Proxy` reads the slot.
+    socks5: Cell<Option<Box<ProxyState>>>,
+    http_proxy: Cell<Option<Box<ProxyState>>>,
 }
 
 /// A client's proxies.
@@ -330,7 +332,7 @@ enum Proxy {
 }
 
 impl Client {
-    fn proxy_slot(&self, which: Proxy) -> &Cell<*mut ProxyState> {
+    fn proxy_slot(&self, which: Proxy) -> &Cell<Option<Box<ProxyState>>> {
         match which {
             Proxy::Socks5 => &self.socks5,
             Proxy::Http => &self.http_proxy,
@@ -512,9 +514,10 @@ impl Handle {
     }
 
     fn proxy(self, which: Proxy) -> Option<&'static ProxyState> {
-        let proxy = self.get().proxy_slot(which).get();
-        // SAFETY: a proxy the client owns until it is replaced or freed.
-        (!proxy.is_null()).then(|| unsafe { &*proxy })
+        let slot = self.get().proxy_slot(which).as_ptr();
+        // SAFETY: the live client's slot, whose proxy the client owns until it is
+        // replaced or freed; borrowed only between effects, as the state is.
+        unsafe { (*slot).as_deref() }
     }
 
     /// The proxy's state, or -1 when there is none.
@@ -813,8 +816,8 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         listener: Cell::new(None),
         events: Cell::new(0),
         tls: OnceCell::new(),
-        socks5: Cell::new(core::ptr::null_mut()),
-        http_proxy: Cell::new(core::ptr::null_mut()),
+        socks5: Cell::new(None),
+        http_proxy: Cell::new(None),
     });
     client.set(ASYNC, is_async);
     let fields = client.record.get_mut();
@@ -957,9 +960,9 @@ impl Handle {
         }
         // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
+        // The proxies first, then the rest of the state.
         for proxy in [&client.socks5, &client.http_proxy] {
-            // SAFETY: a proxy the client owns, released once.
-            unsafe { swr_v1_core_proxy_free(proxy.get()) };
+            drop(proxy.take());
         }
     }
 
@@ -1154,22 +1157,20 @@ pub fn set_proxy(
     let port = port as c_int;
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     let proxy = if http {
-        Box::into_raw(swoole_rs_http_ffi::http_proxy(host, port, user, password))
+        Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
-        // SAFETY: a length check that logs.
-        match unsafe { socks5_admit(user.len(), password.len()) } {
-            0 => core::ptr::null_mut(),
+        match socks5_admit(user.len(), password.len()) {
+            0 => None,
             config => {
                 let owner = ProxyState::new(true);
                 let texts = [host, user, password];
                 owner.configure(texts, port, config == 2, this.socket_type());
-                Box::into_raw(owner)
+                Some(owner)
             }
         }
     };
-    let previous = client.proxy_slot(which).replace(proxy);
-    // SAFETY: the replaced proxy, released once.
-    unsafe { swr_v1_core_proxy_free(previous) };
+    // The replaced proxy is released here.
+    drop(client.proxy_slot(which).replace(proxy));
 }
 
 /// The proxy's fields (`http` or SOCKS5), null without one.

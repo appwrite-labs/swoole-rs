@@ -465,19 +465,18 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
     }
-    let explicit = owner_ref.strings[8].view();
-    let selected = if explicit.length != 0 {
-        Some(explicit)
+    let explicit = &owner_ref.strings[TLS_HOST_NAME];
+    let selected = if !explicit.bytes().is_empty() {
+        Some(explicit.c_str())
     } else if disable_tls_host_name == 0 {
         // SAFETY: the enclosing socket lends its live automatic hostname slot.
-        let automatic = unsafe { &*hostname }.view();
-        (automatic.length != 0).then_some(automatic)
+        let automatic = unsafe { &*hostname };
+        (!automatic.bytes().is_empty()).then(|| automatic.c_str())
     } else {
         None
     };
     if let (Some(name), Some(ssl)) = (selected, ssl) {
-        // SAFETY: a slot's view is NUL-terminated, and stays unchanged meanwhile.
-        _ = ssl.set_host_name(unsafe { CStr::from_ptr(name.data) });
+        _ = ssl.set_host_name(name);
     }
     OwnedTlsSessionResult {
         status: 0,

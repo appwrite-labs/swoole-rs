@@ -28,7 +28,7 @@ use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
     message,
     string::{self, ZBuf},
-    sys::{ZEND_ACC_PUBLIC, zend_hash_index_update, zval},
+    sys::{ZEND_ACC_PUBLIC, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -921,12 +921,13 @@ fn get_process(call: &Call) {
     // The property reads null meanwhile; creating a Process object runs no PHP code.
     props.edit_array(c"workers", |workers| {
         // Separated: a new worker is added in place.
-        let Some(table) = workers.as_mut_ptr().and(workers.array()) else {
+        if workers.as_mut_ptr().is_none() {
             return;
-        };
+        }
         let key = id.cast_unsigned();
         let class = crate::process::process_class();
-        match table.index(key).filter(|found| !found.is_null()) {
+        let existing = workers.array().and_then(|table| table.index(key));
+        match existing.filter(|found| !found.is_null()) {
             None => {
                 let object = class.create_object();
                 // A worker C++ allocates, as the Process object frees it.
@@ -948,9 +949,8 @@ fn get_process(call: &Call) {
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
                 set_worker_of(&object, worker, true, c_int::from(view.is_async));
-                let mut object = object.into_zval();
-                // SAFETY: a live table; it takes the new object's reference.
-                unsafe { zend_hash_index_update(table.as_ptr(), key, &raw mut object) };
+                // The table takes the new object's reference.
+                workers.update_index(key, object);
             }
             Some(found) => {
                 if found.object().is_some() {
@@ -971,7 +971,7 @@ fn get_process(call: &Call) {
             }
         }
         // The return value shares the element (`ZVAL_COPY`).
-        if let Some(found) = table.index(key) {
+        if let Some(found) = workers.array().and_then(|table| table.index(key)) {
             call.set_owned(found.copy());
         }
     });

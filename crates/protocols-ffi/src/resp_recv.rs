@@ -3,7 +3,7 @@
 //! [`RespConnection`]; the ports crate runs it over the server's own records, and
 //! [`swr_v1_resp_recv`] over C's effects.
 use core::ffi::{c_int, c_void};
-use swoole_rs_corebase::{log, set_errno, sw_malloc};
+use swoole_rs_corebase::{log, set_errno, sw_calloc};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{resp_extend_size, resp_receive_range};
 
@@ -92,11 +92,12 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
     }
 }
 
-/// The request state in `slot`, allocated zeroed with `sw_malloc` when null; null
+/// The request state in `slot`, allocated zeroed with `sw_calloc` when null; null
 /// (after a warning) when that fails.
 pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
     if slot.is_null() {
-        let fresh = sw_malloc(size_of::<RespRequest>()).cast::<RespRequest>();
+        // Zeroed, which every field of a RespRequest takes.
+        let fresh = sw_calloc(1, size_of::<RespRequest>()).cast::<RespRequest>();
         if fresh.is_null() {
             log::warning(
                 ORIGIN,
@@ -104,8 +105,6 @@ pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
             );
             return fresh;
         }
-        // SAFETY: a fresh allocation of one RespRequest, whose fields all take zero.
-        unsafe { fresh.write_bytes(0, 1) };
         *slot = fresh;
     }
     *slot

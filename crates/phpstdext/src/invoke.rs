@@ -14,7 +14,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Value,
+    Call, Value,
     bailout::{Bailout, trap},
     string,
     sys::{
@@ -100,32 +100,30 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
     // SAFETY: a registered function; the frame passes `object` as upstream does.
     let call =
         unsafe { swr_zend_push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
-    // SAFETY: the frame just pushed.
-    unsafe { (*call).run_time_cache = info.cast() };
-    // SAFETY: this live frame.
-    let previous = unsafe { (*frame.as_ptr()).call };
-    // SAFETY: the frame just pushed.
-    unsafe { (*call).prev_execute_data = previous };
-    // SAFETY: this live frame.
-    unsafe { (*frame.as_ptr()).call = call };
+    // SAFETY: the frame just pushed, which nothing else reaches until this
+    // frame's `call` names it below.
+    let pushed = unsafe { &mut *call };
+    pushed.run_time_cache = info.cast();
+    // SAFETY: this live frame's header; the operands borrowed above are slots
+    // after it, and no Zend code runs while it is borrowed.
+    let current = unsafe { &mut *frame.as_ptr() };
+    pushed.prev_execute_data = current.call;
+    current.call = call;
     frame.jump(op.at.wrapping_add(1));
     CONTINUE
 }
 
-/// `ZEND_CALL_FRAME_SLOT`: zvals before a frame's first argument.
-const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval>());
-
-/// `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`.
-/// # Safety
-/// `frame` is a live call frame, which outlives `'a`.
-unsafe fn arguments<'a>(frame: *mut zend_execute_data) -> &'a [zval] {
-    // SAFETY: per the caller.
-    let this = unsafe { (*frame).This };
-    // SAFETY: a call frame's `This.u2` holds the argument count.
-    let count = unsafe { this.u2.num_args } as usize;
-    let first = frame.cast::<zval>().wrapping_add(FRAME_SLOT);
-    // SAFETY: the frame's arguments follow its header.
-    unsafe { slice::from_raw_parts(first, count) }
+/// `prefix`, then `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`:
+/// plain copies, as upstream's.
+fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
+    let first = frame.zval(1);
+    if first.is_null() {
+        return prefix.to_vec();
+    }
+    // SAFETY: a handler's live frame holds its `num_args()` arguments in a row
+    // from the first; they are copied here, before anything can write them.
+    let passed = unsafe { slice::from_raw_parts(first, frame.num_args() as usize) };
+    [prefix, passed].concat()
 }
 
 /// `zend_call_known_function(function, ..., retval, count, argv)` under
@@ -203,8 +201,9 @@ unsafe fn call_alias(
     }
     // A plain copy, as upstream's.
     let this = info.this;
-    // SAFETY: a live frame.
-    let mut argv = [slice::from_ref(&this), unsafe { arguments(frame) }].concat();
+    // SAFETY: per the caller, the dispatcher's own frame and return slot.
+    let frame = unsafe { Call::new(frame, value) };
+    let mut argv = arguments(slice::from_ref(&this), &frame);
     // SAFETY: a live function and the caller's return slot.
     unsafe { call(function, value, &mut argv) }?;
     if u32::from(info.op1_type) == IS_VAR {
@@ -217,12 +216,13 @@ unsafe fn call_alias(
 /// Upstream's `move_first_element`: the first argument moves to `position`.
 /// With `position` or fewer arguments the first argument moves to the end, and
 /// the target function reports the missing arguments itself.
-fn move_first(args: &[zval], position: usize) -> Vec<zval> {
-    let Some((first, rest)) = args.split_first() else {
-        return Vec::new();
+fn move_first(args: &mut [zval], position: usize) {
+    let Some(last) = args.len().checked_sub(1) else {
+        return;
     };
-    let (before, after) = rest.split_at(position.min(rest.len()));
-    [before, slice::from_ref(first), after].concat()
+    if let Some(moved) = args.get_mut(..=position.min(last)) {
+        moved.rotate_left(1);
+    }
 }
 
 /// `SW_CREATE_PHP_FUNCTION_WRAPPER`: call `name` with the first argument moved
@@ -241,8 +241,10 @@ unsafe fn forward(
         target = compiled_function(name);
         function.store(target, Ordering::Relaxed);
     }
-    // SAFETY: a live frame.
-    let mut argv = move_first(unsafe { arguments(frame) }, position);
+    // SAFETY: per the caller, the wrapper's own frame and return slot.
+    let frame = unsafe { Call::new(frame, value) };
+    let mut argv = arguments(&[], &frame);
+    move_first(&mut argv, position);
     // SAFETY: a registered core function and the caller's return slot.
     swoole_rs_zend::bailout::raise(unsafe { call(target, value, &mut argv) });
 }
@@ -303,10 +305,8 @@ mod tests {
         for (index, slot) in src.iter_mut().enumerate() {
             slot.value.lval = i64::try_from(index).unwrap();
         }
-        move_first(&src, position)
-            .iter()
-            .map(|slot| unsafe { slot.value.lval })
-            .collect()
+        move_first(&mut src, position);
+        src.iter().map(|slot| unsafe { slot.value.lval }).collect()
     }
 
     #[test]

@@ -13,19 +13,19 @@ use crate::{
 use std::{
     cell::{Cell, RefCell},
     ffi::{c_long, c_void},
+    mem::ManuallyDrop,
     ptr,
     rc::Rc,
 };
 use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, OwnedArray,
+    Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray,
     bailout::{self, Bailout},
     set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
-        swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_class_entry,
-        zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
-        zend_throw_exception_object,
+        swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
+        zend_fetch_debug_backtrace, zend_objects_new, zend_throw_exception_object,
     },
 };
 
@@ -155,7 +155,7 @@ fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
     // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
-    unsafe { host::yield_cancelable(co, cancel_yield) };
+    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel_yield) };
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -510,10 +510,11 @@ fn get_context(call: &Call) {
     } else {
         object
     };
-    // SAFETY: a live object; the return value takes the new reference.
-    unsafe { swr_zend_object_addref(object) };
-    // SAFETY: as above.
-    unsafe { set_object(call.return_value(), object) };
+    // SAFETY: a live object. The reference is the context's, which keeps it:
+    // `held` only lends it to the copy and is never dropped.
+    let held = ManuallyDrop::new(unsafe { Owned::object(object) });
+    // The return value takes a new reference.
+    call.set_owned(held.copy());
 }
 
 /// `Co::getElapsed(int $cid = 0)`.

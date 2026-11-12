@@ -67,11 +67,10 @@ pub(crate) struct ReactorSocket(Socket<'static>);
 impl ReactorSocket {
     /// Out of the reactor, carrying no object yet.
     pub(crate) fn new(fd: c_int) -> Self {
-        let record = SocketRecord::with_fd(fd, FD_CO_CURL).into_raw();
-        // SAFETY: the new record, live until `free`, and touched only through this handle
-        // and the reactor on this thread.
-        let socket = unsafe { Socket::from_ptr(record) };
-        Self(socket.unwrap_or_else(|| std::process::abort()))
+        // The new record, on the heap as `new Socket()`: leaked until `free`, and
+        // touched only through this handle and the reactor on this thread.
+        let record = Box::leak(Box::new(SocketRecord::with_fd(fd, FD_CO_CURL)));
+        Self(Socket::new(record))
     }
 
     fn record(self) -> *mut SocketRecord {

@@ -12,7 +12,7 @@ use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, report,
-    sys::{swr_zend_try_json_decode_ex, zend_array, zend_hash_func, zval},
+    sys::{swr_zend_try_json_decode_ex, zend_array, zval},
 };
 
 unsafe extern "C" {
@@ -62,8 +62,8 @@ const JSON_DEFAULT_DEPTH: i64 = 512;
 const JSON_OBJECT_AS_ARRAY: i64 = 1;
 
 unsafe extern "C" {
-    /// `<netdb.h>`; not in the libc crate.
-    fn hstrerror(error: c_int) -> *const c_char;
+    /// `<netdb.h>`; not in the libc crate. Any code names a static message.
+    safe fn hstrerror(error: c_int) -> *const c_char;
 }
 
 /// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)`.
@@ -115,8 +115,7 @@ fn strerror(call: &Call) {
         // SAFETY: libc's message table.
         unsafe { libc::gai_strerror(int(code)) }
     } else if kind == STRERROR_DNS {
-        // SAFETY: as above.
-        unsafe { hstrerror(int(code)) }
+        hstrerror(int(code))
     } else if kind == STRERROR_SWOOLE || (code > ERROR_BEGIN && code < ERROR_END) {
         // Swoole's `swoole_strerror`, with the system fallback C++ passes.
         swoole_rs_error::strerror_with(int(code), Some(system_error))
@@ -156,8 +155,7 @@ fn hashcode(call: &Call) {
     };
     match kind {
         0 => {
-            // SAFETY: a live string argument.
-            let hash = unsafe { zend_hash_func(data.as_ptr().cast(), data.len()) };
+            let hash = swoole_rs_zend::string::hash(data, data.len());
             #[expect(clippy::cast_possible_wrap, reason = "RETURN_LONG of a zend_ulong")]
             call.set_long(hash as i64);
         }

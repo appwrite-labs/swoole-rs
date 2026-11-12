@@ -280,8 +280,9 @@ pub unsafe extern "C" fn swoole_coroutine_getaddrinfo(
 
 unsafe extern "C" {
     fn gethostbyname(name: *const c_char) -> *mut hostent;
+    // Takes nothing and returns this thread's slot: no preconditions.
     #[cfg(target_os = "linux")]
-    fn __h_errno_location() -> *mut c_int;
+    safe fn __h_errno_location() -> *mut c_int;
     #[cfg(not(target_os = "linux"))]
     static mut h_errno: c_int;
 }
@@ -289,8 +290,7 @@ unsafe extern "C" {
 /// This thread's `h_errno`.
 fn h_errno_slot() -> *mut c_int {
     #[cfg(target_os = "linux")]
-    // SAFETY: glibc and musl return this thread's slot.
-    return unsafe { __h_errno_location() };
+    return __h_errno_location();
     #[cfg(not(target_os = "linux"))]
     return &raw mut h_errno;
 }

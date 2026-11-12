@@ -62,10 +62,40 @@ impl ReactorIov {
         owned_new(source).ok()
     }
 
+    /// The descriptors the cursor has left.
+    fn remaining(&mut self) -> &mut [libc::iovec] {
+        let state = &self.fields.state;
+        // SAFETY: the iterator names `remain_count` of this cursor's own descriptors,
+        // which only this cursor, borrowed for the span, reaches.
+        unsafe { span(state.iterator, state.remain_count) }
+    }
+
     /// `IOVector::update_iterator(n)`: advance the descriptors and counters together.
+    /// # Panics
+    /// When `n` is more than the remaining descriptors hold.
     pub fn advance(&mut self, n: isize) {
-        // SAFETY: the iterator names `remain_count` of this cursor's own descriptors.
-        unsafe { self.fields.state.update(n) };
+        let state = self.fields.state;
+        let reply = owned_progress(
+            self.remaining(),
+            n,
+            state.remain_count,
+            state.index,
+            state.offset_bytes,
+        );
+        if reply.action == 0 {
+            return;
+        }
+        assert!(
+            reply.action > 0,
+            "iovec progress outside the original domain"
+        );
+        let state = &mut self.fields.state;
+        state.remain_count = reply.remain_count;
+        state.index = reply.index;
+        state.offset_bytes = reply.offset_bytes;
+        if reply.action == 1 {
+            state.iterator = state.iterator.wrapping_add(reply.advance);
+        }
     }
 }
 
@@ -138,7 +168,9 @@ pub extern "C" fn swr_v1_reactor_iov_advance(owner: Option<&mut ReactorIov>, n: 
     }
 }
 
-/// Read/write through an owned `IOVector` without copying state through C++.
+/// `Socket::readv`/`writev` through an owned `IOVector`: readv(2)/writev(2) over the
+/// remaining iovecs, or `tls` one iovec at a time until one comes up short, advancing
+/// the cursor; retried on EINTR.
 /// # Safety
 /// `owner` is live/exclusive; each payload is valid for the direction and the
 /// optional nonthrowing TLS effect is valid for `socket`.
@@ -150,9 +182,38 @@ pub unsafe fn swr_v1_socket_iov_owned(
     socket: *mut std::ffi::c_void,
 ) -> isize {
     // SAFETY: live exclusive owner per the contract.
-    let state = unsafe { &mut (*owner).fields.state };
-    // SAFETY: the payload and TLS effect contracts are forwarded unchanged.
-    unsafe { crate::socket_iov(fd, write, state, tls, socket) }
+    let owner = unsafe { &mut *owner };
+    loop {
+        let result = if let Some(io) = tls {
+            let mut total: isize = 0;
+            loop {
+                let Some(current) = owner.remaining().first().copied() else {
+                    break total;
+                };
+                // SAFETY: the caller's TLS call for this socket, on that iovec.
+                let done = unsafe { io(socket, current.iov_base, current.iov_len) };
+                total += done.max(0);
+                owner.advance(done);
+                if !(done > 0 && owner.fields.state.remain_count > 0) {
+                    break if total > 0 { total } else { done };
+                }
+            }
+        } else {
+            let state = owner.fields.state;
+            let done = if write {
+                // SAFETY: `remain_count` iovecs from the iterator are the caller's buffers.
+                unsafe { libc::writev(fd, state.iterator, state.remain_count) }
+            } else {
+                // SAFETY: as above, writable.
+                unsafe { libc::readv(fd, state.iterator, state.remain_count) }
+            };
+            owner.advance(done);
+            done
+        };
+        if !(result < 0 && crate::socket_rw::interrupted()) {
+            return result;
+        }
+    }
 }
 /// The `count` descriptors at `base`, none when `count` isn't positive.
 ///

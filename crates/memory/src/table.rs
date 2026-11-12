@@ -890,13 +890,18 @@ impl Table {
     /// Copy `row_size` bytes of `row` (zeros for `None`) to the cursor's row,
     /// which holds `stride >= row_size` bytes.
     fn copy(cursor: &mut Cursor, row: Option<Live>, row_size: usize) {
+        let Some(row) = row else {
+            // The words `row_size` reaches: no copy writes the last one's bytes past
+            // `row_size`, so they are zero already.
+            let words = row_size.div_ceil(size_of::<u64>());
+            if let Some(header) = cursor.current.get_mut(..words) {
+                header.fill(0);
+            }
+            return;
+        };
         let current = cursor.current.as_mut_ptr().cast::<u8>();
-        match row {
-            // SAFETY: a locked row's bytes, into the cursor's row.
-            Some(row) => unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current, row_size) },
-            // SAFETY: the cursor's row.
-            None => unsafe { ptr::write_bytes(current, 0, row_size) },
-        }
+        // SAFETY: a locked row's bytes, into the cursor's row.
+        unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current, row_size) };
     }
 
     /// `Table::forward`: copies the next row to `current()`, or an empty

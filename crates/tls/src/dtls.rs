@@ -1,10 +1,11 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`, independent of native `SSLContext` lifetime.
+use crate::handle::CText;
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 use core::ptr;
-use openssl_sys::{BIO_METHOD, BIO_meth_free, BIO_meth_new, SSL_set_bio};
+use openssl_sys::{BIO_METHOD, BIO_meth_free, SSL_set_bio};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
@@ -214,7 +215,7 @@ pub unsafe fn swr_v1_tls_dtls_control(
     if tag == 5 {
         if !ptrval.is_null() {
             // SAFETY: the enclosing native Session retains its live network socket.
-            if let Some(socket) = unsafe { socket_of(owner) } {
+            if let Some(socket) = unsafe { Socket::from_ptr(owner.socket) } {
                 let address = socket.read(|record| record.info.addr);
                 // SAFETY: native's peer destination is writable for the exact native address union.
                 unsafe {
@@ -255,12 +256,26 @@ type Read = unsafe extern "C" fn(&DtlsBio, *mut c_char, c_int) -> c_int;
 type Control = unsafe extern "C" fn(&DtlsBio, c_int, c_long, *mut c_void) -> c_long;
 type Hook = extern "C" fn(&DtlsBio) -> c_int;
 
+/// A method table `BIO_meth_new` just made, which no BIO uses yet. It is zero-sized,
+/// so a reference to it claims none of the bytes OpenSSL changes behind it.
+#[repr(C)]
+struct NewTable {
+    _opaque: [u8; 0],
+    _not_send: PhantomData<(*mut u8, PhantomPinned)>,
+}
+
 // SAFETY: libcrypto's declarations, typed so that a live BIO is a reference: the
 // `safe` ones read or write only the BIO's own flags and shutdown fields (data and
 // init stay unsafe: a method reads data as the session once init is set), and
 // OpenSSL calls each method of a table with the live BIO it is reading or writing.
+// `BIO_meth_new` copies the name and returns a table nothing else holds (null on
+// failure), and the `safe` setters store a hook any BIO may be given into the table
+// their caller holds exclusively.
 unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
+    safe fn BIO_meth_new(kind: c_int, name: CText<'_>) -> Option<&'static mut NewTable>;
+    safe fn BIO_meth_set_create(table: &mut NewTable, create: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_destroy(table: &mut NewTable, destroy: Option<Hook>) -> c_int;
     safe fn BIO_get_shutdown(bio: &DtlsBio) -> c_int;
     safe fn BIO_set_shutdown(bio: &DtlsBio, shutdown: c_int);
     safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
@@ -272,8 +287,6 @@ unsafe extern "C" {
     fn BIO_meth_set_write(table: *mut BIO_METHOD, write: Option<Write>) -> c_int;
     fn BIO_meth_set_read(table: *mut BIO_METHOD, read: Option<Read>) -> c_int;
     fn BIO_meth_set_ctrl(table: *mut BIO_METHOD, control: Option<Control>) -> c_int;
-    fn BIO_meth_set_create(table: *mut BIO_METHOD, create: Option<Hook>) -> c_int;
-    fn BIO_meth_set_destroy(table: *mut BIO_METHOD, destroy: Option<Hook>) -> c_int;
 }
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
@@ -311,23 +324,12 @@ unsafe fn session_of<'a>(bio: &DtlsBio) -> &'a DtlsSession {
     unsafe { &*session }
 }
 
-/// The session's socket, or None for a null one.
-///
-/// # Safety
-/// `owner` is live, and its socket a live record while the handle is used.
-unsafe fn socket_of<'a>(owner: *const DtlsSession) -> Option<Socket<'a>> {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { (*owner).socket };
-    // SAFETY: as the caller promises.
-    unsafe { Socket::from_ptr(socket) }
-}
-
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
 unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
     // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
     // SAFETY: a live session, whose socket is a live record.
-    let Some(socket) = (unsafe { socket_of(session) }) else {
+    let Some(socket) = (unsafe { Socket::from_ptr(session.socket) }) else {
         return -1;
     };
     let fd = socket.fd();
@@ -392,21 +394,19 @@ fn methods() -> *mut BIO_METHOD {
         return current;
     }
     let index = BIO_get_new_index();
-    // SAFETY: a static name.
-    let table = unsafe { BIO_meth_new(index | BIO_TYPE_SOURCE_SINK, c"swoole_dtls_bio".as_ptr()) };
-    if table.is_null() {
-        return table;
-    }
+    let name = c"swoole_dtls_bio".into();
+    let Some(table) = BIO_meth_new(index | BIO_TYPE_SOURCE_SINK, name) else {
+        return ptr::null_mut();
+    };
+    BIO_meth_set_create(table, Some(bio_create));
+    BIO_meth_set_destroy(table, Some(bio_destroy));
+    let table: *mut BIO_METHOD = ptr::from_mut(table).cast();
     // SAFETY: the fresh table, and a callback of the slot's type.
     unsafe { BIO_meth_set_write(table, Some(bio_write)) };
     // SAFETY: as above.
     unsafe { BIO_meth_set_read(table, Some(bio_read)) };
     // SAFETY: as above.
     unsafe { BIO_meth_set_ctrl(table, Some(bio_ctrl)) };
-    // SAFETY: as above.
-    unsafe { BIO_meth_set_create(table, Some(bio_create)) };
-    // SAFETY: as above.
-    unsafe { BIO_meth_set_destroy(table, Some(bio_destroy)) };
     match METHODS.compare_exchange(ptr::null_mut(), table, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => table,
         Err(winner) => {
@@ -427,7 +427,9 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     context: *const crate::OwnedTlsContext,
 ) -> bool {
     // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { socket_of(owner) }) else {
+    let socket = unsafe { (*owner).socket };
+    // SAFETY: as the caller promises.
+    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
         return false;
     };
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
@@ -473,7 +475,7 @@ pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
         return false;
     }
     // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { socket_of(owner) }) else {
+    let Some(socket) = (unsafe { Socket::from_ptr(owner.socket) }) else {
         return false;
     };
     crate::clear_errors();

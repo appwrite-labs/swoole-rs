@@ -171,14 +171,6 @@ impl<'a> Op<'a> {
         }
     }
 
-    /// The `OP_DATA` instruction after this one.
-    /// # Safety
-    /// This instruction is followed by its `OP_DATA` (`ASSIGN_DIM`, `ASSIGN_DIM_OP`).
-    unsafe fn data(self) -> Self {
-        // SAFETY: per the caller.
-        unsafe { Self::at(self.frame, self.at.wrapping_add(1)) }
-    }
-
     /// An operand of type `kind`: its literal, its slot, or None if unused.
     fn operand(self, kind: u8, node: znode_op) -> Option<&'a Value> {
         let operand = match u32::from(kind) {

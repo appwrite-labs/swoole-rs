@@ -68,7 +68,6 @@ fn length_size(conn: &ConnectionRecord) -> u8 {
 pub mod exports {
     use std::ffi::{c_int, c_void};
     use std::mem::MaybeUninit;
-    use std::sync::atomic::Ordering;
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
     use swoole_rs_corebase::DataHead;
@@ -76,15 +75,11 @@ pub mod exports {
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_reactor::{Socket, SocketRecord};
     use swoole_rs_server::{ConnectionRecord, view};
-    use swoole_rs_tls::upstream::send;
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
     use crate::framing_recv::{Packages, Recv};
-
-    /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.
-    const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
 
     pub use swoole_rs_server::reactor_entry::dispatch_task;
 
@@ -315,28 +310,6 @@ pub mod exports {
                 )
             }
         }
-    }
-
-    /// `int dispatch_request(Server *, const Protocol *, Socket *, const RecvData *)`:
-    /// 503 while the server is at `max_concurrency`, else `Server::dispatch_task`.
-    ///
-    /// # Safety
-    /// Upstream's: the server's port's protocol, and the connection socket's data.
-    pub(crate) unsafe fn dispatch_request(
-        serv: view::Server<'_>,
-        proto: *const Protocol,
-        socket: Socket<'_>,
-        rdata: *const c_void,
-    ) -> c_int {
-        let counters = serv.counters();
-        if counters.concurrency.load(Ordering::Relaxed)
-            >= counters.max_concurrency.load(Ordering::Relaxed)
-        {
-            _ = send(socket, SERVICE_UNAVAILABLE, 0);
-            return -1;
-        }
-        // SAFETY: upstream's arguments, forwarded.
-        unsafe { dispatch_task(proto, socket.as_ptr().cast(), rdata) }
     }
 
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.

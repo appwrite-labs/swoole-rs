@@ -16,7 +16,7 @@ use swoole_rs_cares_sys as sdk;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
@@ -206,12 +206,9 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             return;
         }
         // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
-        let socket = socket_upstream::make_socket_fd(fd, FD);
-        // SAFETY: the fresh record (never null), live until `free`, which only this
-        // function calls, on taking it out of the registry.
-        let Some(wrapper) = (unsafe { Socket::from_ptr(socket) }) else {
-            return;
-        };
+        // `make_socket(fd, SW_FD_CARES)`: the fresh record, leaked until `free`,
+        // which only this function calls, on taking it out of the registry.
+        let wrapper = Socket::new(Box::leak(Box::new(SocketRecord::with_fd(fd, FD))));
         wrapper.edit(|wrapper| wrapper.object = data);
         query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
@@ -307,7 +304,9 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         install();
     }
     let coroutine = co::current();
-    let owner = Box::into_raw(Box::new(Query {
+    // Boxed for a stable address; only shared from here on, by this frame and by
+    // the callbacks, which reach it through the userdata pointer made from `query`.
+    let owner = Box::new(Query {
         channel: Cell::new(ptr::null_mut()),
         error: Cell::new(0),
         completed: Cell::new(false),
@@ -315,10 +314,9 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         retired: Arc::new(AtomicBool::new(false)),
         sockets: RefCell::new(Vec::new()),
         results: RefCell::new(Vec::new()),
-    }));
-    let state = owner.cast::<c_void>();
-    // SAFETY: the allocation just made, freed only at the end; callbacks share it too.
-    let query = unsafe { &*owner };
+    });
+    let query: &Query = &owner;
+    let state = ptr::from_ref(query).cast_mut().cast::<c_void>();
     let mut channel = ptr::null_mut();
     let metadata = metadata();
     let mask = metadata.timeout_ms | metadata.tries | metadata.socket_state | metadata.lookups;
@@ -394,8 +392,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             format_args!("ares_init_options() failed, Error: {reason}[{status}]"),
         );
     }
-    // SAFETY: the channel no longer retains userdata; consume this owner exactly once.
-    unsafe { Box::from_raw(owner) }.results.into_inner()
+    // The channel no longer retains the userdata: the owner goes, once.
+    owner.results.into_inner()
 }
 #[expect(
     clippy::cast_possible_truncation,

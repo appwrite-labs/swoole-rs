@@ -327,14 +327,6 @@ pub(crate) fn yield_(co: Co) {
     unsafe { swoole_rs_coroutine::suspend(co) };
 }
 
-/// [`yield_`], cancelable through `cancel(co)`.
-/// # Safety
-/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
-pub(crate) unsafe fn yield_cancelable<F: FnOnce(Co) -> bool + Copy>(co: Co, cancel: F) {
-    // SAFETY: as the caller promises.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel) };
-}
-
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
 pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
     swoole_rs_coroutine::yield_resumed(wait(co, timeout))

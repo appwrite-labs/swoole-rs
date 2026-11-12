@@ -676,16 +676,6 @@ pub fn swr_table_create(table: &mut Table) -> bool {
     true
 }
 
-/// `Table::destroy()`: frees the arena, then the header.
-///
-/// # Safety
-/// `this` is a made table, destroyed once.
-pub unsafe fn swr_table_destroy(this: *mut Table) {
-    // SAFETY: as the caller promises.
-    let arena = unsafe { Table::destroy(this) };
-    Shm(arena.cast()).free();
-}
-
 /// A table [`swr_table_make`] made, owned by this process: its header lives as
 /// long as this does, unless [`SharedTable::destroy`] has freed it by then.
 /// Dropping it leaves the table to the processes that share it (forked workers
@@ -723,7 +713,7 @@ impl SharedTable {
         swr_table_create(self.table_mut())
     }
 
-    /// `Table::destroy()` ([`swr_table_destroy`]), once this is dropped.
+    /// `Table::destroy()`, once this is dropped.
     pub fn destroy(&self) {
         self.destroyed.set(true);
     }
@@ -741,8 +731,10 @@ impl std::ops::Deref for SharedTable {
 impl Drop for SharedTable {
     fn drop(&mut self) {
         if self.destroyed.get() {
+            // `Table::destroy()`: frees the arena, then the header.
             // SAFETY: a made table, destroyed once: nothing borrows it any more.
-            unsafe { swr_table_destroy(self.table.as_ptr()) };
+            let arena = unsafe { Table::destroy(self.table.as_ptr()) };
+            Shm(arena.cast()).free();
         }
     }
 }

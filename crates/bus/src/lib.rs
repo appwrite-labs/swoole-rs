@@ -154,8 +154,9 @@ impl Drop for Bus {
                 continue;
             };
             record.edit(|record| record.fd = -1);
-            // SAFETY: as above.
-            unsafe { free_socket(socket) };
+            // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
+            // freed once: the bus is dropping.
+            unsafe { free_socket(record.as_ptr()) };
         }
     }
 }

@@ -14,13 +14,14 @@ use std::{
     mem,
     ptr::{self, NonNull},
 };
+use swoole_rs_zend::Value;
 use swoole_rs_zend::sys::{
     IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
     swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
     swr_zend_coroutine_set_frame, swr_zend_coroutine_start, swr_zend_coroutine_switch,
     swr_zend_coroutine_vm, swr_zend_coroutine_vm_destroy, swr_zend_efree, swr_zend_emalloc,
-    swr_zend_object_release, swr_zval_try_addref, zend_class_entry, zend_execute_data,
-    zend_fcall_info, zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
+    swr_zend_object_release, zend_class_entry, zend_execute_data, zend_fcall_info,
+    zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
     zend_object, zend_observer_fiber_destroy_notify, zend_observer_fiber_init_notify,
@@ -389,11 +390,10 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
         fci.params = args.argv;
         fci.named_params = ptr::null_mut();
         fci.retval = retval;
-        if !args.callable.is_null() {
-            // SAFETY: the creator's live callable zval.
-            fci.function_name = unsafe { *args.callable };
-            // SAFETY: the copy takes a reference.
-            unsafe { swr_zval_try_addref(&raw mut fci.function_name) };
+        // SAFETY: null, or the creator's live callable zval.
+        if let Some(callable) = unsafe { Value::from_ptr(args.callable) } {
+            // The copy takes a reference.
+            fci.function_name = callable.copy().into_zval();
         }
     });
     // SAFETY: a resolved callable (sw_zend_fci_cache_persist).

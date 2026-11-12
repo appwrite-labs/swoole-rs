@@ -4,7 +4,8 @@
 use std::{
     cell::Cell,
     ffi::{c_int, c_void},
-    ptr::{self, NonNull},
+    ptr,
+    rc::Rc,
 };
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpcoroutines::create_coroutine;
@@ -16,16 +17,18 @@ use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_callable_warning, zend_class_entry, zval},
+    sys::swr_zend_callable_warning,
 };
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
+// Safe as crates/phpcoroutines declares them: each takes nothing or a live value
+// and is called from a PHP call.
 unsafe extern "C" {
-    fn php_swoole_reactor_init() -> c_int;
-    fn swr_v1_phpevents_wait();
-    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
+    safe fn php_swoole_reactor_init() -> c_int;
+    safe fn swr_v1_phpevents_wait();
+    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
 /// `SW_MASTER`, `SW_TASK_WORKER`, `SW_MANAGER` and `SW_USER_WORKER`.
@@ -39,11 +42,6 @@ const SOCK_UNIX_DGRAM: c_int = 6;
 /// `Reactor::EXIT_CONDITION_SIGNAL_LISTENER` and `SW_ERROR_WRONG_OPERATION`.
 const EXIT_CONDITION_SIGNAL_LISTENER: c_int = 4;
 const WRONG_OPERATION: c_int = 509;
-
-/// `swoole_exception_ce`.
-pub(crate) fn exception() -> *mut zend_class_entry {
-    swoole_rs_phpswoole::exception_class()
-}
 
 /// `f` over the process's server (`sw_server()`), or `None` while it has none.
 /// Each `f` here reads the server's config and worker records and returns; none
@@ -137,14 +135,12 @@ pub(crate) fn worker_base() -> u32 {
 
 /// `php_swoole_reactor_init()`.
 pub(crate) fn reactor_init() -> c_int {
-    // SAFETY: phpevents' init, from a PHP call.
-    unsafe { php_swoole_reactor_init() }
+    php_swoole_reactor_init()
 }
 
 /// `php_swoole_event_wait()`.
 pub(crate) fn event_wait() {
-    // SAFETY: as above.
-    unsafe { swr_v1_phpevents_wait() };
+    swr_v1_phpevents_wait();
 }
 
 /// `php_swoole_dup_socket(fd, SW_SOCK_UNIX_STREAM or _DGRAM)`.
@@ -159,8 +155,7 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
 
 /// `php_swoole_convert_to_fd(value)`.
 pub(crate) fn convert_to_fd(value: &Value) -> c_int {
-    // SAFETY: a live zval.
-    unsafe { php_swoole_convert_to_fd(value.as_ptr()) }
+    php_swoole_convert_to_fd(Some(value))
 }
 
 /// The value, or `None` with the bailout deferred: the caller stops on
@@ -170,35 +165,27 @@ fn deferred<T>(result: Result<T, Bailout>) -> Option<T> {
 }
 
 /// A callable `sw_callable_create` made, freed (`sw_callable_free`) on drop,
-/// which leaves a destructor's bailout pending.
-pub(crate) struct Callable(NonNull<callable::Callable>);
+/// which leaves a destructor's bailout pending. Its only owner: the `Rc` is
+/// never cloned.
+pub(crate) struct Callable(Rc<callable::Callable>);
 
 impl Callable {
     /// `sw_callable_create(value)`, or `None` after a warning or with a bailout
     /// pending.
     pub(crate) fn create(value: &Value) -> Option<Self> {
-        // SAFETY: a live zval; the reporter is C.
-        let created = unsafe {
-            callable::factory(
-                value.as_ptr(),
-                ptr::null(),
-                true,
-                exception(),
-                swr_zend_callable_warning,
-            )
-        };
-        deferred(created).and_then(NonNull::new).map(Self)
+        deferred(callable::Callable::new(value)).flatten().map(Self)
     }
 
     /// Take back a callable [`Callable::into_raw`] gave up (none for null).
     /// # Safety
     /// `raw` is null or a callable `into_raw` gave up, taken back once.
     pub(crate) unsafe fn from_raw(raw: *mut c_void) -> Option<Self> {
-        NonNull::new(raw.cast()).map(Self)
+        // SAFETY: per the caller, the `Rc` that `into_raw` gave up.
+        (!raw.is_null()).then(|| Self(unsafe { Rc::from_raw(raw.cast()) }))
     }
 
     pub(crate) fn into_raw(self) -> *mut c_void {
-        std::mem::ManuallyDrop::new(self).0.as_ptr().cast()
+        Rc::into_raw(self.0).cast_mut().cast()
     }
 
     /// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`
@@ -211,8 +198,7 @@ impl Callable {
             *slot = unsafe { arg.as_ptr().read() };
         }
         let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
-        // SAFETY: a live callable.
-        let cache = unsafe { callable::cache(self.0.as_ptr()) };
+        let cache = self.0.cache_ptr();
         // SAFETY: a live cache and `argc` zvals; the leaves are phpcoroutines' and C's.
         let called = unsafe {
             function_call(
@@ -227,13 +213,6 @@ impl Callable {
             )
         };
         deferred(called).unwrap_or(false)
-    }
-}
-
-impl Drop for Callable {
-    fn drop(&mut self) {
-        // SAFETY: the callable this owns, freed once.
-        bailout::defer(unsafe { callable::release(self.0.as_ptr()) });
     }
 }
 

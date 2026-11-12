@@ -320,9 +320,9 @@ fn membership(
 ) -> Result<c_int, Stop> {
     // SAFETY: the live argument, converted in place as upstream does; nothing
     // borrows what it held before.
-    let table = unsafe { swr_zend_convert_to_array(value.as_ptr()) };
-    // SAFETY: the argument's array now, live for the call.
-    let Some(table) = (unsafe { Array::from_ptr(table) }) else {
+    unsafe { swr_zend_convert_to_array(value.as_ptr()) };
+    // The argument's array now, live for the call.
+    let Some(table) = value.array() else {
         return Ok(FAILURE);
     };
     let Some(group) = address(s, table, c"group")? else {

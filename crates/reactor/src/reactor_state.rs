@@ -368,7 +368,7 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
         owner.fields.write = Some(reactor_write);
         owner.fields.writev = Some(reactor_writev);
         owner.fields.close = Some(reactor_close);
-        owner.handlers.defaults[0] = Some(reactor_writable_callback);
+        owner.handlers.defaults[0].set(Some(reactor_writable_callback));
     }
     let state = ReactorState::into_raw(owner);
     if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_CREATE) {

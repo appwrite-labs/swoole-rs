@@ -5,7 +5,7 @@
 //! `network::Socket`, the master end writing and the worker end reading. With
 //! `upstream-symbols` each member is defined under its upstream (Itanium) symbol, and
 //! the process patch deletes `pipe.cc` and `unix_socket.cc`.
-use crate::upstream::{socket_free, socket_read_sync, socket_write_sync};
+use crate::upstream::{read_sync, socket_free, write_sync};
 use std::ffi::{CStr, c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -185,12 +185,16 @@ pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: us
     let [_, Some(socket)] = ends(this) else {
         return -1;
     };
-    if this.blocking {
-        // SAFETY: the live end, and the caller's buffer.
-        unsafe { socket_read_sync(socket, buffer, length) }
+    let buffer: &mut [MaybeUninit<u8>] = if buffer.is_null() {
+        &mut []
     } else {
-        // SAFETY: as the caller promises.
-        unsafe { libc::read(socket.fd(), buffer, length) }
+        // SAFETY: as the caller promises, lent until this returns.
+        unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) }
+    };
+    if this.blocking {
+        read_sync(socket, buffer)
+    } else {
+        swoole_rs_corebase::sys::read(socket.fd(), buffer)
     }
 }
 
@@ -207,12 +211,16 @@ pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length:
     let [Some(socket), _] = ends(this) else {
         return -1;
     };
-    if this.blocking {
-        // SAFETY: the live end, and the caller's buffer.
-        unsafe { socket_write_sync(socket, buffer, length) }
+    let data: &[u8] = if buffer.is_null() {
+        &[]
     } else {
-        // SAFETY: as the caller promises.
-        unsafe { libc::write(socket.fd(), buffer, length) }
+        // SAFETY: as the caller promises, lent until this returns.
+        unsafe { std::slice::from_raw_parts(buffer.cast(), length) }
+    };
+    if this.blocking {
+        write_sync(socket, data)
+    } else {
+        swoole_rs_corebase::sys::write(socket.fd(), data)
     }
 }
 

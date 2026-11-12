@@ -5,7 +5,6 @@
 //! and `getaddrinfo` over the async pool, `coroutine::dns_lookup` and the pool's DNS
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
-use crate::co_socket::Co;
 use crate::offload::{AsyncEvent, AsyncOps, Handler, hook_async};
 use crate::wait_event::native::{coroutine_yield_ex, current};
 use core::ffi::{CStr, c_int};
@@ -159,18 +158,18 @@ pub fn system_getaddrinfo(
 }
 
 /// `new Socket(SW_SOCK_UDP)`, deleted on drop.
-struct DnsUdp(Co);
+struct DnsUdp(crate::hooked::Owned);
 
 impl DnsUdp {
     /// The socket, with `timeout` set when positive.
     fn open(timeout: f64) -> Self {
-        let socket = Self((crate::hooked::SOCKETS.open)(
+        let socket = Self(crate::hooked::Owned::open(
             libc::AF_INET,
             libc::SOCK_DGRAM,
             0,
         ));
         if timeout > 0.0 {
-            socket.0.set_timeout(timeout, TIMEOUT_ALL);
+            socket.0.socket().set_timeout(timeout, TIMEOUT_ALL);
         }
         socket
     }
@@ -178,22 +177,16 @@ impl DnsUdp {
 
 impl DnsSocket for DnsUdp {
     fn sendto(&mut self, host: &CStr, port: c_int, data: &[u8]) -> bool {
-        self.0.sendto(host.to_bytes(), port, data) != 0
+        self.0.socket().sendto(host.to_bytes(), port, data) != 0
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> isize {
-        let n = self.0.recv(buffer);
-        if n <= 0 && self.0.err_code() == libc::ECANCELED {
+        let socket = self.0.socket();
+        let n = socket.recv(buffer);
+        if n <= 0 && socket.err_code() == libc::ECANCELED {
             return -isize::try_from(libc::ECANCELED).unwrap_or(isize::MAX);
         }
         n
-    }
-}
-
-impl Drop for DnsUdp {
-    fn drop(&mut self) {
-        // SAFETY: the socket `open` made.
-        unsafe { (crate::hooked::SOCKETS.free)(self.0.this()) };
     }
 }
 

@@ -342,17 +342,6 @@ impl CppString {
         start.wrapping_sub(unsigned(first)).cast_signed()
     }
 
-    /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
-    ///
-    /// # Safety
-    /// As [`Self::set_len`] of `len() + increment`.
-    pub unsafe fn grow(&mut self, increment: usize) {
-        self.length = self.length.wrapping_add(increment);
-        if self.length == self.size {
-            self.reserve(self.size.wrapping_mul(2));
-        }
-    }
-
     /// The whole allocation, its first `length` bytes the content. Only the content is
     /// known initialized, so safe code may only write the rest.
     fn allocation(&mut self) -> &mut [MaybeUninit<u8>] {
@@ -620,11 +609,14 @@ upstream! {
         this.view() == unsafe { bytes(data, length) }
     }
     "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
+    /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
     /// # Safety
-    /// As `CppString::grow`.
+    /// As `CppString::set_len` of `len() + increment`.
     pub unsafe extern "C" fn swr_string_grow(this: &mut CppString, increment: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { this.grow(increment) };
+        this.length = this.length.wrapping_add(increment);
+        if this.length == this.size {
+            this.reserve(this.size.wrapping_mul(2));
+        }
     }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a

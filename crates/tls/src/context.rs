@@ -3,19 +3,17 @@
 //! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
+use crate::handle::CText;
 use openssl_sys::{
     BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
     SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
-    SSL_CTX, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_set_alpn_protos,
-    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list, SSL_CTX_set_client_CA_list,
-    SSL_CTX_set_session_id_context, SSL_CTX_use_PrivateKey_file,
-    SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file, SSL_FILETYPE_PEM,
+    SSL_CTX, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_set_alpn_protos,
+    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM,
     SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
     SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
     SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
     SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
-    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
-    SSL_select_next_proto, X509_STORE_CTX,
+    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -51,9 +49,23 @@ unsafe extern "C" {
 }
 
 // SAFETY: libssl/libcrypto's declarations, typed so that a live context is a
-// reference: each reads only its arguments, and `SSL_CTX_new` returns its new
-// context's one reference, or null.
+// reference and a NUL-terminated string a `CText`: each reads only its arguments
+// (copying what it keeps of a string), `SSL_CTX_new` returns its new context's one
+// reference, or null, and `SSL_load_client_CA_file` a new list, which
+// `SSL_CTX_set_client_CA_list` takes over.
 unsafe extern "C" {
+    safe fn SSL_CTX_load_verify_locations(
+        ctx: &SslCtx,
+        file: Option<CText<'_>>,
+        path: Option<CText<'_>>,
+    ) -> c_int;
+    safe fn SSL_CTX_set_cipher_list(ctx: &SslCtx, ciphers: CText<'_>) -> c_int;
+    safe fn SSL_CTX_use_certificate_file(ctx: &SslCtx, file: CText<'_>, kind: c_int) -> c_int;
+    safe fn SSL_CTX_use_certificate_chain_file(ctx: &SslCtx, file: CText<'_>) -> c_int;
+    safe fn SSL_CTX_use_PrivateKey_file(ctx: &SslCtx, file: CText<'_>, kind: c_int) -> c_int;
+    safe fn SSL_load_client_CA_file(file: CText<'_>) -> Option<ClientCaNames>;
+    safe fn SSL_CTX_set_client_CA_list(ctx: &SslCtx, names: ClientCaNames);
+
     safe fn TLS_method() -> &'static SslMethod;
     safe fn DTLS_method() -> &'static SslMethod;
     safe fn SSL_CTX_new(method: &SslMethod) -> Option<SslContext>;
@@ -72,6 +84,11 @@ unsafe extern "C" {
 struct SslMethod {
     _opaque: [u8; 0],
 }
+
+/// A `STACK_OF(X509_NAME)` this side owns, as `SSL_load_client_CA_file` returns it,
+/// until a context takes it.
+#[repr(transparent)]
+struct ClientCaNames(ptr::NonNull<c_void>);
 
 /// A live `SSL_CTX`, borrowed from an [`SslContext`]. It is zero-sized, so a
 /// reference to it claims none of the bytes OpenSSL changes behind it.
@@ -191,18 +208,27 @@ impl TlsStr {
         self.length == 0
     }
 
-    /// What `%s` prints: the bytes before the first NUL.
-    fn text(self) -> Vec<u8> {
+    /// The `c_str()`, None when unset.
+    fn c_str(&self) -> Option<&CStr> {
+        if self.data.is_null() {
+            return None;
+        }
         // SAFETY: `data` is a NUL-terminated `c_str()` that outlives the call that lent it.
-        unsafe { CStr::from_ptr(self.data) }.to_bytes().to_vec()
+        Some(unsafe { CStr::from_ptr(self.data) })
     }
 
-    /// The `c_str()`, or null when empty (what upstream passes for an unset path).
-    fn or_null(self) -> *const c_char {
+    /// What `%s` prints: the bytes before the first NUL.
+    fn text(self) -> Vec<u8> {
+        self.c_str()
+            .map_or_else(Vec::new, |text| text.to_bytes().to_vec())
+    }
+
+    /// The `c_str()`, or None when empty (upstream passes null for an unset path).
+    fn path(&self) -> Option<CText<'_>> {
         if self.is_empty() {
-            ptr::null()
+            None
         } else {
-            self.data
+            self.c_str().map(CText::from)
         }
     }
 }
@@ -302,10 +328,7 @@ impl Method<'_> {
 
     /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
     fn load_verify_locations(&self, file: TlsStr, path: TlsStr) -> c_int {
-        let ctx = self.ctx.as_ptr();
-        // SAFETY: a live context; each is null or a NUL-terminated `c_str()` of the
-        // configuration, which outlives the method.
-        unsafe { SSL_CTX_load_verify_locations(ctx, file.or_null(), path.or_null()) }
+        SSL_CTX_load_verify_locations(self.ctx, file.path(), path.path())
     }
 
     fn set_capath(&self) -> bool {
@@ -326,9 +349,8 @@ impl Method<'_> {
 
     fn set_ciphers(&self) -> bool {
         let config = self.config;
-        if !config.ciphers.is_empty() {
-            // SAFETY: a live context and a NUL-terminated cipher list.
-            if unsafe { SSL_CTX_set_cipher_list(self.ctx.as_ptr(), config.ciphers.data) } == 0 {
+        if let Some(ciphers) = config.ciphers.path() {
+            if SSL_CTX_set_cipher_list(self.ctx, ciphers) == 0 {
                 self.ssl_error(&quoted(
                     b"SSL_CTX_set_cipher_list(\"",
                     config.ciphers,
@@ -364,15 +386,15 @@ impl Method<'_> {
             return false;
         }
         crate::clear_errors();
-        // SAFETY: a NUL-terminated path.
-        let names = unsafe { SSL_load_client_CA_file(file.data) };
-        if names.is_null() {
+        let names = file
+            .c_str()
+            .and_then(|file| SSL_load_client_CA_file(file.into()));
+        let Some(names) = names else {
             self.ssl_error(&quoted(b"SSL_load_client_CA_file(\"", file, b"\") failed"));
             return false;
-        }
+        };
         crate::clear_errors();
-        // SAFETY: a live context takes ownership of the list.
-        unsafe { SSL_CTX_set_client_CA_list(self.ctx.as_ptr(), names) };
+        SSL_CTX_set_client_CA_list(self.ctx, names);
         true
     }
 
@@ -483,15 +505,13 @@ impl Method<'_> {
             // SAFETY: a live context; a plain callback with the binding's userdata.
             unsafe { SSL_CTX_set_default_passwd_cb(raw, binding.callback) };
         }
-        if !config.cert_file.is_empty() {
+        if let Some(path) = config.cert_file.path() {
             let file = config.cert_file;
-            // SAFETY: a live context and a NUL-terminated path.
-            if unsafe { SSL_CTX_use_certificate_file(raw, file.data, SSL_FILETYPE_PEM) } <= 0 {
+            if SSL_CTX_use_certificate_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
                 self.ssl_error(&quoted(b"SSL_CTX_use_certificate_file(", file, b") failed"));
                 return false;
             }
-            // SAFETY: as above.
-            if unsafe { SSL_CTX_use_certificate_chain_file(raw, file.data) } <= 0 {
+            if SSL_CTX_use_certificate_chain_file(ctx, path) <= 0 {
                 self.ssl_error(&quoted(
                     b"SSL_CTX_use_certificate_chain_file(",
                     file,
@@ -500,10 +520,9 @@ impl Method<'_> {
                 return false;
             }
         }
-        if !config.key_file.is_empty() {
+        if let Some(path) = config.key_file.path() {
             let file = config.key_file;
-            // SAFETY: a live context and a NUL-terminated path.
-            if unsafe { SSL_CTX_use_PrivateKey_file(raw, file.data, SSL_FILETYPE_PEM) } <= 0 {
+            if SSL_CTX_use_PrivateKey_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
                 self.ssl_error(&quoted(b"SSL_CTX_use_PrivateKey_file(", file, b") failed"));
                 return false;
             }
