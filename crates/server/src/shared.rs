@@ -1,5 +1,6 @@
 //! Rust-owned shared server and port counters in the existing shared-memory arena.
-use core::sync::atomic::{AtomicU32, AtomicU64};
+use core::ffi::c_int;
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering::Relaxed};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
 #[derive(Default)]
@@ -30,6 +31,16 @@ impl PortCounters {
 }
 
 impl ServerCounters {
+    #[must_use]
+    pub fn max_fd(&self) -> c_int {
+        self.max_fd.load(Relaxed)
+    }
+
+    #[must_use]
+    pub fn min_fd(&self) -> c_int {
+        self.min_fd.load(Relaxed)
+    }
+
     /// The per-worker connection counts, or null.
     pub(crate) fn cells(&self) -> *mut AtomicU32 {
         cells(&self.connection_nums)
@@ -44,8 +55,9 @@ pub struct ServerCounters {
     pub session_round: libc::c_long,
     pub start: AtomicU32,
     pub shutdown: AtomicU32,
-    pub max_fd: core::ffi::c_int,
-    pub min_fd: core::ffi::c_int,
+    /// The connection fd range; written under the server lock, read by every thread.
+    pub max_fd: AtomicI32,
+    pub min_fd: AtomicI32,
     pub onstart_called: bool,
     pub start_time: libc::time_t,
     pub connection_num: AtomicU32,
@@ -206,8 +218,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         OP_MASTER_PID => i64::from(gs.master_pid).cast_unsigned(),
         OP_MANAGER_PID => i64::from(gs.manager_pid).cast_unsigned(),
         // Native server code serializes fd-bound updates with its existing lock.
-        OP_MAXFD => i64::from(gs.max_fd).cast_unsigned(),
-        OP_MINFD => i64::from(gs.min_fd).cast_unsigned(),
+        OP_MAXFD => i64::from(gs.max_fd()).cast_unsigned(),
+        OP_MINFD => i64::from(gs.min_fd()).cast_unsigned(),
         OP_SET_MAXFD | OP_SET_MINFD => {
             let value = core::ffi::c_int::from_ne_bytes(
                 u32::try_from(arg & u64::from(u32::MAX))
@@ -215,12 +227,11 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                     .to_ne_bytes(),
             );
             if op == OP_SET_MAXFD {
-                // SAFETY: caller owns the native server fd-bound lock.
-                unsafe { (*raw).max_fd = value };
+                &gs.max_fd
             } else {
-                // SAFETY: caller owns the native server fd-bound lock.
-                unsafe { (*raw).min_fd = value };
+                &gs.min_fd
             }
+            .store(value, Relaxed);
             0
         }
         // Callers read the session round under the shared spin lock.

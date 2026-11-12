@@ -225,8 +225,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval),
         OP_REACTOR_WAIT => sign(ctx.reactor_handle().wait()),
-        OP_MINFD => sign(ctx.counters().min_fd),
-        OP_MAXFD => sign(ctx.counters().max_fd),
+        OP_MINFD => sign(ctx.counters().min_fd()),
+        OP_MAXFD => sign(ctx.counters().max_fd()),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
         _ => return None,
     })
@@ -290,7 +290,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_CONN_ACTIVE => {
             let fd = ctx.event().fd();
             let conn = server.at(fd);
-            let active = conn.as_ref().is_some_and(|c| c.active != 0);
+            let active = conn.as_ref().is_some_and(|c| c.is_active());
             ctx.conn = conn.map_or(core::ptr::null_mut(), |c| &raw mut *c);
             return Some(u64::from(active));
         }

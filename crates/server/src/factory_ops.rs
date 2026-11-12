@@ -307,7 +307,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SEND_CONN_ACTIVE => {
             ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
-            return Some(u64::from(ctx.conn().is_some_and(|c| c.active != 0)));
+            return Some(u64::from(ctx.conn().is_some_and(|c| c.is_active())));
         }
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
