@@ -315,6 +315,28 @@ pub fn thread_buffer() -> *mut c_void {
     read(|thread| thread.buffer_stack)
 }
 
+thread_local! {
+    /// Whether a [`lend_thread_buffer`] is running on this thread.
+    static BUFFER_LENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` as the one Rust borrower of [`thread_buffer`] on this thread: a lend
+/// inside `f` panics instead of aliasing the buffer. A thread-context coroutine's
+/// thread shares the buffer, but no other runs while `f` does.
+/// # Panics
+/// Inside another lend's `f` on this thread.
+pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
+    struct Lent;
+    impl Drop for Lent {
+        fn drop(&mut self) {
+            BUFFER_LENT.set(false);
+        }
+    }
+    assert!(!BUFFER_LENT.replace(true), "sw_tg_buffer() is lent already");
+    let _lent = Lent;
+    f()
+}
+
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
 /// thread that activated coroutines: the buffer stack, reactor, timer and async
 /// threads.
