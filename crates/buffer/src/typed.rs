@@ -205,7 +205,6 @@ mod tests {
         }
         assert_eq!(queue.front().unwrap().kind, 2);
         assert_eq!(queue.front_data(), b"");
-
         queue.pop().unwrap();
         assert_eq!(queue.front().err(), Some(EMPTY));
         let mut native_payload = 37u32;

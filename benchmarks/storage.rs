@@ -63,7 +63,6 @@ fn run(name: &str, rounds: usize) -> u64 {
                     }
                 }
                 assert!(owner.release().is_ok());
-
             }
             "timer-churn-512" => {
                 let mut owner = timer::Timer::default();

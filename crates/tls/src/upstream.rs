@@ -1800,7 +1800,6 @@ mod tests {
         assert_eq!(read_all(&right, 4), b"tail");
         assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");
         assert!(unsafe { Box::from_raw(queue) }.release().is_ok());
-
         std::fs::remove_file(path).unwrap();
         unsafe { libc::close(left.fd) };
         unsafe { libc::close(right.fd) };
