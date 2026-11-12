@@ -1340,33 +1340,10 @@ fn path(ctx: Ctx, zserver: *mut zval, value: &[u8]) {
 
 /// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
 fn strtol(value: &[u8]) -> (i64, bool) {
-    let text = value.split(|&byte| byte == 0).next().unwrap_or_default();
-    let mut at = text
-        .iter()
-        .take_while(|&&byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
-        .count();
-    let negative = matches!(text.get(at), Some(b'-'));
-    if matches!(text.get(at), Some(b'-' | b'+')) {
-        at += 1;
+    match swoole_rs_corebase::strtol(value) {
+        (_, 0) => (0, value.is_empty()),
+        (parsed, end) => (parsed, end == value.len()),
     }
-    let unsigned = text.get(at..).unwrap_or_default();
-    let digits = unsigned
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digits == 0 {
-        return (0, value.is_empty());
-    }
-    let mut parsed: i64 = 0;
-    for &digit in unsigned.iter().take(digits) {
-        let digit = i64::from(digit - b'0');
-        parsed = if negative {
-            parsed.saturating_mul(10).saturating_sub(digit)
-        } else {
-            parsed.saturating_mul(10).saturating_add(digit)
-        };
-    }
-    (parsed, at + digits == value.len())
 }
 
 /// `http2_server_send_status_code`: a header-only response.
