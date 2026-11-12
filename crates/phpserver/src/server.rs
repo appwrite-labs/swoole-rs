@@ -13,11 +13,11 @@ use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{ConnectionRecord, server_methods, view};
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
+    Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Owned, Value, report,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        add_assoc_double_ex, add_assoc_stringl_ex, add_next_index_long, zend_class_entry,
-        zend_object, zend_object_handlers, zval,
+        add_assoc_double_ex, add_assoc_stringl_ex, zend_class_entry, zend_object,
+        zend_object_handlers, zval,
     },
     unset_property_deny,
 };
@@ -167,6 +167,12 @@ impl Iterator {
     fn server(&self) -> view::Server<'_> {
         // SAFETY: `new_iterator` stored `$this`'s live server, which outlives the iterator.
         unsafe { view::Server::from_raw(self.serv.get()) }
+    }
+
+    /// The port whose connections the iterator walks; none for all of them.
+    fn port(&self) -> Option<view::Port<'_>> {
+        // SAFETY: null, or one of the live server's ports, which outlive the iterator.
+        unsafe { view::Port::from_raw(self.port.get()) }
     }
 }
 
@@ -578,8 +584,7 @@ pub(crate) fn fatal(level: i32, message: &CStr) {
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)`: an `E_ERROR`, which
 /// does not return, for a Server never constructed. The frames own nothing.
 pub(crate) fn server(call: &Call) -> view::Server<'_> {
-    // SAFETY: `$this` is a Server, which C++ allocated as a `ServerObject`.
-    let serv = unsafe { Object::<ServerData>::data(call.this()) }.serv;
+    let serv = crate::lifecycle::ServerObject::this(call).serv();
     if serv.is_null() {
         invalid(call.this());
         // The `E_ERROR` bailed out of this frame.
@@ -776,8 +781,7 @@ fn heartbeat(call: &Call) {
                     conn.close_force = 1;
                     server_methods::close(serv, session_id, false);
                 }
-                // SAFETY: the return slot holds an array.
-                unsafe { add_next_index_long(call.return_value(), session_id) };
+                push_long(call, session_id);
             }
         }
         fd += 1;
@@ -832,6 +836,17 @@ fn get_socket(call: &Call) {
     match serv.port_number(port as c_int) {
         Some(ls) => crate::port::socket(ls, call),
         None => call.set_bool(false),
+    }
+}
+
+/// `add_next_index_long(return_value, value)` (nothing unless the return slot
+/// holds an array).
+fn push_long(call: &Call, value: i64) {
+    // SAFETY: the return slot is live for the handler, and nothing else
+    // borrows it; `Owned` is a transparent zval, and is not dropped here.
+    let slot = unsafe { &mut *call.return_value().cast::<Owned>() };
+    if let Some(array) = slot.array_mut() {
+        array.push_long(value);
     }
 }
 
@@ -961,8 +976,7 @@ fn get_client_list(call: &Call) {
             if session_id <= 0 {
                 continue;
             }
-            // SAFETY: the return slot holds an array.
-            unsafe { add_next_index_long(call.return_value(), session_id) };
+            push_long(call, session_id);
             find_count -= 1;
         }
         if find_count <= 0 {
@@ -1121,7 +1135,7 @@ fn rewind(call: &Call) {
 fn valid(call: &Call) {
     let iterator = iterator(call);
     let max_fd = iterator.server().counters().max_fd;
-    let port = iterator.port.get();
+    let port = iterator.port();
     for fd in iterator.current_fd.get()..=max_fd {
         let Some(conn) = iterator.server().iterated(fd) else {
             continue;
@@ -1130,8 +1144,7 @@ fn valid(call: &Call) {
         if session_id <= 0 {
             continue;
         }
-        // SAFETY: null, or the iterator's live port.
-        if let Some(port) = unsafe { view::Port::from_raw(port) } {
+        if let Some(port) = port {
             let port_fd = port.fd();
             if port_fd < 0 || server_fd != port_fd {
                 continue;
@@ -1160,8 +1173,7 @@ fn key(call: &Call) {
 
 fn count(call: &Call) {
     let iterator = iterator(call);
-    // SAFETY: null, or one of the live server's ports.
-    let num = match unsafe { view::Port::from_raw(iterator.port.get()) } {
+    let num = match iterator.port() {
         None => iterator.server().connection_num(),
         Some(port) => iterator.server().port_connection_num(port),
     };

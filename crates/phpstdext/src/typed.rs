@@ -4,7 +4,7 @@
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
 use crate::{CONTINUE, DISPATCH, Frame, invoke::compiled_function};
 use std::{
-    ffi::{CStr, c_char, c_int, c_long},
+    ffi::{CStr, CString, c_int, c_long},
     marker::PhantomData,
     mem::offset_of,
     ptr, slice,
@@ -256,14 +256,10 @@ fn parse_value(text: &[u8], start: usize, len: usize) -> Option<TypeValue> {
         Ok(value) => Some(value),
         Err(rest) => {
             let rest = text.get(rest..).unwrap_or_default();
-            // SAFETY: a printf format with the NUL-terminated rest.
-            unsafe {
-                zend_throw_error(
-                    ptr::null_mut(),
-                    c"The key type of array must be string or int, but got %s".as_ptr(),
-                    rest.as_ptr(),
-                );
-            }
+            throw(&message(&[
+                b"The key type of array must be string or int, but got ",
+                rest,
+            ]));
             None
         }
     }
@@ -339,27 +335,43 @@ fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
         return Err(Failure::Bailout(Bailout));
     }
     if ce.is_null() {
-        // SAFETY: a printf format with the NUL-terminated name.
-        unsafe {
-            zend_throw_error(
-                ptr::null_mut(),
-                c"Class '%s' not found".as_ptr(),
-                name.c_str().as_ptr(),
-            );
-        }
+        throw(&message(&[b"Class '", name.bytes(), b"' not found"]));
         return Err(Failure::Thrown);
     }
     Ok(ce)
 }
 
-fn throw(message: &CStr) {
-    // SAFETY: a literal message without directives.
+/// `zend_throw_error(NULL, "%s", message)`.
+pub(crate) fn throw(message: &CStr) {
+    // SAFETY: "%s" takes the NUL-terminated message.
     unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
 }
 
-fn type_name(kind: u32) -> *const c_char {
-    // SAFETY: Zend's name table (NULL for an unnamed type, which printf shows).
-    unsafe { zend_get_type_by_const(kind.cast_signed()) }
+/// `zend_type_error("%s", message)`.
+fn type_error(message: &CStr) {
+    // SAFETY: "%s" takes the NUL-terminated message.
+    unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+}
+
+/// The parts in a row, each as printf's `%s` (or `%.*s`) prints it: up to its
+/// first NUL.
+pub(crate) fn message(parts: &[&[u8]]) -> CString {
+    let text = parts
+        .iter()
+        .flat_map(|part| part.split(|&byte| byte == 0).next().unwrap_or_default());
+    CString::new(text.copied().collect::<Vec<u8>>()).unwrap_or_default()
+}
+
+/// `zend_get_type_by_const`, as printf's `%s` shows it.
+fn type_name(kind: u32) -> &'static [u8] {
+    // SAFETY: Zend's name table.
+    let name = unsafe { zend_get_type_by_const(kind.cast_signed()) };
+    if name.is_null() {
+        // What Zend's printf shows for a null string.
+        return b"(null)";
+    }
+    // SAFETY: a static, NUL-terminated name.
+    unsafe { CStr::from_ptr(name) }.to_bytes()
 }
 
 /// A key as [`check`] reads it: its type and, for an int, its value.
@@ -399,14 +411,13 @@ pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
         return true;
     }
     if value_type != expected {
-        // SAFETY: printf arguments: two strings.
-        unsafe {
-            zend_type_error(
-                c"Array value type mismatch, expected `%s`, got `%s`".as_ptr(),
-                type_name(expected),
-                type_name(value_type),
-            );
-        }
+        type_error(&message(&[
+            b"Array value type mismatch, expected `",
+            type_name(expected),
+            b"`, got `",
+            type_name(value_type),
+            b"`",
+        ]));
         return false;
     }
     match (value.class(), Typed::of(&value)) {
@@ -422,26 +433,24 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
         if key.kind == u32::from(this.key) {
             return true;
         }
-        // SAFETY: printf arguments: two strings.
-        unsafe {
-            zend_type_error(
-                c"Array key type mismatch, expected `%s`, got `%s`".as_ptr(),
-                type_name(this.key.into()),
-                type_name(key.kind),
-            );
-        }
+        type_error(&message(&[
+            b"Array key type mismatch, expected `",
+            type_name(this.key.into()),
+            b"`, got `",
+            type_name(key.kind),
+            b"`",
+        ]));
         return false;
     }
     if key.kind == IS_LONG {
         if key.index > i64::from(typed.count()) {
-            // SAFETY: printf arguments: a long.
-            unsafe {
-                zend_throw_error(
-                    ptr::null_mut(),
-                    c"Incorrect array key `%ld`, out of the permitted range".as_ptr(),
-                    key.index as c_long,
-                );
-            }
+            // `%ld` of the key.
+            let index = (key.index as c_long).to_string();
+            throw(&message(&[
+                b"Incorrect array key `",
+                index.as_bytes(),
+                b"`, out of the permitted range",
+            ]));
             return false;
         }
     } else if !matches!(key.kind, IS_UNDEF | IS_NULL) {
@@ -476,33 +485,25 @@ fn check_object(ce: *mut zend_class_entry, actual: *mut zend_class_entry) -> boo
 /// array of arrays.
 fn check_array(typed: Typed, element: Option<Typed>) -> bool {
     let expected = typed.value_bytes();
-    // Shorter than 65535 bytes.
-    let expected_len = c_int::try_from(expected.len()).unwrap_or(c_int::MAX);
     let Some(element) = element else {
-        // SAFETY: printf arguments: a length and its bytes.
-        unsafe {
-            zend_type_error(
-                c"Array value type mismatch, expected `%.*s`, got `array`".as_ptr(),
-                expected_len,
-                expected.as_ptr(),
-            );
-        }
+        type_error(&message(&[
+            b"Array value type mismatch, expected `",
+            expected,
+            b"`, got `array`",
+        ]));
         return false;
     };
     if typed.element_equals(element) {
         return true;
     }
     let actual = element.definition();
-    // SAFETY: printf arguments: two lengths and their bytes.
-    unsafe {
-        zend_type_error(
-            c"Array value type mismatch, expected `%.*s`, got `%.*s`".as_ptr(),
-            expected_len,
-            expected.as_ptr(),
-            c_int::try_from(actual.bytes().len()).unwrap_or(c_int::MAX),
-            actual.bytes().as_ptr(),
-        );
-    }
+    type_error(&message(&[
+        b"Array value type mismatch, expected `",
+        expected,
+        b"`, got `",
+        actual.bytes(),
+        b"`",
+    ]));
     false
 }
 
@@ -543,8 +544,7 @@ pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
         )
     };
     if !allowed {
-        // SAFETY: a literal message without directives.
-        unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+        type_error(message);
     }
     allowed
 }

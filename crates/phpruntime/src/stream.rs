@@ -271,6 +271,12 @@ fn set_error(param: &mut php_stream_xport_param, text: &[u8]) {
     }
 }
 
+/// `EG(active)`: whether the executor is running, so a coroutine can wait.
+fn vm_active() -> bool {
+    // SAFETY: no preconditions: reads this PHP thread's executor flag.
+    unsafe { swr_zend_stream_vm_active() }
+}
+
 /// `socket_write`.
 fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<isize, Bailout> {
     let Some(net) = net(stream) else {
@@ -279,8 +285,7 @@ fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<is
     let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
     // SAFETY: Zend lends `count` bytes at `buf` for the call, which a send only reads.
     let send = |op| unsafe { socket.io(op, buf.cast_mut(), count) };
-    // SAFETY: no preconditions.
-    if !unsafe { swr_zend_stream_vm_active() } {
+    if !vm_active() {
         return Ok(send(Io::SendSync));
     }
     let mut written = if blocking {
@@ -324,8 +329,7 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
     let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
     // SAFETY: Zend lends `count` writable bytes at `buf` for the call.
     let recv = |op| unsafe { socket.io(op, buf, count) };
-    // SAFETY: no preconditions.
-    if !unsafe { swr_zend_stream_vm_active() } {
+    if !vm_active() {
         return Ok(recv(Io::RecvSync));
     }
     // SAFETY: a live stream.

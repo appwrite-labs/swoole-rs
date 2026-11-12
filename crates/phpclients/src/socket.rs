@@ -17,8 +17,8 @@ use std::{
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
-    Array, Call, Class, Custom, CustomClass, Invalid, Minit, Object, Owned, OwnedArray, Props,
-    Value, ZString,
+    Array, Call, Class, Custom, CustomClass, Invalid, Minit, Owned, OwnedArray, Props, Value,
+    ZString,
     bailout::Bailout,
     string::ZBuf,
     sys::{
@@ -268,16 +268,6 @@ fn register_constants(minit: &Minit) {
     }
 }
 
-/// `php_swoole_get_socket`: the C++ socket of a `Coroutine\Socket` object.
-/// # Safety
-/// `object` is a live `Coroutine\Socket` object.
-pub unsafe fn socket_of(object: *mut zend_object) -> Socket {
-    // SAFETY: per the caller.
-    unsafe { &*Object::<Data>::data_ptr(object) }
-        .co()
-        .map_or(ptr::null_mut(), Co::as_ptr)
-}
-
 /// `swoole_get_socket_coro`: the constructed, open socket of `$this`; else
 /// errCode/errMsg say EBADF and the method returns false.
 pub(crate) fn open(call: &Call) -> Option<Co> {
@@ -300,8 +290,9 @@ pub(crate) fn strerror(code: c_int) -> &'static CStr {
 fn constructed(call: &Call) -> Option<Co> {
     let socket = Sock::this(call).and_then(Sock::co);
     if socket.is_none() {
+        let (code, message) = native::UNCONSTRUCTED;
         // SAFETY: a fatal error; the handler owns nothing it skips.
-        unsafe { native::unconstructed() };
+        unsafe { swoole_rs_corebase::fatal_error(code, message) };
         call.set_bool(false);
     }
     socket
@@ -319,22 +310,14 @@ fn set_error(call: &Call, code: c_int, message: &CStr) {
 /// `socket_coro_sync_properties`: errCode and errMsg from the socket.
 fn sync(call: &Call, socket: Co) {
     let (code, message) = socket.error();
-    set_error(call, code, message);
+    set_error(call, code, &message);
 }
 
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
 pub(crate) fn warn(fatal: bool, message: &str) {
     let message = CString::new(message).unwrap_or_default();
     #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    // SAFETY: C++'s reporter, from a handler.
-    swoole_rs_zend::bailout::defer(unsafe {
-        swoole_rs_zend::bailout::report_flag(
-            native::swoole_rs_php_error,
-            E_WARNING as c_int,
-            fatal,
-            &message,
-        )
-    });
+    native::swoole_rs_php_error(E_WARNING as c_int, fatal, &message);
 }
 
 /// `zend_throw_exception_ex(swoole_socket_coro_exception_ce, code, ...)`.

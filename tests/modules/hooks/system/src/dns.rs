@@ -1,5 +1,5 @@
 //! Upstream's `core-tests/src/network/dns.cpp`, one Rust function per TEST with the
-//! same inputs and expected values. `dns_lookup` is `swr_v1_hook_dns_lookup`;
+//! same inputs and expected values. `dns_lookup` is crates/hooks' `resolve::dns_lookup`;
 //! `get_ip_by_hosts`, the DNS server and hosts-path setters and `swoole_load_resolv_conf`
 //! are the `swr_v1_clients_*` exports they were over; the name-resolver list
 //! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
@@ -72,13 +72,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_hook_dns_lookup(
-        domain: *const c_char,
-        family: c_int,
-        timeout: f64,
-        push: unsafe extern "C" fn(*mut c_void, *const c_char),
-        list: *mut c_void,
-    );
     fn swr_v1_clients_hosts_lookup(
         domain: *const u8,
         length: usize,
@@ -117,16 +110,6 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
     unsafe { swr_v1_clients_address_verify(family, ip.as_ptr()) }
 }
 
-unsafe extern "C" fn push_address(list: *mut c_void, address: *const c_char) {
-    // SAFETY: `list` is the caller's Vec; `address` is NUL-terminated.
-    unsafe { &mut *list.cast::<Vec<String>>() }.push(
-        unsafe { CStr::from_ptr(address) }
-            .to_str()
-            .unwrap()
-            .to_owned(),
-    );
-}
-
 unsafe extern "C" fn put_text(out: *mut c_void, text: *const u8, length: usize) {
     // SAFETY: `out` is the caller's String; `text` holds `length` bytes.
     let text = unsafe { std::slice::from_raw_parts(text, length) };
@@ -135,18 +118,10 @@ unsafe extern "C" fn put_text(out: *mut c_void, text: *const u8, length: usize) 
 }
 
 fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
-    let mut list = Vec::<String>::new();
-    // SAFETY: a NUL-terminated domain, in a coroutine; `push_address` fills `list`.
-    unsafe {
-        swr_v1_hook_dns_lookup(
-            domain.as_ptr(),
-            family,
-            timeout,
-            push_address,
-            (&raw mut list).cast(),
-        )
-    };
-    list
+    swoole_rs_hooks::resolve::dns_lookup(domain.to_bytes(), family, timeout)
+        .into_iter()
+        .map(|address| address.into_string().unwrap())
+        .collect()
 }
 
 /// `get_ip_by_hosts`: its lines split by the classic locale's spaces, as

@@ -55,7 +55,9 @@ fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
     })
 }
 
-fn timer_del(_: *mut c_void) {}
+unsafe extern "C-unwind" fn timer_del(_: *mut swoole_rs_timer::TimerNode) -> bool {
+    true
+}
 
 fn read_buffer(_: Co, view: &mut ReadBuffer, action: u32, size: usize) {
     with(|s| {

@@ -77,6 +77,27 @@ pub(crate) struct ServerShared {
     pub(crate) manager_barrier: swoole_rs_locks::Barrier,
 }
 
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the native ops read the pools")
+)]
+impl ServerShared {
+    /// The live server's record, which `swr_v1_server_new` maps for its life.
+    pub(crate) fn of(serv: crate::view::Server<'_>) -> &Self {
+        let gs = serv.config().gs.as_ptr().cast::<Self>();
+        // SAFETY: as above; its writers keep to the server's own synchronization.
+        unsafe { &*gs }
+    }
+    /// `serv->get_task_worker_pool()`.
+    pub(crate) fn task_pool(&self) -> &swoole_rs_process::process_pool::PoolRecord {
+        &self.pools[0]
+    }
+    /// `serv->get_event_worker_pool()`.
+    pub(crate) fn event_pool(&self) -> &swoole_rs_process::process_pool::PoolRecord {
+        &self.pools[1]
+    }
+}
+
 /// The server's shared counters (`serv->gs`), once configured.
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
     let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();

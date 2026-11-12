@@ -150,6 +150,51 @@ struct Method<'a> {
     password: Option<PasswordBinding>,
 }
 
+/// `SSL_OP_*`'s type: `uint64_t` since OpenSSL 3.
+#[cfg(ossl300)]
+type Options = u64;
+#[cfg(not(ossl300))]
+type Options = std::ffi::c_ulong;
+
+/// A file BIO, freed when dropped.
+struct FileBio(*mut BIO);
+
+impl Drop for FileBio {
+    fn drop(&mut self) {
+        // SAFETY: the live BIO `set_dhparam` opened, which nothing else holds or frees.
+        unsafe { BIO_free(self.0) };
+    }
+}
+
+/// The context's setters that take plain values. `create_context` builds a `Method`
+/// over the context `SSL_CTX_new` just returned and calls nothing but `ssl_error` on
+/// a null one, so `ctx` is live in each.
+impl Method<'_> {
+    /// `SSL_CTX_set_options`.
+    fn set_options(&self, options: Options) -> Options {
+        // SAFETY: the method's live context.
+        unsafe { SSL_CTX_set_options(self.ctx, options) }
+    }
+
+    /// `SSL_CTX_clear_options`.
+    fn clear_options(&self, options: Options) {
+        // SAFETY: the method's live context.
+        unsafe { SSL_CTX_clear_options(self.ctx, options) };
+    }
+
+    /// `SSL_CTX_set_verify_depth`.
+    fn set_verify_depth(&self, depth: u8) {
+        // SAFETY: the method's live context.
+        unsafe { SSL_CTX_set_verify_depth(self.ctx, c_int::from(depth)) };
+    }
+
+    /// `SSL_CTX_set_verify`.
+    fn set_verify(&self, mode: c_int, callback: Option<VerifyCallback>) {
+        // SAFETY: the method's live context; the callback is a safe function.
+        unsafe { SSL_CTX_set_verify(self.ctx, mode, callback) };
+    }
+}
+
 impl Method<'_> {
     fn warn(&self, message: &[u8]) {
         let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
@@ -194,8 +239,7 @@ impl Method<'_> {
             }
         }
         if config.verify_depth > 0 {
-            // SAFETY: a live context.
-            unsafe { SSL_CTX_set_verify_depth(self.ctx, c_int::from(config.verify_depth)) };
+            self.set_verify_depth(config.verify_depth);
         }
         true
     }
@@ -213,8 +257,7 @@ impl Method<'_> {
                 return false;
             }
             if config.prefer_server_ciphers
-                // SAFETY: a live context.
-                && unsafe { SSL_CTX_set_options(self.ctx, SSL_OP_CIPHER_SERVER_PREFERENCE) } == 0
+                && self.set_options(SSL_OP_CIPHER_SERVER_PREFERENCE) == 0
             {
                 self.ssl_error(b"SSL_CTX_set_options(SSL_OP_CIPHER_SERVER_PREFERENCE) failed");
                 return false;
@@ -229,10 +272,8 @@ impl Method<'_> {
 
     fn set_client_certificate(&self) -> bool {
         let file = self.config.client_cert_file;
-        // SAFETY: a live context; the callback is a plain function.
-        unsafe { SSL_CTX_set_verify(self.ctx, SSL_VERIFY_PEER, Some(verify_callback)) };
-        // SAFETY: a live context.
-        unsafe { SSL_CTX_set_verify_depth(self.ctx, c_int::from(self.config.verify_depth)) };
+        self.set_verify(SSL_VERIFY_PEER, Some(verify_callback));
+        self.set_verify_depth(self.config.verify_depth);
         // SAFETY: a live context and a NUL-terminated path.
         if unsafe { SSL_CTX_load_verify_locations(self.ctx, file.data, ptr::null()) } == 0 {
             self.ssl_error(&quoted(
@@ -289,12 +330,12 @@ impl Method<'_> {
             self.ssl_error(&quoted(b"BIO_new_file(", file, b") failed"));
             return false;
         }
+        // Freed on each return below, after its error is reported.
+        let bio = FileBio(bio);
         // SAFETY: a live file BIO.
-        let key = unsafe { PEM_read_bio_Parameters(bio, ptr::null_mut()) };
+        let key = unsafe { PEM_read_bio_Parameters(bio.0, ptr::null_mut()) };
         if key.is_null() {
             self.ssl_error(&quoted(b"PEM_read_bio_Parameters('", file, b"') failed"));
-            // SAFETY: the BIO opened above.
-            unsafe { BIO_free(bio) };
             return false;
         }
         // SAFETY: a live context takes the key on success.
@@ -302,12 +343,8 @@ impl Method<'_> {
             self.ssl_error(&quoted(b"SSL_CTX_set0_tmp_dh_pkey('", file, b"') failed"));
             // SAFETY: the key the context refused.
             unsafe { EVP_PKEY_free(key) };
-            // SAFETY: the BIO opened above.
-            unsafe { BIO_free(bio) };
             return false;
         }
-        // SAFETY: the BIO opened above.
-        unsafe { BIO_free(bio) };
         true
     }
 
@@ -326,10 +363,8 @@ impl Method<'_> {
         let ctx = self.ctx;
         let protocols = config.protocols;
         // The other legacy SSL_OP_*_BUG workarounds are 0 in OpenSSL 3.
-        // SAFETY: option, mode and callback setters on a live context, here and below.
-        unsafe { SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS) };
-        // SAFETY: as above.
-        unsafe { SSL_CTX_clear_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1) };
+        self.set_options(SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
+        self.clear_options(SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
         let mut disable = 0;
         for (bit, option) in [
             (SSLV2, SSL_OP_NO_SSLv2),
@@ -344,22 +379,14 @@ impl Method<'_> {
                 disable |= option;
             }
         }
-        // SAFETY: as above.
-        unsafe {
-            SSL_CTX_clear_options(
-                ctx,
-                SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3,
-            )
-        };
-        // SAFETY: as above.
-        unsafe { SSL_CTX_set_options(ctx, disable) };
+        self.clear_options(SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3);
+        self.set_options(disable);
         if config.disable_compress {
-            // SAFETY: as above.
-            unsafe { SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION) };
+            self.set_options(SSL_OP_NO_COMPRESSION);
         }
-        // SAFETY: as above.
+        // SAFETY: a mode setter on the live context.
         unsafe { SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_NO_AUTO_CHAIN) };
-        // SAFETY: as above.
+        // SAFETY: a live context.
         unsafe { SSL_CTX_set_read_ahead(ctx, 1) };
 
         // The owner's binding reads its live passphrase slot (crates/tls's owned.rs).
@@ -413,8 +440,7 @@ impl Method<'_> {
                 return false;
             }
         } else {
-            // SAFETY: a live context.
-            unsafe { SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, None) };
+            self.set_verify(SSL_VERIFY_NONE, None);
         }
         if config.http || config.http_v2 {
             let protos: &'static Protos = if config.http_v2 { &H2_HTTP1 } else { &HTTP1 };
@@ -499,31 +525,32 @@ unsafe extern "C" fn select_alpn(
     }
 }
 
+/// `SSL_CTX_set_verify`'s callback.
+type VerifyCallback = extern "C" fn(c_int, *mut X509_STORE_CTX) -> c_int;
+
 /// Peer certificates are checked later by the callers; the chain walk always continues.
 extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int {
     1
 }
 
-/// Copies the passphrase when it fits with a spare byte, else reports none.
+/// Copies the passphrase and the NUL after it (`terminated` is both) when it fits
+/// with a spare byte, else reports none.
 /// # Safety
-/// Passphrase bytes remain live; buffer holds capacity writable bytes when positive.
+/// `buffer` holds `capacity` writable bytes when positive.
 pub(crate) unsafe fn copy_password(
     buffer: *mut c_char,
     capacity: c_int,
-    passphrase: TlsStr,
+    terminated: &[u8],
 ) -> c_int {
-    let Ok(length) = c_int::try_from(passphrase.length) else {
+    let Ok(length) = c_int::try_from(terminated.len().saturating_sub(1)) else {
         return 0;
     };
-    if passphrase.is_empty() || i64::from(length) >= i64::from(capacity) - 1 {
+    if length == 0 || i64::from(length) >= i64::from(capacity) - 1 {
         return 0;
     }
-    // SAFETY: the owner's `length` bytes into OpenSSL's buffer of `capacity` > `length + 1` bytes.
-    unsafe { ptr::copy_nonoverlapping(passphrase.data, buffer, passphrase.length) };
-    // SAFETY: as above; the terminator is inside the buffer.
-    let terminator = unsafe { buffer.add(passphrase.length) };
-    // SAFETY: as above.
-    unsafe { terminator.write(0) };
+    // SAFETY: the passphrase's `length + 1` bytes into OpenSSL's buffer of
+    // `capacity` > `length + 1` bytes, which a borrowed slice can't overlap.
+    unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), buffer.cast(), terminated.len()) };
     length
 }
 
@@ -992,14 +1019,14 @@ mod tests {
 
     #[test]
     fn password_copies_when_it_fits() {
-        let view = |text: &CString| TlsStr {
-            data: text.as_ptr(),
-            length: text.as_bytes().len(),
-        };
         let passphrase = CString::new("swoole").unwrap();
         let mut buffer = [0x55u8; 8];
         let copy = |buffer: &mut [u8; 8], capacity, text: &CString| unsafe {
-            copy_password(buffer.as_mut_ptr().cast(), capacity, view(text))
+            copy_password(
+                buffer.as_mut_ptr().cast(),
+                capacity,
+                text.as_bytes_with_nul(),
+            )
         };
         assert_eq!(copy(&mut buffer, 8, &passphrase), 6);
         assert_eq!(&buffer[..7], b"swoole\0");

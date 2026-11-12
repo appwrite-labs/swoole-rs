@@ -85,7 +85,7 @@ impl Wait {
         added
     }
 
-    fn wait(&self, co: *mut c_void, event: u32, buffer: *mut *mut u8, length: usize) -> bool {
+    fn wait(&self, co: *mut c_void, event: u32, buffer: Option<WriteSlot<'_>>) -> bool {
         let status = self.status();
         if status & CLOSE_WAIT != 0 {
             set_err(self.0, CLOSE_WAIT_ERROR);
@@ -112,9 +112,10 @@ impl Wait {
         } else if !self.add(status, event) {
             return false;
         }
-        if event == WRITE && !buffer.is_null() {
-            // The caller's live buffer slot of `length` bytes.
-            (NATIVE.buffer)(self.0, buffer, length);
+        if event == WRITE
+            && let Some(mut slot) = buffer
+        {
+            (NATIVE.buffer)(self.0, &mut slot);
         }
         self.bind(event, co);
         // Suspends this coroutine until a callback, timer or cancel resumes it.
@@ -133,15 +134,44 @@ impl Wait {
     }
 }
 
-/// `Socket::wait_event(event)` for the current coroutine. `buffer`, when not null,
-/// is a write's buffer slot, which may move to the socket's write buffer. True when
-/// woken with the socket open and no error.
-///
-/// # Safety
-/// `buffer` is null or a live slot of `length` bytes.
-pub(crate) unsafe fn wait(socket: Co, event: u32, buffer: *mut *mut u8, length: usize) -> bool {
+/// A write's buffer slot: where its bytes are. A wait may move them to the socket's
+/// write buffer and point the slot there.
+pub(crate) struct WriteSlot<'a> {
+    #[cfg_attr(test, expect(dead_code, reason = "the test host only logs the length"))]
+    at: &'a mut *mut u8,
+    length: usize,
+}
+
+impl<'a> WriteSlot<'a> {
+    /// # Safety
+    /// `*at` points to `length` readable bytes, which stay so while the slot lives.
+    pub(crate) unsafe fn new(at: &'a mut *mut u8, length: usize) -> Self {
+        Self { at, length }
+    }
+
+    /// Where the bytes are now.
+    #[cfg(not(test))]
+    pub(crate) fn bytes(&self) -> *mut u8 {
+        *self.at
+    }
+
+    pub(crate) fn length(&self) -> usize {
+        self.length
+    }
+
+    /// The bytes moved to `bytes`, still `length` of them and live as long.
+    #[cfg(not(test))]
+    pub(crate) fn moved_to(&mut self, bytes: *mut u8) {
+        *self.at = bytes;
+    }
+}
+
+/// `Socket::wait_event(event)` for the current coroutine. `buffer` is a write's
+/// buffer slot, which may move to the socket's write buffer. True when woken with
+/// the socket open and no error.
+pub(crate) fn wait(socket: Co, event: u32, buffer: Option<WriteSlot<'_>>) -> bool {
     let co = (NATIVE.current)();
-    !co.is_null() && Wait(socket).wait(co, event, buffer, length)
+    !co.is_null() && Wait(socket).wait(co, event, buffer)
 }
 
 /// Clears the barrier [`wait_barrier`] installed, also when the wait unwinds.
@@ -171,13 +201,13 @@ pub(crate) fn wait_barrier(socket: Co, event: u32, barrier: &mut dyn FnMut() -> 
         unsafe { core::mem::transmute::<*mut (dyn FnMut() -> bool + '_), Barrier>(barrier) };
     let installed = Installed(Wait(socket), event);
     installed.0.set_barrier(event, Some(barrier));
-    installed.0.wait(co, event, core::ptr::null_mut(), 0)
+    installed.0.wait(co, event, None)
 }
 
 /// [`wait`] with no barrier and no buffer.
 pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
-    // SAFETY: no buffer.
-    unsafe { wait(socket, event, core::ptr::null_mut(), 0) }
+    let co = (NATIVE.current)();
+    !co.is_null() && Wait(socket).wait(co, event, None)
 }
 
 /// The readable (`event` read) or writable callback: the coroutine to resume, or
@@ -288,7 +318,12 @@ mod tests {
             return wait_barrier(socket.co(), event, barrier);
         }
         let mut slot = core::ptr::null_mut();
-        unsafe { wait(socket.co(), event, &raw mut slot, 4) }
+        // The test host's `buffer` only logs the length.
+        wait(
+            socket.co(),
+            event,
+            Some(unsafe { WriteSlot::new(&mut slot, 4) }),
+        )
     }
 
     fn effects() -> Vec<String> {

@@ -60,9 +60,7 @@ mod classes;
 pub use classes::*;
 mod context;
 mod host;
-pub use host::{
-    Coroutine, counts, in_coroutine, park, sleep, suspend, suspend_for, timer_add, timer_del,
-};
+pub use host::{Coroutine, counts, in_coroutine, park, sleep, suspend, suspend_for};
 mod methods;
 pub use methods::*;
 mod runtime;

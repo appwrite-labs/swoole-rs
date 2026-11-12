@@ -19,7 +19,7 @@ struct RecvData {
 }
 
 struct Connection<'a> {
-    protocol: *const Protocol,
+    protocol: &'a Protocol,
     socket: Socket<'a>,
     buffer: *mut CppString,
     fd: c_int,
@@ -63,8 +63,7 @@ unsafe extern "C" fn connection_dispatch(context: *mut c_void, length: usize) ->
         // SAFETY: the live String.
         data: unsafe { (*c.buffer).as_mut_ptr() },
     };
-    // SAFETY: the live protocol.
-    let Some(on_package) = (unsafe { (*c.protocol).on_package }) else {
+    let Some(on_package) = c.protocol.on_package else {
         return -1;
     };
     // SAFETY: upstream's call, over the live protocol, socket and packet.
@@ -91,6 +90,8 @@ pub(crate) unsafe fn recv_packet(
     conn: *mut c_void,
     buffer: *mut CppString,
 ) -> c_int {
+    // SAFETY: as the caller promises; nothing writes the protocol during a receive.
+    let protocol = unsafe { &*protocol };
     // SAFETY: as the caller promises.
     let conn = unsafe { &mut *conn.cast::<ConnectionRecord>() };
     // SAFETY: the connection's live socket, as the caller promises.
@@ -109,8 +110,7 @@ pub(crate) unsafe fn recv_packet(
         extend: connection_extend,
         dispatch: connection_dispatch,
     };
-    // SAFETY: the live protocol.
-    let maximum = unsafe { (*protocol).package_max_length };
+    let maximum = protocol.package_max_length;
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     // SAFETY: the String's head is a RespBuffer; the request slot is the connection's.
     unsafe {

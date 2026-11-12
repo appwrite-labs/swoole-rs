@@ -172,7 +172,7 @@ fn report_code(call: &Call, code: c_int) {
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, socket)`.
 fn report_socket(call: &Call, socket: Co) {
     let (code, message) = socket.error();
-    report(call, code, message);
+    report(call, code, &message);
 }
 
 /// The client's `setting` property, if it is an array.

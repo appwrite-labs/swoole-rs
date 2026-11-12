@@ -278,8 +278,9 @@ fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
         message.extend_from_slice(b"OS:");
         for field in [host.sysname, host.release, host.version, host.machine] {
             message.push(b' ');
-            // SAFETY: uname's fields are NUL-terminated.
-            message.extend(unsafe { CStr::from_ptr(field.as_ptr()) }.to_bytes());
+            // Each field is NUL-terminated inside its array.
+            let field = field.map(|byte| byte.to_ne_bytes()[0]);
+            message.extend(field.split(|&byte| byte == 0).next().unwrap_or_default());
         }
         message.push(b'\n');
     }

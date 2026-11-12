@@ -7,10 +7,7 @@ use std::{
     ffi::CString,
     sync::{LazyLock, Mutex, PoisonError},
 };
-use swoole_rs_zend::{
-    Call,
-    sys::{swr_zend_runtime_env_lock, zend_argument_value_error},
-};
+use swoole_rs_zend::{Call, sys::swr_zend_runtime_env_lock};
 
 swoole_rs_zend::handlers! {
     zif_swoole_putenv => putenv;
@@ -25,8 +22,7 @@ fn putenv(call: &Call) {
         return;
     };
     if setting.first().is_none_or(|&first| first == b'=') {
-        // SAFETY: a handler's context; the message has no conversions.
-        unsafe { zend_argument_value_error(1, c"must have a valid syntax".as_ptr()) };
+        call.argument_value_error(1, c"must have a valid syntax");
         return;
     }
     // as C reads it: up to the first NUL

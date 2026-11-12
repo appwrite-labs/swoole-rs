@@ -12,13 +12,8 @@ use swoole_rs_error::ErrorCode::{
 use swoole_rs_zend::{
     E_ERROR, Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_instanceof, zend_class_entry},
+    sys::swr_zend_instanceof,
 };
-
-/// `swoole_exception_ce`.
-pub(crate) fn exception() -> *mut zend_class_entry {
-    swoole_rs_phpswoole::exception_class()
-}
 
 /// `php_swoole_serialize`: the serialized bytes, or `None`; a bailout is
 /// deferred.

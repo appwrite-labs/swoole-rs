@@ -63,61 +63,72 @@ fn event(directions: c_int) -> c_int {
     }
 }
 
-/// `ssh2_async_call`: `call` until it stops saying `EAGAIN`, waiting for
-/// `event`, the direction libssh2 was blocked on when it started.
-/// # Safety
-/// `ops` is the lent table and `session` a live session it can wait on.
-unsafe fn retry(
-    ops: *const Ops,
+/// The lent wait and the session it parks on, as an export received them.
+struct Wait<'a> {
+    ops: &'a Ops,
     session: *mut LIBSSH2_SESSION,
-    event: c_int,
-    mut call: impl FnMut() -> c_int,
-) -> c_int {
-    // SAFETY: per the caller.
-    let wait = unsafe { (*ops).wait };
-    loop {
-        let result = call();
-        if result != LIBSSH2_ERROR_EAGAIN {
-            return result;
-        }
-        // SAFETY: per the caller.
-        if !unsafe { (wait)(session, event) } {
-            return LIBSSH2_ERROR_SOCKET_NONE;
-        }
-    }
 }
 
-/// `ssh2_async_call_ex`: as [`retry`], for a call that returns null when it
-/// fails, `EAGAIN` being the session's `last_errno`.
-/// # Safety
-/// As [`retry`].
-unsafe fn retry_pointer<T>(
-    ops: *const Ops,
-    session: *mut LIBSSH2_SESSION,
-    event: c_int,
-    mut call: impl FnMut() -> *mut T,
-    last_errno: impl Fn() -> c_int,
-) -> *mut T {
-    // SAFETY: per the caller.
-    let wait = unsafe { (*ops).wait };
-    loop {
-        let handle = call();
-        if !handle.is_null() {
-            return handle;
-        }
+impl Wait<'_> {
+    /// # Safety
+    /// `ops` is the lent table and `session` a live session it can wait on,
+    /// both for as long as the value is used.
+    unsafe fn new(ops: *const Ops, session: *mut LIBSSH2_SESSION) -> Self {
         // SAFETY: per the caller.
-        if last_errno() != LIBSSH2_ERROR_EAGAIN || !unsafe { (wait)(session, event) } {
-            return ptr::null_mut();
+        let ops = unsafe { &*ops };
+        Self { ops, session }
+    }
+
+    /// The event to wait for on the session.
+    fn blocked(&self) -> c_int {
+        // SAFETY: the session is live (`new`).
+        event(unsafe { libssh2_session_block_directions(self.session) })
+    }
+
+    /// The session's `last_errno`.
+    fn last_errno(&self) -> c_int {
+        // SAFETY: the session is live (`new`).
+        unsafe { libssh2_session_last_errno(self.session) }
+    }
+
+    /// Park the coroutine until `event` on the session's socket.
+    fn park(&self, event: c_int) -> bool {
+        // SAFETY: the lent table's wait, on the session it can wait on (`new`).
+        unsafe { (self.ops.wait)(self.session, event) }
+    }
+
+    /// `ssh2_async_call`: `call` until it stops saying `EAGAIN`, waiting for
+    /// `event`, the direction libssh2 was blocked on when it started.
+    fn retry(&self, event: c_int, mut call: impl FnMut() -> c_int) -> c_int {
+        loop {
+            let result = call();
+            if result != LIBSSH2_ERROR_EAGAIN {
+                return result;
+            }
+            if !self.park(event) {
+                return LIBSSH2_ERROR_SOCKET_NONE;
+            }
         }
     }
-}
 
-/// The event to wait for on `session`.
-/// # Safety
-/// `session` is live.
-unsafe fn blocked(session: *mut LIBSSH2_SESSION) -> c_int {
-    // SAFETY: per the caller.
-    event(unsafe { libssh2_session_block_directions(session) })
+    /// `ssh2_async_call_ex`: as [`retry`](Self::retry), for a call that returns
+    /// null when it fails, `EAGAIN` being the session's `last_errno`.
+    fn retry_pointer<T>(
+        &self,
+        event: c_int,
+        mut call: impl FnMut() -> *mut T,
+        last_errno: impl Fn() -> c_int,
+    ) -> *mut T {
+        loop {
+            let handle = call();
+            if !handle.is_null() {
+                return handle;
+            }
+            if last_errno() != LIBSSH2_ERROR_EAGAIN || !self.park(event) {
+                return ptr::null_mut();
+            }
+        }
+    }
 }
 
 /// An `int` result, as upstream's `std::function<int(void)>` narrows a
@@ -176,14 +187,10 @@ macro_rules! hooks {
         /// the libssh2 function's arguments.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
-            let call = || {
-                // SAFETY: the caller's arguments, as libssh2 takes them.
-                unsafe { $function($($arg),*) }.narrow()
-            };
             // SAFETY: per the caller.
-            let event = unsafe { blocked(wait_on) };
-            // SAFETY: as above.
-            unsafe { retry(ops, wait_on, event, call) }
+            let wait = unsafe { Wait::new(ops, wait_on) };
+            // SAFETY: the caller's arguments, as libssh2 takes them.
+            wait.retry(wait.blocked(), || unsafe { $function($($arg),*) }.narrow())
         }
     };
     (@pointer $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
@@ -192,16 +199,11 @@ macro_rules! hooks {
         /// As the `int` exports.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
-            let call = || {
-                // SAFETY: the caller's arguments, as libssh2 takes them.
-                unsafe { $function($($arg),*) }
-            };
             // SAFETY: per the caller.
-            let last_errno = || unsafe { libssh2_session_last_errno(wait_on) };
-            // SAFETY: as above.
-            let event = unsafe { blocked(wait_on) };
-            // SAFETY: as above.
-            unsafe { retry_pointer(ops, wait_on, event, call, last_errno) }
+            let wait = unsafe { Wait::new(ops, wait_on) };
+            // SAFETY: the caller's arguments, as libssh2 takes them.
+            let call = || unsafe { $function($($arg),*) };
+            wait.retry_pointer(wait.blocked(), call, || wait.last_errno())
         }
     };
 }

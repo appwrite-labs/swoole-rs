@@ -25,14 +25,15 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr, ZString,
+    Array, Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr,
+    ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
     sys::{
         IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
         get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
-        zend_type_error, zval,
+        zend_type_error,
     },
     unset_property_deny,
 };
@@ -575,9 +576,9 @@ pub(crate) fn type_property(object: Obj, async_message: bool) -> Option<i64> {
 }
 
 /// The `setting` property when it is an array.
-pub(crate) fn settings(object: Obj) -> Option<*mut zval> {
+pub(crate) fn settings(object: Obj<'_>) -> Option<&Array> {
     let zset = object.property(c"setting");
-    (zset.kind() == IS_ARRAY).then(|| zset.as_ptr())
+    (zset.kind() == IS_ARRAY).then(|| zset.array()).flatten()
 }
 
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.

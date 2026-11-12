@@ -71,12 +71,23 @@ trait Raw {
 impl Raw for Table {
     unsafe fn clear_row(&self, row: *mut Row) {
         for column in self.columns() {
-            unsafe { clear_value(row, column) };
+            data(row).clear(column);
         }
     }
 
     unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize) {
-        unsafe { set_value(row, column, value, length, self.warning) };
+        // A number takes its 8 bytes whatever the length; a null string is empty.
+        let length = if column.kind == TYPE_STRING {
+            length
+        } else {
+            8
+        };
+        let value = if value.is_null() {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(value, length) }
+        };
+        data(row).set(column, value, Live(row).key(), self.warning);
     }
 
     fn current(&self) -> *mut Row {
@@ -107,7 +118,14 @@ impl Owned {
         #[expect(clippy::cast_ptr_alignment, reason = "alloc honours Table's layout")]
         let table = unsafe { alloc(Alloc::new::<Table>()) }.cast::<Table>();
         assert!(!table.is_null());
-        assert!(unsafe { Table::init(table, rows, conflict, djb, record_warning, record_error) });
+        assert!(Table::init(
+            unsafe { &mut *table.cast() },
+            rows,
+            conflict,
+            djb,
+            record_warning,
+            record_error
+        ));
         Owned {
             table,
             arena: Vec::new(),
@@ -496,7 +514,14 @@ fn row(name: &[u8], id: i64, score: f64) -> Entry {
 fn make(rows: u32, conflict: f32) -> *mut Table {
     let table = crate::members::sw_shm_malloc(size_of::<Table>()).cast::<Table>();
     assert!(!table.is_null());
-    assert!(unsafe { Table::init(table, rows, conflict, djb, record_warning, record_error) });
+    assert!(Table::init(
+        unsafe { &mut *table.cast() },
+        rows,
+        conflict,
+        djb,
+        record_warning,
+        record_error
+    ));
     table
 }
 
@@ -768,11 +793,9 @@ fn table_get_value() {
         1.245
     );
     assert_eq!(unsafe { get_number(row, column_id) }.cast_signed(), 1);
-    unsafe {
-        clear_value(row, column_id);
-        clear_value(row, column_name);
-        clear_value(row, column_score);
-    }
+    data(row).clear(column_id);
+    data(row).clear(column_name);
+    data(row).clear(column_score);
     streq(c"php");
     assert_eq!(
         f64::from_bits(unsafe { get_number(row, column_score) }),

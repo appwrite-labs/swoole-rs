@@ -180,6 +180,13 @@ extern "C" fn deferred(signo: c_int) {
     PENDING.store(true, Relaxed);
 }
 
+/// The `Callback` `signal_set` stored last; none before the first.
+fn callback() -> Option<Callback> {
+    // SAFETY: the slot holds 0 or a `Callback` `signal_set` stored, and a null
+    // `Option` of a function pointer is `None`.
+    unsafe { std::mem::transmute::<usize, Option<Callback>>(CALLBACK.load(Relaxed)) }
+}
+
 /// `signal_handler_simple`: deferred under a reactor, otherwise the callback runs in
 /// the signal frame, dropping a signal that arrives while one is running.
 extern "C" fn immediate(signo: c_int) {
@@ -193,10 +200,10 @@ extern "C" fn immediate(signo: c_int) {
     if RUNNING.swap(true, Relaxed) {
         return;
     }
-    // SAFETY: as above, for the `Callback`.
-    let callback: Callback = unsafe { std::mem::transmute(CALLBACK.load(Relaxed)) };
-    // SAFETY: the native callback takes any signal number.
-    unsafe { callback(signo) };
+    if let Some(callback) = callback() {
+        // SAFETY: the native callback takes any signal number.
+        unsafe { callback(signo) };
+    }
     RUNNING.store(false, Relaxed);
 }
 
@@ -207,9 +214,11 @@ pub extern "C" fn swoole_signal_dispatch() {
     if !PENDING.load(Relaxed) {
         return;
     }
-    // SAFETY: only the deferred handler marks a signal, and `signal_set`
-    // stores its `Callback` before installing that handler.
-    let callback: Callback = unsafe { std::mem::transmute(CALLBACK.load(Relaxed)) };
+    // Only the deferred handler marks a signal, and `signal_set` stores its
+    // `Callback` before installing that handler.
+    let Some(callback) = callback() else {
+        return;
+    };
     // SAFETY: upstream calls dispatch from a safe context, never a signal frame.
     unsafe { dispatch(callback) };
 }

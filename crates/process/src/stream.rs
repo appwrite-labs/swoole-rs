@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::{log, sys};
 
 /// `SW_INPUT_BUFFER_SIZE`: the client's default `package_max_length`.
@@ -60,7 +61,7 @@ fn set_flags(fd: c_int, get: c_int, set: c_int, flag: c_int, on: bool) -> io::Re
 }
 
 /// A non-blocking connect; `EINPROGRESS` is success.
-fn connect<T>(family: c_int, address: &T) -> io::Result<OwnedFd> {
+fn connect(family: c_int, addr: AddressStorage, len: libc::socklen_t) -> io::Result<OwnedFd> {
     let fd = swoole_rs_corebase::sys::socket(family, libc::SOCK_STREAM, 0);
     if fd < 0 {
         return Err(io::Error::last_os_error());
@@ -69,15 +70,8 @@ fn connect<T>(family: c_int, address: &T) -> io::Result<OwnedFd> {
     let socket = unsafe { OwnedFd::from_raw_fd(fd) };
     set_flags(fd, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, true)?;
     set_flags(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, true)?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a sockaddr's size fits socklen_t"
-    )]
-    let length = size_of::<T>() as libc::socklen_t;
-    // SAFETY: `address` is a whole sockaddr of `family`, `length` bytes long.
-    if unsafe { libc::connect(fd, (&raw const *address).cast(), length) } < 0
-        && errno() != libc::EINPROGRESS
-    {
+    let address = SocketAddress { addr, len, kind: 0 };
+    if address.connect(fd) < 0 && errno() != libc::EINPROGRESS {
         return Err(io::Error::last_os_error());
     }
     Ok(socket)
@@ -94,14 +88,18 @@ fn open(peer: &Peer) -> io::Result<OwnedFd> {
             for (to, from) in address.sun_path.iter_mut().zip(path.iter()) {
                 *to = libc::c_char::from_ne_bytes([*from]);
             }
-            connect(libc::AF_UNIX, &address)
+            let mut addr: AddressStorage = sys::zeroed();
+            addr.un = address;
+            connect(libc::AF_UNIX, addr, sys::socklen::<libc::sockaddr_un>())
         }
         Peer::Tcp(peer) => {
             let mut address: libc::sockaddr_in = swoole_rs_corebase::sys::zeroed();
             address.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
             address.sin_port = peer.port().to_be();
             address.sin_addr.s_addr = u32::from(*peer.ip()).to_be();
-            connect(libc::AF_INET, &address)
+            let mut addr: AddressStorage = sys::zeroed();
+            addr.inet_v4 = address;
+            connect(libc::AF_INET, addr, sys::socklen::<libc::sockaddr_in>())
         }
     }
 }

@@ -219,6 +219,12 @@ RACY = {'tests/swoole_http_server/compression_content_type_release.phpt':
         "joins the reactor threads, whose destroy callback closes every connection, before it "
         "stops the worker; when that wins, onClose's getClientInfo() finds no session and the "
         'isArray assert fails on both engines (Docker, 150 runs each: upstream 4, cargo 5, #2890)',
+        'tests/swoole_http2_server/413.phpt':
+        "`nghttp -d` posts 2 MiB to a server whose package_max_length is 1 MiB; the server "
+        "answers 413 on the request's HEADERS and then neither resets the stream nor extends "
+        "its window, so nghttp 1.59 sends its first 64 KiB and waits to send the rest until the "
+        "runner's timeout, on every engine (the last four merge-tier runs, both engines; the "
+        'aarch64 dev image against upstream: 413 at 13 ms, nghttp still waiting at 20 s, #3309)',
         'tests/swoole_coroutine_lock/lock.phpt':
         "its three concurrent requests land on different SWOOLE_PROCESS workers, and when request "
         "2's worker takes the shared lock before request 1's, the output is lock2, value 3, lock1 "

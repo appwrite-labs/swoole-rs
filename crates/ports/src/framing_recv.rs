@@ -100,7 +100,7 @@ impl Packages for Callbacks {
         // `start`, inside the buffer (the loop dispatches only a whole one).
         unsafe {
             dispatch(
-                r.protocol,
+                r.protocol(),
                 r.socket.as_ptr(),
                 b.as_ptr().wrapping_add(start),
                 length,
@@ -150,9 +150,9 @@ fn paused(socket: &SocketFields) -> bool {
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.
 ///
 /// # Safety
-/// The live protocol and socket, and `length` readable bytes at `data`.
+/// The live socket, and `length` readable bytes at `data`.
 unsafe fn dispatch(
-    protocol: *const Protocol,
+    protocol: &Protocol,
     socket: *mut SocketRecord,
     data: *const u8,
     length: u64,
@@ -164,8 +164,7 @@ unsafe fn dispatch(
         },
         data,
     };
-    // SAFETY: as the caller promises.
-    match unsafe { (*protocol).on_package } {
+    match protocol.on_package {
         // SAFETY: upstream's call, over the live protocol, socket and packet.
         Some(on_package) => unsafe {
             on_package(protocol, socket.cast(), (&raw const packet).cast())
@@ -183,7 +182,7 @@ unsafe extern "C" fn split_part(
     // SAFETY: `effect`'s live receive.
     let r = unsafe { &*context.cast::<Recv>() };
     // SAFETY: the live protocol and socket, and the part inside the buffer.
-    let result = unsafe { dispatch(r.protocol, r.socket.as_ptr(), data.cast(), length as u64) };
+    let result = unsafe { dispatch(r.protocol(), r.socket.as_ptr(), data.cast(), length as u64) };
     result >= 0 && r.socket.read(|s| s.removed) == 0
 }
 

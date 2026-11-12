@@ -115,9 +115,7 @@ pub fn socket_cast(value: &Value) -> c_int {
                 .unwrap_or_default();
             (-1, c"failed to dup socket fd", errno)
         };
-        let exception = crate::EXCEPTION.entry();
-        // SAFETY: a request, with a registered class.
-        unsafe { swoole_rs_zend::throw_exception(exception, message, i64::from(code)) };
+        crate::EXCEPTION.throw(message, i64::from(code));
         fd
     }
     #[cfg(not(feature = "sockets"))]
@@ -236,10 +234,7 @@ pub fn set_blocking(driver: Switch, blocking: bool) {
 
 /// `SW_MUST_BE_MAIN_THREAD`'s test: always true without `SW_THREAD`.
 pub(crate) fn main_thread() -> bool {
-    !built_with(Switch::Thread) || {
-        // SAFETY: no preconditions.
-        unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
-    }
+    !built_with(Switch::Thread) || swoole_rs_zend::is_main_thread()
 }
 
 /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.

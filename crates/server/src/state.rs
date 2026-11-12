@@ -592,12 +592,9 @@ fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
-pub(crate) fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<bool> {
-    // SAFETY: native code lends the live `SendData` it built for the call.
-    let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, unsafe { &*data })?;
+pub(crate) fn send<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
+    let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, send)?;
     let sent = if here {
-        // SAFETY: as above.
-        let send = unsafe { &*data };
         match h.send_now(send)? {
             Some(sent) if sent == i64::from(send.info.len) => true,
             first => send_to_connection(h, u64::from(SEND_DATA), first)? == SW_OK,
@@ -608,8 +605,6 @@ pub(crate) fn send<H: Host>(h: &mut H, data: *const SendData) -> crate::Effect<b
     if !sent {
         return Ok(false);
     }
-    // SAFETY: as above.
-    let send = unsafe { &*data };
     crate::shared::count_send(h.state()?, send.info.fd, send.info.len);
     Ok(true)
 }
@@ -802,9 +797,9 @@ mod tests {
             s
         };
         let mut s = process(&[(OP_ST_FINISH, 1)]);
-        assert!(send(&mut s, &raw const data).unwrap());
+        assert!(send(&mut s, &data).unwrap());
         let mut s = process(&[]);
-        assert!(!send(&mut s, &raw const data).unwrap());
+        assert!(!send(&mut s, &data).unwrap());
     }
 
     /// A 4-byte send to session 1.
@@ -830,10 +825,10 @@ mod tests {
             (OP_SC_SEND, 4),
             (OP_SC_WRITABLE, 1),
         ]);
-        assert!(send(&mut s, &raw const data).unwrap());
+        assert!(send(&mut s, &data).unwrap());
         assert_eq!((s.called(OP_ST_FINISH), s.called(OP_SC_SEND)), (0, 1));
         let mut s = Script::default();
-        assert!(!send(&mut s, &raw const data).unwrap(), "no session");
+        assert!(!send(&mut s, &data).unwrap(), "no session");
     }
 
     #[test]

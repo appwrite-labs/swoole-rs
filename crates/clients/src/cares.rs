@@ -231,10 +231,11 @@ unsafe extern "C" fn host(
         };
         query.error.set(error);
     } else {
-        // SAFETY: a successful SDK callback lends hostent and its terminated address list.
-        let mut addresses = unsafe { (*entry).h_addr_list };
-        // SAFETY: the successful SDK hostent identifies the address storage family.
-        let family = unsafe { (*entry).h_addrtype };
+        // SAFETY: a successful SDK callback lends its hostent for the call.
+        let entry = unsafe { &*entry };
+        // The terminated address list, and the family of the storage its slots name.
+        let mut addresses = entry.h_addr_list;
+        let family = entry.h_addrtype;
         while !addresses.is_null() {
             // SAFETY: each list slot is valid until the first null terminator.
             let address = unsafe { *addresses };

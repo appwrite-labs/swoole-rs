@@ -27,10 +27,7 @@ use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
-    sys::{
-        ZEND_ACC_PUBLIC, swr_zend_instanceof, zend_class_entry, zend_object,
-        zend_wrong_parameter_class_error,
-    },
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_wrong_parameter_class_error},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -229,9 +226,9 @@ fn ce() -> *mut zend_class_entry {
 
 /// `php_swoole_socket_set` when `settings` is an array.
 fn apply(socket: Co, settings: &Value) {
-    if settings.array().is_some() {
-        // SAFETY: a live socket and array; 0 applies every setting.
-        unsafe { swoole_rs_phpclients::socket_settings(socket.this(), settings.as_ptr(), 0) };
+    if let Some(settings) = settings.array() {
+        // Every setting.
+        swoole_rs_phpclients::socket_set(socket, settings);
     }
 }
 
@@ -346,8 +343,7 @@ impl Client {
 
     /// Writes under the client class.
     fn props(&self) -> Props<'_> {
-        // SAFETY: the client object outlives its client.
-        unsafe { Props::new(ce(), self.object) }
+        self.conn.props()
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
@@ -369,14 +365,8 @@ impl Client {
 
     /// `io_error`: the socket's errCode and errMsg.
     fn io_error(&self, socket: Co) {
-        let (code, message) = (socket.err_code(), socket.err_msg());
-        let message = if message.is_null() {
-            &b""[..]
-        } else {
-            // SAFETY: the socket's NUL-terminated errMsg.
-            unsafe { CStr::from_ptr(message) }.to_bytes()
-        };
-        self.update_error(code, message);
+        let (code, message) = swoole_rs_phpclients::Co::from(socket).error();
+        self.update_error(code, message.to_bytes());
     }
 
     fn is_available(&self) -> bool {
@@ -409,13 +399,13 @@ impl Client {
             }
             return false;
         }
-        // SAFETY: the new socket object, whose socket lives as long as it.
-        let socket = unsafe { swoole_rs_phpclients::socket_of(object) };
-        // SAFETY: as above; the conn's reference to the object keeps it live
-        // until the close hook clears this handle.
-        let socket = unsafe { Co::of(socket) };
         // SAFETY: the conn takes the new object's reference.
-        *self.conn.zsocket.borrow_mut() = unsafe { Owned::object(object) };
+        let zsocket = unsafe { Owned::object(object) };
+        // SAFETY: the new socket object's socket, which lives as long as it; the
+        // conn's reference to the object keeps it live until the close hook clears
+        // this handle.
+        let socket = unsafe { Co::of(swoole_rs_phpclients::get_socket(&zsocket)) };
+        *self.conn.zsocket.borrow_mut() = zsocket;
         self.conn.socket.set(Some(socket));
         let conn = Rc::clone(&self.conn);
         set_close_hook(socket, Box::new(move |_| socket_closed(&conn)));
@@ -1364,10 +1354,7 @@ mod request {
 fn request_arg(call: &Call) -> Option<Request<'_>> {
     let arg = call.value(1)?;
     let ce = REQUEST.entry();
-    if let (Some(object), Some(class)) = (arg.object(), arg.class())
-        // SAFETY: two registered classes.
-        && (class == ce || unsafe { swr_zend_instanceof(class, ce) })
-    {
+    if let Some(object) = arg.object().filter(|_| arg.instance_of(&REQUEST)) {
         return Some(Request::new(object));
     }
     // SAFETY: from a handler, as Zend's macro reports it; the name is the

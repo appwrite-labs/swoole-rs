@@ -22,7 +22,8 @@ pub struct Running<'a> {
 
 impl Running<'_> {
     /// # Safety
-    /// `raw` is a live `Reactor`, on this thread, while the handle is used.
+    /// `raw` is a live `Reactor`, on this thread, while the handle is used, and no Rust
+    /// reference to its state is held across a call that takes the handle.
     #[must_use]
     pub unsafe fn new(raw: *mut c_void) -> Self {
         Self {
@@ -34,6 +35,12 @@ impl Running<'_> {
     #[must_use]
     pub fn as_ptr(self) -> *mut c_void {
         self.raw
+    }
+
+    /// The reactor's state: live while the handle is, and borrowed by no reference.
+    #[cfg(unix)]
+    pub(crate) fn state(self) -> *mut crate::ReactorState {
+        self.raw.cast()
     }
 }
 

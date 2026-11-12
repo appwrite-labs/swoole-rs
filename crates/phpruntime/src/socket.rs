@@ -7,9 +7,9 @@ use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
-    E_ERROR, Owned, Value,
+    E_ERROR, Owned, Value, ZString,
     bailout::{self, Bailout},
-    sys::{swr_zval_stringl, zval, zval_ptr_dtor},
+    sys::{zval, zval_ptr_dtor},
 };
 
 // crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
@@ -425,9 +425,8 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
     let retval = certificate.as_ptr();
     let read = || {
-        let mut string: zval = swoole_rs_zend::UNDEF;
-        // SAFETY: the caller's bytes, copied into a new string.
-        unsafe { swr_zval_stringl(&raw mut string, pem.as_ptr().cast(), pem.len()) };
+        // The caller's bytes, copied into a new string.
+        let mut string: zval = Owned::string(ZString::new(pem)).into_zval();
         let name = c"openssl_x509_read";
         // SAFETY: one live argument and the caller's writable result.
         unsafe {
@@ -521,7 +520,7 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
     pub use super::Io;
-    use libc::{c_char, c_int, c_void, iovec};
+    use libc::{c_int, c_void, iovec};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
@@ -587,14 +586,6 @@ pub mod co {
                 .map_or(0.0, |now| now.as_secs_f64());
             self.0.timed_out(kind, now)
         }
-    }
-
-    /// One table transfer of `length` bytes at `buf`.
-    /// # Safety
-    /// `buf` holds `length` bytes, writable to receive.
-    pub unsafe fn io(socket: Co, op: Io, buf: *mut c_char, length: usize) -> isize {
-        // SAFETY: per the caller.
-        unsafe { super::io(socket, op, buf, length) }
     }
 
     /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over

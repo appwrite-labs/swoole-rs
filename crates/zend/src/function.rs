@@ -13,11 +13,7 @@ impl Call {
     /// `add_assoc_bool_ex(return_value, key, value)`, after `set_array`
     /// (nothing unless the return slot holds an array).
     pub fn add_assoc_bool(&self, key: &CStr, value: bool) {
-        // SAFETY: as in `add_assoc_long`.
-        let slot = unsafe { &mut *self.return_value().cast::<crate::Owned>() };
-        if let Some(array) = slot.array_mut() {
-            array.insert_bool(key.to_bytes(), value);
-        }
+        self.add(|array| array.insert_bool(key.to_bytes(), value));
     }
 }
 

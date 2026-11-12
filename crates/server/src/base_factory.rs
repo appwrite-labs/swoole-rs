@@ -20,7 +20,7 @@ use swoole_rs_process::worker_record::Worker;
 
 /// `swoole::SendData`.
 #[repr(C)]
-pub(crate) struct SendData {
+pub struct SendData {
     pub info: DataHead,
     pub data: *const c_char,
 }

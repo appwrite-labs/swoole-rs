@@ -199,9 +199,7 @@ pub fn shutdown(fd: c_int, how: c_int) -> c_int {
 /// `getsockopt(2)` of an int option into `value`, which keeps what it held when
 /// the call fails.
 pub fn getsockopt_int(fd: c_int, level: c_int, name: c_int, value: &mut c_int) -> c_int {
-    let mut length = libc::socklen_t::try_from(size_of::<c_int>()).unwrap_or(4);
-    // SAFETY: `value` holds the `length` writable bytes given.
-    unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) }
+    getsockopt(fd, level, name, value).map_or(-1, |_| 0)
 }
 
 /// `getsockopt(2)` into `value`: the length the kernel stored, or `None` with

@@ -14,11 +14,11 @@ pub const EPOLL: u32 = 1;
 pub const KQUEUE: u32 = 2;
 
 /// The effects of one `wait()`. Every function receives `reactor`.
-pub(crate) struct WaitOps {
-    /// The native `Reactor`; each handler runs as `handler(reactor, event)`.
-    pub(crate) reactor: *mut c_void,
-    pub(crate) begin: fn(*mut c_void),
-    pub(crate) end: fn(*mut c_void, bool),
+pub(crate) struct WaitOps<'a> {
+    /// The `Reactor` that waits; each handler runs as `handler(reactor, event)`.
+    pub(crate) reactor: handlers::Running<'a>,
+    pub(crate) begin: fn(handlers::Running<'_>),
+    pub(crate) end: fn(handlers::Running<'_>, bool),
 }
 
 /// The `io_uring` engine's operations this crate calls. crates/hooks, which sits
@@ -28,8 +28,8 @@ pub struct UringOps {
     pub interrupted: fn() -> bool,
     /// Harvest the engine's completions after that interruption.
     pub interrupt: fn(),
-    /// `Iouring::waitpid`; `status` is writable.
-    pub waitpid: unsafe fn(libc::pid_t, *mut c_int, c_int, f64) -> libc::pid_t,
+    /// `Iouring::waitpid`.
+    pub waitpid: fn(libc::pid_t, Option<&mut c_int>, c_int, f64) -> libc::pid_t,
 }
 
 static URING: OnceLock<&'static UringOps> = OnceLock::new();
@@ -116,7 +116,7 @@ impl Event {
 
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
-    ops: &'a WaitOps,
+    ops: &'a WaitOps<'a>,
     owner: *mut ReactorState,
     backend: u32,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
@@ -127,6 +127,8 @@ struct Loop<'a> {
     handlers: *const Handlers,
     /// The event the loop prepared for the ready socket's handlers.
     event: std::cell::Cell<Event>,
+    /// How many of `events` (and poll's `sockets`) the last kernel wait filled.
+    ready: std::cell::Cell<usize>,
 }
 
 const SW_EVENT_ONCE: c_int = 1 << 12;
@@ -150,14 +152,13 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 }
 
 /// Upstream's `wait()` for the state's backend: 0 when the loop stops (and when poll fails
-/// uncaught), -1 when epoll or kqueue fail uncaught.
-/// # Safety
-/// `owner` is a live state with an open backend. No reference to the state crosses an
+/// uncaught), -1 when epoll or kqueue fail uncaught. No reference to the state crosses an
 /// effect, so effects may change it through its native views.
-pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
+pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
     let reactor = ops.reactor;
-    // SAFETY: the state is live and no native effect is active, so nothing else borrows
-    // it; this borrow ends before the first effect.
+    let owner = reactor.state();
+    // SAFETY: the handle's live state; no native effect is active, so nothing else
+    // borrows it, and this borrow ends before the first effect.
     let state = unsafe { &mut *owner };
     // The backend's arrays stay put until the state closes it.
     let view = state.backend_view();
@@ -194,6 +195,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
         reactor_id: id as i16,
         handlers,
         event: std::cell::Cell::new(Event::empty()),
+        ready: std::cell::Cell::new(0),
     };
     // SAFETY: single field reads; effects may change the field between them.
     while unsafe { running.read() } {
@@ -201,8 +203,7 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
         let mut entries: c_int = 0;
         // SAFETY: a single field read of the live state; deferred work waits without blocking.
         let deferred = !unsafe { (*fields).defer_tasks }.is_null();
-        // SAFETY: the kernel wait runs no native effect.
-        let ready = unsafe { kernel_wait(owner, deferred, &raw mut entries) };
+        let ready = kernel_wait(reactor, deferred, &mut entries);
         match ready.cmp(&0) {
             core::cmp::Ordering::Less => {
                 // upstream's Reactor::catch_error()
@@ -226,9 +227,10 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
             }
             core::cmp::Ordering::Greater => {
                 let count = if run.backend == POLL { entries } else { ready };
-                for index in 0..count.unsigned_abs() as usize {
-                    // SAFETY: the kernel filled the first `count` entries of `events`.
-                    unsafe { entry(&run, index) };
+                // The kernel filled the first `count` entries of `events`.
+                run.ready.set(count.unsigned_abs() as usize);
+                for index in 0..run.ready.get() {
+                    entry(&run, index);
                 }
             }
         }
@@ -240,14 +242,15 @@ pub(crate) unsafe fn wait(owner: *mut ReactorState, ops: &WaitOps) -> i32 {
     0
 }
 
-/// Decode and dispatch entry `index`.
-/// # Safety
-/// `index` is below the count the kernel wait reported.
-unsafe fn entry(ops: &Loop<'_>, index: usize) {
+/// Decode and dispatch entry `index`, if the kernel wait filled it.
+fn entry(ops: &Loop<'_>, index: usize) {
+    if index >= ops.ready.get() {
+        return;
+    }
     let (socket, fd, mask) = match ops.backend {
         POLL => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
-            // SAFETY: the caller checked `index` against poll's entry count.
+            // SAFETY: `index` is below poll's entry count, checked above.
             let pollfd = unsafe { pollfd.read() };
             if pollfd.revents == 0 {
                 return;
@@ -265,7 +268,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
         #[cfg(target_os = "linux")]
         EPOLL => {
             let event = ops.events.cast::<libc::epoll_event>().wrapping_add(index);
-            // SAFETY: the caller checked `index` against the kernel's ready count.
+            // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read_unaligned() };
             let events = event.events;
             let mask = mask(
@@ -288,7 +291,7 @@ unsafe fn entry(ops: &Loop<'_>, index: usize) {
         ))]
         KQUEUE => {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
-            // SAFETY: the caller checked `index` against the kernel's ready count.
+            // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read() };
             return kqueue(ops, event.udata.cast(), c_int::from(event.filter));
         }
@@ -382,7 +385,7 @@ mod kqueue_signal {
     /// Upstream's `swoole::Signal`.
     #[repr(C)]
     pub(super) struct Signal {
-        pub handler: Option<unsafe extern "C" fn(c_int)>,
+        pub handler: Option<swoole_rs_process::signal::Callback>,
         pub signo: u16,
         pub activated: bool,
     }
@@ -505,12 +508,10 @@ fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
     let Some(handler) = (unsafe { &*ops.handlers }).dispatch(kind, fd_type) else {
         return -1;
     };
-    // SAFETY: the live reactor running this wait, on its thread.
-    let reactor = unsafe { handlers::Running::new(ops.ops.reactor) };
     // The handler may change the event, which the next handler of this socket sees; a
     // nested wait prepares its own.
     let mut event = ops.event.get();
-    let result = handler(reactor, &mut event);
+    let result = handler(ops.ops.reactor, &mut event);
     ops.event.set(event);
     result
 }
@@ -562,36 +563,36 @@ fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reactor_state::tests::running;
     use std::cell::RefCell;
 
     thread_local! {
         static EFFECTS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
-    }
-
-    struct Probe {
-        running: *mut bool,
-        begin_stops: bool,
-        cycles: u32,
+        /// Whether begin stops the loop, and the end callbacks run so far.
+        static PROBE: std::cell::Cell<(bool, u32)> = const { std::cell::Cell::new((false, 0)) };
     }
 
     fn effect(name: &'static str) {
         EFFECTS.with(|effects| effects.borrow_mut().push(name));
     }
 
-    fn begin(reactor: *mut c_void) {
+    fn stop(reactor: crate::Running<'_>) {
+        unsafe { (*reactor.state()).fields.running = false };
+    }
+
+    fn begin(reactor: crate::Running<'_>) {
         effect("begin");
-        let probe = unsafe { &mut *reactor.cast::<Probe>() };
-        if probe.begin_stops {
-            unsafe { probe.running.write(false) };
+        if PROBE.get().0 {
+            stop(reactor);
         }
     }
 
-    fn end(reactor: *mut c_void, timed_out: bool) {
+    fn end(reactor: crate::Running<'_>, timed_out: bool) {
         effect(if timed_out { "end-timeout" } else { "end" });
-        let probe = unsafe { &mut *reactor.cast::<Probe>() };
-        probe.cycles += 1;
-        if probe.cycles == 2 {
-            unsafe { probe.running.write(false) };
+        let (begin_stops, cycles) = PROBE.get();
+        PROBE.set((begin_stops, cycles + 1));
+        if cycles + 1 == 2 {
+            stop(reactor);
         }
     }
 
@@ -674,23 +675,18 @@ mod tests {
             (*state.fields).timeout_msec = if deferred { -1 } else { 1 };
             (*state.fields).once = once;
         }
-        let mut probe = Probe {
-            // SAFETY: the state's own field slot.
-            running: unsafe { &raw mut (*state.fields).running },
-            begin_stops,
-            cycles: 0,
-        };
+        PROBE.set((begin_stops, 0));
         let mut task = crate::ReactorDeferred::default();
         if deferred {
             // SAFETY: the state's own field; the stack queue outlives the wait and is detached after.
             unsafe { (*state.fields).defer_tasks = &raw mut task };
         }
         let ops = WaitOps {
-            reactor: (&raw mut probe).cast(),
+            reactor: running(state.owner),
             begin,
             end,
         };
-        assert_eq!(unsafe { wait(state.owner, &ops) }, 0);
+        assert_eq!(wait(&ops), 0);
         let removed = socket.removed != 0;
         unsafe {
             assert!((*state.fields).start);

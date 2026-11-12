@@ -268,11 +268,10 @@ pub struct SslSendfileResult {
 /// A failed send warns when `catch_error` says it is an error.
 ///
 /// # Safety
-/// `offset` is writable and `send` is valid for `socket`, which `send` may
-/// access while `offset` is lent.
+/// `send` is valid for `socket`.
 pub unsafe fn ssl_sendfile(
     file_fd: c_int,
-    offset: *mut libc::off_t,
+    offset: &mut libc::off_t,
     size: usize,
     send: TlsIo,
     socket: *mut c_void,
@@ -280,8 +279,7 @@ pub unsafe fn ssl_sendfile(
 ) -> SslSendfileResult {
     const CHUNK: usize = 65536;
     let mut buffer = vec![0_u8; size.min(CHUNK)];
-    // SAFETY: the caller's offset.
-    let at = unsafe { *offset };
+    let at = *offset;
     let n = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at);
     if n <= 0 {
         return SslSendfileResult { value: -1, warn: 2 };
@@ -296,8 +294,7 @@ pub unsafe fn ssl_sendfile(
             warn: c_int::from(failed),
         };
     }
-    // SAFETY: the caller's offset.
-    unsafe { *offset = at + libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX) };
+    *offset = at + libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
     SslSendfileResult {
         value: sent,
         warn: 0,
@@ -543,7 +540,7 @@ mod tests {
         let result = unsafe {
             ssl_sendfile(
                 file.as_raw_fd(),
-                &raw mut offset,
+                &mut offset,
                 6,
                 sends_three,
                 std::ptr::null_mut(),
@@ -559,7 +556,7 @@ mod tests {
         let result = unsafe {
             ssl_sendfile(
                 file.as_raw_fd(),
-                &raw mut offset,
+                &mut offset,
                 6,
                 sends_three,
                 std::ptr::null_mut(),
