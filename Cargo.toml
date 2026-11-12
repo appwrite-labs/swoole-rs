@@ -26,7 +26,7 @@ codegen-units = 1
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).
 unreachable_pub = "deny"
 # `cargo fuzz` builds with --cfg fuzzing.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(tsan)"] }
 
 [workspace.lints.clippy]
 # Pedantic is denied whole (#156), including the cast lints that guard the FFI

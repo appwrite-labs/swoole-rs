@@ -2,6 +2,7 @@
 //! usage markers and their exponential sampling. context.rs switches onto it.
 
 use core::ffi::c_void;
+use core::mem::MaybeUninit;
 use std::ptr;
 
 const START: usize = 64 * 1024;
@@ -48,8 +49,8 @@ pub fn swr_v1_context_stack_alloc(size: usize, flags: u32) -> *mut c_void {
         return stack;
     }
     if flags & STACK_MARK != 0 {
-        // SAFETY: `stack` is a fresh `size`-byte writable allocation.
-        unsafe { mark(stack.cast(), size) };
+        // SAFETY: `stack` is a fresh `size`-byte writable allocation, borrowed only here.
+        mark(unsafe { std::slice::from_raw_parts_mut(stack.cast::<MaybeUninit<u8>>(), size) });
     }
     if flags & STACK_PROTECT != 0 {
         let page = swoole_rs_corebase::sys::sysconf(libc::_SC_PAGESIZE);
@@ -79,15 +80,15 @@ pub unsafe fn swr_v1_context_stack_free(stack: *mut c_void, size: usize, flags: 
     }
 }
 
-/// # Safety
-/// `stack` names `size` writable bytes without concurrent access. Bytes outside
-/// the marker spans may be uninitialized.
-unsafe fn mark(stack: *mut u8, size: usize) {
+/// Writes the markers; bytes outside their spans stay as they were.
+fn mark(stack: &mut [MaybeUninit<u8>]) {
+    let size = stack.len();
     for offset in offsets().take_while(|&offset| offset <= size) {
-        let index = size - offset + MAGIC.len();
-        // SAFETY: `offset >= 64 KiB >= 2 * MAGIC.len()` and `offset <= size`, so the span
-        // `index..index + MAGIC.len()` lies inside the caller's `size` writable bytes.
-        unsafe { ptr::copy_nonoverlapping(MAGIC.as_ptr(), stack.wrapping_add(index), MAGIC.len()) };
+        // `offset >= 64 KiB >= 2 * MAGIC.len()` and `offset <= size`: the span is inside.
+        let span = stack.iter_mut().skip(size - offset + MAGIC.len());
+        for (byte, &magic) in span.zip(MAGIC) {
+            byte.write(magic);
+        }
     }
 }
 
@@ -142,7 +143,7 @@ mod tests {
             START * 16,
         ] {
             let mut memory = vec![0xa5; size];
-            unsafe { mark(memory.as_mut_ptr(), size) };
+            mark(unsafe { &mut *(ptr::from_mut::<[u8]>(&mut memory) as *mut [MaybeUninit<u8>]) });
             for (index, &byte) in memory.iter().enumerate() {
                 let expected = offsets()
                     .take_while(|&offset| offset <= size)
