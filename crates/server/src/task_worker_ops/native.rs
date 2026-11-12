@@ -82,7 +82,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             in_worker_bus(ctx.state(), ctx.config(), pipe, |pipe| {
                 set_nonblock(pipe);
                 let reactor = Reactor::thread();
-                reactor.fields().ptr = ctx.pool().raw().cast();
+                reactor.handle().set_object(ctx.pool().raw().cast());
                 reactor.add(pipe, EVENT_READ);
                 reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
             })?;
@@ -142,7 +142,7 @@ extern "C" fn on_pipe_receive(
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
     // The reactor running this handler, whose `ptr` is the task pool.
-    let raw = Reactor::running(reactor).fields().ptr.cast();
+    let raw = reactor.object().cast();
     // SAFETY: OP_LISTEN_TASK_PIPE set the reactor's `ptr` to the live task pool.
     let pool = unsafe { PoolRef::new(raw) };
     let id = u16::try_from(swoole_get_worker_id()).unwrap_or(u16::MAX);

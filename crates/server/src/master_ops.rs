@@ -1454,7 +1454,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_MASTER_REACTOR => {
             let reactor = o.reactor();
-            reactor.fields().ptr = o.ctx.serv;
+            reactor.handle().set_object(o.ctx.serv);
             let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
             reactor.set_handler(SW_FD_STREAM_SERVER, SW_EVENT_READ, accept);
             0
@@ -1601,11 +1601,11 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_REACTOR_WAIT_EXIT => {
-            reactor().fields().wait_exit = true;
+            reactor().handle().set_wait_exit(true);
             0
         }
         OP_REACTOR_STOP => {
-            reactor().fields().running = false;
+            reactor().handle().set_running(false);
             0
         }
         OP_NOW_MS => swoole_rs_reactor::steady_ms().to_bits(),
@@ -2106,7 +2106,9 @@ extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
             c"Server::stop_master_thread",
             format_args!("graceful shutdown failed, forced termination"),
         );
-        crate::reactor_handle::Reactor::thread().fields().running = false;
+        crate::reactor_handle::Reactor::thread()
+            .handle()
+            .set_running(false);
     }
     true
 }
@@ -2632,9 +2634,7 @@ extern "C" fn accept_command_result(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    let serv = crate::reactor_handle::Reactor::running(reactor)
-        .fields()
-        .ptr;
+    let serv = reactor.object();
     // SAFETY: the master reactor's live server.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
     let bus = state.message_bus();

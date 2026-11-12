@@ -243,9 +243,9 @@ impl<'c> Objects<'_, 'c> {
     fn handle(&self) -> Option<Reactor> {
         self.ctx.reactor
     }
-    /// The fields of the context's live reactor, which only this thread touches.
-    fn reactor(&self) -> Option<&mut swoole_rs_reactor::ReactorFields> {
-        self.ctx.reactor.as_ref().map(Reactor::fields)
+    /// The context's live reactor, which only this thread touches.
+    fn reactor(&self) -> Option<swoole_rs_reactor::Running<'static>> {
+        self.ctx.reactor.map(Reactor::handle)
     }
     fn port(&self) -> Option<&'c PortConfig> {
         self.ctx.port.map(view::Port::config)
@@ -322,7 +322,7 @@ fn write_facts(o: &mut Objects<'_, '_>) -> u64 {
     if o.mode() == crate::MODE_PROCESS {
         debug_assert_eq!(
             Some(fd % c_int::from(o.config().reactor_num)),
-            o.reactor().map(|reactor| c_int::from(reactor.id)),
+            o.reactor().map(|reactor| c_int::from(reactor.id())),
             "a reactor thread writes only its own fds"
         );
     }
@@ -549,7 +549,7 @@ pub(crate) fn answer(
                 info: DataHead {
                     fd: o.sock()?.fd().into(),
                     kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
-                    reactor_id: o.reactor()?.id.cast_signed(),
+                    reactor_id: o.reactor()?.id().cast_signed(),
                     len: u32::try_from(len).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
@@ -560,7 +560,7 @@ pub(crate) fn answer(
         OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),
         // SAFETY: the datagram server's connection, whose object is its live port.
         OP_PORT_DTLS => u64::from(unsafe { port_config::of(o.conn()?.object()) }.is_dtls()),
-        OP_REACTOR_ID => u64::from(o.reactor()?.id),
+        OP_REACTOR_ID => u64::from(o.reactor()?.id()),
         OP_REACTOR_NUM => u64::from(o.config().reactor_num),
         OP_WORKER_NUM => u64::from(o.config().worker_num),
         OP_CONN_AT | OP_CC_VALID => {
@@ -581,7 +581,7 @@ pub(crate) fn answer(
             u64::from(o.conn()?.peer_closed() == 0 && !removed)
         }
         OP_WAIT_EXIT => {
-            o.reactor()?.wait_exit = true;
+            o.reactor()?.set_wait_exit(true);
             0
         }
         OP_SESSION_CONN | OP_RT_FRONT_CONN => {
@@ -813,17 +813,17 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         OP_MASTER_REACTOR_ID => {
             // a special id for the master thread
             let id = o.config().reactor_num;
-            o.reactor()?.id = id;
+            o.reactor()?.set_id(id);
             swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
             0
         }
         OP_RT_SETUP => {
-            let fields = o.reactor()?;
-            fields.ptr = o.ctx.serv.raw();
-            fields.id = u16::try_from(arg & 0xffff).unwrap_or_default();
-            fields.wait_exit = false;
-            fields.max_socket = o.tables().max_connection;
-            fields.close = Some(crate::reactor_entry::close_connection);
+            let reactor = o.reactor()?;
+            reactor.set_object(o.ctx.serv.raw());
+            reactor.set_id(u16::try_from(arg & 0xffff).unwrap_or_default());
+            reactor.set_wait_exit(false);
+            reactor.set_max_socket(o.tables().max_connection);
+            reactor.set_close(Some(crate::reactor_entry::close_connection));
             let handle = o.handle()?;
             handle.set_error_handler(entry::on_close);
             for (event, handler) in [
@@ -951,7 +951,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_DTLS_ACCEPT => {
             let (serv, reactor) = (o.ctx.serv, o.handle()?.ptr());
-            let (single_thread, close) = (o.config().single_thread, o.reactor()?.close);
+            let (single_thread, close) = (o.config().single_thread, o.reactor()?.close());
             let (port, pkt) = (o.conn()?.object(), o.ctx.pkt.cast());
             // SAFETY: the context's live server and reactor, the DTLS port the packet
             // arrived on and the packet received, `arg` bytes.

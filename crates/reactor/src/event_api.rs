@@ -286,8 +286,10 @@ pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
 /// # Safety
 /// `call(data)` is sound when the reactor is destroyed.
 pub unsafe fn on_destroy_with(call: crate::DeferCall, data: *mut c_void) {
-    // SAFETY: as the caller promises.
-    field_mut(|fields| unsafe { crate::defer_destroy(fields, call, data) });
+    if let Some(reactor) = running() {
+        // SAFETY: as the caller promises.
+        unsafe { crate::defer_destroy(reactor, call, data) };
+    }
 }
 
 /// `sw_reactor()->running = running`, when there is a reactor.

@@ -13,6 +13,25 @@ use crate::Event;
 /// A handler runs only for the fd types and reactors it was registered with.
 pub type Handler = extern "C" fn(Running<'_>, &mut Event) -> c_int;
 
+/// A getter and setter of one of the reactor's fields, each borrowing its state for
+/// the one read or write.
+macro_rules! field {
+    ($(#[$doc:meta])* $get:ident, $set:ident, $field:ident: $ty:ty) => {
+        $(#[$doc])*
+        #[cfg(unix)]
+        #[must_use]
+        pub fn $get(self) -> $ty {
+            self.with(|state| state.fields.$field)
+        }
+
+        $(#[$doc])*
+        #[cfg(unix)]
+        pub fn $set(self, value: $ty) {
+            self.with(|state| state.fields.$field = value);
+        }
+    };
+}
+
 /// The `Reactor *` a handler is called with: live, and on this thread, for the call.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -94,6 +113,39 @@ impl Running<'_> {
     pub(crate) fn has_deferred(self) -> bool {
         self.with(|state| !state.fields.defer_tasks.is_null())
     }
+
+    field!(
+        /// `Reactor::ptr`: the object the reactor serves (a server or a process pool).
+        object, set_object, ptr: *mut c_void
+    );
+    field!(
+        /// `Reactor::id`.
+        id, set_id, id: u16
+    );
+    field!(
+        /// `Reactor::running`.
+        running, set_running, running: bool
+    );
+    field!(
+        /// `Reactor::wait_exit`.
+        wait_exit, set_wait_exit, wait_exit: bool
+    );
+    field!(
+        /// `Reactor::timeout_msec`.
+        timeout_msec, set_timeout_msec, timeout_msec: i32
+    );
+    field!(
+        /// `Reactor::destroyed`.
+        destroyed, set_destroyed, destroyed: bool
+    );
+    field!(
+        /// `Reactor::max_socket`.
+        max_socket, set_max_socket, max_socket: u32
+    );
+    field!(
+        /// `Reactor::close`: how the reactor closes one of its sockets.
+        close, set_close, close: Option<crate::ReactorClose>
+    );
 }
 
 #[cfg(debug_assertions)]

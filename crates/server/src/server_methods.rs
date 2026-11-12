@@ -278,9 +278,7 @@ pub(crate) extern "C" fn accept_connection(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    let serv = crate::reactor_handle::Reactor::running(reactor)
-        .fields()
-        .ptr;
+    let serv = reactor.object();
     let mut ctx = NativeContext::new(serv);
     ctx.reactor = reactor.as_ptr();
     ctx.server_fd = event.fd();

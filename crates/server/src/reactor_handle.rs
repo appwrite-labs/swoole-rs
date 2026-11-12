@@ -9,7 +9,7 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reactor_set_handler};
-use swoole_rs_reactor::{Handler, ReactorFields, ReactorPrepared, Running, Socket};
+use swoole_rs_reactor::{Handler, ReactorPrepared, Running, Socket};
 
 /// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
 const ADD: u32 = 0;
@@ -22,10 +22,6 @@ pub(crate) const EVENT_READ: c_int = 1 << 9;
 #[derive(Clone, Copy)]
 pub(crate) struct Reactor(pub(crate) *mut c_void);
 
-#[expect(
-    clippy::mut_from_ref,
-    reason = "the reactor's fields, which only its own thread touches"
-)]
 impl Reactor {
     /// # Safety
     /// `reactor` is a live `Reactor` while the handle is used, on its own thread.
@@ -48,12 +44,6 @@ impl Reactor {
         // SAFETY: a live reactor, used by its own thread (the type's invariant), and no
         // reference to its state outlives the call it is passed to.
         unsafe { Running::new(self.0) }
-    }
-    pub(crate) fn fields(&self) -> &mut ReactorFields {
-        // A live reactor, which begins with its prepared state.
-        let fields = ReactorPrepared::of(self.0).fields;
-        // SAFETY: as above.
-        unsafe { &mut *fields }
     }
     /// `Reactor::change`'s `op` (0 add, 1 set, 2 del) of `sock` with `events`.
     pub(crate) fn change(self, sock: Socket<'_>, op: u32, events: c_int) -> c_int {
@@ -79,7 +69,7 @@ impl Reactor {
     }
     /// The reactor's own `close` of `sock`, when it has one.
     pub(crate) fn close(self, sock: Socket<'_>) -> c_int {
-        self.fields().close.map_or(0, |close| {
+        self.handle().close().map_or(0, |close| {
             // SAFETY: the reactor's close on one of its live sockets.
             unsafe { close(self.0, sock.as_ptr().cast()) }
         })
