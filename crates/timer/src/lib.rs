@@ -25,8 +25,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
 pub use wrapper::{
-    php, swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
-    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
+    add_fn, add_fn_id, add_fn_sec, php, swoole_timer_create, swoole_timer_del, swoole_timer_delay,
+    swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec, thread_timer_count, timer_cancel,
 };
 
