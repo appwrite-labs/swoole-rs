@@ -310,18 +310,17 @@ pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 /// # Errors
 /// It bailed out.
 pub(crate) fn call_handler(
-    callable: *mut Callable,
+    callable: &Callable,
     args: &mut [zval],
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
-    // SAFETY: a live handle.
-    let cache = unsafe { swoole_rs_zend::host::callable::cache(callable) };
-    // SAFETY: a resolved cache and the two arguments; the coroutine leaf,
-    // `then` and the reporter run inside C traps.
+    // SAFETY: the resolved cache of a callable the caller holds through the
+    // call, and the arguments; the coroutine leaf, `then` and the reporter run
+    // inside C traps.
     let called = unsafe {
         swoole_rs_zend::host::function_call(
-            cache,
+            callable.cache_ptr(),
             u32::try_from(args.len()).unwrap_or(0),
             args.as_mut_ptr(),
             std::ptr::null_mut(),
@@ -347,11 +346,10 @@ pub(crate) fn call_port(
     kind: c_int,
     args: &mut [zval],
 ) -> Result<Option<bool>, bailout::Bailout> {
-    let callback = php_swoole_server_get_callback(server, server_fd, kind);
-    if callback.is_null() {
+    let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return Ok(None);
-    }
-    call_handler(callback.cast(), args, enable_coroutine(server), NO_THEN).map(Some)
+    };
+    call_handler(&callback, args, enable_coroutine(server), NO_THEN).map(Some)
 }
 
 /// `http_server_process_request`: the handler with the request's objects,
@@ -359,10 +357,14 @@ pub(crate) fn call_port(
 /// the call's own trap.
 fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = ctx.state();
-    let callback = state.callback.cast();
+    // Its own reference: the handler may replace the server's.
+    let callback = state.callback.clone();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     let mut release = context::Release::new(ctx);
-    match call_handler(callback, &mut args, coroutine, release.then()) {
+    let called = callback.map_or(Ok(false), |callback| {
+        call_handler(&callback, &mut args, coroutine, release.then())
+    });
+    match called {
         // The objects stay held, as upstream's jump skipped their release.
         Err(bailout) if !release.begun() => return Err(bailout),
         Err(bailout) => bailout.defer(),
@@ -467,17 +469,16 @@ fn handle(
         .by_session(session)
         .is_some_and(|conn| conn.websocket_status == STATUS_CONNECTION);
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
-    let callback = php_swoole_server_get_callback(server, server_fd, kind);
-    if callback.is_null() {
+    let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         if handshake {
             websocket::handshake_open(ctx)?;
         } else {
             websocket::request(ctx);
         }
         return Ok(DONE);
-    }
+    };
     let state = ctx.state();
-    state.callback = callback;
+    state.callback = Some(callback);
     if handshake {
         websocket::upgrading(server, session);
         state.upgrade = 1;
@@ -583,10 +584,13 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         }
     }
     let state = ctx.state();
-    let callback = state.callback.cast();
+    let callback = state.callback.clone();
     let mut args = [state.request.zobject.value, state.response.zobject.value];
     let mut release = context::Release::new(ctx);
-    match call_handler(callback, &mut args, facts.coroutine, release.then()) {
+    let called = callback.map_or(Ok(false), |callback| {
+        call_handler(&callback, &mut args, facts.coroutine, release.then())
+    });
+    match called {
         // As in `call`.
         Err(bailout) if !release.begun() => return Err(bailout),
         Err(bailout) => bailout.defer(),

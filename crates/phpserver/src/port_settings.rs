@@ -409,18 +409,22 @@ impl Source for Zend<'_> {
             return Ok(None);
         };
         // Its bailouts stay deferred.
-        let callable = crate::callable::Callable::create(value);
+        let callable = crate::callable::create(value);
         if checked().is_err() {
             drop(callable);
             return Err(Stop);
         }
-        // Owned by the slot now, which `release` frees.
-        Ok(callable.map(|callable| std::mem::ManuallyDrop::new(callable).as_raw()))
+        // The slot's reference now, which `release` (or the port's release) drops.
+        Ok(callable.map(|callable| std::rc::Rc::into_raw(callable).cast_mut().cast()))
     }
 
     fn release(&self, callable: *mut c_void) {
-        // SAFETY: a callable `callable_create` made, released once.
-        unsafe { swoole_rs_phpruntime::callable_free(callable) };
+        // A thread-mode worker replaced the master's slot, which other threads'
+        // reactors, or this thread's running length function, may still be
+        // calling: the master owns it, so it leaks, as the port's release does.
+        if crate::lifecycle::owns_shared() {
+            crate::port::free_callable(callable);
+        }
     }
 
     fn single_thread(&self) {
