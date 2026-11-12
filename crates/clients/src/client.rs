@@ -1921,8 +1921,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
             }
             return OK;
         }
-        // SAFETY: the handler's reactor and event.
-        if unsafe { writable_callback(reactor.as_ptr(), event) } < 0 {
+        if writable_callback(reactor, event) < 0 {
             return ERR;
         }
         if this.has(ON_BUFFER_EMPTY)

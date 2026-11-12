@@ -166,8 +166,8 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
         return false;
     }
     let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
-    // SAFETY: initialised arguments.
-    unsafe { swoole_rs_zend::host::named_call(&name, args) }.is_err()
+    let args: Vec<&Value> = args.iter_mut().map(Value::of).collect();
+    swoole_rs_zend::host::named_call(&name, &args).is_err()
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -965,9 +965,9 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     props.long(c"master_pid", i64::from(gs.master_pid));
     props.long(c"manager_pid", i64::from(gs.manager_pid));
     if let Some(process) = process {
-        // SAFETY: the worker and its process object; this frame owns nothing that
-        // needs a drop, as the process exits through a bailout.
-        unsafe { swoole_rs_phpprocess::start_worker(worker.raw().cast(), process) };
+        // This frame owns nothing that needs a drop, as the process exits through a
+        // bailout.
+        swoole_rs_phpprocess::start_worker(worker, process);
     }
 }
 

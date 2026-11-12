@@ -134,12 +134,10 @@ banner, `uname`, compiler and TLS lines, from what C++ compiled (`swr_cpp_bug_re
 capped at `SW_SESSION_LIST_SIZE`, or -1 with errno kept.
 
 Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divisor`/`_multiple`, `swoole_dec2hex`,
-`swoole_version_compare`, `swoole_dump_ascii`/`_hex`, `swoole::microtime`,
+`swoole_version_compare`, `swoole::microtime`,
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
-struct tag), `swoole_hex2dec` (in the target's plain-char mode), `swoole_dump_bin`
-(over crates/framing's unpack),
-`DataHead::dump`, both `swoole_rand` overloads, `swoole_random_int`, and
+struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
 `sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
 directly. The `corebase-native` gate compares them with the pinned `base.cc`.
@@ -149,6 +147,9 @@ warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtra
 `microtime`, `DataHead::dump`, `swoole_rand`/`swoole_random_int` (a per-thread
 xoshiro256** seeded by getentropy), `swoole_system_random` and
 `swoole_redirect_stdout(int)` (each dup2's errno is handed back for its warning).
+`swoole_shell_exec`, `swoole_dump_ascii`/`_hex`/`_bin` (`_bin` over crates/framing's
+unpack), `DataHead::dump` and `swoole_redirect_stdout(const char *)` have no native
+caller, so they are plain Rust over `&CStr` and slices, without their C++ symbols.
 
 `sw_snprintf`, `sw_vsnprintf` and `sw_printf` are C variadics, so they're a C
 shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
