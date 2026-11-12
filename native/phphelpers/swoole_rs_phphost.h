@@ -190,8 +190,6 @@ SW_ZEND_KNOWN_STRINGS(_SW_ZEND_STR_ID)
 #define SW_ZSTR_KNOWN(idx) sw_zend_known_strings[idx]
 extern zend_string **sw_zend_known_strings;
 
-SW_API zif_handler php_swoole_get_original_handler(const char *name, size_t len);
-
 static inline bool php_swoole_is_fatal_error() {
     return PG(last_error_message) && (PG(last_error_type) & E_FATAL_ERRORS);
 }
