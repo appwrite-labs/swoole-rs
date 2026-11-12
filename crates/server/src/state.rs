@@ -66,10 +66,6 @@ pub struct ServerState {
     worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
     /// A worker thread asked to shut down: the thread manager respawns no worker.
     pub(crate) stopping: AtomicBool,
-    /// `serv->running`, cleared by whichever thread stops the server while the others
-    /// read it. It lives here, not in `ServerConfig`, so no thread reaches it through
-    /// the `&mut ServerConfig` the op contexts hand out.
-    running: AtomicBool,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -113,7 +109,6 @@ impl ServerState {
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
-            running: AtomicBool::new(true),
         }
     }
 
@@ -290,14 +285,14 @@ impl ServerState {
         };
     }
 
-    /// `serv->running`.
+    /// `serv->running`, read through a shared reference, never a `&mut ServerConfig`.
     pub(crate) fn running(&self) -> bool {
-        self.running.load(Ordering::Acquire)
+        self.config_ref().running.load(Ordering::Acquire)
     }
 
     /// `serv->running = running`, seen by every thread's next [`Self::running`].
     pub(crate) fn set_running(&self, running: bool) {
-        self.running.store(running, Ordering::Release);
+        self.config_ref().running.store(running, Ordering::Release);
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
