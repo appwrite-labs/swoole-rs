@@ -140,6 +140,7 @@ pub(crate) fn create<H: Host>(h: &mut H) -> crate::Effect<i64> {
 
 /// `BaseFactory::dispatch`: a stream event needs an active connection the server has
 /// not closed and goes out under its session id; the bus hands it to this worker.
+#[inline(always)]
 pub(crate) fn dispatch<H: Host>(
     h: &mut H,
     task: *mut SendData,
@@ -189,6 +190,7 @@ pub(crate) fn dispatch<H: Host>(
 /// `MessageBus::pass` and `get_packet` would have handed it, under `SW_EVENT_DATA_PTR`,
 /// and nothing reads the bus after them in base mode. False leaves the event to
 /// `OP_BASE_PASS`, untouched.
+#[inline(always)]
 fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     let dgram = task.info.kind == RECV_DGRAM;
     if task.info.kind != RECV_DATA && !dgram {
