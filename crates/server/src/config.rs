@@ -3,7 +3,6 @@
 //! C++ retains borrowed reference views for the original embedding API. The
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
-use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
@@ -85,9 +84,10 @@ pub struct ServerConfig {
     pub task_max_request: u32,
     pub task_max_request_grace: u32,
     pub task_results: Shm,
-    /// The server's worker registry, which crates/process and the manager write
-    /// through `registry`'s pointer; native sees only a `void *` handle.
-    pub worker_registry: Option<Box<UnsafeCell<WorkerRegistry>>>,
+    /// The server's worker registry, which crates/process and the manager reach
+    /// through `registry`'s pointer and write through `&`; native sees only a
+    /// `void *` handle.
+    pub worker_registry: Option<Box<WorkerRegistry>>,
     pub user_workers: Shm,
     pub workers: Shm,
     pub gs: Shm,
@@ -187,7 +187,9 @@ impl ServerConfig {
     pub(crate) fn registry(&self) -> *mut WorkerRegistry {
         self.worker_registry
             .as_deref()
-            .map_or(core::ptr::null_mut(), UnsafeCell::get)
+            .map_or(core::ptr::null_mut(), |registry| {
+                core::ptr::from_ref(registry).cast_mut()
+            })
     }
 
     /// `serv->ipc_max_size`.

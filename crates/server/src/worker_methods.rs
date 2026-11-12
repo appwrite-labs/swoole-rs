@@ -52,8 +52,7 @@ pub unsafe fn add_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) -> c
         );
         return -1;
     }
-    // SAFETY: the server's live registry, configured only by the master before it starts.
-    let index = unsafe { serv.registry_mut() }.pending_add(worker.cast());
+    let index = serv.registry().pending_add(worker.cast());
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     // SAFETY: the caller's live worker.

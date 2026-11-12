@@ -4,6 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // `category` is an opaque tag the registry only groups by: event workers (1) and
 // user workers (2); task workers live in the task pool and are not registered.
@@ -16,43 +17,57 @@ struct Entry {
     category: c_int,
 }
 
-/// pid -> (native `Worker*`, category).
+/// pid -> (native `Worker*`, category). Read and written through `&`, each call
+/// under its own lock: the master writes it, and its reactor threads look workers
+/// up concurrently, so no caller holds `&mut` to it.
 #[derive(Default)]
 pub struct WorkerRegistry {
-    workers: HashMap<c_int, Entry>,
-    detached: HashSet<c_int>,
-    pending_users: Vec<*mut c_void>,
+    workers: RwLock<HashMap<c_int, Entry>>,
+    detached: RwLock<HashSet<c_int>>,
+    pending_users: RwLock<Vec<*mut c_void>>,
+}
+
+/// A read of `lock`; a panic while it was held leaves the data whole.
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A write of `lock`, as [`read`].
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl WorkerRegistry {
-    pub fn pids(&self, category: c_int) -> impl Iterator<Item = c_int> + '_ {
-        self.workers
+    #[must_use]
+    pub fn pids(&self, category: c_int) -> Vec<c_int> {
+        read(&self.workers)
             .iter()
-            .filter(move |(_, entry)| entry.category == category)
+            .filter(|(_, entry)| entry.category == category)
             .map(|(pid, _)| *pid)
+            .collect()
     }
 
     /// Register (or overwrite) the worker at `pid` with its pointer and category.
-    pub fn register(&mut self, pid: c_int, worker: *mut c_void, category: c_int) {
-        self.workers.insert(pid, Entry { worker, category });
+    pub fn register(&self, pid: c_int, worker: *mut c_void, category: c_int) {
+        write(&self.workers).insert(pid, Entry { worker, category });
     }
 
     /// Insert a worker without replacing an existing PID, matching `ProcessPool::add_worker`.
-    pub fn insert(&mut self, pid: c_int, worker: *mut c_void, category: c_int) {
-        self.workers
+    pub fn insert(&self, pid: c_int, worker: *mut c_void, category: c_int) {
+        write(&self.workers)
             .entry(pid)
             .or_insert(Entry { worker, category });
     }
 
     /// Remove the worker at `pid`. Returns whether one was present.
-    pub fn unregister(&mut self, pid: c_int) -> bool {
-        self.workers.remove(&pid).is_some()
+    pub fn unregister(&self, pid: c_int) -> bool {
+        write(&self.workers).remove(&pid).is_some()
     }
 
     /// The pointer registered for `pid`, or null.
     #[must_use]
     pub fn lookup(&self, pid: c_int) -> *mut c_void {
-        self.workers
+        read(&self.workers)
             .get(&pid)
             .map_or(std::ptr::null_mut(), |entry| entry.worker)
     }
@@ -60,7 +75,7 @@ impl WorkerRegistry {
     /// The pointer registered for `pid` in `category` only, or null.
     #[must_use]
     pub fn lookup_category(&self, pid: c_int, category: c_int) -> *mut c_void {
-        self.workers
+        read(&self.workers)
             .get(&pid)
             .filter(|entry| entry.category == category)
             .map_or(std::ptr::null_mut(), |entry| entry.worker)
@@ -68,27 +83,27 @@ impl WorkerRegistry {
 
     /// Detach the worker at `pid`: it has been replaced and exits on its own, so it
     /// leaves the lookup and its exit is later reaped by [`Self::reap_detached`].
-    pub fn detach(&mut self, pid: c_int) {
-        self.workers.remove(&pid);
-        self.detached.insert(pid);
+    pub fn detach(&self, pid: c_int) {
+        write(&self.workers).remove(&pid);
+        write(&self.detached).insert(pid);
     }
 
     /// Reap a detached worker's exit. Returns false when `pid` was never detached.
-    pub fn reap_detached(&mut self, pid: c_int) -> bool {
-        self.detached.remove(&pid)
+    pub fn reap_detached(&self, pid: c_int) -> bool {
+        write(&self.detached).remove(&pid)
     }
 
     /// Append one pending user worker before Server creation, preserving insertion
     /// order. The returned index is its original pre-start worker ID.
-    pub fn pending_add(&mut self, worker: *mut c_void) -> usize {
-        self.pending_users.push(worker);
-        self.pending_users.len() - 1
+    pub fn pending_add(&self, worker: *mut c_void) -> usize {
+        let mut pending = write(&self.pending_users);
+        pending.push(worker);
+        pending.len() - 1
     }
 
     /// The pending user workers, in the order they were added.
-    #[must_use]
-    pub fn pending(&self) -> &[*mut c_void] {
-        &self.pending_users
+    pub fn pending(&self) -> RwLockReadGuard<'_, Vec<*mut c_void>> {
+        read(&self.pending_users)
     }
 
     /// Terminate every worker of `category`: send `signo` to each, then wait for each.
@@ -103,7 +118,7 @@ impl WorkerRegistry {
         wait: impl Fn(c_int) -> c_int,
         warn: impl Fn(c_int),
     ) {
-        let pids: Vec<c_int> = self.pids(category).collect();
+        let pids = self.pids(category);
         for &pid in &pids {
             kill(pid, signo);
         }
@@ -155,7 +170,7 @@ mod tests {
 
     #[test]
     fn registers_looks_up_and_unregisters() {
-        let mut reg = WorkerRegistry::default();
+        let reg = WorkerRegistry::default();
         let mut worker_a = 0u8;
         let a = std::ptr::from_mut(&mut worker_a).cast::<c_void>();
         reg.register(100, a, CATEGORY_EVENT);
@@ -214,7 +229,7 @@ mod tests {
 
     #[test]
     fn terminate_hits_only_its_category_kill_all_then_wait_all() {
-        let mut reg = WorkerRegistry::default();
+        let reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         reg.register(10, p, CATEGORY_EVENT);
@@ -232,7 +247,7 @@ mod tests {
 
     #[test]
     fn terminate_warns_on_wait_failure() {
-        let mut reg = WorkerRegistry::default();
+        let reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         WARNED.with(|w| w.borrow_mut().clear());
@@ -249,7 +264,7 @@ mod tests {
 
     #[test]
     fn detached_workers_leave_the_lookup_and_are_reaped_once() {
-        let mut reg = WorkerRegistry::default();
+        let reg = WorkerRegistry::default();
         let mut w = 0u8;
         let p = std::ptr::from_mut(&mut w).cast::<c_void>();
         reg.register(40, p, CATEGORY_EVENT);
@@ -262,19 +277,19 @@ mod tests {
 
     #[test]
     fn pending_workers_keep_their_order_and_indexes() {
-        let mut reg = WorkerRegistry::default();
+        let reg = WorkerRegistry::default();
         let (a, b) = (
             core::ptr::without_provenance_mut(1),
             core::ptr::without_provenance_mut(2),
         );
         assert_eq!(reg.pending_add(a), 0);
         assert_eq!(reg.pending_add(b), 1);
-        assert_eq!(reg.pending(), [a, b]);
+        assert_eq!(*reg.pending(), [a, b]);
     }
 
     #[test]
     fn user_lookup_cannot_return_an_event_worker_index_entry() {
-        let mut registry = WorkerRegistry::default();
+        let registry = WorkerRegistry::default();
         registry.register(30, core::ptr::without_provenance_mut(11), 1);
         registry.register(40, core::ptr::without_provenance_mut(13), CATEGORY_USER);
         assert!(registry.lookup_category(30, CATEGORY_USER).is_null());

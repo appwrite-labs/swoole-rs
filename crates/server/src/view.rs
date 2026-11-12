@@ -378,22 +378,11 @@ impl<'a> Server<'a> {
     /// The server's worker registry, which its configuration owns for the server's life.
     #[must_use]
     pub fn registry(self) -> &'a WorkerRegistry {
-        let registry = self.config().registry();
-        // SAFETY: the server's live registry, whose writers the server's own
-        // synchronization keeps apart from readers (`registry_mut`).
-        unsafe { &*registry }
-    }
-
-    /// The server's worker registry, to write.
-    ///
-    /// # Safety
-    /// No other reference to the registry is live meanwhile, and no other thread
-    /// reads it (only the master configures it, and only the manager tracks pids).
-    #[must_use]
-    pub unsafe fn registry_mut(self) -> &'a mut WorkerRegistry {
-        let registry = self.config().registry();
-        // SAFETY: per the caller; the registry lives as long as the server.
-        unsafe { &mut *registry }
+        // A server's state gives its config the registry before any op runs.
+        self.config()
+            .worker_registry
+            .as_deref()
+            .unwrap_or_else(|| std::process::abort())
     }
 
     /// `Server::get_user_worker_num()`: the user workers added so far.

@@ -5,7 +5,7 @@
 //! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
 //! fails when that header is stale. See #629.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
 
@@ -379,6 +379,17 @@ impl Worker<'_> {
         limit != 0 && self.request_count().cast_unsigned() >= limit
     }
 
+    /// `sw_atomic_fetch_add(&worker->dispatch_count, 1)`: one more dispatch to this worker.
+    pub fn count_dispatch(self) {
+        let count = self
+            .raw
+            .wrapping_byte_add(core::mem::offset_of!(WorkerRecord, dispatch_count))
+            .cast::<i64>();
+        // SAFETY: `new`'s contract: a live record, whose dispatch counter is shared
+        // and updated only atomically.
+        unsafe { AtomicI64::from_ptr(count) }.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// Resets one retired worker's counters and removes its concurrency from the
     /// server's shared `total`. The CAS and underflow clamp keep the native reset
     /// protocol.
@@ -512,7 +523,9 @@ mod tests {
         record.concurrency = AtomicU32::new(3);
         record.request_count = 7;
         record.response_count = 8;
-        record.dispatch_count = 9;
+        record.dispatch_count = 8;
+        unsafe { Worker::new(&raw mut record) }.count_dispatch();
+        assert_eq!(record.dispatch_count, 9);
         let total = core::sync::atomic::AtomicU32::new(7);
         unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
         assert_eq!(

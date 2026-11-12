@@ -119,7 +119,7 @@ impl ServerState {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn push_worker_pipe(
         &self,
-        worker: &mut swoole_rs_process::worker_record::WorkerRecord,
+        worker: swoole_rs_process::worker_record::Worker<'_>,
     ) -> bool {
         let mut pair = Box::new(swoole_rs_tls::socket_pair::unix_socket(
             true,
@@ -136,9 +136,9 @@ impl ServerState {
         let pipe = pipes
             .last_mut()
             .map_or(core::ptr::null_mut(), |pair| &raw mut **pair);
-        worker.pipe_master = master.cast();
-        worker.pipe_worker = end.cast();
-        worker.pipe_object = pipe.cast();
+        worker.set_pipe_master(master.cast());
+        worker.set_pipe_worker(end.cast());
+        worker.set_pipe_object(pipe.cast());
         true
     }
 
