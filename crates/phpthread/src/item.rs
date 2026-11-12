@@ -9,8 +9,7 @@ use swoole_rs_zend::{
     Call, Owned, Value as ZValue, ZString, bailout, numeric,
     sys::{
         IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
-        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp, zend_binary_strcmp, zend_double_to_str,
-        zend_throw_error,
+        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp, zend_binary_strcmp, zend_throw_error,
     },
 };
 
@@ -448,10 +447,7 @@ fn double_to_string(dval: f64, text: &[u8]) -> i32 {
             }
         }
         _ => {
-            // SAFETY: in a request; a new string.
-            let string = unsafe { zend_double_to_str(dval) };
-            // SAFETY: the reference it carries, released on drop.
-            let string = unsafe { ZString::from_raw(string) };
+            let string = ZString::from_double(dval);
             binary_strcmp(string.bytes(), text)
         }
     }

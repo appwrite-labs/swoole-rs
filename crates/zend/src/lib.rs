@@ -42,7 +42,7 @@ pub use error::{E_ERROR, E_WARNING, Message, report, throw_exception, zend_error
 pub use function::create_object_deny;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, property,
-    time, update_property, zeroed,
+    property_not_null, time, update_property, zeroed,
 };
 pub use local::Php;
 pub use minit::{Minit, Parent};

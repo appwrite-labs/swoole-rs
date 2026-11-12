@@ -26,6 +26,17 @@ impl Php<'_> {
     }
 }
 
+impl<'a> Php<'a> {
+    /// `EG(function_table)`: the functions the running request can call.
+    #[must_use]
+    pub fn function_table(self) -> &'a crate::Array {
+        // SAFETY: this thread runs PHP, whose executor has its function table.
+        let table = unsafe { crate::sys::swr_zend_facade_function_table() };
+        // SAFETY: the executor's live table, which nothing frees while PHP runs.
+        unsafe { &*table.cast() }
+    }
+}
+
 /// `thread_local!` on ZTS and in tests, a process static otherwise, either behind a
 /// [`PhpLocal`]. The choice is this crate's `cfg(zts)`, so callers need no build
 /// script of their own.

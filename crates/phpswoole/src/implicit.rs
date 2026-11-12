@@ -6,13 +6,10 @@ use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_error::ErrorCode::{SW_ERROR_FOR_TEST, SW_ERROR_INVALID_PARAMS};
 use swoole_rs_zend::{
-    Array, Call, Message, Value, ZString,
+    Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    sys::{
-        swr_zend_facade_function_table, swr_zend_set_exit_status, swr_zval_facade_refcount,
-        zend_function,
-    },
+    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount, zend_function},
 };
 
 handlers! {
@@ -69,11 +66,7 @@ fn implicit_fn(call: &Call) {
         call.set_long(i64::from(unsafe { swr_zval_facade_refcount(args) }));
     } else if is(b"func_handler") {
         let lookup = arg.map_or_else(|| ZString::new(b""), Value::string);
-        // SAFETY: a running request's EG(function_table).
-        let table = unsafe { swr_zend_facade_function_table() };
-        // SAFETY: the request's live table, which this lookup does not change.
-        let table = unsafe { Array::from_ptr(table) };
-        let found = table.and_then(|table| table.find(lookup.bytes()));
+        let found = call.php().function_table().find(lookup.bytes());
         let Some(function) = found.and_then(Value::pointer) else {
             call.set_bool(false);
             return;

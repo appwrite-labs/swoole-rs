@@ -178,11 +178,7 @@ fn backtrace(options: i32) -> Owned {
 /// `zend_trace_to_string(Z_ARRVAL_P(trace), false)`: a request string, or
 /// `None` when `trace` is not an array.
 fn trace_to_string(trace: &Value) -> Option<ZString> {
-    let array = trace.array()?;
-    // SAFETY: a live array.
-    let text = unsafe { z::zend_trace_to_string(array.as_ptr(), false) };
-    // SAFETY: the new reference Zend returned.
-    Some(unsafe { ZString::from_raw(text) })
+    Some(trace.array()?.trace_to_string())
 }
 
 // --- leak detection ---------------------------------------------------------
