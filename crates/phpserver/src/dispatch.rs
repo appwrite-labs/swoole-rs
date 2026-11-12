@@ -30,8 +30,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     long_zval, message, report,
     sys::{
-        ZEND_ACC_VARIADIC, swr_zend_callable_warning, swr_zend_stack_restore,
-        swr_zend_stack_unlimit, zend_fcall_info_cache, zval, zval_ptr_dtor,
+        swr_zend_callable_warning, swr_zend_stack_restore, swr_zend_stack_unlimit,
+        zend_fcall_info_cache, zval, zval_ptr_dtor,
     },
 };
 
@@ -1011,18 +1011,18 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
 /// `SW_SERVER_EVENT_CLOSE`.
 const EVENT_CLOSE: u8 = 4;
 
-/// The `dispatch_func` setting: `handle` (a `callable::factory` handle) picks
-/// the worker of each event from now on, in the reactor's one thread.
+/// The `dispatch_func` setting: `callable`, which the config's slot holds until
+/// `release_dispatch_func`, picks the worker of each event from now on, in the
+/// reactor's one thread; the previous one is released.
 /// # Errors
-/// Releasing the previous callable bailed out.
-/// # Safety
-/// `server` is a live server, not started.
-pub(crate) unsafe fn set_dispatch_func(
+/// The previous one's destructor bailed out.
+pub(crate) fn set_dispatch_func(
     server: view::Server<'_>,
-    handle: *mut callable::Callable,
+    callable: Callable,
 ) -> Result<(), Bailout> {
     let config = server.config();
-    let previous = config.private_data_3.swap(handle.cast(), Relaxed);
+    let handle = Rc::into_raw(callable).cast_mut().cast();
+    let previous = config.private_data_3.swap(handle, Relaxed);
     server.set_callback(Callback::DispatchFunc(on_dispatch));
     config.single_thread.set(true);
     release_dispatch_func(previous)
@@ -1035,23 +1035,9 @@ pub(crate) fn release_dispatch_func(handle: *mut c_void) -> Result<(), Bailout> 
     if handle.is_null() {
         return Ok(());
     }
-    // SAFETY: a handle `set_dispatch_func` owned, released once.
-    unsafe { callable::release(handle.cast()) }
-}
-
-/// `sw_zend_function_max_num_args`.
-fn max_num_args(cache: *mut zend_fcall_info_cache) -> u32 {
-    // SAFETY: a resolved cache.
-    let function = unsafe { (*cache).function_handler };
-    // SAFETY: its live function; every kind starts with `common`.
-    let common = unsafe { &raw const (*function).common };
-    // SAFETY: as above.
-    let common = unsafe { common.read() };
-    if common.fn_flags & ZEND_ACC_VARIADIC != 0 {
-        u32::MAX
-    } else {
-        common.num_args
-    }
+    // SAFETY: the slot's reference `set_dispatch_func` gave up, taken back once.
+    drop(unsafe { Rc::from_raw(handle.cast_const().cast::<callable::Callable>()) });
+    bailout::outcome(())
 }
 
 /// `sw_zend_call_function_ex(nullptr, cache, args, retval)` under
@@ -1093,8 +1079,11 @@ extern "C" fn on_dispatch(
     send: Option<&RecvData>,
 ) -> c_int {
     let config = server.config();
-    // SAFETY: as above.
-    let cache = unsafe { callable::cache(config.private_data_3.load(Relaxed).cast()) };
+    let handle = config.private_data_3.load(Relaxed);
+    // SAFETY: the slot's live reference (`set_dispatch_func`), which a started
+    // server's `set()` can't replace during the call.
+    let dispatch = unsafe { &*handle.cast_const().cast::<callable::Callable>() };
+    let cache = dispatch.cache_ptr();
     // Its live object, copied without a reference as upstream.
     let zserv = zserv();
     let session = match conn {
@@ -1109,7 +1098,7 @@ extern "C" fn on_dispatch(
         undef(),
     ];
     let mut argc = 3;
-    if let Some(send) = send.filter(|_| max_num_args(cache) > 3) {
+    if let Some(send) = send.filter(|_| dispatch.max_num_args() > 3) {
         let payload = send.payload();
         let bytes = payload.get(..SW_IPC_BUFFER_SIZE).unwrap_or(payload);
         args[3] = Owned::string(ZString::new(bytes)).into_zval();
