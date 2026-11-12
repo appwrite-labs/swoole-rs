@@ -6,7 +6,7 @@
 use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int};
-use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::log;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
@@ -16,10 +16,10 @@ use swoole_rs_httpbindings::{
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::{
-    swr_zend_http_estrndup, swr_zend_http_intern, swr_zend_http_max_input_vars,
-    swr_zend_http_treat_data, swr_zend_http_upload, zend_string, zval,
+    swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
+    swr_zend_http_upload, zval,
 };
-use swoole_rs_zend::{Class, Owned, OwnedArray, Value, ZStr, ZString, string};
+use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString, string};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -239,7 +239,7 @@ const HEADER_KEYS: [Key; 8] = [
     Key::AcceptEncoding,
 ];
 
-static KEYS: [AtomicPtr<zend_string>; 25] = [const { AtomicPtr::new(ptr::null_mut()) }; 25];
+static KEYS: [Interned; 25] = [const { Interned::new() }; 25];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 /// ... and `server`, `header` and `fd`.
 static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
@@ -247,9 +247,7 @@ pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
 /// The interned key, None before MINIT.
 pub(crate) fn key(key: Key) -> Option<&'static ZStr> {
-    let key = KEYS.get(key as usize)?.load(Relaxed);
-    // SAFETY: null, or a string MINIT interned permanently.
-    unsafe { ZStr::from_ptr(key) }
+    KEYS.get(key as usize)?.get()
 }
 
 /// The request's array properties, read (and created) on first use.
@@ -266,14 +264,10 @@ pub(crate) enum Property {
 
 /// MINIT: intern the keys and find the array properties' slots.
 /// Called once at MINIT, after `Swoole\Http\Request` is registered.
-pub(crate) fn minit(codecs: u32) {
+pub(crate) fn minit(minit: &Minit, codecs: u32) {
     CAPABILITIES.store(codecs, Relaxed);
     for (slot, name) in KEYS.iter().zip(KEY_NAMES) {
-        // SAFETY: MINIT, so the string is interned permanently.
-        slot.store(
-            unsafe { swr_zend_http_intern(name.as_ptr().cast(), name.len()) },
-            Relaxed,
-        );
+        minit.intern(slot, name);
     }
     for (slot, name) in OFFSETS.iter().zip([
         c"get",
