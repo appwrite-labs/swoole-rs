@@ -22,7 +22,7 @@ fn current() -> *mut c_void {
 }
 
 /// The thread's `Reactor` as a handle for the caller's call, or `None` without one.
-fn running<'a>() -> Option<crate::Running<'a>> {
+pub(crate) fn running<'a>() -> Option<crate::Running<'a>> {
     let reactor = current();
     // SAFETY: the thread's reactor stays live until `swoole_event_free`, which no
     // caller's use of the handle spans.
@@ -108,6 +108,42 @@ pub unsafe fn swoole_event_set(socket: *mut SocketRecord, events: c_int) -> c_in
 pub unsafe extern "C" fn swoole_event_del(socket: *mut SocketRecord) -> c_int {
     // SAFETY: as the caller promises.
     unsafe { reactor_change(current(), socket, 2, 0) }
+}
+
+/// `Reactor::change` of `socket` on the thread's reactor; -1 without one. A registered
+/// record's address stays in the registry and with the kernel until its removal, which
+/// a `'static` record outlives: it is live until an unsafe free, whose caller answers
+/// for every user left, the reactor among them.
+fn change(socket: crate::Socket<'static>, op: u32, events: c_int) -> c_int {
+    let Some(reactor) = running() else {
+        return -1;
+    };
+    // SAFETY: the thread's live reactor, which no reference borrows (the handle's
+    // contract), and a record that is live for as long as it stays registered.
+    unsafe { reactor_change(reactor.as_ptr(), socket.as_ptr(), op, events) }
+}
+
+/// [`swoole_event_add`] of a socket that is never freed while registered; -1 without
+/// a reactor.
+#[must_use]
+pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> c_int {
+    change(socket, 0, events)
+}
+
+/// [`swoole_event_set`] of a socket that is never freed while registered (kqueue's set
+/// registers its address again); -1 without a reactor.
+#[must_use]
+pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> c_int {
+    change(socket, 1, events)
+}
+
+/// [`swoole_event_del`]: -1 without a reactor. Any live socket: a removal leaves its
+/// address nowhere.
+#[must_use]
+pub fn event_del(socket: crate::Socket<'_>) -> c_int {
+    running().map_or(-1, |reactor| {
+        crate::reactor_upstream::reactor_del(reactor, socket)
+    })
 }
 
 /// `int swoole_event_add_or_update(Socket *socket, int event)`: `add_read_event` or
@@ -235,22 +271,7 @@ pub fn swoole_event_num() -> Option<usize> {
 /// no reactor (no `event_api` call, no handler or task): a nested call would be a
 /// second `&mut` to the same fields, which debug builds refuse.
 pub(crate) fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Option<T> {
-    let fields = current_prepared()?.fields;
-    #[cfg(debug_assertions)]
-    assert!(!BORROWED.replace(true), "field_mut nested in field_mut");
-    // SAFETY: a live reactor's fields, borrowed for this call alone; the loop
-    // reads them through its raw pointer, never across it, and `write` doesn't
-    // reach them again.
-    let written = write(unsafe { &mut *fields });
-    #[cfg(debug_assertions)]
-    BORROWED.set(false);
-    Some(written)
-}
-
-#[cfg(debug_assertions)]
-thread_local! {
-    /// Whether a [`field_mut`] borrow is live on this thread.
-    static BORROWED: Cell<bool> = const { Cell::new(false) };
+    Some(running()?.with(|state| write(&mut state.fields)))
 }
 
 /// Runs `call` (with null data) when the thread's `Reactor` is destroyed;

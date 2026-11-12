@@ -5,15 +5,15 @@
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use crate::handle::CText;
 use openssl_sys::{
-    BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
-    SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
-    SSL_CTX, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_set_alpn_protos,
-    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM,
-    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
-    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
-    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
-    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
-    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_select_next_proto, X509_STORE_CTX,
+    BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE,
+    SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTX,
+    SSL_CTX_free, SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust,
+    SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN,
+    SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
+    SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1,
+    SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK,
+    SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio,
+    SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -28,8 +28,6 @@ use swoole_rs_corebase::log;
 // building crates/clients' parsers against OpenSSL 1.1, lacks.
 unsafe extern "C" {
     fn SSL_CTX_set0_tmp_dh_pkey(ctx: *mut SSL_CTX, key: *mut EVP_PKEY) -> c_int;
-    fn BIO_free(bio: *mut BIO) -> c_int;
-    fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
     fn PEM_read_bio_Parameters(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
     fn ERR_print_errors_cb(
         callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
@@ -77,6 +75,24 @@ unsafe extern "C" {
     safe fn SSL_CTX_set_default_verify_paths(ctx: &SslCtx) -> c_int;
     safe fn SSL_CTX_check_private_key(ctx: &SslCtx) -> c_int;
     safe fn EVP_sha1() -> *const EVP_MD;
+    /// A new SSL of `ctx`, which it references; null on failure, or without a context.
+    safe fn SSL_new(ctx: Option<&SslCtx>) -> *mut SSL;
+    /// `Ctrl`'s commands: `GroupsList` parses `text`, and the others read only `value`.
+    safe fn SSL_CTX_ctrl(ctx: &SslCtx, command: Ctrl, value: c_long, text: CText<'_>) -> c_long;
+    /// Library initialization, with default settings when given none.
+    safe fn OPENSSL_init_ssl(options: u64, settings: Option<&InitSettings>) -> c_int;
+}
+
+/// An `OPENSSL_INIT_SETTINGS`, which this side never makes.
+#[repr(C)]
+struct InitSettings {
+    _opaque: [u8; 0],
+}
+
+/// `SSL_new` of `context`: the new SSL, whose one reference the caller owns, or null
+/// when OpenSSL fails or there is no context.
+pub(crate) fn new_ssl(context: Option<&SslCtx>) -> *mut SSL {
+    SSL_new(context)
 }
 
 /// An `SSL_METHOD`, one of libssl's static tables.
@@ -106,19 +122,20 @@ impl SslCtx {
 
     /// `SSL_CTX_ctrl` for a command that reads only its integer.
     fn ctrl(&self, command: Ctrl, value: c_long) -> c_long {
-        // SAFETY: a live context, and a command that reads no pointer.
-        unsafe { SSL_CTX_ctrl(self.as_ptr(), command as c_int, value, ptr::null_mut()) }
+        SSL_CTX_ctrl(self, command, value, c"".into())
     }
 }
 
-/// The `SSL_CTX_ctrl` commands behind `SSL_CTX_set_mode`, `_set_read_ahead` and
-/// `_set_session_cache_mode`.
+/// The `SSL_CTX_ctrl` commands behind `SSL_CTX_set_mode`, `_set_read_ahead`,
+/// `_set_session_cache_mode` and `SSL_CTX_set1_curves_list`. Only the last reads its
+/// pointer, as a NUL-terminated list.
 #[derive(Clone, Copy)]
 #[repr(i32)]
 enum Ctrl {
     Mode = SSL_CTRL_MODE,
     ReadAhead = SSL_CTRL_SET_READ_AHEAD,
     SessionCacheMode = SSL_CTRL_SET_SESS_CACHE_MODE,
+    GroupsList = SSL_CTRL_SET_GROUPS_LIST,
 }
 
 /// One reference to an `SSL_CTX`, released on drop. A clone takes another.
@@ -286,16 +303,6 @@ type Options = u64;
 #[cfg(not(ossl300))]
 type Options = std::ffi::c_ulong;
 
-/// A file BIO, freed when dropped.
-struct FileBio(*mut BIO);
-
-impl Drop for FileBio {
-    fn drop(&mut self) {
-        // SAFETY: the live BIO `set_dhparam` opened, which nothing else holds or frees.
-        unsafe { BIO_free(self.0) };
-    }
-}
-
 fn warn(config: &TlsConfig, function: &CStr, message: &[u8]) {
     let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
     (config.warn)(function, &String::from_utf8_lossy(&text));
@@ -404,15 +411,10 @@ impl Method<'_> {
         if curve.text() == b"auto" {
             return true;
         }
-        // SAFETY: `SSL_CTX_set1_curves_list` on a live context and a NUL-terminated list.
-        let set = unsafe {
-            SSL_CTX_ctrl(
-                self.ctx.as_ptr(),
-                SSL_CTRL_SET_GROUPS_LIST,
-                0,
-                curve.data.cast_mut().cast(),
-            )
-        };
+        // `SSL_CTX_set1_curves_list`.
+        let set = curve.c_str().map_or(0, |list| {
+            SSL_CTX_ctrl(self.ctx, Ctrl::GroupsList, 0, list.into())
+        });
         if set == 0 {
             self.warn(&quoted(
                 b"SSL_CTX_set1_curves_list(\"",
@@ -426,16 +428,13 @@ impl Method<'_> {
 
     fn set_dhparam(&self) -> bool {
         let file = self.config.dhparam;
-        // SAFETY: a NUL-terminated path and mode.
-        let bio = unsafe { BIO_new_file(file.data, c"r".as_ptr()) };
-        if bio.is_null() {
+        // Freed on each return below, after its error is reported.
+        let Some(bio) = file.c_str().and_then(crate::OwnedBio::open) else {
             self.ssl_error(&quoted(b"BIO_new_file(", file, b") failed"));
             return false;
-        }
-        // Freed on each return below, after its error is reported.
-        let bio = FileBio(bio);
-        // SAFETY: a live file BIO.
-        let key = unsafe { PEM_read_bio_Parameters(bio.0, ptr::null_mut()) };
+        };
+        // SAFETY: a live file BIO, and no key to reuse.
+        let key = unsafe { PEM_read_bio_Parameters(bio.bio().as_ptr(), ptr::null_mut()) };
         if key.is_null() {
             self.ssl_error(&quoted(b"PEM_read_bio_Parameters('", file, b"') failed"));
             return false;
@@ -778,8 +777,7 @@ pub fn swr_v1_tls_init() -> c_int {
     if INITIALIZED.load(Ordering::Acquire) {
         return 0;
     }
-    // SAFETY: library initialization with default settings.
-    if unsafe { OPENSSL_init_ssl(INIT_OPTIONS, ptr::null()) } == 0 {
+    if OPENSSL_init_ssl(INIT_OPTIONS, None) == 0 {
         return 1;
     }
     let connection = new_ssl_index();

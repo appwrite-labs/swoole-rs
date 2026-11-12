@@ -5,9 +5,9 @@
 use crate::handle::{Cert, CertRef, Ssl};
 use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
-    SSL_CTX, SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
+    SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
     SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
-    SSL_SENT_SHUTDOWN, SSL_new, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
+    SSL_SENT_SHUTDOWN, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
 };
 use std::ffi::CStr;
 use std::mem::MaybeUninit;
@@ -375,13 +375,15 @@ pub fn swr_v1_socket_ssl_shutdown(
 /// new one, where upstream's stack buffer happens to keep its address. The record
 /// owns the SSL once made, and its state is cleared on success. Returns 0, or 1 when
 /// `SSL_new` failed, 2 when `SSL_set_fd` failed (`error` holds the peeked error) and
-/// 3 when `SSL_set_ex_data` failed; native code warns.
+/// 3 when `SSL_set_ex_data` failed; native code warns. Without a context `SSL_new`
+/// fails.
 ///
 /// # Safety
-/// `context` is a live `SSL_CTX`.
+/// `socket` is null or the socket record that owns `record`, live while the SSL is:
+/// at the connection's `index` the context's info callback reads it as one.
 pub unsafe fn swr_v1_socket_ssl_new(
     record: &mut SocketFields,
-    context: *mut SSL_CTX,
+    context: Option<&crate::SslCtx>,
     flags: c_int,
     index: c_int,
     socket: *mut c_void,
@@ -389,8 +391,7 @@ pub unsafe fn swr_v1_socket_ssl_new(
 ) -> c_int {
     want(&mut record.tls, false, false);
     clear_errors();
-    // SAFETY: the caller's live context.
-    let made = unsafe { SSL_new(context) };
+    let made = crate::context::new_ssl(context);
     // SAFETY: null or the new SSL, which nothing else holds and the record now owns.
     unsafe { record.set_ssl(made.cast()) };
     // SAFETY: null or the new SSL, which the record frees only in `ssl_close`.
@@ -629,7 +630,7 @@ mod tests {
             };
             let made = swr_v1_socket_ssl_new(
                 &mut record,
-                context,
+                context.cast::<crate::SslCtx>().as_ref(),
                 CLIENT,
                 index,
                 (&raw mut socket).cast(),
@@ -648,7 +649,7 @@ mod tests {
             assert_eq!(
                 swr_v1_socket_ssl_new(
                     &mut record,
-                    context,
+                    context.cast::<crate::SslCtx>().as_ref(),
                     SERVER,
                     index,
                     std::ptr::null_mut(),
@@ -704,7 +705,7 @@ mod tests {
 mod shutdown_tests {
     use super::*;
     use openssl_sys::*;
-    use std::os::raw::{c_char, c_int, c_long};
+    use std::os::raw::{c_int, c_long};
     use std::ptr;
 
     // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
@@ -716,7 +717,6 @@ mod shutdown_tests {
             right_size: usize,
         ) -> c_int;
         fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
-        fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
         fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     }
 
@@ -871,7 +871,7 @@ mod shutdown_tests {
                     let mut error = 0;
                     let made = swr_v1_socket_ssl_new(
                         &mut record,
-                        server_ctx,
+                        server_ctx.cast::<crate::SslCtx>().as_ref(),
                         SERVER,
                         0,
                         ptr::null_mut(),
@@ -1278,9 +1278,7 @@ mod shutdown_tests {
             socket.repaired = false;
             socket.calls.injected = SSL_ERROR_WANT_WRITE;
             if queued {
-                assert!(
-                    unsafe { BIO_new_file(c"/nonexistent/m21".as_ptr(), c"r".as_ptr()) }.is_null()
-                );
+                assert!(crate::OwnedBio::open(c"/nonexistent/m21").is_none());
             }
             assert_eq!(socket.ssl_shutdown(), !queued);
             assert_eq!(socket.warnings, usize::from(queued));

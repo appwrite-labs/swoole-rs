@@ -26,7 +26,8 @@ use swoole_rs_zend::{
 };
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
-/// `run_time_cache`.
+/// `run_time_cache`. `this` is the receiver's live zval, which the method call
+/// releases once when it was a `VAR` operand.
 #[repr(C)]
 struct CallInfo {
     func: zval,
@@ -38,9 +39,7 @@ struct CallInfo {
 static METHODS: [AtomicPtr<zend_function>; 3] = [const { AtomicPtr::new(ptr::null_mut()) }; 3];
 
 /// Look up the method dispatchers (MINIT).
-/// # Safety
-/// At MINIT.
-pub(crate) unsafe fn install() {
+pub(crate) fn install() {
     for (slot, name) in METHODS.iter().zip([
         c"swoole_call_array_method",
         c"swoole_call_string_method",
@@ -171,8 +170,11 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
             }
             Ok(())
         }
-        // SAFETY: as above.
-        Some(alias) => unsafe { call_alias(alias, info, frame, value) },
+        Some(alias) => {
+            // SAFETY: per the caller, the dispatcher's own frame and return slot.
+            let frame = unsafe { Call::new(frame, value) };
+            call_alias(alias, info, &frame)
+        }
     };
     // SAFETY: the handler's allocation; nothing else holds it.
     unsafe { swr_zend_efree(allocation.cast()) };
@@ -181,14 +183,8 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
     swoole_rs_zend::bailout::raise(outcome);
 }
 
-/// # Safety
-/// As [`call_method`]; `info` is its `CallInfo`.
-unsafe fn call_alias(
-    alias: &CStr,
-    info: &mut CallInfo,
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) -> Result<(), Bailout> {
+/// Call `alias` in `frame`, the dispatcher's, with `info`'s receiver first.
+fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bailout> {
     // SAFETY: Zend reads `count_bytes()` bytes.
     let function = unsafe { swr_zend_function_find(alias.as_ptr(), alias.count_bytes()) };
     if function.is_null() {
@@ -201,13 +197,12 @@ unsafe fn call_alias(
     }
     // A plain copy, as upstream's.
     let this = info.this;
-    // SAFETY: per the caller, the dispatcher's own frame and return slot.
-    let frame = unsafe { Call::new(frame, value) };
-    let mut argv = arguments(slice::from_ref(&this), &frame);
-    // SAFETY: a live function and the caller's return slot.
-    unsafe { call(function, value, &mut argv) }?;
+    let mut argv = arguments(slice::from_ref(&this), frame);
+    // SAFETY: the registered function just found, and the frame's return slot.
+    unsafe { call(function, frame.return_value(), &mut argv) }?;
     if u32::from(info.op1_type) == IS_VAR {
-        // SAFETY: a C body releasing the receiver, which may run destructors.
+        // SAFETY: a C body releasing the receiver (`CallInfo::this`), which
+        // may run destructors.
         unsafe { trap(swr_zend_zval_release, (&raw mut info.this).cast()) }?;
     }
     Ok(())

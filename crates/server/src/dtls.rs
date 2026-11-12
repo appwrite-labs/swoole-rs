@@ -70,17 +70,13 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// connected to the peer, registered as a connection with a DTLS session; null,
 /// with everything it made undone, when a step fails.
 ///
-/// # Safety
-/// `port` is one of `serv`'s live DTLS ports.
-unsafe fn accept(
+/// `listen` is one of `serv`'s DTLS ports.
+fn accept(
     serv: crate::view::Server<'_>,
-    port: *mut c_void,
+    listen: crate::view::Port<'_>,
     sa: &SocketAddress,
 ) -> *mut DtlsSession {
-    // SAFETY: as the caller guarantees.
-    let Some(listen) = (unsafe { crate::view::Port::from_raw(port) }) else {
-        return ptr::null_mut();
-    };
+    let port = listen.raw();
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -175,7 +171,10 @@ pub(crate) unsafe fn on_packet(
     // SAFETY: the received packet.
     let pkt = unsafe { &mut *pkt };
     // SAFETY: as the caller guarantees.
-    let session = unsafe { accept(serv, port, &pkt.socket_addr) };
+    let Some(port) = (unsafe { crate::view::Port::from_raw(port) }) else {
+        return -1;
+    };
+    let session = accept(serv, port, &pkt.socket_addr);
     if session.is_null() {
         return -1;
     }
@@ -228,8 +227,8 @@ pub(crate) fn on_read(port: &mut port_config::PortConfig, sock: Socket<'_>, fd: 
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
     // SAFETY: a `dtls::Buffer` header and its payload; the session frees it.
     let buffer = unsafe { libc::malloc(2 + size) }.cast::<u16>();
-    // SAFETY: the payload follows the header.
-    let data = unsafe { buffer.add(1) }.cast::<c_void>();
+    // The payload follows the header.
+    let data = buffer.wrapping_add(1).cast::<c_void>();
     // SAFETY: the live socket and the payload's `size` bytes.
     let read = unsafe { libc::read(sock.fd(), data, size) };
     #[expect(

@@ -2,7 +2,7 @@
 use crate::sys::{
     std_object_handlers, swr_zend_http_property_offset, swr_zend_register_class, zend_class_entry,
     zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string,
-    zend_throw_error,
+    zend_throw_error, zend_throw_exception,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
@@ -114,7 +114,7 @@ impl Class {
         let entry = self.entry();
         assert!(!entry.is_null(), "throw a registered class");
         // SAFETY: a registered exception class; Zend copies the message.
-        unsafe { crate::throw_exception(entry, message, code) };
+        unsafe { zend_throw_exception(entry, message.as_ptr(), code) };
     }
 
     /// The offset of the slot of the instance property this class declares as

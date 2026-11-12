@@ -1389,11 +1389,12 @@ pub unsafe fn socket_ssl_create(
     flags: c_int,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let context = unsafe { crate::owner_fields(context) }.context_ptr();
+    let context = unsafe { crate::owner_fields(context) }.context.as_deref();
     let (this, index) = (socket.as_ptr().cast(), crate::swr_v1_tls_connection_index());
     let (status, error) = socket.edit(|record| {
         let mut error = 0;
-        // SAFETY: a live context; OpenSSL calls nothing back while making the SSL.
+        // SAFETY: the record's own socket as the SSL's ex data; OpenSSL calls nothing
+        // back while making the SSL.
         let status = unsafe {
             crate::swr_v1_socket_ssl_new(record, context, flags, index, this, &mut error)
         };

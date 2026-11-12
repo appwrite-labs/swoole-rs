@@ -62,7 +62,7 @@ fn run_with<'s, 'c>(
     clippy::cast_possible_truncation,
     reason = "C++'s implicit int64_t to int"
 )]
-fn int(value: i64) -> c_int {
+pub(crate) fn int(value: i64) -> c_int {
     value as c_int
 }
 
@@ -176,26 +176,6 @@ pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
     let mut ctx = unsafe { reactor_context(reactor) };
     ctx.thread = thread;
     run(RUN_THREAD_SHUTDOWN, 0, &mut ctx);
-}
-
-/// `int ReactorThread::init(Server *, Reactor *, uint16_t)`.
-///
-/// # Safety
-/// `thread` is `serv`'s live `ReactorThread` and `reactor` its new reactor.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe fn thread_init(
-    thread: *mut c_void,
-    serv: view::Server<'_>,
-    reactor: Option<Reactor>,
-    reactor_id: u16,
-) -> c_int {
-    let mut ctx = ReactorContext::new(serv, reactor);
-    ctx.thread = thread;
-    int(run(
-        crate::ops::RUN_RT_INIT,
-        u64::from(reactor_id),
-        &mut ctx,
-    ))
 }
 
 /// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.

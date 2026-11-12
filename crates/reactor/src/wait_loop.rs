@@ -4,7 +4,7 @@
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
 use crate::handlers;
-use crate::reactor_state::{ReactorFields, ReactorState, before_wait, kernel_wait};
+use crate::reactor_state::{before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
 use swoole_rs_corebase::log;
@@ -116,7 +116,6 @@ impl Event {
 
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
-    owner: *mut ReactorState,
     backend: u32,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
     events: *const c_void,
@@ -156,30 +155,16 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 /// effect, so effects may change it through its native views.
 pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
     let reactor = ops.reactor;
-    let owner = reactor.state();
-    // SAFETY: the handle's live state; no native effect is active, so nothing else
-    // borrows it, and this borrow ends before the first effect.
-    let state = unsafe { &mut *owner };
-    // The backend's arrays stay put until the state closes it.
-    let view = state.backend_view();
-    before_wait(&mut state.fields);
-    let id = state.fields.id;
-    // The state's fields live as long as it does; their address is taken without a
-    // borrow.
-    let fields = owner
-        .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
-        .cast::<ReactorFields>()
-        .cast_const();
-    let running = fields
-        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, running))
-        .cast::<bool>();
-    let once = fields
-        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, once))
-        .cast::<bool>();
-    // SAFETY: a single field read of the live state, which effects may change between reads.
-    let once = || unsafe { once.read() };
+    // No native effect is active, and this borrow ends before the first one.
+    let (view, id) = reactor.with(|state| {
+        // The backend's arrays stay put until the state closes it.
+        let view = state.backend_view();
+        before_wait(&mut state.fields);
+        (view, state.fields.id)
+    });
+    // Single field reads: effects may change either field between them.
+    let once = || reactor.with(|state| state.fields.once);
     let run = Loop {
-        owner,
         backend: view.backend,
         events: view.events,
         sockets: view.sockets,
@@ -192,8 +177,7 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
         event: std::cell::Cell::new(Event::empty()),
         ready: std::cell::Cell::new(0),
     };
-    // SAFETY: single field reads; effects may change the field between them.
-    while unsafe { running.read() } {
+    while reactor.with(|state| state.fields.running) {
         (ops.begin)(reactor);
         let mut entries: c_int = 0;
         // Deferred work waits without blocking.
@@ -428,22 +412,21 @@ use kqueue_signal::{EVENT_UNKNOWN_DATA, LOG_WARNING, dispatch_signal};
 
 /// Warns about an uncaught kernel wait failure (errno is the kernel's); `entries` is poll's.
 fn wait_failed(ops: &Loop<'_>, entries: c_int) {
-    // SAFETY: the live state; no native effect runs during the warning.
-    let state = unsafe { &*ops.owner };
-    let (fields, epfd) = (&state.fields, state.backend_fd);
-    let id = fields.id;
-    // `Reactor::get_timeout_msec()`.
-    let timeout = if fields.defer_tasks.is_null() {
-        fields.timeout_msec
-    } else {
-        0
-    };
+    let (id, epfd, max_event_num, timeout) = ops.reactor.with(|state| {
+        let fields = &state.fields;
+        // `Reactor::get_timeout_msec()`.
+        let timeout = if fields.defer_tasks.is_null() {
+            fields.timeout_msec
+        } else {
+            0
+        };
+        (fields.id, state.backend_fd, fields.max_event_num, timeout)
+    });
     match ops.backend {
         EPOLL => log::sys_warning(
             c"ReactorEpoll::wait",
             format_args!(
-                "[Reactor#{id}] epoll_wait(epfd={epfd}, max_events={}, timeout={timeout}) failed",
-                fields.max_event_num
+                "[Reactor#{id}] epoll_wait(epfd={epfd}, max_events={max_event_num}, timeout={timeout}) failed"
             ),
         ),
         KQUEUE => log::sys_warning(
@@ -535,21 +518,11 @@ fn registered(socket: Socket<'_>) -> bool {
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
         if ops.backend == EPOLL {
-            // SAFETY: the live state; no native effect is active.
-            let state = unsafe { &mut *ops.owner };
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            state.record(socket, 2, 0);
+            ops.reactor.with(|state| state.record(socket, 2, 0));
         } else {
-            // SAFETY: as above; poll and kqueue run `Reactor::del`.
-            unsafe {
-                crate::swr_v1_reactor_change(
-                    ops.owner,
-                    socket.as_ptr(),
-                    2,
-                    0,
-                    crate::socket_upstream::swr_v1_reactor_log,
-                )
-            };
+            // poll and kqueue run `Reactor::del`.
+            crate::reactor_upstream::reactor_del(ops.reactor, socket);
         }
     }
 }

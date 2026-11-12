@@ -348,12 +348,8 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         // SAFETY: two live exceptions.
         unsafe { zend_exception_set_previous(exception, pending) };
     }
-    // SAFETY: the suspended coroutine's frame, restored below.
-    let backup = unsafe { swr_zend_coroutine_set_frame(task.execute_data()) };
-    // SAFETY: the exception, located in that frame.
-    unsafe { swr_zend_coroutine_locate(exception) };
-    // SAFETY: restores the running frame.
-    unsafe { swr_zend_coroutine_set_frame(backup) };
+    // SAFETY: the new exception, located in the suspended coroutine's frame.
+    task.in_frame(|| unsafe { swr_zend_coroutine_locate(exception) });
     if pending.is_null() {
         // SAFETY: the suspended coroutine's VM state.
         unsafe { swr_zend_coroutine_redirect(task.vm()) };
@@ -563,24 +559,18 @@ fn get_back_trace(call: &Call) {
         return;
     };
     let (options, limit) = (narrow(options), narrow(limit));
-    // Another coroutine's trace is taken from its frame.
-    let backup = if cid == 0 || cid == runtime::get_cid() {
-        None
-    } else {
-        let Some(ctx) = context::by_cid(cid) else {
-            host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
-            call.set_bool(false);
-            return;
-        };
-        // SAFETY: the coroutine's frame, restored below.
-        Some(unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) })
-    };
     // SAFETY: the return slot.
-    unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
-    if let Some(backup) = backup {
-        // SAFETY: restores the running frame.
-        unsafe { swr_zend_coroutine_set_frame(backup) };
+    let trace = || unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
+    if cid == 0 || cid == runtime::get_cid() {
+        return trace();
     }
+    let Some(ctx) = context::by_cid(cid) else {
+        host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
+        call.set_bool(false);
+        return;
+    };
+    // Another coroutine's trace is taken from its frame.
+    ctx.in_frame(trace);
 }
 
 /// `(int) value`, as C's conversion to the `int` Zend takes.

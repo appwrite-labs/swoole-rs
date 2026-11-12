@@ -227,9 +227,10 @@ fn pid(value: u64) -> c_int {
     c_int::try_from(value.cast_signed()).unwrap_or(-1)
 }
 
-fn alarm(seconds: u32) {
-    // SAFETY: alarm only (re)arms this process's SIGALRM timer.
-    unsafe { libc::alarm(seconds) };
+// libc's `alarm(3)`, which only (re)arms this process's SIGALRM timer: it takes a
+// plain value and touches no caller memory.
+unsafe extern "C" {
+    safe fn alarm(seconds: libc::c_uint) -> libc::c_uint;
 }
 
 /// The reap loop's host: each step asks the native server through the `Host`.

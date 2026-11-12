@@ -127,11 +127,7 @@ pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCount
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
     // Kind 1 is `get_connection_by_session_id`, kind 0 `get_connection(server_fd)`.
     let server_fd = state.connection(session_id, 1)?.server_fd();
-    // A listening socket's record holds its `ListenPort` as the object.
-    let port = state.connection(server_fd.into(), 0)?.object();
-    // SAFETY: null, or one of the server's ports, which live as long as it.
-    let port = unsafe { crate::view::Port::from_raw(port) }?;
-    port.config().counters()
+    state.port_by_server_fd(server_fd)?.config().counters()
 }
 
 /// `Server::send`'s counts: the server's and the session's port's responses and bytes,
@@ -177,12 +173,10 @@ pub unsafe fn swr_v1_server_shared_init(
     counters.write(value)
 }
 
-/// Reads and updates the shared record, ending every borrow before host callbacks.
-///
-/// # Safety
-/// The state is live and native callers keep the shared allocation mapped for this operation.
+/// Reads and updates the shared record ([`server_counters`]), ending every borrow before
+/// host callbacks.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
+pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MASTER_PID,
         OP_MAXFD, OP_MINFD, OP_SESSION_ROUND, OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY,

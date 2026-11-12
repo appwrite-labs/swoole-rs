@@ -13,13 +13,29 @@ use std::{
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
     sys::{
-        swr_zend_bailout_to, swr_zend_guard_clear, swr_zend_guard_mark, swr_zend_guard_pending,
-        swr_zend_guard_register, swr_zend_guard_target, swr_zend_thread_enter,
-        swr_zend_thread_leave, swr_zend_thread_main_request, swr_zend_thread_request,
-        swr_zend_thread_set_argv, swr_zend_tsrm_api_name, swr_zend_tsrm_is_shutdown,
+        swr_zend_bailout_to, swr_zend_guard_register, swr_zend_thread_enter, swr_zend_thread_leave,
+        swr_zend_thread_main_request, swr_zend_thread_request, swr_zend_thread_set_argv,
         zend_declare_class_constant_string,
     },
 };
+
+// crates/zend-sys' shims that take nothing and can't run PHP or bail out: the calling
+// thread's exit mark and native scopes (`shim_guard.c`), and TSRM's process state.
+unsafe extern "C" {
+    /// The thread-exit mark: nonzero once `exit()` ran in this thread.
+    safe fn swr_zend_guard_pending() -> c_int;
+    /// Sets the thread-exit mark.
+    safe fn swr_zend_guard_mark();
+    /// Clears the thread-exit mark.
+    safe fn swr_zend_guard_clear();
+    /// The jump buffer of the innermost native scope of the running context
+    /// ([`guard_context`]), or null. Only jumping to it is unsafe.
+    safe fn swr_zend_guard_target() -> *mut c_void;
+    /// `tsrm_is_shutdown()`; false on NTS.
+    safe fn swr_zend_tsrm_is_shutdown() -> bool;
+    /// `tsrm_api_name()`: a NUL-terminated literal (empty on NTS).
+    safe fn swr_zend_tsrm_api_name() -> *const std::ffi::c_char;
+}
 
 /// PHP threads running, the main thread included.
 static THREADS: AtomicUsize = AtomicUsize::new(1);
@@ -124,8 +140,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
 /// After the script: an `exit()` the thread's reactor has not seen stops it,
 /// then the thread-exit mark is cleared. It never reads its argument.
 extern "C" fn epilogue(_start: *mut c_void) {
-    // SAFETY: pure reads of this thread's state.
-    if unsafe { swr_zend_guard_pending() } != 0 {
+    if swr_zend_guard_pending() != 0 {
         swoole_rs_reactor::event_api::swoole_event_bail_out();
     }
     clear_exit();
@@ -133,18 +148,15 @@ extern "C" fn epilogue(_start: *mut c_void) {
 
 /// The thread-exit mark goes: nothing is left for the exit to leave.
 fn clear_exit() {
-    // SAFETY: no preconditions.
-    unsafe { swr_zend_guard_clear() };
+    swr_zend_guard_clear();
 }
 
 /// Upstream's `php_swoole_thread_bailout()`: `exit()` in a thread unwinds to the nearest
 /// native scope that contains it, else out of the coroutine, else out of the
 /// thread's script.
 pub extern "C" fn thread_bailout() {
-    // SAFETY: no preconditions.
-    unsafe { swr_zend_guard_mark() };
-    // SAFETY: as above.
-    let target = unsafe { swr_zend_guard_target() };
+    swr_zend_guard_mark();
+    let target = swr_zend_guard_target();
     if !target.is_null() {
         // SAFETY: a live native scope's jump buffer; this frame owns nothing.
         unsafe { swr_zend_bailout_to(target) };
@@ -184,8 +196,8 @@ pub fn thread_minit(minit: &Minit) {
     // `std::thread::hardware_concurrency()`.
     let cpus = swoole_rs_corebase::sys::sysconf(libc::_SC_NPROCESSORS_ONLN).max(0);
     minit.class_constant_long(class, c"HARDWARE_CONCURRENCY", cpus);
-    // SAFETY: no preconditions; TSRM's static name.
-    let api = unsafe { swr_zend_tsrm_api_name() };
+    // TSRM's static name.
+    let api = swr_zend_tsrm_api_name();
     // SAFETY: MINIT; Zend copies both strings.
     unsafe { zend_declare_class_constant_string(class.entry(), c"API_NAME".as_ptr(), 8, api) };
     let policies = [
@@ -260,8 +272,7 @@ pub(crate) fn arguments(call: &Call) {
 pub(crate) fn info() -> Owned {
     let mut info = OwnedArray::default();
     info.insert_bool(b"is_main_thread", main_thread());
-    // SAFETY: no preconditions.
-    info.insert_bool(b"is_shutdown", unsafe { swr_zend_tsrm_is_shutdown() });
+    info.insert_bool(b"is_shutdown", swr_zend_tsrm_is_shutdown());
     #[expect(clippy::cast_possible_wrap, reason = "a thread count")]
     info.insert_long(b"thread_num", sw_active_thread_count() as i64);
     info.into_owned()

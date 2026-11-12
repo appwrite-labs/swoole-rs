@@ -119,6 +119,11 @@ impl<'a> Typed<'a> {
         }
     }
 
+    /// The table, for Zend's hash API.
+    pub(crate) fn table(self) -> *mut HashTable {
+        self.ht
+    }
+
     /// Flag the table typed again, after a builtin rebuilt it in place.
     fn mark(self) {
         // SAFETY: a live table; only its flags change.
@@ -490,17 +495,17 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 
 /// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: a copy the
 /// separation made gets `source`'s definition, in a fresh allocation that has
-/// room for it behind the table. The table `container` holds afterwards.
+/// room for it behind the table. The typed table `container` holds afterwards.
 /// # Safety
 /// `container` holds `source`, which nothing uses afterwards.
-pub(crate) unsafe fn separate(container: &Value, source: Typed) -> *mut HashTable {
+pub(crate) unsafe fn separate<'a>(container: &'a Value, source: Typed<'a>) -> Typed<'a> {
     let container = container.as_ptr();
     // SAFETY: Zend separates this exact live array slot.
     unsafe { swr_zend_separate_array(container) };
     // SAFETY: successful separation leaves the container holding an initialized array.
     let ht = unsafe { table(container) };
     if source.ht == ht {
-        return ht;
+        return source;
     }
     // `source` remains shared or immutable; `ht` is the fresh unshared copy.
     let source_info = info_of(source.ht);
@@ -512,12 +517,13 @@ pub(crate) unsafe fn separate(container: &Value, source: Typed) -> *mut HashTabl
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
     unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
     // SAFETY: the table just made, with the definition copied behind it.
-    unsafe { Typed::from_table(copy) }.mark();
+    let own = unsafe { Typed::from_table(copy) };
+    own.mark();
     // SAFETY: an array zval, which now holds the copy.
     unsafe { (*container).value = zend_value { arr: copy } };
     // SAFETY: the old allocation, which nothing references now.
     unsafe { swr_zend_efree(ht.cast()) };
-    copy
+    own
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,

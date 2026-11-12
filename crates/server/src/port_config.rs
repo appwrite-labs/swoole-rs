@@ -126,13 +126,15 @@ impl PortConfig {
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
     #[must_use]
     pub fn is_dtls(&self) -> bool {
-        let Some(context) = &self.ssl_context else {
-            return false;
-        };
-        let fields = swr_v1_tls_owner_view(context).fields;
+        self.ssl_fields()
+            .is_some_and(|fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
+    }
+
+    /// The fields of the port's `SSLContext`, if it has one.
+    pub(crate) fn ssl_fields(&self) -> Option<&swoole_rs_tls::OwnedTlsFields> {
+        let fields = swr_v1_tls_owner_view(self.ssl_context.as_ref()?).fields;
         // SAFETY: the owner's fields live as long as the port's reference.
-        let protocols = unsafe { (*fields).protocols };
-        protocols & SslVersion::SW_SSL_DTLS as u32 != 0
+        unsafe { fields.as_ref() }
     }
 }
 
@@ -178,6 +180,14 @@ impl PortConfig {
     pub(crate) fn counters(&self) -> Option<&crate::shared::PortCounters> {
         // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
         unsafe { self.gs.cast::<crate::shared::PortCounters>().as_ref() }
+    }
+    /// The port's listening socket, or `None` before it has one or after it closes
+    /// (`OP_PORT_CLOSE_SOCKET`), which ends every handle to it: one is used within the
+    /// op that took it.
+    pub(crate) fn listening_socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
+        // SAFETY: null, or the live listening socket the port owns: closing it frees it
+        // and nulls the field in one step.
+        unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket.cast()) }
     }
     /// A new port's settings.
     pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {

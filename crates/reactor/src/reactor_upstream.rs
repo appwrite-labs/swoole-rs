@@ -44,6 +44,16 @@ pub unsafe extern "C" fn reactor_change(
     changed(unsafe { crate::swr_v1_reactor_change(owner, socket, op, events, swr_v1_reactor_log) })
 }
 
+/// `int Reactor::del(Socket *socket)` of any live socket: a removal leaves the
+/// record's address neither in the registry nor with the kernel.
+pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_int {
+    // SAFETY: the handle's live state, which no reference borrows (its contract), and
+    // a live record; del registers nothing, and the log reads neither.
+    unsafe {
+        crate::swr_v1_reactor_change(reactor.state(), socket.as_ptr(), 2, 0, swr_v1_reactor_log)
+    }
+}
+
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
 ///
 /// # Safety

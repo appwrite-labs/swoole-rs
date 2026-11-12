@@ -306,8 +306,34 @@ impl Props<'_> {
     #[must_use]
     #[inline]
     pub fn own(self) -> Self {
-        // SAFETY: a live object.
-        Self(unsafe { (*self.1).ce }, self.1, PhantomData)
+        Self(self.class(), self.1, PhantomData)
+    }
+
+    /// `Z_OBJCE_P`: the object's own class.
+    #[inline]
+    fn class(self) -> *mut zend_class_entry {
+        // SAFETY: a live object, per `new`.
+        unsafe { (*self.1).ce }
+    }
+
+    /// `zend_update_property` inside `zend_try`: the property takes a copy of
+    /// `value`.
+    /// # Errors
+    /// PHP code the write ran (`__set`, a property hook, a conversion, the old
+    /// value's `__destruct`, an error handler) bailed out.
+    #[inline]
+    pub(crate) fn update_trapped(self, name: &[u8], value: &Value) -> Result<(), bailout::Bailout> {
+        // SAFETY: a live object and a registered class or null, per `new`, and
+        // a live value; Zend copies the name's bytes and the value.
+        bailout::trapped(unsafe {
+            swr_zend_try_facade_update(
+                self.0,
+                self.1,
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        })
     }
 
     /// `zend_update_property_long`.
@@ -347,89 +373,70 @@ impl Props<'_> {
         if bailout::pending() {
             return;
         }
-        let (scope, object, name, length) = (self.0, self.1, name.as_ptr(), name.count_bytes());
-        // SAFETY: a live object.
-        let class = unsafe { (*object).ce };
-        // SAFETY: its class, which outlives it.
+        let class = self.class();
+        // SAFETY: the object's class, which outlives it.
         let internal = unsafe { (*class).type_ } == INTERNAL;
         if internal && value.kind() != IS_OBJECT {
+            let (scope, object, length) = (self.0, self.1, name.count_bytes());
             // SAFETY: a live object, a registered class or null, and a live value
             // Zend copies.
-            unsafe { zend_update_property(scope, object, name, length, value.as_ptr()) };
+            unsafe { zend_update_property(scope, object, name.as_ptr(), length, value.as_ptr()) };
             return;
         }
-        // SAFETY: as above.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_facade_update(scope, object, name, length, value.as_ptr())
-        }));
+        bailout::defer(self.update_trapped(name.to_bytes(), value));
     }
 
     /// The `set()` merge: `php_array_merge` of `settings` into the array
-    /// property `name` ([`Props::array`]); nothing when `settings` is no array.
+    /// property `name` ([`Props::array_slot`]); nothing when `settings` is no array.
     #[inline]
     pub fn merge(self, name: &CStr, settings: &Value) {
-        // SAFETY: the array serves this one merge, which separates it first and
-        // traps a replaced value's `__destruct`.
-        if let Some(array) = unsafe { self.array(name) } {
-            array.merge_array(settings);
+        if let Some(slot) = self.array_slot(name) {
+            // SAFETY: an array slot of a live object, which nothing else
+            // borrows: it serves this one merge, which separates the array
+            // first and traps a replaced value's `__destruct`.
+            unsafe { ArrayMut::from_ptr(slot.as_ptr()) }.merge_array(settings);
         }
     }
 }
 
 impl<'a> Props<'a> {
-    /// `sw_zend_read_and_convert_property_array`: the declared property `name`,
-    /// as an array to add to. Any other value is replaced through
-    /// `zend_update_property` (inside `zend_try`), never destroyed in its slot,
-    /// because releasing it can run PHP code (a `__destruct`) that writes the
-    /// property again. None when the object declares no `name`, a bailout is
-    /// pending, or that code left something other than an array there.
-    /// # Safety
-    /// Nothing else borrows the property, and no PHP code runs, while the
-    /// result is borrowed.
+    /// `sw_zend_read_property_ex`: the slot of the instance property the
+    /// object's class declares as `name` (an uninitialised typed property reads
+    /// as null), or None for no such property.
     #[must_use]
     #[inline]
-    unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
-        let slot = self.array_slot(name)?;
-        // SAFETY: an array slot of a live object; per the caller.
-        Some(unsafe { ArrayMut::from_ptr(slot.as_ptr()) })
+    pub(crate) fn slot(self, name: &CStr) -> Option<&'a Value> {
+        // SAFETY: a live object, per `new`; Zend reads `name` only.
+        let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
+        // SAFETY: null, or a slot of the object, live for `'a`.
+        unsafe { Value::from_ptr(slot) }
     }
 
-    /// [`Props::array`], lent to `edit` out of its property: the property
-    /// reads null while `edit` runs, so nothing `edit` does can free or
-    /// replace the array under it, and takes the array back when `edit`
-    /// returns, in place of whatever was put there meanwhile. None as
-    /// [`Props::array`].
+    /// The array [`Props::array_slot`] finds, lent to `edit` out of its
+    /// property: the property reads null while `edit` runs, so nothing `edit`
+    /// does can free or replace the array under it, and takes the array back
+    /// when `edit` returns, in place of whatever was put there meanwhile. None
+    /// as [`Props::array_slot`].
     pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
         self.array_slot(name)?
             .lend(|held| held.array_mut().map(|array| edit(array)))
     }
 
-    /// The slot of the declared property `name`, holding an array, as
-    /// [`Props::array`] converts it.
+    /// `sw_zend_read_and_convert_property_array`: the slot of the declared
+    /// property `name`, holding an array. Any other value is replaced through
+    /// `zend_update_property` (inside `zend_try`), never destroyed in its slot,
+    /// because releasing it can run PHP code (a `__destruct`) that writes the
+    /// property again. None when the object declares no `name`, a bailout is
+    /// pending, or that code left something other than an array there.
     fn array_slot(self, name: &CStr) -> Option<&'a Value> {
-        let array = || {
-            // SAFETY: a live object; Zend reads `name` only.
-            let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
-            // SAFETY: null, or a slot of the object, live for `'a`.
-            unsafe { Value::from_ptr(slot) }.filter(|slot| slot.array().is_some())
-        };
+        let array = || self.slot(name).filter(|slot| slot.array().is_some());
         let slot = match array() {
             Some(slot) => slot,
             None if bailout::pending() => return None,
             None => {
                 // `value` would skip `zend_try` for an internal class, but the
                 // old value's release can still run PHP code.
-                // SAFETY: a live object, a registered class or null, and a
-                // live value Zend copies.
-                bailout::defer(bailout::trapped(unsafe {
-                    swr_zend_try_facade_update(
-                        self.0,
-                        self.1,
-                        name.as_ptr(),
-                        name.count_bytes(),
-                        OwnedArray::default().as_ptr(),
-                    )
-                }));
+                bailout::defer(self.update_trapped(name.to_bytes(), &OwnedArray::default()));
                 // The release may have written an array and then bailed out.
                 if bailout::pending() {
                     return None;

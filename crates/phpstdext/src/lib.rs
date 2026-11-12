@@ -78,8 +78,8 @@ pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
         // SAFETY: each callback obeys Zend's user opcode ABI and lives for the process.
         unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, Some(handler)) };
     }
-    // SAFETY: install function lookups and overrides at MINIT in the original order.
-    unsafe { invoke::install() };
+    // Function lookups, then overrides, in the original order.
+    invoke::install();
     // SAFETY: PHP's function table is complete and no request has started.
     unsafe { typed::install() };
 }
