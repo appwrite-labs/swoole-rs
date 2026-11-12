@@ -1297,7 +1297,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SIGNAL_ACTIVE => {
-            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.config().running())
+            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.state.running())
         }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);

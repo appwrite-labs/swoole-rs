@@ -89,7 +89,6 @@ enum {
     F(bool, send_yield) \
     F(bool, enable_coroutine) \
     F(bool, single_thread) \
-    F(bool, running) \
     F(void *, cpu_affinity_available[3]) /* Rust's Vec<int>, opaque here */ \
     F(SWR_SERVER_NATIVE(UnixSocket) *, pipe_command) \
     F(double, send_timeout) \
