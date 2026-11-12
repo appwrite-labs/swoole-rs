@@ -3,25 +3,24 @@
 //! a connection whose wait was interrupted fails with a connection error and
 //! is never reused, and a hooked persistent connection resets without
 //! blocking the event loop.
-use crate::{Conn, blocking, has_io_error, take_io_error, wait_connect};
-use pq_sys::{ConnStatusType, PQreset, PQresetPoll, PQresetStart, PostgresPollingStatusType};
+use crate::{
+    Conn, PQreset, PQresetPoll, PQresetStart, blocking, has_io_error, take_io_error, wait_connect,
+};
+use pq_sys::{ConnStatusType, PostgresPollingStatusType};
 use std::ffi::{c_char, c_int, c_void};
-use swoole_rs_zend::sys::{swr_zend_pdo_driver_data, swr_zend_pdo_forget_persistent};
+use swoole_rs_zend::sys::swr_zend_pdo_forget_persistent;
 
 impl Conn {
     fn reset_poll(self) -> PostgresPollingStatusType {
-        // SAFETY: a live connection.
-        unsafe { PQresetPoll(self.0) }
+        PQresetPoll(self)
     }
 
     fn reset_start(self) -> bool {
-        // SAFETY: as above.
-        unsafe { PQresetStart(self.0) != 0 }
+        PQresetStart(self) != 0
     }
 
     fn reset(self) {
-        // SAFETY: as above.
-        unsafe { PQreset(self.0) };
+        PQreset(self);
     }
 }
 
@@ -35,12 +34,16 @@ const FAILURE: c_int = -1;
 #[derive(Clone, Copy)]
 pub struct Dbh(*mut c_void);
 
+// SAFETY: crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
+// (`Dbh` has a `void *`'s layout): it only reads the live handle's `driver_data`.
+unsafe extern "C" {
+    safe fn swr_zend_pdo_driver_data(dbh: Dbh) -> *const Conn;
+}
+
 impl Dbh {
     fn server(self) -> Conn {
-        // SAFETY: a live pgsql `pdo_dbh_t`.
-        let handle = unsafe { swr_zend_pdo_driver_data(self.0) };
-        // SAFETY: `server` starts the handle.
-        unsafe { *handle.cast::<Conn>() }
+        // SAFETY: a live pgsql handle's `pdo_pgsql_db_handle`, which `server` starts.
+        unsafe { *swr_zend_pdo_driver_data(self) }
     }
 }
 

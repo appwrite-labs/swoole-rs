@@ -801,18 +801,7 @@ fn accept(
     };
     // The peer's name, as upstream reports it: from an empty address.
     let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    let (textaddr, addr, addrlen) = name_slots(param);
-    #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-    // SAFETY: the address and the output slots Zend asked for.
-    unsafe {
-        php_network_populate_name_from_sockaddr(
-            (&raw mut peer).cast(),
-            size_of::<sockaddr_storage>() as socklen_t,
-            textaddr,
-            addr,
-            addrlen,
-        );
-    }
+    populate_name(param, &mut peer, STORAGE_SIZE);
     if nodelay {
         client.set_nodelay(1);
     }
@@ -844,6 +833,26 @@ fn name_slots(
     (textaddr, addr, addrlen)
 }
 
+/// `sizeof(sockaddr_storage)`.
+#[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
+const STORAGE_SIZE: socklen_t = size_of::<sockaddr_storage>() as socklen_t;
+
+/// `php_network_populate_name_from_sockaddr` of the first `size` bytes of `peer`
+/// (at most all of it) into the names the transport parameter wants.
+fn populate_name(param: &mut php_stream_xport_param, peer: &mut sockaddr_storage, size: socklen_t) {
+    let (textaddr, addr, addrlen) = name_slots(param);
+    // SAFETY: an address of at least `size` bytes, and the output slots Zend asked for.
+    unsafe {
+        php_network_populate_name_from_sockaddr(
+            ptr::from_mut(peer).cast(),
+            size.min(STORAGE_SIZE),
+            textaddr,
+            addr,
+            addrlen,
+        );
+    }
+}
+
 /// The receive buffer Zend lends the transport parameter for the call.
 fn buffer(param: &mut php_stream_xport_param) -> &mut [u8] {
     let (buf, length) = (param.inputs.buf, param.inputs.buflen);
@@ -863,17 +872,7 @@ fn recvfrom(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
     let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
     let (received, size) = socket.recvfrom(buffer(param), &mut peer);
     if size != 0 {
-        let (textaddr, addr, addrlen) = name_slots(param);
-        // SAFETY: the address and the output slots Zend asked for.
-        unsafe {
-            php_network_populate_name_from_sockaddr(
-                (&raw mut peer).cast(),
-                size,
-                textaddr,
-                addr,
-                addrlen,
-            );
-        };
+        populate_name(param, &mut peer, size);
     } else {
         if want_textaddr {
             // The empty string is interned.

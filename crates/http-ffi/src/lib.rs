@@ -130,21 +130,21 @@ pub unsafe extern "C" fn swr_v1_http_multipart_disposition(data: *const u8, leng
         Err(status) => status,
     }
 }
-/// The cookies of `data` from `cursor` to the NUL that ends them, or `INVALID`
-/// when `capacity` ends first.
-///
+/// Consume the destructive cookie iterator through the first filename; `INVALID`
+/// when `capacity` ends before the NUL that ends the cookies.
 /// # Safety
-/// `data` is null or writable through `capacity` bytes, initialized up to the first
-/// NUL at or after `cursor`.
-unsafe fn cookies<'a>(data: *mut u8, capacity: usize, cursor: usize) -> Result<&'a mut [u8], i32> {
+/// Scratch is null, or writable through capacity<=`isize::MAX` and initialized through
+/// a reachable NUL terminator. No reference or owner is retained across native work.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity: usize) -> i32 {
     if data.is_null() || capacity > isize::MAX as usize {
-        return Err(INVALID);
+        return INVALID;
     }
     // Only the bytes up to that NUL are initialized: find it before borrowing them.
-    let mut end = cursor;
+    let mut end = 0;
     loop {
         if end >= capacity {
-            return Err(INVALID);
+            return INVALID;
         }
         // SAFETY: `end < capacity`, an initialized byte up to the NUL.
         if unsafe { data.wrapping_add(end).read() } == 0 {
@@ -153,19 +153,7 @@ unsafe fn cookies<'a>(data: *mut u8, capacity: usize, cursor: usize) -> Result<&
         end += 1;
     }
     // SAFETY: `end < capacity` writable bytes, initialized through the NUL at `end`.
-    Ok(unsafe { slice::from_raw_parts_mut(data, end + 1) })
-}
-/// Consume the destructive cookie iterator through the first filename.
-/// # Safety
-/// Scratch is writable through capacity<=`isize::MAX` and initialized through a
-/// reachable NUL terminator. No reference or owner is retained across native work.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_http_multipart_filename(data: *mut u8, capacity: usize) -> i32 {
-    // SAFETY: as the caller guarantees.
-    match unsafe { cookies(data, capacity, 0) } {
-        Ok(data) => swoole_rs_http::multipart_filename(data),
-        Err(status) => status,
-    }
+    swoole_rs_http::multipart_filename(unsafe { slice::from_raw_parts_mut(data, end + 1) })
 }
 /// `location_match` for `tests/modules/http/locale_gate.cc`.
 /// # Safety

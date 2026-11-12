@@ -9,10 +9,11 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// SAFETY: crates/timer's. A declaration, since crates/timer depends on this crate.
+// SAFETY: crates/timer's, a safe function there. A declaration, since crates/timer
+// depends on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
-    fn swoole_timer_select();
+    safe fn swoole_timer_select();
 }
 
 fn errno() -> c_int {
@@ -169,10 +170,11 @@ pub extern "C" fn system_waitpid_safe(
     const OK: c_int = 0;
     const LOCK_DEFAULT_SECOND: f64 = 0.001;
     const LOCK_MAX_SECOND: f64 = 0.1;
-    // SAFETY: crates/hooks's; declared, since crates/hooks depends on this crate.
+    // SAFETY: crates/hooks's, a safe function there; declared, since crates/hooks
+    // depends on this crate.
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-        fn system_sleep(seconds: f64) -> c_int;
+        safe fn system_sleep(seconds: f64) -> c_int;
     }
     let mut status = status;
     let outside = crate::event_api::swr_v1_event_current().is_null()
@@ -186,8 +188,8 @@ pub extern "C" fn system_waitpid_safe(
     let mut second = LOCK_DEFAULT_SECOND;
     loop {
         let result = sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG);
-        // SAFETY: in a coroutine.
-        if result != 0 || unsafe { system_sleep(second) } != OK {
+        // In a coroutine, checked above.
+        if result != 0 || system_sleep(second) != OK {
             return result;
         }
         second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
@@ -233,7 +235,7 @@ pub extern "C" fn swoole_waitpid(
             return result;
         }
         swoole_signal_dispatch();
-        // SAFETY: the thread's timer, if any.
-        unsafe { swoole_timer_select() };
+        // The thread's timer, if any.
+        swoole_timer_select();
     }
 }

@@ -21,31 +21,21 @@ unsafe extern "C" {
     fn gethostbyname2(name: *const c_char, family: c_int) -> *mut libc::hostent;
 }
 
-/// The entry's first address (`h_length` bytes, zero if it has none) and its length.
-///
-/// # Safety
-/// `entry` is a resolved hostent.
-unsafe fn first_address(entry: &libc::hostent) -> ([c_char; 46], usize) {
-    let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
-    let mut bytes = [0 as c_char; 46];
-    // SAFETY: `h_addr_list` is the resolver's null-terminated list, which some
-    // libcs (Apple's) do not align.
-    let first = unsafe { entry.h_addr_list.read_unaligned() };
-    if !first.is_null() {
-        // SAFETY: each address holds `h_length` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(first, bytes.as_mut_ptr(), length) };
-    }
-    (bytes, length)
-}
+/// Serializes `gethostbyname2`'s shared result.
+#[cfg(not(target_os = "linux"))]
+static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// `network::gethostbyname(flags, name)`: the first address of `name` for the
-/// flags' family and its length, or none if it does not resolve.
+/// flags' family (`h_length` bytes, zero if it has none) and its length, or none if
+/// it does not resolve.
 fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
     let family = flags & !LOOKUP_RANDOM;
+    // The entry's lists live in `buffer`, which outlives the reads below.
     #[cfg(target_os = "linux")]
-    {
+    let mut buffer = vec![0 as c_char; 256];
+    #[cfg(target_os = "linux")]
+    let entry = {
         let mut entry: libc::hostent = crate::sys::zeroed();
-        let mut buffer = vec![0 as c_char; 256];
         let mut result = std::ptr::null_mut();
         let mut error = 0;
         loop {
@@ -70,22 +60,30 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
             }
             break;
         }
-        // SAFETY: `entry` was filled by the resolver.
-        Some(unsafe { first_address(&entry) })
-    }
+        entry
+    };
+    // Held until the shared result is read below.
     #[cfg(not(target_os = "linux"))]
-    {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _held = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    #[cfg(not(target_os = "linux"))]
+    let entry = {
         // SAFETY: a terminated name; the lock serializes gethostbyname2's shared result.
         let entry = unsafe { gethostbyname2(name.as_ptr(), family) };
         // SAFETY: a non-null result is the resolver's entry, read under the lock.
-        let entry = unsafe { entry.as_ref() }?;
-        // SAFETY: as above.
-        Some(unsafe { first_address(entry) })
+        *unsafe { entry.as_ref() }?
+    };
+    let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
+    let mut bytes = [0 as c_char; 46];
+    // SAFETY: the resolver filled `entry`: `h_addr_list` is its null-terminated list,
+    // which some libcs (Apple's) do not align.
+    let first = unsafe { entry.h_addr_list.read_unaligned() };
+    if !first.is_null() {
+        // SAFETY: each address holds `h_length` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(first, bytes.as_mut_ptr(), length) };
     }
+    Some((bytes, length))
 }
 
 /// [`gethostbyname`] into `addr`; 0, or -1 if it does not resolve.

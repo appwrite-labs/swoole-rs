@@ -1,7 +1,10 @@
 //! A Process object's `Worker` and its pipe (were the host table's worker and
 //! pipe entries in ext-src/swoole_server.cc): the record crates/process lays
 //! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
-use std::ffi::{c_int, c_void};
+use std::{
+    ffi::{c_int, c_void},
+    mem::MaybeUninit,
+};
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_record::WorkerRecord,
@@ -14,7 +17,7 @@ use swoole_rs_reactor::{
 };
 use swoole_rs_tls::{
     socket_pair::{self, SocketPair},
-    upstream::{send_sync, socket_read_sync},
+    upstream::{read_sync, send_sync},
 };
 use swoole_rs_zend::string::ZBuf;
 
@@ -147,12 +150,12 @@ pub(crate) fn pipe_read(worker: *mut c_void, buffer: &mut ZBuf, blocking: bool) 
         return -1;
     };
     let (data, length) = (buffer.as_mut_ptr().cast(), buffer.capacity());
+    // SAFETY: the buffer's own `capacity` writable bytes, borrowed with it.
+    let spare: &mut [MaybeUninit<u8>] = unsafe { std::slice::from_raw_parts_mut(data, length) };
     if blocking {
-        // SAFETY: a live socket and `length` writable bytes.
-        unsafe { socket_read_sync(socket, data, length) }
+        read_sync(socket, spare)
     } else {
-        // SAFETY: as above.
-        unsafe { libc::read(socket.fd(), data, length) }
+        swoole_rs_corebase::sys::read(socket.fd(), spare)
     }
 }
 

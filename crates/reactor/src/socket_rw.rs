@@ -9,7 +9,7 @@ use std::os::raw::{c_int, c_void};
 pub type TlsIo =
     unsafe extern "C" fn(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize;
 
-fn interrupted() -> bool {
+pub(crate) fn interrupted() -> bool {
     Error::last_os_error().raw_os_error() == Some(libc::EINTR)
 }
 
@@ -175,84 +175,6 @@ pub struct IovState {
     pub remain_count: c_int,
     pub index: c_int,
     pub offset_bytes: usize,
-}
-
-impl IovState {
-    /// `IOVector::update_iterator`.
-    ///
-    /// # Safety
-    /// `iterator` names `remain_count` writable initialized iovecs.
-    pub(crate) unsafe fn update(&mut self, n: isize) {
-        // SAFETY: as the caller promises.
-        let iterator = unsafe { crate::iov_owned::span(self.iterator, self.remain_count) };
-        let reply = crate::iov_owned::owned_progress(
-            iterator,
-            n,
-            self.remain_count,
-            self.index,
-            self.offset_bytes,
-        );
-        if reply.action == 0 {
-            return;
-        }
-        assert!(
-            reply.action > 0,
-            "iovec progress outside the original domain"
-        );
-        self.remain_count = reply.remain_count;
-        self.index = reply.index;
-        self.offset_bytes = reply.offset_bytes;
-        if reply.action == 1 {
-            self.iterator = self.iterator.wrapping_add(reply.advance);
-        }
-    }
-}
-
-/// `Socket::readv`/`writev`: readv(2)/writev(2) over the remaining iovecs, or
-/// `tls` one iovec at a time until one comes up short, advancing `state`;
-/// retried on EINTR.
-///
-/// # Safety
-/// `state` names a live `IOVector`'s iovecs, whose buffers are valid for the
-/// direction; `tls`, when given, is valid for `socket`.
-pub unsafe fn socket_iov(
-    fd: c_int,
-    write: bool,
-    state: &mut IovState,
-    tls: Option<TlsIo>,
-    socket: *mut c_void,
-) -> isize {
-    loop {
-        let result = if let Some(io) = tls {
-            let mut total: isize = 0;
-            loop {
-                // SAFETY: the current iovec is live while any remain.
-                let current = unsafe { *state.iterator };
-                // SAFETY: the caller's TLS call for this socket, on that iovec.
-                let done = unsafe { io(socket, current.iov_base, current.iov_len) };
-                total += done.max(0);
-                // SAFETY: the iterator still names `remain_count` iovecs.
-                unsafe { state.update(done) };
-                if !(done > 0 && state.remain_count > 0) {
-                    break if total > 0 { total } else { done };
-                }
-            }
-        } else {
-            let done = if write {
-                // SAFETY: `remain_count` iovecs from the iterator are the caller's buffers.
-                unsafe { libc::writev(fd, state.iterator, state.remain_count) }
-            } else {
-                // SAFETY: as above, writable.
-                unsafe { libc::readv(fd, state.iterator, state.remain_count) }
-            };
-            // SAFETY: the iterator still names `remain_count` iovecs.
-            unsafe { state.update(done) };
-            done
-        };
-        if !(result < 0 && interrupted()) {
-            return result;
-        }
-    }
 }
 
 /// `Socket::ssl_sendfile`'s outcome: what it returns, and which warning native code
@@ -432,9 +354,10 @@ mod tests {
 
     #[test]
     fn iov_plain_and_tls() {
+        use crate::{ReactorIov, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned};
         let [a, b] = pair();
         let (mut first, mut second) = (*b"abc", *b"defg");
-        let mut iov = [
+        let iov = [
             libc::iovec {
                 iov_base: first.as_mut_ptr().cast(),
                 iov_len: 3,
@@ -444,19 +367,17 @@ mod tests {
                 iov_len: 4,
             },
         ];
-        let mut state = IovState {
-            iterator: iov.as_mut_ptr(),
-            remain_count: 2,
-            index: 0,
-            offset_bytes: 0,
+        let mut owner = ReactorIov::new(&iov).unwrap();
+        // SAFETY: the cursor names the two local iovecs.
+        let sent = unsafe {
+            swr_v1_socket_iov_owned(a, true, &raw mut *owner, None, std::ptr::null_mut())
         };
-        // SAFETY: `state` names the two local iovecs.
-        let sent = unsafe { socket_iov(a, true, &mut state, None, std::ptr::null_mut()) };
+        let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((sent, state.remain_count), (7, 0));
 
         let mut into = [0_u8; 5];
         let mut tail = [0_u8; 5];
-        let mut iov = [
+        let iov = [
             libc::iovec {
                 iov_base: into.as_mut_ptr().cast(),
                 iov_len: 5,
@@ -466,14 +387,12 @@ mod tests {
                 iov_len: 5,
             },
         ];
-        let mut state = IovState {
-            iterator: iov.as_mut_ptr(),
-            remain_count: 2,
-            index: 0,
-            offset_bytes: 0,
-        };
+        let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: as above, writable.
-        let read = unsafe { socket_iov(b, false, &mut state, None, std::ptr::null_mut()) };
+        let read = unsafe {
+            swr_v1_socket_iov_owned(b, false, &raw mut *owner, None, std::ptr::null_mut())
+        };
+        let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!(read, 7);
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
         assert_eq!(
@@ -485,7 +404,7 @@ mod tests {
         let mut left: usize = 7;
         let mut into = [0_u8; 4];
         let mut tail = [0_u8; 6];
-        let mut iov = [
+        let iov = [
             libc::iovec {
                 iov_base: into.as_mut_ptr().cast(),
                 iov_len: 4,
@@ -495,22 +414,18 @@ mod tests {
                 iov_len: 6,
             },
         ];
-        let mut state = IovState {
-            iterator: iov.as_mut_ptr(),
-            remain_count: 2,
-            index: 0,
-            offset_bytes: 0,
-        };
+        let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: the counter stands in for the socket; the iovecs are local.
         let read = unsafe {
-            socket_iov(
+            swr_v1_socket_iov_owned(
                 -1,
                 false,
-                &mut state,
+                &raw mut *owner,
                 Some(tls_in_pieces),
                 (&raw mut left).cast(),
             )
         };
+        let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((read, left), (7, 0));
         assert_eq!((&into, &tail[..3]), (b"xxxx", &b"xxx"[..]));
         // update_iterator keeps the first iovec's offset when that iovec ends exactly.

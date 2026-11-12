@@ -132,11 +132,11 @@ pub fn errno() -> c_int {
 /// Sets this thread's errno.
 pub fn set_errno(value: c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__errno_location() };
+    use libc::__errno_location as errno_location;
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    use libc::__error as errno_location;
     // SAFETY: returns this thread's errno slot, live for the thread.
-    let slot = unsafe { libc::__error() };
+    let slot = unsafe { errno_location() };
     // SAFETY: `slot` is this thread's errno.
     unsafe { slot.write(value) };
 }

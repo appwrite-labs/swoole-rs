@@ -60,10 +60,10 @@ impl RespConnection for Connection<'_> {
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
-        // SAFETY: the live receive buffer, not held across `onPackage`.
-        let buffer = unsafe { &*self.buffer };
-        // SAFETY: the connection's live request, not held across `onPackage`.
+        // SAFETY: the connection's live request, apart from the buffer and not held
+        // across `onPackage`.
         let request = unsafe { &mut *self.request };
+        let buffer = &*self.string();
         (buffer.view(), buffer.size(), request)
     }
 

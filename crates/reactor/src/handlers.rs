@@ -1,6 +1,7 @@
 //! The reactor's handler tables (upstream `Reactor::read_handler`, `write_handler`,
 //! `error_handler` and the two defaults): which native `ReactorHandler` runs for an
 //! fd type's read, write or error readiness.
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::ptr;
@@ -42,6 +43,41 @@ impl Running<'_> {
     pub(crate) fn state(self) -> *mut crate::ReactorState {
         self.raw.cast()
     }
+
+    /// The reactor's handler tables, for one lookup or registration: the borrow of the
+    /// handle ends before any call that takes it.
+    #[cfg(unix)]
+    #[inline]
+    pub(crate) fn handlers(&self) -> &Handlers {
+        let handlers = self
+            .state()
+            .wrapping_byte_add(std::mem::offset_of!(crate::ReactorState, handlers))
+            .cast::<Handlers>();
+        // SAFETY: the handle's live tables, which no mutable reference holds (the
+        // handle's contract); their slots are cells, so sharing them is enough to set one.
+        unsafe { &*handlers }
+    }
+
+    /// The reactor's socket registry, for one lookup: the borrow of the handle ends
+    /// before any call that takes it, so before anything registers or removes a socket.
+    #[cfg(unix)]
+    pub(crate) fn registry(&self) -> &crate::Registry {
+        let registry = self
+            .state()
+            .wrapping_byte_add(std::mem::offset_of!(crate::ReactorState, registry))
+            .cast::<crate::Registry>();
+        // SAFETY: the handle's live registry, which no mutable reference holds (the
+        // handle's contract).
+        unsafe { &*registry }
+    }
+
+    /// Whether the reactor has deferred tasks waiting (`defer_tasks`).
+    #[cfg(unix)]
+    #[inline]
+    pub(crate) fn has_deferred(self) -> bool {
+        // SAFETY: the handle's live state; a single field read.
+        !unsafe { (*self.state()).fields.defer_tasks }.is_null()
+    }
 }
 
 /// `SW_MAX_FDTYPE`.
@@ -56,11 +92,12 @@ pub(crate) const READ: usize = 0;
 pub(crate) const WRITE: usize = 1;
 pub(crate) const ERROR: usize = 2;
 
+/// Each slot is a cell: a registration needs only the shared tables, as a lookup does.
 #[derive(Default)]
 pub struct Handlers {
-    tables: [[Option<Handler>; FD_TYPES]; 3],
+    tables: [[Cell<Option<Handler>>; FD_TYPES]; 3],
     /// Write and error fallbacks (`default_write_handler`, `default_error_handler`).
-    pub(crate) defaults: [Option<Handler>; 2],
+    pub(crate) defaults: [Cell<Option<Handler>>; 2],
 }
 
 /// `Reactor::isset_*_event`'s order: the table an `events` mask names, if any.
@@ -79,9 +116,9 @@ fn table(events: c_int) -> Option<usize> {
 impl Handlers {
     /// `Reactor::set_handler`: false when `events` names no table (upstream asserts) or
     /// `fd_type` is out of range.
-    pub(crate) fn set(&mut self, fd_type: c_int, events: c_int, handler: Option<Handler>) -> bool {
+    pub(crate) fn set(&self, fd_type: c_int, events: c_int, handler: Option<Handler>) -> bool {
         self.slot(fd_type, events)
-            .map(|slot| *slot = handler)
+            .map(|slot| slot.set(handler))
             .is_some()
     }
 
@@ -90,24 +127,27 @@ impl Handlers {
         table(events).is_some_and(|kind| self.registered(kind, fd_type).is_some())
     }
 
-    fn slot(&mut self, fd_type: c_int, events: c_int) -> Option<&mut Option<Handler>> {
+    fn slot(&self, fd_type: c_int, events: c_int) -> Option<&Cell<Option<Handler>>> {
         let table = table(events)?;
-        self.tables
-            .get_mut(table)?
-            .get_mut(usize::try_from(fd_type).ok()?)
+        self.tables.get(table)?.get(usize::try_from(fd_type).ok()?)
     }
 
     fn registered(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
         let row = self.tables.get(kind)?;
-        *row.get(usize::try_from(fd_type).ok()?)?
+        row.get(usize::try_from(fd_type).ok()?)?.get()
+    }
+
+    /// `default_write_handler` (0) or `default_error_handler` (1).
+    pub(crate) fn fallback(&self, index: usize) -> Option<Handler> {
+        self.defaults.get(index).and_then(Cell::get)
     }
 
     /// `Reactor::get_handler`: the registered handler, else the write or error default.
     fn get(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
         let registered = self.registered(kind, fd_type);
         match kind {
-            WRITE => registered.or(self.defaults[0]),
-            ERROR => registered.or(self.defaults[1]),
+            WRITE => registered.or(self.defaults[0].get()),
+            ERROR => registered.or(self.defaults[1].get()),
             _ => registered,
         }
     }
@@ -149,9 +189,9 @@ pub extern "C" fn swr_v1_reactor_handlers_set_default(
 ) {
     if let Some(slot) = kind
         .checked_sub(1)
-        .and_then(|i| handlers.defaults.get_mut(i as usize))
+        .and_then(|i| handlers.defaults.get(i as usize))
     {
-        *slot = handler;
+        slot.set(handler);
     }
 }
 
@@ -165,7 +205,7 @@ pub extern "C" fn swr_v1_reactor_handlers_default(
 ) -> *const Option<Handler> {
     kind.checked_sub(1)
         .and_then(|i| handlers.defaults.get(i as usize))
-        .map_or(ptr::null(), ptr::from_ref)
+        .map_or(ptr::null(), |slot| slot.as_ptr().cast_const())
 }
 
 #[cfg(test)]

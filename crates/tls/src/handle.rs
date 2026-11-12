@@ -8,10 +8,10 @@
 //! `'a` is unsafe: the constructors from raw pointers, `Ssl::set_fd`, `Ssl::set_bio`
 //! and `upstream::socket_ssl_close`.
 use openssl_sys::{
-    BIO, BIO_METHOD, BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK,
-    OPENSSL_sk_num, OPENSSL_sk_value, PEM_write_bio_X509, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTX,
-    SSL_ctrl, SSL_peek, SSL_read, SSL_set_SSL_CTX, SSL_set_bio, SSL_write,
-    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
+    BIO, BIO_METHOD, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK, OPENSSL_sk_num,
+    OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTX, SSL_ctrl, SSL_peek, SSL_read,
+    SSL_set_SSL_CTX, SSL_set_bio, SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host,
+    X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -20,8 +20,9 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Socket, SocketFields};
 
 // SAFETY: libssl's and libcrypto's own declarations, with each pointer typed as the
-// handle it is: `Ssl` and `Bio` are live for their lifetime, `CipherRef` is an entry
-// of OpenSSL's static cipher table, and `Cert` takes the reference OpenSSL returns.
+// handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
+// an entry of OpenSSL's static cipher table, `Cert` takes the reference OpenSSL
+// returns, and a `CText<'static>` is one of OpenSSL's static strings.
 // The `safe` ones take only such handles and plain values, read or change only the
 // object behind the handle or this thread's error queue, and return raw pointers the
 // caller dereferences in its own unsafe block.
@@ -29,9 +30,12 @@ unsafe extern "C" {
     safe fn ERR_clear_error();
     safe fn ERR_peek_error() -> c_ulong;
     safe fn ERR_get_error() -> c_ulong;
-    safe fn ERR_reason_error_string(error: c_ulong) -> *const c_char;
+    safe fn ERR_reason_error_string(error: c_ulong) -> Option<CText<'static>>;
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
     safe fn BIO_s_mem() -> *const BIO_METHOD;
+    /// `BIO_pending` as a function: the bytes queued to read.
+    safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
+    safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_connect(ssl: Ssl<'_>) -> c_int;
@@ -58,8 +62,8 @@ unsafe extern "C" {
     safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
     /// Null names the `(NONE)` cipher, whose bits are 0.
     safe fn SSL_CIPHER_get_bits(cipher: Option<CipherRef>, algorithm: Option<&mut c_int>) -> c_int;
-    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> *const c_char;
-    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> *const c_char;
+    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<CText<'static>>;
+    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<CText<'static>>;
     fn DTLSv1_listen(ssl: *mut SSL, peer: *mut c_void) -> c_int;
     fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
@@ -70,8 +74,24 @@ unsafe extern "C" {
     fn BIO_int_ctrl(bio: *mut BIO, command: c_int, large: c_long, integer: c_int) -> c_long;
 }
 
-/// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
-const BIO_CTRL_PENDING: c_int = 10;
+/// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
+/// `const char *` it is: what a declaration takes or returns in place of the raw pointer.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub(crate) struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+
+impl<'a> From<&'a CStr> for CText<'a> {
+    fn from(text: &'a CStr) -> Self {
+        Self(NonNull::from(text).cast(), PhantomData)
+    }
+}
+
+impl<'a> CText<'a> {
+    pub(crate) fn get(self) -> &'a CStr {
+        // SAFETY: the type's invariant: a NUL-terminated string live for `'a`.
+        unsafe { CStr::from_ptr(self.0.as_ptr()) }
+    }
+}
 
 /// The int OpenSSL's I/O calls take for a buffer's length: at most `INT_MAX`, where
 /// upstream's `(int)` cast would wrap a buffer over 2 GiB.
@@ -99,9 +119,7 @@ pub fn pop_error() -> c_ulong {
 /// OpenSSL's reason string for `error`, None for an unknown code.
 #[must_use]
 pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
-    let reason = ERR_reason_error_string(error);
-    // SAFETY: OpenSSL's static NUL-terminated string when not null.
-    (!reason.is_null()).then(|| unsafe { CStr::from_ptr(reason) })
+    ERR_reason_error_string(error).map(CText::get)
 }
 
 /// `ERR_error_string_n` of `error` into a 512-byte buffer, as upstream's logs print it.
@@ -288,10 +306,9 @@ impl<'a> Ssl<'a> {
         let (name, version) = (SSL_CIPHER_get_name(cipher), SSL_CIPHER_get_version(cipher));
         Cipher {
             bits: SSL_CIPHER_get_bits(cipher, None),
-            // SAFETY: the table's name or the `(NONE)` literal: static and NUL-terminated.
-            name: unsafe { CStr::from_ptr(name) },
-            // SAFETY: a static NUL-terminated literal.
-            version: unsafe { CStr::from_ptr(version) },
+            // The table's name and version; OpenSSL itself answers `(NONE)` without a cipher.
+            name: name.map_or(c"(NONE)", CText::get),
+            version: version.map_or(c"(NONE)", CText::get),
         }
     }
 
@@ -417,9 +434,7 @@ impl Bio<'_> {
     /// `BIO_pending`: the bytes queued to read.
     #[must_use]
     pub fn pending(self) -> usize {
-        // SAFETY: a live BIO; BIO_pending.
-        let pending = unsafe { BIO_ctrl(self.as_ptr(), BIO_CTRL_PENDING, 0, std::ptr::null_mut()) };
-        usize::try_from(pending).unwrap_or(0)
+        BIO_ctrl_pending(self)
     }
 
     /// `BIO_read` into `buffer`.
@@ -476,6 +491,7 @@ impl Drop for OwnedBio {
 }
 
 /// A live certificate, borrowed for `'a`.
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug)]
 pub struct CertRef<'a>(NonNull<X509>, PhantomData<&'a X509>);
 
@@ -510,8 +526,7 @@ impl CertRef<'_> {
         let Some(bio) = OwnedBio::memory() else {
             return -1;
         };
-        // SAFETY: the live certificate into the fresh BIO.
-        if unsafe { PEM_write_bio_X509(bio.bio().as_ptr(), self.as_ptr()) } == 0 {
+        if PEM_write_bio_X509(bio.bio(), self) == 0 {
             return -2;
         }
         let count = bio.bio().pending().min(buffer.len());

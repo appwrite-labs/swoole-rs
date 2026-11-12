@@ -431,6 +431,14 @@ impl CoSocket {
         self.sock_fd == -1
     }
 
+    /// The handle of a record this module boxed, which the caller owns from here:
+    /// [`swr_v1_hook_co_socket_free`] releases it.
+    fn into_co(self: Box<Self>) -> Co {
+        // SAFETY: a live record until it is freed, with the state and metadata `new`
+        // made; its `socket` is null or the network::Socket this module attached.
+        unsafe { Co::new(Box::into_raw(self)) }
+    }
+
     fn new() -> Self {
         Self {
             err_code: 0,
@@ -606,8 +614,7 @@ pub fn make_quiet(
     let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast();
     let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
-    // SAFETY: the record just made, with its state and metadata, which the caller owns.
-    let socket = unsafe { Co::new(Box::into_raw(socket)) };
+    let socket = socket.into_co();
     if crate::stdio::host().is_some_and(|host| host.uring_socket) {
         crate::socket_extra::swr_v1_hook_co_socket_uring(socket);
     }
@@ -771,8 +778,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
     socket.http2 = server.http2();
     socket.protocol = server.protocol();
     socket.ssl_is_server = server.ssl_is_server();
-    // SAFETY: the record just made, with its state and metadata, which the caller owns.
-    let socket = unsafe { Co::new(Box::into_raw(socket)) };
+    let socket = socket.into_co();
     swr_v1_hook_co_socket_created(socket, result);
     socket.with_state(|state| state.flags.connected = true);
     socket

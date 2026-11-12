@@ -146,14 +146,15 @@ impl Drop for Bus {
         // timers, buffers or loop: `Socket::free` is the record's deallocation.
         #[cfg(not(all(feature = "upstream-symbols", not(test))))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
-        for &socket in &self.pipe_sockets {
-            // SAFETY: null or a record `init_pipe_socket` made, used by nothing else now.
-            let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+        for fd in 0..self.pipe_sockets.len() {
+            // The record `init_pipe_socket` made for `fd`, if any.
+            let Some(record) = c_int::try_from(fd).ok().and_then(|fd| self.pipe(fd)) else {
                 continue;
             };
             record.edit(|record| record.fd = -1);
-            // SAFETY: as above.
-            unsafe { free_socket(socket) };
+            // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
+            // freed once: the bus is dropping.
+            unsafe { free_socket(record.as_ptr()) };
         }
     }
 }

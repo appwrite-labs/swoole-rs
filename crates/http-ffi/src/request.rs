@@ -228,6 +228,12 @@ impl HttpForm {
     pub fn boundary(&self) -> (*const u8, u32) {
         (self.boundary, self.boundary_length)
     }
+
+    /// The saved buffer's length, 0 before `init_multipart_parser` saves one.
+    fn saved_length(&self) -> usize {
+        // SAFETY: null, or the saved buffer, which is live while the form is.
+        unsafe { self.saved.as_ref() }.map_or(0, |saved| saved.length)
+    }
 }
 
 /// `http_server::Request`, field for field; native code asserts the layout.
@@ -644,8 +650,7 @@ impl Parts for HttpRequest {
         let form = form_of(self);
         let (saved, fp) = (form.saved, form.fp);
         if fp.is_null() {
-            // SAFETY: the saved buffer is live while the form is.
-            if (unsafe { (*saved).length } as u64).wrapping_add(length as u64) > max_length {
+            if (form.saved_length() as u64).wrapping_add(length as u64) > max_length {
                 (self.excepted, self.unavailable) = (true, true);
                 return MPPE_PAUSED;
             }
@@ -724,9 +729,8 @@ impl Parts for HttpRequest {
         let saved = form_of(self).saved;
         self.append(saved, boundary.as_ptr(), boundary.len());
         self.append(saved, b"--".as_ptr(), 2);
-        // SAFETY: the saved buffer is live while the form is.
-        let saved = unsafe { &*saved };
-        self.content_length = (saved.length as u64).wrapping_sub(u64::from(self.header_length));
+        let length = form_of(self).saved_length();
+        self.content_length = (length as u64).wrapping_sub(u64::from(self.header_length));
         self.tried_to_dispatch = true;
         0
     }

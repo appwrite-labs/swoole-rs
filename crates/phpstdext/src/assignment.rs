@@ -8,7 +8,6 @@ use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
     sys::{self as z, zend_execute_data, zend_op, zend_reference, zval},
-    value::table,
 };
 
 unsafe extern "C" {
@@ -58,8 +57,8 @@ impl<'a> Data<'a> {
     /// `op` is an `ASSIGN_DIM` or `ASSIGN_DIM_OP`, which `OP_DATA` follows, and
     /// nothing else frees that operand.
     unsafe fn of(op: Op<'a>) -> Result<Option<Self>, Bailout> {
-        // SAFETY: per the caller.
-        let op = unsafe { op.data() };
+        // SAFETY: per the caller, the `OP_DATA` instruction follows `op`.
+        let op = unsafe { Op::at(op.frame, op.at.wrapping_add(1)) };
         Ok(operand(op)?.map(|value| Self { op, value }))
     }
 
@@ -128,22 +127,6 @@ fn operand(data: Op<'_>) -> Result<Option<Cow<'_, Value>>, Bailout> {
     Ok(Some(Cow::Owned(Owned::null())))
 }
 
-/// `SEPARATE_ARRAY(container)`, carrying the definition to a copy.
-/// # Safety
-/// `container` holds `source`, which nothing uses afterwards.
-unsafe fn separate(container: &Value, source: Typed) -> *mut z::HashTable {
-    // SAFETY: Zend separates this exact live array slot.
-    unsafe { z::swr_zend_separate_array(container.as_ptr()) };
-    // SAFETY: successful separation leaves the container holding an initialized array.
-    let current = unsafe { table(container.as_ptr()) };
-    if source.table() != current {
-        // SAFETY: source remains shared/immutable; current is the fresh unshared copy.
-        unsafe { typed::copy_type(container.as_ptr(), source) };
-    }
-    // SAFETY: copying type metadata may have replaced the header allocation.
-    unsafe { table(container.as_ptr()) }
-}
-
 /// Whether the active function declares `strict_types`.
 fn strict(frame: Frame) -> bool {
     // SAFETY: a live execution frame points at its active function.
@@ -166,7 +149,7 @@ unsafe fn assign(
 ) -> Result<(), Bailout> {
     let value = data.value();
     // SAFETY: per the caller.
-    let ht = unsafe { separate(container, source) };
+    let ht = unsafe { typed::separate(container, source) };
     let mut slot = ptr::null_mut();
     if key.kind() == z::IS_NULL {
         // SAFETY: the table takes the original operand reference on successful insertion.
@@ -226,7 +209,7 @@ unsafe fn assign_op(
 ) -> Result<(), Bailout> {
     let value = data.value();
     // SAFETY: per the caller.
-    let ht = unsafe { separate(container, source) };
+    let ht = unsafe { typed::separate(container, source) };
     let mut slot = ptr::null_mut();
     // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
     // SAFETY: retain that exact distinction when invoking the native VM primitive.
@@ -274,8 +257,11 @@ unsafe fn assign_op(
 }
 
 /// # Safety
-/// `frame` is at an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
-unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
+/// Zend's user opcode handler contract: `frame` is the live frame it passed, at
+/// an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
+unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_int, Bailout> {
+    // SAFETY: per the caller.
+    let frame = unsafe { Frame::new(frame) };
     let op = frame.op();
     let Some(array) = op.op1_container() else {
         return Ok(DISPATCH);
@@ -312,18 +298,16 @@ unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
 /// # Safety
 /// Zend supplies a live frame at its assignment instruction.
 pub unsafe extern "C" fn swr_v1_phpstdext_assign(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: this native entry follows Zend's user opcode callback contract.
-    let frame = unsafe { Frame::new(frame) };
-    // SAFETY: Zend installed this handler for ASSIGN_DIM.
+    // SAFETY: Zend's user opcode callback contract; it installed this handler
+    // for ASSIGN_DIM.
     finish(unsafe { dispatch(frame, false) })
 }
 /// `ASSIGN_DIM_OP`'s complete typed-array opcode handler.
 /// # Safety
 /// Zend supplies a live frame at its assignment operation instruction.
 pub unsafe extern "C" fn swr_v1_phpstdext_assign_op(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: this native entry follows Zend's user opcode callback contract.
-    let frame = unsafe { Frame::new(frame) };
-    // SAFETY: Zend installed this handler for ASSIGN_DIM_OP.
+    // SAFETY: Zend's user opcode callback contract; it installed this handler
+    // for ASSIGN_DIM_OP.
     finish(unsafe { dispatch(frame, true) })
 }
 fn finish(result: Result<c_int, Bailout>) -> c_int {

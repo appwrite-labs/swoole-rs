@@ -12,14 +12,13 @@ use std::{
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
-    Call, Class, Minit,
+    Call, Class, Minit, Owned, Props, Value, ZStr,
     bailout::Bailout,
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
-        swr_zend_error_reporting, swr_zend_exit_status, swr_zval_try_addref, zend_class_entry,
-        zend_execute_data, zend_read_property, zend_string, zend_throw_exception,
-        zend_update_property, zend_update_property_long, zend_update_property_str,
+        swr_zend_error_reporting, swr_zend_exit_status, zend_class_entry, zend_execute_data,
+        zend_read_property, zend_string, zend_throw_exception,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -203,16 +202,14 @@ fn exit_flags() -> i64 {
     flags
 }
 
-/// Throw `Swoole\ExitException` with its flags; the caller sets its status.
-fn throw_exit(
-    message: *const std::ffi::c_char,
-    flags: i64,
-) -> *mut swoole_rs_zend::sys::zend_object {
+/// Throw `Swoole\ExitException` with its flags and status.
+fn throw_exit(message: &CStr, flags: i64, status: &Value) {
     // SAFETY: a NUL-terminated message and the registered class.
-    let object = unsafe { zend_throw_exception(EXIT.entry(), message, 0) };
-    // SAFETY: the new exception; Zend copies the name.
-    unsafe { zend_update_property_long(EXIT.entry(), object, c"flags".as_ptr(), 5, flags) };
-    object
+    let object = unsafe { zend_throw_exception(EXIT.entry(), message.as_ptr(), 0) };
+    // SAFETY: the new exception, which Zend holds as thrown past these writes.
+    let props = unsafe { Props::new(EXIT.entry(), object) };
+    props.long(c"flags", flags);
+    props.value(c"status", status);
 }
 
 /// `coro_exit_handler` (before PHP 8.4, where `exit` is an opcode).
@@ -222,13 +219,10 @@ unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int
         let mut status = swoole_rs_zend::UNDEF;
         // SAFETY: the exit opcode's frame.
         unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
-        let object = throw_exit(c"swoole exit".as_ptr(), flags);
-        // SAFETY: upstream's extra reference, kept as it was.
-        unsafe { swr_zval_try_addref(&raw mut status) };
-        // SAFETY: the new exception; Zend copies the value.
-        unsafe {
-            zend_update_property(EXIT.entry(), object, c"status".as_ptr(), 6, &raw mut status);
-        };
+        let status = Value::of(&mut status);
+        // Upstream's extra reference, kept (never released) as it was.
+        std::mem::forget(status.copy());
+        throw_exit(c"swoole exit", flags, status);
     }
     DISPATCH
 }
@@ -251,41 +245,32 @@ fn exit(call: &Call) {
         Some(Ok(code)) => (ptr::null_mut(), code),
         None => (ptr::null_mut(), 0),
     };
+    // SAFETY: null, or the string argument, which the frame holds for the call.
+    let message = unsafe { ZStr::from_ptr(message) };
     if flags != 0 {
-        let text = if message.is_null() {
-            c"swoole exit".as_ptr()
-        } else {
-            // SAFETY: a live string argument.
-            swoole_rs_zend::string::val(message).cast_const().cast()
-        };
-        let object = throw_exit(text, flags);
-        if message.is_null() {
-            // SAFETY: the new exception; Zend copies the name.
-            unsafe { zend_update_property_long(EXIT.entry(), object, c"status".as_ptr(), 6, code) };
-        } else {
-            // SAFETY: as above; Zend takes a reference to the string.
-            unsafe {
-                zend_update_property_str(EXIT.entry(), object, c"status".as_ptr(), 6, message);
-            };
+        match message {
+            // The property takes a reference to the string.
+            Some(message) => throw_exit(message.c_str(), flags, &Owned::string(message.to_owned())),
+            None => throw_exit(c"swoole exit", flags, &Owned::long(code)),
         }
         return;
     }
     if host::exit_original(call.frame(), call.return_value()) {
         return;
     }
-    // SAFETY: as above.
-    let text = (!message.is_null()).then(|| unsafe { swoole_rs_zend::string::bytes(message) });
-    host::exit_fallback(text, code);
+    host::exit_fallback(message.map(ZStr::bytes), code);
 }
 
 /// `SW_RETURN_PROPERTY(name)` of `$this`.
 fn property(call: &Call, name: &CStr) {
-    let this = call.this();
+    // `$this` and its class, which the frame holds for the call.
+    let this = call.this_value();
+    let Some((this, scope)) = this.and_then(|this| Some((this.object()?, this.class()?))) else {
+        return;
+    };
     // The read's scratch slot.
     let mut scratch = swoole_rs_zend::UNDEF;
-    // SAFETY: a live object.
-    let scope = unsafe { (*this).ce };
-    // SAFETY: as above, read in its own class's scope.
+    // SAFETY: a live object, read in its own class's scope.
     let value = unsafe {
         zend_read_property(
             scope,

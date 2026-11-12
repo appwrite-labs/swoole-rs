@@ -4,6 +4,7 @@
 //! error, errno and logs included. With `upstream-symbols` (the hybrid's reactor
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
+use crate::handle::CText;
 use crate::{
     Cert, CertRef, SocketTls, Ssl, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept,
     swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
@@ -28,9 +29,10 @@ use swoole_rs_reactor::{
     what_event_want,
 };
 
-// SAFETY: libcrypto's own declaration.
+// SAFETY: libcrypto's own declaration: it reads only the code, and answers one of its
+// static strings.
 unsafe extern "C" {
-    fn X509_verify_cert_error_string(error: c_long) -> *const c_char;
+    safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY`, `SW_ERROR_INVALID_PARAMS`,
@@ -213,15 +215,9 @@ pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
             format_args!("self signed certificate from fd#{fd} is not allowed"),
         );
     } else {
-        // SAFETY: OpenSSL's static string table.
-        let reason = unsafe { X509_verify_cert_error_string(error) };
         // `%s`, which glibc prints as `(null)` when null.
-        let reason = if reason.is_null() {
-            "(null)".into()
-        } else {
-            // SAFETY: a NUL-terminated string of that table.
-            unsafe { CStr::from_ptr(reason) }.to_string_lossy()
-        };
+        let reason = X509_verify_cert_error_string(error)
+            .map_or("(null)".into(), |reason| reason.get().to_string_lossy());
         log::error_log(
             LOG_NOTICE,
             VERIFY_FAILED,
@@ -319,8 +315,12 @@ unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: 
             }
         },
         |tls, ssl, length| {
-            // SAFETY: the caller's buffer, of which `length` is at most its size.
-            let data = unsafe { bytes(buffer, length) };
+            let data: &[u8] = if buffer.is_null() {
+                &[]
+            } else {
+                // SAFETY: the caller's buffer, of which `length` is at most its size.
+                unsafe { std::slice::from_raw_parts(buffer.cast(), length) }
+            };
             swr_v1_socket_ssl_send(tls, ssl, data)
         },
     );
@@ -337,18 +337,6 @@ unsafe fn slots<'a>(buffer: *mut c_void, length: usize) -> &'a mut [MaybeUninit<
     }
     // SAFETY: as the caller promises.
     unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) }
-}
-
-/// The caller's `length` bytes at `buffer`, none when null.
-///
-/// # Safety
-/// `buffer` is null or denotes `length` readable bytes, lent for `'a`.
-unsafe fn bytes<'a>(buffer: *const c_void, length: usize) -> &'a [u8] {
-    if buffer.is_null() {
-        return &[];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { std::slice::from_raw_parts(buffer.cast(), length) }
 }
 
 /// `ssize_t Socket::readv(IOVector *)` and `writev`, which upstream's `ssl_readv` and
@@ -526,34 +514,66 @@ pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
     unsafe { socket_record_send(socket, at, length, flags, tls_send, steady_ms) }
 }
 
+/// What a blocking read does, with the address a `recvfrom` fills.
+enum Fill<'a> {
+    Recv,
+    Read,
+    RecvFrom(&'a mut SocketAddress),
+}
+
+/// [`sync`] reading into `buffer`.
+fn sync_fill(
+    socket: Socket<'_>,
+    fill: Fill<'_>,
+    kind: c_int,
+    buffer: &mut [impl ReadSlot],
+    flags: c_int,
+) -> isize {
+    let io = match fill {
+        Fill::Recv => Io::Recv,
+        Fill::Read => Io::Read,
+        Fill::RecvFrom(address) => {
+            Io::RecvFrom((&raw mut address.addr).cast(), &raw mut address.len)
+        }
+    };
+    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+    // SAFETY: the buffer's writable bytes and, for a `recvfrom`, the address's storage,
+    // both borrowed until the call returns.
+    unsafe { sync(socket, io, kind, at, length, flags, false) }
+}
+
+/// [`sync`] writing `data`: a `send`, else a `write`.
+fn sync_drain(socket: Socket<'_>, send: bool, data: &[u8], flags: c_int) -> isize {
+    let (io, kind) = if send {
+        (Io::Send, SYNC_SEND)
+    } else {
+        (Io::Write, SYNC_ONCE)
+    };
+    let (at, length) = (data.as_ptr().cast(), data.len());
+    // SAFETY: the data's readable bytes, borrowed until the call returns.
+    unsafe { sync(socket, io, kind, at, length, flags, true) }
+}
+
 /// [`socket_recv_sync`] into `buffer`.
 pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
-    // SAFETY: a live record and the buffer's writable bytes.
-    unsafe { sync(socket, Io::Recv, SYNC_RECV, at, length, flags, false) }
+    sync_fill(socket, Fill::Recv, SYNC_RECV, buffer, flags)
 }
 
 /// [`socket_send_sync`] of `data`.
 #[must_use]
 pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    let (at, length) = (data.as_ptr().cast(), data.len());
-    // SAFETY: a live record and the data's bytes.
-    unsafe { sync(socket, Io::Send, SYNC_SEND, at, length, flags, true) }
+    sync_drain(socket, true, data, flags)
 }
 
 /// [`socket_read_sync`] into `buffer`.
 pub fn read_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> isize {
-    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
-    // SAFETY: the buffer's writable bytes.
-    unsafe { sync(socket, Io::Read, SYNC_ONCE, at, length, 0, false) }
+    sync_fill(socket, Fill::Read, SYNC_ONCE, buffer, 0)
 }
 
 /// [`socket_write_sync`] of `data`.
 #[must_use]
 pub fn write_sync(socket: Socket<'_>, data: &[u8]) -> isize {
-    let (at, length) = (data.as_ptr().cast(), data.len());
-    // SAFETY: the data's bytes.
-    unsafe { sync(socket, Io::Write, SYNC_ONCE, at, length, 0, true) }
+    sync_drain(socket, false, data, 0)
 }
 
 /// [`socket_recvfrom_sync_address`] into `buffer` and `address`.
@@ -563,10 +583,7 @@ pub fn recvfrom_sync(
     flags: c_int,
     address: &mut SocketAddress,
 ) -> isize {
-    let io = Io::RecvFrom((&raw mut address.addr).cast(), &raw mut address.len);
-    let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
-    // SAFETY: a live record, the buffer's writable bytes and the address's storage.
-    unsafe { sync(socket, io, SYNC_ONCE, at, length, flags, false) }
+    sync_fill(socket, Fill::RecvFrom(address), SYNC_ONCE, buffer, flags)
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const`.

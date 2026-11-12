@@ -4,7 +4,7 @@
 //! `upstream-symbols`. Logs name the function as upstream's `__SW_FUNC__` did.
 
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -120,18 +120,6 @@ pub fn swoole_dump_bin(data: &[u8], kind: c_char) {
         put(&format!("{},", value as c_long));
     }
     put("\n");
-}
-
-/// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode.
-/// # Safety
-/// As `swr_v1_corebase_hex_mode`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z14swoole_hex2decPKcPm")
-)]
-pub unsafe extern "C" fn swoole_hex2dec(hex: *const c_char, parsed: &mut usize) -> c_ulong {
-    // SAFETY: the caller upholds swr_v1_corebase_hex_mode's contract.
-    unsafe { crate::swr_v1_corebase_hex_mode(hex, parsed, u8::from(c_char::MIN != 0)) }
 }
 
 /// `void swoole_print_backtrace()`: up to 16 frames, one symbol per line (upstream's

@@ -174,8 +174,7 @@ fn malloc_trim(last: &mut libc::time_t) {
 /// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
 pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
     let owner = reactor.state();
-    // SAFETY: the handle's live state; the borrow ends here.
-    let mut event_num = unsafe { (*owner).registry.count() };
+    let mut event_num = reactor.registry().count();
     for slot in 0..EXIT_SLOTS {
         // SAFETY: as above; the copy is read before the condition runs.
         let Some(exit) = (unsafe { (*owner).callbacks.exit.get(slot).copied().flatten() }) else {
@@ -183,8 +182,7 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
         };
         let accepted = match exit {
             Exit::Call(call) => call(&mut event_num),
-            // SAFETY: a single field read.
-            Exit::Defer => unsafe { (*owner).fields.defer_tasks.is_null() },
+            Exit::Defer => !reactor.has_deferred(),
             Exit::Default => event_num == 0,
         };
         if !accepted {

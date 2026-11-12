@@ -45,15 +45,13 @@ use std::{
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_phpstubs::runtime;
-use swoole_rs_zend::host::callable as handle;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
-        swr_zend_stream_factory_set, zend_class_entry, zend_register_class_alias_ex, zif_handler,
-        zval,
+        swr_zend_runtime_find_class, swr_zend_stream_factory, swr_zend_stream_factory_set,
+        zend_class_entry, zend_register_class_alias_ex, zif_handler,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -101,48 +99,9 @@ static RUNTIME: Class = Class::new();
 /// `runtime_hook_flags`: the families hooked now.
 static HOOKED: AtomicU32 = AtomicU32::new(0);
 
-/// `swoole_exception_ce`, which MINIT registered before the runtime's.
-fn exception() -> *mut zend_class_entry {
-    swoole_rs_phpswoole::exception_class()
-}
-
 /// `sw_is_main_thread()`.
 fn main_thread() -> bool {
     swoole_rs_zend::is_main_thread()
-}
-
-/// `sw_callable_create(value)`: a `swoole_rs_zend::host` callable, or null after a
-/// warning. Null with a bailout pending (the warning's handler bailed out) is
-/// one the caller stops on, leaving the raise to its handler's last step.
-/// # Safety
-/// PHP is running and `value` is a live zval.
-pub unsafe fn callable_create(value: *mut zval) -> *mut c_void {
-    // SAFETY: per the caller; the reporter is C.
-    let created = unsafe {
-        handle::factory(
-            value,
-            std::ptr::null(),
-            true,
-            exception(),
-            swr_zend_callable_warning,
-        )
-    };
-    created
-        .map_err(bailout::Bailout::defer)
-        .unwrap_or(std::ptr::null_mut())
-        .cast()
-}
-
-/// `sw_callable_free(callable)`; null is ignored. The callable is gone even
-/// when a destructor leaves a bailout pending, which the caller stops on.
-/// # Safety
-/// PHP is running; `callable` is one [`callable_create`] made, freed once and
-/// held by no slot.
-pub unsafe fn callable_free(callable: *mut c_void) {
-    if !callable.is_null() {
-        // SAFETY: per the caller.
-        bailout::defer(unsafe { handle::release(callable.cast()) });
-    }
 }
 
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;

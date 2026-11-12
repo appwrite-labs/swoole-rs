@@ -60,7 +60,7 @@ pub use swoole_rs_corebase::{Switch, built_with};
 use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
-    sync::atomic::{AtomicI32, AtomicU32, Ordering},
+    sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering},
 };
 use swoole_rs_zend::{
     Class,
@@ -83,13 +83,14 @@ fn log_put(level: c_int, message: &[u8]) {
 /// `Swoole\Exception` and `Swoole\Error`, for code that links them by name
 /// (crates/phpredis, crates/phpevents and the shims), and Exception's handlers,
 /// which upstream's bundled curl copies by name for its exception class
-/// (`SW_INIT_CLASS_ENTRY_EX`); MINIT writes them.
+/// (`SW_INIT_CLASS_ENTRY_EX`); MINIT writes them. C reads each class as a
+/// `zend_class_entry *`: `AtomicPtr` has a pointer's layout.
 #[unsafe(no_mangle)]
-pub static mut swoole_exception_ce: *mut zend_class_entry = ptr::null_mut();
+pub static swoole_exception_ce: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 #[unsafe(no_mangle)]
 pub static mut swoole_exception_handlers: zend_object_handlers = swoole_rs_zend::zeroed();
 #[unsafe(no_mangle)]
-pub static mut swoole_error_ce: *mut zend_class_entry = ptr::null_mut();
+pub static swoole_error_ce: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 
 /// `swoole_exception_ce`: `Swoole\Exception`, registered at MINIT.
 #[must_use]
@@ -153,10 +154,9 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     // SAFETY: MINIT, before any family copies it.
     unsafe { swoole_exception_handlers = handlers };
     minit.register_child(&ERROR, c"Swoole\\Error", &[], minit.error(), |_, _| {});
-    // SAFETY: MINIT, before any family reads them.
-    unsafe { swoole_exception_ce = EXCEPTION.entry() };
-    // SAFETY: as above.
-    unsafe { swoole_error_ce = ERROR.entry() };
+    // MINIT, before any family reads them.
+    swoole_exception_ce.store(EXCEPTION.entry(), Ordering::Relaxed);
+    swoole_error_ce.store(ERROR.entry(), Ordering::Relaxed);
     if let Err(error) = table::register_aliases(&minit, flags) {
         error.defer();
     } else {

@@ -31,34 +31,34 @@ impl AddressStorage {
     /// The family, which every member starts with.
     #[must_use]
     pub const fn family(&self) -> libc::sa_family_t {
-        // SAFETY: every member is plain bytes, so any of them reads whatever was stored.
-        unsafe { self.ss.sa_family }
+        // Every address struct starts as `sockaddr` does, so this is `ss.sa_family`.
+        self.v4().sin_family
     }
 
     /// The storage as an IPv4 address.
     #[must_use]
     pub const fn v4(&self) -> &libc::sockaddr_in {
-        // SAFETY: as for `family`.
+        // SAFETY: every member is plain bytes, so any of them reads whatever was stored.
         unsafe { &self.inet_v4 }
     }
 
     /// The storage as an IPv6 address.
     #[must_use]
     pub const fn v6(&self) -> &libc::sockaddr_in6 {
-        // SAFETY: as for `family`.
+        // SAFETY: as for `v4`.
         unsafe { &self.inet_v6 }
     }
 
     /// The storage as a Unix address.
     #[must_use]
     pub const fn unix(&self) -> &libc::sockaddr_un {
-        // SAFETY: as for `family`.
+        // SAFETY: as for `v4`.
         unsafe { &self.un }
     }
 
     /// The storage as a Unix address, to fill.
     pub const fn unix_mut(&mut self) -> &mut libc::sockaddr_un {
-        // SAFETY: as for `family`, and any bytes written are a value of every member.
+        // SAFETY: as for `v4`, and any bytes written are a value of every member.
         unsafe { &mut self.un }
     }
 }

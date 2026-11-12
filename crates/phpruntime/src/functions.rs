@@ -11,13 +11,15 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    ffi::{CStr, c_void},
+    ffi::CStr,
     ptr,
+    rc::Rc,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZString, bailout,
+    host::callable::Callable,
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
         swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
@@ -50,8 +52,9 @@ struct Hooked {
     ori_fn_flags: u32,
     /// The arginfo copy installed with the handler, freed at RSHUTDOWN.
     arg_info_copy: *mut zend_internal_arg_info,
-    /// The library replacement's callable.
-    callable: *mut c_void,
+    /// The library replacement's callable (`sw_callable_create`), released
+    /// (`sw_callable_free`) with the record. Never cloned: only its cache is lent.
+    callable: Option<Rc<Callable>>,
 }
 
 #[derive(Default)]
@@ -65,8 +68,10 @@ struct Table {
     children: HashMap<Box<[u8]>, *mut zend_class_entry>,
 }
 
-// SAFETY: the pointers are Zend's function and class entries and Swoole's
-// callables, which live for the request; the mutex orders every access.
+// SAFETY: the pointers are Zend's function and class entries, which live for the
+// request, and each callable's only owner is its record (the `Rc` is never cloned,
+// so its count is touched only as the record is made and dropped); the mutex
+// orders every access.
 unsafe impl Send for Table {}
 
 static TABLE: LazyLock<Mutex<Table>> = LazyLock::new(Mutex::default);
@@ -142,7 +147,7 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
             ori_arg_info,
             ori_fn_flags: 0,
             arg_info_copy: ptr::null_mut(),
-            callable: ptr::null_mut(),
+            callable: None,
         };
         entry.handler = handler;
         if !arg_info.is_null() {
@@ -166,13 +171,14 @@ fn library_callable(key: &[u8]) {
         .hooked
         .as_ref()
         .and_then(|hooked| hooked.get(key))
-        .is_none_or(|record| !record.callable.is_null());
+        .is_none_or(|record| record.callable.is_some());
     if has || bailout::pending() {
         return;
     }
     let name = Owned::from(ZString::new(&[b"swoole_".as_slice(), key].concat()));
-    // SAFETY: a string zval; the callable keeps its own copy.
-    let callable = unsafe { crate::callable_create(name.as_ptr()) };
+    // The callable keeps its own copy of the name. None after a warning, or with a
+    // bailout pending (the warning's handler bailed out), which the caller stops on.
+    let callable = Callable::new(&name).map_err(Bailout::defer).ok().flatten();
     let mut table = table();
     if let Some(record) = table.hooked.as_mut().and_then(|hooked| hooked.get_mut(key)) {
         record.callable = callable;
@@ -215,7 +221,7 @@ fn disable(name: &CStr, handler: zif_handler) {
         ori_arg_info: entry.arg_info,
         ori_fn_flags: entry.fn_flags,
         arg_info_copy: ptr::null_mut(),
-        callable: ptr::null_mut(),
+        callable: None,
     };
     entry.handler = handler;
     entry.fn_flags = ZEND_ACC_FAKE_CLOSURE;
@@ -323,10 +329,8 @@ pub(crate) fn finish() {
         (table.hooked.take(), std::mem::take(&mut table.children))
     };
     for (_, record) in hooked.unwrap_or_default() {
-        if !record.callable.is_null() {
-            // SAFETY: the callable `callable_create` made, freed once.
-            unsafe { crate::callable_free(record.callable) };
-        }
+        // `sw_callable_free`: a destructor's bailout stays pending.
+        drop(record.callable);
         let function = internal!(record.function);
         if !record.arg_info_copy.is_null() {
             // SAFETY: the copy made for this function, freed once.
@@ -384,24 +388,23 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
         }
         return Ok(());
     }
-    let callable = table()
+    let fcc = table()
         .hooked
         .as_ref()
-        .and_then(|hooked| hooked.get(name))
-        .map_or(ptr::null_mut(), |record| record.callable);
-    if callable.is_null() {
+        .and_then(|hooked| hooked.get(name)?.callable.as_deref())
+        .map(Callable::cache_ptr);
+    let Some(fcc) = fcc else {
         let message = message!("{} func not exists", String::from_utf8_lossy(name));
         throw(&message, SW_ERROR_UNDEFINED_BEHAVIOR);
         return Ok(());
-    }
-    // SAFETY: a live callable.
-    let fcc = unsafe { swoole_rs_zend::host::callable::cache(callable.cast()) };
+    };
     let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
     fci.retval = value;
     fci.param_count = call.num_args();
     fci.params = call.zval(1);
-    // SAFETY: the frame's arguments and return slot, and a resolved callable.
+    // SAFETY: the frame's arguments and return slot, and the cache of a resolved
+    // callable its record keeps until RSHUTDOWN.
     unsafe { bailout::call(&raw mut fci, fcc) }.map(|_| ())
 }
 

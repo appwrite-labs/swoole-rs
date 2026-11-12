@@ -4,6 +4,7 @@
 //! settings. Logs name the upstream function that wrote them.
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
+use core::sync::atomic::Ordering;
 
 use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
@@ -22,7 +23,7 @@ use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{send, socket_recv};
 
 use crate::framing_recv::{self, Callbacks, Packages};
-use crate::http_routes::exports::{Frames, RecvData, dispatch_request, dispatch_task};
+use crate::http_routes::exports::{Frames, RecvData, dispatch_task};
 use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -249,8 +250,9 @@ impl Connection for Read<'_> {
         }
     }
 
-    /// `Server::dispatch_task` or `http_server::dispatch_request` of `length` bytes
-    /// from the buffer's start.
+    /// `Server::dispatch_task` or `http_server::dispatch_request` (503 while the server
+    /// is at `max_concurrency`, else `Server::dispatch_task`) of `length` bytes from the
+    /// buffer's start.
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
         let data = RecvData {
             info: DataHead {
@@ -266,12 +268,22 @@ impl Connection for Read<'_> {
         };
         let proto = &raw const self.port.protocol;
         let rdata: *const c_void = (&raw const data).cast();
-        if dispatch == Dispatch::Task {
+        // A request waits its turn under `max_concurrency`; a task never does.
+        let busy = dispatch != Dispatch::Task && {
+            let counters = self.server.counters();
+            counters.concurrency.load(Ordering::Relaxed)
+                >= counters.max_concurrency.load(Ordering::Relaxed)
+        };
+        let result = if busy {
+            self.send(Reply::Unavailable);
+            -1
+        } else {
             // SAFETY: the port's protocol, the live socket and its data.
-            return i64::from(unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) });
+            unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) }
+        };
+        if dispatch == Dispatch::Task {
+            return i64::from(result);
         }
-        // SAFETY: as above, on the live server.
-        let result = unsafe { dispatch_request(self.server, proto, self.socket, rdata) };
         // The connection, which dispatch may have given a new request, unless the
         // request callback closed it ([`Connection::active`]).
         self.request = if self.removed() {

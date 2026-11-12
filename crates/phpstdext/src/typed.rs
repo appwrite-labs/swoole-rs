@@ -17,9 +17,9 @@ use swoole_rs_zend::{
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof, swr_zend_try_lookup_class,
-        zend_class_entry, zend_execute_data, zend_function, zend_internal_function, zend_long,
-        zend_value, zif_handler, zval, zval_ptr_dtor,
+        swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof, swr_zend_separate_array,
+        swr_zend_try_lookup_class, zend_class_entry, zend_execute_data, zend_internal_function,
+        zend_long, zend_value, zif_handler, zval, zval_ptr_dtor,
     },
     throw_error, type_error,
     value::{self, table},
@@ -117,10 +117,6 @@ impl<'a> Typed<'a> {
             ht,
             live: PhantomData,
         }
-    }
-
-    pub(crate) fn table(self) -> *mut HashTable {
-        self.ht
     }
 
     /// Flag the table typed again, after a builtin rebuilt it in place.
@@ -492,16 +488,23 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
     false
 }
 
-/// `copy_array_type_info`: after `SEPARATE_ARRAY(container)` made a copy of
-/// the typed array `source`, give the copy `source`'s definition, without
-/// resuming a contained bailout.
+/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: a copy the
+/// separation made gets `source`'s definition, in a fresh allocation that has
+/// room for it behind the table. The table `container` holds afterwards.
 /// # Safety
-/// `container` holds the fresh separated array.
-pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) {
+/// `container` holds `source`, which nothing uses afterwards.
+pub(crate) unsafe fn separate(container: &Value, source: Typed) -> *mut HashTable {
+    let container = container.as_ptr();
+    // SAFETY: Zend separates this exact live array slot.
+    unsafe { swr_zend_separate_array(container) };
+    // SAFETY: successful separation leaves the container holding an initialized array.
+    let ht = unsafe { table(container) };
+    if source.ht == ht {
+        return ht;
+    }
+    // `source` remains shared or immutable; `ht` is the fresh unshared copy.
     let source_info = info_of(source.ht);
     let extra = info_size(usize::from(source.header().len));
-    // SAFETY: an array zval.
-    let ht = unsafe { table(container) };
     // SAFETY: allocate the real table header and trailing type metadata.
     let copy = unsafe { swr_zend_emalloc(size_of::<HashTable>() + extra) }.cast::<HashTable>();
     // SAFETY: both hold a table.
@@ -514,6 +517,7 @@ pub(crate) unsafe fn copy_type(container: *mut zval, source: Typed) {
     unsafe { (*container).value = zend_value { arr: copy } };
     // SAFETY: the old allocation, which nothing references now.
     unsafe { swr_zend_efree(ht.cast()) };
+    copy
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,
@@ -722,18 +726,6 @@ struct Originals {
 
 static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 
-/// Swap `function`'s handler for `handler`: the original.
-/// # Safety
-/// `function` is a core internal function; at MINIT.
-unsafe fn replace(function: *mut zend_function, handler: zif_handler) -> zif_handler {
-    // `internal_function` starts the `zend_function` union.
-    let slot = function
-        .wrapping_byte_add(offset_of!(zend_internal_function, handler))
-        .cast::<zif_handler>();
-    // SAFETY: per the caller.
-    unsafe { ptr::replace(slot, handler) }
-}
-
 /// Replace `array_push`, `array_unshift` and `array_splice`'s handlers (MINIT).
 /// # Safety
 /// At MINIT.
@@ -744,8 +736,14 @@ pub(crate) unsafe fn install() {
         (c"array_unshift", unshift),
         (c"array_splice", splice),
     ]
-    // SAFETY: a core function, at MINIT.
-    .map(|(name, handler)| unsafe { replace(compiled_function(name), Some(handler)) });
+    .map(|(name, handler)| {
+        // `internal_function` starts the `zend_function` union.
+        let slot = compiled_function(name)
+            .wrapping_byte_add(offset_of!(zend_internal_function, handler))
+            .cast::<zif_handler>();
+        // SAFETY: a core internal function's handler slot, at MINIT.
+        unsafe { ptr::replace(slot, Some(handler)) }
+    });
     let originals = Originals {
         push,
         unshift,
@@ -753,19 +751,6 @@ pub(crate) unsafe fn install() {
     };
     if ORIGINALS.set(originals).is_err() {
         // MINIT runs once; nothing to do on a second call.
-    }
-}
-
-/// # Safety
-/// The original handler of the running frame.
-unsafe fn run(
-    handler: fn(&Originals) -> zif_handler,
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) {
-    if let Some(handler) = ORIGINALS.get().and_then(handler) {
-        // SAFETY: per the caller.
-        unsafe { handler(frame, value) };
     }
 }
 
@@ -784,51 +769,70 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
         .all(|value| check(typed, KeyType::UNDEF, value))
 }
 
-unsafe extern "C" fn push(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract.
-    let call = unsafe { Call::new(frame, value) };
-    if let Some(typed) = typed_target(&call)
-        && !check_appended(typed, &call)
-    {
-        return;
-    }
-    // SAFETY: the original handler.
-    unsafe { run(|originals| originals.push, frame, value) };
-}
-
-unsafe extern "C" fn unshift(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract.
+/// An override: unless the first argument names a typed array that `allowed`
+/// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
+/// flag the table it rebuilt in place typed again.
+/// # Safety
+/// Zend's handler contract, in the frame of the function `original` names.
+unsafe fn guarded(
+    frame: *mut zend_execute_data,
+    value: *mut zval,
+    original: fn(&Originals) -> zif_handler,
+    remark: bool,
+    allowed: fn(Typed, &Call) -> bool,
+) {
+    // SAFETY: per the caller.
     let call = unsafe { Call::new(frame, value) };
     let target = typed_target(&call);
     if let Some(typed) = target
-        && !check_appended(typed, &call)
+        && !allowed(typed, &call)
     {
         return;
     }
-    // SAFETY: the original handler.
-    unsafe { run(|originals| originals.unshift, frame, value) };
-    // The table the original handler rebuilt in place.
-    if let Some(typed) = target {
+    if let Some(handler) = ORIGINALS.get().and_then(original) {
+        // SAFETY: per the caller, the original handler of the running frame.
+        unsafe { handler(frame, value) };
+    }
+    if remark && let Some(typed) = target {
         typed.mark();
+    }
+}
+
+unsafe extern "C" fn push(frame: *mut zend_execute_data, value: *mut zval) {
+    // SAFETY: Zend's handler contract, as `array_push`.
+    unsafe {
+        guarded(
+            frame,
+            value,
+            |originals| originals.push,
+            false,
+            check_appended,
+        );
+    }
+}
+
+unsafe extern "C" fn unshift(frame: *mut zend_execute_data, value: *mut zval) {
+    // SAFETY: Zend's handler contract, as `array_unshift`.
+    unsafe {
+        guarded(
+            frame,
+            value,
+            |originals| originals.unshift,
+            true,
+            check_appended,
+        );
     }
 }
 
 unsafe extern "C" fn splice(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract.
-    let call = unsafe { Call::new(frame, value) };
-    let target = typed_target(&call);
-    if let Some(typed) = target
-        && let Some(replacement) = call.value(4)
-        && !check_replacement(typed, replacement)
-    {
-        return;
-    }
-    // SAFETY: the original handler.
-    unsafe { run(|originals| originals.splice, frame, value) };
-    // The table the original handler rebuilt in place.
-    if let Some(typed) = target {
-        typed.mark();
-    }
+    // SAFETY: Zend's handler contract, as `array_splice`.
+    unsafe { guarded(frame, value, |originals| originals.splice, true, spliced) };
+}
+
+/// `array_splice`'s `$replacement`, if passed, may go in `typed`.
+fn spliced(typed: Typed, call: &Call) -> bool {
+    call.value(4)
+        .is_none_or(|replacement| check_replacement(typed, replacement))
 }
 
 /// `array_splice`'s `$replacement`: an array of values, or one value.

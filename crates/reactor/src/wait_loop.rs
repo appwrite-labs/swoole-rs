@@ -3,7 +3,7 @@
 //! kernel wait, the readiness order and the warnings; native code supplies the effects
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
-use crate::handlers::{self, Handlers};
+use crate::handlers;
 use crate::reactor_state::{ReactorFields, ReactorState, before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
@@ -116,7 +116,6 @@ impl Event {
 
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
-    ops: &'a WaitOps<'a>,
     owner: *mut ReactorState,
     backend: u32,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
@@ -124,7 +123,8 @@ struct Loop<'a> {
     /// poll only: the socket each `pollfd` entry was built from.
     sockets: *const *mut c_void,
     reactor_id: i16,
-    handlers: *const Handlers,
+    /// The reactor, for its handler tables and the handlers' own argument.
+    reactor: handlers::Running<'a>,
     /// The event the loop prepared for the ready socket's handlers.
     event: std::cell::Cell<Event>,
     /// How many of `events` (and poll's `sockets`) the last kernel wait filled.
@@ -164,15 +164,11 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
     let view = state.backend_view();
     before_wait(&mut state.fields);
     let id = state.fields.id;
-    // The state's fields and handler tables live as long as it does; their
-    // addresses are taken without a borrow.
+    // The state's fields live as long as it does; their address is taken without a
+    // borrow.
     let fields = owner
         .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
         .cast::<ReactorFields>()
-        .cast_const();
-    let handlers = owner
-        .wrapping_byte_add(std::mem::offset_of!(ReactorState, handlers))
-        .cast::<Handlers>()
         .cast_const();
     let running = fields
         .wrapping_byte_add(std::mem::offset_of!(ReactorFields, running))
@@ -183,7 +179,6 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
     // SAFETY: a single field read of the live state, which effects may change between reads.
     let once = || unsafe { once.read() };
     let run = Loop {
-        ops,
         owner,
         backend: view.backend,
         events: view.events,
@@ -193,7 +188,7 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
             reason = "upstream's static_cast<int16_t>(reactor_->id)"
         )]
         reactor_id: id as i16,
-        handlers,
+        reactor,
         event: std::cell::Cell::new(Event::empty()),
         ready: std::cell::Cell::new(0),
     };
@@ -201,9 +196,8 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
     while unsafe { running.read() } {
         (ops.begin)(reactor);
         let mut entries: c_int = 0;
-        // SAFETY: a single field read of the live state; deferred work waits without blocking.
-        let deferred = !unsafe { (*fields).defer_tasks }.is_null();
-        let ready = kernel_wait(reactor, deferred, &mut entries);
+        // Deferred work waits without blocking.
+        let ready = kernel_wait(reactor, reactor.has_deferred(), &mut entries);
         match ready.cmp(&0) {
             core::cmp::Ordering::Less => {
                 // upstream's Reactor::catch_error()
@@ -354,8 +348,9 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         }
         oneshot(ops, socket, live);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
-        // SAFETY: a signal entry's udata is its registered `swoole::Signal`.
-        unsafe { dispatch_signal(udata.cast()) };
+        // SAFETY: a signal entry's udata is its registered `swoole::Signal`, copied
+        // before its handler, which may register another, runs.
+        dispatch_signal(unsafe { udata.cast::<kqueue_signal::Signal>().read() });
     } else {
         log::error_log(
             LOG_WARNING,
@@ -382,21 +377,20 @@ mod kqueue_signal {
     const UNREGISTERED_SIGNAL: c_int = 721;
     pub(super) const EVENT_UNKNOWN_DATA: c_int = 803;
 
-    /// Upstream's `swoole::Signal`.
+    /// Upstream's `swoole::Signal`, as the signal loop registered it: its handler, when
+    /// neither none nor `SIG_IGN`, is sound to call with its signal number. The fields
+    /// are private, so safe code outside this module can't make one that isn't.
     #[repr(C)]
+    #[derive(Clone, Copy)]
     pub(super) struct Signal {
-        pub handler: Option<swoole_rs_process::signal::Callback>,
-        pub signo: u16,
-        pub activated: bool,
+        handler: Option<swoole_rs_process::signal::Callback>,
+        signo: u16,
+        activated: bool,
     }
 
     /// `ReactorKqueue::wait`'s signal entry: an activated signal runs its handler unless that is
     /// `SIG_IGN`, and warns when it has none.
-    /// # Safety
-    /// `signal` is a live `swoole::Signal`.
-    pub(super) unsafe fn dispatch_signal(signal: *const Signal) {
-        // SAFETY: as the caller promises.
-        let signal = unsafe { &*signal };
+    pub(super) fn dispatch_signal(signal: Signal) {
         if !signal.activated {
             return;
         }
@@ -416,7 +410,7 @@ mod kqueue_signal {
                 );
             }
             Some(handler) if handler as usize != libc::SIG_IGN => {
-                // SAFETY: the signal's registered handler.
+                // SAFETY: the signal's registered handler (the type's invariant).
                 unsafe { handler(signo) };
             }
             Some(_) => {}
@@ -504,14 +498,14 @@ fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
         1 => handlers::WRITE,
         _ => handlers::ERROR,
     };
-    // SAFETY: the native reactor's tables stay live while it waits.
-    let Some(handler) = (unsafe { &*ops.handlers }).dispatch(kind, fd_type) else {
+    // The lookup's borrow of the tables ends here, before the handler runs.
+    let Some(handler) = ops.reactor.handlers().dispatch(kind, fd_type) else {
         return -1;
     };
     // The handler may change the event, which the next handler of this socket sees; a
     // nested wait prepares its own.
     let mut event = ops.event.get();
-    let result = handler(ops.ops.reactor, &mut event);
+    let result = handler(ops.reactor, &mut event);
     ops.event.set(event);
     result
 }
@@ -709,6 +703,13 @@ mod tests {
         target_os = "dragonfly"
     ))]
     fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
+        /// The registered `swoole::Signal`, as the kernel hands it back in `udata`.
+        #[repr(C)]
+        struct Registered {
+            handler: Option<unsafe extern "C" fn(c_int)>,
+            signo: u16,
+            activated: bool,
+        }
         static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
         unsafe extern "C" fn handler(signo: c_int) {
             SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);
@@ -722,12 +723,13 @@ mod tests {
             (Some(handler), true, libc::SIGUSR1),
         ] {
             SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-            let signal = kqueue_signal::Signal {
+            let registered = Registered {
                 handler,
                 signo: u16::try_from(libc::SIGUSR1).unwrap(),
                 activated,
             };
-            unsafe { dispatch_signal(&raw const signal) };
+            let udata = (&raw const registered).cast::<kqueue_signal::Signal>();
+            dispatch_signal(unsafe { udata.read() });
             assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
         }
     }

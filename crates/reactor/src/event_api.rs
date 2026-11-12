@@ -213,9 +213,8 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 /// `f` over the thread's `Reactor`'s socket registry (null as `None`); `None`
 /// without a reactor. `f` reaches no reactor: the registry is shared while it runs.
 fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
-    let registry = current_prepared()?.registry;
-    // SAFETY: a live reactor's registry or null, borrowed for this call alone.
-    Some(f(unsafe { registry.as_ref() }))
+    let reactor = running()?;
+    Some(f(Some(reactor.registry())))
 }
 
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
