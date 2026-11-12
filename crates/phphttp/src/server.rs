@@ -289,16 +289,16 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
     config.mode_ == MODE_BASE
-        || (config.mode_ == MODE_PROCESS && config.dispatch_mode == DISPATCH_FDMOD)
+        || (config.mode_ == MODE_PROCESS && config.dispatch_mode.get() == DISPATCH_FDMOD)
 }
 
 /// `Server::is_enable_coroutine`.
 fn enable_coroutine(server: view::Server<'_>) -> bool {
     let config = server.config();
     match swoole_rs_process::methods::swoole_get_worker_type() {
-        TASK_WORKER => config.task_enable_coroutine,
+        TASK_WORKER => config.task_enable_coroutine.get(),
         MANAGER => false,
-        _ => config.enable_coroutine,
+        _ => config.enable_coroutine.get(),
     }
 }
 
@@ -522,7 +522,7 @@ fn http2_connection(
         cache: can_cache_session_addr(server)
             .then(|| usize::try_from(conn.fd()).ok())
             .flatten(),
-        static_handler: server.config().enable_static_handler,
+        static_handler: server.config().enable_static_handler.get(),
         unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency.load(SeqCst),
         coroutine: enable_coroutine(server),
     };
@@ -644,7 +644,7 @@ fn worker() -> Option<Worker> {
         // atomic counter.
         concurrency: unsafe { &(*current).concurrency },
         server_concurrency: &server.counters().concurrency,
-        max_concurrency: server.config().worker_max_concurrency,
+        max_concurrency: server.config().worker_max_concurrency.get(),
         shutdown: swoole_rs_process::methods::worker_is_shutdown(),
     })
 }

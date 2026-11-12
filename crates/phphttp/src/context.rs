@@ -172,13 +172,13 @@ pub(crate) fn alloc() -> Ctx {
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
 pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     let config = server.config();
-    state.parse_cookie = u8::from(config.http_parse_cookie);
-    state.parse_body = u8::from(config.http_parse_post);
-    state.parse_files = u8::from(config.http_parse_files);
+    state.parse_cookie = u8::from(config.http_parse_cookie.get());
+    state.parse_body = u8::from(config.http_parse_post.get());
+    state.parse_files = u8::from(config.http_parse_files.get());
     if parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
-        state.enable_compression = u8::from(config.http_compression);
-        state.compression_level = i8::from_ne_bytes([config.http_compression_level]);
-        state.compression_min_length = config.compression_min_length;
+        state.enable_compression = u8::from(config.http_compression.get());
+        state.compression_level = i8::from_ne_bytes([config.http_compression_level.get()]);
+        state.compression_min_length = config.compression_min_length.get();
     }
     bind_server(state, server);
 }

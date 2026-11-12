@@ -254,11 +254,11 @@ fn facts(server: view::Server<'_>) -> Facts {
     Facts {
         worker: worker_type == crate::server::EVENT_WORKER,
         task_worker: worker_type == crate::server::TASK_WORKER,
-        task_object: config.task_enable_coroutine || config.task_object,
-        task_coroutine: config.task_enable_coroutine,
-        event_object: config.event_object,
-        enable_coroutine: config.enable_coroutine,
-        task_worker_num: i64::from(config.task_worker_num),
+        task_object: config.task_enable_coroutine.get() || config.task_object.get(),
+        task_coroutine: config.task_enable_coroutine.get(),
+        event_object: config.event_object.get(),
+        enable_coroutine: config.enable_coroutine.get(),
+        task_worker_num: i64::from(config.task_worker_num.get()),
     }
 }
 
