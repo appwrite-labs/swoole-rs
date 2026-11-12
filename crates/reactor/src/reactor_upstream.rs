@@ -10,19 +10,13 @@ use std::ffi::{c_int, c_void};
 
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
 /// when none is set.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` and `event` an event its handler accepts.
-pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the live reactor's handler tables; a copy of the error default.
+pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> c_int {
+    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
+    // SAFETY: the handle's live handler tables, which no reference holds; a copy of the
+    // error default.
     let Some(handler) = (unsafe { (*handlers).defaults[1] }) else {
         return -1;
     };
-    // SAFETY: as the caller promises, the live reactor on its thread.
-    let reactor = unsafe { crate::Running::new(reactor) };
-    // SAFETY: as the caller promises, an event lent for the call.
-    let event = unsafe { &mut *event.cast() };
     handler(reactor, event)
 }
 
