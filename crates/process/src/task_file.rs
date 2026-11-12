@@ -238,8 +238,7 @@ impl EventData {
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
     pub fn dump(&self) {
         let mut buf = [0_u8; 1024];
-        // SAFETY: a live header; `buf` is writable for its length.
-        unsafe { datahead_dump(&self.head, buf.as_mut_ptr().cast(), buf.len()) };
+        datahead_dump(&self.head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         swoole_rs_corebase::sys::print(text.to_bytes());
         if self.head.ext_flags & TMPFILE != 0 {
