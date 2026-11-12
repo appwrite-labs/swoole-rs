@@ -136,9 +136,9 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host<'_>> {
         let id = swoole_get_worker_id() as u16;
         // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
         host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
-        let worker = serv.worker(id);
-        // SAFETY: this worker's live record.
-        host.lock = unsafe { (*worker).lock };
+        host.lock = serv
+            .worker_record(id)
+            .and_then(swoole_rs_process::worker_record::Worker::lock);
         let results = serv.config().task_results.as_ptr().cast::<u8>();
         let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
         result = results.wrapping_add(usize::from(id) * size);
