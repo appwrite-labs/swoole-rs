@@ -24,7 +24,7 @@ binary is the hooks one (`tests/modules/hooks/system`, which includes this file)
 so `hooks-system-rust` builds and runs it over
 the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources). A
 `Client` is crates/clients' state: made by `swr_v1_clients_new` and given its
-callbacks by `swr_v1_clients_listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
+callbacks by `client::listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their
 upstream symbols.

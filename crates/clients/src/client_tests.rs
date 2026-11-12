@@ -188,7 +188,7 @@ fn io(name: &str, length: usize) -> isize {
     log(format!("{name} {length}"));
     mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
 }
-extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: usize) {
+fn listener(event: c_int, _: *const c_char, length: usize) {
     log(format!("call {event} {length}"));
     if mock(|m| m.releases) == Some(event) {
         sock().object = core::ptr::null_mut();
@@ -297,12 +297,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
-        swr_v1_clients_listen(
-            unsafe { &*client },
-            core::ptr::null_mut(),
-            0b111_1110,
-            listener,
-        );
+        listen(unsafe { &*client }, 0b111_1110, std::rc::Rc::new(listener));
     }
     taken();
     client
