@@ -887,6 +887,8 @@ getters!(
     ;
     ptr: *mut c_void,
     protocol_type: c_int,
+    max_request: u32,
+    max_request_grace: u32,
     on_task: Option<TaskFn>,
     on_worker_error: Option<ErrorFn>,
     scheduler_warning: u8,
@@ -925,6 +927,11 @@ setters!(
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
     warning_time / set_warning_time: i64,
+    schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
+    ptr / set_ptr: *mut c_void,
+    on_task / set_on_task: Option<TaskFn>,
+    on_worker_start / set_on_worker_start: Option<WorkerFn>,
+    on_worker_stop / set_on_worker_stop: Option<WorkerFn>,
     on_worker_message / set_on_worker_message: Option<EventFn>,
     main_loop / set_main_loop: Option<MainLoopFn>,
 );
