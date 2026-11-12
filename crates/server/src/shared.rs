@@ -1,6 +1,8 @@
 //! Rust-owned shared server and port counters in the existing shared-memory arena.
 use core::ffi::c_int;
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
+};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
 #[derive(Default)]
@@ -50,21 +52,25 @@ impl ServerCounters {
 #[derive(Default)]
 #[repr(C)]
 pub struct ServerCounters {
-    pub master_pid: libc::pid_t,
-    pub manager_pid: libc::pid_t,
-    pub session_round: libc::c_long,
+    /// `pid_t`s, set by the master and the manager and read by every process.
+    pub master_pid: AtomicI32,
+    pub manager_pid: AtomicI32,
+    /// `long`, read under the shared spin lock.
+    pub session_round: AtomicI64,
     pub start: AtomicU32,
     pub shutdown: AtomicU32,
     /// The connection fd range; written under the server lock, read by every thread.
     pub max_fd: AtomicI32,
     pub min_fd: AtomicI32,
-    pub onstart_called: bool,
-    pub start_time: libc::time_t,
+    pub onstart_called: AtomicBool,
+    /// `time_t`.
+    pub start_time: AtomicI64,
     pub connection_num: AtomicU32,
     /// An `AtomicU32` per worker.
     pub connection_nums: Shm,
     pub tasking_num: AtomicU32,
-    pub max_concurrency: u32,
+    /// Set by `Server::set()`, read by every worker.
+    pub max_concurrency: AtomicU32,
     pub concurrency: AtomicU32,
     pub abort_count: AtomicU64,
     pub accept_count: AtomicU64,
@@ -165,7 +171,7 @@ pub unsafe fn swr_v1_server_shared_init(
         .store(1, core::sync::atomic::Ordering::Relaxed);
     // The limit is configuration, initialized before publication to any worker.
     let value = ServerCounters {
-        max_concurrency: u32::MAX,
+        max_concurrency: AtomicU32::new(u32::MAX),
         ..value
     };
     counters.write(value)
@@ -203,8 +209,6 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     }
     // The fields each op reads follow the native owner's lifetime and synchronization.
     let gs = server_counters(state)?;
-    // The plain fields the master writes, through the mapping rather than `gs`.
-    let raw = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
     Some(match op {
         OP_IS_STARTED => u64::from(gs.start.load(Ordering::Relaxed)),
         // One server starts.
@@ -215,13 +219,12 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         ),
         OP_LC_START_TIME => {
             let now = swoole_rs_corebase::time_now();
-            // SAFETY: only the starting master writes the start time, before forking workers.
-            unsafe { (*raw).start_time = now };
+            gs.start_time.store(now, Relaxed);
             0
         }
         // The master pid is assigned before workers can read it.
-        OP_MASTER_PID => i64::from(gs.master_pid).cast_unsigned(),
-        OP_MANAGER_PID => i64::from(gs.manager_pid).cast_unsigned(),
+        OP_MASTER_PID => i64::from(gs.master_pid.load(Relaxed)).cast_unsigned(),
+        OP_MANAGER_PID => i64::from(gs.manager_pid.load(Relaxed)).cast_unsigned(),
         // Native server code serializes fd-bound updates with its existing lock.
         OP_MAXFD => i64::from(gs.max_fd()).cast_unsigned(),
         OP_MINFD => i64::from(gs.min_fd()).cast_unsigned(),
@@ -240,7 +243,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             0
         }
         // Callers read the session round under the shared spin lock.
-        OP_SESSION_ROUND => gs.session_round.cast_unsigned(),
+        OP_SESSION_ROUND => gs.session_round.load(Relaxed).cast_unsigned(),
         OP_ST_GS_CONCURRENCY_SUB => {
             let sub = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
             gs.concurrency.fetch_sub(sub, Ordering::SeqCst);
@@ -346,7 +349,7 @@ mod tests {
             let mapping = gs.as_ptr();
             assert!(!mapping.is_null());
             let counters = swr_v1_server_shared_init(mapping);
-            assert_eq!(counters.max_concurrency, u32::MAX);
+            assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);
             assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             counters.concurrency.store(7, Ordering::Relaxed);
             let state = swr_v1_server_state_new();

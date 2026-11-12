@@ -239,18 +239,6 @@ impl<'a> Server<'a> {
         unsafe { &*gs }
     }
 
-    /// The shared counters, for the settings `Server::set()` writes before the
-    /// server starts.
-    ///
-    /// # Safety
-    /// No concurrent reader of the fields written, and no other reference to them.
-    #[must_use]
-    pub unsafe fn counters_mut(self) -> &'a mut ServerCounters {
-        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
-        // SAFETY: as `counters`, with the caller's exclusion.
-        unsafe { &mut *gs }
-    }
-
     /// `Server::is_started()`.
     #[must_use]
     pub fn is_started(self) -> bool {
@@ -275,7 +263,8 @@ impl<'a> Server<'a> {
         let config = self.config();
         u64::from(config.mode_) == crate::MODE_BASE
             && self.is_single_worker()
-            && self.counters().master_pid == std::process::id().cast_signed()
+            && self.counters().master_pid.load(Ordering::Relaxed)
+                == std::process::id().cast_signed()
             && !config.factory_.is_null()
     }
 
@@ -657,11 +646,11 @@ mod tests {
         let mut factory = 0u8;
         config.factory_ = (&raw mut factory).cast();
         let own = std::process::id().cast_signed();
-        unsafe { serv.counters_mut() }.master_pid = own;
+        serv.counters().master_pid.store(own, Ordering::Relaxed);
         assert!(serv.ran_its_single_worker_here());
-        unsafe { serv.counters_mut() }.master_pid = own + 1;
+        serv.counters().master_pid.store(own + 1, Ordering::Relaxed);
         assert!(!serv.ran_its_single_worker_here(), "another process's");
-        unsafe { serv.counters_mut() }.master_pid = own;
+        serv.counters().master_pid.store(own, Ordering::Relaxed);
         let config = unsafe { serv.config_mut() };
         config.factory_ = core::ptr::null_mut();
         assert!(!serv.ran_its_single_worker_here(), "destroyed");

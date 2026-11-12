@@ -492,6 +492,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     // thread, and each as its arm's last tables access.
     let tables_mut = || unsafe { &mut *ctx.state().tables() };
     let gs = ctx.server().counters();
+    let manager_pid = || gs.manager_pid.load(Ordering::Relaxed);
     let task_worker_pid = || {
         let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
         let index = usize::try_from(arg).unwrap_or(usize::MAX);
@@ -534,18 +535,18 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),
-        OP_KILL_MANAGER => signed(swoole_rs_process::os::kill(gs.manager_pid, libc::SIGTERM)),
+        OP_KILL_MANAGER => signed(swoole_rs_process::os::kill(manager_pid(), libc::SIGTERM)),
         LOG_KILL_MANAGER => {
-            let pid = gs.manager_pid;
+            let pid = manager_pid();
             log::sys_warning(
                 c"ProcessFactory::shutdown",
                 format_args!("kill({pid}) failed"),
             );
             0
         }
-        OP_WAIT_MANAGER => waitpid(gs.manager_pid),
+        OP_WAIT_MANAGER => waitpid(manager_pid()),
         LOG_WAIT_MANAGER => {
-            let pid = gs.manager_pid;
+            let pid = manager_pid();
             log::sys_warning(
                 c"ProcessFactory::shutdown",
                 format_args!("waitpid({pid}) failed"),

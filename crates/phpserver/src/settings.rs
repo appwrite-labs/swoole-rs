@@ -95,7 +95,11 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
         f::STARTED => i64::from(serv.is_started()),
         f::WORKER_THREAD => i64::from(serv.is_worker_thread()),
         f::WORKER_MAX_CONCURRENCY => i64::from(config.worker_max_concurrency),
-        f::MAX_CONCURRENCY => i64::from(serv.counters().max_concurrency),
+        f::MAX_CONCURRENCY => i64::from(
+            serv.counters()
+                .max_concurrency
+                .load(core::sync::atomic::Ordering::Relaxed),
+        ),
         f::ENABLE_COROUTINE => i64::from(config.enable_coroutine),
         f::DISPATCH_MODE => i64::from(config.dispatch_mode),
         f::TASK_IPC_MODE => i64::from(config.task_ipc_mode),
@@ -142,8 +146,10 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::WORKER_NUM => c.worker_num = v as u32,
         f::MAX_WAIT_TIME => c.max_wait_time = v as u32,
         f::MAX_QUEUED_BYTES => c.max_queued_bytes = v as u32,
-        // SAFETY: per the caller; the counters are mapped before set() runs.
-        f::MAX_CONCURRENCY => unsafe { serv.counters_mut() }.max_concurrency = limit,
+        f::MAX_CONCURRENCY => serv
+            .counters()
+            .max_concurrency
+            .store(limit, core::sync::atomic::Ordering::Relaxed),
         f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency = limit,
         f::ENABLE_COROUTINE => c.enable_coroutine = on,
         f::DISPATCH_MODE => c.dispatch_mode = v as u8,
@@ -161,9 +167,10 @@ unsafe fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace = v as u32,
         f::MAX_CONNECTION => server_methods::set_max_connection(serv, v as u32),
         f::START_SESSION_ID => {
-            // SAFETY: per the caller, as above.
-            let counters = unsafe { serv.counters_mut() };
-            counters.session_round = v.min(i64::from(u32::MAX));
+            let round = v.min(i64::from(u32::MAX));
+            serv.counters()
+                .session_round
+                .store(round, core::sync::atomic::Ordering::Relaxed);
         }
         f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval = v as u16,
         f::MAX_REQUEST => c.max_request = v as u32,

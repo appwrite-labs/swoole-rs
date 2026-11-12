@@ -44,9 +44,8 @@ impl Context<'_> {
     pub(super) fn config(&self) -> &crate::ServerConfig {
         self.server().config()
     }
-    pub(super) fn counters(&self) -> &mut crate::ServerCounters {
-        // SAFETY: the context's live server.
-        unsafe { self.server().counters_mut() }
+    pub(super) fn counters(&self) -> &crate::ServerCounters {
+        self.server().counters()
     }
     pub(super) fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
         self.server().workers()

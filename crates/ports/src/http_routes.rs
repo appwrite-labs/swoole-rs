@@ -329,7 +329,9 @@ pub mod exports {
         rdata: *const c_void,
     ) -> c_int {
         let counters = serv.counters();
-        if counters.concurrency.load(Ordering::Relaxed) >= counters.max_concurrency {
+        if counters.concurrency.load(Ordering::Relaxed)
+            >= counters.max_concurrency.load(Ordering::Relaxed)
+        {
             _ = send(socket, SERVICE_UNAVAILABLE, 0);
             return -1;
         }
