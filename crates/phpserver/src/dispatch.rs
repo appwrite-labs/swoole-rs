@@ -242,9 +242,7 @@ fn prepare_worker(server: view::Server<'_>) {
 /// that takes no reference.
 #[must_use]
 pub fn zserv() -> zval {
-    let held = ServerObject::running();
-    let object = held.as_deref().and_then(ServerObject::of);
-    object.map_or(swoole_rs_zend::UNDEF, ServerObject::zval)
+    crate::instance::server_zval()
 }
 
 pub(crate) fn dtor(value: &mut zval) {

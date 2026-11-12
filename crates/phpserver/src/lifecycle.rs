@@ -22,10 +22,7 @@ use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
     bailout, message, report,
-    sys::{
-        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_OBJECT_EX, swr_zend_instanceof,
-        swr_zend_json_decode, zend_class_entry, zend_object, zend_value, zval,
-    },
+    sys::{swr_zend_instanceof, swr_zend_json_decode, zend_class_entry, zval},
 };
 
 /// `SWR_PHPSERVER_FACT_*`.
@@ -372,13 +369,6 @@ impl<'a> ServerObject<'a> {
         self.value
     }
 
-    /// The object as a zval that takes no reference (`ZVAL_OBJ` without
-    /// `GC_ADDREF`), as upstream's `*zserv` copies are. Whatever holds the
-    /// object keeps it live while the zval is used.
-    pub(crate) fn zval(self) -> zval {
-        object_zval(self.value.object().unwrap_or(ptr::null_mut()))
-    }
-
     /// The object's class.
     pub(crate) fn class(self) -> *mut zend_class_entry {
         self.value.class().unwrap_or(ptr::null_mut())
@@ -484,21 +474,6 @@ impl<'a> ServerObject<'a> {
     pub(crate) fn user_process(self, index: usize) -> *mut zval {
         self.property(|p| p.user_processes.get(index).map(|process| process.as_ptr()))
             .unwrap_or(ptr::null_mut())
-    }
-}
-
-/// `ZVAL_OBJ(object)` without `GC_ADDREF`, undefined for null; only for an
-/// object something else keeps live while the zval is used.
-fn object_zval(object: *mut zend_object) -> zval {
-    if object.is_null() {
-        return swoole_rs_zend::UNDEF;
-    }
-    zval {
-        value: zend_value { obj: object },
-        u1: _zval_struct__bindgen_ty_1 {
-            type_info: IS_OBJECT_EX,
-        },
-        u2: _zval_struct__bindgen_ty_2 { next: 0 },
     }
 }
 

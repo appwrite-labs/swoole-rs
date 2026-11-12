@@ -50,6 +50,26 @@ pub(crate) fn server_object() -> Option<Owned> {
     (ServerObject::of(&object)?.mark() == mark).then_some(object)
 }
 
+/// `*php_swoole_server_zval_ptr()` as upstream copies it: the running server's
+/// object without a reference of its own (undefined for none), for an event's
+/// arguments. A counted lookup costs a reference taken and released per event.
+pub(crate) fn server_zval() -> zval {
+    let found = INSTANCE.with_borrow(|instance| {
+        let (object, mark) = instance.as_ref()?;
+        Some((object.zval()?, *mark))
+    });
+    let Some((mut object, mark)) = found else {
+        return swoole_rs_zend::UNDEF;
+    };
+    // The handle may be another Server object's by now.
+    let current = ServerObject::of(Value::of(&mut object)).map(ServerObject::mark);
+    if current == Some(mark) {
+        object
+    } else {
+        swoole_rs_zend::UNDEF
+    }
+}
+
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
 pub(crate) fn set_server_object(object: ServerObject<'_>) {
     let mark = MARKS.get() + 1;
