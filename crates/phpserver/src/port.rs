@@ -153,11 +153,10 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     // A new object has no server yet.
     data.property.serv.get_or_init(|| serv);
     data.property.bound.set(true);
-    // SAFETY: a live port, whose property link only this thread touches.
-    let config = unsafe { port.config_mut() };
+    let config = port.config();
     // The object's property lives as long as the port's link, which only reads it.
     let property = ptr::from_ref(&data.property).cast_mut().cast();
-    crate::server::port_property(config.object_id, &mut config.ptr, property, true);
+    crate::server::port_property(config.object_id, &config.ptr, property, true);
     zport
 }
 
