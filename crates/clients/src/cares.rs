@@ -5,7 +5,6 @@
 use crate::ip::swr_v1_clients_ip_text;
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     ffi::{CStr, c_char, c_void},
     ptr,
     sync::{
@@ -67,8 +66,9 @@ struct Query {
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
     retired: Arc<AtomicBool>,
-    /// The wrapper of each descriptor c-ares watches, live until [`free`].
-    sockets: RefCell<HashMap<i32, Socket<'static>>>,
+    /// The wrapper of each descriptor c-ares watches, live until [`free`]: one per
+    /// server it asks, so a list beats a hash map.
+    sockets: RefCell<Vec<(i32, Socket<'static>)>>,
     results: RefCell<Vec<Vec<u8>>>,
 }
 struct Completion {
@@ -181,7 +181,12 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     };
     // SAFETY: c-ares passes the live query's userdata.
     let query = unsafe { query(data) };
-    let registered = query.sockets.borrow().get(&fd).copied();
+    let registered = query
+        .sockets
+        .borrow()
+        .iter()
+        .find(|&&(watched, _)| watched == fd)
+        .map(|&(_, wrapper)| wrapper);
     let wrapper = if let Some(wrapper) = registered {
         if events == 0 {
             // SAFETY: remove the registered native socket before detaching its descriptor.
@@ -189,7 +194,10 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             // SAFETY: out of the reactor above, and of the registry below; free
             // detaches fd first, as c-ares retains ownership of the OS descriptor.
             unsafe { free(wrapper) };
-            query.sockets.borrow_mut().remove(&fd);
+            query
+                .sockets
+                .borrow_mut()
+                .retain(|&(watched, _)| watched != fd);
             return;
         }
         wrapper
@@ -206,7 +214,7 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             return;
         };
         wrapper.edit(|wrapper| wrapper.object = data);
-        query.sockets.borrow_mut().insert(fd, wrapper);
+        query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
     };
     if wrapper.read(|wrapper| wrapper.events) != 0 {
@@ -306,7 +314,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         completed: Cell::new(false),
         coroutine: Cell::new(coroutine),
         retired: Arc::new(AtomicBool::new(false)),
-        sockets: RefCell::new(HashMap::new()),
+        sockets: RefCell::new(Vec::new()),
         results: RefCell::new(Vec::new()),
     }));
     let state = owner.cast::<c_void>();
