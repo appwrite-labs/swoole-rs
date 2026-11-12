@@ -927,11 +927,12 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     }
 }
 
-/// `command()`'s wait, which it shares with the reply's callback: the reply
-/// lands in `reply`, the call's return value once it resumes.
+/// `command()`'s wait, which it shares with the reply's callback: the reply's
+/// bytes, which become the call's return value once it resumes. Only Rust
+/// memory: the server's callback table may keep the callback, and so this,
+/// past the request (a master-handled command's stays until shutdown).
 struct Wait {
-    reply: RefCell<Owned>,
-    json_decode: bool,
+    reply: RefCell<Option<Vec<u8>>>,
     coroutine: Coroutine,
     replied: Cell<bool>,
 }
@@ -940,17 +941,7 @@ struct Wait {
 /// waiting coroutine resumes, if it has yielded yet.
 fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
-        let reply = if wait.json_decode {
-            let decoded = Owned::default();
-            // SAFETY: the reply's bytes and an undefined slot this owns.
-            unsafe {
-                swr_zend_json_decode(message.as_ptr().cast(), message.len(), decoded.as_ptr());
-            }
-            decoded
-        } else {
-            Owned::string(ZString::new(message))
-        };
-        drop(wait.reply.replace(reply));
+        wait.reply.replace(Some(message.to_vec()));
         if wait.coroutine.is_suspending() == Some(true) {
             // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
             unsafe { wait.coroutine.wake(false) };
@@ -986,7 +977,6 @@ fn command(call: &Call) {
     };
     let wait = Rc::new(Wait {
         reply: RefCell::default(),
-        json_decode,
         coroutine,
         replied: Cell::new(false),
     });
@@ -1013,7 +1003,17 @@ fn command(call: &Call) {
         // `command_done` resumes it.
         swoole_rs_phpcoroutines::suspend();
     }
-    call.set_owned(wait.reply.take());
+    let Some(reply) = wait.reply.take() else {
+        return;
+    };
+    if json_decode {
+        let decoded = Owned::default();
+        // SAFETY: the reply's bytes and an undefined slot this owns.
+        unsafe { swr_zend_json_decode(reply.as_ptr().cast(), reply.len(), decoded.as_ptr()) };
+        call.set_owned(decoded);
+    } else {
+        call.set_owned(Owned::string(ZString::new(&reply)));
+    }
 }
 
 /// `php_swoole_error(E_WARNING, ...)`: a notice-coded warning, shown when
