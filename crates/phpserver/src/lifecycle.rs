@@ -334,16 +334,7 @@ impl ServerObject {
     /// `GC_ADDREF`), as upstream's `*zserv` copies are; undefined for no object.
     /// The handle keeps the object live while the zval is used.
     pub(crate) fn zval(self) -> zval {
-        if self.0.is_null() {
-            return swoole_rs_zend::UNDEF;
-        }
-        zval {
-            value: zend_value { obj: self.0 },
-            u1: _zval_struct__bindgen_ty_1 {
-                type_info: IS_OBJECT_EX,
-            },
-            u2: _zval_struct__bindgen_ty_2 { next: 0 },
-        }
+        object_zval(self.0)
     }
 
     /// The object's class.
@@ -437,16 +428,35 @@ impl ServerObject {
         true
     }
 
-    /// The Port object at `index` (`property->ports.at(index)`), or null.
-    pub(crate) fn port_at(self, index: usize) -> *mut zend_object {
-        self.property(|p| p.ports.get(index).copied())
-            .unwrap_or(ptr::null_mut())
+    /// The Port object at `index` (`property->ports.at(index)`) as an uncounted
+    /// zval, undefined for none: `add_port` keeps each in `$server->ports`, which
+    /// holds it while the Server object lives.
+    pub(crate) fn port(self, index: usize) -> zval {
+        object_zval(
+            self.property(|p| p.ports.get(index).copied())
+                .unwrap_or(ptr::null_mut()),
+        )
     }
 
     /// The user process at `index`, or null.
     pub(crate) fn user_process(self, index: usize) -> *mut zval {
         self.property(|p| p.user_processes.get(index).map(|process| process.as_ptr()))
             .unwrap_or(ptr::null_mut())
+    }
+}
+
+/// `ZVAL_OBJ(object)` without `GC_ADDREF`, undefined for null; only for an
+/// object a [`ServerObject`] (or its property) keeps live while the zval is used.
+fn object_zval(object: *mut zend_object) -> zval {
+    if object.is_null() {
+        return swoole_rs_zend::UNDEF;
+    }
+    zval {
+        value: zend_value { obj: object },
+        u1: _zval_struct__bindgen_ty_1 {
+            type_info: IS_OBJECT_EX,
+        },
+        u2: _zval_struct__bindgen_ty_2 { next: 0 },
     }
 }
 
@@ -1144,7 +1154,7 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
     let kind = kind(object);
     let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
     let ports = object.property(|p| p.ports.clone());
-    let Some((&first, others)) = ports.split_first() else {
+    let Some(&first) = ports.first() else {
         return Ok(());
     };
     let primary = port_facts(first);
@@ -1192,21 +1202,14 @@ fn before_start(object: ServerObject, serv: view::Server<'_>) -> Result<(), Stop
         }
         put(serv, install::RECEIVE);
     }
-    let setting = settings.as_ptr();
-    for &port_object in others {
-        // SAFETY: a live Port object; the Port class declares `setting`.
-        if unsafe { swoole_rs_zend::property(port_object, c"setting") }.is_null() {
+    let setting: &Value = settings;
+    for index in 1..ports.len() {
+        let mut zport = object.port(index);
+        let zport = Value::of(&mut zport);
+        // The Port class declares `setting`.
+        if zport.property(c"setting").is_some_and(Value::is_null) {
             // `$port->set($setting)`, Port's own method.
-            // SAFETY: the live Port object, its class and the server's settings.
-            let set = unsafe {
-                bailout::call_method(
-                    port_object,
-                    crate::PORT.entry(),
-                    b"set",
-                    ptr::null_mut(),
-                    &[setting],
-                )
-            };
+            let set = zport.call_method(Some(&crate::PORT), b"set", &[setting]);
             trapped(set.is_err())?;
         }
     }

@@ -231,6 +231,42 @@ impl Value {
         Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
     }
 
+    /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
+    /// object this holds, inside `zend_try` (at most two arguments, which Zend
+    /// copies into the call): `scope`'s method (`None`: the object's class's).
+    /// Undefined, and nothing is called, for no object or one that isn't a
+    /// `scope`. A result the call left when it bailed out is leaked, as
+    /// upstream leaves it.
+    /// # Errors
+    /// The method bailed out, or a bailout is pending.
+    pub fn call_method(
+        &self,
+        scope: Option<&crate::Class>,
+        method: &[u8],
+        args: &[&Self],
+    ) -> Result<Owned, bailout::Bailout> {
+        let result = Owned::default();
+        let Some(object) = self.object() else {
+            return Ok(result);
+        };
+        if scope.is_some_and(|scope| !self.instance_of(scope)) {
+            return Ok(result);
+        }
+        let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
+        let args: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        // SAFETY: the zval holds the object while borrowed, `scope` is null or
+        // a class it is an instance of, the result a slot this owns, and the
+        // arguments live values.
+        let called = unsafe { bailout::call_method(object, scope, method, result.as_ptr(), &args) };
+        match called {
+            Ok(()) => Ok(result),
+            Err(bailout) => {
+                std::mem::forget(result);
+                Err(bailout)
+            }
+        }
+    }
+
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
     /// statics) at any time, so it stays a pointer.
     #[must_use]

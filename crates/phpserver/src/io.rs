@@ -7,10 +7,7 @@ use std::ffi::{CStr, CString, c_int, c_void};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
-use swoole_rs_zend::{
-    Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
-    sys::{IS_TRUE, zval},
-};
+use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, Value, bailout, message, sys::IS_TRUE};
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
 pub(crate) fn closed(serv: view::Server<'_>) -> bool {
@@ -54,11 +51,15 @@ fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
 /// `method(args)` of the primary port (`Swoole\Server\Port`'s own), on the
 /// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
 /// raised from the handler, which owns nothing.
-fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
-    let object = crate::lifecycle::ServerObject::this(call).port_at(0);
-    // SAFETY: a live Port object, its class, the result slot and the arguments.
-    let called = unsafe { bailout::call_method(object, crate::PORT.entry(), method, retval, args) };
-    bailout::raise(called);
+fn port_call(call: &Call, method: &[u8], args: &[&Value]) -> Owned {
+    let mut port = crate::lifecycle::ServerObject::this(call).port(0);
+    match Value::of(&mut port).call_method(Some(&crate::PORT), method, args) {
+        Ok(result) => result,
+        Err(bailout) => {
+            bailout.defer();
+            Owned::default()
+        }
+    }
 }
 
 fn on(call: &Call) {
@@ -73,13 +74,15 @@ fn on(call: &Call) {
     if call.arity(2, 2).is_err() {
         return call.set_bool(false);
     }
-    let (name, cb) = (call.zval(1), call.zval(2));
     let Some((kind, property)) = call.value(1).and_then(lookup) else {
         if bailout::pending() {
             return;
         }
-        let retval = Owned::default();
-        port_call(call, b"on", retval.as_ptr(), &[name, cb]);
+        let args: Vec<&Value> = [call.value(1), call.value(2)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let retval = port_call(call, b"on", &args);
         // RETURN_BOOL(Z_BVAL_P(&retval))
         return call.set_bool(retval.kind() == IS_TRUE);
     };
@@ -95,7 +98,6 @@ fn get_callback(call: &Call) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let name = call.zval(1);
     if let Some((_, property)) = call.value(1).and_then(lookup) {
         // `$this`'s own class is the scope (subclasses).
         match call
@@ -111,7 +113,8 @@ fn get_callback(call: &Call) {
     if bailout::pending() {
         return;
     }
-    port_call(call, b"getcallback", call.return_value(), &[name]);
+    let args: Vec<&Value> = call.value(1).into_iter().collect();
+    call.set_owned(port_call(call, b"getcallback", &args));
 }
 
 fn listen(call: &Call) {
