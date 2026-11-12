@@ -45,11 +45,22 @@ pub(crate) fn exception() -> *mut zend_class_entry {
     swoole_rs_phpswoole::exception_class()
 }
 
+/// `f` over the process's server (`sw_server()`), or `None` while it has none.
+/// Each `f` here reads the server's config and worker records and returns; none
+/// reaches `swr_v1_server_delete`, and the view can't outlive the call.
+fn with_server<R>(f: impl FnOnce(view::Server<'_>) -> R) -> Option<R> {
+    // SAFETY: nothing deletes the server while `f`, a read, runs.
+    unsafe { view::Server::current() }.map(f)
+}
+
 /// Who may construct a Process: 0, or 1 in a started server's master, 2 once
 /// async-io threads exist.
 pub(crate) fn construct_guard() -> c_int {
-    // SAFETY: the running server, read once here.
-    let started = unsafe { view::Server::current() }.is_some_and(view::Server::is_started);
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method's path fixes the view's lifetime; with_server's `f` takes any"
+    )]
+    let started = with_server(|serv| serv.is_started()).unwrap_or(false);
     if started && methods::swoole_get_worker_type() == MASTER {
         return 1;
     }
@@ -74,11 +85,11 @@ thread_local! {
 /// In a server worker thread, `process` becomes a copy of its server worker
 /// (shared); false elsewhere.
 pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
-    // SAFETY: the running server, which outlives this worker thread's requests.
-    let Some(serv) = unsafe { view::Server::current() }.filter(|&serv| serv.is_worker_thread())
-    else {
-        return false;
-    };
+    with_server(|serv| serv.is_worker_thread() && share(serv, process)).unwrap_or(false)
+}
+
+/// [`worker_share`] in a worker thread of `serv`.
+fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
     let user = methods::swoole_get_worker_type() == USER_WORKER;
     let id = if user {
         methods::swoole_get_worker_id()
@@ -107,21 +118,20 @@ pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
 /// The id a Process takes after the server's workers: `get_all_worker_num()`
 /// once started, else 1.
 pub(crate) fn worker_base() -> u32 {
-    // SAFETY: the running server, which nothing deletes during this read.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return 1;
-    };
-    if !serv.is_started() {
-        return 1;
-    }
-    let config = serv.config();
-    let users = serv.user_worker_num();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "worker counts fit a uint32_t"
-    )]
-    let users = users as u32;
-    config.worker_num + config.task_worker_num + users
+    with_server(|serv| {
+        if !serv.is_started() {
+            return 1;
+        }
+        let config = serv.config();
+        let users = serv.user_worker_num();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "worker counts fit a uint32_t"
+        )]
+        let users = users as u32;
+        config.worker_num + config.task_worker_num + users
+    })
+    .unwrap_or(1)
 }
 
 /// `php_swoole_reactor_init()`.
@@ -254,15 +264,12 @@ pub(crate) fn callable_defer_free(callable: Callable) {
 #[unsafe(export_name = "php_swoole_is_enable_coroutine")]
 #[must_use]
 pub extern "C" fn enable_coroutine() -> bool {
-    // SAFETY: the running server, which nothing deletes during this read.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return swoole_rs_corebase::swr_v1_core_enable_coroutine();
-    };
-    match methods::swoole_get_worker_type() {
+    with_server(|serv| match methods::swoole_get_worker_type() {
         TASK_WORKER => task_coroutine(serv),
         MANAGER => false,
         _ => serv.config().enable_coroutine,
-    }
+    })
+    .unwrap_or_else(|| swoole_rs_corebase::swr_v1_core_enable_coroutine())
 }
 
 /// `tsrm_is_main_thread()`, true without threads.
@@ -310,12 +317,12 @@ fn task_coroutine(serv: view::Server<'_>) -> bool {
 /// `Server::is_sync_process()` of the running server.
 #[must_use]
 pub fn sync_server() -> bool {
-    // SAFETY: the running server, which nothing deletes during this read.
-    unsafe { view::Server::current() }.is_some_and(|serv| match methods::swoole_get_worker_type() {
+    with_server(|serv| match methods::swoole_get_worker_type() {
         MANAGER => true,
         TASK_WORKER => !task_coroutine(serv),
         _ => false,
     })
+    .unwrap_or(false)
 }
 
 /// Whether a timer added in this process runs on its reactor: a server's user
@@ -324,11 +331,8 @@ pub fn sync_server() -> bool {
 #[must_use]
 pub fn timer_uses_reactor() -> bool {
     let kind = methods::swoole_get_worker_type();
-    // SAFETY: the running server, which nothing deletes during this read.
-    match unsafe { view::Server::current() } {
-        Some(serv) => kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)),
-        None => crate::pool::timer_uses_reactor(kind == MASTER).unwrap_or(true),
-    }
+    with_server(|serv| kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)))
+        .unwrap_or_else(|| crate::pool::timer_uses_reactor(kind == MASTER).unwrap_or(true))
 }
 
 extern "C-unwind" fn listening(_event_num: &mut usize) -> bool {
