@@ -235,7 +235,7 @@ fn construct(call: &Call) {
         call.throw_error(c"socket type param is required");
         return call.set_bool(false);
     };
-    if !check_type(kind) {
+    if !check_type(kind, "Swoole\\Async\\Client") {
         return call.set_bool(false);
     }
     swoole_rs_phpruntime::check_reactor();

@@ -5,7 +5,7 @@
 //! in the pool. Each method parses as upstream's ZPP block does; operations
 //! that can run PHP code go through `Cli::run` inside `zend_try`.
 use crate::native::{self, Cli, ErrorKind};
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
@@ -29,10 +29,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
-    sys::{
-        IS_ARRAY, IS_UNDEF, ZEND_ACC_PUBLIC, get_active_class_name, get_active_function_name,
-        zend_class_entry, zend_object, zend_type_error,
-    },
+    sys::{IS_ARRAY, IS_UNDEF, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -514,26 +511,16 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
     None
 }
 
-/// `__construct`'s type check: the socket type, or a `TypeError` like upstream's.
-pub(crate) fn check_type(kind: i64) -> bool {
+/// `__construct`'s type check: the socket type, or a `TypeError` like upstream's,
+/// which names the active function: `class`'s `__construct`, which declares it.
+pub(crate) fn check_type(kind: i64, class: &str) -> bool {
     if (SOCK_TCP..=SOCK_UNIX_DGRAM).contains(&socket_type(kind)) {
         return true;
     }
-    let mut space: *const c_char = ptr::null();
-    // SAFETY: inside a method call; Zend returns static names.
-    let class = unsafe { get_active_class_name(&raw mut space) };
-    // SAFETY: as above.
-    let function = unsafe { get_active_function_name() };
-    // SAFETY: Zend's printf: those three NUL-terminated names and a `long long`.
-    unsafe {
-        zend_type_error(
-            c"%s%s%s() expects parameter 1 to be client type, unknown type %lld given".as_ptr(),
-            class,
-            space,
-            function,
-            kind,
-        );
-    }
+    let message = format!(
+        "{class}::__construct() expects parameter 1 to be client type, unknown type {kind} given"
+    );
+    swoole_rs_zend::type_error(&CString::new(message).unwrap_or_default());
     false
 }
 
@@ -640,7 +627,7 @@ fn construct(call: &Call) {
         call.throw_error(c"The $async parameter is not supported");
         return call.set_bool(false);
     }
-    if !check_type(kind) {
+    if !check_type(kind, "Swoole\\Client") {
         return call.set_bool(false);
     }
     let props = Obj::this(call).props();
