@@ -583,6 +583,7 @@ pub(crate) fn new_iterator(serv: SharedServer, port: *mut c_void) -> swoole_rs_z
 
 /// `server(call)`, or `None` with a warning and `false` returned when the
 /// server is not running.
+#[inline]
 pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
     let serv = server(call);
     if serv.is_started() {

@@ -8,7 +8,7 @@ use crate::lifecycle::{ServerData, ServerObject};
 use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     ffi::{CStr, CString, c_int, c_long},
     ptr,
     rc::Rc,
@@ -22,62 +22,51 @@ use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_recor
 use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
-    Owned, Value, Weak, bailout, string,
+    Owned, Value, bailout, string,
     sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
 
 thread_local! {
     /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
-    /// server's object, named without a reference as upstream's zval was. Only the
-    /// thread that runs PHP reads it. None until bound.
-    /// It goes with the mark [`set_server_object`] gave the object: Zend hands a
-    /// freed object's handle to the next object made, which has no such mark.
-    static INSTANCE: RefCell<Option<(Weak<ServerData>, u64)>> = const { RefCell::new(None) };
-    /// The last mark given.
-    static MARKS: Cell<u64> = const { Cell::new(0) };
+    /// server's object, named without a reference as upstream's zval was, with the
+    /// mark [`set_server_object`] gave it. Only the thread that runs PHP reads it.
+    /// Undefined until bound, and again once the object is being freed.
+    static INSTANCE: Cell<(zval, u64)> = const { Cell::new((swoole_rs_zend::UNDEF, 0)) };
 }
 
 /// `php_swoole_server_zval_ptr()`: the running server's object, with a reference
 /// of its own; none before one is bound and once it is being freed.
 #[must_use]
 pub(crate) fn server_object() -> Option<Owned> {
-    let (object, mark) = INSTANCE.with_borrow(|instance| {
-        let (object, mark) = instance.as_ref()?;
-        Some((object.get()?, *mark))
-    })?;
-    // The handle may be another Server object's by now.
-    (ServerObject::of(&object)?.mark() == mark).then_some(object)
+    let mut object = server_zval();
+    let object = Value::of(&mut object);
+    object.object().map(|_| object.copy())
 }
 
 /// `*php_swoole_server_zval_ptr()` as upstream copies it: the running server's
 /// object without a reference of its own (undefined for none), for an event's
-/// arguments. A counted lookup costs a reference taken and released per event.
+/// arguments.
 pub(crate) fn server_zval() -> zval {
-    let found = INSTANCE.with_borrow(|instance| {
-        let (object, mark) = instance.as_ref()?;
-        // SAFETY: the running Server object, which its server keeps live while it
-        // runs; the zval is an event's argument, read during the call, never released.
-        Some((unsafe { object.zval() }?, *mark))
-    });
-    let Some((mut object, mark)) = found else {
-        return swoole_rs_zend::UNDEF;
-    };
-    // The handle may be another Server object's by now.
-    let current = ServerObject::of(Value::of(&mut object)).map(ServerObject::mark);
-    if current == Some(mark) {
-        object
-    } else {
-        swoole_rs_zend::UNDEF
-    }
+    INSTANCE.get().0
 }
 
 /// `*php_swoole_server_zval_ptr() = *zserv`: no reference is taken.
 pub(crate) fn set_server_object(object: ServerObject<'_>) {
-    let mark = MARKS.get() + 1;
-    MARKS.set(mark);
+    let mark = INSTANCE.get().1 + 1;
     object.set_mark(mark);
-    INSTANCE.set(Weak::of(object.value()).map(|object| (object, mark)));
+    // SAFETY: a live zval. The copy takes no reference: `forget` drops it as
+    // the object's data is dropped, before Zend frees the object.
+    let copy = unsafe { object.value().as_ptr().read() };
+    INSTANCE.set((copy, mark));
+}
+
+/// The object marked `mark` is being freed: it is no longer the running one.
+pub(crate) fn forget(mark: u64) {
+    let (_, running) = INSTANCE.get();
+    if running == mark {
+        INSTANCE.set((swoole_rs_zend::UNDEF, running));
+    }
 }
 
 /// `php_swoole_server_get_ptr`: the `Server` of a Server object, which `value`
