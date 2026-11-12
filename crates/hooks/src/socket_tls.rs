@@ -11,8 +11,9 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, TlsContext, owner_fields, owner_tls_host_name, reason_text,
-    swoole_ssl_init, swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
+    OwnedTlsContext, OwnedTlsFields, OwnedTlsSessionResult, TlsContext, owner_fields,
+    owner_tls_host_name, reason_text, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -82,10 +83,12 @@ impl Co {
     /// `Socket::ssl_context_create()`: the socket's context, configured for it.
     pub(crate) fn ssl_context_create(self) -> bool {
         swoole_ssl_init();
-        // SAFETY: the live owner and network::Socket; TLS is initialised.
-        let made = unsafe {
-            swr_v1_tls_owner_socket_context(self.tls_owner(), self.socket(), self.http2(), true)
-        };
+        let (owner, http2) = (self.tls_owner(), self.http2());
+        let made = self.with_network(|socket| {
+            // SAFETY: the live owner; TLS is initialised.
+            unsafe { swr_v1_tls_owner_socket_context(owner, socket, http2, true) }
+        });
+        let made = made.unwrap_or(2);
         match made {
             1 => {
                 log::warning(
@@ -108,9 +111,14 @@ impl Co {
             set_err(self, SSL_CREATE_SESSION_FAILED);
             return false;
         };
-        // SAFETY: the live owner, network::Socket and the record's host name slot;
-        // TLS is initialised.
-        let result = unsafe { swr_v1_tls_owner_socket_session(owner, self.socket(), hostname) };
+        let result = self.with_network(|socket| {
+            // SAFETY: the live owner and the record's host name slot; TLS is initialised.
+            unsafe { swr_v1_tls_owner_socket_session(owner, socket, hostname) }
+        });
+        let result = result.unwrap_or(OwnedTlsSessionResult {
+            status: 1,
+            error: 0,
+        });
         let origin = c"Socket::ssl_create";
         match result.status {
             0 => return true,

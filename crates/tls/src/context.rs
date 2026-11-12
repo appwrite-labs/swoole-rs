@@ -216,7 +216,7 @@ impl Method<'_> {
 
     /// Upstream's `ssl_error`: pops one error and appends its reason and code.
     fn ssl_error(&self, message: &[u8]) {
-        let code = crate::socket::pop_error();
+        let code = crate::pop_error();
         let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
         #[expect(
             clippy::cast_possible_wrap,
@@ -288,14 +288,14 @@ impl Method<'_> {
             ));
             return false;
         }
-        crate::socket::clear_errors();
+        crate::clear_errors();
         // SAFETY: a NUL-terminated path.
         let names = unsafe { SSL_load_client_CA_file(file.data) };
         if names.is_null() {
             self.ssl_error(&quoted(b"SSL_load_client_CA_file(\"", file, b"\") failed"));
             return false;
         }
-        crate::socket::clear_errors();
+        crate::clear_errors();
         // SAFETY: a live context takes ownership of the list.
         unsafe { SSL_CTX_set_client_CA_list(self.ctx, names) };
         true

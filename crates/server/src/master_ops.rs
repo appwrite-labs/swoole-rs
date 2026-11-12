@@ -1183,19 +1183,19 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SC_WRITABLE => u64::from(o.edit_sock(|s| s.events) & SW_EVENT_WRITE != 0),
         OP_SC_SEND => {
             let (data, length) = (o.ctx.data, o.ctx.length as usize);
-            let sock = o.ctx.sock.cast();
-            // SAFETY: the context's live socket and the data it sends.
-            let sent =
-                unsafe { swoole_rs_tls::upstream::socket_send(sock, data.cast(), length, 0) };
-            sign(sent as i64)
+            let send = |sock| {
+                // SAFETY: the context's live socket and the data it sends.
+                unsafe { swoole_rs_tls::upstream::socket_send(sock, data.cast(), length, 0) }
+            };
+            sign(o.sock().map_or(-1, send) as i64)
         }
         OP_SEND_SYNC => {
             let (data, length) = (o.ctx.data, o.ctx.length as usize);
-            let socket = o.conn().socket.cast();
-            // SAFETY: the connection's socket and the data it sends.
-            let sent = unsafe {
-                swoole_rs_tls::upstream::socket_send_sync(socket, data.cast(), length, 0)
+            let send = |socket| {
+                // SAFETY: the connection's socket and the data it sends.
+                unsafe { swoole_rs_tls::upstream::socket_send_sync(socket, data.cast(), length, 0) }
             };
+            let sent = o.conn_socket().map_or(-1, send);
             u64::from(usize::try_from(sent) == Ok(length))
         }
         OP_SC_FLAGS => send_flags(o),
@@ -2163,9 +2163,10 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let task = o.ctx.data.cast::<SendfileTask>();
             // SAFETY: the send's `SendfileTask`, whose name follows its head.
             let SendfileTask { offset, length } = unsafe { task.read() };
-            let name = task.wrapping_add(1).cast::<c_char>();
-            // SAFETY: the connection's live socket and the task's name.
-            sign(unsafe { sendfile_async(o.conn().socket.cast(), name, offset, length) })
+            // SAFETY: the task's NUL-terminated name, which follows its head.
+            let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<c_char>()) };
+            let socket = o.conn_socket();
+            sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
         }
         OP_SEND_SHUTDOWN => {
             // A worker may run as a user that cannot signal the master.
@@ -2180,7 +2181,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let pipe = o.server().worker_pipe(0, false)?;
             let data = (&raw const send).cast();
             // SAFETY: the worker's live pipe socket and the send's bytes.
-            u64::from(unsafe { send_async(pipe.as_ptr().cast(), data, size_of::<SendData>()) } > 0)
+            u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
             let task = o.ctx.buffer.cast::<SendfileTask>();

@@ -9,14 +9,11 @@ use std::ffi::{CStr, c_char, c_int, c_ulong};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_tls::{Bio, Ssl};
 
 use openssl_sys as ssl;
 
 use crate::uring::{self, Host};
-
-unsafe extern "C" {
-    fn BIO_ctrl_pending(bio: *mut ssl::BIO) -> usize;
-}
 
 /// `SW_ERROR_SSL_BAD_PROTOCOL` and `SW_ERROR_SSL_RESET`.
 pub const SSL_BAD_PROTOCOL: c_int = 1016;
@@ -39,9 +36,9 @@ pub trait TlsSocket: Copy {
 pub struct Tls<S> {
     pub uring: &'static Host,
     pub socket: S,
-    pub ssl: *mut ssl::SSL,
-    pub rbio: *mut ssl::BIO,
-    pub wbio: *mut ssl::BIO,
+    pub ssl: Option<Ssl>,
+    pub rbio: Option<Bio>,
+    pub wbio: Option<Bio>,
     pub fd: c_int,
     pub read_timeout: f64,
     pub write_timeout: f64,
@@ -51,22 +48,22 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-fn len(size: usize) -> c_int {
-    c_int::try_from(size).unwrap_or(c_int::MAX)
-}
-
 impl<S: TlsSocket> Tls<S> {
     fn pending(&self) -> usize {
-        // SAFETY: `wbio` is the socket's live memory BIO.
-        unsafe { BIO_ctrl_pending(self.wbio) }
+        self.wbio.map_or(0, Bio::pending)
     }
 
     /// Upstream's `ssl_bio_write`: send everything OpenSSL queued.
     pub(crate) fn bio_write(&self) -> bool {
         let (buf, size) = self.socket.buffer(true);
+        let Some(wbio) = self.wbio else {
+            return true;
+        };
         while self.pending() != 0 {
-            // SAFETY: `buf` holds `size` bytes.
-            let nread = unsafe { ssl::BIO_read(self.wbio, buf.cast(), len(size)) };
+            // SAFETY: `buf` holds `size` bytes, which the BIO may only write.
+            let slots =
+                unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
+            let nread = wbio.read(slots);
             if nread <= 0 {
                 self.socket.set_err(SSL_BAD_PROTOCOL);
                 return false;
@@ -102,9 +99,11 @@ impl<S: TlsSocket> Tls<S> {
                 unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
             let rv = uring::recv(self.uring, self.fd, slots, 0, self.read_timeout);
             if rv > 0 {
-                let rv = c_int::try_from(rv).unwrap_or(c_int::MAX);
+                let length = rv.unsigned_abs();
                 // SAFETY: the first `rv` bytes of `buf` were received.
-                if unsafe { ssl::BIO_write(self.rbio, buf.cast(), rv) } != rv {
+                let received = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), length) };
+                let rv = c_int::try_from(rv).unwrap_or(c_int::MAX);
+                if self.rbio.map_or(-1, |rbio| rbio.write(received)) != rv {
                     self.socket.set_err(SSL_BAD_PROTOCOL);
                     return false;
                 }
@@ -134,8 +133,7 @@ impl<S: TlsSocket> Tls<S> {
         if !self.prepare() {
             return false;
         }
-        // SAFETY: `ssl` is the socket's live session.
-        let error = unsafe { ssl::SSL_get_error(self.ssl, rc) };
+        let error = self.ssl.map_or(ssl::SSL_ERROR_SSL, |ssl| ssl.error(rc));
         let moved = match error {
             ssl::SSL_ERROR_WANT_WRITE => self.bio_write(),
             ssl::SSL_ERROR_WANT_READ => self.bio_read(),
@@ -145,8 +143,7 @@ impl<S: TlsSocket> Tls<S> {
             }
             ssl::SSL_ERROR_SYSCALL => false,
             _ => {
-                // SAFETY: reads this thread's OpenSSL error queue.
-                let code = unsafe { ssl::ERR_get_error() };
+                let code = swoole_rs_tls::pop_error();
                 if code == 0 {
                     self.socket.set_err(SSL_BAD_PROTOCOL);
                 } else {
@@ -179,23 +176,25 @@ impl<S: TlsSocket> Tls<S> {
 
     /// `ssl_recv`: decrypted bytes into `buf`, or -1.
     pub(crate) fn recv(&self, buf: &mut [impl ReadSlot]) -> isize {
-        let (at, n) = (buf.as_mut_ptr().cast(), len(buf.len()));
-        // SAFETY: the live session, into `buf`'s first `n` bytes.
-        self.transfer(c"ssl_recv", || unsafe { ssl::SSL_read(self.ssl, at, n) })
+        let Some(ssl) = self.ssl else {
+            return -1;
+        };
+        self.transfer(c"ssl_recv", || ssl.read(buf))
     }
 
     /// `ssl_send`: bytes of `buf` encrypted and sent, or -1.
     pub(crate) fn send(&self, buf: &[u8]) -> isize {
-        let (at, n) = (buf.as_ptr().cast(), len(buf.len()));
-        // SAFETY: the live session, from `buf`'s first `n` bytes.
-        self.transfer(c"ssl_send", || unsafe { ssl::SSL_write(self.ssl, at, n) })
+        let Some(ssl) = self.ssl else {
+            return -1;
+        };
+        self.transfer(c"ssl_send", || ssl.write(buf))
     }
 
     /// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv`,
     /// and `want` its `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
     /// Without a TLS session it runs once.
     pub(crate) fn once(&self, mut io: impl FnMut() -> isize, want: impl FnMut() -> c_int) -> isize {
-        if self.ssl.is_null() {
+        if self.ssl.is_none() {
             return io();
         }
         once(
@@ -292,9 +291,9 @@ mod tests {
         Tls {
             uring: &HOST,
             socket: Recorder,
-            ssl: std::ptr::null_mut(),
-            rbio,
-            wbio,
+            ssl: None,
+            rbio: unsafe { Bio::new(rbio) },
+            wbio: unsafe { Bio::new(wbio) },
             fd,
             read_timeout: 1.0,
             write_timeout: 1.0,
@@ -454,7 +453,7 @@ mod tests {
             ssl::SSL_set_bio(session, rbio, wbio);
             ssl::SSL_set_connect_state(session);
             let tls = Tls {
-                ssl: session,
+                ssl: Ssl::new(session),
                 ..tls(stream.as_raw_fd(), rbio, wbio)
             };
             loop {
