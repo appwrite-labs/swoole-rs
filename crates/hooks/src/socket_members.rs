@@ -19,7 +19,7 @@ use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, tra
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, vector_all};
-use core::ffi::{CStr, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, strerror};
@@ -172,32 +172,6 @@ impl Drop for OpenFile {
             sys::close(self.0);
         }
     }
-}
-
-/// `Socket::get_read_buffer()`: the read buffer, made on first use.
-///
-/// # Safety
-/// `this` is a live native socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv")
-)]
-pub unsafe extern "C" fn get_read_buffer(this: *mut c_void) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    unsafe { Co::of(this) }.buffer(false).cast()
-}
-
-/// `Socket::get_write_buffer()`: the write buffer, made on first use.
-///
-/// # Safety
-/// `this` is a live native socket.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv")
-)]
-pub unsafe extern "C" fn get_write_buffer(this: *mut c_void) -> *mut c_void {
-    // SAFETY: as the caller promises.
-    unsafe { Co::of(this) }.buffer(true).cast()
 }
 
 impl Co {

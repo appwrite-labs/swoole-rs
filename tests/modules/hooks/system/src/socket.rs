@@ -213,10 +213,6 @@ unsafe extern "C" {
         port: c_int,
     ) -> bool;
 
-    #[link_name = "_ZN6swoole9coroutine6Socket15get_read_bufferEv"]
-    fn socket_get_read_buffer(this: *mut c_void) -> *mut CppString;
-    #[link_name = "_ZN6swoole9coroutine6Socket16get_write_bufferEv"]
-    fn socket_get_write_buffer(this: *mut c_void) -> *mut CppString;
     #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPcm"]
     fn network_peer_certificate(socket: *const NetHead, buf: *mut c_char, n: usize) -> c_int;
 
@@ -415,12 +411,11 @@ impl Sock {
 
     fn read_buffer(&self) -> &mut CppString {
         // SAFETY: the live socket's read buffer, which it keeps.
-        unsafe { &mut *socket_get_read_buffer(self.ptr) }
+        unsafe { &mut *self.co().buffer(false).cast() }
     }
 
     fn write_buffer(&self) -> *mut CppString {
-        // SAFETY: the live socket.
-        unsafe { socket_get_write_buffer(self.ptr) }
+        self.co().buffer(true).cast()
     }
 
     /// `pop_packet()`: the packet's buffer, which the caller now owns, or null.
