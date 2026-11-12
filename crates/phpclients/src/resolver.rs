@@ -6,20 +6,14 @@
 use crate::native::UNCONSTRUCTED;
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{
-    cell::UnsafeCell,
-    ffi::{c_int, c_void},
-    mem::{self, ManuallyDrop},
-    ptr,
-};
+use std::{cell::UnsafeCell, ffi::c_void, mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
     sys::{
-        IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_efree, swr_zend_emalloc,
-        swr_zend_runtime_instanceof, swr_zend_try_zval_dtor, swr_zend_zval_release,
-        zend_lookup_class, zend_object, zval,
+        IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_runtime_instanceof, swr_zend_zval_release,
+        zend_lookup_class, zend_object,
     },
 };
 
@@ -35,7 +29,7 @@ static CONTEXT: CustomClass<Held> = CustomClass::new();
 mod native {
     use std::ffi::{c_int, c_void};
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
-    use swoole_rs_zend::{Owned, Value, sys::zval};
+    use swoole_rs_zend::{Owned, Value};
 
     /// `*context = {}` with `with_port`: the old value is overwritten, not destroyed.
     pub(crate) fn swoole_name_resolver_context_reset(
@@ -88,28 +82,33 @@ mod native {
         context.is_final = is_final;
     }
 
-    /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`.
-    pub(super) fn swoole_name_resolver_php_add(resolver: *mut zval) {
+    /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`: the list keeps
+    /// `resolver` until a remove unlinks it.
+    pub(super) fn swoole_name_resolver_php_add(resolver: Owned) {
         swoole_rs_corebase::swr_v1_core_name_resolver_add(
             super::lookup_php,
-            resolver.cast(),
+            Box::into_raw(Box::new(resolver)).cast(),
             TYPE_PHP,
             true,
         );
     }
 
     /// Remove the first PHP resolver for `resolver`'s object (any, when `None`) and
-    /// return its kept zval, or null if there was none (or `resolver` is no object).
-    pub fn swoole_name_resolver_php_remove(resolver: Option<&Value>) -> *mut zval {
+    /// return the reference the list kept, or none if there was none (or
+    /// `resolver` is no object).
+    pub fn swoole_name_resolver_php_remove(resolver: Option<&Value>) -> Option<Owned> {
         let object = match resolver.map(Value::object) {
             None => None,
             Some(Some(object)) => Some(object),
-            Some(None) => return std::ptr::null_mut(),
+            Some(None) => return None,
         };
         let same = |kept: *mut c_void, kind| {
             kind == TYPE_PHP && object.is_none_or(|object| super::object_of(kept) == Some(object))
         };
-        swoole_rs_corebase::swr_v1_core_name_resolver_remove(same).cast()
+        let kept = swoole_rs_corebase::swr_v1_core_name_resolver_remove(same).cast::<Owned>();
+        // SAFETY: a `TYPE_PHP` resolver's data is the box `swoole_name_resolver_php_add`
+        // made, which the list no longer holds.
+        (!kept.is_null()).then(|| *unsafe { Box::from_raw(kept) })
     }
 }
 
@@ -231,47 +230,28 @@ pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
         );
         return false;
     }
-    // SAFETY: Zend's request allocator (`sw_zval_dup`); the list owns the copy.
-    let copy = unsafe { swr_zend_emalloc(mem::size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: fresh storage for one zval, which takes a reference of its own.
-    unsafe { copy.write(resolver.copy().into_zval()) };
-    // The list keeps the copy until remove or RSHUTDOWN.
-    native::swoole_name_resolver_php_add(copy);
+    // `sw_zval_dup`: the list keeps a reference of its own until remove or RSHUTDOWN.
+    native::swoole_name_resolver_php_add(resolver.copy());
     true
 }
 
 /// The object of a PHP resolver's kept zval; `sw_php_spl_object_hash` equality is
 /// the same object.
 fn object_of(kept: *mut c_void) -> Option<*mut zend_object> {
-    // SAFETY: every `TYPE_PHP` resolver's data is the live zval copy `add` made.
+    // SAFETY: every `TYPE_PHP` resolver's data is the live `Owned` `add` boxed.
     unsafe { Value::from_ptr(kept.cast()) }.and_then(Value::object)
 }
 
 /// `swoole_name_resolver_remove(Swoole\NameResolver $ns): bool`.
 fn remove(call: &Call) {
-    let Ok(resolver) = call.arity(1, 1).and_then(|()| call.object(1)) else {
+    if call.arity(1, 1).and_then(|()| call.object(1)).is_err() {
         call.set_bool(false);
         return;
-    };
+    }
+    // Dropping the reference `add` took runs no destructor: the argument holds another.
     let kept =
         native::swoole_name_resolver_php_remove(call.value(1).map(Value::dereferenced).as_deref());
-    if !kept.is_null() {
-        // Drop the reference `add` took, through the argument as upstream does.
-        // SAFETY: the argument holds another reference, so no destructor runs.
-        bailout::defer(trapped(unsafe { swr_zend_try_zval_dtor(resolver) }));
-        // SAFETY: the copy `add` allocated.
-        unsafe { swr_zend_efree(kept.cast()) };
-    }
-    call.set_bool(!kept.is_null());
-}
-
-/// A shim's bailout flag.
-fn trapped(flag: c_int) -> Result<(), bailout::Bailout> {
-    if flag == 0 {
-        Ok(())
-    } else {
-        Err(bailout::Bailout)
-    }
+    call.set_bool(kept.is_some());
 }
 
 /// `method(arg)` on the object `object` holds: the result (`IS_UNDEF` if it
@@ -300,7 +280,7 @@ fn call_method(
 }
 
 /// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver` (the
-/// kept zval, registered only by [`php_swoole_name_resolver_add`]) for `name`, keeping
+/// kept `Owned`, registered only by [`php_swoole_name_resolver_add`]) for `name`, keeping
 /// a returned cluster in the context and popping a node from it. Writes the result to
 /// `out` and returns whether it is non-empty, then raises a bailout the PHP code caused.
 fn lookup_php(
@@ -309,7 +289,7 @@ fn lookup_php(
     context: &mut NameResolverContext,
     out: &mut Vec<u8>,
 ) -> bool {
-    // SAFETY: the zval copy `add` registered with this function, which the list holds
+    // SAFETY: the `Owned` `add` registered with this function, which the list holds
     // until a remove unlinks it.
     let resolver = unsafe { Value::from_ptr(resolver.cast()) };
     let result = resolver.map_or(Ok(None), |resolver| resolve(resolver, name, context));
@@ -393,15 +373,4 @@ swoole_rs_zend::handlers! {
     zif_swoole_name_resolver_lookup => lookup;
     zif_swoole_name_resolver_add => add;
     zif_swoole_name_resolver_remove => remove;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shim_flags_are_bailouts() {
-        assert!(trapped(0).is_ok(), "0: the call returned");
-        assert!(trapped(1).is_err(), "1: it bailed out");
-    }
 }

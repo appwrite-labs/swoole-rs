@@ -23,9 +23,8 @@ use swoole_rs_http2::{
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
-    Array, HeldArray, Owned, Props, Value as Zval, ZString, bailout, string,
-    sys::{add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_url_decode, zend_object, zval},
-    value,
+    Array, HeldArray, Owned, Value as Zval, ZString, bailout, string,
+    sys::{add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_url_decode, zval},
 };
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
@@ -102,7 +101,7 @@ const SW_ERR: c_int = -1;
 use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
 
-pub(crate) use swoole_rs_phphttp::http2::{Ctx, Value};
+pub(crate) use swoole_rs_phphttp::http2::{Ctx, ResponseArray, Value};
 
 pub(crate) fn get(ctx: Ctx, field: Field) -> u32 {
     ctx.get(field)
@@ -349,15 +348,8 @@ impl Drop for Headers {
 /// `trailer` properties, and [`length_safe`] and [`entries`] take only a
 /// [`HeldArray`]: a value's `__toString` may replace or unset the property while
 /// the array is walked, and the hold keeps the walked table live.
-fn property(ctx: Ctx, name: &CStr) -> Option<HeldArray> {
-    let response = object(zval_of(ctx, Value::Response));
-    // SAFETY: the live Response object, which declares `name`, for the context.
-    unsafe { swoole_rs_zend::property(response, name) }.hold()
-}
-
-fn object(value: *mut zval) -> *mut zend_object {
-    // SAFETY: an object zval.
-    unsafe { value::obj_of(value) }
+fn property(ctx: Ctx, which: ResponseArray) -> Option<HeldArray> {
+    ctx.response_array(which)
 }
 
 /// `php_swoole_array_length_safe`.
@@ -414,7 +406,7 @@ fn has_crlf(value: &[u8]) -> bool {
 /// `http2_server_build_trailer`, as an unsealed frame (an empty block
 /// without a trailer): `None` on an error.
 fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
-    let trailer = property(ctx, c"trailer");
+    let trailer = property(ctx, ResponseArray::Trailer);
     let size = length_safe(trailer.as_ref());
     let mut headers = Headers::new(size);
     if size == 0 {
@@ -441,8 +433,8 @@ struct Body {
 
 /// `http2_server_build_header`.
 fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Headers> {
-    let zheader = property(ctx, c"header");
-    let zcookie = property(ctx, c"cookie");
+    let zheader = property(ctx, ResponseArray::Header);
+    let zcookie = property(ctx, ResponseArray::Cookie);
     let mut headers =
         Headers::new(32 + length_safe(zheader.as_ref()) + length_safe(zcookie.as_ref()));
     #[expect(
@@ -721,7 +713,7 @@ fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
 
 /// Whether the response has a trailer.
 fn has_trailer(ctx: Ctx) -> bool {
-    length_safe(property(ctx, c"trailer").as_ref()) > 0
+    length_safe(property(ctx, ResponseArray::Trailer).as_ref()) > 0
 }
 
 /// `http2_server_respond`: the header, the body and the trailer, then the
@@ -852,13 +844,12 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     };
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
-    let response = zval_of(ctx, Value::Response);
-    let object = object(response);
-    // SAFETY: the live Response object, under its own class.
-    let props = unsafe { Props::new(ptr::null_mut(), object) }.own();
-    // SAFETY: `header` is only read here.
-    let zheader = unsafe { props.array(c"header") }.and_then(|header| header.array());
-    if zheader.is_none_or(|zheader| zheader.find(b"content-type").is_none()) {
+    let zheader = property(ctx, ResponseArray::Header);
+    let typed = zheader
+        .as_ref()
+        .and_then(|zheader| zheader.array())
+        .is_some_and(|zheader| zheader.find(b"content-type").is_some());
+    if !typed {
         ctx.set_header(b"content-type", content_type);
     }
     let body = Body {
@@ -1143,12 +1134,9 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
         return SW_ERR;
     }
     let ctx = stream.ctx;
-    // SAFETY: a live context.
-    let body = unsafe { ctx.data() };
-    if !body.is_empty() {
+    if ctx.has_body() {
         if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
-            // SAFETY: the live `post` array.
-            ctx.treat_query(Value::Post, body);
+            ctx.treat_post();
         } else if get(ctx, Field::Multipart) != 0
             // SAFETY: a live context with a multipart parser.
             && !ctx.multipart()
@@ -1162,9 +1150,8 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
 
 /// The request header `key` as a string, if it has one.
 fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
-    // SAFETY: the context's live header array.
-    let headers = unsafe { Zval::from_ptr(zval_of(ctx, Value::Header)) }?;
-    string_of(headers.array()?.find(key)?)
+    let entry = ctx.entry(Value::Header, key)?;
+    string_of(&entry)
 }
 
 fn read_u32(at: *const u8) -> u32 {
@@ -1414,33 +1401,10 @@ fn path(ctx: Ctx, zserver: *mut zval, value: &[u8]) {
 
 /// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
 fn strtol(value: &[u8]) -> (i64, bool) {
-    let text = value.split(|&byte| byte == 0).next().unwrap_or_default();
-    let mut at = text
-        .iter()
-        .take_while(|&&byte| matches!(byte, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
-        .count();
-    let negative = matches!(text.get(at), Some(b'-'));
-    if matches!(text.get(at), Some(b'-' | b'+')) {
-        at += 1;
+    match swoole_rs_corebase::strtol(value) {
+        (_, 0) => (0, value.is_empty()),
+        (parsed, end) => (parsed, end == value.len()),
     }
-    let unsigned = text.get(at..).unwrap_or_default();
-    let digits = unsigned
-        .iter()
-        .take_while(|byte| byte.is_ascii_digit())
-        .count();
-    if digits == 0 {
-        return (0, value.is_empty());
-    }
-    let mut parsed: i64 = 0;
-    for &digit in unsigned.iter().take(digits) {
-        let digit = i64::from(digit - b'0');
-        parsed = if negative {
-            parsed.saturating_mul(10).saturating_sub(digit)
-        } else {
-            parsed.saturating_mul(10).saturating_add(digit)
-        };
-    }
-    (parsed, at + digits == value.len())
 }
 
 /// `http2_server_send_status_code`: a header-only response.

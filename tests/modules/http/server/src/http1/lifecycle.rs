@@ -8,8 +8,7 @@ use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{
-    Client, Handle, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, swr_v1_clients_listen,
-    swr_v1_clients_new,
+    Client, Handle, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, listen, swr_v1_clients_new,
 };
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -1698,12 +1697,7 @@ fn client_run(op: Op<'_>) -> i64 {
 }
 
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
-unsafe extern "C" fn clean_client_event(
-    _: *mut c_void,
-    event: c_int,
-    _: *const c_char,
-    error: usize,
-) {
+fn clean_client_event(event: c_int, _: *const c_char, error: usize) {
     match event {
         ON_CONNECT => {
             client_run(Op::Send {
@@ -1723,9 +1717,9 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     let events = [ON_CONNECT, ON_ERROR, ON_CLOSE, ON_RECEIVE]
         .iter()
         .fold(0, |events, kind| events | 1 << kind);
-    // SAFETY: the live client; its callbacks take no object.
+    // SAFETY: the live client.
     let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
-    swr_v1_clients_listen(client, ptr::null_mut(), events, clean_client_event);
+    listen(client, events, std::rc::Rc::new(clean_client_event));
     let host = CString::new(TEST_HOST).unwrap();
     let connected = client_run(Op::Connect {
         host: &host,

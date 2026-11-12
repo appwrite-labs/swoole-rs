@@ -355,6 +355,41 @@ pub fn if_nametoindex(name: &CStr) -> libc::c_uint {
     unsafe { libc::if_nametoindex(name.as_ptr()) }
 }
 
+/// An `ioctl(2)` request on a socket that reads and writes one `ifreq`, and no
+/// memory it points to.
+#[derive(Clone, Copy)]
+pub enum InterfaceRequest {
+    /// `SIOCGIFADDR`: the interface's address.
+    Address,
+    /// `SIOCGIFFLAGS`: its `IFF_*` flags.
+    #[cfg(target_os = "linux")]
+    Flags,
+    /// `SIOCGIFHWADDR`: its hardware address.
+    #[cfg(target_os = "linux")]
+    HardwareAddress,
+    /// `SIOCGIFNAME`: the name of the interface `ifru_ifindex` numbers.
+    #[cfg(target_os = "linux")]
+    Name,
+}
+
+/// `ioctl(fd, request, value)`: -1 with errno set on failure.
+pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::ifreq) -> c_int {
+    // The request numbers as `ioctl` takes them (an int on musl).
+    #[cfg(target_os = "linux")]
+    let request: libc::Ioctl = match request {
+        InterfaceRequest::Address => 0x8915,
+        InterfaceRequest::Flags => 0x8913,
+        InterfaceRequest::HardwareAddress => 0x8927,
+        InterfaceRequest::Name => 0x8910,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let request = match request {
+        InterfaceRequest::Address => libc::SIOCGIFADDR,
+    };
+    // SAFETY: each request reads and writes only the one live ifreq.
+    unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }
+}
+
 /// The host's interface addresses (`getifaddrs(3)`), freed on drop.
 pub struct Interfaces(*mut libc::ifaddrs);
 
@@ -480,6 +515,14 @@ pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
     unsafe { libc::setitimer(which as _, value, std::ptr::null_mut()) }
 }
 
+/// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.
+#[must_use]
+pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
+    let mut tm = zeroed::<libc::tm>();
+    // SAFETY: `time` and `tm` are live locals; localtime_r writes only `tm`.
+    (!unsafe { libc::localtime_r(&raw const time, &raw mut tm) }.is_null()).then_some(tm)
+}
+
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
 pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
     // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
@@ -554,7 +597,8 @@ mod tests {
         for fd in [reader, writer, copy] {
             assert_eq!(close(fd), 0);
         }
-        assert_eq!(close(copy), -1);
+        // Not `copy` again: a test on another thread may already hold that number.
+        assert_eq!(close(-1), -1);
         assert_eq!(errno(), libc::EBADF);
     }
 

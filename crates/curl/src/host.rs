@@ -54,8 +54,7 @@ pub(crate) fn install_handlers() {
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        // SAFETY: `on_event` needs only the live event of a cURL socket.
-        unsafe { event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler)) };
+        event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler));
     }
 }
 
@@ -128,23 +127,16 @@ pub(crate) fn timer_available() -> bool {
     swoole_rs_timer::swoole_timer_is_available()
 }
 
-/// The multi's timer fired.
-///
-/// # Safety
-/// `multi` is the live `Multi` that armed the timer.
-unsafe extern "C-unwind" fn on_timer(multi: *mut c_void) {
-    // SAFETY: per the caller; the multi deletes its timer before it is freed.
-    let multi = unsafe { &*multi.cast::<Multi>() };
-    multi.timer.set(std::ptr::null_mut());
-    multi.callback(None);
-}
-
 /// A one-shot timer of `ms` that reaches `multi`, which deletes it, unless it
 /// fired, before it is freed.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
-    let multi = ptr::from_ref(multi).cast_mut().cast();
-    // SAFETY: `on_timer` takes the multi, which deletes the timer before it goes.
-    unsafe { swoole_rs_timer::swr_v1_timer_add_plain(ms, false, on_timer, multi) }
+    let multi = ptr::from_ref(multi);
+    swoole_rs_timer::add_fn(ms, false, move || {
+        // SAFETY: the multi deletes its timer before it is freed.
+        let multi = unsafe { &*multi };
+        multi.timer.set(std::ptr::null_mut());
+        multi.callback(None);
+    })
 }
 
 /// # Safety
@@ -172,8 +164,8 @@ pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
 /// # Safety
 /// `co` is a live, suspended coroutine.
 pub(crate) unsafe fn resume(co: *mut c_void) {
-    // SAFETY: per the caller; a facade starts with its Rust state.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_resume(scheduler(), co.cast()) };
+    // SAFETY: per the caller.
+    unsafe { swoole_rs_coroutine::resume(co) };
 }
 
 unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {

@@ -164,7 +164,10 @@ pub(super) unsafe extern "C-unwind" fn swoole_event_write(
     }
 }
 /// crates/tls's `Reactor::_writable_callback`.
-pub(super) unsafe fn writable_callback(_: *mut c_void, _: *mut swoole_rs_reactor::Event) -> c_int {
+pub(super) fn writable_callback(
+    _: swoole_rs_reactor::Running<'_>,
+    _: &mut swoole_rs_reactor::Event,
+) -> c_int {
     log("writable");
     OK
 }
@@ -185,19 +188,14 @@ fn io(name: &str, length: usize) -> isize {
     log(format!("{name} {length}"));
     mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
 }
-extern "C" fn listener(_: *mut c_void, event: c_int, _: *const c_char, length: usize) {
+fn listener(event: c_int, _: *const c_char, length: usize) {
     log(format!("call {event} {length}"));
     if mock(|m| m.releases) == Some(event) {
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `swr_v1_timer_add_plain_sec`: logs, adds nothing.
-pub(super) unsafe fn swr_v1_timer_add_plain_sec(
-    timeout: f64,
-    _: bool,
-    _: unsafe extern "C-unwind" fn(*mut c_void),
-    _: *mut c_void,
-) -> *mut c_void {
+/// crates/timer's `add_fn_sec`: logs, adds nothing.
+pub(super) fn add_fn_sec(timeout: f64, _: bool, _: impl Fn() + Copy + 'static) -> *mut c_void {
     log(format!("timer {timeout}"));
     core::ptr::without_provenance_mut(1)
 }
@@ -299,12 +297,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     let client = new_client(kind, is_async);
     if callbacks {
         // SAFETY: a live state.
-        swr_v1_clients_listen(
-            unsafe { &*client },
-            core::ptr::null_mut(),
-            0b111_1110,
-            listener,
-        );
+        listen(unsafe { &*client }, 0b111_1110, std::rc::Rc::new(listener));
     }
     taken();
     client
@@ -354,7 +347,7 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
         _: *mut c_void,
         packet: &mut PacketLength,
     ) -> isize {
-        2 * isize::try_from(packet.buf_size).unwrap()
+        2 * isize::try_from(packet.bytes().len()).unwrap()
     }
     let client = client(1, true, false);
     Handle(client).fields().protocol.get_package_length = Some(twice);
@@ -575,7 +568,7 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     Handle(client).set(ACTIVE, true);
     set_proxy(client, true);
     assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
-    unsafe { on_timeout(client.cast()) };
+    on_timeout(Handle(client));
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(
         taken(),

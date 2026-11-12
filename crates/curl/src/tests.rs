@@ -243,7 +243,7 @@ fn perform_registers_the_transfer_socket_and_removal_frees_it() {
 fn a_waiterless_socket_event_leaves_the_reactor() {
     let transfer = transfer();
     let multi = transfer.multi;
-    let socket = *multi.sockets.borrow().values().next().unwrap();
+    let socket = Rc::as_ptr(multi.sockets.borrow().values().next().unwrap()).cast_mut();
     unsafe { socket_event(socket.cast(), CURL_CSELECT_IN) };
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();

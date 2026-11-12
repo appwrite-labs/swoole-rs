@@ -4,7 +4,7 @@
 //! no lookup goes through a thread-local. Lists run newest first, the order
 //! upstream's map iterates in while its buckets keep one coroutine each.
 use crate::coroutine::{Co, STATE_END, STATE_INIT, STATE_RUNNING, STATE_WAITING, Scheduler};
-use core::ffi::{c_char, c_long, c_void};
+use core::ffi::{c_long, c_void};
 use core::ptr;
 
 /// The registry behind [`Scheduler::live`], allocated with the first coroutine:
@@ -142,13 +142,11 @@ impl Scheduler {
         native(co)
     }
 
-    /// `Coroutine::print_list`: one `Coroutine\t<cid>\t<state>` line per live
-    /// coroutine on `out` (Swoole's stdout stream); aborts on a state outside the
-    /// four.
-    ///
-    /// # Safety
-    /// `out` is an open stream.
-    pub unsafe fn print_list(&self, out: *mut libc::FILE) {
+    /// `Coroutine::print_list`'s text: one `Coroutine\t<cid>\t<state>` line per
+    /// live coroutine; aborts on a state outside the four.
+    #[must_use]
+    pub fn list_text(&self) -> String {
+        let mut text = String::new();
         let mut before = c_long::MAX;
         while let Some((cid, co)) = self.older(before) {
             before = cid;
@@ -156,10 +154,13 @@ impl Scheduler {
             let Some(label) = state_label(state) else {
                 std::process::abort();
             };
-            let format: *const c_char = c"Coroutine\t%ld\t%s\n".as_ptr();
-            // SAFETY: `out` is open; the format takes a long and a C string, which follow it.
-            unsafe { libc::fprintf(out, format, cid, label.as_ptr()) };
+            text.push_str("Coroutine\t");
+            text.push_str(&cid.to_string());
+            text.push('\t');
+            text.push_str(&label.to_string_lossy());
+            text.push('\n');
         }
+        text
     }
 }
 
@@ -223,28 +224,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no C stdio")]
     fn print_list_writes_one_line_each_newest_first() {
         let mut s = scheduler();
         let mut a = coroutine(0, STATE_WAITING);
         let mut b = coroutine(0, STATE_RUNNING);
         s.insert(7, co(&mut a));
         s.insert(9, co(&mut b));
-        let mut text = [0u8; 64];
-        // SAFETY: a fresh temporary stream, read back and closed here.
-        let n = unsafe {
-            let out = libc::tmpfile();
-            s.print_list(out);
-            libc::rewind(out);
-            let n = libc::fread(text.as_mut_ptr().cast(), 1, text.len(), out);
-            libc::fclose(out);
-            n
-        };
+        let text = s.list_text();
         s.remove(7);
         s.remove(9);
         s.release_live();
         assert_eq!(
-            &text[..n],
+            text.as_bytes(),
             b"Coroutine\t9\t[RUNNING]\nCoroutine\t7\t[WAITING]\n"
         );
     }

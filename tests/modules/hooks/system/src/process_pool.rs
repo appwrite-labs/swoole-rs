@@ -247,8 +247,7 @@ unsafe extern "C" {
     #[link_name = "_Z18swoole_timer_clearl"]
     fn swoole_timer_clear(timer_id: c_long) -> bool;
 
-    // The raw-bytes dispatch_sync overload and the stream listener (crates/process).
-    fn swr_v1_process_pool_ipc_send_sync(ipc: *const c_void, data: *const u8, len: u32) -> bool;
+    // The stream listener (crates/process).
     fn swr_v1_process_pool_ipc_listener(ipc: *const c_void) -> *mut c_void;
     fn swr_v1_os_msg_queue_push(queue: *const c_void, node: *const c_void, length: usize) -> bool;
     #[link_name = "_Z22swoole_set_worker_typei"]
@@ -286,11 +285,6 @@ unsafe extern "C" {
     fn msgget(key: c_int, flags: c_int) -> c_int;
     fn shutdown(fd: c_int, how: c_int) -> c_int;
     fn __libc_current_sigrtmin() -> c_int;
-}
-
-unsafe extern "C-unwind" {
-    #[link_name = "_Z20swoole_random_stringPcm"]
-    fn swoole_random_string(buf: *mut c_char, size: usize);
 }
 
 // The `ProcessPool` and `Worker` methods: crates/process's Rust functions over the mirrors,
@@ -808,10 +802,9 @@ fn tcp_raw() {
         // SAFETY: a thread of this process; the pool's IPC and `data` outlive the join.
         unsafe {
             swoole_thread_init(false);
-            let dispatch_result = if swr_v1_process_pool_ipc_send_sync(
-                ipc as *const c_void,
-                bytes as *const u8,
-                length,
+            let dispatch_result = if swoole_rs_process::pool::swr_v1_process_pool_ipc_send_sync(
+                (ipc as *const swoole_rs_process::pool::PoolIpc).as_ref(),
+                std::slice::from_raw_parts(bytes as *const u8, length as usize),
             ) {
                 SW_OK
             } else {
@@ -939,8 +932,8 @@ extern "C" fn shutdown_on_task(pool: *mut Pool, _: *mut Worker, _: *mut EventDat
 extern "C" fn dispatch_random_128(pool: *mut Pool) {
     let mut msg = EventData::new();
     msg.info.len = 128;
-    // SAFETY: 128 writable bytes.
-    unsafe { swoole_random_string(msg.data.as_mut_ptr().cast(), 128) };
+    // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
+    swoole_rs_corebase::swoole_random_string(&mut msg.data[..=128]);
     dispatch_sync(pool, &mut msg);
 }
 
@@ -1147,8 +1140,8 @@ fn async_() {
 
     let mut msg = EventData::new();
     msg.info.len = 128;
-    // SAFETY: 128 writable bytes.
-    unsafe { swoole_random_string(msg.data.as_mut_ptr().cast(), 128) };
+    // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
+    swoole_rs_corebase::swoole_random_string(&mut msg.data[..=128]);
     dispatch_sync(pool, &mut msg);
 
     assert_eq!(wait(pool), SW_OK);

@@ -46,10 +46,6 @@ zend_execute_data *swr_zend_push_nested_call(zend_function *fn, uint32_t num_arg
     return zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, fn, num_args, object);
 }
 
-zval *swr_zend_uninitialized_zval(void) {
-    return &EG(uninitialized_zval);
-}
-
 void swr_zend_treat_string(char *text, zval *array) {
     sapi_module.treat_data(PARSE_STRING, text, array);
 }

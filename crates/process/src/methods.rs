@@ -15,9 +15,9 @@ use crate::process_pool::{
     PoolNative, PoolRecord, PoolRef, RAISE, RUN_CREATE_MESSAGE_BOX, RUN_CREATE_MESSAGE_BUS,
     RUN_DESTROY, RUN_DETACH, RUN_DROP_RELOAD_TASK, RUN_KILL_ALL, RUN_PUSH_MESSAGE, RUN_RELOAD,
     RUN_REOPEN_LOGGER, RUN_SET_MAX_REQUEST, RUN_SET_PROTOCOL, RUN_SET_START_ID, RUN_SET_TYPE,
-    RUN_SHUTDOWN, RUN_SIGNAL, RUN_SPAWN, RUN_START, RUN_START_CHECK, RUN_STOP, RUN_WAIT,
-    pool_run_op, swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event,
-    swr_v1_process_pool_push, swr_v1_worker_symbol,
+    RUN_SHUTDOWN, RUN_SIGNAL, RUN_SPAWN, RUN_START, RUN_START_CHECK, RUN_STOP, RUN_WAIT, run_op,
+    swr_v1_process_pool_create, swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push,
+    swr_v1_worker_symbol,
 };
 use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
 use crate::worker_globals::{
@@ -94,14 +94,11 @@ impl Narrow for c_int {
     }
 }
 
-/// One `RUN_*` operation; a callback's bailout is raised once the export's
-/// frames are gone. This frame holds nothing, so the `longjmp` may cross it.
-///
-/// # Safety
-/// `worker` is null or one of the pool's workers.
-unsafe fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: *mut WorkerRecord, op: u32, arg: u64) -> R {
-    // SAFETY: the caller's worker; the side is native's.
-    let result = unsafe { pool_run_op(native(), pool, worker, op, arg) };
+/// One `RUN_*` operation on `worker`, one of the pool's, or none; a callback's
+/// bailout is raised once the export's frames are gone. This frame holds nothing,
+/// so the `longjmp` may cross it.
+fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: Option<Worker<'_>>, op: u32, arg: u64) -> R {
+    let result = run_op(native(), pool, worker, op, arg);
     if result == RAISE {
         raise_bailout();
     }
@@ -110,8 +107,7 @@ unsafe fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: *mut WorkerRecord, op: u3
 
 /// [`run_on`] the pool itself.
 fn run<R: Narrow>(pool: PoolRef<'_>, op: u32, arg: u64) -> R {
-    // SAFETY: no worker.
-    unsafe { run_on(pool, ptr::null_mut(), op, arg) }
+    run_on(pool, None, op, arg)
 }
 
 /// Each `ProcessPool` method that is one `RUN_*` operation on the pool alone: its
@@ -144,41 +140,36 @@ run_methods! {
     fn destroy() -> () = RUN_DESTROY(0);
 }
 
-/// `ProcessPool::push_message(event)`: the `EventData` at `event`.
-///
-/// # Safety
-/// `event` is an `EventData`.
+/// `ProcessPool::push_message(event)`: the `EventData` `event` heads.
 #[must_use]
-pub unsafe fn push_event(pool: PoolRef<'_>, event: *const c_void) -> c_int {
-    // SAFETY: no worker; the caller's event.
-    unsafe { run_on(pool, ptr::null_mut(), RUN_PUSH_MESSAGE, event.addr() as u64) }
+pub fn push_event(pool: PoolRef<'_>, event: Packed<'_>) -> c_int {
+    run(
+        pool,
+        RUN_PUSH_MESSAGE,
+        event.as_ptr().expose_provenance() as u64,
+    )
 }
 
-/// `ProcessPool::stop(worker)`.
-///
-/// # Safety
-/// `worker` is one of the pool's workers.
-pub unsafe fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
-    // SAFETY: as the caller guarantees.
-    unsafe { run_on(pool, worker, RUN_STOP, 0) }
+/// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
+pub fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+    if let Some(worker) = pool.worker_of(worker) {
+        run_on::<()>(pool, Some(worker), RUN_STOP, 0);
+    }
 }
 
-/// `ProcessPool::signal(signo, worker)`.
-///
-/// # Safety
-/// `worker` is null or one of the pool's workers.
-pub unsafe fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
-    // SAFETY: as the caller guarantees.
-    unsafe { run_on(pool, worker, RUN_SIGNAL, i64::from(signo).cast_unsigned()) }
+/// `ProcessPool::signal(signo, worker)`, in `worker` or (null, or none of the
+/// pool's) the master.
+pub fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
+    let worker = pool.worker_of(worker);
+    run_on::<()>(pool, worker, RUN_SIGNAL, i64::from(signo).cast_unsigned());
 }
 
-/// `ProcessPool::spawn(worker)`.
-///
-/// # Safety
-/// `worker` is one of the pool's workers.
-pub unsafe fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
-    // SAFETY: as the caller guarantees.
-    unsafe { run_on(pool, worker, RUN_SPAWN, 0) }
+/// `ProcessPool::spawn(worker)`; -1 when `worker` is none of the pool's.
+pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
+    let Some(worker) = pool.worker_of(worker) else {
+        return -1;
+    };
+    run_on(pool, Some(worker), RUN_SPAWN, 0)
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.

@@ -1,8 +1,7 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use crate::{
     bailout,
-    sys::{self, zend_class_entry, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
-    type_of,
+    sys::{self, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
 };
 use std::{
     ffi::{c_char, c_int, c_long, c_void},
@@ -34,76 +33,6 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -
     // SAFETY: the destination has space for one initialized slot.
     unsafe { dest.write(value) };
     dest
-}
-
-unsafe fn read(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: *const c_char,
-    length: usize,
-    silent: bool,
-    rv: *mut zval,
-) -> *mut zval {
-    let mut result = ptr::null_mut();
-    // SAFETY: live scope/object/name and writable result/temporary slots.
-    bailed(unsafe {
-        sys::swr_zend_try_facade_read(scope, object, name, length, silent, rv, &raw mut result)
-    });
-    result
-}
-
-/// `sw_zend_read_and_convert_property_array(scope, object, name, length, 0)`:
-/// the object's property, made an array first when it is not one.
-/// # Errors
-/// PHP bailed out; nothing is resumed while a Rust caller owns its state.
-/// # Safety
-/// A live internal scope and object with a declared property; the returned
-/// storage belongs to the object.
-pub unsafe fn array_property_of(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &core::ffi::CStr,
-) -> Result<*mut zval, bailout::Bailout> {
-    let (name, length) = (name.as_ptr(), name.count_bytes());
-    let mut temporary = crate::UNDEF;
-    // SAFETY: per the caller; the result is the object's own slot.
-    let mut property = unsafe { read(scope, object, name, length, false, &raw mut temporary) };
-    // SAFETY: a successful property read returns a live zval.
-    if !bailout::pending() && unsafe { type_of(property) } != sys::IS_ARRAY {
-        // SAFETY: Zend's distinguished uninitialized-value address is process/thread global.
-        if property == unsafe { sys::swr_zend_uninitialized_zval() } {
-            // Construct and publish the missing array property; null once a
-            // bailout is pending.
-            property = ptr::null_mut();
-            let mut value = crate::UNDEF;
-            // SAFETY: construct a request array in an initialized writable slot.
-            unsafe { sys::swr_zend_array_init(&raw mut value) };
-            // SAFETY: update_property can execute PHP, which the C shim traps.
-            bailed(unsafe {
-                sys::swr_zend_try_facade_update(scope, object, name, length, &raw mut value)
-            });
-            if !bailout::pending() {
-                // SAFETY: release the temporary after the object has taken its reference.
-                unsafe { destroy(&raw mut value) };
-            }
-            if !bailout::pending() {
-                // SAFETY: the object owns this declared property; its result is not the local rv.
-                property = unsafe { read(scope, object, name, length, true, &raw mut value) };
-            }
-        } else {
-            // SAFETY: replace the existing value in the object's property slot.
-            unsafe { destroy(property) };
-            if !bailout::pending() {
-                // SAFETY: the old payload has been released and the slot remains writable.
-                unsafe { sys::swr_zend_array_init(property) };
-            }
-        }
-    }
-    if bailout::relay_to_c(Ok(())) {
-        Err(bailout::Bailout)
-    } else {
-        Ok(property)
-    }
 }
 
 /// # Safety
@@ -376,22 +305,23 @@ pub unsafe fn named_call_into(
 }
 
 /// `zend::function::call(name, args)`, its result discarded as upstream's
-/// temporary `Variable` is.
+/// temporary `Variable` is. Each argument goes with a reference of its own
+/// ([`crate::Value::copy`]), so PHP code the call runs can't free one under it.
 /// # Errors
 /// PHP bailed out; nothing is resumed while a Rust caller owns its state.
-/// # Safety
-/// `args` are live zvals.
-pub unsafe fn named_call(name: &[u8], args: &mut [zval]) -> Result<(), bailout::Bailout> {
+pub fn named_call(name: &[u8], args: &[&crate::Value]) -> Result<(), bailout::Bailout> {
+    let mut args: Vec<crate::Owned> = args.iter().map(|arg| arg.copy()).collect();
     #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
     let argc = args.len() as u32;
     let mut retval = crate::UNDEF;
-    // SAFETY: the name's bytes, live arguments and a writable result.
+    // SAFETY: the name's bytes, `argc` live arguments (`Owned` is a
+    // transparent zval) and a writable result.
     unsafe {
         named_call_into(
             name.as_ptr().cast(),
             name.len(),
             argc,
-            args.as_mut_ptr(),
+            args.as_mut_ptr().cast::<zval>(),
             &raw mut retval,
         );
     };

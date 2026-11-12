@@ -552,7 +552,7 @@ pub(crate) fn answer(
             }
             let mut result = u64::from(retval.cast_unsigned());
             let conn = ctx.connection()?;
-            if conn.active != 0 {
+            if conn.is_active() {
                 let max = config().max_queued_bytes;
                 let flag = |set: bool, bit: u64| if set { bit } else { 0 };
                 result |= crate::conn_io::ACTIVE

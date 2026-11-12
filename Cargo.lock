@@ -1047,6 +1047,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-http2",
+ "swoole-rs-locale",
  "swoole-rs-oracle",
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",

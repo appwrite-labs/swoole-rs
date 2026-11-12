@@ -277,21 +277,6 @@ fn finish(conn: Conn, sent: c_int) -> *mut PGresult {
     get_result(conn)
 }
 
-/// `strtol(value, NULL, 10)`, saturating.
-fn strtol(value: &[u8]) -> i64 {
-    let text = value.trim_ascii_start();
-    let (negative, digits) = match text.split_first() {
-        Some((b'-', rest)) => (true, rest),
-        Some((b'+', rest)) => (false, rest),
-        _ => (false, text),
-    };
-    let mut n: i64 = 0;
-    for &digit in digits.iter().take_while(|b| b.is_ascii_digit()) {
-        n = n.saturating_mul(10).saturating_add(i64::from(digit - b'0'));
-    }
-    if negative { -n } else { n }
-}
-
 /// The connect deadline from a connection's options: `connect_timeout` in
 /// seconds (0 for none) and the number of targets that share it. libpq
 /// before 17 treats a timeout of 1 as 2.
@@ -307,7 +292,7 @@ fn connect_budget<'a>(
             continue;
         }
         match keyword {
-            b"connect_timeout" => timeout = strtol(value),
+            b"connect_timeout" => timeout = swoole_rs_corebase::strtol(value).0,
             b"host" => hosts = count(value),
             b"hostaddr" => addresses = count(value),
             _ => {}
@@ -553,14 +538,6 @@ mod tests {
             ),
             (0, 1)
         );
-    }
-
-    #[test]
-    fn strtol_reads_the_leading_number() {
-        assert_eq!(strtol(b" 12s"), 12);
-        assert_eq!(strtol(b"+7"), 7);
-        assert_eq!(strtol(b"-3"), -3);
-        assert_eq!(strtol(b"x"), 0);
     }
 
     #[test]

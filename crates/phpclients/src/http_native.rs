@@ -2,10 +2,10 @@
 //! the typed [`Co`] handle: its proxy, buffers and timeouts), files and
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
-use crate::native::{Co, Socket};
+use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
-use swoole_rs_buffer::string::{CppString, delete_string};
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
@@ -79,37 +79,31 @@ pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, 
 
 /// The write buffer a closed socket left (`tmp_write_buffer`): a `new String`
 /// this owns alone, or none.
-pub(crate) struct Written(*mut CppString);
-
-impl Default for Written {
-    fn default() -> Self {
-        Self(std::ptr::null_mut())
-    }
-}
+#[derive(Default)]
+pub(crate) struct Written(Option<Box<CppString>>);
 
 impl Written {
     /// The bytes the socket had written, if it left a buffer.
     pub(crate) fn buffer(&self) -> Option<&CppString> {
-        // SAFETY: null, or the String this owns, which nothing else reaches.
-        unsafe { self.0.as_ref() }
+        self.0.as_deref()
     }
 }
 
 impl Drop for Written {
+    /// `delete string`.
     fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: the `new String` this owns, deleted once.
-            unsafe { delete_string(self.0) };
+        if let Some(mut string) = self.0.take() {
+            string.dispose();
         }
     }
 }
 
-/// The socket frames WebSocket packets from now on.
-/// # Safety
-/// `socket` is a live coroutine socket.
-pub unsafe fn websocket_protocol(socket: Socket) {
-    // SAFETY: per the caller.
-    unsafe { Co::new(socket) }.websocket_protocol();
+/// The core socket of the `Coroutine\Socket` object `socket` holds frames
+/// WebSocket packets from now on.
+pub fn websocket_protocol(socket: &Value) {
+    if let Some(co) = Sock::of(socket).and_then(Sock::co) {
+        co.websocket_protocol();
+    }
 }
 
 /// What the HTTP client asks of its socket.
@@ -186,11 +180,12 @@ impl Co {
 
     /// The socket gives up its write buffer, as before its first write.
     pub(crate) fn take_write_buffer(self) -> Written {
-        let written = Written(self.handle().write_buffer().cast());
+        let buffer = self.handle().write_buffer().cast::<CppString>();
         // SAFETY: null, as before the socket's first write; `written` owns the
         // String the socket no longer reaches.
         unsafe { self.handle().set_write_buffer(std::ptr::null_mut()) };
-        written
+        // SAFETY: the socket's `new String` (a Box), which nothing else reaches now.
+        Written((!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) }))
     }
 
     /// The write or read buffer, made on first use.

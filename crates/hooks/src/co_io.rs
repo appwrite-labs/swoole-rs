@@ -140,26 +140,12 @@ mod native {
         packet_fail,
     };
 
-    /// A record and a direction in one pointer: the record is aligned, so its low
-    /// bit is free for `write`.
-    fn tag(socket: Co, write: bool) -> *mut c_void {
-        socket.this().map_addr(|addr| addr | usize::from(write))
-    }
-
+    /// The record's wait deletes its timer before the record goes.
     fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
-        /// # Safety
-        /// `data` is the [`tag`] of the record whose timer fired: its wait deletes
-        /// the timer before the record goes.
-        unsafe extern "C-unwind" fn fired(data: *mut c_void) {
-            let event = if data.addr() & 1 == 0 { READ } else { WRITE };
-            // SAFETY: per the caller: the tagged live record, its tag bit cleared.
-            let socket = unsafe { Co::of(data.map_addr(|addr| addr & !1)) };
+        let event = if write { WRITE } else { READ };
+        swoole_rs_timer::add_fn_sec(timeout, false, move || {
             super::timer_fired(socket, event);
-        }
-        // SAFETY: `fired` gets the live record's tag, as it asks.
-        unsafe {
-            swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, fired, tag(socket, write))
-        }
+        })
     }
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
@@ -225,11 +211,14 @@ mod native {
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
         // The record's read String, which the packet receive fills.
         let buf = socket.with_buffer(false, CppString::as_mut_ptr);
-        let mut packet = PacketLength {
-            buf,
-            buf_size: size,
-            header_len: 0,
+        let bytes = if buf.is_null() {
+            &[][..]
+        } else {
+            // SAFETY: its initialized prefix of `size` bytes, which nothing changes
+            // while the length function reads it.
+            unsafe { std::slice::from_raw_parts(buf, size as usize) }
         };
+        let mut packet = PacketLength::new(bytes);
         let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
         let Some(call) = callback else {
             return -1;

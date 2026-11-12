@@ -10,7 +10,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef};
 use swoole_rs_process::server_workers::ServerWorkers;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS,
@@ -59,8 +59,8 @@ struct WorkerStopMessage {
 struct Context<'a> {
     /// `None` for a signal that arrives before the server exists.
     serv: Option<view::Server<'a>>,
-    /// The worker being restarted, or the message being read.
-    worker: *mut WorkerRecord,
+    /// The worker `OP_WORKER_BY_PID` found, to check and restart.
+    worker: Option<Worker<'a>>,
     task: *const EventData,
     handler: Option<CommandHandler>,
     wait_status: c_int,
@@ -91,7 +91,7 @@ impl<'a> Context<'a> {
     fn of(serv: Option<view::Server<'a>>) -> Self {
         Self {
             serv,
-            worker: null_mut(),
+            worker: None,
             task: null(),
             handler: None,
             wait_status: 0,
@@ -129,15 +129,14 @@ impl<'a> Context<'a> {
         // SAFETY: the server's live task pool, which only the manager writes meanwhile.
         unsafe { &mut *self.workers().task_pool }
     }
-    /// `serv->get_worker(id)`.
-    fn worker_at(&self, id: u64) -> *mut WorkerRecord {
+    /// `serv->get_worker(id)`, or `None` past the last.
+    fn worker_at(&self, id: u64) -> Option<Worker<'a>> {
         let id = u16::try_from(id).unwrap_or(u16::MAX);
-        self.server().worker(id)
+        self.server().worker_record(id)
     }
-    /// The worker `OP_WORKER_BY_PID` found.
-    fn worker(&self) -> &WorkerRecord {
-        // SAFETY: the ops reading it run after it is found.
-        unsafe { &*self.worker }
+    /// The worker `OP_WORKER_BY_PID` found; the ops reading it run after it is found.
+    fn worker(&self) -> Worker<'a> {
+        self.worker.unwrap_or_else(|| std::process::abort())
     }
     /// The command message's live head.
     fn task(&self) -> &EventData {
@@ -264,7 +263,7 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 + u64::from(config.task_worker_num)
                 + workers.user_count as u64
         }
-        OP_ANY_WORKER_PID => pid(ctx.worker_at(arg)),
+        OP_ANY_WORKER_PID => signed(ctx.worker_at(arg).map_or(0, Worker::pid)),
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
         OP_INFO_TYPE => u64::from(ctx.task().info.kind),
         _ => return None,
@@ -388,26 +387,34 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.server();
     // `Factory::spawn_*_worker(worker)`: the child's pid, or -1.
     let spawn = |op, worker| {
-        // SAFETY: the context's live server, and one of its workers.
-        let pid = unsafe { run(serv, op, worker, null_mut(), null(), 0) };
+        let pid = run(serv, op, worker, None, None, 0);
         c_int::try_from(pid).unwrap_or(-1)
     };
     let pid = match op {
-        OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg).cast()),
+        OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg)),
         OP_SPAWN_USER_WORKER => {
             // The manager spawns the pending workers by index, below their count.
             let &worker = ctx.registry().pending().get(index(arg))?;
-            spawn(RUN_SPAWN_USER_WORKER, worker.cast())
+            // SAFETY: a user worker `add_worker` added, which outlives the server.
+            let worker = unsafe { Worker::from_raw(worker.cast()) };
+            spawn(RUN_SPAWN_USER_WORKER, worker)
         }
         OP_WORKER_BY_PID => {
-            ctx.worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
-            return Some(u64::from(!ctx.worker.is_null()));
+            let worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
+            // SAFETY: null or one of the server's live workers, kept for its life.
+            ctx.worker = unsafe { Worker::from_raw(worker) };
+            return Some(u64::from(ctx.worker.is_some()));
         }
         OP_CHECK_EXIT_STATUS => {
             let status = exit_status(arg);
-            let (worker, status) = (ctx.worker, &raw const status);
-            // SAFETY: the context's live server, the worker found and its exit status.
-            unsafe { run(serv, RUN_CHECK_EXIT_STATUS, worker, null_mut(), status, 0) };
+            run(
+                serv,
+                RUN_CHECK_EXIT_STATUS,
+                ctx.worker,
+                None,
+                Some(&status),
+                0,
+            );
             return Some(0);
         }
         OP_KILL_EVENT_WORKERS => {
@@ -424,15 +431,15 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 ctx.worker
             };
-            // SAFETY: one of the task pool's workers.
-            let pid = unsafe { methods::spawn(ctx.server().task_pool_ref(), worker) };
+            let worker = worker.map_or(null_mut(), Worker::raw);
+            let pid = methods::spawn(ctx.server().task_pool_ref(), worker);
             if op == OP_SPAWN_TASK_WORKER {
                 return Some(0);
             }
             pid
         }
-        OP_RESPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker.cast()),
-        OP_RESPAWN_USER_WORKER => spawn(RUN_SPAWN_USER_WORKER, ctx.worker.cast()),
+        OP_RESPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker),
+        OP_RESPAWN_USER_WORKER => spawn(RUN_SPAWN_USER_WORKER, ctx.worker),
         _ => return None,
     };
     Some(signed(pid))

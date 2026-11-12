@@ -106,33 +106,60 @@ pub extern "C" fn swoole_api_version_id() -> c_int {
     API_VERSION_ID
 }
 
-/// The successful, representable portion of `std::stoi`: `strtol(input, &end, 10)`
-/// in the C locale (leading white space, a sign, then decimal digits), none where
-/// `std::stoi` throws. Native code retains the throwing path.
+/// `strtol(input, &end, 10)` in the C locale: leading white space, a sign, then
+/// decimal digits, saturating at the `long` range. With `end`'s offset into `input`,
+/// 0 when there are no digits.
+#[must_use]
+pub fn strtol(input: &[u8]) -> (i64, usize) {
+    let space = input
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))
+        .count();
+    let rest = input.get(space..).unwrap_or_default();
+    let (negative, sign) = match rest.first() {
+        Some(b'-') => (true, 1),
+        Some(b'+') => (false, 1),
+        _ => (false, 0),
+    };
+    let digits = rest.get(sign..).unwrap_or_default();
+    let count = digits
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if count == 0 {
+        return (0, 0);
+    }
+    let mut value: i64 = 0;
+    for digit in digits.iter().take(count) {
+        let digit = i64::from(digit - b'0');
+        value = if negative {
+            value.saturating_mul(10).saturating_sub(digit)
+        } else {
+            value.saturating_mul(10).saturating_add(digit)
+        };
+    }
+    (value, space + sign + count)
+}
+
+/// `sw_atoi`: [`strtol`] truncated to `int` as `static_cast<int>(long)` does.
+#[must_use]
+pub fn atoi(input: &[u8]) -> c_int {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "`static_cast<int>` of a `long` keeps its low 32 bits"
+    )]
+    let value = strtol(input).0 as c_int;
+    value
+}
+
+/// The successful, representable portion of `std::stoi`: [`strtol`], none where
+/// `std::stoi` throws (no digits, or out of `int` range). Native code retains the
+/// throwing path.
 #[must_use]
 pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
-    let start = input
-        .iter()
-        .position(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r'))?;
-    let (negative, digits) = match input.get(start..)? {
-        [b'-', rest @ ..] => (true, rest),
-        [b'+', rest @ ..] => (false, rest),
-        rest => (false, rest),
-    };
-    let end = digits
-        .iter()
-        .position(|byte| !byte.is_ascii_digit())
-        .unwrap_or(digits.len());
-    let digits = digits.get(..end).filter(|digits| !digits.is_empty())?;
-    let mut value: i64 = 0;
-    for digit in digits {
-        let digit = i64::from(digit - b'0');
-        value = value.checked_mul(10)?;
-        value = if negative {
-            value.checked_sub(digit)?
-        } else {
-            value.checked_add(digit)?
-        };
+    let (value, end) = strtol(input);
+    if end == 0 {
+        return None;
     }
     c_int::try_from(value).ok()
 }
@@ -597,7 +624,7 @@ mod tests {
     fn base_mkdir_recursive() {
         let max = libc::PATH_MAX as usize;
         let (mut dir, mut scratch) = (vec![0u8; max + 1], vec![0u8; max]);
-        unsafe { crate::random::swoole_random_string(dir.as_mut_ptr().cast(), max) };
+        crate::random::swoole_random_string(&mut dir);
         let status = swr_v1_corebase_mkdir_complete(&dir[..max], &mut scratch);
         assert_ne!(status, 0);
     }
@@ -657,6 +684,23 @@ mod tests {
             );
             assert_eq!(output, 0x1357_9bdf);
         }
+    }
+
+    #[test]
+    fn strtol_is_libc_strtol() {
+        assert_eq!(strtol(b"123"), (123, 3));
+        assert_eq!(strtol(b" 12s"), (12, 3), "leading space, trailing junk");
+        assert_eq!(strtol(b"\x0b-7"), (-7, 3), "vertical tab, sign");
+        assert_eq!(strtol(b"+3"), (3, 2), "plus");
+        assert_eq!(strtol(b"x"), (0, 0), "no digits");
+        assert_eq!(strtol(b"  -"), (0, 0), "a sign alone");
+        assert_eq!(strtol(b""), (0, 0));
+        assert_eq!(strtol(b"12\x0034"), (12, 2), "stops at NUL");
+        assert_eq!(strtol(b"99999999999999999999999"), (i64::MAX, 23));
+        assert_eq!(strtol(b"-99999999999999999999999"), (i64::MIN, 24));
+        assert_eq!(atoi(b" 42abc"), 42);
+        assert_eq!(atoi(b"4294967297"), 1, "low 32 bits");
+        assert_eq!(atoi(b"99999999999999999999"), -1, "LONG_MAX's low bits");
     }
 
     #[test]

@@ -45,7 +45,9 @@ else {
     $expected=match($mode){'string'=>["final\0node"],'cycle'=>["one\0node:-19",'two:42','three:0'],'mutate-port'=>["raw\0node"],'missing-port'=>['127.0.0.1'],default=>["raw\0node:-19"]};
     check($results===array_map('bin2hex',$expected),'exact results:'.json_encode($results));
 }
-$ctx=null;gc_collect_cycles();check($weak->get()===null,'context collected');foreach(WitnessState::$weak as $item)check($item->get()===null,'cluster collected');
+$ctx=null;gc_collect_cycles();check($weak->get()===null,'context collected');
+// Removing the resolver releases the list's reference, so the last one goes with $resolver.
+check(swoole_name_resolver_remove($resolver),'remove');$weakResolver=WeakReference::create($resolver);$resolver=null;check($weakResolver->get()===null,'resolver released');foreach(WitnessState::$weak as $item)check($item->get()===null,'cluster collected');
 check($warnings===[],'warnings:'.json_encode($warnings));
 if($mode==='cycle')check(WitnessState::$events===['lookup:3132372e302e302e31','pop:1','count:1:1','pop:1','count:1:0','dtor:1','lookup:3132372e302e302e31','pop:2','dtor:2'],'exact count/retry/destructor ordering');
 echo json_encode(['mode'=>$mode,'results_hex'=>$results,'exception'=>$exception,'events'=>WitnessState::$events,'context_and_clusters_collected'=>true,'warnings'=>$warnings],JSON_THROW_ON_ERROR),"\n";

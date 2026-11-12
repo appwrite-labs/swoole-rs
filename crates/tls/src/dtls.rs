@@ -2,14 +2,9 @@
 //! `init`/`listen`, independent of native `SSLContext` lifetime.
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
+use core::marker::{PhantomData, PhantomPinned};
 use core::ptr;
-use openssl_sys::{
-    BIO, BIO_METHOD, BIO_clear_flags, BIO_get_data, BIO_meth_free, BIO_meth_new,
-    BIO_meth_set_create__fixed_rust, BIO_meth_set_ctrl__fixed_rust,
-    BIO_meth_set_destroy__fixed_rust, BIO_meth_set_read__fixed_rust,
-    BIO_meth_set_write__fixed_rust, BIO_new, BIO_set_data, BIO_set_flags, BIO_set_init,
-    SSL_set_bio,
-};
+use openssl_sys::{BIO_METHOD, BIO_meth_free, BIO_meth_new, SSL_set_bio};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
@@ -246,11 +241,39 @@ pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> u32 {
     action
 }
 
-// SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
+/// A BIO of the table `methods` makes, which OpenSSL lends each callback for the
+/// call. It is zero-sized, so a reference to it claims none of the bytes OpenSSL
+/// changes behind it.
+#[repr(C)]
+struct DtlsBio {
+    _opaque: [u8; 0],
+    _not_send: PhantomData<(*mut u8, PhantomPinned)>,
+}
+
+type Write = unsafe extern "C" fn(&DtlsBio, *const c_char, c_int) -> c_int;
+type Read = unsafe extern "C" fn(&DtlsBio, *mut c_char, c_int) -> c_int;
+type Control = unsafe extern "C" fn(&DtlsBio, c_int, c_long, *mut c_void) -> c_long;
+type Hook = extern "C" fn(&DtlsBio) -> c_int;
+
+// SAFETY: libcrypto's declarations, typed so that a live BIO is a reference: the
+// `safe` ones read or write only the BIO's own flags and shutdown fields (data and
+// init stay unsafe: a method reads data as the session once init is set), and
+// OpenSSL calls each method of a table with the live BIO it is reading or writing.
 unsafe extern "C" {
-    fn BIO_get_new_index() -> c_int;
-    fn BIO_get_shutdown(bio: *mut BIO) -> c_int;
-    fn BIO_set_shutdown(bio: *mut BIO, shutdown: c_int);
+    safe fn BIO_get_new_index() -> c_int;
+    safe fn BIO_get_shutdown(bio: &DtlsBio) -> c_int;
+    safe fn BIO_set_shutdown(bio: &DtlsBio, shutdown: c_int);
+    safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
+    safe fn BIO_clear_flags(bio: &DtlsBio, flags: c_int);
+    safe fn BIO_get_data(bio: &DtlsBio) -> *mut c_void;
+    fn BIO_set_init(bio: &DtlsBio, init: c_int);
+    fn BIO_set_data(bio: &DtlsBio, data: *mut c_void);
+    fn BIO_new(table: *const BIO_METHOD) -> Option<&'static DtlsBio>;
+    fn BIO_meth_set_write(table: *mut BIO_METHOD, write: Option<Write>) -> c_int;
+    fn BIO_meth_set_read(table: *mut BIO_METHOD, read: Option<Read>) -> c_int;
+    fn BIO_meth_set_ctrl(table: *mut BIO_METHOD, control: Option<Control>) -> c_int;
+    fn BIO_meth_set_create(table: *mut BIO_METHOD, create: Option<Hook>) -> c_int;
+    fn BIO_meth_set_destroy(table: *mut BIO_METHOD, destroy: Option<Hook>) -> c_int;
 }
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
@@ -281,10 +304,9 @@ fn control_tag(command: c_int) -> u32 {
 /// The session `swr_v1_tls_dtls_init` made the BIO for.
 ///
 /// # Safety
-/// `bio` is one of those BIOs, whose session is live for `'a`.
-unsafe fn session_of<'a>(bio: *mut BIO) -> &'a DtlsSession {
-    // SAFETY: as the caller promises.
-    let session = unsafe { BIO_get_data(bio) }.cast::<DtlsSession>();
+/// `bio`'s session is live for `'a`.
+unsafe fn session_of<'a>(bio: &DtlsBio) -> &'a DtlsSession {
+    let session = BIO_get_data(bio).cast::<DtlsSession>();
     // SAFETY: as the caller promises: `swr_v1_tls_dtls_init` set it to the live session.
     unsafe { &*session }
 }
@@ -301,7 +323,7 @@ unsafe fn socket_of<'a>(owner: *const DtlsSession) -> Option<Socket<'a>> {
 }
 
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
-unsafe extern "C" fn bio_write(bio: *mut BIO, data: *const c_char, length: c_int) -> c_int {
+unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
     // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
     // SAFETY: a live session, whose socket is a live record.
@@ -315,31 +337,28 @@ unsafe extern "C" fn bio_write(bio: *mut BIO, data: *const c_char, length: c_int
 }
 
 /// `dtls::BIO_read`: the next queued datagram, or a read retry when there is none.
-unsafe extern "C" fn bio_read(bio: *mut BIO, data: *mut c_char, length: c_int) -> c_int {
-    // SAFETY: OpenSSL's live BIO.
-    unsafe { BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY) };
+unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -> c_int {
+    BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY);
     // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
     // SAFETY: OpenSSL lends `length` writable bytes.
     let plan = unsafe { swr_v1_tls_dtls_read(session, data.cast(), length) };
     if plan.retry != 0 {
-        // SAFETY: OpenSSL's live BIO.
-        unsafe { BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY) };
+        BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
     }
     plan.length
 }
 
 /// `dtls::BIO_ctrl`.
 unsafe extern "C" fn bio_ctrl(
-    bio: *mut BIO,
+    bio: &DtlsBio,
     command: c_int,
     value: c_long,
     pointer: *mut c_void,
 ) -> c_long {
     let tag = control_tag(command);
     let observed = if tag == 1 {
-        // SAFETY: OpenSSL's live BIO.
-        c_long::from(unsafe { BIO_get_shutdown(bio) })
+        c_long::from(BIO_get_shutdown(bio))
     } else {
         0
     };
@@ -349,19 +368,18 @@ unsafe extern "C" fn bio_ctrl(
     let plan = unsafe { swr_v1_tls_dtls_control(session, tag, observed, value, pointer) };
     match plan.effect {
         #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) lval")]
-        // SAFETY: OpenSSL's live BIO.
-        1 => unsafe { BIO_set_shutdown(bio, value as c_int) },
+        1 => BIO_set_shutdown(bio, value as c_int),
         4 => log::warning(c"dtls::BIO_ctrl", format_args!("unknown cmd: {command}")),
         _ => {}
     }
     plan.result
 }
 
-extern "C" fn bio_create(_bio: *mut BIO) -> c_int {
+extern "C" fn bio_create(_bio: &DtlsBio) -> c_int {
     1
 }
 
-extern "C" fn bio_destroy(_bio: *mut BIO) -> c_int {
+extern "C" fn bio_destroy(_bio: &DtlsBio) -> c_int {
     1
 }
 
@@ -373,23 +391,22 @@ fn methods() -> *mut BIO_METHOD {
     if !current.is_null() {
         return current;
     }
-    // SAFETY: allocates a BIO type index.
-    let index = unsafe { BIO_get_new_index() };
+    let index = BIO_get_new_index();
     // SAFETY: a static name.
     let table = unsafe { BIO_meth_new(index | BIO_TYPE_SOURCE_SINK, c"swoole_dtls_bio".as_ptr()) };
     if table.is_null() {
         return table;
     }
     // SAFETY: the fresh table, and a callback of the slot's type.
-    unsafe { BIO_meth_set_write__fixed_rust(table, Some(bio_write)) };
+    unsafe { BIO_meth_set_write(table, Some(bio_write)) };
     // SAFETY: as above.
-    unsafe { BIO_meth_set_read__fixed_rust(table, Some(bio_read)) };
+    unsafe { BIO_meth_set_read(table, Some(bio_read)) };
     // SAFETY: as above.
-    unsafe { BIO_meth_set_ctrl__fixed_rust(table, Some(bio_ctrl)) };
+    unsafe { BIO_meth_set_ctrl(table, Some(bio_ctrl)) };
     // SAFETY: as above.
-    unsafe { BIO_meth_set_create__fixed_rust(table, Some(bio_create)) };
+    unsafe { BIO_meth_set_create(table, Some(bio_create)) };
     // SAFETY: as above.
-    unsafe { BIO_meth_set_destroy__fixed_rust(table, Some(bio_destroy)) };
+    unsafe { BIO_meth_set_destroy(table, Some(bio_destroy)) };
     match METHODS.compare_exchange(ptr::null_mut(), table, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => table,
         Err(winner) => {
@@ -428,12 +445,19 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
         record.dtls = 1;
         record.ssl()
     });
-    // SAFETY: a BIO of the table above; OpenSSL returns null on failure.
-    let bio = unsafe { BIO_new(methods()) };
+    let table = methods();
+    if table.is_null() {
+        return false;
+    }
+    // SAFETY: a BIO of the live table above; OpenSSL returns null on failure.
+    let Some(bio) = (unsafe { BIO_new(table) }) else {
+        return false;
+    };
     // SAFETY: the session outlives its SSL, which owns the BIO.
     unsafe { BIO_set_data(bio, owner.cast()) };
-    // SAFETY: the fresh BIO.
+    // SAFETY: the fresh BIO, whose data is now the session its methods read.
     unsafe { BIO_set_init(bio, 1) };
+    let bio = ptr::from_ref(bio).cast_mut().cast();
     // SAFETY: the SSL ssl_create made takes the BIO for both directions.
     unsafe { SSL_set_bio(ssl.cast(), bio, bio) };
     true
@@ -480,6 +504,7 @@ const _: () = assert!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl_sys::BIO;
     struct Owner(*mut DtlsSession);
     impl Owner {
         fn new(socket: *mut SocketRecord) -> Self {
@@ -525,9 +550,10 @@ mod tests {
         assert!(!table.is_null());
         assert_eq!(methods(), table);
         unsafe {
-            let bio = BIO_new(table);
-            BIO_set_data(bio, owner.handle().cast());
-            BIO_set_init(bio, 1);
+            let lent = BIO_new(table).unwrap();
+            BIO_set_data(lent, owner.handle().cast());
+            BIO_set_init(lent, 1);
+            let bio: *mut BIO = ptr::from_ref(lent).cast_mut().cast();
             let mut bytes = [0u8; 8];
             assert_eq!(openssl_sys::BIO_read(bio, bytes.as_mut_ptr().cast(), 8), -1);
             assert_ne!(BIO_test_flags(bio, BIO_FLAGS_SHOULD_RETRY), 0);

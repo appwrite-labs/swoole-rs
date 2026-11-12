@@ -5,6 +5,7 @@
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 
+use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
@@ -14,7 +15,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Event, ReactorPrepared, Socket};
+use swoole_rs_reactor::{Event, ReactorPrepared, Running, Socket};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -37,8 +38,9 @@ struct Read<'a> {
     /// The current buffer, and the connection's request once made current.
     buffer: *mut CppString,
     request: *mut HttpRequest,
-    reactor: *mut c_void,
-    event: *mut Event,
+    reactor: Running<'a>,
+    /// The reactor's event, which the close handler may change; the caller sees it after.
+    event: Cell<Event>,
     socket: Socket<'a>,
     conn: *mut ConnectionRecord,
     server: view::Server<'a>,
@@ -60,16 +62,19 @@ pub(crate) unsafe fn on_read(
     event: *mut c_void,
     kind: u32,
 ) -> c_int {
-    let event = event.cast::<Event>();
-    // SAFETY: as the caller guarantees; the borrow ends with this read of its socket,
-    // the live connection socket, which only this reactor thread touches.
-    let Some(socket) = unsafe { &*event }.socket() else {
+    // SAFETY: as the caller guarantees, the reactor's event, lent for this call; its
+    // socket is the live connection socket, which only this reactor thread touches.
+    let event = unsafe { &mut *event.cast::<Event>() };
+    // SAFETY: as the caller guarantees, the live reactor on this thread.
+    let reactor = unsafe { Running::new(reactor) };
+    let lent = Cell::new(*event);
+    let Some(socket) = event.socket() else {
         return -1;
     };
     // A connection socket's object is its connection.
     let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
     // A live reactor.
-    let fields = ReactorPrepared::of(reactor).fields;
+    let fields = ReactorPrepared::of(reactor.as_ptr()).fields;
     // SAFETY: its fields, whose `ptr` is its server.
     let serv = unsafe { (*fields).ptr };
     // SAFETY: the reactor's live server, whose settings this thread only reads.
@@ -80,7 +85,7 @@ pub(crate) unsafe fn on_read(
         buffer: ptr::null_mut(),
         request: ptr::null_mut(),
         reactor,
-        event,
+        event: lent,
         socket,
         conn,
         server,
@@ -92,7 +97,9 @@ pub(crate) unsafe fn on_read(
         read.frames =
             read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol;
     }
-    readable(kind, &mut read)
+    let result = readable(kind, &mut read);
+    *event = read.event.get();
+    result
 }
 
 fn errno() -> c_int {
@@ -171,8 +178,7 @@ impl Connection for Read<'_> {
         } else {
             c"ListenPort::readable_callback_raw"
         };
-        // SAFETY: the live event.
-        let fd = unsafe { (*self.event).fd() };
+        let fd = self.event.get().fd();
         log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
     }
 
@@ -181,8 +187,9 @@ impl Connection for Read<'_> {
     }
 
     fn close(&mut self) {
-        // SAFETY: the live reactor and event.
-        unsafe { trigger_close_event(self.reactor, self.event.cast()) };
+        let mut event = self.event.get();
+        trigger_close_event(self.reactor, &mut event);
+        self.event.set(event);
     }
 
     fn send(&mut self, reply: Reply) {
@@ -264,9 +271,9 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn active(&mut self) -> bool {
-        let active = self.conn().active;
+        let active = self.conn().is_active();
         let removed = self.socket.read(|s| s.removed);
-        active != 0 && removed == 0
+        active && removed == 0
     }
 
     fn upgrade(&mut self) -> Upgrade {
