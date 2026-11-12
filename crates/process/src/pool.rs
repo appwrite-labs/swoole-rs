@@ -107,14 +107,17 @@ impl PoolCall {
 
     /// The live pool.
     #[must_use]
-    pub fn pool(&self) -> *mut c_void {
-        self.pool
+    pub fn pool(&self) -> crate::process_pool::PoolRef<'_> {
+        // SAFETY: only this crate makes a call, over the live pool it runs on.
+        unsafe { crate::process_pool::PoolRef::new(self.pool.cast()) }
     }
 
-    /// The live worker, or null.
+    /// The live worker, if the call has one.
     #[must_use]
-    pub fn worker(&self) -> *mut c_void {
-        self.worker
+    pub fn worker(&self) -> Option<Record<'_>> {
+        // SAFETY: only this crate makes a call, over null or one of its pool's live
+        // workers, whose owner orders the writes made through the handle.
+        unsafe { Record::from_raw(self.worker.cast()) }
     }
 
     /// The live native socket the hook works on, or null.

@@ -240,8 +240,8 @@ pub fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
 
 /// `ProcessPool::is_worker_running(worker)`.
 #[must_use]
-pub fn is_worker_running(pool: &PoolRecord, worker: Worker<'_>) -> bool {
-    pool.running && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
+pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
+    pool.running() && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)`: through its pool's queue or the pipe
@@ -297,9 +297,9 @@ unsafe extern "C-unwind" {
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn listen_unix(pool: &PoolRecord, file: &CStr, backlog: c_int) -> c_int {
+pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> c_int {
     // 5 is SW_SOCK_UNIX_STREAM.
-    listen_socket(pool, 5, file, 0, backlog)
+    listen_socket(pool.record(), 5, file, 0, backlog)
 }
 
 /// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
@@ -427,11 +427,11 @@ pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
 ///
 /// The pool's box is the one `create` made with `SW_CHAN_LOCK`.
 #[must_use]
-pub fn pop_message(pool: &PoolRecord, data: &mut [u8]) -> c_int {
+pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> c_int {
     // SAFETY: null, or the pool's box: a live channel record whose mutex serializes
     // its users.
     let Some(message_box) = (unsafe {
-        pool.message_box
+        pool.message_box()
             .cast::<swoole_rs_memory::channel::Record>()
             .as_ref()
     }) else {
@@ -751,7 +751,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         let mut out = [0u8; 16];
-        let none = pop_message(&pool, &mut out);
+        let none = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(none, -1, "no box");
         let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
         let record = memory.as_mut_ptr().cast::<Record>();
@@ -766,19 +766,19 @@ pub(crate) mod tests {
             // SAFETY: the record made above.
             assert_eq!(unsafe { &*record }.push(message), 0, "pushed");
         }
-        let n = pop_message(&pool, &mut out);
+        let n = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(
             &out[..usize::try_from(n).unwrap_or(0)],
             b"first",
             "oldest first"
         );
-        let n = pop_message(&pool, &mut out);
+        let n = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(
             &out[..usize::try_from(n).unwrap_or(0)],
             b"second",
             "then the next"
         );
-        let n = pop_message(&pool, &mut out);
+        let n = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(n, -1, "then empty");
     }
 
