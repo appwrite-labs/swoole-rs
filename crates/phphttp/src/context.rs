@@ -162,7 +162,8 @@ pub(crate) fn alloc() -> Ctx {
     let state = std::hint::black_box(NonNull::from(Box::leak(Box::<State>::new_uninit())));
     // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
     // pointers, `None`s and `IS_UNDEF` zvals, as upstream's value-initialisation
-    // left it), which `free` drops as a `Box<State>`.
+    // left it, and a null socket handle, which `socket` reads only once `bind`
+    // set it), which `free` drops as a `Box<State>`.
     unsafe { state.write_bytes(0, 1) };
     // SAFETY: the context just made, live until `free`.
     unsafe { Ctx::of(state.cast()) }
@@ -199,9 +200,7 @@ pub(crate) fn co_socket(state: &State) -> bool {
 /// of its state (the context holds the socket's object), or None for a
 /// server's context.
 pub(crate) fn socket(state: &State) -> Option<co::Co> {
-    // SAFETY: `bind`'s contract: a socket-bound context's `private_data` is
-    // the live socket of the object it holds.
-    co_socket(state).then(|| unsafe { co::Co::of(state.private_data) })
+    co_socket(state).then_some(state.socket)
 }
 
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
@@ -257,11 +256,12 @@ pub(crate) fn bind_server(state: &mut State, server: view::Server<'_>) {
 }
 
 /// `Context::bind(zval *)`: the context holds the socket object and sends
-/// through its coroutine socket.
-/// # Safety
-/// `socket` is a live `Swoole\Coroutine\Socket`.
-pub(crate) unsafe fn bind(state: &mut State, socket: &Value) {
-    state.private_data = swoole_rs_phpclients::get_socket(socket);
+/// through its coroutine socket; nothing for a value that holds none.
+pub(crate) fn bind(state: &mut State, socket: &Value) {
+    let Some(co) = swoole_rs_phpclients::get_socket(socket) else {
+        return;
+    };
+    state.socket = co.handle();
     // The context takes a reference.
     state.zsocket = socket.copy();
 }
@@ -280,6 +280,7 @@ pub(crate) fn copy_settings(state: &mut State, from: &State) {
     state.websocket_settings = from.websocket_settings;
     state.zsocket = from.zsocket.copy();
     state.private_data = from.private_data;
+    state.socket = from.socket;
     state.before_request = from.before_request;
     state.after_response = from.after_response;
 }

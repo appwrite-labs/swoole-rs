@@ -347,7 +347,7 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
         _: *mut c_void,
         packet: &mut PacketLength,
     ) -> isize {
-        2 * isize::try_from(packet.buf_size).unwrap()
+        2 * isize::try_from(packet.bytes().len()).unwrap()
     }
     let client = client(1, true, false);
     Handle(client).fields().protocol.get_package_length = Some(twice);

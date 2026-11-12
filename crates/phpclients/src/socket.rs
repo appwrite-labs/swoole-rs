@@ -5,14 +5,13 @@
 //! C++ socket (`crate::native`).
 use crate::{
     constants,
-    native::{self, Co, NewSocket, Socket, Transfer},
+    native::{self, Co, NewSocket, Transfer},
 };
 use libc::c_int;
 use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, CString},
-    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_phpruntime::co;
@@ -975,12 +974,11 @@ pub fn dup(fd: i32, kind: i32) -> Option<Owned> {
     created(owner::duplicate(fd, kind))
 }
 
-/// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
+/// `php_swoole_get_socket(zobject)`: the object's core socket, if it is a
+/// constructed socket object.
 #[must_use]
-pub fn get_socket(value: &Value) -> Socket {
-    Sock::of(value)
-        .and_then(Sock::co)
-        .map_or(ptr::null_mut(), Co::as_ptr)
+pub fn get_socket(value: &Value) -> Option<Co> {
+    Sock::of(value).and_then(Sock::co)
 }
 
 /// The descriptor and type (`get_fd()`, `get_type()`) of the core socket a

@@ -26,18 +26,13 @@ pub extern "C" fn set_protocol(protocol: &mut Protocol) {
 /// `swoole::mqtt::get_package_length(protocol, socket, pl)`: 0 until the remaining
 /// length is buffered, then the whole packet's length; -1, with a warning, past four
 /// length bytes.
-///
-/// # Safety
-/// `pl.buf` addresses `pl.buf_size` initialized bytes.
 #[unsafe(export_name = "_ZN6swoole4mqtt18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE")]
-pub unsafe extern "C" fn get_package_length(
+pub extern "C" fn get_package_length(
     _protocol: *const Protocol,
     _socket: *mut core::ffi::c_void,
     pl: &mut PacketLength,
 ) -> isize {
-    // SAFETY: `buf` addresses `buf_size` initialized bytes.
-    let length =
-        unsafe { crate::input(pl.buf, pl.buf_size as usize) }.map_or(-1, mqtt_frame_length);
+    let length = mqtt_frame_length(pl.bytes());
     if length < 0 {
         swoole_rs_corebase::log::error_log(
             /* SW_LOG_WARNING */ 4,
@@ -70,13 +65,9 @@ mod tests {
             Some(get_package_length as swoole_rs_corebase::net_types::GetPackageLength as usize)
         );
         let measure = |bytes: &[u8]| {
-            let mut pl = PacketLength {
-                buf: bytes.as_ptr(),
-                buf_size: u32::try_from(bytes.len()).unwrap(),
-                header_len: 99,
-            };
-            let length =
-                unsafe { get_package_length(core::ptr::null(), core::ptr::null_mut(), &mut pl) };
+            let mut pl = PacketLength::new(bytes);
+            pl.header_len = 99;
+            let length = get_package_length(core::ptr::null(), core::ptr::null_mut(), &mut pl);
             assert_eq!(pl.header_len, 99);
             length
         };

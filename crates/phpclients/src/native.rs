@@ -68,9 +68,10 @@ pub(crate) fn make(
     protocol: c_int,
     family: bool,
 ) -> Result<NewSocket, Bailout> {
-    let socket = co::make(fd, domain, kind, protocol, family)?;
-    // SAFETY: the new socket, which nothing else holds.
-    Ok(NewSocket(unsafe { Co::new(socket) }))
+    // The new socket, which nothing else holds.
+    Ok(NewSocket(Co::from(co::make(
+        fd, domain, kind, protocol, family,
+    )?)))
 }
 
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
@@ -155,7 +156,7 @@ impl Co {
     }
 
     /// The socket's buffers are zend strings from now on.
-    pub(crate) fn use_zend_strings(self) {
+    pub fn use_zend_strings(self) {
         // SAFETY: the static zend string allocator.
         unsafe {
             self.0

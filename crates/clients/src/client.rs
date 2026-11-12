@@ -994,17 +994,12 @@ impl Handle {
 }
 
 /// The client protocol's length of the packet in `data`.
-#[expect(clippy::cast_possible_truncation, reason = "`(uint32_t) length`")]
 fn package_length(this: Handle, data: &[u8]) -> isize {
     let record = this.fields();
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
-    let mut packet = PacketLength {
-        buf: data.as_ptr().cast(),
-        buf_size: data.len() as u32,
-        header_len: 0,
-    };
+    let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
     unsafe {
         get(

@@ -487,7 +487,8 @@ pub mod co {
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
-    /// else by the `swSocketType` `kind`; over `fd` unless it is negative.
+    /// else by the `swSocketType` `kind`; over `fd` unless it is negative. The
+    /// caller holds the new socket, live until it frees it.
     /// # Errors
     /// The constructor bailed out.
     pub fn make(
@@ -496,14 +497,15 @@ pub mod co {
         kind: c_int,
         protocol: c_int,
         family: bool,
-    ) -> Result<Socket, Bailout> {
+    ) -> Result<Co, Bailout> {
         let mut made = std::ptr::null_mut();
         if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
             drop(super::Socket::wrap(made, true));
             return Err(Bailout);
         }
-        Ok(made)
+        // SAFETY: the socket just made, which the caller holds until it frees it.
+        Ok(unsafe { Co::of(made) })
     }
 
     /// `delete socket`.
