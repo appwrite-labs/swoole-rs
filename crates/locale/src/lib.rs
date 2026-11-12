@@ -73,31 +73,43 @@ pub fn is_space(byte: u8) -> bool {
     // SAFETY: a value in -128..=255, which glibc's, musl's and Apple's tables all index.
     unsafe { libc::isspace(byte) != 0 }
 }
-/// True when libc's case-insensitive comparison differs at this first byte pair in
-/// every locale, so the call can be skipped: `tolower` keeps ASCII in ASCII except
-/// Turkish `I` (to `ı`), and only Turkish `İ` lowers to an ASCII byte (`i`).
-fn differs_at_first(left: u8, right: u8) -> bool {
-    left.is_ascii()
-        && right.is_ascii()
-        && left | 0x20 != b'i'
-        && right | 0x20 != b'i'
-        && !left.eq_ignore_ascii_case(&right)
+/// libc's `tolower(left) == tolower(right)` where every locale agrees, None where the
+/// locale decides: `tolower` keeps ASCII in ASCII except Turkish `I` (to `ı`), and
+/// only Turkish `İ` lowers to an ASCII byte (`i`).
+fn same_folded(left: u8, right: u8) -> Option<bool> {
+    if left == right {
+        return Some(true);
+    }
+    (left.is_ascii() && right.is_ascii() && left | 0x20 != b'i' && right | 0x20 != b'i')
+        .then(|| left.eq_ignore_ascii_case(&right))
 }
 /// `input` starts with `expected` as `strncasecmp` compares them in the current
-/// locale, which the pinned header matching uses.
+/// locale, which the pinned header matching uses. libc runs only when a pair the
+/// locale decides comes before the first pair that differs in every locale.
 #[inline]
 #[must_use]
 pub fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
-    input.len() >= expected.len()
-        && !matches!((input.first(), expected.first()), (Some(&left), Some(&right)) if differs_at_first(left, right))
-        && strncasecmp_equal(input, expected, expected.len())
+    if input.len() < expected.len() {
+        return false;
+    }
+    let mut undecided = false;
+    for (&left, &right) in input.iter().zip(expected) {
+        match same_folded(left, right) {
+            // A matching NUL ends libc's comparison.
+            Some(true) if left == 0 => break,
+            Some(true) => {}
+            Some(false) => return false,
+            None => undecided = true,
+        }
+    }
+    !undecided || strncasecmp_equal(input, expected, expected.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn skipped_first_bytes_differ_under_libc_in_each_locale() {
+    fn case_prefix_is_strncasecmp_in_each_locale() {
         let locales = [
             c"C",
             c"C.UTF-8",
@@ -106,6 +118,11 @@ mod tests {
             c"tr_TR.ISO8859-9",
             c"tr_TR.UTF-8",
         ];
+        // Each kind of pair: equal, ASCII case, a definite difference, the locale's
+        // `I`/`i`/`İ`/`ı`, other non-ASCII, and NUL, in every order.
+        let bytes = [
+            0, b'a', b'A', b'b', b'i', b'I', b'-', 0xc4, 0xdd, 0xfd, 0xe9, 0xc9,
+        ];
         for locale in locales {
             // SAFETY: a NUL-terminated name; this test alone changes LC_CTYPE, then restores it.
             if unsafe { libc::setlocale(libc::LC_CTYPE, locale.as_ptr()) }.is_null() {
@@ -113,16 +130,34 @@ mod tests {
             }
             for left in 0..=u8::MAX {
                 for right in 0..=u8::MAX {
-                    if differs_at_first(left, right) {
-                        assert!(
-                            !strncasecmp_equal(&[left], &[right], 1),
+                    if let Some(same) = same_folded(left, right) {
+                        assert_eq!(
+                            same,
+                            strncasecmp_equal(&[left], &[right], 1),
                             "{left:#x} {right:#x} in {locale:?}"
                         );
+                    }
+                }
+            }
+            for a in bytes {
+                for b in bytes {
+                    for c in bytes {
+                        for d in bytes {
+                            let (input, expected) = ([a, b, b'x'], [c, d]);
+                            assert_eq!(
+                                case_prefix(&input, &expected),
+                                strncasecmp_equal(&input, &expected, 2),
+                                "{input:x?} {expected:x?} in {locale:?}"
+                            );
+                        }
                     }
                 }
             }
         }
         // SAFETY: restores the default locale.
         unsafe { libc::setlocale(libc::LC_CTYPE, c"C".as_ptr()) };
+        assert!(case_prefix(b"Content-Length: 1", b"content-length"));
+        assert!(!case_prefix(b"Content-Type: x", b"content-length"));
+        assert!(!case_prefix(b"Content", b"content-length"), "shorter input");
     }
 }
