@@ -182,8 +182,8 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
 fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
-        OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),
-        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
+        OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker()),
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
             SW_WORKER_IDLE
         } else {
@@ -194,23 +194,23 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 logger.reopen();
             }
         }
-        OP_CALL_WORKER_START => call_worker_start_callback(ctx.server(), ctx.worker().into()),
-        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server(), ctx.worker().into()),
+        OP_CALL_WORKER_START => call_worker_start_callback(ctx.server(), ctx.worker()),
+        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server(), ctx.worker()),
         OP_WORKER_STOP_CALLBACK => {
-            call_worker_stop_callback(ctx.server(), ctx.worker().into());
+            call_worker_stop_callback(ctx.server(), ctx.worker());
         }
         OP_WORKER_SIGNAL_INIT => worker_signal_init(ctx.server()),
         OP_DRAIN_PIPES => drain_worker_pipe(ctx.server()),
         OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
-        OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker().into()),
+        OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker()),
         OP_RESET_WORKER_COUNTER => {
-            crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker().into());
+            crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker());
         }
-        OP_DETACH_WORKER => worker_global_detach(ctx.worker().into()),
+        OP_DETACH_WORKER => worker_global_detach(ctx.worker()),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
-            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker().into());
+            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker());
         }
         OP_CPU_AFFINITY =>
         {
