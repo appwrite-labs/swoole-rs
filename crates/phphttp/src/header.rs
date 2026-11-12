@@ -81,7 +81,7 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// of its own (`GC_TRY_ADDREF`). A value's `__toString` may reach the same
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
-fn property(response: &Slot, which: usize) -> Option<HeldArray> {
+pub(crate) fn property(response: &Slot, which: usize) -> Option<HeldArray> {
     let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
