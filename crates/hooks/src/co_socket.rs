@@ -520,33 +520,6 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
     swoole_rs_reactor::swr_v1_socket_domain_and_type(socket_type, domain, kind);
 }
 
-/// A socket record's defaults (not open, no buffers, nothing bound), which every
-/// constructor writes first.
-///
-/// # Safety
-/// `socket` is writable storage for one record.
-pub(crate) unsafe fn init(socket: *mut CoSocket) -> &'static mut CoSocket {
-    // SAFETY: as the caller promises.
-    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
-    // SAFETY: just initialised; the native object owns it for its lifetime.
-    unsafe { &mut *socket }
-}
-
-/// Release the bound state and the metadata a constructor made.
-///
-/// # Safety
-/// `socket` is a live record, not used afterwards.
-pub unsafe fn swr_v1_hook_co_socket_fini(socket: *mut CoSocket) {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { &mut *socket };
-    if !socket.state.is_null() {
-        // SAFETY: the record's own state, from `Bound::alloc`, released once.
-        drop(unsafe { Box::from_raw(socket.state) });
-    }
-    socket.state = ptr::null_mut();
-    socket.extra = None;
-}
-
 /// `~Socket()`: the destructor callback if it has not run, the buffers, the
 /// `network::Socket` (its TLS session closed first), then the bound state and the
 /// metadata, whose TLS context outlived the session.
@@ -576,8 +549,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
         // SAFETY: the live record, which nothing uses afterwards.
         unsafe { socket_free(network) };
     }
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_hook_co_socket_fini(socket) };
+    record.fini();
 }
 
 /// `new SocketImpl(...)` for the sockets Rust hands out: by `domain`, `kind` and
@@ -656,10 +628,24 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     protocol: c_int,
 ) -> u32 {
     // SAFETY: as the caller promises.
-    unsafe { init(socket) }.construct(owner, how, fd, socket_type, domain, kind, protocol)
+    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
+    // SAFETY: just written; the native object owns it for its lifetime.
+    unsafe { &mut *socket }.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
 impl CoSocket {
+    /// Release the bound state and the metadata [`CoSocket::new`] made, as a
+    /// constructor's undo or the end of `~Socket()`.
+    pub(crate) fn fini(&mut self) {
+        if !self.state.is_null() {
+            // SAFETY: the record's own state, from `Bound::alloc` (the only value
+            // `state` takes besides null), released once: it is nulled next.
+            drop(unsafe { Box::from_raw(self.state) });
+        }
+        self.state = ptr::null_mut();
+        self.extra = None;
+    }
+
     /// The public constructors' work over a fresh record (see
     /// [`swr_v1_hook_co_socket_new`]).
     #[expect(clippy::too_many_arguments, reason = "the constructors' union")]
@@ -741,10 +727,8 @@ impl CoSocket {
 /// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
 /// `server`, with the server's type, framing and timeouts, connected; `accept`
 /// shares the TLS context after. [`swr_v1_hook_co_socket_free`] releases it.
-///
-/// # Safety
-/// `conn` is a live accepted `network::Socket` the new socket takes.
-pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
+pub(crate) fn accepted(server: Co, conn: Box<SocketRecord>) -> Co {
+    let conn = Box::into_raw(conn);
     let mut socket = Box::new(CoSocket::new(Bound::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
@@ -755,7 +739,7 @@ pub(crate) unsafe fn accepted(server: Co, conn: *mut SocketRecord) -> Co {
     socket.sock_protocol = server.sock_protocol();
     socket.socket = conn;
     let mut result = OPENED;
-    // SAFETY: as the caller promises.
+    // SAFETY: the accepted record, which the new socket owns from here.
     if let Some(network) = unsafe { Socket::from_ptr(conn) } {
         socket.sock_fd = network.edit(|record| {
             record.object = owner;
@@ -826,6 +810,12 @@ pub(crate) fn peer_name(socket: Co, address: &mut SocketAddress) -> c_int {
     0
 }
 
+/// Writes a fresh record (not open, nothing bound) into `socket`'s storage.
+#[cfg(test)]
+pub(crate) unsafe fn init(socket: *mut CoSocket) {
+    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
+}
+
 /// An open record over a `network::Socket` record without a descriptor, for the
 /// operations' tests.
 #[cfg(test)]
@@ -865,7 +855,7 @@ impl Drop for TestSocket {
                 }
             }
             SocketRecord::free(self.0.socket);
-            swr_v1_hook_co_socket_fini(self.ptr());
+            self.0.fini();
         }
     }
 }
@@ -892,14 +882,14 @@ mod tests {
                 SocketRecord::free(socket.socket);
             }
         }
-        unsafe { swr_v1_hook_co_socket_fini(&raw mut *socket) };
+        socket.fini();
         assert!(socket.state.is_null());
     }
 
     fn new(socket: &mut CoSocket, how: c_int, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
         let owner = (&raw mut *socket).cast();
         // The constructor writes the record again.
-        unsafe { swr_v1_hook_co_socket_fini(socket) };
+        socket.fini();
         unsafe { swr_v1_hook_co_socket_new(socket, owner, how, fd, ty, d, k, 0) }
     }
 
@@ -1058,9 +1048,10 @@ mod tests {
         server.protocol.package_eof_len = 2;
         unsafe { (*server.socket).fields.timeouts.read = 1.5 };
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        let conn = SocketRecord::with_fd(fd, 0).into_raw();
-        let socket = unsafe { accepted(Co::new(&raw mut *server), conn) };
+        let conn = Box::new(SocketRecord::with_fd(fd, 0));
+        let socket = accepted(unsafe { Co::new(&raw mut *server) }, conn);
         let socket = unsafe { Box::from_raw(socket.raw()) };
+        let conn = socket.socket;
         assert_eq!(
             unsafe { (*conn).fields.object },
             (&raw const *socket).cast_mut().cast()

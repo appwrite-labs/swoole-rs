@@ -19,21 +19,6 @@ use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_reactor::Socket;
 use swoole_rs_tls::socket_pair::SocketPair;
 
-/// A global hook whose callbacks take the server: its `SW_GLOBAL_HOOK_*` number.
-#[derive(Clone, Copy)]
-#[repr(i32)]
-pub(crate) enum ServerHook {
-    BeforeStart = 0,
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the master's shutdown ops call it")
-    )]
-    BeforeShutdown = 6,
-    AfterShutdown = 7,
-    BeforeCreate = 10,
-    AfterCreate = 11,
-}
-
 /// The head of every `Server`.
 #[repr(C)]
 struct Fields {
@@ -85,15 +70,6 @@ impl<'a> Server<'a> {
     fn fields(self) -> &'a Fields {
         // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
         unsafe { &*self.raw.cast::<Fields>() }
-    }
-
-    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`.
-    pub(crate) fn call_hook(self, hook: ServerHook) {
-        let kind = hook as c_int;
-        if swoole_rs_corebase::hook::swoole_isset_hook(kind) {
-            // SAFETY: a server hook's callbacks take the server, live per `from_raw`.
-            unsafe { swoole_rs_corebase::hook::swoole_call_hook(kind, self.raw) };
-        }
     }
 
     /// `serv` itself, for the native-shaped calls that still take it.
@@ -467,20 +443,6 @@ impl<'a> Server<'a> {
         // SAFETY: null, or one of the server's live ports' listening socket, which the
         // server keeps open while it serves.
         unsafe { Socket::from_ptr(port.config().socket.cast()) }
-    }
-
-    /// The worker end of `serv->pipe_command` (a `Socket *`), or null while the
-    /// server has no command pipe.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    #[must_use]
-    pub(crate) fn command_pipe_worker(self) -> *mut c_void {
-        let pair = self.config().pipe_command.cast::<SocketPair>();
-        if pair.is_null() {
-            return core::ptr::null_mut();
-        }
-        // SAFETY: the server's command pipe, which it keeps until it is destroyed;
-        // only the field is read.
-        unsafe { (*pair).worker_socket }.cast()
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.

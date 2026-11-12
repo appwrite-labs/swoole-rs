@@ -369,15 +369,13 @@ impl Reap for Reaping<'_> {
 
 extern "C" fn no_warn(_kind: c_int, _pid: c_int, _worker_id: u32) {}
 
-/// Native `reload_warn` (`OP_RELOAD_WARN`), which logs a reload's failed kill.
+/// [`reload_warn`](crate::methods::reload_warn), which logs a reload's failed kill,
+/// when the host has a log (`OP_RELOAD_WARN` is nonzero).
 fn reload_warn<H: Host>(h: &mut H) -> Warn {
-    let address = usize::try_from(h.get(OP_RELOAD_WARN)).unwrap_or(0);
-    if address == 0 {
+    if h.get(OP_RELOAD_WARN) == 0 {
         return no_warn;
     }
-    // SAFETY: native passes the address of `reload_warn`, a C-ABI function
-    // with exactly `Warn`'s signature.
-    unsafe { core::mem::transmute::<usize, Warn>(address) }
+    crate::methods::reload_warn
 }
 
 fn reap<H: Host>(h: &mut H, manager: &Manager) {

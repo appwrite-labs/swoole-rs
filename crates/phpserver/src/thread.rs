@@ -16,7 +16,7 @@ use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
     kind,
-    sys::{IS_NULL, swr_zend_thread_main_request, zend_fcall_info, zval_ptr_dtor},
+    sys::{IS_NULL, swr_zend_thread_main_request, swr_zend_tsrm_is_main_thread, zend_fcall_info},
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -66,7 +66,8 @@ pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
         *existing = Some(server);
         return 1;
     }
-    if swoole_rs_zend::is_main_thread() {
+    // SAFETY: a pure TSRM read.
+    if unsafe { swr_zend_tsrm_is_main_thread() } {
         0
     } else {
         2
@@ -151,20 +152,14 @@ fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
     if kind(&callable) == IS_NULL {
         return Ok(None);
     }
-    let mut result = crate::dispatch::undef();
+    let result = Owned::default();
     let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
     fci.function_name = callable;
-    fci.retval = &raw mut result;
+    fci.retval = result.as_ptr();
     // SAFETY: `call_user_function(NULL, nullptr, &init_arguments, &result, 0, nullptr)`.
     unsafe { bailout::call(&raw mut fci, ptr::null_mut()) }?;
-    let argv = Value::of(&mut result)
-        .array()
-        .map(Arguments::copy)
-        .transpose();
-    // SAFETY: the result this call owns.
-    unsafe { zval_ptr_dtor(&raw mut result) };
-    argv
+    result.array().map(Arguments::copy).transpose()
 }
 
 /// The thread starter: this `ThreadFactory` thread becomes a PHP thread running

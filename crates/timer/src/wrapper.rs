@@ -86,14 +86,17 @@ fn sec2msec(timeout: f64) -> c_long {
     msec
 }
 
-/// Adds `node` to this thread's timer, creating it on first use.
-fn add(ms: c_long, persistent: bool, node: TimerNode) -> *mut TimerNode {
+/// Adds `node` to this thread's timer, creating it on first use: the node and its id.
+fn add(ms: c_long, persistent: bool, node: TimerNode) -> Option<(*mut TimerNode, c_long)> {
     if timer().is_null() {
         swoole_timer_create(false);
     }
-    current().map_or(std::ptr::null_mut(), |timer| {
-        timer.add(ms, persistent, node)
-    })
+    current()?.add(ms, persistent, node)
+}
+
+/// The node [`add`] added, or null.
+fn node(added: Option<(*mut TimerNode, c_long)>) -> *mut TimerNode {
+    added.map_or(std::ptr::null_mut(), |(node, _)| node)
 }
 
 /// `TimerNode *swoole_timer_add(double timeout, ...)`: seconds, at least
@@ -105,11 +108,11 @@ extern "C-unwind" fn swoole_timer_add_sec(
     callback: Option<Callback>,
     data: *mut c_void,
 ) -> *mut TimerNode {
-    add(
+    node(add(
         sec2msec(timeout),
         persistent,
         TimerNode::new(callback, data),
-    )
+    ))
 }
 
 /// `TimerNode *swoole_timer_add(long ms, ...)`: creates this thread's timer on
@@ -121,7 +124,7 @@ extern "C-unwind" fn swoole_timer_add(
     callback: Option<Callback>,
     data: *mut c_void,
 ) -> *mut TimerNode {
-    add(ms, persistent, TimerNode::new(callback, data))
+    node(add(ms, persistent, TimerNode::new(callback, data)))
 }
 
 /// `swoole_timer_add(ms, persistent, ...)` of a callback of `data` alone: the
@@ -138,7 +141,7 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain(
     callback: Plain,
     data: *mut c_void,
 ) -> *mut c_void {
-    add(ms, persistent, TimerNode::plain(callback, data)).cast()
+    node(add(ms, persistent, TimerNode::plain(callback, data))).cast()
 }
 
 /// `swoole_timer_add(timeout, persistent, ...)`, in seconds, of a callback of
@@ -153,11 +156,11 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     callback: Plain,
     data: *mut c_void,
 ) -> *mut c_void {
-    add(
+    node(add(
         sec2msec(timeout),
         persistent,
         TimerNode::plain(callback, data),
-    )
+    ))
     .cast()
 }
 
@@ -167,12 +170,6 @@ pub extern "C-unwind" fn timer_cancel(id: c_long) {
     if let Some(timer) = current() {
         timer.remove(id);
     }
-}
-
-/// The id of a node the timer just added, or none.
-fn id(node: *mut TimerNode) -> Option<c_long> {
-    // SAFETY: null or a live node.
-    unsafe { node.as_ref() }.map(|node| node.id)
 }
 
 /// `swoole_timer_after`/`swoole_timer_tick`: the new timer's id, or `SW_ERR`.
@@ -187,7 +184,7 @@ fn schedule(
         log::warning(origin, format_args!("Timer must be greater than 0"));
         return ERR;
     }
-    id(swoole_timer_add(ms, persistent, callback, data)).unwrap_or(ERR)
+    add(ms, persistent, TimerNode::new(callback, data)).map_or(ERR, |(_, id)| id)
 }
 
 /// `long swoole_timer_after(long ms, TimerCallback, void *)`.
@@ -282,7 +279,7 @@ pub extern "C-unwind" fn swoole_timer_select() {
 /// What `Swoole\Timer` (crates/phptimer) needs: PHP (`TYPE_PHP`) timers on
 /// this thread's timer.
 pub mod php {
-    use super::{Timer, TimerNode, add, current, id};
+    use super::{Timer, TimerNode, add, current};
     pub use crate::owner::{Bailout, Info, Plain};
     use std::ffi::c_void;
 
@@ -301,11 +298,7 @@ pub mod php {
         destructor: Plain,
         data: *mut c_void,
     ) -> Option<i64> {
-        id(add(
-            ms,
-            persistent,
-            TimerNode::php(callback, destructor, data),
-        ))
+        add(ms, persistent, TimerNode::php(callback, destructor, data)).map(|(_, id)| id)
     }
 
     /// `swoole_timer_get(id)`'s fields, and whether it is a PHP timer.

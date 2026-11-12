@@ -6,7 +6,7 @@ use swoole_rs_corebase::DataHead;
 #[cfg(target_os = "linux")]
 use swoole_rs_corebase::log;
 use swoole_rs_process::methods::{
-    push_message, swoole_get_worker_id, swoole_get_worker_type, swoole_set_worker_id,
+    push_stop, swoole_get_worker_id, swoole_get_worker_type, swoole_set_worker_id,
     swoole_set_worker_type,
 };
 use swoole_rs_process::worker_globals::worker_global_detach;
@@ -61,25 +61,18 @@ impl<'a> Context<'a> {
     }
 }
 
-/// `swGlobalHookType`'s worker hooks.
+/// `swGlobalHookType`'s worker and shutdown hooks.
 const SW_GLOBAL_HOOK_BEFORE_WORKER_START: c_int = 2;
+const SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
 const SW_GLOBAL_HOOK_BEFORE_WORKER_STOP: c_int = 8;
-/// `swoole::WorkerType::SW_EVENT_WORKER`, `SW_WORKER_MESSAGE_STOP`.
+/// `swoole::WorkerType::SW_EVENT_WORKER`.
 const SW_EVENT_WORKER: c_int = 2;
-const SW_WORKER_MESSAGE_STOP: u8 = 1;
 /// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
 const SW_WORKER_BUSY: u8 = 1;
 const SW_WORKER_IDLE: u8 = 2;
 /// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
 const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
-
-/// `WorkerStopMessage`.
-#[repr(C)]
-struct WorkerStopMessage {
-    pid: libc::pid_t,
-    worker_id: u16,
-}
 
 /// Answers each event-worker op over the context.
 impl swoole_rs_process::workers::Answer for Context<'_> {
@@ -137,11 +130,11 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(id.is_some_and(|id| !ctx.server().worker(id).is_null()))
         }
         OP_IS_EVENT_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
-        OP_POOL_RUNNING => {
-            let pool = ctx.server().workers().event_pool;
-            // SAFETY: its live event worker pool.
-            u64::from(unsafe { (*pool).running })
-        }
+        OP_POOL_RUNNING => u64::from(
+            crate::shared::ServerShared::of(ctx.server())
+                .event_pool()
+                .running,
+        ),
         OP_MINFD => i64::from(ctx.counters().min_fd).cast_unsigned(),
         OP_MAXFD => i64::from(ctx.counters().max_fd).cast_unsigned(),
         OP_HAS_REACTOR => u64::from(!swoole_rs_corebase::thread_reactor().is_null()),
@@ -185,7 +178,6 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
 /// The effects on the worker, the server and the process.
 #[inline(always)]
 fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
-    let worker = ctx.worker;
     match op {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
         OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),
@@ -212,8 +204,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_RESET_WORKER_COUNTER => {
             crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker().into());
         }
-        // SAFETY: the context's live worker.
-        OP_DETACH_WORKER => unsafe { worker_global_detach(worker) },
+        OP_DETACH_WORKER => worker_global_detach(ctx.worker().into()),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
@@ -228,15 +219,11 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_GLOBAL_HOOK => global_hook(ctx, arg),
         OP_PUSH_STOP_MESSAGE => {
-            let msg = WorkerStopMessage {
-                pid: std::process::id().cast_signed(),
-                worker_id: u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
-            };
-            let pool = ctx.server().workers().event_pool;
-            let data = (&raw const msg).cast::<u8>();
-            // SAFETY: its live event pool and a message of the size passed.
-            let sent =
-                unsafe { push_message(pool, SW_WORKER_MESSAGE_STOP, data, size_of_val(&msg)) };
+            let sent = push_stop(
+                ctx.server().event_pool_ref(),
+                std::process::id().cast_signed(),
+                u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX),
+            );
             return Some(i64::from(sent).cast_unsigned());
         }
         _ => return None,
@@ -303,13 +290,15 @@ pub(crate) fn swr_workers_signal_set(arg: u64, own: extern "C" fn(c_int)) {
 fn global_hook(ctx: &Context<'_>, hook: u64) {
     let id = match hook {
         HOOK_BEFORE_WORKER_START => SW_GLOBAL_HOOK_BEFORE_WORKER_START,
-        HOOK_BEFORE_SERVER_SHUTDOWN => {
-            ctx.serv.call_hook(view::ServerHook::BeforeShutdown);
-            return;
-        }
+        HOOK_BEFORE_SERVER_SHUTDOWN => SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN,
         _ => SW_GLOBAL_HOOK_BEFORE_WORKER_STOP,
     };
     if !swoole_rs_corebase::swoole_isset_hook(id) {
+        return;
+    }
+    if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
+        // SAFETY: the shutdown hooks take the server.
+        unsafe { swoole_rs_corebase::swoole_call_hook(id, ctx.serv.raw()) };
         return;
     }
     let worker_id = ctx.worker().id() as usize;

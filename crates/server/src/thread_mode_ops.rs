@@ -338,10 +338,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CREATE_WORKER_PIPES => {
             u64::from(crate::factory_ops::run_server(serv, RUN_CREATE_WORKER_PIPES) != 0)
         }
-        // SAFETY: the live server.
-        OP_CREATE_EVENT_WORKERS => u64::from(unsafe { create_event_workers(ctx.server()) }),
-        // SAFETY: as above.
-        OP_CREATE_USER_WORKERS => u64::from(unsafe { create_user_workers(ctx.server()) }),
+        OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
+        OP_CREATE_USER_WORKERS => u64::from(create_user_workers(serv, ctx.config())),
         OP_TASK_START_CHECK => sign(start_check(ctx.server().task_pool_ref())),
         OP_STORE_LISTEN_SOCKET => {
             server_methods::store_listen_socket(ctx.server());
@@ -372,8 +370,8 @@ fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     // a hook runs (`$server->stats()`) reach the record while one runs.
     let pool_hook = |op| {
         let pool = ctx.workers().task_pool;
-        // SAFETY: the live server's task pool; the borrow ends with the copy.
-        let record = unsafe { &*pool };
+        // The borrow ends with the copy.
+        let record = crate::shared::ServerShared::of(ctx.server()).task_pool();
         let (start, main_loop, stop) = (
             record.on_worker_start,
             record.main_loop,

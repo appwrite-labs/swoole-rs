@@ -12,7 +12,7 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Socket, reactor_upstream};
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
@@ -152,9 +152,12 @@ pub(crate) fn answer(
             0
         }
         OP_FORCE_CLOSE => {
-            let conn = conn_ref()?;
-            conn.close_force = 1;
-            handle?.trigger_close(conn);
+            conn_ref()?.close_force = 1;
+            // SAFETY: the connection's live socket, for this call.
+            let mut event =
+                unsafe { swoole_rs_reactor::Event::new(conn_ref()?.fd, 0, 0, conn_ref()?.socket) };
+            // SAFETY: this thread's reactor and an event over a live connection.
+            unsafe { reactor_upstream::trigger_close_event(reactor, (&raw mut event).cast()) };
             0
         }
         OP_PACKET_INIT => {
@@ -359,7 +362,11 @@ pub(crate) fn answer(
             0
         }
         OP_RT_PIPE_COMMAND => {
-            let fd = socket(server.command_pipe_worker())?.fd();
+            let pair = config()
+                .pipe_command
+                .cast::<swoole_rs_tls::socket_pair::SocketPair>();
+            // SAFETY: the server's live command pipe.
+            let fd = socket(unsafe { (*pair).worker_socket }.cast())?.fd();
             let thread = ctx.thread_record()?;
             let bus = thread.message_bus();
             bus.init_pipe_socket(fd);
@@ -442,8 +449,8 @@ pub(crate) fn answer(
                 info,
                 data: packet.data,
             };
-            // SAFETY: the live server and a send over the packet.
-            unsafe { methods::send_to_connection(serv, (&raw const send).cast()) };
+            // SAFETY: a send over the bus's packet.
+            unsafe { methods::send_to_connection(server, &send) };
             0
         }
         OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
@@ -477,7 +484,7 @@ pub(crate) fn answer(
         }
 
         // SAFETY: the live server, this thread's reactor and a live connection.
-        OP_INCOMING => sign(unsafe { methods::connection_incoming(server, reactor, conn) }),
+        OP_INCOMING => sign(unsafe { methods::connection_incoming(server, reactor, conn_ref()?) }),
         // SAFETY: this thread's reactor and the connection's live socket.
         OP_CLOSE => sign(unsafe { entry::close_connection(reactor, conn_ref()?.socket.cast()) }),
         OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), conn_ref()?)),
@@ -586,9 +593,10 @@ fn packet<'a>(ctx: &ReactorContext<'_>) -> Option<&'a mut DgramPacket> {
 
 /// The destroy callback of a reactor thread's reactor: close its connections.
 unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
-    // SAFETY: the callback's live reactor, on its own thread: a reactor thread's,
-    // whose `ptr` is its live server.
-    let mut ctx = unsafe { entry::reactor_context(reactor) };
+    // SAFETY: the callback's live reactor, on its own thread.
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: a reactor thread's reactor, whose `ptr` is its live server.
+    let mut ctx = ReactorContext::new(unsafe { entry::server(reactor) }, Some(reactor));
     run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx);
 }
 
@@ -621,11 +629,11 @@ unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
 
 /// `Server::heartbeat_check`: the heartbeat timer of `reactor`.
 unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
-    // SAFETY: the timer's live reactor, on its own thread: a server reactor, whose
-    // `ptr` is its live server.
-    let mut ctx = unsafe { entry::reactor_context(reactor) };
-    let id = ctx.reactor.map_or(0, |reactor| reactor.fields().id);
-    ctx.thread = thread(ctx.serv.state(), usize::from(id));
+    // SAFETY: the timer's live reactor, on its own thread.
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: a server reactor, whose `ptr` is its live server.
+    let mut ctx = ReactorContext::new(unsafe { entry::server(reactor) }, Some(reactor));
+    ctx.thread = thread(ctx.serv.state(), usize::from(reactor.fields().id));
     run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
 }
 

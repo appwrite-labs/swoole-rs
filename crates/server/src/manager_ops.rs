@@ -276,8 +276,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let registry = ctx.registry();
     match op {
         OP_CREATE_EVENT_WORKERS => {
-            // SAFETY: the context's live server.
-            let created = unsafe { worker_methods::create_event_workers(ctx.server()) };
+            let created = worker_methods::create_event_workers(ctx.server());
             return Some(u64::from(created));
         }
         OP_CREATE_MESSAGE_BOX => {
@@ -287,8 +286,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             )));
         }
         OP_CREATE_USER_WORKERS => {
-            // SAFETY: the context's live server.
-            let created = unsafe { worker_methods::create_user_workers(ctx.server()) };
+            let created = worker_methods::create_user_workers(ctx.server(), config);
             return Some(u64::from(created));
         }
         OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
@@ -492,7 +490,7 @@ fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .unwrap_or(&task.data);
             let state = ctx.state();
             let sock = crate::commands::reply_socket(state, ctx.server())?;
-            let bus = crate::master_ops::server_message_bus(state);
+            let bus = state.message_bus();
             let handler = ctx.handler.as_ref()?;
             let fd = task.info.fd;
             crate::commands::answer(handler, ctx.server(), message, (bus, sock), fd, 0);

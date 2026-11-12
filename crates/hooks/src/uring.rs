@@ -14,11 +14,13 @@ use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::mem;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::set_errno;
-use swoole_rs_corebase::sys as os;
+use swoole_rs_corebase::sys::{self as os, ReadSlot};
 
 /// `SW_IOURING_QUEUE_SIZE`: default ring size and completion batch.
 const QUEUE_SIZE: u32 = 8192;
@@ -518,6 +520,45 @@ macro_rules! operations {
     )*};
 }
 
+/// [`operations!`] whose entries carry no pointer but their borrowed arguments'.
+macro_rules! safe_operations {
+    ($(
+        $(#[$doc:meta])*
+        fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
+    )*) => {$(
+        $(#[$doc])*
+        #[must_use]
+        pub fn $name(host: &Host, $($arg: $ty),*) -> $ret {
+            let entry = $entry.build();
+            // SAFETY: the entry's only pointers are the borrowed arguments', which
+            // outlive the request: it completes before `request` returns.
+            let result = unsafe { request(host, $timeout, entry) };
+            $convert(result)
+        }
+    )*};
+}
+
+safe_operations! {
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
+    fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as u32).flags(flags), std::convert::identity;
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
+    fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32).flags(flags), std::convert::identity;
+    fn close_fd(fd: c_int) -> c_int,
+        timeout -1.0, opcode::Close::new(Fd(fd)), int;
+    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
+    fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
+        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
+    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
+    fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
+        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
+    fn futex_wait(futex: &AtomicU32) -> c_int,
+        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
+    fn futex_wakeup(futex: &AtomicU32) -> c_int,
+        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
+}
+
 operations! {
     fn open_file(pathname: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int,
         timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
@@ -525,12 +566,6 @@ operations! {
         timeout timeout, opcode::Connect::new(Fd(fd), addr, len), int;
     fn accept(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t, flags: c_int, timeout: f64) -> c_int,
         timeout timeout, opcode::Accept::new(Fd(fd), addr, len).flags(flags), int;
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
-    fn recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Recv::new(Fd(fd), buf.cast(), len as u32).flags(flags), std::convert::identity;
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
-    fn send(fd: c_int, buf: *const c_void, len: usize, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.cast(), len as u32).flags(flags), std::convert::identity;
     fn recvmsg(fd: c_int, message: *mut libc::msghdr, flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::RecvMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,
@@ -543,14 +578,6 @@ operations! {
         timeout timeout, opcode::Readv::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
     fn writev(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::Writev::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
-    fn close_fd(fd: c_int) -> c_int,
-        timeout -1.0, opcode::Close::new(Fd(fd)), int;
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
-    fn read(fd: c_int, buf: *mut c_void, size: usize, timeout: f64) -> isize,
-        timeout timeout, opcode::Read::new(Fd(fd), buf.cast(), size as c_uint).offset(u64::MAX), std::convert::identity;
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
-    fn write(fd: c_int, buf: *const c_void, size: usize, timeout: f64) -> isize,
-        timeout timeout, opcode::Write::new(Fd(fd), buf.cast(), size as c_uint).offset(u64::MAX), std::convert::identity;
     fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int,
         timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath, Fd(libc::AT_FDCWD), newpath), int;
     fn mkdir(pathname: *const c_char, mode: libc::mode_t) -> c_int,
@@ -565,10 +592,6 @@ operations! {
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), int;
     fn ftruncate(fd: c_int, length: libc::off_t) -> c_int,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), int;
-    fn futex_wait(futex: *mut u32) -> c_int,
-        timeout -1.0, opcode::FutexWait::new(futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
-    fn futex_wakeup(futex: *mut u32) -> c_int,
-        timeout -1.0, opcode::FutexWake::new(futex, 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
 }
 
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
@@ -589,7 +612,7 @@ fn sleep_timespec(host: &Host, ts: libc::timespec) -> c_int {
 /// A peek through the ring, then the datagram itself without blocking.
 ///
 /// # Safety
-/// Pointers are valid as for recvfrom(2).
+/// Pointers are valid as for recvfrom(2), and `buf` is not null.
 pub unsafe fn recvfrom(
     host: &Host,
     fd: c_int,
@@ -599,8 +622,9 @@ pub unsafe fn recvfrom(
     len: *mut libc::socklen_t,
     timeout: f64,
 ) -> isize {
-    // SAFETY: the caller's contract.
-    let peeked = unsafe { recv(host, fd, buf, n, libc::MSG_PEEK, timeout) };
+    // SAFETY: the caller's contract: `n` writable bytes at `buf`, which is not null.
+    let slots = unsafe { core::slice::from_raw_parts_mut(buf.cast::<mem::MaybeUninit<u8>>(), n) };
+    let peeked = recv(host, fd, slots, libc::MSG_PEEK, timeout);
     if peeked > 0 {
         // SAFETY: the caller's contract.
         unsafe { libc::recvfrom(fd, buf, n, libc::MSG_DONTWAIT, addr, len) }

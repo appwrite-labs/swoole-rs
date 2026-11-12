@@ -7,14 +7,12 @@
 //! use, under their upstream symbols, over scheduler.rs. These need the timer
 //! and the event loop, which only the extension links.
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
-use crate::context::{Native, swr_v1_context_init};
-use crate::scheduler::{
-    Routine, bailed_out, context, current, resume, scheduler, with_scheduler, yield_with_cancel,
-};
+use crate::context::{Context, Native};
+use crate::coroutine::{self, Co, Sched, run};
+use crate::scheduler::{bailed_out, current, resume, with_scheduler, yield_with_cancel};
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{
-    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, STACK_MARK, STACK_PROTECT, Scheduler,
-    swr_v1_coroutine_run,
+    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
 };
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::ptr;
@@ -103,32 +101,37 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
     routine: Routine,
     arg: *mut c_void,
 ) -> c_long {
-    let mut record = Box::<Native>::new_uninit();
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
-    let ctx = context(record.as_mut_ptr().cast());
-    // SAFETY: a writable context that stays put until `destroy` frees it.
-    let error = unsafe { swr_v1_context_init(ctx, stack_size, flags, routine, arg) };
-    if error != 0 {
-        set_last_error(error);
-        log::warning(
-            c"Coroutine::create",
-            format_args!(
-                "failed to create coroutine, Error: {}",
-                io::Error::from_raw_os_error(error)
-            ),
-        );
-        return -1;
-    }
-    let native = Box::into_raw(record).cast::<c_void>();
+    // SAFETY: `routine` takes `arg`, as the caller promises.
+    let ctx = match unsafe { Context::new(stack_size, flags, routine, arg) } {
+        Ok(ctx) => ctx,
+        Err(error) => {
+            set_last_error(error);
+            log::warning(
+                c"Coroutine::create",
+                format_args!(
+                    "failed to create coroutine, Error: {}",
+                    io::Error::from_raw_os_error(error)
+                ),
+            );
+            return -1;
+        }
+    };
+    let co = Coroutine::IDLE;
+    let native = Box::into_raw(Box::new(Native { co, ctx })).cast::<c_void>();
     let now = steady_usec();
     let co = native.cast::<Coroutine>();
-    // SAFETY: the record starts with its coroutine, which registers once.
+    // SAFETY: the record starts with its coroutine, which registers once and
+    // stays put until `destroy` frees it.
     if with_scheduler(|s| unsafe { s.register(co, native, now / 1000, now) }) {
         activate();
     }
-    // SAFETY: the registered coroutine, which runs until it yields or ends.
-    unsafe { swr_v1_coroutine_run(scheduler(), co) }
+    // SAFETY: the coroutine just registered, live until it ends.
+    let Some(co) = (unsafe { Co::of(co) }) else {
+        return -1;
+    };
+    run(Sched::this(), co)
 }
 
 extern "C" fn keep_alive(_: *mut c_void) {}
@@ -177,30 +180,37 @@ pub extern "C-unwind" fn deactivate() {
 #[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
 pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     // SAFETY: as the caller promises.
-    let canceler = unsafe { (*co).cancel_fn }.cast::<Canceler>();
+    let Some(co) = (unsafe { Co::of(co) }) else {
+        return false;
+    };
+    let canceler = co.with(|co| co.cancel_fn).cast::<Canceler>();
     if canceler.is_null() {
         set_last_error(SW_ERROR_CO_CANNOT_CANCEL);
         return false;
     }
     // SAFETY: the waiting yield's canceler, on its live frame.
     let Canceler { call, data } = unsafe { canceler.read() };
+    co.with(Coroutine::mark_canceled);
     // SAFETY: that yield's cancel function and its closure.
-    unsafe { call(co.cast(), data) }
+    unsafe { call(co.ptr().cast(), data) }
 }
 
 /// `yield_ex`'s timer: the wait timed out.
 unsafe extern "C" fn timed_out(co: *mut c_void) {
     // SAFETY: the coroutine waits in `yield_ex` until this resumes it.
-    unsafe { (*co.cast::<Coroutine>()).mark_timed_out() };
-    // SAFETY: as above.
-    unsafe { resume(co) };
+    if let Some(co) = unsafe { Co::of(co.cast()) } {
+        co.with(Coroutine::mark_timed_out);
+        coroutine::resume(Sched::this(), co);
+    }
 }
 
-/// `bool Coroutine::yield_ex(double timeout)`: false, with the last error, when
-/// it timed out or was canceled.
+/// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
+/// (aborting otherwise): false, with the last error, when it timed out or was
+/// canceled.
 ///
 /// # Safety
-/// `co` is the running coroutine.
+/// The caller's frames own nothing with a destructor: a bailout abandons the
+/// coroutine's stack.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
 pub unsafe extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
     // SAFETY: as the caller promises.
@@ -223,12 +233,14 @@ pub fn yield_resumed(code: i32) -> bool {
 /// `RC_CANCELED` when it timed out or was canceled.
 ///
 /// # Safety
-/// `co` is the running coroutine; the caller's frames own nothing that needs a drop.
+/// `co` is the running coroutine (this aborts otherwise); the caller's frames
+/// own nothing with a destructor.
 #[must_use]
 pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
+    let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first.
-        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, co) }
+        unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, running.ptr().cast()) }
     } else {
         ptr::null_mut()
     };
@@ -239,8 +251,8 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     };
     // SAFETY: as the caller promises.
     unsafe { yield_with_cancel(co, resume_canceled) };
-    // SAFETY: `co` runs again.
-    let code = unsafe { (*co.cast::<Coroutine>()).resume_code };
+    // `co` runs again.
+    let code = running.with(|co| co.resume_code);
     if code != RC_TIMEDOUT && !timer.is_null() {
         // SAFETY: the pending timer added above.
         unsafe { swoole_timer_del(timer) };
@@ -286,18 +298,19 @@ pub unsafe extern "C-unwind" fn print_socket_bound_error(
 /// `routine` takes `arg`.
 #[unsafe(no_mangle)]
 unsafe extern "C-unwind" fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long {
-    if swoole_event_is_available() {
-        // SAFETY: as the caller promises.
-        return unsafe { swr_v1_coroutine_create(routine, arg) };
+    let fresh = !swoole_event_is_available();
+    if fresh {
+        if swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0 {
+            return -1;
+        }
+        activate();
     }
-    if swoole_event_init(SW_EVENTLOOP_WAIT_EXIT) < 0 {
-        return -1;
-    }
-    activate();
     // SAFETY: as the caller promises.
     let cid = unsafe { swr_v1_coroutine_create(routine, arg) };
-    swoole_event_wait();
-    deactivate();
+    if fresh {
+        swoole_event_wait();
+        deactivate();
+    }
     cid
 }
 
@@ -310,8 +323,7 @@ extern "C" fn swoole_coroutine_is_in() -> u8 {
 /// `long swoole_coroutine_get_id()`: -1 outside a coroutine.
 #[unsafe(no_mangle)]
 extern "C" fn swoole_coroutine_get_id() -> c_long {
-    // SAFETY: the current coroutine is live.
-    unsafe { current().as_ref() }.map_or(-1, |co| co.cid)
+    crate::current_cid()
 }
 
 /// `swoole::Coroutine *swoole_coroutine_get(long cid)`, for gdb.

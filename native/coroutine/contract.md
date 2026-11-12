@@ -37,8 +37,8 @@ Create, run, resume, yield (with or without a cancel function), the timed
 `yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
 resume callback still sees the old current; yield clears the resume code before
 its callback). They call back through `swr_v1_coroutine_hooks`: `swap_in` (returns
-whether the coroutine ended), `swap_out`, `destroy` (the stack-usage trace, then
-the context and record are freed), `bailout` (`on_bailout`, a C function and its
+whether the coroutine ended), `swap_out`, `destroy` (frees the record and its
+stack, or joins its thread), `bailout` (`on_bailout`, a C function and its
 data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
 coroutine closes: the close callback, then `release` restores current, orphans
 the coroutines this one resumed, unlinks it from its origin and drops it from
@@ -74,9 +74,9 @@ anonymous mapping (plus `MAP_STACK` on OpenBSD) whose lowest page is made
 inaccessible; it returns null on failure, which context init reports as upstream does.
 `STACK_MARK` (`SW_CONTEXT_DETECT_STACK_USAGE`) writes upstream's magic
 markers before the context is made: at `size - offset + 31` for each doubling
-`offset` from 64 KiB while `offset <= size`. `swr_v1_context_stack_usage`
-samples them while `offset < size` and reports twice the last changed offset,
-or 64 KiB. `swr_v1_context_stack_free` takes the same size and flags.
+`offset` from 64 KiB while `offset <= size`; only upstream's trace log read
+them (`get_stack_usage`), which stack.rs's tests keep. `swr_v1_context_stack_free`
+takes the same size and flags.
 
 `crates/coroutine/src/context.rs` owns the `Context` record that follows
 each coroutine's `swr_v1_coroutine`: init
