@@ -257,6 +257,7 @@ impl Bus {
 
     /// `MessageBus::get_packet`.
     #[must_use]
+    #[inline]
     pub fn packet(&self) -> BusPacket {
         let head = self.head();
         if head.flags & PTR != 0 {
@@ -775,6 +776,7 @@ impl Bus {
 
     /// `MessageBus::get_pipe_socket`: the record `init_pipe_socket` made for `fd`.
     #[must_use]
+    #[inline]
     pub fn pipe_socket(&self, fd: c_int) -> *mut SocketRecord {
         usize::try_from(fd)
             .ok()
