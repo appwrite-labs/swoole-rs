@@ -6,10 +6,8 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::DataHead;
-use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{Connection, SharedServer, server_methods, view};
@@ -685,16 +683,13 @@ fn stats(call: &Call) {
         call.add_assoc_long(c"worker_dispatch_count", dispatch);
         call.add_assoc_long(c"worker_concurrency", concurrency);
     }
-    let pool = serv.task_pool();
-    // SAFETY: its live task pool.
-    let queue = unsafe { (*pool).queue() };
-    if config.task_ipc_mode.get() > TASK_IPC_UNIXSOCK && !queue.is_null() {
-        // SAFETY: the pool's live queue.
-        if let Some((num, bytes)) = unsafe { &*queue.cast::<QueueRecord>() }.stat() {
-            // (zend_long) of each count, as upstream.
-            call.add_assoc_long(c"task_queue_num", num.cast_signed() as i64);
-            call.add_assoc_long(c"task_queue_bytes", bytes.cast_signed() as i64);
-        }
+    let stat = (config.task_ipc_mode.get() > TASK_IPC_UNIXSOCK)
+        .then(|| serv.task_pool_ref().queue_stat())
+        .flatten();
+    if let Some((num, bytes)) = stat {
+        // (zend_long) of each count, as upstream.
+        call.add_assoc_long(c"task_queue_num", num.cast_signed() as i64);
+        call.add_assoc_long(c"task_queue_bytes", bytes.cast_signed() as i64);
     }
     if config.task_worker_num.get() > 0 {
         let idle = server_methods::get_idle_task_worker_num(serv);
@@ -843,14 +838,7 @@ fn get_client_info(call: &Call) {
     {
         call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status()));
     }
-    let cert = conn.ssl_client_cert().cast::<CppString>();
-    if !cert.is_null()
-        && conn.ssl_client_cert_pid() == swoole_rs_process::methods::swoole_get_worker_pid()
-    {
-        // SAFETY: the connection's live certificate string.
-        let cert = unsafe { &*cert };
-        call.add_assoc_stringl(c"ssl_client_cert", cert.view());
-    }
+    conn.with_client_cert(|cert| call.add_assoc_stringl(c"ssl_client_cert", cert));
     if let Some(server_socket) = serv.at(conn.server_fd()) {
         let port = swr_v1_clients_address_port(&server_socket.info());
         call.add_assoc_long(c"server_port", i64::from(port));

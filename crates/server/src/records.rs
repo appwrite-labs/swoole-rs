@@ -223,6 +223,20 @@ impl<'a> Connection<'a> {
         // SAFETY: null, or the connection's live socket, as `socket` says.
         unsafe { swoole_rs_reactor::Event::new(self.fd(), reactor_id, fd_type, self.socket_ptr()) }
     }
+
+    /// `f` over the client certificate this worker stored for the connection
+    /// (`OP_STORE_CLIENT_CERT`), or `None` when this worker stored none.
+    pub fn with_client_cert<R>(self, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+        if self.ssl_client_cert_pid() != swoole_rs_process::methods::swoole_get_worker_pid() {
+            return None;
+        }
+        let cert = self
+            .ssl_client_cert()
+            .cast::<swoole_rs_buffer::string::CppString>();
+        // SAFETY: null, or the certificate this worker made, which only this worker's
+        // `OP_FREE_CLIENT_CERT` frees, and not during `f`, which gets a borrow.
+        unsafe { cert.as_ref() }.map(|cert| f(cert.view()))
+    }
 }
 
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
