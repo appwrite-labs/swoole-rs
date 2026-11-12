@@ -160,7 +160,7 @@ struct Native<'a, 'c> {
     state: Option<&'a ServerState>,
     /// master.cc's context, whose records `master_ops` answers ops from; null
     /// for the other runners.
-    master: *mut server_methods::NativeContext,
+    master: *mut server_methods::NativeContext<'a>,
     /// The method runner's server; `None` for the other runners.
     server: Option<view::Server<'a>>,
     /// The reactor-thread context, whose records `reactor_ops` answers ops from;
@@ -251,7 +251,7 @@ pub(crate) fn run_reactor_with<'s, 'c>(
 pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,
-    ctx: *mut server_methods::NativeContext,
+    ctx: *mut server_methods::NativeContext<'_>,
 ) -> i64 {
     // SAFETY: per the caller.
     let serv = unsafe { (*ctx).serv };
