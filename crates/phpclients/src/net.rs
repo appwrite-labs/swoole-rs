@@ -9,7 +9,6 @@ use libc::c_int;
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
-    ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard, PoisonError},
 };
