@@ -134,6 +134,13 @@ the ZTS PHP and `--enable-swoole-thread`. The merge tier's `variant.yml` counts 
 one on the pair its variant already builds (release profile, not `release-lto`), so
 their records compare only with themselves. Their results go in the variant's
 `phpt-<variant>` artifact, which the ratchet doesn't read: lower those records by hand.
+`thread` reads at parity by construction, like a full TLS handshake: starting a
+thread boots a ZTS PHP request in it, and its profile (`profiles-zts-callgrind`)
+puts 92.7% of the instructions in `php` and 6.9% in libc on both engines, against
+0.05% in the extension (691,776 for cargo, 743,664 plus 20,411 in libstdc++ for
+upstream, over 1.37 billion). It stays as a check that a thread still starts and
+joins; `uring-file`, at 59.5% (cargo) and 41.7% (upstream) in the extension, does
+measure Swoole's work.
 
 ```sh
 python3 tools/build_ext.py --profile release-lto
