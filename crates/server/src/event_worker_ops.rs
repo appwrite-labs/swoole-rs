@@ -48,7 +48,7 @@ struct Context<'a> {
     serv: view::Server<'a>,
     worker: *mut WorkerRecord,
     info: *mut DataHead,
-    reactor: *mut c_void,
+    reactor: crate::reactor_handle::Reactor,
     conn: *mut ConnectionRecord,
     status: *const c_void,
     socket: *mut c_void,
@@ -135,8 +135,8 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .event_pool()
                 .running,
         ),
-        OP_MINFD => i64::from(ctx.counters().min_fd).cast_unsigned(),
-        OP_MAXFD => i64::from(ctx.counters().max_fd).cast_unsigned(),
+        OP_MINFD => i64::from(ctx.counters().min_fd()).cast_unsigned(),
+        OP_MAXFD => i64::from(ctx.counters().max_fd()).cast_unsigned(),
         OP_HAS_REACTOR => u64::from(!swoole_rs_corebase::thread_reactor().is_null()),
         _ => return None,
     })

@@ -28,7 +28,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_START_CALLBACK, OP_WORKER_STATUS, OP_WORKER_STOP_CALLBACK, OP_WRITE_RESULT_FILE,
     OP_ZERO_RESULT,
 };
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_reactor::Socket;
 
 use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
 use crate::commands::CommandHandler;
@@ -79,10 +79,9 @@ struct Context<'a> {
     worker: Option<Worker<'a>>,
     /// The task being run, or the one being finished: null, or live for `'a`.
     task: *const DataHead,
-    socket: *mut SocketRecord,
+    socket: Option<Socket<'a>>,
     /// `Server::finish`'s result, its packed form and its file.
-    data: *const u8,
-    data_len: usize,
+    data: &'a [u8],
     packed: *mut DataHead,
     buf: *mut DataHead,
     file: c_int,
@@ -93,9 +92,8 @@ struct Context<'a> {
 
 impl<'a> Context<'a> {
     /// The pipe or stream socket the op runs over, if any.
-    fn socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: null, or the live socket the method that built the context lent.
-        unsafe { Socket::from_ptr(self.socket) }
+    fn socket(&self) -> Option<Socket<'a>> {
+        self.socket
     }
     /// The context over `pool`'s server and `worker`.
     fn of(pool: TaskPool<'a>, worker: Worker<'a>) -> Self {
@@ -112,9 +110,8 @@ impl<'a> Context<'a> {
             pool: None,
             worker: None,
             task: core::ptr::null(),
-            socket: core::ptr::null_mut(),
-            data: core::ptr::null(),
-            data_len: 0,
+            socket: None,
+            data: &[],
             packed: core::ptr::null_mut(),
             buf: core::ptr::null_mut(),
             file: -1,
@@ -357,7 +354,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let packed = ctx.packed.cast::<EventHead>();
             // SAFETY: an `EventData` (the context's, or the source's result slot) and
             // the result's bytes.
-            u64::from(unsafe { task_pack(packed, ctx.data.cast(), ctx.data_len) })
+            u64::from(unsafe { task_pack(packed, ctx.data.as_ptr().cast(), ctx.data.len()) })
         }
         OP_ZERO_RESULT => {
             ctx.edit_packed(|packed| packed.len = 0);
@@ -382,28 +379,29 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: its live pool.
             let pool = unsafe { &*pool };
             // Only a stream pool has IPC state: an event worker's pool has none.
-            ctx.socket = if pool.use_socket != 0 {
-                pool.ipc_connection().cast()
+            let connection = if pool.use_socket != 0 {
+                pool.ipc_connection()
             } else {
                 core::ptr::null_mut()
             };
-            u64::from(!ctx.socket.is_null())
+            // SAFETY: null, or the stream pool's live connection for this task.
+            ctx.socket = unsafe { Socket::from_ptr(connection.cast()) };
+            u64::from(ctx.socket.is_some())
         }
         OP_SEND_STREAM => {
-            let send = |data: *const u8, length| {
-                let send_sync = swoole_rs_tls::upstream::socket_send_sync;
-                // SAFETY: the stream's live connection and `length` bytes at `data`.
-                let send = |socket| unsafe { send_sync(socket, data.cast(), length, 0) };
-                crate::objects::socket(ctx.socket.cast()).map_or(-1, send)
+            let send = |data: &[u8]| {
+                ctx.socket().map_or(-1, |socket| {
+                    swoole_rs_tls::upstream::send_sync(socket, data, 0)
+                })
             };
             #[expect(
                 clippy::cast_possible_truncation,
                 reason = "htonl's uint32_t, as upstream"
             )]
-            let length = (ctx.data_len as u32).to_be_bytes();
-            let mut retval = send(length.as_ptr(), length.len());
+            let length = (ctx.data.len() as u32).to_be_bytes();
+            let mut retval = send(&length);
             if retval > 0 {
-                retval = send(ctx.data, ctx.data_len);
+                retval = send(ctx.data);
             }
             signed(retval as i64)
         }

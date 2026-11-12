@@ -275,30 +275,6 @@ fn all_commands<F: Facts>(f: &mut F) -> Json {
     answer(0, Json::Array(list))
 }
 
-/// `sw_atoi`: `strtol` base 10, saturating, truncated to `int`.
-fn atoi(text: &str) -> i32 {
-    let text = text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
-    let (negative, digits) = match text.strip_prefix('-') {
-        Some(digits) => (true, digits),
-        None => (false, text.strip_prefix('+').unwrap_or(text)),
-    };
-    let mut value: i64 = 0;
-    for byte in digits.bytes().take_while(u8::is_ascii_digit) {
-        let digit = i64::from(byte - b'0');
-        value = if negative {
-            value.saturating_mul(10).saturating_sub(digit)
-        } else {
-            value.saturating_mul(10).saturating_add(digit)
-        };
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "`static_cast<int>` of a `long` keeps its low 32 bits"
-    )]
-    let value = value as i32;
-    value
-}
-
 fn socket_info(msg: &[u8]) -> Json {
     let Some(fd) = json::param(msg, "fd") else {
         return require("fd");
@@ -306,7 +282,7 @@ fn socket_info(msg: &[u8]) -> Json {
     if !TCP_INFO_SUPPORTED {
         return answer(5001, Json::Str("platform unsupported".into()));
     }
-    let data = match tcp_info_of(atoi(&fd)) {
+    let data = match tcp_info_of(swoole_rs_corebase::atoi(fd.as_bytes())) {
         Some(fields) => Json::Object(fields.into_iter().collect()),
         // Upstream returned the dumped error object as the data.
         None => Json::Str(
@@ -398,7 +374,7 @@ fn connection_info<F: Facts>(f: &mut F, msg: &[u8]) -> Json {
         return require("session_id");
     };
     // An `int` session id, widened as `SessionId`.
-    if !f.session(atoi(&session_id).into()) {
+    if !f.session(swoole_rs_corebase::atoi(session_id.as_bytes()).into()) {
         return answer(4004, Json::Str("connection not exists".into()));
     }
     answer(0, connection_json(f.connection(0)))
@@ -450,8 +426,7 @@ fn tcp_info_of(_: i32) -> Option<Vec<(&'static str, Json)>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMAND_TABLE, Command, Connection, Facts, Manager, Port, Socket, Thread, atoi, commands,
-        run,
+        COMMAND_TABLE, Command, Connection, Facts, Manager, Port, Socket, Thread, commands, run,
     };
 
     #[derive(Default)]
@@ -661,15 +636,5 @@ mod tests {
             r#"{"code":0,"data":"{\"code\":5001,\"data\":\"failed to getsockopt(TCP_INFO) for socket\"}"}"#,
             "a bad fd answers the dumped error"
         );
-    }
-
-    #[test]
-    fn atoi_is_strtol() {
-        assert_eq!(atoi(" 42abc"), 42, "leading space, trailing junk");
-        assert_eq!(atoi("-7"), -7, "sign");
-        assert_eq!(atoi("+3"), 3, "plus");
-        assert_eq!(atoi("x"), 0, "no digits");
-        assert_eq!(atoi("4294967297"), 1, "low 32 bits");
-        assert_eq!(atoi("99999999999999999999"), -1, "LONG_MAX's low bits");
     }
 }
