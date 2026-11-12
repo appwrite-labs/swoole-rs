@@ -157,6 +157,15 @@ impl<'a> Server<'a> {
         self.state().tables_ref().message_bus
     }
 
+    /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
+    /// the packet it holds; its new owner does.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub fn move_worker_packet(self) {
+        crate::master_ops::worker_message_bus(self.state())
+            .rust()
+            .move_packet();
+    }
+
     /// `upload_tmp_dir = dir`.
     pub fn set_upload_tmp_dir(self, dir: &[u8]) {
         self.state().set_upload_tmp_dir(dir);
