@@ -34,11 +34,11 @@ impl Co {
             .unwrap_or(core::ptr::null())
     }
 
-    /// The `SSLContext` owner's fields, or none without one.
-    pub(crate) fn tls_fields(self) -> Option<OwnedTlsFields> {
+    /// `read` over the `SSLContext` owner's fields, or none without one.
+    pub(crate) fn tls_fields<R>(self, read: impl FnOnce(&OwnedTlsFields) -> R) -> Option<R> {
         let owner = self.tls_owner();
         // SAFETY: the record's live owner, whose fields nothing writes meanwhile.
-        (!owner.is_null()).then(|| unsafe { owner_fields(owner) })
+        (!owner.is_null()).then(|| read(unsafe { owner_fields(owner) }))
     }
 
     /// The `SSLContext` owner's `tls_host_name`, empty without one.
@@ -169,13 +169,15 @@ impl Co {
     /// this socket, then the socket is handshaked. In a coroutine.
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
-        let fields = self.tls_fields().unwrap_or_default();
+        let (context_ready, verify_peer) = self
+            .tls_fields(|fields| (fields.context.is_some(), fields.verify_peer != 0))
+            .unwrap_or_default();
         let mut state = Handshake {
             socket: self,
             timer: Timer::new(self, READ, self.read_timeout()),
             handshaked: self.ssl_handshaked(),
-            context_ready: !fields.context.is_null(),
-            verify_peer: fields.verify_peer != 0,
+            context_ready,
+            verify_peer,
         };
         let done = ssl_handshake(&mut state);
         state.timer.stop();
@@ -294,8 +296,11 @@ impl Handshaking for Handshake {
 
     fn verify(&mut self) -> bool {
         // Verified only with a context.
-        let fields = self.socket.tls_fields().unwrap_or_default();
-        self.socket.ssl_verify(fields.allow_self_signed != 0)
+        let allow_self_signed = self
+            .socket
+            .tls_fields(|fields| fields.allow_self_signed != 0);
+        self.socket
+            .ssl_verify(allow_self_signed.unwrap_or_default())
     }
 }
 

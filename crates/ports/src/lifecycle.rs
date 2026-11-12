@@ -175,7 +175,7 @@ pub unsafe fn ssl_init(port: *const c_void) -> bool {
         // SAFETY: the context's live SSL_CTX and a callback of OpenSSL's signature.
         unsafe {
             SSL_CTX_set_tlsext_servername_callback__fixed_rust(
-                edit(&context, |fields| fields.context),
+                edit(&context, |fields| fields.context_ptr()),
                 Some(sni_callback),
             );
         }
@@ -258,7 +258,7 @@ unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_v
     else {
         return TLSEXT_NOACK;
     };
-    let ctx = edit(context, |fields| fields.context);
+    let ctx = edit(context, |fields| fields.context_ptr());
     // SAFETY: that context's live SSL_CTX.
     unsafe { ssl.set_context(ctx) };
     TLSEXT_OK

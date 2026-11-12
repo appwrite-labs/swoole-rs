@@ -13,7 +13,7 @@ use swoole_rs_http2::{
     hpack::{Decoder, Encoder},
     sw_rs_http2_default_settings,
 };
-use swoole_rs_phphttp::http2::{Ctx, Handler};
+use swoole_rs_phphttp::http2::{Ctx, Handler, ServerCtx, StreamCtx};
 use swoole_rs_zend::bailout;
 
 pub(crate) type Session = Rc<SessionState>;
@@ -66,15 +66,19 @@ pub(crate) struct SessionState {
     pub(crate) header_stream_id: Cell<u32>,
     pub(crate) header_end_stream: Cell<bool>,
     pub(crate) shutting_down: Cell<bool>,
-    pub(crate) is_coro: bool,
     /// The connection's context: frames that belong to no stream go out on it.
     pub(crate) default_ctx: Ctx,
+    /// An async server's settings context, made for this session alone (a
+    /// coroutine server's is its connection's).
+    own: Option<ServerCtx>,
     handle: Handler,
 }
 
 /// `http2::Stream`.
 pub(crate) struct StreamState {
     pub(crate) ctx: Ctx,
+    /// The stream's hold on `ctx`, let go with the stream.
+    hold: StreamCtx,
     pub(crate) id: u32,
     pub(crate) remote_window_size: Cell<u32>,
     pub(crate) local_window_size: Cell<u32>,
@@ -82,15 +86,13 @@ pub(crate) struct StreamState {
     pub(crate) headers_received: Cell<bool>,
     /// The request is complete: no later frame adds to it.
     pub(crate) request_received: Cell<bool>,
-    /// The request went to its handler, which releases its objects.
-    dispatched: Cell<bool>,
     /// A Content-Length of the request's header block was malformed or too large.
     pub(crate) bad_length: Cell<bool>,
     /// The block named a Content-Type or Accept-Encoding, which are read
     /// back from `$header` once it is complete.
     pub(crate) negotiates: Cell<bool>,
     /// The coroutine waiting for the peer to open the window.
-    waiting: Cell<Option<swoole_rs_phpcoroutines::Coroutine>>,
+    waiting: swoole_rs_phpcoroutines::Waiter,
 }
 
 thread_local! {
@@ -113,7 +115,13 @@ fn defaults() -> [u32; 6] {
 const INIT_WINDOW_SIZE: usize = 3;
 
 impl SessionState {
-    fn new(fd: i64, default_ctx: Ctx, max_body_size: u32, is_coro: bool, handle: Handler) -> Self {
+    fn new(
+        fd: i64,
+        default_ctx: Ctx,
+        own: Option<ServerCtx>,
+        max_body_size: u32,
+        handle: Handler,
+    ) -> Self {
         // The peer need not send every setting: start from the defaults.
         let local = defaults();
         Self {
@@ -130,8 +138,8 @@ impl SessionState {
             header_stream_id: Cell::new(0),
             header_end_stream: Cell::new(false),
             shutting_down: Cell::new(false),
-            is_coro,
             default_ctx,
+            own,
             handle,
         }
     }
@@ -146,6 +154,11 @@ impl SessionState {
         Self::find(ctx.fd())
     }
 
+    /// A coroutine server's session.
+    pub(crate) fn is_coro(&self) -> bool {
+        self.own.is_none()
+    }
+
     pub(crate) fn local(&self, field: usize) -> u32 {
         self.local.get(field).copied().unwrap_or(0)
     }
@@ -155,18 +168,18 @@ impl SessionState {
         if !create {
             return self.streams.borrow().get(&id).cloned();
         }
-        let ctx = self.default_ctx.stream_context(self.fd, id);
+        let hold = self.default_ctx.stream_context(self.fd, id);
         let stream = Rc::new(StreamState {
-            ctx,
+            ctx: hold.ctx(),
+            hold,
             id,
             remote_window_size: Cell::new(self.remote[INIT_WINDOW_SIZE].get()),
             local_window_size: Cell::new(self.local[INIT_WINDOW_SIZE]),
             headers_received: Cell::new(false),
             request_received: Cell::new(false),
-            dispatched: Cell::new(false),
             bad_length: Cell::new(false),
             negotiates: Cell::new(false),
-            waiting: Cell::new(None),
+            waiting: swoole_rs_phpcoroutines::Waiter::default(),
         });
         let replaced = self.streams.borrow_mut().insert(id, stream.clone());
         drop(replaced);
@@ -188,59 +201,43 @@ impl SessionState {
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
     pub(crate) fn handle(&self, stream: &StreamState) {
-        stream.dispatched.set(true);
+        stream.hold.dispatch();
         bailout::defer((self.handle)(stream.ctx, self.default_ctx));
-    }
-}
-
-impl Drop for SessionState {
-    fn drop(&mut self) {
-        if !self.is_coro {
-            // SAFETY: the server's settings context, made for this session
-            // alone (a coroutine server's is its connection's).
-            unsafe { self.default_ctx.release_default() };
-        }
     }
 }
 
 impl StreamState {
     /// Suspend the current coroutine until `wake`.
     pub(crate) fn wait(&self) {
-        swoole_rs_phpcoroutines::park(&self.waiting);
+        self.waiting.wait();
     }
 
     pub(crate) fn wake(&self) {
-        if let Some(coroutine) = self.waiting.get() {
-            // SAFETY: the coroutine suspended in `wait`.
-            unsafe { coroutine.wake(false) };
-        }
+        self.waiting.wake();
     }
 }
 
-impl Drop for StreamState {
-    fn drop(&mut self) {
-        // SAFETY: the stream's own context, released once.
-        bailout::defer(unsafe { self.ctx.release_stream(self.dispatched.get()) });
-    }
+/// A coroutine server's session for connection `fd`
+/// (`swoole_http2_server_session_new`), unless it has one. `handle` gets each
+/// finished request; `default_ctx` outlives the session.
+pub(crate) fn session_new(fd: i64, default_ctx: Ctx, max_body_size: u32, handle: Handler) {
+    insert(fd, default_ctx, None, max_body_size, handle);
 }
 
-/// A session for connection `fd` (`swoole_http2_server_session_new`), unless
-/// it has one. `handle` gets each finished request; `default_ctx` outlives
-/// the session.
-pub(crate) fn session_new(
-    fd: i64,
-    default_ctx: Ctx,
-    max_body_size: u32,
-    is_coro: bool,
-    handle: Handler,
-) {
+/// An async server's session for connection `fd`, unless it has one: the
+/// settings context goes with the session.
+pub(crate) fn session_own(fd: i64, own: ServerCtx, max_body_size: u32, handle: Handler) {
+    insert(fd, own.ctx(), Some(own), max_body_size, handle);
+}
+
+fn insert(fd: i64, default_ctx: Ctx, own: Option<ServerCtx>, max_body_size: u32, handle: Handler) {
     SESSIONS.with_borrow_mut(|sessions| {
         sessions.entry(fd).or_insert_with(|| {
             Rc::new(SessionState::new(
                 fd,
                 default_ctx,
+                own,
                 max_body_size,
-                is_coro,
                 handle,
             ))
         });

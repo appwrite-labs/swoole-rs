@@ -115,10 +115,10 @@ fn with_tls<P, R>(
     pick: impl FnOnce(&SocketFields) -> P,
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
-    let (before, ssl, picked) =
-        socket.read(|record| (record.tls, Ssl::of_fields(record), pick(record)));
+    let (before, picked) = socket.read(|record| (record.tls, pick(record)));
+    let ssl = Ssl::of(socket)?;
     let mut tls = before;
-    let result = step(&mut tls, ssl?, picked);
+    let result = step(&mut tls, ssl, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
     if tls != before {
         socket.edit(|record| record.tls = tls);
@@ -1372,7 +1372,7 @@ pub unsafe fn socket_ssl_create(
     flags: c_int,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let context = unsafe { crate::owner_fields(context) }.context;
+    let context = unsafe { crate::owner_fields(context) }.context_ptr();
     let (this, index) = (socket.as_ptr().cast(), crate::swr_v1_tls_connection_index());
     let (status, error) = socket.edit(|record| {
         let mut error = 0;
@@ -1644,7 +1644,7 @@ mod tests {
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
             let owner = crate::swr_v1_tls_owner_new();
-            (*owner.fields).context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
+            (*owner.fields).context = Some(crate::SslContext::tls());
             let mut fds = [0; 2];
             assert_eq!(
                 libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()),
@@ -1680,7 +1680,7 @@ mod tests {
         assert_eq!(socket_ssl_session(handle), None);
         unsafe {
             let owner = crate::swr_v1_tls_owner_new();
-            (*owner.fields).context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
+            (*owner.fields).context = Some(crate::SslContext::tls());
             assert_eq!(
                 socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), owner.owner, 2),
                 0
