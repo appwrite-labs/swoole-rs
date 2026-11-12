@@ -1,6 +1,6 @@
 # Buffer ABI v1
 
-Declarations: `native/include/swoole_rs_buffer.h` and
+Types: `native/include/swoole_rs_buffer.h` and
 `native/buffer/swoole_rs_buffer_typed.h`. Feature value 2 (graduated: always on).
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
@@ -8,16 +8,16 @@ tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too.
 (`native/buffer/swoole_buffer.h`) holds only the Rust handle, and its methods are
 Rust under their upstream symbols (`crates/buffer/src/cpp.rs`). Callers read the
 first entry with `typed_front()`, commit sends with `typed_consume()`, queue a
-close with `typed_close()` and drop the entry with `pop()`.
+close with `typed_close()` and drop the entry with `pop()`. Only Rust calls the
+queue's own operations (`swoole_rs_buffer::Buffer`'s methods); C++ goes through
+`Buffer`'s members, so the headers carry only the handle and front types.
 
 ## Ownership and accounting
 
-- `swr_v1_buffer_typed_create` writes a unique handle, or null on failure. Chunk
-  size 0 means `INT32_MAX`. Each non-null handle is released exactly once.
-- Append copies borrowed input into stable Rust allocations. Inputs, data and
-  outputs must be valid, aligned where typed, and disjoint from the handle,
-  queued data and each other. Byte buffers need only byte alignment. Null input
-  is allowed for zero length/count.
+- `Buffer::create` returns a unique queue, or `NOMEM`. Chunk size 0 means
+  `INT32_MAX`. `Buffer::release` drops it, or hands it back while a token is queued.
+- Append copies borrowed slices (and `Buffer`'s iovec member's descriptors) into
+  stable Rust allocations. A null iovec base is allowed for zero length.
 - Vector offset is an unsigned byte offset into the concatenated descriptors.
   Empty descriptors are allowed. Offset equal to the total succeeds and inserts
   nothing; beyond the total is `INVALID`. The facade rejects negative `off_t`.
@@ -26,13 +26,10 @@ close with `typed_close()` and drop the entry with `pop()`.
   chunk is popped. Pop subtracts the entry's copied length. Total length cannot
   exceed `UINT32_MAX`. Tokens count zero bytes.
 - The queue never dereferences, calls or frees a token or its disposer; pop hands
-  both back, and `Buffer::pop` runs the disposer after the queue call returns. Data pointers survive append; pop
-  invalidates the removed front.
-- `release(NULL)` succeeds. Release with pending tokens fails without mutation;
-  otherwise it drops remaining data and the handle. `~Buffer` drains and
-  disposes tokens first. Null required outputs return `INVALID` without being
-  dereferenced. Failed front/create/pop zero their output; failed stats leaves
-  outputs unchanged.
+  both back as a `TypedDetached`, whose `dispose()` runs the disposer once, after the
+  queue call returns. Data pointers survive append; pop invalidates the removed front.
+- Release with pending tokens fails without mutation; otherwise it drops remaining
+  data. `~Buffer` drains and disposes tokens first.
 
 ## Errors, threads, fork
 

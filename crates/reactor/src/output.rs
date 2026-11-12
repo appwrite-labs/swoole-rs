@@ -176,12 +176,10 @@ pub struct OwnedOutputResult {
 
 /// `Socket::handle_send` over the socket's typed queue: send its front, then
 /// commit the cursor and the socket's wait flags, and detach a finished chunk.
-///
-/// # Safety
-/// `buffer` is live and exclusive.
-pub unsafe fn handle_send_owned(
+/// The effects send from the queue's front chunk and never reach the queue itself.
+pub fn handle_send_owned(
     socket: crate::Socket<'_>,
-    buffer: *mut swoole_rs_buffer::Buffer,
+    queue: &mut swoole_rs_buffer::Buffer,
     hooks: &impl OutputEffects,
 ) -> OwnedOutputResult {
     let mut output = OwnedOutputResult {
@@ -189,26 +187,18 @@ pub unsafe fn handle_send_owned(
         status: 0,
         detached: swoole_rs_buffer::TypedDetached::default(),
     };
-    let mut front = swoole_rs_buffer::TypedFront::default();
-    // SAFETY: a live typed queue, with no retained borrow.
-    let queue = unsafe { buffer.as_ref() };
-    output.status = swoole_rs_buffer::swr_v1_buffer_typed_front(queue, Some(&mut front));
-    if output.status != 0 {
-        return output;
-    }
-    let data = if front.data.is_null() {
-        &[]
-    } else {
-        // SAFETY: the queue's front chunk, which it keeps until the pop below.
-        unsafe { std::slice::from_raw_parts(front.data, front.length as usize) }
+    let front = match queue.front() {
+        Ok(front) => front,
+        Err(status) => {
+            output.status = status;
+            return output;
+        }
     };
-    output.result = handle_send(hooks, data, front.offset);
-    // SAFETY: the live, exclusive queue. The effect has returned, so the observed front
-    // identity is committed only now, and the socket's flags are not part of the queue.
-    let mut queue = unsafe { buffer.as_mut() };
+    output.result = handle_send(hooks, queue.front_data(), front.offset);
+    // The effect has returned, so the observed front identity is committed only now,
+    // and the socket's flags are not part of the queue.
     if output.result.set_offset {
-        output.status = swoole_rs_buffer::swr_v1_buffer_typed_consume(
-            queue.as_deref_mut(),
+        output.status = queue.consume(
             front.generation,
             front.offset,
             output.result.offset.wrapping_sub(front.offset),
@@ -220,8 +210,10 @@ pub unsafe fn handle_send_owned(
     socket.edit(|record| output.result.publish(&mut record.output));
     if output.result.pop {
         // Detach transfers custody to the caller without invoking a disposer.
-        output.status =
-            swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut output.detached));
+        match queue.pop() {
+            Ok(detached) => output.detached = detached,
+            Err(status) => output.status = status,
+        }
     }
     output
 }
@@ -345,33 +337,21 @@ mod tests {
     fn owned_queue_commits_offsets_wait_flags_and_detaches_after_effects() {
         unsafe {
             let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
-            let mut queue = std::ptr::null_mut();
-            assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_create(64, Some(&mut queue)),
-                0
-            );
-            assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_append(queue.as_mut(), b"hello".as_ptr(), 5),
-                0
-            );
+            let mut queue = swoole_rs_buffer::Buffer::create(64).unwrap();
+            assert_eq!(queue.append(b"hello"), 0);
             // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
             let hooks = hooks(socket.cast(), &raw mut (*socket).fields.kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
             reset(2, 0, false);
-            let sent = handle_send_owned(handle, queue, &hooks);
+            let sent = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!(
                 (sent.status, sent.result.code, sent.result.offset),
                 (0, -1, 2)
             );
             assert_eq!((*socket).fields.output.send_wait, 1);
-            let mut front = swoole_rs_buffer::TypedFront::default();
-            assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
-                0
-            );
-            assert_eq!(front.offset, 2);
+            assert_eq!(queue.front().unwrap().offset, 2);
             reset(-1, libc::EPIPE, false);
-            let closed = handle_send_owned(handle, queue, &hooks);
+            let closed = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!(
                 (
                     closed.status,
@@ -380,20 +360,13 @@ mod tests {
                 ),
                 (0, -1, 1)
             );
-            assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
-                0
-            );
-            assert_eq!(front.offset, 2);
+            assert_eq!(queue.front().unwrap().offset, 2);
             reset(3, 0, false);
-            let completed = handle_send_owned(handle, queue, &hooks);
+            let completed = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!((completed.status, completed.result.pop), (0, true));
-            assert!(completed.detached.token.is_null() && completed.detached.dispose.is_none());
-            assert_eq!(
-                swoole_rs_buffer::swr_v1_buffer_typed_front(queue.as_ref(), Some(&mut front)),
-                1
-            );
-            assert_eq!(swoole_rs_buffer::swr_v1_buffer_release(queue), 0);
+            assert!(completed.detached.token().is_null());
+            assert_eq!(queue.front().err(), Some(1));
+            assert!(queue.release().is_ok());
             crate::SocketRecord::free(socket);
         }
     }
