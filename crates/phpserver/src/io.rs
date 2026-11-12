@@ -3,7 +3,7 @@
 //! Server's records (crates/server's view) and its Rust methods.
 use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
-use std::ffi::{CStr, CString, c_int, c_void};
+use std::ffi::{CStr, CString, c_int};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
@@ -155,16 +155,12 @@ fn listen(call: &Call) {
     call.set_owned(zport);
 }
 
-/// `network::Socket::sendto(host, port, data, length)` on `socket`: the bytes
-/// sent, or -1. `host` ends with a NUL, and C reads it up to its first.
-/// # Safety
-/// `socket` is null or a live socket.
-unsafe fn socket_sendto(socket: *mut c_void, host: &[u8], port: i64, data: &[u8]) -> isize {
-    if socket.is_null() {
+/// `network::Socket::sendto(host, port, data, length)` on `socket`, its fd and
+/// type: the bytes sent, or -1. `host` ends with a NUL, and C reads it up to its first.
+fn socket_sendto(socket: Option<(c_int, c_int)>, host: &[u8], port: i64, data: &[u8]) -> isize {
+    let Some((fd, kind)) = socket else {
         return -1;
-    }
-    // SAFETY: per the caller.
-    let (fd, kind) = unsafe { view::socket_fd(socket) };
+    };
     let mut address = SocketAddress::default();
     #[expect(
         clippy::cast_possible_truncation,
@@ -200,12 +196,11 @@ fn send(call: &Call) {
         let config = serv.config();
         if path.bytes().first() == Some(&b'/') && config.have_dgram_sock {
             let socket = if server_socket == -1 {
-                config.dgram_socket
+                serv.dgram_socket(3)
             } else {
                 serv.server_socket(server_socket)
             };
-            // SAFETY: null or a live socket, and the path's bytes.
-            let sent = unsafe { socket_sendto(socket, path.bytes_with_nul(), 0, payload) } > 0;
+            let sent = socket_sendto(socket, path.bytes_with_nul(), 0, payload) > 0;
             return call.set_bool(sent);
         }
     }
@@ -245,23 +240,16 @@ fn sendto(call: &Call) {
     } else {
         (1, c"UDP listener has to be added before executing sendto")
     };
-    let config = serv.config();
-    let socket = match kind {
-        1 => config.udp_socket_ipv4,
-        2 => config.udp_socket_ipv6,
-        _ => config.dgram_socket,
-    };
-    if socket.is_null() {
+    let Some(socket) = serv.dgram_socket(kind) else {
         fatal(E_WARNING, missing);
         return call.set_bool(false);
-    }
+    };
     let socket = if server_socket < 0 {
-        socket
+        Some(socket)
     } else {
         serv.server_socket(server_socket)
     };
-    // SAFETY: null or a live socket, the address and the payload.
-    call.set_bool(unsafe { socket_sendto(socket, host, port, data) } >= 0);
+    call.set_bool(socket_sendto(socket, host, port, data) >= 0);
 }
 
 fn sendfile(call: &Call) {
