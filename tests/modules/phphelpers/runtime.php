@@ -436,4 +436,15 @@ $references=swoole_typed_array('<string>',[&$property->text]);
 $typedConcat=($references[0].='y');
 check($typedConcat==='xy' && $property->text==='xy' && $references[0]==='xy','typed-property string concat reference fast path');
 $summary['typed_reference_concat']=$typedConcat;
+// An exit condition that replaces itself (Co::set) while the reactor runs it
+// finishes on its own reference; the slot's goes with the replacement.
+$exitCalls=0;
+Swoole\Coroutine::set(['exit_condition'=>function () use (&$exitCalls):bool {
+    ++$exitCalls;
+    Swoole\Coroutine::set(['exit_condition'=>function () use (&$exitCalls):bool { ++$exitCalls; return true; }]);
+    return true;
+}]);
+Swoole\Coroutine\run(function ():void { Swoole\Coroutine::sleep(0.01); });
+check($exitCalls>0,'self-replacing exit condition ran');
+$summary['exit_condition_replaced']=$exitCalls>0;
 echo json_encode($summary, JSON_THROW_ON_ERROR), "\n";

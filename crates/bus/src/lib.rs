@@ -766,6 +766,15 @@ impl Bus {
             .and_then(|index| self.pipe_sockets.get(index).copied())
             .unwrap_or(ptr::null_mut())
     }
+
+    /// [`MessageBus::pipe_socket`]'s record as a handle, or `None` before
+    /// `init_pipe_socket` made one for `fd`.
+    #[must_use]
+    pub fn pipe(&self, fd: c_int) -> Option<Socket<'_>> {
+        // SAFETY: null or a record `init_pipe_socket` made, which the bus frees only
+        // when it drops.
+        unsafe { Socket::from_ptr(self.pipe_socket(fd)) }
+    }
 }
 
 /// [`Bus::send`] for crates/process' `ProcessPool::send_message`, which cannot

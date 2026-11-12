@@ -286,21 +286,14 @@ impl ServerState {
         };
     }
 
-    /// `serv->running` alone: no reference to the rest of the record, which an
-    /// op context on another thread may hold as `&mut ServerConfig`.
-    fn running_flag(&self) -> &AtomicBool {
-        // SAFETY: a field of the box this state owns until it drops.
-        unsafe { &(*self.config()).running }
-    }
-
     /// `serv->running`.
     pub(crate) fn running(&self) -> bool {
-        self.running_flag().load(Ordering::Acquire)
+        self.config_ref().running.load(Ordering::Acquire)
     }
 
     /// `serv->running = running`, seen by every thread's next [`Self::running`].
     pub(crate) fn set_running(&self, running: bool) {
-        self.running_flag().store(running, Ordering::Release);
+        self.config_ref().running.store(running, Ordering::Release);
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {

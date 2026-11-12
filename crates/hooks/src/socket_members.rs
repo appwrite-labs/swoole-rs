@@ -250,7 +250,7 @@ impl Co {
         if !available(self, READ) {
             return None;
         }
-        let needs_context = self.tls_fields().is_some_and(|tls| tls.context.is_null());
+        let needs_context = self.tls_fields(|tls| tls.context.is_none()) == Some(true);
         if needs_context && !self.ssl_context_create() {
             return None;
         }

@@ -177,8 +177,9 @@ pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
 /// executor's object store at each use, so it reads `None` once the object is
 /// being freed, or when its handle went to an object that is no `T`. Another
 /// `T` can take the handle later: a holder that needs the same object compares
-/// what it finds.
-pub struct Weak<T>(u32, PhantomData<fn() -> T>);
+/// what it finds. The handle means something only to the executor of the
+/// thread that made it, so a `Weak` is neither `Send` nor `Sync`.
+pub struct Weak<T>(u32, PhantomData<*const T>);
 
 impl<T: Custom> Weak<T> {
     /// The handle of the `T` object `value` holds.

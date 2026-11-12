@@ -43,7 +43,7 @@ pub(crate) unsafe extern "C" fn php_swoole_length_func(
 fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
     let mut data = Owned::string(ZString::new(bytes)).into_zval();
     let mut retval = long_zval(0);
-    let called = native::invoke(callable, std::slice::from_mut(&mut data), &raw mut retval);
+    let called = native::invoke(callable, std::slice::from_mut(&mut data), &mut retval);
     let length = match called {
         Err(bailout) => {
             bailout.defer();
@@ -261,7 +261,7 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
         edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
-        let callable = bailed(native::callable(function.as_ptr()))?;
+        let callable = bailed(native::callable(function))?;
         if callable.is_null() {
             return Some(false);
         }
