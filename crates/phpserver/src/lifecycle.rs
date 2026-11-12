@@ -325,6 +325,18 @@ impl Custom for ServerData {
             mark: Cell::new(0),
         }
     }
+    const DESTRUCTS: bool = true;
+
+    /// Once the object's last reference went, its releases run here, while it
+    /// is still live: PHP code they run (a user process's destructor, say) can
+    /// reach the object through a `Connection\Iterator`, as upstream's can. An
+    /// object destructed at shutdown while something still holds it keeps what
+    /// it has until it is freed.
+    fn destruct(&self, last: bool) {
+        if last {
+            self.release();
+        }
+    }
 }
 
 /// A Server object and its data, for as long as the value holding it is borrowed.
@@ -493,15 +505,16 @@ pub(crate) fn owns_shared() -> bool {
     swoole_rs_corebase::thread_kind() != THREAD_WORKER
 }
 
-impl Drop for ServerData {
-    /// `php_swoole_server_free_object`, before Zend releases the object's
-    /// properties. Nothing reaches the object any more: it is no longer the
-    /// running one, so the callbacks this runs find none.
-    fn drop(&mut self) {
-        let Some(share) = self.serv.take() else {
+impl ServerData {
+    /// `php_swoole_server_free_object`'s releases: the `dispatch_func` callable,
+    /// the callbacks, the user processes, the ports' links and the commands.
+    /// Each goes out of the object before it drops, since its destructor can
+    /// run PHP code that reaches the object (a `Connection\Iterator` calls the
+    /// server's methods). Nothing the second time.
+    fn release(&self) {
+        let Some(server) = self.serv.get().map(SharedServer::view) else {
             return;
         };
-        let server = share.view();
         if owns_shared() {
             // SAFETY: freeing the object on the one thread that owns the config's slots.
             let dispatch = std::mem::replace(
@@ -510,14 +523,31 @@ impl Drop for ServerData {
             );
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        let property = self.property.get_mut();
-        drop(std::mem::take(&mut property.callbacks));
+        let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);
+        drop(callbacks);
         // `sw_zval_free`: each copy's reference goes.
-        drop(std::mem::take(&mut property.user_processes));
-        for port in std::mem::take(&mut property.ports) {
+        let processes = std::mem::take(&mut self.property.borrow_mut().user_processes);
+        drop(processes);
+        let ports = std::mem::take(&mut self.property.borrow_mut().ports);
+        for port in ports {
             crate::port::release(&port);
         }
-        drop(std::mem::take(&mut property.commands));
+        let commands = std::mem::take(&mut self.property.borrow_mut().commands);
+        drop(commands);
+    }
+}
+
+impl Drop for ServerData {
+    /// The rest of `php_swoole_server_free_object`, before Zend releases the
+    /// object's properties: what [`Custom::destruct`] left (it is skipped for an
+    /// object PHP never destructs), then the object's share in its server. The
+    /// object is no longer the running one, so the callbacks this runs find none.
+    fn drop(&mut self) {
+        self.release();
+        let Some(share) = self.serv.take() else {
+            return;
+        };
+        let server = share.view();
         if fact(server, fact::MASTER) {
             crate::thread::free_setting(server);
             // Its shutdown callbacks run now, as they did before the delete. The

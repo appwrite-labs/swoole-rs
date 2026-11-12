@@ -121,8 +121,10 @@ pub trait Custom: Sized + 'static {
     /// The object's `dtor_obj` step after `__destruct` ran (Zend runs it once,
     /// on the last reference or at shutdown, before the object is freed). PHP
     /// code it runs sees a live object; a bailout it defers is raised after it,
-    /// unless one was already pending.
-    fn destruct(&self) {}
+    /// unless one was already pending. `last` says the object's last reference
+    /// went, so Zend frees it next unless this step gives it a new one; at
+    /// shutdown an object something still holds is destructed with `last` false.
+    fn destruct(&self, _last: bool) {}
     /// Whether PHP may serialize the objects, asked once, when the class registers.
     #[must_use]
     fn serializable() -> bool {
@@ -274,10 +276,13 @@ unsafe extern "C" fn destruct<T: Custom>(std: *mut zend_object) {
     // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
     // which owns nothing yet.
     unsafe { zend_objects_destroy_object(std) };
+    // SAFETY: a live object. Zend holds one reference across this handler, so
+    // a count of one means nothing else names the object.
+    let last = unsafe { (*std).gc.refcount } == 1;
     bailout::finish_after(|| {
         // SAFETY: a live object of `T`'s class, which outlives this call.
         if let Some(data) = unsafe { custom::<T>(std) } {
-            data.destruct();
+            data.destruct(last);
         }
     });
 }

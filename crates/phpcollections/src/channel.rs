@@ -39,7 +39,7 @@ impl Custom for Chan {
     const DESTRUCTS: bool = true;
 
     /// `channel_coro_dtor_object`: free every queued value, then the channel.
-    fn destruct(&self) {
+    fn destruct(&self, _last: bool) {
         self.release(drop);
     }
 }
