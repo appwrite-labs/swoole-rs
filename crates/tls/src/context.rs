@@ -4,23 +4,24 @@
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use openssl_sys::{
-    BIO, BIO_ctrl, DTLS_method, EVP_MD, EVP_PKEY, EVP_PKEY_free, EVP_sha1, OPENSSL_NPN_NEGOTIATED,
-    OPENSSL_init_ssl, SSL, SSL_CTRL_SET_GROUPS_LIST, SSL_CTX, SSL_CTX_check_private_key,
-    SSL_CTX_clear_options, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_new,
-    SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list,
-    SSL_CTX_set_client_CA_list, SSL_CTX_set_default_verify_paths, SSL_CTX_set_mode,
-    SSL_CTX_set_options, SSL_CTX_set_read_ahead, SSL_CTX_set_session_cache_mode,
-    SSL_CTX_set_session_id_context, SSL_CTX_set_verify, SSL_CTX_set_verify_depth,
-    SSL_CTX_use_PrivateKey_file, SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file,
-    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
-    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
-    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
-    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
-    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
-    SSL_select_next_proto, TLS_method, X509_STORE_CTX,
+    BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, OPENSSL_init_ssl, SSL,
+    SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
+    SSL_CTX, SSL_CTX_ctrl, SSL_CTX_free, SSL_CTX_load_verify_locations, SSL_CTX_set_alpn_protos,
+    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_cipher_list, SSL_CTX_set_client_CA_list,
+    SSL_CTX_set_session_id_context, SSL_CTX_use_PrivateKey_file,
+    SSL_CTX_use_certificate_chain_file, SSL_CTX_use_certificate_file, SSL_FILETYPE_PEM,
+    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
+    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
+    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
+    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
+    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_get_wbio, SSL_load_client_CA_file,
+    SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
+use std::marker::{PhantomData, PhantomPinned};
+use std::mem::ManuallyDrop;
+use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
@@ -48,6 +49,97 @@ unsafe extern "C" {
     ) -> *mut c_uchar;
     fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, callback: PasswordCallback);
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
+}
+
+// SAFETY: libssl/libcrypto's declarations, typed so that a live context is a
+// reference: each reads only its arguments, and `SSL_CTX_new` returns its new
+// context's one reference, or null.
+unsafe extern "C" {
+    safe fn TLS_method() -> &'static SslMethod;
+    safe fn DTLS_method() -> &'static SslMethod;
+    safe fn SSL_CTX_new(method: &SslMethod) -> Option<SslContext>;
+    safe fn SSL_CTX_up_ref(ctx: &SslCtx) -> c_int;
+    safe fn SSL_CTX_set_options(ctx: &SslCtx, options: Options) -> Options;
+    safe fn SSL_CTX_clear_options(ctx: &SslCtx, options: Options) -> Options;
+    safe fn SSL_CTX_set_verify(ctx: &SslCtx, mode: c_int, callback: Option<VerifyCallback>);
+    safe fn SSL_CTX_set_verify_depth(ctx: &SslCtx, depth: c_int);
+    safe fn SSL_CTX_set_default_verify_paths(ctx: &SslCtx) -> c_int;
+    safe fn SSL_CTX_check_private_key(ctx: &SslCtx) -> c_int;
+    safe fn EVP_sha1() -> *const EVP_MD;
+}
+
+/// An `SSL_METHOD`, one of libssl's static tables.
+#[repr(C)]
+struct SslMethod {
+    _opaque: [u8; 0],
+}
+
+/// A live `SSL_CTX`, borrowed from an [`SslContext`]. It is zero-sized, so a
+/// reference to it claims none of the bytes OpenSSL changes behind it.
+#[repr(C)]
+pub struct SslCtx {
+    _opaque: [u8; 0],
+    _not_send: PhantomData<(*mut u8, PhantomPinned)>,
+}
+
+impl SslCtx {
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut SSL_CTX {
+        ptr::from_ref(self).cast_mut().cast()
+    }
+
+    /// `SSL_CTX_ctrl` for a command that reads only its integer.
+    fn ctrl(&self, command: Ctrl, value: c_long) -> c_long {
+        // SAFETY: a live context, and a command that reads no pointer.
+        unsafe { SSL_CTX_ctrl(self.as_ptr(), command as c_int, value, ptr::null_mut()) }
+    }
+}
+
+/// The `SSL_CTX_ctrl` commands behind `SSL_CTX_set_mode`, `_set_read_ahead` and
+/// `_set_session_cache_mode`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum Ctrl {
+    Mode = SSL_CTRL_MODE,
+    ReadAhead = SSL_CTRL_SET_READ_AHEAD,
+    SessionCacheMode = SSL_CTRL_SET_SESS_CACHE_MODE,
+}
+
+/// One reference to an `SSL_CTX`, released on drop. A clone takes another.
+#[repr(transparent)]
+pub struct SslContext(&'static SslCtx);
+
+impl SslContext {
+    /// Gives the reference up, to an owner that releases it with `SSL_CTX_free`.
+    #[must_use]
+    pub fn into_raw(self) -> *mut SSL_CTX {
+        ManuallyDrop::new(self).as_ptr()
+    }
+}
+
+impl Deref for SslContext {
+    type Target = SslCtx;
+
+    /// The context, live while this reference is.
+    fn deref(&self) -> &SslCtx {
+        self.0
+    }
+}
+
+impl Clone for SslContext {
+    fn clone(&self) -> Self {
+        // OpenSSL 3 fails only when its lock does; 1.1 never does.
+        assert_eq!(SSL_CTX_up_ref(self), 1, "SSL_CTX_up_ref failed");
+        Self(self.0)
+    }
+}
+
+impl Drop for SslContext {
+    fn drop(&mut self) {
+        // SAFETY: the reference this handle holds, released once; borrows of the
+        // context end with the handle's.
+        unsafe { SSL_CTX_free(self.as_ptr()) };
+    }
 }
 
 /// `swSSLVersion`'s protocol bits.
@@ -151,7 +243,7 @@ pub(crate) struct PasswordBinding {
 
 struct Method<'a> {
     config: &'a TlsConfig,
-    ctx: *mut SSL_CTX,
+    ctx: &'a SslCtx,
     function: &'static CStr,
     password: Option<PasswordBinding>,
 }
@@ -172,62 +264,42 @@ impl Drop for FileBio {
     }
 }
 
-/// The context's setters that take plain values. `create_context` builds a `Method`
-/// over the context `SSL_CTX_new` just returned and calls nothing but `ssl_error` on
-/// a null one, so `ctx` is live in each.
-impl Method<'_> {
-    /// `SSL_CTX_set_options`.
-    fn set_options(&self, options: Options) -> Options {
-        // SAFETY: the method's live context.
-        unsafe { SSL_CTX_set_options(self.ctx, options) }
-    }
+fn warn(config: &TlsConfig, function: &CStr, message: &[u8]) {
+    let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
+    (config.warn)(function, &String::from_utf8_lossy(&text));
+}
 
-    /// `SSL_CTX_clear_options`.
-    fn clear_options(&self, options: Options) {
-        // SAFETY: the method's live context.
-        unsafe { SSL_CTX_clear_options(self.ctx, options) };
-    }
-
-    /// `SSL_CTX_set_verify_depth`.
-    fn set_verify_depth(&self, depth: u8) {
-        // SAFETY: the method's live context.
-        unsafe { SSL_CTX_set_verify_depth(self.ctx, c_int::from(depth)) };
-    }
-
-    /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
-    fn load_verify_locations(&self, file: TlsStr, path: TlsStr) -> c_int {
-        // SAFETY: the method's live context; each is null or a NUL-terminated `c_str()`
-        // of the configuration, which outlives the method.
-        unsafe { SSL_CTX_load_verify_locations(self.ctx, file.or_null(), path.or_null()) }
-    }
-
-    /// `SSL_CTX_set_verify`.
-    fn set_verify(&self, mode: c_int, callback: Option<VerifyCallback>) {
-        // SAFETY: the method's live context; the callback is a safe function.
-        unsafe { SSL_CTX_set_verify(self.ctx, mode, callback) };
-    }
+/// Upstream's `ssl_error`: pops one error and appends its reason and code.
+fn ssl_error(config: &TlsConfig, function: &CStr, message: &[u8]) {
+    let code = crate::pop_error();
+    let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "upstream stores ERR_get_error's unsigned long in a long and prints %ld"
+    )]
+    let code = code as c_long;
+    let mut text = message.to_vec();
+    text.extend_from_slice(b", Error: ");
+    text.extend_from_slice(reason);
+    text.extend_from_slice(format!("[{code}]").as_bytes());
+    warn(config, function, &text);
 }
 
 impl Method<'_> {
     fn warn(&self, message: &[u8]) {
-        let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
-        (self.config.warn)(self.function, &String::from_utf8_lossy(&text));
+        warn(self.config, self.function, message);
     }
 
-    /// Upstream's `ssl_error`: pops one error and appends its reason and code.
     fn ssl_error(&self, message: &[u8]) {
-        let code = crate::pop_error();
-        let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "upstream stores ERR_get_error's unsigned long in a long and prints %ld"
-        )]
-        let code = code as c_long;
-        let mut text = message.to_vec();
-        text.extend_from_slice(b", Error: ");
-        text.extend_from_slice(reason);
-        text.extend_from_slice(format!("[{code}]").as_bytes());
-        self.warn(&text);
+        ssl_error(self.config, self.function, message);
+    }
+
+    /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
+    fn load_verify_locations(&self, file: TlsStr, path: TlsStr) -> c_int {
+        let ctx = self.ctx.as_ptr();
+        // SAFETY: a live context; each is null or a NUL-terminated `c_str()` of the
+        // configuration, which outlives the method.
+        unsafe { SSL_CTX_load_verify_locations(ctx, file.or_null(), path.or_null()) }
     }
 
     fn set_capath(&self) -> bool {
@@ -236,15 +308,12 @@ impl Method<'_> {
             if self.load_verify_locations(config.cafile, config.capath) == 0 {
                 return false;
             }
-        } else {
-            // SAFETY: a live context.
-            if unsafe { SSL_CTX_set_default_verify_paths(self.ctx) } == 0 {
-                self.ssl_error(b"SSL_CTX_set_default_verify_paths() failed");
-                return false;
-            }
+        } else if SSL_CTX_set_default_verify_paths(self.ctx) == 0 {
+            self.ssl_error(b"SSL_CTX_set_default_verify_paths() failed");
+            return false;
         }
         if config.verify_depth > 0 {
-            self.set_verify_depth(config.verify_depth);
+            SSL_CTX_set_verify_depth(self.ctx, c_int::from(config.verify_depth));
         }
         true
     }
@@ -253,7 +322,7 @@ impl Method<'_> {
         let config = self.config;
         if !config.ciphers.is_empty() {
             // SAFETY: a live context and a NUL-terminated cipher list.
-            if unsafe { SSL_CTX_set_cipher_list(self.ctx, config.ciphers.data) } == 0 {
+            if unsafe { SSL_CTX_set_cipher_list(self.ctx.as_ptr(), config.ciphers.data) } == 0 {
                 self.ssl_error(&quoted(
                     b"SSL_CTX_set_cipher_list(\"",
                     config.ciphers,
@@ -262,7 +331,7 @@ impl Method<'_> {
                 return false;
             }
             if config.prefer_server_ciphers
-                && self.set_options(SSL_OP_CIPHER_SERVER_PREFERENCE) == 0
+                && SSL_CTX_set_options(self.ctx, SSL_OP_CIPHER_SERVER_PREFERENCE) == 0
             {
                 self.ssl_error(b"SSL_CTX_set_options(SSL_OP_CIPHER_SERVER_PREFERENCE) failed");
                 return false;
@@ -277,8 +346,8 @@ impl Method<'_> {
 
     fn set_client_certificate(&self) -> bool {
         let file = self.config.client_cert_file;
-        self.set_verify(SSL_VERIFY_PEER, Some(verify_callback));
-        self.set_verify_depth(self.config.verify_depth);
+        SSL_CTX_set_verify(self.ctx, SSL_VERIFY_PEER, Some(verify_callback));
+        SSL_CTX_set_verify_depth(self.ctx, c_int::from(self.config.verify_depth));
         // `configure` calls this for a file that is set, and with no directory.
         if self.load_verify_locations(file, TlsStr::NONE) == 0 {
             self.ssl_error(&quoted(
@@ -297,7 +366,7 @@ impl Method<'_> {
         }
         crate::clear_errors();
         // SAFETY: a live context takes ownership of the list.
-        unsafe { SSL_CTX_set_client_CA_list(self.ctx, names) };
+        unsafe { SSL_CTX_set_client_CA_list(self.ctx.as_ptr(), names) };
         true
     }
 
@@ -310,7 +379,7 @@ impl Method<'_> {
         // SAFETY: `SSL_CTX_set1_curves_list` on a live context and a NUL-terminated list.
         let set = unsafe {
             SSL_CTX_ctrl(
-                self.ctx,
+                self.ctx.as_ptr(),
                 SSL_CTRL_SET_GROUPS_LIST,
                 0,
                 curve.data.cast_mut().cast(),
@@ -344,7 +413,7 @@ impl Method<'_> {
             return false;
         }
         // SAFETY: a live context takes the key on success.
-        if unsafe { SSL_CTX_set0_tmp_dh_pkey(self.ctx, key) } != 1 {
+        if unsafe { SSL_CTX_set0_tmp_dh_pkey(self.ctx.as_ptr(), key) } != 1 {
             self.ssl_error(&quoted(b"SSL_CTX_set0_tmp_dh_pkey('", file, b"') failed"));
             // SAFETY: the key the context refused.
             unsafe { EVP_PKEY_free(key) };
@@ -366,10 +435,11 @@ impl Method<'_> {
     fn configure(&self) -> bool {
         let config = self.config;
         let ctx = self.ctx;
+        let raw = ctx.as_ptr();
         let protocols = config.protocols;
         // The other legacy SSL_OP_*_BUG workarounds are 0 in OpenSSL 3.
-        self.set_options(SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
-        self.clear_options(SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
+        SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
+        SSL_CTX_clear_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
         let mut disable = 0;
         for (bit, option) in [
             (SSLV2, SSL_OP_NO_SSLv2),
@@ -384,34 +454,38 @@ impl Method<'_> {
                 disable |= option;
             }
         }
-        self.clear_options(SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3);
-        self.set_options(disable);
+        SSL_CTX_clear_options(
+            ctx,
+            SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3,
+        );
+        SSL_CTX_set_options(ctx, disable);
         if config.disable_compress {
-            self.set_options(SSL_OP_NO_COMPRESSION);
+            SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION);
         }
-        // SAFETY: a mode setter on the live context.
-        unsafe { SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_NO_AUTO_CHAIN) };
-        // SAFETY: a live context.
-        unsafe { SSL_CTX_set_read_ahead(ctx, 1) };
+        ctx.ctrl(
+            Ctrl::Mode,
+            SSL_MODE_RELEASE_BUFFERS | SSL_MODE_NO_AUTO_CHAIN,
+        );
+        ctx.ctrl(Ctrl::ReadAhead, 1);
 
         // The owner's binding reads its live passphrase slot (crates/tls's owned.rs).
         if !config.passphrase.is_empty()
             && let Some(binding) = self.password
         {
             // SAFETY: a live context; the binding's owner outlives the borrowed context.
-            unsafe { SSL_CTX_set_default_passwd_cb_userdata(ctx, binding.userdata) };
+            unsafe { SSL_CTX_set_default_passwd_cb_userdata(raw, binding.userdata) };
             // SAFETY: a live context; a plain callback with the binding's userdata.
-            unsafe { SSL_CTX_set_default_passwd_cb(ctx, binding.callback) };
+            unsafe { SSL_CTX_set_default_passwd_cb(raw, binding.callback) };
         }
         if !config.cert_file.is_empty() {
             let file = config.cert_file;
             // SAFETY: a live context and a NUL-terminated path.
-            if unsafe { SSL_CTX_use_certificate_file(ctx, file.data, SSL_FILETYPE_PEM) } <= 0 {
+            if unsafe { SSL_CTX_use_certificate_file(raw, file.data, SSL_FILETYPE_PEM) } <= 0 {
                 self.ssl_error(&quoted(b"SSL_CTX_use_certificate_file(", file, b") failed"));
                 return false;
             }
             // SAFETY: as above.
-            if unsafe { SSL_CTX_use_certificate_chain_file(ctx, file.data) } <= 0 {
+            if unsafe { SSL_CTX_use_certificate_chain_file(raw, file.data) } <= 0 {
                 self.ssl_error(&quoted(
                     b"SSL_CTX_use_certificate_chain_file(",
                     file,
@@ -423,21 +497,20 @@ impl Method<'_> {
         if !config.key_file.is_empty() {
             let file = config.key_file;
             // SAFETY: a live context and a NUL-terminated path.
-            if unsafe { SSL_CTX_use_PrivateKey_file(ctx, file.data, SSL_FILETYPE_PEM) } <= 0 {
+            if unsafe { SSL_CTX_use_PrivateKey_file(raw, file.data, SSL_FILETYPE_PEM) } <= 0 {
                 self.ssl_error(&quoted(b"SSL_CTX_use_PrivateKey_file(", file, b") failed"));
                 return false;
             }
-            // SAFETY: a live context.
-            if unsafe { SSL_CTX_check_private_key(ctx) } == 0 {
+            if SSL_CTX_check_private_key(ctx) == 0 {
                 self.ssl_error(b"SSL_CTX_check_private_key() failed");
                 return false;
             }
         }
         if protocols & DTLS != 0 {
             // SAFETY: a live context; plain functions.
-            unsafe { set_cookie_generate_cb(ctx, Some(generate_cookie)) };
+            unsafe { set_cookie_generate_cb(raw, Some(generate_cookie)) };
             // SAFETY: as above.
-            unsafe { set_cookie_verify_cb(ctx, Some(verify_cookie)) };
+            unsafe { set_cookie_verify_cb(raw, Some(verify_cookie)) };
         }
         let capath = self.with(c"SSLContext::set_capath").set_capath();
         if config.verify_peer {
@@ -445,7 +518,7 @@ impl Method<'_> {
                 return false;
             }
         } else {
-            self.set_verify(SSL_VERIFY_NONE, None);
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, None);
         }
         if config.http || config.http_v2 {
             let protos: &'static Protos = if config.http_v2 { &H2_HTTP1 } else { &HTTP1 };
@@ -455,22 +528,21 @@ impl Method<'_> {
             )]
             let length = protos.0.len() as c_uint;
             // SAFETY: a live context and a static list.
-            if unsafe { SSL_CTX_set_alpn_protos(ctx, protos.0.as_ptr(), length) } < 0 {
+            if unsafe { SSL_CTX_set_alpn_protos(raw, protos.0.as_ptr(), length) } < 0 {
                 self.ssl_error(&[b"SSL_CTX_set_alpn_protos(", protos.0, b") failed"].concat());
                 return false;
             }
             // SAFETY: a live context; the argument is a static.
             unsafe {
                 SSL_CTX_set_alpn_select_cb__fixed_rust(
-                    ctx,
+                    raw,
                     Some(select_alpn),
                     ptr::from_ref(protos).cast_mut().cast(),
                 );
             }
             // SAFETY: a live context and a static id.
-            unsafe { SSL_CTX_set_session_id_context(ctx, b"HTTP".as_ptr(), 4) };
-            // SAFETY: a live context.
-            unsafe { SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_SERVER) };
+            unsafe { SSL_CTX_set_session_id_context(raw, b"HTTP".as_ptr(), 4) };
+            ctx.ctrl(Ctrl::SessionCacheMode, SSL_SESS_CACHE_SERVER);
         }
         if !config.client_cert_file.is_empty()
             && !self
@@ -611,8 +683,7 @@ unsafe extern "C" fn generate_cookie(
         _ => std::process::abort(),
     };
     let data = [&port[..], address].concat();
-    // SAFETY: a static digest.
-    let sha1 = unsafe { EVP_sha1() };
+    let sha1 = EVP_sha1();
     // SAFETY: `HMAC` over local buffers into OpenSSL's cookie buffer, which holds
     // more than EVP_MAX_MD_SIZE bytes, and its length slot.
     let digest = unsafe {
@@ -776,35 +847,27 @@ fn drain_errors() {
 pub(crate) unsafe fn create_context(
     config: &mut TlsConfig,
     password: Option<PasswordBinding>,
-) -> *mut SSL_CTX {
+) -> Option<SslContext> {
     let method = if config.protocols & DTLS != 0 {
-        // SAFETY: a static method table.
-        unsafe { DTLS_method() }
+        DTLS_method()
     } else {
-        // SAFETY: a static method table.
-        unsafe { TLS_method() }
+        TLS_method()
     };
     if config.protocols == 0 {
         config.protocols = ALL;
     }
-    // SAFETY: creates a context from a static method.
-    let ctx = unsafe { SSL_CTX_new(method) };
+    let function = c"SSLContext::create";
+    let Some(ctx) = SSL_CTX_new(method) else {
+        ssl_error(config, function, b"SSL_CTX_new() failed");
+        return None;
+    };
     let create = Method {
         config,
-        ctx,
-        function: c"SSLContext::create",
+        ctx: &ctx,
+        function,
         password,
     };
-    if ctx.is_null() {
-        create.ssl_error(b"SSL_CTX_new() failed");
-        return ptr::null_mut();
-    }
-    if create.configure() {
-        return ctx;
-    }
-    // SAFETY: the context created above.
-    unsafe { SSL_CTX_free(ctx) };
-    ptr::null_mut()
+    create.configure().then_some(ctx)
 }
 
 #[cfg(test)]
@@ -817,7 +880,7 @@ mod tests {
     ///
     /// # Safety
     /// `config`'s strings are NUL-terminated and outlive the call.
-    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> *mut SSL_CTX {
+    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> Option<SslContext> {
         // SAFETY: forwards the caller's live configuration view.
         unsafe { create_context(config, None) }
     }
@@ -829,7 +892,7 @@ mod tests {
             /// # Safety
             /// `ctx` is a live context and `config`'s strings are NUL-terminated and
             /// outlive the call.
-            unsafe fn $name(ctx: *mut SSL_CTX, config: &TlsConfig) -> bool {
+            unsafe fn $name(ctx: &SslCtx, config: &TlsConfig) -> bool {
                 Method {
                     config,
                     ctx,
@@ -921,23 +984,21 @@ mod tests {
         let mut owned = Owned(Vec::new());
         let mut config = owned.config();
         unsafe {
-            let ctx = swr_v1_tls_context_create(&mut config);
-            assert!(!ctx.is_null());
+            let ctx = swr_v1_tls_context_create(&mut config).unwrap();
             assert_eq!(config.protocols, ALL, "zero means every version");
-            let options = SSL_CTX_get_options(ctx);
+            let options = SSL_CTX_get_options(ctx.as_ptr());
             assert_eq!(options & (SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3), 0);
-            assert_eq!(SSL_CTX_get_verify_mode(ctx), SSL_VERIFY_NONE);
-            SSL_CTX_free(ctx);
+            assert_eq!(SSL_CTX_get_verify_mode(ctx.as_ptr()), SSL_VERIFY_NONE);
+            drop(ctx);
 
             config.protocols = TLSV1_3 | DTLS;
             config.disable_compress = true;
-            let ctx = swr_v1_tls_context_create(&mut config);
-            let options = SSL_CTX_get_options(ctx);
+            let ctx = swr_v1_tls_context_create(&mut config).unwrap();
+            let options = SSL_CTX_get_options(ctx.as_ptr());
             assert_ne!(options & SSL_OP_NO_TLSv1_1, 0);
             assert_eq!(options & SSL_OP_NO_TLSv1_2, 0, "DTLS keeps 1.2");
             assert_eq!(options & SSL_OP_NO_TLSv1_3, 0);
             assert_ne!(options & SSL_OP_NO_COMPRESSION, 0);
-            SSL_CTX_free(ctx);
         }
         assert_eq!(take_log(), Vec::<String>::new());
     }
@@ -953,7 +1014,7 @@ mod tests {
         config.cert_file = owned.str("/nonexistent/m21.pem");
         unsafe { ERR_clear_error() };
         let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
-        assert!(ctx.is_null());
+        assert!(ctx.is_none());
         let log = take_log();
         assert_eq!(log.len(), 1);
         assert!(
@@ -966,7 +1027,7 @@ mod tests {
         let mut config = owned.config();
         config.ciphers = owned.str("M21-nonexistent-cipher");
         let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
-        assert!(ctx.is_null());
+        assert!(ctx.is_none());
         let log = take_log();
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(log[0].starts_with(
@@ -982,7 +1043,8 @@ mod tests {
         let mut owned = Owned(Vec::new());
         let mut config = owned.config();
         unsafe {
-            let ctx = SSL_CTX_new(TLS_method());
+            let context = SSL_CTX_new(TLS_method()).unwrap();
+            let ctx = &*context;
             config.ecdh_curve = owned.str("auto");
             assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
             config.ecdh_curve = owned.str("prime256v1");
@@ -1006,8 +1068,8 @@ mod tests {
             config.client_cert_file = owned.str("/nonexistent/m21-ca.pem");
             config.verify_depth = 3;
             assert!(!swr_v1_tls_set_client_certificate(ctx, &config));
-            assert_eq!(SSL_CTX_get_verify_mode(ctx), SSL_VERIFY_PEER);
-            assert_eq!(SSL_CTX_get_verify_depth(ctx), 3);
+            assert_eq!(SSL_CTX_get_verify_mode(ctx.as_ptr()), SSL_VERIFY_PEER);
+            assert_eq!(SSL_CTX_get_verify_depth(ctx.as_ptr()), 3);
             take_log();
 
             config.cafile = owned.str("/nonexistent/m21-ca.pem");
@@ -1017,7 +1079,6 @@ mod tests {
                 Vec::<String>::new(),
                 "a failed CA load is silent"
             );
-            SSL_CTX_free(ctx);
         }
         assert_eq!(verify_callback(0, ptr::null_mut()), 1);
     }

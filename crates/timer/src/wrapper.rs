@@ -4,7 +4,7 @@
 //! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
-use crate::owner::{Callback, Owner as Timer, Plain, TimerNode, free};
+use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode, free};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
@@ -161,6 +161,24 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
         TimerNode::plain(callback, data),
     ))
     .cast()
+}
+
+/// `swoole_timer_add(ms, persistent, ...)` of `f`: the node, or null.
+#[must_use]
+pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> *mut c_void {
+    node(add(ms, persistent, TimerNode::closure(Closure::new(f)))).cast()
+}
+
+/// [`add_fn`] of `timeout` seconds, at least `SW_TIMER_MIN_SEC`.
+#[must_use]
+pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + Copy + 'static) -> *mut c_void {
+    add_fn(sec2msec(timeout), persistent, f)
+}
+
+/// [`add_fn`]'s timer id, or none.
+#[must_use]
+pub fn add_fn_id(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<c_long> {
+    add(ms, persistent, TimerNode::closure(Closure::new(f))).map(|(_, id)| id)
 }
 
 /// Deletes timer `id` if this thread's timer still holds it, quietly otherwise:
