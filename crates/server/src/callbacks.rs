@@ -235,6 +235,30 @@ impl CallbackSlot {
         })
     }
 
+    /// `serv->onWorkerError(serv, worker, status)`, a slot of a
+    /// `void (Server *, Worker *, const ExitStatus &)` signature; nothing when
+    /// the slot is empty. Unlike [`CallbackSlot::dispatch`], it reads no return.
+    ///
+    /// # Safety
+    /// The slot holds that signature, and the pointers are what it takes.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) unsafe fn worker_error(
+        &self,
+        serv: *mut c_void,
+        worker: *mut c_void,
+        status: *mut c_void,
+    ) {
+        type Invoke =
+            unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void);
+        let invoke = self.invoke.load(Relaxed);
+        // SAFETY: the slot holds null or a `void (*)(void *, Server *, Worker *, ExitStatus *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            // SAFETY: per the caller, with the slot's own context.
+            unsafe { invoke(self.ctx.load(Relaxed), serv, worker, status) };
+        }
+    }
+
     /// `serv->onX = nullptr`: empties the slot, then frees what it held.
     pub(crate) fn clear(&self) {
         self.invoke.store(core::ptr::null_mut(), Relaxed);
