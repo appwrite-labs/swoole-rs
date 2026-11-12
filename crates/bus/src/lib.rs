@@ -787,6 +787,7 @@ impl Bus {
     /// [`MessageBus::pipe_socket`]'s record as a handle, or `None` before
     /// `init_pipe_socket` made one for `fd`.
     #[must_use]
+    #[inline]
     pub fn pipe(&self, fd: c_int) -> Option<Socket<'_>> {
         // SAFETY: null or a record `init_pipe_socket` made, which the bus frees only
         // when it drops.
