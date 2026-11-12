@@ -56,6 +56,9 @@ struct Read<'a> {
 ///
 /// # Safety
 /// The reactor's readable event on a live connection of the live `port`.
+// Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
+// frame reads, measures and dispatches where five did (#3335).
+#[inline(always)]
 pub(crate) unsafe fn on_read(
     reactor: *mut c_void,
     port: *mut c_void,
@@ -224,7 +227,7 @@ impl Connection for Read<'_> {
         release
     }
 
-    #[inline]
+    #[inline(always)]
     fn receive(&mut self, framing: Framing) -> i64 {
         match framing {
             Framing::Length if self.frames => self.framed::<Frames>(MODE_LENGTH),

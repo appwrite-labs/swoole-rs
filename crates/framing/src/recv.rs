@@ -189,6 +189,7 @@ impl<E: Effects> Recv<'_, E> {
             .is_some_and(|eof| self.effects.data().ends_with(eof))
     }
 
+    #[inline(always)]
     fn length_protocol(&mut self, head: u32) -> i32 {
         if self.flag(FLAG_DYNAMIC) && head == 0 {
             return SW_ERR;
@@ -276,6 +277,7 @@ impl<E: Effects> Recv<'_, E> {
 
     /// The next package's length from the buffered bytes: dispatch it if it is all
     /// here, else read more (unless the socket left the reactor).
+    #[inline(always)]
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
         let packet = self.op(OP_GET_LENGTH, self.start as u64);
         let header = self.header(head);
@@ -424,7 +426,9 @@ impl<E: Effects> Recv<'_, E> {
 
 /// Runs one receive of `mode` and returns its `SW_*` result. `head` is the
 /// package length size (`get_package_length_size` or the fixed size); `flags`
-/// holds the socket's flags at entry and its `recv_wait` on return.
+/// holds the socket's flags at entry and its `recv_wait` on return. Always inlined, with the
+/// length loop: each caller's `mode` is a constant, and the loop shares its caller's frame.
+#[inline(always)]
 pub fn recv<E: Effects>(mode: u32, head: u32, flags: &mut u32, effects: &mut E) -> i32 {
     let mut recv = Recv {
         flags: *flags,
