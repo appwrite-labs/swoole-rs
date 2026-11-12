@@ -357,14 +357,15 @@ impl Owner {
         }
     }
 
-    /// Refreshes a node's deadline from its caller-mutated `exec_msec`.
+    /// Refreshes node `id`'s deadline from its caller-mutated `exec_msec`. Both by
+    /// value, as for [`Self::delay`].
     #[cfg(test)]
-    fn update(&self, node: &TimerNode) {
+    fn update(&self, id: i64, exec_msec: i64) {
         let (status, view) = {
             let mut queue = self.queue.borrow_mut();
-            match queue.update(node.id, node.exec_msec) {
+            match queue.update(id, exec_msec) {
                 (OK, view) => (OK, view),
-                _ => queue.get(node.id),
+                _ => queue.get(id),
             }
         };
         if status == OK {
@@ -372,14 +373,14 @@ impl Owner {
         }
     }
 
-    /// Moves a node's deadline to `delay_ms` from now.
-    pub(crate) fn delay(&self, node: &TimerNode, delay_ms: c_long) {
-        let Some(deadline) =
-            swr_v1_timer_delay_deadline(self.relative_msec(), node.exec_msec, delay_ms)
+    /// Moves node `id`'s deadline, now `exec_msec`, to `delay_ms` from now. The node's
+    /// fields come by value: `apply` writes the node, so no reference to it may be live.
+    pub(crate) fn delay(&self, id: i64, exec_msec: i64, delay_ms: c_long) {
+        let Some(deadline) = swr_v1_timer_delay_deadline(self.relative_msec(), exec_msec, delay_ms)
         else {
             return;
         };
-        let (status, view) = self.queue.borrow_mut().update(node.id, deadline);
+        let (status, view) = self.queue.borrow_mut().update(id, deadline);
         if status == OK {
             apply(&view);
         }
@@ -631,7 +632,7 @@ mod tests {
                 .add(1000, repeat, TimerNode::new(Some(call), hooks.cast()))
                 .expect("add failed");
             unsafe { (*node).exec_msec = 0 };
-            self.timer().update(unsafe { &*node });
+            self.timer().update(unsafe { (*node).id }, 0);
             unsafe { (*node).destructor = Some(destruct) };
             node
         }
@@ -715,7 +716,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn equal_deadlines() {
         let p = Probe::new();
         for label in ['A', 'B', 'C'] {
@@ -725,7 +725,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn self_remove() {
         let p = Probe::new();
         let log = Rc::clone(&p.log);
@@ -771,13 +770,11 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn remove_other_in_a_callback() {
         expect(&remove_other(false), "AbaCc", "AbaCc", 0, 3, false);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn destructor_remove_other() {
         expect(&remove_other(true), "AabCc", "AabCc", 0, 3, false);
     }
@@ -795,9 +792,10 @@ mod tests {
                 log.borrow_mut().events.push('A');
                 if repeat {
                     unsafe { (*n).exec_msec = 100_000 };
-                    t.update(unsafe { &*n });
+                    t.update(unsafe { (*n).id }, 100_000);
                 } else {
-                    t.delay(unsafe { &*n }, 100_000);
+                    let (id, exec_msec) = unsafe { ((*n).id, (*n).exec_msec) };
+                    t.delay(id, exec_msec, 100_000);
                 }
                 flag.set(true);
             }),
@@ -810,19 +808,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn update_active_repeat() {
         expect(&move_active(true), "ABb", "ABba", 1, 2, true);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn delay_active_once() {
         expect(&move_active(false), "AaBb", "AaBb", 0, 2, false);
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn destructor_add() {
         let p = Probe::new();
         let a = p.add('A', false, p.record('A'));
@@ -838,7 +833,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn nested_select_once() {
         let p = Probe::new();
         let (log, nested) = (Rc::clone(&p.log), Rc::new(Cell::new(false)));
@@ -923,7 +917,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "the reactor's natives")]
     fn wrapper_clear() {
         use crate::wrapper::{publish, swoole_timer_clear, swoole_timer_get, timer as slot_value};
         let p = Probe::new();

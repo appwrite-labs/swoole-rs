@@ -228,8 +228,9 @@ pub unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut TimerNode, delay_m
         return;
     };
     // SAFETY: null or a live node, as the caller promises.
-    if let Some(node) = unsafe { node.as_ref() } {
-        timer.delay(node, delay_ms);
+    let fields = unsafe { node.as_ref() }.map(|node| (node.id, node.exec_msec));
+    if let Some((id, exec_msec)) = fields {
+        timer.delay(id, exec_msec, delay_ms);
     }
 }
 

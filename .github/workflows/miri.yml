@@ -69,10 +69,12 @@ jobs:
       # One crate per run, as verified: hooks and server turn on upstream-symbols in
       # coroutine, reactor and timer, which the core step mustn't share. The clients
       # tests' fake ops never free a closed socket (tests read it after close), so
-      # its leaks are ignored.
-      - name: Miri clients, hooks and server
+      # its leaks are ignored. The timer's Owner and its tests exist only with
+      # upstream-symbols (#3379).
+      - name: Miri clients, hooks, server and the timer's owner
         run: |
           MIRIFLAGS="$MIRIFLAGS -Zmiri-ignore-leaks" cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-clients
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-timer --features upstream-symbols
           cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-hooks
           cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-server
         env:
