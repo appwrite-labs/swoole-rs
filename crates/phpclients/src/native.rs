@@ -156,7 +156,7 @@ impl Co {
     }
 
     /// The socket's buffers are zend strings from now on.
-    pub(crate) fn use_zend_strings(self) {
+    pub fn use_zend_strings(self) {
         // SAFETY: the static zend string allocator.
         unsafe {
             self.0

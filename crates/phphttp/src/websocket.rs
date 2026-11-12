@@ -12,7 +12,7 @@ use crate::{
 use std::{
     borrow::Cow,
     cell::Cell,
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     mem::MaybeUninit,
     ptr, slice,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
@@ -1282,12 +1282,6 @@ fn sock_recv(socket: co::Co, timeout: f64) -> (isize, *mut u8, usize) {
     // A packet read leaves it in the socket's read buffer.
     let (data, len) = socket.with_buffer(false, |buffer| (buffer.as_mut_ptr(), buffer.len()));
     (received, data, len)
-}
-
-/// `sock->get_fd()`.
-pub(crate) fn sock_fd(sock: *mut c_void) -> c_int {
-    // SAFETY: a live `SocketImpl *`.
-    unsafe { co::Co::of(sock) }.sock_fd()
 }
 
 /// A message being assembled from fragments: its payload so far, and the
