@@ -157,10 +157,8 @@ def main():
     shutil.copy2(built_by / 'config.h', out / 'config.h')
     if args.native:
         sdk(built_by, [f for f in features if f in FFI_FEATURES], args.profile, env)
-    # CARGO_BUILD_TARGET (coverage.yml) puts the library under target/<triple>/.
-    target = Path(os.environ.get('CARGO_TARGET_DIR', ROOT / 'target'), os.environ.get('CARGO_BUILD_TARGET', ''))
-    built = target / ('debug' if args.profile == 'dev' else args.profile) / (
-        'libswoole.dylib' if sys.platform == 'darwin' else 'libswoole.so')
+    built, = [name for m in messages if m['reason'] == 'compiler-artifact' and m['target']['name'] == 'swoole'
+              for name in m['filenames'] if name.endswith(('.so', '.dylib'))]
     extension = out / 'swoole.so'
     shutil.copy2(built, extension)
     php = Path(subprocess.check_output([args.php_config, '--php-binary'], text=True).strip())
