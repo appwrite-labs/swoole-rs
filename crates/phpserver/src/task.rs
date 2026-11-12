@@ -22,6 +22,7 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::Coroutine;
+use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
     process_pool::{PoolRef, SW_IPC_MAX_SIZE},
@@ -31,10 +32,8 @@ use swoole_rs_process::{
 use swoole_rs_server::{task_worker_ops::finish, view};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value,
-    bailout::Bailout,
+    Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout,
     long_zval, message, report,
-    sys::{swr_zend_unserialize, swr_zval_stringl, zval},
 };
 
 /// `SW_TASK_*` flags.
@@ -180,8 +179,7 @@ impl MultiTask for Multi<'_> {
     }
 
     fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
-        let data = Owned::default();
-        if decode(result, data.as_ptr()).map_err(|Bailout| Bailed)? {
+        if let Some((data, true)) = decode(result).map_err(|Bailout| Bailed)? {
             self.out.update_index(u64::from(index), data);
         }
         Ok(())
@@ -307,31 +305,40 @@ fn encode(data: &Value, buf: &mut EventData) -> Result<i64, Bailout> {
     Ok(id)
 }
 
-/// `php_swoole_server_task_unpack`: `task` into `out`.
-pub(crate) fn decode(task: Packed<'_>, out: *mut zval) -> Result<bool, Bailout> {
+/// `php_swoole_server_task_unpack`: `task`'s value, and whether it unserialized
+/// whole (the part it did is still returned, as upstream leaves it in its zval);
+/// `None` when its temporary file can't be read. A value a bailout interrupted
+/// is leaked.
+pub(crate) fn decode(task: Packed<'_>) -> Result<Option<(Owned, bool)>, Bailout> {
     let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
     // SAFETY: this thread's live buffer.
-    let Some((data, length, flags)) = task.unpack(unsafe { &mut *buffer }) else {
-        return Ok(false);
+    let Some((data, flags)) = task.unpack(unsafe { &mut *buffer }) else {
+        return Ok(None);
     };
     if u32::from(flags) & SERIALIZE == 0 {
-        // SAFETY: a writable zval and the payload's bytes.
-        unsafe { swr_zval_stringl(out, data, length) };
-        return Ok(true);
+        return Ok(Some((Owned::string(ZString::new(data)), true)));
     }
-    let (mut offset, mut bailed) = (0, false);
-    // SAFETY: as above.
-    let done = unsafe { swr_zend_unserialize(out, data, length, &raw mut offset, &raw mut bailed) };
-    if bailed {
-        return Err(Bailout);
+    let (value, done, bailed) = unserialize_from(c"php_swoole_server_task_unpack", data);
+    if let Err(bailout) = bailed {
+        std::mem::forget(value);
+        return Err(bailout);
     }
-    if !done {
-        log::warning(
-            c"php_swoole_server_task_unpack",
-            format_args!("unserialize() failed, Error at offset {offset} of {length} bytes"),
-        );
+    Ok(Some((value, done)))
+}
+
+/// A handler's `decode` into its return value: whether it unserialized whole.
+fn return_decoded(call: &Call, decoded: Result<Option<(Owned, bool)>, Bailout>) -> bool {
+    match decoded {
+        Ok(Some((value, done))) => {
+            call.set_owned(value);
+            done
+        }
+        Ok(None) => false,
+        Err(bailout) => {
+            bailout.defer();
+            false
+        }
     }
-    Ok(done)
 }
 
 /// `php_swoole_server_task_finish`: send `data` as the result of `req` (none:
@@ -488,10 +495,7 @@ fn taskwait(call: &Call) {
             Ok(true) => {
                 // SAFETY: the result the task worker packed into the slot.
                 let result = unsafe { Packed::from_raw(tasks.result.cast()) };
-                decode(result, call.return_value()).unwrap_or_else(|bailout| {
-                    bailout.defer();
-                    false
-                })
+                return_decoded(call, decode(result))
             }
             Ok(false) => false,
             Err(Bailed) => {
@@ -682,12 +686,7 @@ fn unpack_method(call: &Call) {
         .value(1)
         .and_then(Value::bytes)
         .and_then(Packed::from_bytes);
-    let done = task.is_some_and(|task| {
-        decode(task, call.return_value()).unwrap_or_else(|bailout| {
-            bailout.defer();
-            false
-        })
-    });
+    let done = task.is_some_and(|task| return_decoded(call, decode(task)));
     if !done {
         call.set_bool(false);
     }
@@ -710,8 +709,7 @@ fn event_warning(text: &CStr) -> Result<(), Bailout> {
 
 /// Unpack `req` into a value, or `None` (`Err` for a trapped bailout).
 fn unpack(task: Packed<'_>) -> Result<Option<Owned>, Bailout> {
-    let data = Owned::default();
-    Ok(decode(task, data.as_ptr())?.then_some(data))
+    Ok(decode(task)?.and_then(|(data, done)| done.then_some(data)))
 }
 
 /// `php_swoole_server_onTask`, for a live server and the task it received.

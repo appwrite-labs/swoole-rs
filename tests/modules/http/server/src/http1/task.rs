@@ -855,11 +855,7 @@ fn task_worker4() {
 fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
     let mut buffer = CppString::EMPTY;
     buffer.alloc(32 * 1024, None);
-    let unpacked = task.unpack(&mut buffer);
-    let bytes = unpacked.map(|(data, length, _)| {
-        // SAFETY: the unpacked payload, live while `buffer` or the task is.
-        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec()
-    });
+    let bytes = task.unpack(&mut buffer).map(|(data, _)| data.to_vec());
     buffer.dispose();
     bytes
 }
