@@ -398,7 +398,8 @@ pub unsafe fn swr_v1_socket_ssl_new(
         return 1;
     };
     ssl.set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    if !ssl.set_fd(record.fd) {
+    // SAFETY: the new SSL has no BIOs yet, so no handle of one exists.
+    if !unsafe { ssl.set_fd(record.fd) } {
         *error = peek_error();
         return 2;
     }
@@ -421,7 +422,7 @@ mod tests {
     use std::os::raw::c_int;
 
     /// A test's live SSL.
-    fn handle(ssl: *mut SSL) -> Ssl {
+    fn handle(ssl: *mut SSL) -> Ssl<'static> {
         unsafe { Ssl::new(ssl) }.unwrap()
     }
 

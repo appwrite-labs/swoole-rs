@@ -71,27 +71,32 @@ impl TlsSocket for Co {
 
 /// The ring's view of `socket` when it is a `UringSocket`, else none.
 pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
-    let (uring, [rbio, wbio]) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
-    let uring = uring?;
+    let uring = socket.with_extra(|extra| extra.uring)??;
     if socket.socket().is_null() {
         return None;
     }
-    socket.net(|network| UringSocketOps {
-        socket,
-        tls: Tls {
-            uring,
+    socket.net(|network| {
+        // SAFETY: the record's SSL is null or live until the unsafe `socket_ssl_close`,
+        // whose callers run it between the socket's operations, so not while this
+        // view of one is in use.
+        let ssl = unsafe { swoole_rs_tls::Ssl::new(network.ssl().cast()) };
+        UringSocketOps {
             socket,
-            ssl: swoole_rs_tls::Ssl::of_fields(network),
-            rbio,
-            wbio,
-            fd: network.fd,
-            read_timeout: network.timeouts.read,
-            write_timeout: network.timeouts.write,
-        },
-        connect_timeout: network.timeouts.connect,
-        available,
-        check,
-        set_err,
+            tls: Tls {
+                uring,
+                socket,
+                ssl,
+                rbio: ssl.and_then(swoole_rs_tls::Ssl::read_bio),
+                wbio: ssl.and_then(swoole_rs_tls::Ssl::write_bio),
+                fd: network.fd,
+                read_timeout: network.timeouts.read,
+                write_timeout: network.timeouts.write,
+            },
+            connect_timeout: network.timeouts.connect,
+            available,
+            check,
+            set_err,
+        }
     })
 }
 
@@ -501,20 +506,25 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     if !create() {
         return false;
     }
-    let Some(session) = socket.with_network(swoole_rs_tls::Ssl::of).flatten() else {
-        return false;
-    };
-    let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
-        return false;
-    };
-    let (rbio, wbio) = session.set_bio(rbio, Some(wbio));
-    socket.with_extra(|extra| extra.bio = [Some(rbio), Some(wbio)]);
-    if socket.ssl_is_server() {
-        session.set_accept_state();
-    } else {
-        session.set_connect_state();
-    }
-    true
+    let server = socket.ssl_is_server();
+    let made = socket.with_network(|network| {
+        let Some(session) = swoole_rs_tls::Ssl::of(network) else {
+            return false;
+        };
+        let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
+            return false;
+        };
+        // SAFETY: the socket's views take its BIOs from the session per operation,
+        // and none is in use while its handshake creates the session.
+        unsafe { session.set_bio(rbio, Some(wbio)) };
+        if server {
+            session.set_accept_state();
+        } else {
+            session.set_connect_state();
+        }
+        true
+    });
+    made.unwrap_or(false)
 }
 
 /// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed

@@ -26,9 +26,6 @@ pub struct SocketExtra {
     /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
     pub(crate) uring: Option<&'static crate::uring::Host>,
-    /// A `UringSocket`'s TLS memory BIOs (read, write), which its session owns.
-    #[cfg(feature = "iouring")]
-    pub(crate) bio: [Option<swoole_rs_tls::Bio>; 2],
 }
 const _: () = assert!(
     core::mem::offset_of!(SocketExtra, tls) == 0,
@@ -53,8 +50,6 @@ impl SocketExtra {
             proxies: [ptr::null_mut(); 2],
             #[cfg(feature = "iouring")]
             uring: None,
-            #[cfg(feature = "iouring")]
-            bio: [None; 2],
         })
     }
 }

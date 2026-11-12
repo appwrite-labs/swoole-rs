@@ -921,7 +921,9 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             if let Some(socket) = o.conn_socket() {
                 let quiet = o.conn()?.peer_closed;
                 socket.edit(|record| record.ssl_quiet_shutdown = quiet);
-                tls::socket_ssl_close(socket);
+                // SAFETY: TLS handles live only within one reactor call over the
+                // connection, and none runs while this one closes it.
+                unsafe { tls::socket_ssl_close(socket) };
             }
             0
         }

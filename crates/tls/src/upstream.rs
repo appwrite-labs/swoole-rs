@@ -115,10 +115,10 @@ fn with_tls<P, R>(
     pick: impl FnOnce(&SocketFields) -> P,
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
-    let (before, ssl, picked) =
-        socket.read(|record| (record.tls, Ssl::of_fields(record), pick(record)));
+    let (before, picked) = socket.read(|record| (record.tls, pick(record)));
+    let ssl = Ssl::of(socket)?;
     let mut tls = before;
-    let result = step(&mut tls, ssl?, picked);
+    let result = step(&mut tls, ssl, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
     if tls != before {
         socket.edit(|record| record.tls = tls);
@@ -1357,12 +1357,16 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
 
 /// `void Socket::ssl_close()`: shuts down unless already closed (OpenSSL 1.0.2f
 /// complains about `SSL_shutdown` during a handshake), then frees the SSL.
-pub fn socket_ssl_close(socket: Socket<'_>) {
+///
+/// # Safety
+/// No [`Ssl`] handle of the record's SSL, nor a `Bio` of its BIOs, is used afterwards.
+pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
     if socket.read(|record| record.ssl_closed) == 0 {
         socket_ssl_shutdown(socket);
     }
     let ssl = socket.edit(swoole_rs_reactor::SocketFields::take_ssl);
-    // SAFETY: the record's SSL (or null), now released.
+    // SAFETY: the record's SSL (or null), now released; per the caller, no handle
+    // of it is used afterwards.
     unsafe { openssl_sys::SSL_free(ssl.cast()) };
 }
 

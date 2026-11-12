@@ -2,7 +2,10 @@
 //! connection the socket record owns), [`Bio`] (a live BIO an SSL owns) and
 //! [`OwnedBio`] (one this side owns until an SSL takes it), [`CertRef`] and [`Cert`]
 //! (a borrowed and an owned certificate), and this thread's error queue. Callers go
-//! through their methods; only the constructors from raw pointers are unsafe.
+//! through their methods. A handle borrows its owner for `'a`, and what frees the
+//! object under it is unsafe: `socket_ssl_close` (the SSL), [`Ssl::set_bio`] and
+//! [`Ssl::set_fd`] (the BIOs they replace); dropping an [`OwnedBio`] or a [`Cert`]
+//! ends its borrows.
 use openssl_sys::{
     BIO, BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, BIO_write, ERR_clear_error,
     ERR_get_error, ERR_reason_error_string, OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value,
@@ -15,6 +18,7 @@ use openssl_sys::{
     X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Socket, SocketFields};
@@ -84,10 +88,11 @@ pub fn error_string(error: c_ulong) -> String {
         .map_or_else(|_| String::new(), |text| text.to_string_lossy().into())
 }
 
-/// A live SSL on this thread. A socket record's is live while it is set:
-/// `Socket::ssl_create` sets it, and `ssl_close` frees it and clears it.
+/// A live SSL on this thread for `'a`. A socket record's is live while it is set:
+/// `Socket::ssl_create` sets it, and the unsafe `socket_ssl_close` frees it and
+/// clears it, its caller promising no handle of it is used afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ssl(NonNull<SSL>);
+pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
 
 /// A connection's cipher: OpenSSL names it `(NONE)` with 0 bits before the handshake
 /// picks one.
@@ -98,27 +103,23 @@ pub struct Cipher {
     pub version: &'static CStr,
 }
 
-impl Ssl {
+impl<'a> Ssl<'a> {
     /// # Safety
-    /// `ssl` is null or a live SSL, not freed while the handle is used.
+    /// `ssl` is null or a live SSL that nothing frees for `'a`.
     #[must_use]
     pub unsafe fn new(ssl: *mut SSL) -> Option<Self> {
-        NonNull::new(ssl).map(Self)
+        NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
     }
 
-    /// The SSL of `socket`'s record, or None without one.
+    /// The SSL of `socket`'s record, or None without one, for as long as the record.
     #[must_use]
-    pub fn of(socket: Socket<'_>) -> Option<Self> {
-        socket.read(Self::of_fields)
-    }
-
-    /// The SSL of a record's fields, or None without one.
-    #[must_use]
-    pub fn of_fields(fields: &SocketFields) -> Option<Self> {
+    pub fn of(socket: Socket<'a>) -> Option<Self> {
+        let ssl = socket.read(SocketFields::ssl);
         // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
         // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
-        // contract) set it, and `ssl_close` takes it before freeing it.
-        unsafe { Self::new(fields.ssl().cast()) }
+        // contract) set it, and only the unsafe `socket_ssl_close` frees it, whose
+        // caller promises no handle of it is used afterwards.
+        unsafe { Self::new(ssl.cast()) }
     }
 
     #[must_use]
@@ -243,7 +244,7 @@ impl Ssl {
             // SAFETY: an index within the live chain, whose entries are certificates.
             let cert = unsafe { OPENSSL_sk_value(chain, index) };
             if let Some(cert) = NonNull::new(cert.cast()) {
-                f(CertRef(cert, std::marker::PhantomData));
+                f(CertRef(cert, PhantomData));
             }
         }
     }
@@ -282,9 +283,12 @@ impl Ssl {
     }
 
     /// `SSL_set_fd`: false when OpenSSL fails.
+    ///
+    /// # Safety
+    /// No handle of the SSL's earlier BIOs, which this frees, is used afterwards.
     #[must_use]
-    pub fn set_fd(self, fd: c_int) -> bool {
-        // SAFETY: a live SSL over the caller's descriptor.
+    pub unsafe fn set_fd(self, fd: c_int) -> bool {
+        // SAFETY: a live SSL over the caller's descriptor; the caller drops the old BIOs' handles.
         unsafe { SSL_set_fd(self.as_ptr(), fd) != 0 }
     }
 
@@ -302,26 +306,31 @@ impl Ssl {
 
     /// `SSL_set_bio`: the SSL takes both BIOs (one reference when they are the same
     /// BIO) and frees them with itself; the handles borrow them meanwhile.
-    pub fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio, Bio) {
-        let read = read.into_bio();
-        let write = write.map_or(read, OwnedBio::into_bio);
-        // SAFETY: a live SSL takes the references this side owned.
+    ///
+    /// # Safety
+    /// No handle of the SSL's earlier BIOs, which this frees, is used afterwards.
+    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio<'a>, Bio<'a>) {
+        let read = read.into_raw();
+        let write = write.map_or(read, OwnedBio::into_raw);
+        // SAFETY: a live SSL takes the references this side owned; the caller drops
+        // the old BIOs' handles.
         unsafe { SSL_set_bio(self.as_ptr(), read.as_ptr(), write.as_ptr()) };
-        (read, write)
+        (Bio(read, PhantomData), Bio(write, PhantomData))
     }
 
     /// `SSL_get_rbio`, None without one.
     #[must_use]
-    pub fn read_bio(self) -> Option<Bio> {
-        // SAFETY: a live SSL; the BIO it owns lives as long.
-        NonNull::new(unsafe { SSL_get_rbio(self.as_ptr()) }).map(Bio)
+    pub fn read_bio(self) -> Option<Bio<'a>> {
+        // SAFETY: a live SSL; the BIO it owns lives until the SSL is freed or the
+        // unsafe `set_bio`/`set_fd` replace it.
+        NonNull::new(unsafe { SSL_get_rbio(self.as_ptr()) }).map(|bio| Bio(bio, PhantomData))
     }
 
     /// `SSL_get_wbio`, None without one.
     #[must_use]
-    pub fn write_bio(self) -> Option<Bio> {
-        // SAFETY: a live SSL; the BIO it owns lives as long.
-        NonNull::new(unsafe { SSL_get_wbio(self.as_ptr()) }).map(Bio)
+    pub fn write_bio(self) -> Option<Bio<'a>> {
+        // SAFETY: as in `read_bio`.
+        NonNull::new(unsafe { SSL_get_wbio(self.as_ptr()) }).map(|bio| Bio(bio, PhantomData))
     }
 
     /// `SSL_get_ex_data` at `index`.
@@ -377,16 +386,16 @@ impl Ssl {
     }
 }
 
-/// A live BIO an SSL owns, borrowed while the SSL is live.
+/// A live BIO, borrowed for `'a` from the SSL or [`OwnedBio`] that owns it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Bio(NonNull<BIO>);
+pub struct Bio<'a>(NonNull<BIO>, PhantomData<&'a BIO>);
 
-impl Bio {
+impl Bio<'_> {
     /// # Safety
-    /// `bio` is null or a live BIO, not freed while the handle is used.
+    /// `bio` is null or a live BIO that nothing frees for the handle's lifetime.
     #[must_use]
     pub unsafe fn new(bio: *mut BIO) -> Option<Self> {
-        NonNull::new(bio).map(Self)
+        NonNull::new(bio).map(|bio| Self(bio, PhantomData))
     }
 
     #[must_use]
@@ -426,7 +435,7 @@ impl Bio {
 
 /// A BIO this side owns, freed when dropped unless an SSL takes it.
 #[derive(Debug)]
-pub struct OwnedBio(Bio);
+pub struct OwnedBio(NonNull<BIO>);
 
 impl OwnedBio {
     /// A new memory BIO, None when OpenSSL fails.
@@ -435,7 +444,7 @@ impl OwnedBio {
         // SAFETY: OpenSSL's static memory BIO method.
         let method = unsafe { BIO_s_mem() };
         // SAFETY: a fresh BIO of that method, null on failure.
-        NonNull::new(unsafe { BIO_new(method) }).map(|bio| Self(Bio(bio)))
+        NonNull::new(unsafe { BIO_new(method) }).map(Self)
     }
 
     /// A BIO this side owns from now on.
@@ -444,16 +453,17 @@ impl OwnedBio {
     /// `bio` is null or a live BIO whose reference nothing else releases.
     #[must_use]
     pub unsafe fn from_raw(bio: *mut BIO) -> Option<Self> {
-        NonNull::new(bio).map(|bio| Self(Bio(bio)))
+        NonNull::new(bio).map(Self)
     }
 
+    /// The BIO, borrowed while this side owns it.
     #[must_use]
-    pub fn bio(&self) -> Bio {
-        self.0
+    pub fn bio(&self) -> Bio<'_> {
+        Bio(self.0, PhantomData)
     }
 
-    /// The handle, whose reference the caller hands on.
-    fn into_bio(self) -> Bio {
+    /// The BIO, whose reference the caller hands on.
+    fn into_raw(self) -> NonNull<BIO> {
         std::mem::ManuallyDrop::new(self).0
     }
 }
@@ -467,14 +477,14 @@ impl Drop for OwnedBio {
 
 /// A live certificate, borrowed for `'a`.
 #[derive(Clone, Copy, Debug)]
-pub struct CertRef<'a>(NonNull<X509>, std::marker::PhantomData<&'a X509>);
+pub struct CertRef<'a>(NonNull<X509>, PhantomData<&'a X509>);
 
 impl CertRef<'_> {
     /// # Safety
     /// `cert` is null or a live certificate, not freed while the handle is used.
     #[must_use]
     pub unsafe fn new(cert: *mut X509) -> Option<Self> {
-        NonNull::new(cert).map(|cert| Self(cert, std::marker::PhantomData))
+        NonNull::new(cert).map(|cert| Self(cert, PhantomData))
     }
 
     #[must_use]
@@ -531,7 +541,7 @@ impl Cert {
     /// The certificate, borrowed while this reference is held.
     #[must_use]
     pub fn get(&self) -> CertRef<'_> {
-        CertRef(self.0, std::marker::PhantomData)
+        CertRef(self.0, PhantomData)
     }
 }
 
