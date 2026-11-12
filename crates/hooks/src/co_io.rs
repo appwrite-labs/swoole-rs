@@ -93,9 +93,9 @@ pub(crate) struct Ops {
     pub liveness: fn(Co) -> bool,
     /// Yields `co` until resumed, with `cancel(event)` as its cancel function.
     pub suspend: fn(Co, *mut c_void, u32),
-    /// Moves a write's `length` bytes at `*buffer` to the write buffer unless they
-    /// are there already or the socket is zero-copy.
-    pub buffer: fn(Co, *mut *mut u8, usize),
+    /// Moves a write's bytes to the write buffer unless they are there already or
+    /// the socket is zero-copy.
+    pub buffer: fn(Co, &mut crate::socket_wait::WriteSlot<'_>),
 }
 
 /// The runtime's effects: the error slot, the coroutine, the timer and the reactor.
@@ -171,18 +171,23 @@ mod native {
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
-    pub(super) fn buffer(socket: Co, at: *mut *mut u8, length: usize) {
-        if socket.zero_copy() || length == 0 {
+    pub(super) fn buffer(socket: Co, slot: &mut crate::socket_wait::WriteSlot<'_>) {
+        if socket.zero_copy() || slot.length() == 0 {
             return;
         }
         socket.with_buffer(true, |string| {
-            // SAFETY: the write's live buffer slot.
-            let at = unsafe { &mut *at };
-            if *at != string.as_mut_ptr() {
+            if slot.bytes() != string.as_mut_ptr() {
                 string.clear();
-                // SAFETY: the write's `length` bytes, outside the String.
-                unsafe { swoole_rs_buffer::string::swr_string_append(string, *at, length) };
-                *at = string.as_mut_ptr();
+                // SAFETY: the slot's bytes, readable by its constructor's contract and
+                // outside the String.
+                unsafe {
+                    swoole_rs_buffer::string::swr_string_append(
+                        string,
+                        slot.bytes(),
+                        slot.length(),
+                    );
+                };
+                slot.moved_to(string.as_mut_ptr());
             }
         });
     }
@@ -671,8 +676,8 @@ pub(crate) mod test_host {
             ON_SUSPEND.set(Some(hook));
         }
     }
-    fn buffer(_: Co, _: *mut *mut u8, length: usize) {
-        log(format!("buffer:{length}"));
+    fn buffer(_: Co, slot: &mut crate::socket_wait::WriteSlot<'_>) {
+        log(format!("buffer:{}", slot.length()));
     }
     fn remove(_: Co, event: u32) {
         log(format!("remove:{event}"));

@@ -6,7 +6,7 @@
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
-use crate::socket_wait::{wait, wait_barrier};
+use crate::socket_wait::{WriteSlot, wait, wait_barrier};
 use core::marker::PhantomData;
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -132,11 +132,7 @@ fn one(
     length: usize,
 ) -> isize {
     let mut buffer = buffer;
-    let slot = if event == WRITE && !buffer.is_null() {
-        &raw mut buffer
-    } else {
-        core::ptr::null_mut()
-    };
+    let moves = event == WRITE && !buffer.is_null();
     let mut result = op.call(buffer, length);
     while result < 0 {
         if flags & RETRY_INTERRUPTED != 0 && errno() == libc::EINTR {
@@ -146,9 +142,10 @@ fn one(
         if !op.would_block() || !timer.start() {
             break;
         }
-        // SAFETY: `slot` is null or a write's `buffer`, whose borrow keeps it live
-        // across the wait.
-        if !unsafe { wait(op.socket, event, slot, length) } {
+        // SAFETY: a write's `buffer`, whose `length` bytes its caller keeps live
+        // across the transfer.
+        let slot = moves.then(|| unsafe { WriteSlot::new(&mut buffer, length) });
+        if !wait(op.socket, event, slot) {
             break;
         }
         result = op.call(buffer, length);
