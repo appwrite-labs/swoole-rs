@@ -419,7 +419,12 @@ impl Source for Zend<'_> {
     }
 
     fn release(&self, callable: *mut c_void) {
-        crate::port::free_callable(callable);
+        // A thread-mode worker replaced the master's slot, which other threads'
+        // reactors, or this thread's running length function, may still be
+        // calling: the master owns it, so it leaks, as the port's release does.
+        if crate::lifecycle::owns_shared() {
+            crate::port::free_callable(callable);
+        }
     }
 
     fn single_thread(&self) {
