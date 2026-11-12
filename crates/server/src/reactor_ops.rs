@@ -5,6 +5,7 @@
 //! master.cc no longer has a case for them. Logs name the upstream function that
 //! wrote them. Its effects over the reactor, the context's sockets and the
 //! server's counters are Rust calls too.
+use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
 
@@ -135,10 +136,10 @@ impl<'a> ReactorContext<'a> {
     }
 
     /// The context's reactor thread, once an op has set it.
-    pub(crate) fn thread_record(&self) -> Option<&'a mut ThreadRecord> {
+    pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
         // SAFETY: null or one of the server's live reactor threads, as the struct
         // says, which only its own thread touches.
-        unsafe { self.thread.cast::<ThreadRecord>().as_mut() }
+        unsafe { self.thread.cast::<ThreadRecord>().as_ref() }
     }
 
     /// The context's connection, once an op has set it.
@@ -670,14 +671,15 @@ pub(crate) fn answer(
     })
 }
 
-/// `ReactorThread`; server.cc asserts this layout.
+/// `ReactorThread`; server.cc asserts this layout. Its own thread writes it, so the
+/// fields it sets are cells behind a shared reference.
 #[repr(C)]
 pub(crate) struct ThreadRecord {
-    pub(crate) id: c_int,
-    pub(crate) notify_pipe: *mut SocketRecord,
-    pub(crate) dispatch_count: u64,
-    pub(crate) pipe_command: *mut SocketRecord,
-    pub(crate) heartbeat_timer: *mut c_void,
+    pub(crate) id: Cell<c_int>,
+    pub(crate) notify_pipe: Cell<*mut SocketRecord>,
+    pub(crate) dispatch_count: Cell<u64>,
+    pub(crate) pipe_command: Cell<*mut SocketRecord>,
+    pub(crate) heartbeat_timer: Cell<*mut c_void>,
     /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
     pub(crate) bus: *mut c_void,
     pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
@@ -709,11 +711,11 @@ impl ThreadRecord {
         let size = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
         let threads: Box<[Self]> = (0..count)
             .map(|_| Self {
-                id: 0,
-                notify_pipe: core::ptr::null_mut(),
-                dispatch_count: 0,
-                pipe_command: core::ptr::null_mut(),
-                heartbeat_timer: core::ptr::null_mut(),
+                id: Cell::new(0),
+                notify_pipe: Cell::new(core::ptr::null_mut()),
+                dispatch_count: Cell::new(0),
+                pipe_command: Cell::new(core::ptr::null_mut()),
+                heartbeat_timer: Cell::new(core::ptr::null_mut()),
                 bus: Box::into_raw(swoole_rs_bus::MessageBus::create(size)).cast(),
                 allocator,
             })
@@ -801,10 +803,10 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_HEARTBEAT_TIMER_CLEAR => {
             let thread = o.ctx.thread_record()?;
-            if !thread.heartbeat_timer.is_null() {
+            let timer = thread.heartbeat_timer.replace(core::ptr::null_mut());
+            if !timer.is_null() {
                 // SAFETY: the thread's live heartbeat timer.
-                unsafe { swoole_timer_del(thread.heartbeat_timer.cast()) };
-                thread.heartbeat_timer = core::ptr::null_mut();
+                unsafe { swoole_timer_del(timer.cast()) };
             }
             0
         }
