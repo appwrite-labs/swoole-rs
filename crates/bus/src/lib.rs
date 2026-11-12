@@ -24,9 +24,10 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use swoole_rs_corebase::{DataHead as BusHead, log};
+use swoole_rs_corebase::{DataHead as BusHead, log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
 pub use Bus as MessageBus;
@@ -225,6 +226,17 @@ impl Bus {
         self.buffer.cast::<u8>().wrapping_add(HEAD)
     }
 
+    /// The first `length` bytes of the set buffer (at most all of it) for a read to
+    /// fill; empty while no buffer is set.
+    fn slots(&mut self, length: usize) -> &mut [MaybeUninit<u8>] {
+        if self.buffer.is_null() {
+            return &mut [];
+        }
+        // SAFETY: `set_buffer`'s contract: a set buffer holds `buffer_size` writable
+        // bytes, live until `set_buffer` (`&mut self`) replaces it.
+        unsafe { std::slice::from_raw_parts_mut(self.buffer.cast(), length.min(self.buffer_size)) }
+    }
+
     #[must_use]
     pub fn memory_size(&self) -> usize {
         self.buffer_size + self.packets.values().map(|p| p.size).sum::<usize>()
@@ -323,11 +335,9 @@ impl Bus {
                 state.resume = false;
             } else {
                 let n = if dgram {
-                    // SAFETY: the buffer holds `buffer_size` writable bytes.
-                    unsafe { libc::read(fd, self.buffer.cast(), self.buffer_size) }
+                    sys::read(fd, self.slots(usize::MAX))
                 } else {
-                    // SAFETY: the buffer starts with a writable header.
-                    unsafe { libc::recv(fd, self.buffer.cast(), HEAD, libc::MSG_PEEK) }
+                    sys::recv(fd, self.slots(HEAD), libc::MSG_PEEK)
                 };
                 if n < 0 {
                     return if waits(nobufs) { 0 } else { -1 };
@@ -345,9 +355,7 @@ impl Bus {
                     if dgram {
                         return n;
                     }
-                    let length = (HEAD + head.len as usize).min(self.buffer_size);
-                    // SAFETY: `length` is within the buffer.
-                    return unsafe { libc::read(fd, self.buffer.cast(), length) };
+                    return sys::read(fd, self.slots(HEAD + head.len as usize));
                 }
             }
             let head = self.head();
@@ -361,8 +369,7 @@ impl Bus {
                     return -1;
                 }
                 // Read the chunk's header from the pipe and discard it.
-                // SAFETY: the buffer starts with a writable header.
-                unsafe { libc::recv(fd, buffer.cast(), HEAD, 0) };
+                sys::recv(fd, self.slots(HEAD), 0);
                 return 0;
             };
             let n = if dgram {
