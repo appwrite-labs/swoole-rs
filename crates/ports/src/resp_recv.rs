@@ -28,9 +28,8 @@ struct Connection<'a> {
 unsafe extern "C" fn connection_recv(context: *mut c_void, at: *mut u8, n: usize) -> isize {
     // SAFETY: `recv_packet`'s context.
     let c = unsafe { &*context.cast::<Connection<'_>>() };
-    let socket = c.socket.as_ptr();
-    // SAFETY: the connection's live socket and the buffer's free tail.
-    let received = unsafe { swoole_rs_tls::upstream::socket_recv(socket, at.cast(), n, 0) };
+    // SAFETY: the buffer's free tail.
+    let received = unsafe { swoole_rs_tls::upstream::socket_recv(c.socket, at.cast(), n, 0) };
     if received >= 0 {
         return received;
     }

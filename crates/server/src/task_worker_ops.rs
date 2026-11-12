@@ -393,7 +393,8 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let send = |data: *const u8, length| {
                 let send_sync = swoole_rs_tls::upstream::socket_send_sync;
                 // SAFETY: the stream's live connection and `length` bytes at `data`.
-                unsafe { send_sync(ctx.socket, data.cast(), length, 0) }
+                let send = |socket| unsafe { send_sync(socket, data.cast(), length, 0) };
+                crate::objects::socket(ctx.socket.cast()).map_or(-1, send)
             };
             #[expect(
                 clippy::cast_possible_truncation,

@@ -1,7 +1,12 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
 use libc::{c_char, c_int, c_void, sockaddr, socklen_t};
-use std::{ffi::CStr, mem::MaybeUninit, ptr::NonNull};
+use std::{
+    borrow::Cow,
+    ffi::{CStr, CString},
+    mem::MaybeUninit,
+    ptr::NonNull,
+};
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
 use swoole_rs_reactor::SocketFields;
@@ -170,10 +175,8 @@ impl Socket {
     }
 
     /// `errMsg`, if set.
-    pub(crate) fn message(&self) -> Option<&CStr> {
-        let message = self.co().err_msg();
-        // SAFETY: errMsg is null or a NUL-terminated string the socket keeps.
-        (!message.is_null()).then(|| unsafe { CStr::from_ptr(message) })
+    pub(crate) fn message(&self) -> Option<CString> {
+        self.co().err_message()
     }
 
     /// `set_err(code)`.
@@ -302,7 +305,7 @@ impl Socket {
     }
 
     /// `get_err()`: `swoole_strerror(errCode)`.
-    pub(crate) fn strerror(&self) -> &'static CStr {
+    pub(crate) fn strerror(&self) -> Cow<'static, CStr> {
         strerror(self.error())
     }
 
@@ -326,9 +329,9 @@ impl Socket {
         self.co().enable_ssl()
     }
 
-    /// The connection's `SSL *`, or null.
-    pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
-        self.with_record(std::ptr::null_mut(), |record| record.ssl().cast())
+    /// Whether the connection holds an `SSL`.
+    pub(crate) fn has_ssl(&self) -> bool {
+        self.with_record(false, |record| !record.ssl().is_null())
     }
 
     /// The connection's negotiated protocol and cipher, None without an SSL.
@@ -345,7 +348,11 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        self.co().with_network(socket_ssl_close);
+        self.co().with_network(|network| {
+            // SAFETY: handles to a session live only for the operation that took them,
+            // and closing runs none.
+            unsafe { socket_ssl_close(network) };
+        });
     }
 
     /// The peer certificate's PEM, empty without one.
@@ -355,37 +362,10 @@ impl Socket {
     /// The peer's certificate chain: `ssl_get_peer_cert_chain(INT_MAX)`, each
     /// certificate as PEM, skipping one that fails.
     pub(crate) fn peer_chain(&self) -> Vec<Vec<u8>> {
-        use openssl_sys::{OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value};
-        use swoole_rs_tls::upstream::{
-            socket_ssl_get_peer_cert_chain, swr_v1_socket_ssl_read_x509,
-        };
-        let chain = self.co().with_network(socket_ssl_get_peer_cert_chain);
-        let chain = chain
-            .unwrap_or(std::ptr::null_mut())
-            .cast::<OPENSSL_STACK>();
-        if chain.is_null() {
-            return Vec::new();
-        }
-        // SAFETY: the SSL's live chain.
-        let count = unsafe { OPENSSL_sk_num(chain) };
-        let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
-        (0..count)
-            .filter_map(|index| {
-                // SAFETY: an index within the live chain.
-                let cert = unsafe { OPENSSL_sk_value(chain, index) };
-                // SAFETY: that certificate, written into the local buffer.
-                let written = unsafe {
-                    swr_v1_socket_ssl_read_x509(
-                        cert.cast(),
-                        pem.as_mut_ptr().cast(),
-                        pem.len(),
-                        false,
-                    )
-                };
-                let written = usize::try_from(written).ok().filter(|&n| n > 0)?;
-                pem.get(..written).map(<[u8]>::to_vec)
-            })
-            .collect()
+        let chain = self
+            .co()
+            .with_network(swoole_rs_tls::upstream::socket_ssl_peer_chain_pem);
+        chain.unwrap_or_default()
     }
 
     /// `php_swoole_socket_set_ssl(socket, settings)`.
@@ -473,9 +453,8 @@ pub use swoole_rs_phpswoole::check_reactor;
 
 /// `swoole_strerror(code)`.
 #[must_use]
-pub fn strerror(code: i32) -> &'static CStr {
-    // SAFETY: Swoole's static message table or strerror's text.
-    unsafe { CStr::from_ptr(swoole_rs_error_ffi::swoole_strerror(code)) }
+pub fn strerror(code: i32) -> Cow<'static, CStr> {
+    swoole_rs_error::strerror_text(code, swoole_rs_corebase::sys::strerror)
 }
 
 /// `Coroutine::get_current_safe()`: outside a coroutine Swoole raises a fatal

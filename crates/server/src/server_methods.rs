@@ -5,6 +5,7 @@
 
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::ptr;
+use std::ffi::CString;
 
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
@@ -267,11 +268,8 @@ pub(crate) extern "C" fn accept_connection(
 
 /// `Server::get_startup_error_message()`.
 #[must_use]
-pub fn get_startup_error_message() -> *const c_char {
-    // The calling thread's error text, always terminated.
-    let message = swoole_rs_error::swoole_get_last_error_msg();
-    // SAFETY: as above.
-    let message = unsafe { CStr::from_ptr(message) };
+pub fn get_startup_error_message() -> CString {
+    let message = swoole_rs_error::last_error_message();
     crate::state::startup_error(message, log::swr_v1_core_last_error())
 }
 

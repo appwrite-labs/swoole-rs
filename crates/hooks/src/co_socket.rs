@@ -7,9 +7,10 @@
 use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
 use core::cell::{Cell, UnsafeCell};
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
+use std::ffi::CString;
 use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
@@ -253,6 +254,32 @@ impl Co {
         write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
+    }
+
+    /// A copy of `errMsg`, which the socket may replace or free; `None` when null.
+    #[must_use]
+    pub fn err_message(self) -> Option<CString> {
+        self.with_err_message(|message| message.map(CStr::to_owned))
+    }
+
+    /// `f` over a copy of `errMsg` (`None` when null), taken before `f` runs, so `f`
+    /// may reach the socket again. A message that fits is copied to the stack: the
+    /// clients read it after every send and receive.
+    pub fn with_err_message<T>(self, f: impl FnOnce(Option<&CStr>) -> T) -> T {
+        let message = self.err_msg();
+        if message.is_null() {
+            return f(None);
+        }
+        // SAFETY: `set_err_msg`'s contract: a NUL-terminated message the record holds.
+        let message = unsafe { CStr::from_ptr(message) };
+        let bytes = message.to_bytes_with_nul();
+        let mut inline = [0u8; 128];
+        if let Some(copy) = inline.get_mut(..bytes.len()) {
+            copy.copy_from_slice(bytes);
+            return f(CStr::from_bytes_with_nul(copy).ok());
+        }
+        let owned = message.to_owned();
+        f(Some(&owned))
     }
 
     /// `f` over a copy of the protocol, written back after it: nothing borrows the
@@ -523,7 +550,9 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     }
     co.with_network(|network| {
         if !network.read(|record| record.ssl().is_null()) {
-            socket_ssl_close(network);
+            // SAFETY: handles to a session live only for the operation that took them,
+            // and the socket being released runs none.
+            unsafe { socket_ssl_close(network) };
         }
     });
     let network = co.socket();
@@ -909,6 +938,26 @@ mod tests {
         assert_eq!(unsafe { *socket.err_msg }, 0);
         assert!(!socket.state.is_null());
         assert_eq!(socket.protocol.package_length_type, 0);
+        release(socket);
+    }
+
+    #[test]
+    fn err_message_is_a_copy_of_short_and_long_messages_and_none_when_null() {
+        let mut socket = record();
+        let co = unsafe { Co::new(&raw mut *socket) };
+        let long = CString::new([b'x'; 300]).unwrap();
+        for message in [c"Success", long.as_c_str()] {
+            unsafe { co.set_err_msg(message.as_ptr()) };
+            assert_eq!(co.err_message().as_deref(), Some(message));
+            co.with_err_message(|copy| {
+                // The socket may replace its message while `f` runs.
+                unsafe { co.set_err_msg(c"replaced".as_ptr()) };
+                assert_eq!(copy, Some(message));
+            });
+        }
+        unsafe { co.set_err_msg(ptr::null()) };
+        assert_eq!(co.err_message(), None);
+        unsafe { co.set_err_msg(c"".as_ptr()) };
         release(socket);
     }
 

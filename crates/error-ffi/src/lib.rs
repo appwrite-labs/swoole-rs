@@ -326,6 +326,10 @@ mod tests {
         unsafe { buffer.copy_from_nonoverlapping(c"sentinel".as_ptr(), 9) };
         assert_eq!(export_get_last_error_msg(), buffer.cast_const());
         assert_eq!(unsafe { std::ffi::CStr::from_ptr(buffer) }, c"sentinel");
+        assert_eq!(
+            swoole_rs_error::last_error_message().as_c_str(),
+            c"sentinel"
+        );
         let other = std::thread::spawn(|| {
             let other = export_error_buffer();
             (other as usize, unsafe { *other })
@@ -336,5 +340,21 @@ mod tests {
         assert_eq!(other.1, 0);
         export_clear_last_error_msg();
         assert_eq!(unsafe { *buffer }, 0);
+        assert_eq!(swoole_rs_error::last_error_message().as_c_str(), c"");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strerror")]
+    fn strerror_text_agrees_with_swoole_strerror() {
+        let system = |code| {
+            let text = unsafe { std::ffi::CStr::from_ptr(system_error(code)) };
+            text.to_string_lossy().into_owned()
+        };
+        // ENOENT, success, the last system code, then known and unknown Swoole codes.
+        for code in [2, 0, 499, 500, 501, 1004, 9999, i32::MAX] {
+            let native = unsafe { std::ffi::CStr::from_ptr(swoole_strerror(code)) }.to_owned();
+            let text = swoole_rs_error::strerror_text(code, system);
+            assert_eq!(*text, *native, "code {code}");
+        }
     }
 }

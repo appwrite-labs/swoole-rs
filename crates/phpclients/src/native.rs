@@ -206,17 +206,17 @@ impl Co {
         self.0.is_closed()
     }
 
-    /// `errCode` and a copy of `errMsg`, which the socket may replace or free.
-    #[must_use]
-    pub fn error(self) -> (c_int, CString) {
-        let message = self.0.err_msg();
-        let message = if message.is_null() {
-            CString::default()
-        } else {
-            // SAFETY: errMsg is a NUL-terminated string the socket keeps for this read.
-            unsafe { CStr::from_ptr(message) }.to_owned()
-        };
-        (self.0.err_code(), message)
+    /// `f` over `errCode` and a copy of `errMsg` (empty when null), which the socket
+    /// may replace or free.
+    pub fn with_error<T>(self, f: impl FnOnce(c_int, &CStr) -> T) -> T {
+        let code = self.0.err_code();
+        self.0
+            .with_err_message(|message| f(code, message.unwrap_or_default()))
+    }
+
+    /// `errCode`.
+    pub(crate) fn err_code(self) -> c_int {
+        self.0.err_code()
     }
 
     /// `set_err(code)`: the code's message.
@@ -710,14 +710,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
 /// `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
 pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
     let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
-    // SAFETY: a live record with TLS and a writable buffer.
-    let length = unsafe {
-        swoole_rs_tls::upstream::socket_ssl_get_peer_certificate_pem(
-            socket.as_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-        )
-    };
+    let length = swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut buffer);
     let length = usize::try_from(length).ok()?;
     Some(ZString::new(buffer.get(..length).unwrap_or(&buffer)))
 }

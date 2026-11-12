@@ -235,21 +235,17 @@ fn bus_deliver(pool: Pool) {
 
 /// The pool's new bus, which the pool keeps; null when its counter can't be allocated.
 fn new_message_bus() -> *mut c_void {
-    let msg_id = mem_pool::alloc(8).cast::<i64>();
-    if msg_id.is_null() {
+    let Some([msg_id]) = mem_pool::words::<AtomicU64>(1) else {
         return ptr::null_mut();
-    }
-    // SAFETY: a fresh, aligned counter.
-    unsafe { msg_id.write(1) };
-    new_bus(msg_id.cast())
+    };
+    *msg_id.get_mut() = 1;
+    new_bus(msg_id)
 }
 
-/// `new MessageBus()` numbering its messages from `counter`, which outlives it;
-/// [`free_bus`] frees it.
-pub(crate) fn new_bus(counter: *mut c_void) -> *mut c_void {
+/// `new MessageBus()` numbering its messages from `counter`; [`free_bus`] frees it.
+pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
     let mut bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
-    // SAFETY: the caller's live, aligned counter, which outlives the bus.
-    bus.count_ids(unsafe { &*counter.cast::<AtomicU64>() });
+    bus.count_ids(counter);
     let bus = PoolBus {
         bus,
         allocator: &raw const STD_ALLOCATOR,
@@ -848,16 +844,20 @@ impl PoolNative for Native {
     }
 
     fn recv(&self, c: &mut PoolCall) {
-        // SAFETY: the call's connection and buffer.
-        io(c, |c| unsafe {
-            socket_recv_sync(c.socket().cast(), c.data(), c.length(), c.flags())
+        io(c, |c| {
+            let (data, length, flags) = (c.data(), c.length(), c.flags());
+            // SAFETY: the call's connection and buffer.
+            let recv = |socket| unsafe { socket_recv_sync(socket, data, length, flags) };
+            socket(c.socket()).map_or(-1, recv)
         });
     }
 
     fn send(&self, c: &mut PoolCall) {
-        // SAFETY: the call's connection and bytes.
-        io(c, |c| unsafe {
-            socket_send_sync(c.socket().cast(), c.data(), c.length(), 0)
+        io(c, |c| {
+            let (data, length) = (c.data(), c.length());
+            // SAFETY: the call's connection and bytes.
+            let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
+            socket(c.socket()).map_or(-1, send)
         });
     }
 
@@ -876,7 +876,7 @@ impl PoolNative for Native {
             let timeout = next as f64 / 1000.0;
             pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
             // SAFETY: the worker's pipe and the call's buffer.
-            unsafe { socket_read_sync(pipe.as_ptr(), c.data(), c.length()) }
+            unsafe { socket_read_sync(pipe, c.data(), c.length()) }
         });
     }
 
@@ -936,8 +936,10 @@ impl PoolNative for Native {
                 // SAFETY: the worker's pipe, in this thread's loop.
                 unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
             } else {
+                let (data, length) = (c.data(), c.length());
                 // SAFETY: the worker's pipe and the call's bytes.
-                unsafe { socket_send_sync(c.socket().cast(), c.data(), c.length(), 0) }
+                let send = |pipe| unsafe { socket_send_sync(pipe, data, length, 0) };
+                socket(c.socket()).map_or(-1, send)
             }
         });
     }

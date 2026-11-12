@@ -365,8 +365,8 @@ impl Client {
 
     /// `io_error`: the socket's errCode and errMsg.
     fn io_error(&self, socket: Co) {
-        let (code, message) = swoole_rs_phpclients::Co::from(socket).error();
-        self.update_error(code, message.to_bytes());
+        swoole_rs_phpclients::Co::from(socket)
+            .with_error(|code, message| self.update_error(code, message.to_bytes()));
     }
 
     fn is_available(&self) -> bool {

@@ -14,15 +14,11 @@ use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::IoVector;
 use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
-use openssl_sys as ssl;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::SocketRecord;
-
-unsafe extern "C" {
-    fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
-}
+use swoole_rs_tls::{Bio, OwnedBio, Ssl};
 
 const EVENT_READ: u32 = 1 << 9;
 const EVENT_WRITE: u32 = 1 << 10;
@@ -59,12 +55,8 @@ impl TlsSocket for Co {
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the
     /// peer and set as the socket's error.
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong) {
-        let mut text = [0_u8; 512];
-        // SAFETY: at most the buffer's length, NUL-terminated.
-        unsafe { ERR_error_string_n(code, text.as_mut_ptr().cast(), text.len()) };
-        let text = CStr::from_bytes_until_nul(&text).unwrap_or_default();
+        let message = swoole_rs_tls::error_string(code);
         let function = function.to_string_lossy();
-        let message = text.to_string_lossy();
         self.net(|network| {
             let (host, port) = swoole_rs_tls::upstream::peer(&network.info);
             log::notice(format_args!(
@@ -73,33 +65,49 @@ impl TlsSocket for Co {
                 swoole_rs_tls::error_reason(code)
             ));
         });
-        owned_err(self, SSL_BAD_PROTOCOL, text.to_bytes());
+        owned_err(self, SSL_BAD_PROTOCOL, message.as_bytes());
     }
+}
+
+/// The session's own BIOs (read, write) while they are the memory BIOs `tls_session`
+/// stored for it, else none: a stored one is stale once the SSL is freed or its BIOs
+/// replaced, so it is only compared, never handed out.
+fn session_bios(ssl: Option<Ssl>, stored: [Option<Bio>; 2]) -> [Option<Bio>; 2] {
+    let live = |bio: Option<Bio>, stored| bio.filter(|_| bio == stored);
+    let [read, write] = stored;
+    [
+        live(ssl.and_then(Ssl::read_bio), read),
+        live(ssl.and_then(Ssl::write_bio), write),
+    ]
 }
 
 /// The ring's view of `socket` when it is a `UringSocket`, else none.
 pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
-    let (uring, [rbio, wbio]) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
+    let (uring, stored) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
     let uring = uring?;
     if socket.socket().is_null() {
         return None;
     }
-    socket.net(|network| UringSocketOps {
-        socket,
-        tls: Tls {
-            uring,
+    socket.net(|network| {
+        let ssl = Ssl::of_fields(network);
+        let [rbio, wbio] = session_bios(ssl, stored);
+        UringSocketOps {
             socket,
-            ssl: network.ssl().cast(),
-            rbio: rbio.cast(),
-            wbio: wbio.cast(),
-            fd: network.fd,
-            read_timeout: network.timeouts.read,
-            write_timeout: network.timeouts.write,
-        },
-        connect_timeout: network.timeouts.connect,
-        available,
-        check,
-        set_err,
+            tls: Tls {
+                uring,
+                socket,
+                ssl,
+                rbio,
+                wbio,
+                fd: network.fd,
+                read_timeout: network.timeouts.read,
+                write_timeout: network.timeouts.write,
+            },
+            connect_timeout: network.timeouts.connect,
+            available,
+            check,
+            set_err,
+        }
     })
 }
 
@@ -124,7 +132,7 @@ impl UringSocketOps {
     }
 
     fn ssl(&self) -> bool {
-        !self.tls.ssl.is_null()
+        self.tls.ssl.is_some()
     }
 
     fn available(&self, event: u32) -> bool {
@@ -509,25 +517,19 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     if !create() {
         return false;
     }
-    let Some(session) = socket.with_network(swoole_rs_tls::Ssl::of).flatten() else {
+    let Some(session) = socket.with_network(Ssl::of).flatten() else {
         return false;
     };
-    let session = session.as_ptr();
-    // SAFETY: OpenSSL's static memory BIO method.
-    let method = unsafe { ssl::BIO_s_mem() };
-    // SAFETY: as above (each call alike).
-    let rbio = unsafe { ssl::BIO_new(method) };
-    // SAFETY: as above.
-    let wbio = unsafe { ssl::BIO_new(method) };
-    // SAFETY: the live session takes both BIOs.
-    unsafe { ssl::SSL_set_bio(session, rbio, wbio) };
-    socket.with_extra(|extra| extra.bio = [rbio.cast(), wbio.cast()]);
+    let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
+        return false;
+    };
+    // SAFETY: `create` just made the session, whose socket BIO no handle holds.
+    let (rbio, wbio) = unsafe { session.set_bio(rbio, Some(wbio)) };
+    socket.with_extra(|extra| extra.bio = [Some(rbio), Some(wbio)]);
     if socket.ssl_is_server() {
-        // SAFETY: the live session.
-        unsafe { ssl::SSL_set_accept_state(session) };
+        session.set_accept_state();
     } else {
-        // SAFETY: the live session.
-        unsafe { ssl::SSL_set_connect_state(session) };
+        session.set_connect_state();
     }
     true
 }
@@ -535,11 +537,13 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
 /// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed
 /// (as without a session from [`tls_session`]).
 pub(crate) fn tls_step(socket: Co) -> c_int {
-    let Some(ops) = of(socket).filter(|ops| !ops.tls.ssl.is_null()) else {
+    let Some(ops) = of(socket) else {
         return -1;
     };
-    // SAFETY: the socket's live session, which `of` read from its record.
-    let rc = unsafe { ssl::SSL_do_handshake(ops.tls.ssl) };
+    let Some(session) = ops.tls.ssl else {
+        return -1;
+    };
+    let rc = session.do_handshake();
     if rc == 1 {
         return 1;
     }
@@ -588,9 +592,9 @@ mod tests {
             tls: Tls {
                 uring: &HOST,
                 socket,
-                ssl: core::ptr::null_mut(),
-                rbio: core::ptr::null_mut(),
-                wbio: core::ptr::null_mut(),
+                ssl: None,
+                rbio: None,
+                wbio: None,
                 fd,
                 read_timeout: 1.0,
                 write_timeout: 1.0,
@@ -639,6 +643,42 @@ mod tests {
         assert!(vector.iovecs().is_empty());
         // Nothing moved: the failure itself.
         assert_eq!(tls_vector(&source, |_, _| -1), -1);
+    }
+
+    /// `of` hands out a stored BIO only while it is still the live session's: not
+    /// once the BIOs are replaced, nor once the session is gone.
+    #[test]
+    fn session_bios_are_only_the_live_sessions() {
+        use openssl_sys as ssl;
+        unsafe {
+            let context = ssl::SSL_CTX_new(ssl::TLS_method());
+            let made = ssl::SSL_new(context);
+            let session = Ssl::new(made).unwrap();
+            let pair = || {
+                (
+                    OwnedBio::memory().unwrap(),
+                    Some(OwnedBio::memory().unwrap()),
+                )
+            };
+            let (read, write) = pair();
+            let (read, write) = session.set_bio(read, write);
+            let stored = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), stored), stored);
+            assert_eq!(
+                session_bios(Some(session), [Some(read), None]),
+                [Some(read), None]
+            );
+            // Replaced: the stored pair is freed and no longer the session's.
+            let (read, write) = pair();
+            let (read, write) = session.set_bio(read, write);
+            assert_eq!(session_bios(Some(session), stored), [None, None]);
+            let fresh = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), fresh), fresh);
+            // Closed: the record holds no session.
+            assert_eq!(session_bios(None, fresh), [None, None]);
+            ssl::SSL_free(made);
+            ssl::SSL_CTX_free(context);
+        }
     }
 
     #[test]
