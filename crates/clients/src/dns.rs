@@ -10,7 +10,7 @@ use crate::ip::swr_v1_clients_ip_text;
 use crate::{
     dns_endpoint, domain_decode, domain_encode, hosts_match, resolv_line, swr_v1_clients_port,
 };
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
@@ -33,9 +33,6 @@ const RESOLVE_FAILED: c_int = 711;
 const CANCELED: c_int = 10017;
 /// The domain does not encode: native warns `invalid domain[...]`.
 pub const INVALID_DOMAIN: c_int = -1;
-
-/// Collects one address in text form.
-pub type Push = unsafe extern "C" fn(*mut c_void, *const u8, usize);
 
 /// The socket side of one DNS query.
 pub trait DnsExchange {
@@ -111,29 +108,6 @@ pub fn set_dns_server(server: &[u8]) {
     config.port = port;
 }
 
-/// `swoole_set_dns_server(server)`.
-/// # Safety
-/// `server` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_dns_server(server: *const u8, length: usize) {
-    // SAFETY: per the caller.
-    set_dns_server(unsafe { std::slice::from_raw_parts(server, length) });
-}
-
-/// The DNS server: its host through `push` (with `context`), its port returned.
-/// # Safety
-/// `push` is native's, valid with `context`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_dns_server(context: *mut c_void, push: Push) -> c_int {
-    let (host, port) = {
-        let config = config();
-        (config.host.clone(), config.port)
-    };
-    // SAFETY: per the caller; the native push copies `host`.
-    unsafe { push(context, host.as_ptr(), host.len()) };
-    port
-}
-
 /// `swoole_load_resolv_conf`'s read: the first `nameserver` of the file at `path`
 /// becomes the DNS server. 1 found, 0 none, -1 the file did not open (warned with
 /// open's errno).
@@ -156,23 +130,9 @@ pub fn load_resolv_conf(path: &CStr) -> c_int {
     }
 }
 
-/// [`load_resolv_conf`] for the hybrid's tests.
-/// # Safety
-/// `path` is NUL-terminated.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_load_resolv_conf(path: *const c_char) -> c_int {
-    // SAFETY: per the caller.
-    load_resolv_conf(unsafe { CStr::from_ptr(path) })
-}
-
 /// `swoole_set_hosts_path(path)`.
-/// # Safety
-/// `path` holds `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_set_hosts_path(path: *const u8, length: usize) {
-    // SAFETY: per the caller.
-    let path = unsafe { std::slice::from_raw_parts(path, length) }.to_vec();
-    config().hosts = path;
+pub fn set_hosts_path(path: &[u8]) {
+    config().hosts = path.to_vec();
 }
 
 /// Queries `domain` for `family`'s address records with `request_id` over
@@ -294,8 +254,10 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
     }
 }
 
-/// The DNS server's host, NUL-terminated, and port.
-pub(crate) fn server() -> (Vec<u8>, c_int) {
+/// The DNS server's host (empty until set or read from resolv.conf), NUL-terminated,
+/// and port.
+#[must_use]
+pub fn server() -> (Vec<u8>, c_int) {
     let config = config();
     let mut host = config.host.clone();
     host.push(0);
@@ -382,29 +344,11 @@ fn resolv_conf(path: &CStr) -> std::io::Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
-/// `get_ip_by_hosts`: the address `domain` has in the hosts file, pushed as text;
-/// whether one was found. Lines split as `std::getline` does, cut at the first
-/// `#`; `spaces` is the native locale's 256-entry space table.
-///
-/// # Safety
-/// `domain` holds `domain_length` bytes, `spaces` 256; `push` is native's, valid
-/// with `context`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
-    domain: *const u8,
-    domain_length: usize,
-    spaces: *const u8,
-    context: *mut c_void,
-    push: Push,
-) -> bool {
-    let domain = if domain_length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: per the caller.
-        unsafe { std::slice::from_raw_parts(domain, domain_length) }
-    };
-    // SAFETY: per the caller.
-    let spaces = unsafe { std::slice::from_raw_parts(spaces, 256) };
+/// `get_ip_by_hosts`: the address `domain` has in the hosts file, as text, if
+/// any. Lines split as `std::getline` does, cut at the first `#`; `spaces` is
+/// the locale's space table.
+#[must_use]
+pub fn hosts_lookup(domain: &[u8], spaces: &[u8; 256]) -> Option<Vec<u8>> {
     let mut path = config().hosts.clone();
     if path.is_empty() {
         path = HOSTS.to_vec();
@@ -414,7 +358,7 @@ pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
     let Ok(contents) =
         std::fs::read(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(&path))
     else {
-        return false;
+        return None;
     };
     let mut lines: Vec<&[u8]> = contents.split(|&byte| byte == b'\n').collect();
     if contents.last() == Some(&b'\n') {
@@ -427,21 +371,16 @@ pub unsafe extern "C" fn swr_v1_clients_hosts_lookup(
         }
         let found = hosts_match(&line, domain, spaces);
         if found.found != 0 {
-            let address = line
-                .get(found.offset..found.offset + found.length)
-                .unwrap_or_default();
-            // SAFETY: the native push copies `address`.
-            unsafe { push(context, address.as_ptr(), address.len()) };
-            return true;
+            let address = line.get(found.offset..found.offset + found.length);
+            return Some(address.unwrap_or_default().to_vec());
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
     struct Exchange {
         query: Vec<u8>,
@@ -468,12 +407,6 @@ mod tests {
         fn push(&mut self, text: &[u8]) {
             self.results.push(String::from_utf8(text.to_vec()).unwrap());
         }
-    }
-
-    unsafe extern "C" fn collect(context: *mut c_void, text: *const u8, length: usize) {
-        let exchange = unsafe { &*context.cast::<RefCell<Exchange>>() };
-        let text = unsafe { std::slice::from_raw_parts(text, length) };
-        exchange.borrow_mut().push(text);
     }
 
     fn reply(records: &[(u16, &[u8])]) -> Vec<u8> {
@@ -602,18 +535,11 @@ mod tests {
         .unwrap();
         let path = std::ffi::CString::new(resolv.to_str().unwrap()).unwrap();
         let server = || {
-            let exchange = RefCell::new(Exchange {
-                query: Vec::new(),
-                reply: Vec::new(),
-                results: Vec::new(),
-                cancelled: false,
-            });
-            let port = unsafe {
-                swr_v1_clients_dns_server((&raw const exchange).cast_mut().cast(), collect)
-            };
-            (exchange.into_inner().results.concat(), port)
+            let (mut host, port) = server();
+            assert_eq!(host.pop(), Some(0));
+            (String::from_utf8(host).unwrap(), port)
         };
-        assert_eq!(unsafe { swr_v1_clients_load_resolv_conf(path.as_ptr()) }, 1);
+        assert_eq!(load_resolv_conf(&path), 1);
         assert_eq!(server(), ("10.0.0.53".to_string(), 53));
         for (text, expected) in [
             ("127.0.0.1:5353", ("127.0.0.1", 5353)),
@@ -625,13 +551,10 @@ mod tests {
             ("::1", ("", 53)),
             ("10.0.0.1\0:99", ("10.0.0.1", 53)),
         ] {
-            unsafe { swr_v1_clients_set_dns_server(text.as_ptr(), text.len()) };
+            set_dns_server(text.as_bytes());
             assert_eq!(server(), (expected.0.to_string(), expected.1), "{text}");
         }
-        assert_eq!(
-            unsafe { swr_v1_clients_load_resolv_conf(c"/nonexistent/resolv.conf".as_ptr()) },
-            -1
-        );
+        assert_eq!(load_resolv_conf(c"/nonexistent/resolv.conf"), -1);
         assert_eq!(
             server(),
             ("10.0.0.1".to_string(), 53),
@@ -641,32 +564,15 @@ mod tests {
         let hosts = dir.join("hosts");
         std::fs::write(&hosts, "127.0.0.1 localhost\n10.1.1.1 app.local # app\n#10.9.9.9 off.local\n10.2.2.2 last.local").unwrap();
         let path = hosts.to_str().unwrap();
-        unsafe { swr_v1_clients_set_hosts_path(path.as_ptr(), path.len()) };
-        let spaces: Vec<u8> = (0..=255u8)
-            .map(|byte| u8::from(byte.is_ascii_whitespace() || byte == 0x0b))
-            .collect();
-        let lookup = |name: &str| {
-            let exchange = RefCell::new(Exchange {
-                query: Vec::new(),
-                reply: Vec::new(),
-                results: Vec::new(),
-                cancelled: false,
-            });
-            let context = (&raw const exchange).cast_mut().cast();
-            let found = unsafe {
-                swr_v1_clients_hosts_lookup(
-                    name.as_ptr(),
-                    name.len(),
-                    spaces.as_ptr(),
-                    context,
-                    collect,
-                )
-            };
-            (found, exchange.into_inner().results)
-        };
-        assert_eq!(lookup("app.local"), (true, vec!["10.1.1.1".to_string()]));
-        assert_eq!(lookup("last.local"), (true, vec!["10.2.2.2".to_string()]));
-        assert!(!lookup("off.local").0);
+        set_hosts_path(path.as_bytes());
+        let spaces: [u8; 256] = core::array::from_fn(|byte| {
+            let byte = u8::try_from(byte).unwrap();
+            u8::from(byte.is_ascii_whitespace() || byte == 0x0b)
+        });
+        let lookup = |name: &str| hosts_lookup(name.as_bytes(), &spaces);
+        assert_eq!(lookup("app.local"), Some(b"10.1.1.1".to_vec()));
+        assert_eq!(lookup("last.local"), Some(b"10.2.2.2".to_vec()));
+        assert_eq!(lookup("off.local"), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

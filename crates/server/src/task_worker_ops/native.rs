@@ -50,11 +50,10 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(found)
         }
         OP_UNPACK_COMMAND => {
-            // This thread's live buffer.
-            let buffer = crate::reactor_ops::thread_buffer();
             // SAFETY: the live command task.
             let task = unsafe { Packed::from_raw(ctx.task.cast()) };
-            let Some((data, length, _)) = task.unpack(buffer) else {
+            let unpacked = crate::reactor_ops::with_thread_buffer(|buffer| task.unpack(buffer));
+            let Some((data, length, _)) = unpacked else {
                 return Some(0);
             };
             ctx.packet = (length, data);

@@ -324,7 +324,7 @@ impl Headers {
     }
 
     /// The frame `deflate` built, its header filled in.
-    fn seal(&mut self, kind: u32, flags: u32, stream_id: u32) -> &[u8] {
+    fn seal(&mut self, kind: u32, flags: u32, stream_id: u32) -> &mut Vec<u8> {
         let frame = &mut self.buffers.frame;
         let header = frame_header(kind, frame.len() - FRAME_HEADER, flags, stream_id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
@@ -565,6 +565,19 @@ fn send_header(
     body: Option<Body>,
     end_stream: bool,
 ) -> bool {
+    send_header_then(ctx, session, stream, body, end_stream, |_| ())
+}
+
+/// `Stream::send_header`, sending what `then` appends to the HEADERS frame in
+/// the same write.
+fn send_header_then(
+    ctx: Ctx,
+    session: &Session,
+    stream: &Stream,
+    body: Option<Body>,
+    end_stream: bool,
+    then: impl FnOnce(&mut Vec<u8>),
+) -> bool {
     let Some(mut headers) = build_header(ctx, session, body) else {
         // Upstream closes once the session has an encoder.
         if session.deflater.borrow().is_some() {
@@ -578,7 +591,9 @@ fn send_header(
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
     }
-    if !send(ctx, headers.seal(TYPE_HEADERS, flags, stream.id)) {
+    let frame = headers.seal(TYPE_HEADERS, flags, stream.id);
+    then(frame);
+    if !send(ctx, frame) {
         set(ctx, Field::SendHeader, 0);
         return false;
     }
@@ -646,19 +661,51 @@ pub(crate) fn send_body(
             return false;
         }
         rest = tail;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "native uint32_t window arithmetic"
-        )]
-        let sent = send_n as u32;
-        stream
-            .remote_window_size
-            .set(stream.remote_window_size.get().wrapping_sub(sent));
-        session
-            .remote_window_size
-            .set(session.remote_window_size.get().wrapping_sub(sent));
+        consume_window(session, stream, send_n);
     }
     true
+}
+
+/// The windows after `sent` bytes of DATA.
+fn consume_window(session: &Session, stream: &Stream, sent: usize) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "native uint32_t window arithmetic"
+    )]
+    let sent = sent as u32;
+    stream
+        .remote_window_size
+        .set(stream.remote_window_size.get().wrapping_sub(sent));
+    session
+        .remote_window_size
+        .set(session.remote_window_size.get().wrapping_sub(sent));
+}
+
+/// Append `data` to `frame` as the one DATA frame `send_body` would send in
+/// one write (the stream's window holds it, one frame carries it, and it is
+/// below a page), and say how many bytes that was; 0 when it isn't. A small
+/// response's HEADERS and DATA then take one write and one segment, as
+/// upstream's HTTP/1 header and small body do.
+fn append_body(
+    frame: &mut Vec<u8>,
+    session: &Session,
+    stream: &Stream,
+    data: &[u8],
+    end_stream: bool,
+) -> usize {
+    let max_frame_size = send_frame_size(session.remote[MAX_FRAME_SIZE].get()) as usize;
+    let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
+    // An empty body sends nothing: the HEADERS end the stream.
+    if data.is_empty()
+        || data.len() > max_frame_size.min(page - 1)
+        || data.len() > stream.remote_window_size.get() as usize
+    {
+        return 0;
+    }
+    let flags = if end_stream { FLAG_END_STREAM } else { 0 };
+    frame.extend_from_slice(&frame_header(TYPE_DATA, data.len(), flags, stream.id));
+    frame.extend_from_slice(data);
+    data.len()
 }
 
 /// `Stream::send_trailer`: HEADERS with `END_STREAM`, even an empty block.
@@ -687,6 +734,8 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     let end_stream = !trailer;
     let mut body: Vec<u8> = Vec::new();
     let mut compressed = false;
+    // Whether the body went out with the header.
+    let mut body_sent = false;
     let mut facts = Http2RespondFacts {
         header_sent: get(ctx, Field::SendHeader),
         trailer_present: u32::from(trailer),
@@ -706,13 +755,33 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                     data: data.as_ptr().cast(),
                     length: data.len(),
                 };
-                let sent = send_header(ctx, &session, &stream, Some(announced), end_stream);
+                let mut appended = 0;
+                let sent = send_header_then(
+                    ctx,
+                    &session,
+                    &stream,
+                    Some(announced),
+                    end_stream,
+                    |frame| {
+                        // The header decided the compression.
+                        if get(ctx, Field::ContentCompressed) != 0 {
+                            body = ctx.compressed();
+                            compressed = true;
+                        }
+                        let payload = if compressed { &body[..] } else { data };
+                        appended = append_body(frame, &session, &stream, payload, end_stream);
+                    },
+                );
+                if sent {
+                    consume_window(&session, &stream, appended);
+                }
+                body_sent = appended > 0;
                 action = next(action, sent, &facts);
             }
             RESP_COMMIT_END => {
                 // Headers are sent: body failures must not permit a retry.
                 set(ctx, Field::End, 1);
-                if get(ctx, Field::ContentCompressed) != 0 {
+                if !compressed && get(ctx, Field::ContentCompressed) != 0 {
                     body = ctx.compressed();
                     compressed = true;
                 }
@@ -726,7 +795,12 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
             }
             RESP_BODY => {
                 let payload = if compressed { &body[..] } else { data };
-                let sent = send_body(ctx, &session, &stream, payload, end_stream);
+                // `send_body`'s check of the stream, at the same point.
+                let sent = if body_sent {
+                    current(&session, &stream)
+                } else {
+                    send_body(ctx, &session, &stream, payload, end_stream)
+                };
                 action = next(action, sent, &facts);
             }
             RESP_TRAILER => {
