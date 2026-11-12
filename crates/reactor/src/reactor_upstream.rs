@@ -76,21 +76,18 @@ pub unsafe extern "C" fn reactor_interest(
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
 /// upstream asserts the event names a table.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor11set_handlerEiiPFiPS0_PNS_5EventEE")
 )]
-pub unsafe extern "C" fn reactor_set_handler(
-    reactor: *const c_void,
+pub extern "C" fn reactor_set_handler(
+    reactor: crate::Running<'_>,
     fd_type: c_int,
     event: c_int,
     handler: Option<Handler>,
 ) {
-    let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the reactor's live handler tables.
+    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
+    // SAFETY: the handle's live handler tables, which no reference holds.
     let set = unsafe { &mut *handlers }.set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }

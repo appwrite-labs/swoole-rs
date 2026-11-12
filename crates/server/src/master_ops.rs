@@ -1479,7 +1479,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .cast::<WorkerRecord>()
                 .wrapping_add(at);
             // SAFETY: an event worker of the server's array, which shutdown indexes.
-            let worker = unsafe { &mut *worker };
+            let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
             crate::worker_methods::destroy_worker(worker);
             0
         }
