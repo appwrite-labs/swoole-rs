@@ -106,7 +106,7 @@ macro_rules! internal {
 /// `swoole_<name>` through the trampoline.
 fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info) {
     let library = handler.is_none();
-    let handler = handler.or(Some(crate::user_func_handler));
+    let handler = handler.or(Some(crate::zif_swoole_user_func_handler));
     let key = name.to_bytes();
     let mut table = table();
     let Table {
@@ -364,11 +364,8 @@ pub(crate) fn original_handler(name: &[u8]) -> zif_handler {
 
 /// `swoole_user_func_handler`: outside a coroutine the original handler,
 /// inside one the library's `swoole_<name>` with the same arguments.
-pub(crate) fn user_func(
-    call: &Call,
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) -> Result<(), Bailout> {
+pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
+    let (frame, value) = (call.frame(), call.return_value());
     // SAFETY: the frame of the running internal function.
     let function = unsafe { (*frame).func };
     let name = bytes(internal!(function).function_name);
@@ -576,10 +573,13 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         installed,
         flags::STREAM_FUNCTION,
         &[
-            (c"stream_select", Some(crate::select::stream_select)),
+            (
+                c"stream_select",
+                Some(crate::select::zif_swoole_stream_select),
+            ),
             (
                 c"stream_socket_pair",
-                Some(crate::stream::stream_socket_pair),
+                Some(crate::stream::zif_swoole_stream_socket_pair),
             ),
         ],
     );
