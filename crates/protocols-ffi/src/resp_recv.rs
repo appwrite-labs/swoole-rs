@@ -32,7 +32,7 @@ pub trait RespConnection {
     /// `protocol->onPackage` of the whole content: negative when it fails, 1 when
     /// the socket was removed meanwhile, else 0.
     fn dispatch(&mut self) -> c_int;
-    /// `buffer->clear()` and a fresh request state, after a dispatch.
+    /// `buffer->clear()`, after a dispatch.
     fn clear(&mut self);
 }
 
@@ -74,6 +74,7 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
                     _ => return SW_OK,
                 }
                 c.clear();
+                zero(c.view().2);
                 return SW_OK;
             }
             4 => {
@@ -103,11 +104,18 @@ pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
             );
             return fresh;
         }
-        // SAFETY: a fresh allocation of one RespRequest.
-        unsafe { fresh.write(RespRequest::default()) };
+        // SAFETY: a fresh allocation of one RespRequest, whose fields all take zero.
+        unsafe { fresh.write_bytes(0, 1) };
         *slot = fresh;
     }
     *slot
+}
+
+/// A fresh request state, its padding zeroed too, as upstream's `memset` and native
+/// code comparing whole states expect.
+fn zero(request: &mut RespRequest) {
+    // SAFETY: an exclusive RespRequest, whose fields all take zero.
+    unsafe { core::ptr::from_mut(request).write_bytes(0, 1) };
 }
 
 /// The head of `swoole::String`.
@@ -192,7 +200,6 @@ impl RespConnection for Effects<'_> {
         let head = self.head();
         head.length = 0;
         head.offset = 0;
-        *self.state() = RespRequest::default();
     }
 }
 

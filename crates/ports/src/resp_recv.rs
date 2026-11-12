@@ -103,8 +103,6 @@ impl RespConnection for Connection<'_> {
 
     fn clear(&mut self) {
         self.string().clear();
-        let (_, _, request) = self.view();
-        *request = RespRequest::default();
     }
 }
 
