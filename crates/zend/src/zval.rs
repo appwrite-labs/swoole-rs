@@ -12,16 +12,17 @@ use crate::{
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
         swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
-        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_separate_array,
-        swr_zend_serialize, swr_zend_string_release, swr_zend_try_array_merge,
-        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_json_encode,
-        swr_zend_try_ptr_dtor, swr_zend_try_read_property, swr_zend_try_symtable_update,
-        swr_zend_url_decode, swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref,
-        zend_array_count, zend_class_entry, zend_double_to_str, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string,
-        zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_property_slot,
+        swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
+        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
+        swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
+        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_read_property,
+        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
+        zval, zval_ptr_dtor,
     },
     value,
 };
@@ -132,8 +133,8 @@ impl Value {
         if self.kind() != IS_STRING {
             return None;
         }
-        // SAFETY: a live string zval holds `str`, at offset 0.
-        let string = unsafe { self.as_ptr().cast::<*mut zend_string>().read() };
+        // SAFETY: a live string zval.
+        let string = unsafe { value::str_of(self.as_ptr()) };
         // SAFETY: the zval holds the string while borrowed.
         unsafe { ZStr::from_ptr(string) }
     }
@@ -203,7 +204,11 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn property(&self, name: &CStr) -> Option<&Self> {
-        self.props(None)?.slot(name)
+        let object = self.object()?;
+        // SAFETY: the zval holds the object while borrowed; Zend reads `name` only.
+        let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
+        // SAFETY: null, or a slot of the object, which the borrow keeps alive.
+        unsafe { Self::from_ptr(slot) }
     }
 
     /// `zend_read_property(scope, object, name, silent)` of an object, in

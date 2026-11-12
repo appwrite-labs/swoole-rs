@@ -478,7 +478,8 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn value(&self, n: u32) -> Option<&crate::Value> {
-        self.passed_arg(n).then(|| self.arg_value(n))
+        // SAFETY: a passed argument lives for the call, or null.
+        unsafe { crate::Value::from_ptr(self.zval(n)) }
     }
 
     /// The return slot (`return_value`).
@@ -590,8 +591,22 @@ impl Call {
         name: &[u8],
         value: &Value,
     ) -> Result<(), crate::bailout::Bailout> {
-        self.props(scope)
-            .map_or(Ok(()), |props| props.update_trapped(name, value))
+        let Some(this) = self.this_object() else {
+            return Ok(());
+        };
+        let scope = scope.map_or(ptr::null_mut(), Class::entry);
+        // SAFETY: the frame's live `$this`, a registered class or null and a
+        // live value; Zend copies the name and the value.
+        let bailed = unsafe {
+            crate::sys::swr_zend_try_facade_update(
+                scope,
+                this,
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        };
+        crate::bailout::trapped(bailed)
     }
 
     /// `RETURN_ZVAL(zend_read_property(scope, Z_OBJ_P(ZEND_THIS), name, 1, &rv), 1, 0)`:
