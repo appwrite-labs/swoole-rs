@@ -1117,7 +1117,10 @@ pub(crate) fn accept(mut context: Ctx) {
     let offered = if context::co_socket(state) {
         state.websocket_settings & SETTING_COMPRESSION != 0
     } else {
-        crate::context::server(state).config().websocket_compression
+        crate::context::server(state)
+            .config()
+            .websocket_compression
+            .get()
     };
     let mut accepted = false;
     if offered && !state.request.zobject.ptr.is_null() {

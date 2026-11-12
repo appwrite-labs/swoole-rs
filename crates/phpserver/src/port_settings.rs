@@ -428,7 +428,7 @@ impl Source for Zend<'_> {
     }
 
     fn single_thread(&self) {
-        self.settings.configure(|c| c.single_thread = true);
+        self.settings.server().config().single_thread.set(true);
     }
 
     fn length_func(&self) -> GetPackageLength {

@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
@@ -114,15 +114,15 @@ thread_local! {
 /// thread has none for.
 pub(crate) fn port_property(
     object_id: u16,
-    slot: &mut *mut c_void,
+    slot: &AtomicPtr<c_void>,
     property: *mut c_void,
     set: bool,
 ) -> *mut c_void {
     if !THREAD.load(Ordering::Relaxed) {
         if set {
-            *slot = property;
+            slot.store(property, Ordering::Relaxed);
         }
-        return *slot;
+        return slot.load(Ordering::Relaxed);
     }
     let index = usize::from(object_id);
     PORT_PROPERTIES.with_borrow_mut(|properties| {
@@ -658,8 +658,8 @@ fn stats(call: &Call) {
         load(&gs.abort_count),
         load(&gs.accept_count),
         load(&gs.close_count),
-        i64::from(config.worker_num),
-        i64::from(config.task_worker_num),
+        i64::from(config.worker_num.get()),
+        i64::from(config.task_worker_num.get()),
         // SAFETY: a live server.
         i64::try_from(serv.user_worker_num()).unwrap_or(i64::MAX),
         i64::from(server_methods::get_idle_worker_num(serv)),
@@ -690,7 +690,7 @@ fn stats(call: &Call) {
     let pool = serv.task_pool();
     // SAFETY: its live task pool.
     let queue = unsafe { (*pool).queue() };
-    if config.task_ipc_mode > TASK_IPC_UNIXSOCK && !queue.is_null() {
+    if config.task_ipc_mode.get() > TASK_IPC_UNIXSOCK && !queue.is_null() {
         // SAFETY: the pool's live queue.
         if let Some((num, bytes)) = unsafe { &*queue.cast::<QueueRecord>() }.stat() {
             // (zend_long) of each count, as upstream.
@@ -698,7 +698,7 @@ fn stats(call: &Call) {
             call.add_assoc_long(c"task_queue_bytes", bytes.cast_signed() as i64);
         }
     }
-    if config.task_worker_num > 0 {
+    if config.task_worker_num.get() > 0 {
         let idle = server_methods::get_idle_task_worker_num(serv);
         call.add_assoc_long(c"task_idle_worker_num", i64::from(idle));
         let tasking = server_methods::get_tasking_num(serv);
@@ -736,7 +736,7 @@ fn heartbeat(call: &Call) {
     let Ok(close) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    if serv.config().heartbeat_check_interval < 1 {
+    if serv.config().heartbeat_check_interval.get() < 1 {
         return call.set_bool(false);
     }
     call.set_array();
@@ -831,7 +831,7 @@ fn get_client_info(call: &Call) {
     let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
-    let dispatch_mode = serv.config().dispatch_mode;
+    let dispatch_mode = serv.config().dispatch_mode.get();
     call.set_array();
     if conn.uid() > 0 || dispatch_mode == DISPATCH_UIDMOD {
         call.add_assoc_long(c"uid", i64::from(conn.uid()));

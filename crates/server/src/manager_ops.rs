@@ -221,10 +221,10 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_HAS_MESSAGE_BOX => u64::from(!pool.message_box().is_null()),
         OP_USER_WORKER_NUM => workers.user_count as u64,
         OP_MODE => u64::from(config.mode_),
-        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
-        OP_WORKER_NUM => u64::from(config.worker_num),
-        OP_RELOAD_ASYNC => u64::from(config.reload_async),
-        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
+        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
+        OP_WORKER_NUM => u64::from(config.worker_num.get()),
+        OP_RELOAD_ASYNC => u64::from(config.reload_async.get()),
+        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
         // `get_worker(i)` of an event worker, which the manager indexes.
         OP_EVENT_WORKER_PID => ctx.worker_at(arg).map_or(0, |worker| signed(worker.pid())),
         OP_TASK_POOL_WORKER_NUM => u64::from(task_pool.worker_num()),
@@ -257,8 +257,8 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .load(core::sync::atomic::Ordering::Relaxed),
         ),
         OP_ALL_WORKER_NUM => {
-            u64::from(config.worker_num)
-                + u64::from(config.task_worker_num)
+            u64::from(config.worker_num.get())
+                + u64::from(config.task_worker_num.get())
                 + workers.user_count as u64
         }
         OP_ANY_WORKER_PID => signed(ctx.worker_at(arg).map_or(0, Worker::pid)),
@@ -308,7 +308,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .store(pid, core::sync::atomic::Ordering::Relaxed);
             let event_pool = ctx.pool();
             event_pool.set_on_worker_message(Some(read_worker_message));
-            event_pool.set_max_wait_time(config.max_wait_time);
+            event_pool.set_max_wait_time(config.max_wait_time.get());
             event_pool.set_master_pid(pid);
             ctx.task_pool().set_master_pid(pid);
             // SAFETY: `Manager::start`, in the manager process its master just forked,
@@ -333,9 +333,9 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_DISPATCH => swoole_rs_process::signal::swoole_signal_dispatch(),
         OP_RELOAD_ADD_EVENT_WORKERS | OP_RELOAD_ADD_TASK_WORKERS => {
             let (workers, count) = if op == OP_RELOAD_ADD_EVENT_WORKERS {
-                (config.workers.as_ptr().cast(), config.worker_num)
+                (config.workers.as_ptr().cast(), config.worker_num.get())
             } else {
-                (ctx.task_pool().workers(), config.task_worker_num)
+                (ctx.task_pool().workers(), config.task_worker_num.get())
             };
             // SAFETY: the server's `count` worker records.
             let workers: &[WorkerRecord] =

@@ -89,7 +89,7 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     }
 
     fn autoindex(&self) -> bool {
-        self.server.config().http_autoindex
+        self.server.config().http_autoindex.get()
     }
 
     #[must_use]

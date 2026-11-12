@@ -291,7 +291,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
-            let threads = crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num);
+            let threads =
+                crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num.get());
             tables_mut().reactor_threads = threads;
             0
         }
@@ -299,14 +300,19 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let threads = ctx.tables().reactor_threads;
             // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
             unsafe {
-                crate::reactor_ops::ThreadRecord::delete_array(threads, config.reactor_num.into());
+                crate::reactor_ops::ThreadRecord::delete_array(
+                    threads,
+                    config.reactor_num.get().into(),
+                );
             }
             0
         }
         OP_MANAGER_THREAD_ID | OP_ALL_WORKER_NUM => ctx.all_worker_num(),
-        OP_ALL_CORE_WORKER_NUM => u64::from(config.worker_num) + u64::from(config.task_worker_num),
-        OP_WORKER_NUM => u64::from(config.worker_num),
-        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
+        OP_ALL_CORE_WORKER_NUM => {
+            u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get())
+        }
+        OP_WORKER_NUM => u64::from(config.worker_num.get()),
+        OP_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
         OP_RUNNING => u64::from(ctx.state().running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
@@ -316,10 +322,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 clippy::cast_possible_truncation,
                 reason = "`serv->reactor_num = serv->worker_num`, as upstream converts it"
             )]
-            let reactor_num = config.worker_num as u16;
-            // SAFETY: `create_thread_factory`, in `Server::create` before any thread
-            // starts; `config` isn't read across the write.
-            unsafe { serv.config_mut() }.reactor_num = reactor_num;
+            let reactor_num = config.worker_num.get() as u16;
+            serv.config().reactor_num.set(reactor_num);
             0
         }
         OP_SINGLE_REACTOR_PIPE => {

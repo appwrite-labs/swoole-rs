@@ -114,17 +114,19 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INFO_FD => ctx.info().fd.cast_unsigned(),
         OP_INFO_LEN => u64::from(ctx.info().len),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
-        OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request),
+        OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request.get()),
         OP_WORKER_ID => u64::from(ctx.worker().id()),
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),
-        OP_ALL_CORE_WORKER_NUM => u64::from(config.worker_num) + u64::from(config.task_worker_num),
-        OP_WORKER_NUM => u64::from(config.worker_num),
-        OP_REACTOR_NUM => u64::from(config.reactor_num),
-        OP_RELOAD_ASYNC => u64::from(config.reload_async),
-        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
+        OP_ALL_CORE_WORKER_NUM => {
+            u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get())
+        }
+        OP_WORKER_NUM => u64::from(config.worker_num.get()),
+        OP_REACTOR_NUM => u64::from(config.reactor_num.get()),
+        OP_RELOAD_ASYNC => u64::from(config.reload_async.get()),
+        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
         OP_CO_DISPATCH => u64::from(
-            config.dispatch_mode == DISPATCH_CO_CONN_LB
-                || config.dispatch_mode == DISPATCH_CO_REQ_LB,
+            config.dispatch_mode.get() == DISPATCH_CO_CONN_LB
+                || config.dispatch_mode.get() == DISPATCH_CO_REQ_LB,
         ),
         OP_CURRENT_WORKER_ID => u64::from(swoole_get_worker_id()),
         OP_WORKER_EXISTS => {
@@ -182,8 +184,8 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
 fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     match op {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
-        OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker().into()),
-        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker().into()),
+        OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker()),
+        OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
         OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
             SW_WORKER_IDLE
         } else {
@@ -194,28 +196,28 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 logger.reopen();
             }
         }
-        OP_CALL_WORKER_START => call_worker_start_callback(ctx.server(), ctx.worker().into()),
-        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server(), ctx.worker().into()),
+        OP_CALL_WORKER_START => call_worker_start_callback(ctx.server(), ctx.worker()),
+        OP_WORKER_START_CALLBACK => worker_start_callback(ctx.server(), ctx.worker()),
         OP_WORKER_STOP_CALLBACK => {
-            call_worker_stop_callback(ctx.server(), ctx.worker().into());
+            call_worker_stop_callback(ctx.server(), ctx.worker());
         }
         OP_WORKER_SIGNAL_INIT => worker_signal_init(ctx.server()),
         OP_DRAIN_PIPES => drain_worker_pipe(ctx.server()),
         OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
-        OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker().into()),
+        OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker()),
         OP_RESET_WORKER_COUNTER => {
-            crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker().into());
+            crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker());
         }
-        OP_DETACH_WORKER => worker_global_detach(ctx.worker().into()),
+        OP_DETACH_WORKER => worker_global_detach(ctx.worker()),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
             swoole_set_worker_type(SW_EVENT_WORKER);
-            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker().into());
+            crate::worker_methods::init_event_worker(ctx.server(), ctx.worker());
         }
         OP_CPU_AFFINITY =>
         {
             #[cfg(target_os = "linux")]
-            if ctx.config().open_cpu_affinity {
+            if ctx.config().open_cpu_affinity.get() {
                 set_cpu_affinity(ctx.config(), ctx.worker().id());
             }
         }

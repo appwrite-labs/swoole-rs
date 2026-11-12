@@ -333,7 +333,7 @@ impl Server {
     fn new(config: &Config) -> Self {
         let state = Box::into_raw(Box::new(ServerState::new()));
         let server_config = ServerConfig {
-            http_autoindex: config.autoindex,
+            http_autoindex: crate::config::Setting::new(config.autoindex),
             timezone_: config.timezone,
             ..ServerConfig::default()
         };

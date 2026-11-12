@@ -351,6 +351,28 @@ impl Value {
         }
     }
 
+    /// `call_user_function(NULL, nullptr, self, &result, 0, nullptr)` inside
+    /// `zend_try`: the callable this holds, called with no arguments, and its
+    /// result. The call holds a reference of its own to the callable, so PHP
+    /// code it runs can't free it.
+    /// # Errors
+    /// The callable bailed out.
+    pub fn call(&self) -> Result<Owned, bailout::Bailout> {
+        let mut callable = self.copy();
+        let result = Owned::default();
+        let mut fci = crate::EMPTY_FCI;
+        fci.size = size_of::<crate::sys::zend_fcall_info>();
+        // ZVAL_COPY_VALUE of the reference `callable` holds through the call.
+        fci.function_name = *callable.0.0.get_mut();
+        fci.retval = result.as_ptr();
+        // SAFETY: a live callable and a return slot this owns; no Rust borrow
+        // spans the call.
+        let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
+        drop(callable);
+        called?;
+        Ok(result)
+    }
+
     /// `ZSTR_VAL(Z_OBJCE_P(value)->name)` of an object.
     #[must_use]
     #[inline]

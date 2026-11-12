@@ -44,10 +44,6 @@ const SW_TASK_WORKER: c_int = 4;
 use crate::records::{VERIFIED, VERIFIED_TLS};
 
 /// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the worker that owns them as workers.cc did"
-)]
 impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
@@ -70,9 +66,10 @@ impl Context<'_> {
         // SAFETY: the ops reading it run with the event's live head.
         unsafe { &*self.info }
     }
-    pub(super) fn worker(&self) -> &mut WorkerRecord {
-        // SAFETY: the ops reading it run with the context's live worker.
-        unsafe { &mut *self.worker }
+    pub(super) fn worker(&self) -> Worker<'_> {
+        // SAFETY: the ops reading it run with the context's live worker, whose loop
+        // (this thread) owns its counters and status.
+        unsafe { Worker::new(self.worker) }
     }
     /// `serv->get_worker(id)`, or `None` past the last worker.
     fn other(&self, id: u64) -> Option<Worker<'_>> {
@@ -308,11 +305,11 @@ fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_UNREAD_PIPE_WORKER => {
-            ctx.unread_in_bus(worker_pipe(ctx.worker().into(), false));
+            ctx.unread_in_bus(worker_pipe(ctx.worker(), false));
             0
         }
         OP_UNREAD_PIPE_MASTER => {
-            ctx.unread(worker_pipe(ctx.worker().into(), true));
+            ctx.unread(worker_pipe(ctx.worker(), true));
             0
         }
         OP_UNREAD_THREAD_PIPE => {
@@ -362,7 +359,7 @@ fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_LISTEN_PIPE => {
-            let pipe = worker_pipe(ctx.worker().into(), false)?;
+            let pipe = worker_pipe(ctx.worker(), false)?;
             let reactor = Reactor::thread();
             set_nonblock(pipe);
             reactor.fields().ptr = ctx.serv.raw();
@@ -562,7 +559,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
     let pipes = c_long::from(ctx.tables().reactor_pipe_num);
     let id = c_long::from(head.reactor_id)
-        + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num);
+        + (c_long::from(head.fd) % pipes) * c_long::from(ctx.config().reactor_num.get());
     let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
         return -1;
     };
