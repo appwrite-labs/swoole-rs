@@ -3,6 +3,7 @@
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
+use crate::callable::Callable;
 use crate::lifecycle::ServerObject;
 use crate::port::PortProperty;
 use crate::server::THREAD;
@@ -11,6 +12,7 @@ use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int, c_long, c_void},
     ptr,
+    rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_buffer::string::CppString;
@@ -20,6 +22,7 @@ use swoole_rs_corebase::{
 };
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{event_worker_ops, server_methods, view};
+use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     Value, bailout, string,
     sys::{
@@ -74,9 +77,9 @@ fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
     unsafe { property.cast::<PortProperty>().as_ref() }
 }
 
-/// The port's callback `kind`, or null.
-fn port_callback(port: Option<view::Port<'_>>, kind: c_int) -> *mut c_void {
-    port_property(port).map_or(ptr::null_mut(), |property| property.callback(kind))
+/// The port's callback `kind`, or none.
+fn port_callback(port: Option<view::Port<'_>>, kind: c_int) -> Option<Callable> {
+    port_property(port)?.callback(kind)
 }
 
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
@@ -87,25 +90,21 @@ pub fn php_swoole_server_isset_callback(
     kind: c_int,
 ) -> bool {
     let primary = serv.port_at(0);
-    !port_callback(port, kind).is_null() || !port_callback(primary, kind).is_null()
+    port_callback(port, kind).is_some() || port_callback(primary, kind).is_some()
 }
 
 /// `php_swoole_server_get_callback`: callback `kind` of the port listening on
-/// `server_fd`, else the primary port's; null without that port.
+/// `server_fd`, else the primary port's; none without that port. The caller
+/// holds the reference through its call, so an `on()` during it drops only the
+/// port's.
 #[must_use]
 pub fn php_swoole_server_get_callback(
     serv: view::Server<'_>,
     server_fd: c_int,
     kind: c_int,
-) -> *mut c_void {
-    let Some(port) = serv.port_by_server_fd(server_fd) else {
-        return ptr::null_mut();
-    };
-    let callback = port_callback(Some(port), kind);
-    if !callback.is_null() {
-        return callback;
-    }
-    port_callback(serv.port_at(0), kind)
+) -> Option<Rc<Kept>> {
+    let port = serv.port_by_server_fd(server_fd)?;
+    port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))
 }
 
 /// `serv->get_worker_message_bus()->move_packet()`.

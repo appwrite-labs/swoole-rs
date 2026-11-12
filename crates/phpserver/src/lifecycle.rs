@@ -13,12 +13,13 @@ use std::{
     ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
+use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
@@ -391,15 +392,9 @@ impl ServerObject {
         f(property)
     }
 
-    /// `get_callback(kind)`: a callable, or null.
-    fn callback(self, kind: usize) -> *mut c_void {
-        self.property(|p| {
-            p.callbacks
-                .get(kind)
-                .and_then(Option::as_ref)
-                .map(Callable::as_raw)
-        })
-        .unwrap_or(ptr::null_mut())
+    /// `get_callback(kind)`: the callable, a reference the call holds, or none.
+    fn callback(self, kind: usize) -> Option<Callable> {
+        self.property(|p| p.callbacks.get(kind).and_then(Option::clone))
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
@@ -416,7 +411,7 @@ impl ServerObject {
         if bailout::pending() {
             return false;
         }
-        let Some(callable) = Callable::create(callable) else {
+        let Some(callable) = crate::callable::create(callable) else {
             return false;
         };
         // A nested on() (from the old callable's destructor) stored its callable,
@@ -460,8 +455,8 @@ fn object_zval(object: *mut zend_object) -> zval {
     }
 }
 
-/// `server_object->get_callback(kind)`: a callable, or null.
-pub(crate) fn callback(kind: c_int) -> *mut c_void {
+/// `server_object->get_callback(kind)`: the callable, a reference the call holds, or none.
+pub(crate) fn callback(kind: c_int) -> Option<Callable> {
     ServerObject::running().callback(usize::try_from(kind).unwrap_or(CALLBACKS))
 }
 
@@ -878,18 +873,19 @@ fn add_command(call: &Call) {
         fatal(E_WARNING, c"only support worker/task_worker process");
         return call.set_bool(false);
     }
-    let Some(callable) = call.value(3).and_then(Callable::create) else {
+    let Some(callable) = call.value(3).and_then(crate::callable::create) else {
         return call.set_bool(false);
     };
-    let handle = callable.as_raw();
-    // The property keeps the callable for the server's life.
+    // The property keeps the callable for the server's life; the command table
+    // may outlive it.
+    let handle = Rc::downgrade(&callable);
     #[expect(
         clippy::arc_with_non_send_sync,
         reason = "the server's command table, like upstream's, holds PHP callables"
     )]
     let handler = std::sync::Arc::new(
         move |_: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
-            command_run(handle, message, reply);
+            command_run(&handle, message, reply);
         },
     );
     // Upstream's `(int) types`.
@@ -904,13 +900,17 @@ fn add_command(call: &Call) {
 
 /// A command handler (`Server::Command::Handler`): `callable($server, $message)`'s
 /// string, or upstream's JSON errors, into `reply`. A bailout is raised last, from
-/// this frame. `callable` is a live command callable.
-fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
+/// this frame. A callable its server already released fails the call.
+fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
     let mut send = |text: &[u8]| reply.extend_from_slice(text);
+    let Some(callable) = callable.upgrade() else {
+        send(br#"{"data": "failed to call function", "code": -1}"#);
+        return;
+    };
     let message = Owned::string(ZString::new(message)).into_zval();
     let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(callable, &mut args, retval.as_ptr(), false);
+    let called = crate::dispatch::invoke(&callable, &mut args, retval.as_ptr(), false);
     // The message string made above.
     crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {
@@ -933,6 +933,7 @@ fn command_run(callable: *mut c_void, message: &[u8], reply: &mut Vec<u8>) {
     };
     // Released first: a bailout jumps over this frame.
     drop(retval);
+    drop(callable);
     if bailed {
         bailout::raise(Err(bailout::Bailout));
     }
@@ -1055,10 +1056,10 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 /// `ServerObject::register_callback`.
 fn register_callback(object: ServerObject, serv: view::Server<'_>) {
     put(serv, install::CONTROL);
-    if !object.callback(ON_TASK).is_null() {
+    if object.callback(ON_TASK).is_some() {
         put(serv, install::TASK);
     }
-    if !object.callback(ON_PIPE_MESSAGE).is_null() {
+    if object.callback(ON_PIPE_MESSAGE).is_some() {
         put(serv, install::PIPE_MESSAGE);
     }
     if fact(serv, fact::SEND_YIELD) && fact(serv, fact::UNSAFE_EVENTS) {

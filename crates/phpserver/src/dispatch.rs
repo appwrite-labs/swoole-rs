@@ -3,6 +3,7 @@
 //! Server's on* slots hold this module's `extern "C"` fns (stored with a null
 //! `ctx`, see `swoole_rs_server::callbacks`); each re-raises a bailout it
 //! trapped last, from its outermost frame (docs/zend.md).
+use crate::callable::Callable;
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
@@ -103,7 +104,7 @@ pub(crate) fn undef() -> zval {
 /// `zend::function::call(cb, argc, args, nullptr, coroutine)`, warning
 /// "`<class>->on<event> handler error`" (`php_swoole_error`) when it fails.
 #[inline]
-fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Called {
+fn call(cb: &Callable, args: &mut [zval], coroutine: bool, event: &str) -> Called {
     match invoke(cb, args, ptr::null_mut(), coroutine) {
         Ok(true) => Called::Done,
         Err(_) => Called::Bailout,
@@ -115,20 +116,19 @@ fn call(cb: *mut c_void, args: &mut [zval], coroutine: bool, event: &str) -> Cal
 /// callable ran (or its coroutine started), or the bailout it raised, which
 /// the caller re-raises or hands to C++ (it is no longer pending here).
 pub(crate) fn invoke(
-    cb: *mut c_void,
+    cb: &Callable,
     args: &mut [zval],
     retval: *mut zval,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
     #[expect(clippy::cast_possible_truncation, reason = "at most five arguments")]
     let argc = args.len() as u32;
-    // SAFETY: `cb` is a live callable handle.
-    let cache = unsafe { callable::cache(cb.cast()) };
-    // SAFETY: a resolved cache, `argc` initialised arguments and the return
-    // slot or null; the coroutine leaf and the reporter run inside C traps.
+    // SAFETY: the resolved cache of a callable the caller holds through the
+    // call, `argc` initialised arguments and the return slot or null; the
+    // coroutine leaf and the reporter run inside C traps.
     let called = unsafe {
         function_call(
-            cache,
+            cb.cache_ptr(),
             argc,
             args.as_mut_ptr(),
             retval,
@@ -293,7 +293,7 @@ fn receive_done(server: view::Server<'_>, succeeded: bool, fd: i64, args: &mut [
 /// `php_swoole_server_onConnect`/`onClose`'s call, with the chosen callback.
 fn on_connection(
     server: view::Server<'_>,
-    cb: *mut c_void,
+    cb: &Callable,
     close: bool,
     fd: i64,
     reactor_id: i64,
@@ -335,12 +335,11 @@ fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) ->
     } else {
         (ON_BUFFER_EMPTY, "onBufferEmpty")
     };
-    let cb = php_swoole_server_get_callback(server, server_fd, kind);
-    if cb.is_null() {
+    let Some(cb) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return false;
-    }
+    };
     let mut args = [zserv(), long_zval(fd)];
-    call(cb, &mut args, false, event) == Called::Bailout
+    call(&cb, &mut args, false, event) == Called::Bailout
 }
 
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
@@ -379,10 +378,16 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
         args[2] = address.into_owned().into_zval();
         3
     };
-    let cb = php_swoole_server_get_callback(server, server_fd, ON_PACKET);
+    let Some(cb) = php_swoole_server_get_callback(server, server_fd, ON_PACKET) else {
+        dtor(&mut args[1]);
+        if !facts.event_object {
+            dtor(&mut args[2]);
+        }
+        return false;
+    };
     // Upstream names onPipeMessage in onPacket's warning.
     if call(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         facts.enable_coroutine,
         "onPipeMessage",
@@ -405,7 +410,9 @@ fn on_pipe_message(
     source_worker_id: i64,
     time: f64,
 ) -> bool {
-    let cb = crate::lifecycle::callback(ON_PIPE_MESSAGE);
+    let Some(cb) = crate::lifecycle::callback(ON_PIPE_MESSAGE) else {
+        return false;
+    };
     let facts = facts(server);
     let mut args = [zserv(), undef(), undef()];
     let argc = if facts.event_object {
@@ -422,7 +429,7 @@ fn on_pipe_message(
         3
     };
     if call(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         facts.coroutine,
         "onPipeMessage",
@@ -486,12 +493,12 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
     ) {
         return true;
     }
-    if cb.is_null() {
+    let Some(cb) = cb else {
         return false;
-    }
+    };
     let coroutine = coroutine && facts.coroutine;
     call(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         coroutine,
         event,
@@ -532,9 +539,9 @@ fn on_worker_error(
     ) {
         return true;
     }
-    if !cb.is_null()
+    if let Some(cb) = cb
         && call(
-            cb,
+            &cb,
             args.get_mut(..argc).unwrap_or_default(),
             false,
             "onWorkerError",
@@ -608,7 +615,7 @@ struct ExitStatus {
 
 type Ctx = *mut c_void;
 
-fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> *mut c_void {
+fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> Option<Callable> {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
 
@@ -710,15 +717,14 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Pa
 #[must_use]
 pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = &request.info;
-    let cb = port_callback(server, info.server_fd, ON_RECEIVE);
-    if cb.is_null() {
+    let Some(cb) = port_callback(server, info.server_fd, ON_RECEIVE) else {
         return SW_OK;
-    }
+    };
     let config = server.config();
     let mut args = [zserv(), undef(), undef(), undef()];
     let argc = receive_args(server, request, config.event_object, &mut args);
     let called = invoke(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
         config.enable_coroutine,
@@ -838,11 +844,10 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
 }
 
 extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
-    let cb = port_callback(server, info.server_fd, ON_CONNECT);
-    if !cb.is_null() {
+    if let Some(cb) = port_callback(server, info.server_fd, ON_CONNECT) {
         let reactor_id = i64::from(info.reactor_id);
         relay(on_connection(
-            server, cb, false, info.fd, reactor_id, info.time,
+            server, &cb, false, info.fd, reactor_id, info.time,
         ));
     }
 }
@@ -891,9 +896,9 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         }
     }
     let reactor_id = i64::from(info.reactor_id);
-    if !cb.is_null() {
+    if let Some(cb) = cb {
         relay(on_connection(
-            server, cb, true, session_id, reactor_id, info.time,
+            server, &cb, true, session_id, reactor_id, info.time,
         ));
     }
     // SAFETY: as above; the callback may have changed it.

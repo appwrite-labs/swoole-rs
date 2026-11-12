@@ -437,7 +437,7 @@ fn task(call: &Call) {
         flag(&mut buf, NOREPLY);
     } else if let Some(callback) = callback {
         flag(&mut buf, CALLBACK);
-        let Some(cb) = Callable::create(callback) else {
+        let Some(cb) = crate::callable::create(callback) else {
             return call.set_bool(false);
         };
         // A replaced callable is freed once the table is no longer borrowed.
@@ -742,13 +742,15 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         4
     };
     let retval = Owned::default();
-    let cb = crate::lifecycle::callback(ON_TASK);
-    let outcome = match invoke(
-        cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        retval.as_ptr(),
-        facts.task_coroutine,
-    ) {
+    let called = crate::lifecycle::callback(ON_TASK).map_or(Ok(false), |cb| {
+        invoke(
+            &cb,
+            args.get_mut(..argc).unwrap_or_default(),
+            retval.as_ptr(),
+            facts.task_coroutine,
+        )
+    });
+    let outcome = match called {
         Ok(false) => handler_error("onTask"),
         called => called.map(drop),
     };
@@ -785,19 +787,22 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     }
     let mut data = data.into_zval();
     let cb = if flags & CALLBACK != 0 {
-        let cb = pending(server, |p| p.callbacks.get(&id).map(|cb| cb.as_raw()));
+        // Its own reference: the callback may replace the pending entry.
+        let cb = pending(server, |p| {
+            p.callbacks.get(&id).map(|cb| Callable::clone(cb))
+        });
         if cb.is_none() {
             flags &= !CALLBACK;
         }
-        cb.unwrap_or(ptr::null_mut())
+        cb
     } else {
         crate::lifecycle::callback(ON_FINISH)
     };
-    if cb.is_null() {
+    let Some(cb) = cb else {
         let outcome = event_warning(c"require 'onFinish' callback");
         dtor(&mut data);
         return outcome.map(|()| SW_ERR);
-    }
+    };
     let facts = facts(server);
     let mut args = [zserv, undef(), undef()];
     let argc = if facts.event_object {
@@ -813,7 +818,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         3
     };
     let outcome = match invoke(
-        cb,
+        &cb,
         args.get_mut(..argc).unwrap_or_default(),
         ptr::null_mut(),
         facts.enable_coroutine,
@@ -889,14 +894,17 @@ mod tests {
     #[test]
     fn pending_tasks_are_per_server() {
         let (a, b) = (0x1000, 0x2000);
-        let callable = ManuallyDrop::new(Callable::dangling());
-        let raw = callable.as_raw();
+        // An all-zero callable (an undefined zval, an empty cache), never called
+        // or dropped.
+        let callable: Callable = unsafe { std::rc::Rc::new_zeroed().assume_init() };
+        let callable = ManuallyDrop::new(callable);
+        let raw = std::rc::Rc::as_ptr(&callable);
         pending_at(a, |p| p.callbacks.insert(7, callable));
         assert_eq!(
-            pending_at(b, |p| p.callbacks.get(&7).map(|c| c.as_raw())),
+            pending_at(b, |p| p.callbacks.get(&7).map(|c| std::rc::Rc::as_ptr(c))),
             None
         );
         let removed = pending_at(a, |p| p.callbacks.remove(&7));
-        assert_eq!(removed.map(|c| c.as_raw()), Some(raw));
+        assert_eq!(removed.map(|c| std::rc::Rc::as_ptr(&c)), Some(raw));
     }
 }
