@@ -337,14 +337,14 @@ unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
     fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
-    fn system_init_reactor(reactor: *mut c_void);
+    safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
 #[cfg(feature = "upstream-symbols")]
 // SAFETY: crates/tls's, under its upstream symbol, and crates/clients's; declared,
-// since both depend on this crate. The writable callback is a reactor handler,
-// sound for any event the reactor lends it.
+// since both depend on this crate. Each takes the live reactor's handle, and the
+// writable callback is a reactor handler, sound for any event the reactor lends it.
 unsafe extern "C" {
-    fn swr_v1_clients_init_reactor(reactor: *mut c_void);
+    safe fn swr_v1_clients_init_reactor(reactor: crate::Running<'_>);
     #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
     safe fn reactor_writable_callback(
         reactor: crate::Running<'_>,
@@ -437,10 +437,10 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
         return -1;
     }
     fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0;
-    // SAFETY: registers handlers on the new reactor.
-    unsafe { system_init_reactor(reactor) };
-    // SAFETY: as above.
-    unsafe { swr_v1_clients_init_reactor(reactor) };
+    // SAFETY: the new reactor, on this thread, which no reference holds now.
+    let handle = unsafe { crate::Running::new(reactor) };
+    system_init_reactor(handle);
+    swr_v1_clients_init_reactor(handle);
     swoole_rs_corebase::set_thread_reactor(reactor);
     0
 }
