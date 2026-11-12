@@ -437,10 +437,6 @@ pub(crate) unsafe fn free(mut ctx: Ctx) {
         // SAFETY: the path the parser copied into request memory.
         unsafe { swr_zend_efree(state.request.path.cast()) };
     }
-    if !state.response.reason.is_null() {
-        // SAFETY: the reason `status()` copied into request memory.
-        unsafe { swr_zend_efree(state.response.reason.cast()) };
-    }
     parse::parse_free(state);
     // SAFETY: `alloc`'s, which nothing references any more; the drop
     // releases the request's data, the socket and any unfinished upload.

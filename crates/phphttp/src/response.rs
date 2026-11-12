@@ -10,7 +10,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{c_int, c_void},
+    ffi::{CString, c_int, c_void},
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
@@ -399,12 +399,10 @@ fn status(call: &Call) {
         )]
         let code = code as i32;
         response.status = code;
-        response.reason = if reason.is_empty() {
-            ptr::null_mut()
-        } else {
-            // The reason's bytes, copied into request memory.
-            crate::parse::estrndup(reason).cast()
-        };
+        response.reason = (!reason.is_empty()).then(|| {
+            let text = reason.split(|&byte| byte == 0).next().unwrap_or_default();
+            Box::new(CString::new(text).unwrap_or_default())
+        });
         call.set_bool(true);
         Some(())
     };

@@ -500,9 +500,7 @@ impl Handle {
     fn tls_host_name(self) -> &'static CStr {
         let slot = self.tls().strings[TLS_HOST_NAME];
         // SAFETY: the live context's slot.
-        let name = unsafe { &*slot }.view();
-        // SAFETY: a slot's view is NUL-terminated.
-        unsafe { CStr::from_ptr(name.data) }
+        unsafe { &*slot }.c_str()
     }
 
     fn proxy(self, which: Proxy) -> Option<&'static ProxyState> {
