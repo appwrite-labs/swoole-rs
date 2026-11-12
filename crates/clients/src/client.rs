@@ -1640,8 +1640,7 @@ mod ops {
             EVENT_ADD => unsafe { event_api::swoole_event_add(socket, events) },
             // SAFETY: as above.
             EVENT_SET => unsafe { event_api::swoole_event_set(socket, events) },
-            // SAFETY: as above.
-            EVENT_DEL => unsafe { event_api::swoole_event_del(socket) },
+            EVENT_DEL => this.get().socket().map_or(-1, event_api::event_del),
             // SAFETY: as above.
             _ => unsafe { event_api::swoole_event_add_or_update(socket, events) },
         }

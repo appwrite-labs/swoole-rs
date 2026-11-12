@@ -188,8 +188,8 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         .map(|&(_, wrapper)| wrapper);
     let wrapper = if let Some(wrapper) = registered {
         if events == 0 {
-            // SAFETY: remove the registered native socket before detaching its descriptor.
-            unsafe { event_api::swoole_event_del(wrapper.as_ptr()) };
+            // Remove the registered native socket before detaching its descriptor.
+            _ = event_api::event_del(wrapper);
             // SAFETY: out of the reactor above, and of the registry below; free
             // detaches fd first, as c-ares retains ownership of the OS descriptor.
             unsafe { free(wrapper) };
@@ -214,11 +214,11 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         wrapper
     };
     if wrapper.read(|wrapper| wrapper.events) != 0 {
-        // SAFETY: update this existing registered wrapper with the requested event mask.
-        unsafe { event_api::swoole_event_set(wrapper.as_ptr(), events) };
+        // Update this registered wrapper, which lives until `free` above.
+        _ = event_api::event_set(wrapper, events);
     } else {
-        // SAFETY: register this fresh wrapper with the requested event mask.
-        unsafe { event_api::swoole_event_add(wrapper.as_ptr(), events) };
+        // Register this fresh wrapper.
+        _ = event_api::event_add(wrapper, events);
     }
 }
 unsafe extern "C" fn host(

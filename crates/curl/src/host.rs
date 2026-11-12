@@ -8,7 +8,7 @@ use crate::{EXEC_NEEDS_COROUTINE, Multi, swr_v1_curl_get_handle};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::ptr;
-use swoole_rs_coroutine::{Coroutine, RC_CANCELED, scheduler};
+use swoole_rs_coroutine::{Coroutine, RC_CANCELED};
 use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 
@@ -93,18 +93,15 @@ impl ReactorSocket {
     }
 
     pub(crate) fn add(self, events: c_int) -> c_int {
-        // SAFETY: a live record; the multi registers it while the loop is available.
-        unsafe { event_api::swoole_event_add(self.record(), events) }
+        event_api::event_add(self.0, events)
     }
 
     pub(crate) fn set(self, events: c_int) -> c_int {
-        // SAFETY: as above.
-        unsafe { event_api::swoole_event_set(self.record(), events) }
+        event_api::event_set(self.0, events)
     }
 
     pub(crate) fn del(self) -> c_int {
-        // SAFETY: as above.
-        unsafe { event_api::swoole_event_del(self.record()) }
+        event_api::event_del(self.0)
     }
 
     /// Leave the reactor silently if in it, then free the socket without
@@ -198,8 +195,7 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
     let co = multi.co.get();
     // SAFETY: the coroutine waiting on the multi is live.
     if let Some(co) = unsafe { co.cast::<Coroutine>().as_ref() } {
-        // SAFETY: this thread's scheduler.
-        unsafe { (*scheduler()).socket_bound_cid = co.cid };
+        swoole_rs_coroutine::set_socket_bound_cid(co.cid);
         // On the stack, NUL-terminated: the fatal error may longjmp past this frame.
         let mut buffer = [0u8; 128];
         let (mut text, _) = buffer.split_at_mut(127);

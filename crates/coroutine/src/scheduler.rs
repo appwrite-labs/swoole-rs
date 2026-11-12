@@ -98,6 +98,18 @@ pub fn coroutine_older(before: c_long) -> Option<(c_long, *mut c_void)> {
     with_scheduler(|s| s.older_native(before))
 }
 
+/// The coroutine the last socket-bound error named (`Coroutine::get_socket_bound_cid`).
+#[must_use]
+pub fn socket_bound_cid() -> c_long {
+    with_scheduler(|s| s.socket_bound_cid)
+}
+
+/// Names `cid` as the coroutine a socket (or a cURL handle) is bound to, for the
+/// fatal error that follows.
+pub fn set_socket_bound_cid(cid: c_long) {
+    with_scheduler(|s| s.socket_bound_cid = cid);
+}
+
 /// [`Scheduler::set_stack_size`] on this thread.
 pub fn set_stack_size(size: usize) {
     with_scheduler(|s| s.set_stack_size(size));

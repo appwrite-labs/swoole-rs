@@ -14,7 +14,8 @@ zend_object *swr_zend_objects_get(uint32_t handle) {
     return NULL;
 }
 
-zend_object *swr_zend_objects_find(uint32_t handle, const zend_object_handlers *handlers) {
+/* The live object of `handlers` at `handle`, or NULL; no reference is taken. */
+static zend_object *objects_find(uint32_t handle, const zend_object_handlers *handlers) {
     if (handle >= EG(objects_store).top) {
         return NULL;
     }
@@ -26,7 +27,7 @@ zend_object *swr_zend_objects_find(uint32_t handle, const zend_object_handlers *
 }
 
 bool swr_zend_objects_hold(uint32_t handle, const zend_object_handlers *handlers, zval *out) {
-    zend_object *obj = swr_zend_objects_find(handle, handlers);
+    zend_object *obj = objects_find(handle, handlers);
     if (!obj) {
         return false;
     }

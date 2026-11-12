@@ -13,10 +13,6 @@ use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, Ordering,
 };
 
-unsafe extern "C" {
-    fn srandom(seed: c_uint);
-}
-
 /// Upstream's `SW_MAX_FILE_CONTENT` (`include/swoole_config.h`).
 const MAX_FILE_CONTENT: u32 = crate::constants::SW_MAX_FILE_CONTENT;
 
@@ -205,8 +201,7 @@ pub fn swr_v1_core_init() -> bool {
         reason = "srandom(time(nullptr)) narrows as upstream"
     )]
     let seed = now as c_uint;
-    // SAFETY: srandom has no memory preconditions.
-    unsafe { srandom(seed) };
+    crate::sys::srandom(seed);
     true
 }
 
@@ -273,8 +268,7 @@ fn bug_report_lines(banner: &CStr, compiler: &CStr, ssl: &CStr) {
     message.extend(banner.to_bytes());
     message.push(b'\n');
     let mut host: libc::utsname = crate::sys::zeroed();
-    // SAFETY: `host` is a live, writable utsname.
-    if unsafe { libc::uname(&raw mut host) } != -1 {
+    if crate::sys::uname(&mut host) != -1 {
         message.extend_from_slice(b"OS:");
         for field in [host.sysname, host.release, host.version, host.machine] {
             message.push(b' ');

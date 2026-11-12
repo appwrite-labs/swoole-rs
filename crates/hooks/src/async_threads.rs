@@ -16,9 +16,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
 use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
-use swoole_rs_reactor::event_api::{
-    on_destroy, swoole_event_add, swoole_event_del, swr_v1_event_current,
-};
+use swoole_rs_reactor::event_api::{event_del, on_destroy, swoole_event_add, swr_v1_event_current};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::write_sync;
@@ -178,8 +176,10 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     set_thread_async_threads(ptr::null_mut());
     // SAFETY: `create` boxed it; nothing refers to it any more.
     let mut threads = unsafe { Box::from_raw(threads) };
-    // SAFETY: its read end, registered on the closing reactor.
-    unsafe { swoole_event_del(threads.pipe.worker_socket) };
+    // Its read end, registered on the closing reactor.
+    if let Some(read) = threads.pipe.worker_end() {
+        _ = event_del(read);
+    }
     // The last reference this thread holds.
     if let Some(pool) = threads.pool {
         pool.release();

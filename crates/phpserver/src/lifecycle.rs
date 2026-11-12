@@ -393,11 +393,6 @@ impl<'a> ServerObject<'a> {
         self.data.serv.get().cloned()
     }
 
-    /// The running object's mark (`instance::set_server_object`); 0 without one.
-    pub(crate) fn mark(self) -> u64 {
-        self.data.mark.get()
-    }
-
     pub(crate) fn set_mark(self, mark: u64) {
         self.data.mark.set(mark);
     }
@@ -527,6 +522,7 @@ impl Drop for ServerData {
     /// object PHP never destructs), then the object's share in its server. The
     /// object is no longer the running one, so the callbacks this runs find none.
     fn drop(&mut self) {
+        crate::instance::forget(self.mark.get());
         self.release();
         let Some(share) = self.serv.take() else {
             return;

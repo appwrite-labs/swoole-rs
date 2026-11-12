@@ -7,10 +7,11 @@
 //! live handle are declared `safe`. What frees an SSL or replaces its BIOs within
 //! `'a` is unsafe: the constructors from raw pointers, `Ssl::set_fd`, `Ssl::set_bio`
 //! and `upstream::socket_ssl_close`.
+use crate::context::SslCtx;
 use openssl_sys::{
     BIO, BIO_METHOD, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK, OPENSSL_sk_num,
-    OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTX, SSL_ctrl, SSL_peek, SSL_read,
-    SSL_set_SSL_CTX, SSL_set_bio, SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host,
+    OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
+    SSL_peek, SSL_read, SSL_set_bio, SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host,
     X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
@@ -21,8 +22,9 @@ use swoole_rs_reactor::{Socket, SocketFields};
 
 // SAFETY: libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
-// an entry of OpenSSL's static cipher table, `Cert` takes the reference OpenSSL
-// returns, and a `CText<'static>` is one of OpenSSL's static strings.
+// an entry of OpenSSL's static cipher table, `Cert` and `OwnedBio` take the reference
+// OpenSSL returns, a `CText<'static>` is one of OpenSSL's static strings, and an
+// `SslCtx` reference is a live context.
 // The `safe` ones take only such handles and plain values, read or change only the
 // object behind the handle or this thread's error queue, and return raw pointers the
 // caller dereferences in its own unsafe block.
@@ -33,6 +35,8 @@ unsafe extern "C" {
     safe fn ERR_reason_error_string(error: c_ulong) -> Option<CText<'static>>;
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
     safe fn BIO_s_mem() -> *const BIO_METHOD;
+    /// `fopen`s `filename` with `mode`; null on failure.
+    safe fn BIO_new_file(filename: CText<'_>, mode: CText<'_>) -> Option<OwnedBio>;
     /// `BIO_pending` as a function: the bytes queued to read.
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
@@ -64,6 +68,17 @@ unsafe extern "C" {
     safe fn SSL_CIPHER_get_bits(cipher: Option<CipherRef>, algorithm: Option<&mut c_int>) -> c_int;
     safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<CText<'static>>;
     safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<CText<'static>>;
+    /// `SslCtrl`'s commands: `Mode` reads no pointer, and `HostName` copies `text`
+    /// (null clears the name).
+    safe fn SSL_ctrl(
+        ssl: Ssl<'_>,
+        command: SslCtrl,
+        value: c_long,
+        text: Option<CText<'_>>,
+    ) -> c_long;
+    /// The SSL takes its own reference to `context` (null: its session's context)
+    /// and releases the one it held.
+    safe fn SSL_set_SSL_CTX(ssl: Ssl<'_>, context: Option<&SslCtx>) -> *mut SSL_CTX;
     fn DTLSv1_listen(ssl: *mut SSL, peer: *mut c_void) -> c_int;
     fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
@@ -72,6 +87,14 @@ unsafe extern "C" {
     #[cfg_attr(not(ossl300), link_name = "SSL_get_peer_certificate")]
     safe fn peer_certificate(ssl: Ssl<'_>) -> Option<Cert>;
     fn BIO_int_ctrl(bio: *mut BIO, command: c_int, large: c_long, integer: c_int) -> c_long;
+}
+
+/// The `SSL_ctrl` commands behind `SSL_set_mode` and `SSL_set_tlsext_host_name`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum SslCtrl {
+    Mode = SSL_CTRL_MODE,
+    HostName = SSL_CTRL_SET_TLSEXT_HOSTNAME,
 }
 
 /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
@@ -314,8 +337,7 @@ impl<'a> Ssl<'a> {
 
     /// `SSL_set_mode`: adds `mode`'s bits.
     pub fn set_mode(self, mode: c_long) {
-        // SAFETY: a live SSL; `SSL_set_mode` is this `SSL_ctrl`.
-        unsafe { SSL_ctrl(self.as_ptr(), SSL_CTRL_MODE, mode, std::ptr::null_mut()) };
+        SSL_ctrl(self, SslCtrl::Mode, mode, None);
     }
 
     /// `SSL_set_fd`: false when OpenSSL fails.
@@ -386,22 +408,17 @@ impl<'a> Ssl<'a> {
         (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes().to_vec())
     }
 
-    /// `SSL_set_SSL_CTX`: the SSL switches to `context`, which it then references.
-    ///
-    /// # Safety
-    /// `context` is a live `SSL_CTX`.
-    pub unsafe fn set_context(self, context: *mut SSL_CTX) {
-        // SAFETY: a live SSL and, as the caller promises, a live context.
-        unsafe { SSL_set_SSL_CTX(self.as_ptr(), context) };
+    /// `SSL_set_SSL_CTX`: the SSL switches to `context`, which it then references;
+    /// without one, to its session's context.
+    pub fn set_context(self, context: Option<&SslCtx>) {
+        SSL_set_SSL_CTX(self, context);
     }
 
     /// `SSL_set_tlsext_host_name`: false when OpenSSL refuses the name.
     #[must_use]
     pub fn set_host_name(self, name: &CStr) -> bool {
-        // SAFETY: a live SSL copies the NUL-terminated name.
-        unsafe {
-            openssl_sys::SSL_set_tlsext_host_name(self.as_ptr(), name.as_ptr().cast_mut()) != 0
-        }
+        let kind = c_long::from(TLSEXT_NAMETYPE_host_name);
+        SSL_ctrl(self, SslCtrl::HostName, kind, Some(name.into())) != 0
     }
 
     /// One `DTLSv1_listen` step, without the peer's address.
@@ -472,8 +489,14 @@ impl OwnedBio {
         NonNull::new(unsafe { BIO_new(BIO_s_mem()) }).map(Self)
     }
 
+    /// `BIO_new_file(path, "r")`: a BIO reading the file, None when it fails to open.
+    #[must_use]
+    pub(crate) fn open(path: &CStr) -> Option<Self> {
+        BIO_new_file(path.into(), c"r".into())
+    }
+
     /// The BIO, borrowed while this side owns it.
-    fn bio(&self) -> Bio<'_> {
+    pub(crate) fn bio(&self) -> Bio<'_> {
         Bio(self.0, PhantomData)
     }
 

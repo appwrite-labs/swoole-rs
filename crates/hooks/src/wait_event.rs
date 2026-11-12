@@ -185,9 +185,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::log;
-    use swoole_rs_reactor::event_api::{
-        swoole_event_add, swoole_event_del, swoole_event_is_available,
-    };
+    use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
     use swoole_rs_reactor::{Socket, SocketRecord};
 
     pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
@@ -240,8 +238,8 @@ pub(crate) mod native {
             record.object = object;
             // The record is this watch's until `release` frees it.
             let watch = Self(Socket::new(Box::leak(Box::new(record))));
-            // SAFETY: a fresh record this watch owns, on the thread's live reactor.
-            if unsafe { swoole_event_add(watch.0.as_ptr(), events) } < 0 {
+            // A fresh record this watch owns until `release`, off the reactor by then.
+            if event_add(watch.0, events) < 0 {
                 let error = log::last_error();
                 watch.release();
                 return Err(error);
@@ -261,8 +259,7 @@ pub(crate) mod native {
     impl Drop for Watch {
         fn drop(&mut self) {
             if swoole_event_is_available() {
-                // SAFETY: the record `add` registered on this thread's live reactor.
-                unsafe { swoole_event_del(self.0.as_ptr()) };
+                _ = event_del(self.0);
             }
             Self(self.0).release();
         }

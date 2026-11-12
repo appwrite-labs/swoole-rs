@@ -3,8 +3,7 @@ use crate::{
     Call, Class,
     bailout::{self, Bailout},
     sys::{
-        IS_NULL, IS_RESOURCE, zend_class_entry, zend_get_type_by_const, zend_long,
-        zend_throw_error, zend_throw_exception, zend_type_error,
+        IS_NULL, IS_RESOURCE, zend_get_type_by_const, zend_long, zend_throw_error, zend_type_error,
     },
 };
 use std::{
@@ -37,14 +36,6 @@ pub fn type_name(kind: u32) -> Option<&'static CStr> {
     let name = unsafe { zend_get_type_by_const(kind.cast_signed()) };
     // SAFETY: null, or one of Zend's static NUL-terminated names.
     (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) })
-}
-
-/// `zend_throw_exception(ce, message, code)`.
-/// # Safety
-/// Called from a handler, with a registered exception class.
-pub unsafe fn throw_exception(ce: *mut zend_class_entry, message: &CStr, code: zend_long) {
-    // SAFETY: per the caller; Zend copies the message.
-    unsafe { zend_throw_exception(ce, message.as_ptr(), code) };
 }
 
 impl Call {

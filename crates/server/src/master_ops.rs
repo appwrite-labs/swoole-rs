@@ -127,18 +127,6 @@ fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>
     log::error_log(level, code as c_int, origin, message);
 }
 
-/// A NUL-terminated native string, or "" for null.
-///
-/// # Safety
-/// `text` is null or a live NUL-terminated string.
-unsafe fn text<'a>(text: *const c_char) -> std::borrow::Cow<'a, str> {
-    if text.is_null() {
-        return "".into();
-    }
-    // SAFETY: per the caller.
-    unsafe { CStr::from_ptr(text) }.to_string_lossy()
-}
-
 /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`, over the context's server.
 fn call_hook(o: &Objects<'_>, hook: ServerHook) {
     if let Some(serv) = o.server {
@@ -225,8 +213,7 @@ impl<'a> Objects<'a> {
     }
     /// The context port's listening socket.
     fn port_socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: the ops reading it run with a live port, which owns its socket.
-        unsafe { Socket::from_ptr(self.port().socket.cast()) }
+        self.port().listening_socket()
     }
     fn port(&self) -> &PortConfig {
         // SAFETY: the ops reading it run with a live port in the context, which no
@@ -268,9 +255,12 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it pass a live socket.
         unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
     }
+    /// [`Objects::data_bytes`] as text, or "" for null.
     fn data(&self) -> std::borrow::Cow<'_, str> {
-        // SAFETY: the ops reading it pass a NUL-terminated string.
-        unsafe { text(self.ctx.data.cast()) }
+        if self.ctx.data.is_null() {
+            return "".into();
+        }
+        String::from_utf8_lossy(self.data_bytes())
     }
     /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
     fn filename(&self) -> std::borrow::Cow<'_, str> {
@@ -1568,16 +1558,11 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(crate::task_worker_ops::init_task_workers(o.server()))
         }
         OP_DESTROY_WORKER => {
-            let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o
-                .config()
-                .workers
-                .as_ptr()
-                .cast::<WorkerRecord>()
-                .wrapping_add(at);
-            // SAFETY: an event worker of the server's array, which shutdown indexes.
-            let worker = unsafe { swoole_rs_process::worker_record::Worker::new(worker) };
-            crate::worker_methods::destroy_worker(worker);
+            // `get_worker(i)` of an event worker, which shutdown indexes.
+            let id = u16::try_from(arg).unwrap_or(u16::MAX);
+            if let Some(worker) = o.server().worker_record(id) {
+                crate::worker_methods::destroy_worker(worker);
+            }
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {

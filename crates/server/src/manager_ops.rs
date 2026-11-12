@@ -217,10 +217,6 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let config = ctx.config();
     let workers = ctx.workers();
     let (pool, task_pool) = (ctx.pool(), ctx.task_pool());
-    let pid = |worker: *mut WorkerRecord| {
-        // SAFETY: one of the server's live workers.
-        signed(unsafe { &*worker }.pid())
-    };
     Some(match op {
         OP_HAS_MESSAGE_BOX => u64::from(!pool.message_box().is_null()),
         OP_USER_WORKER_NUM => workers.user_count as u64,
@@ -229,7 +225,8 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num.get()),
         OP_RELOAD_ASYNC => u64::from(config.reload_async.get()),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
-        OP_EVENT_WORKER_PID => pid(workers.event_workers.wrapping_add(index(arg))),
+        // `get_worker(i)` of an event worker, which the manager indexes.
+        OP_EVENT_WORKER_PID => ctx.worker_at(arg).map_or(0, |worker| signed(worker.pid())),
         OP_TASK_POOL_WORKER_NUM => u64::from(task_pool.worker_num()),
         OP_TASK_WORKER_PID => signed(
             task_pool

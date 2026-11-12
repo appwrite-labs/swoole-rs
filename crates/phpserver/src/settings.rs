@@ -8,7 +8,7 @@ use std::{
     ptr,
     sync::atomic::Ordering,
 };
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{ServerConfig, server_methods, view};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report,
@@ -123,7 +123,6 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
 }
 
 /// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
-///
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -133,8 +132,6 @@ fn apply(serv: view::Server<'_>, id: u32, v: i64) {
     use field as f;
     let c = serv.config();
     let on = v != 0;
-    // `0` is unlimited for both concurrency limits.
-    let limit = if v as u32 == 0 { u32::MAX } else { v as u32 };
     match id {
         f::DAEMONIZE => c.daemonize.set(on),
         f::REACTOR_NUM => c.reactor_num.set(v as u16),
@@ -145,8 +142,8 @@ fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::MAX_CONCURRENCY => serv
             .counters()
             .max_concurrency
-            .store(limit, core::sync::atomic::Ordering::Relaxed),
-        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency.set(limit),
+            .store(limit(v), core::sync::atomic::Ordering::Relaxed),
+        f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency.set(limit(v)),
         f::ENABLE_COROUTINE => c.enable_coroutine.set(on),
         f::DISPATCH_MODE => c.dispatch_mode.set(v as u8),
         f::SEND_YIELD => c.send_yield.set(on),
@@ -190,6 +187,16 @@ fn apply(serv: view::Server<'_>, id: u32, v: i64) {
     }
 }
 
+/// A concurrency limit, for which `0` is unlimited.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "C++'s implicit conversion of the int64_t setting to uint32_t"
+)]
+fn limit(v: i64) -> u32 {
+    if v as u32 == 0 { u32::MAX } else { v as u32 }
+}
+
 /// The settings array and the Server being configured.
 pub(crate) struct Settings<'a> {
     pub(crate) serv: view::Server<'a>,
@@ -226,6 +233,15 @@ impl<'a> Settings<'a> {
 
     fn fact(&self, id: u32) -> i64 {
         fact(self.serv, id)
+    }
+
+    /// The server's configuration, borrowed for `f`, which runs no PHP code
+    /// and reaches the configuration no other way.
+    pub(crate) fn configure<R>(&self, f: impl FnOnce(&mut ServerConfig) -> R) -> R {
+        // SAFETY: a live server being configured on this thread, not started
+        // (set() checked), so no other thread reads its config; the borrow ends
+        // with `f`, and no other reference to the config is live meanwhile.
+        f(unsafe { self.serv.config_mut() })
     }
 
     fn set(&self, id: u32, value: i64) {
@@ -611,8 +627,7 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    // SAFETY: the live server being configured; nothing else holds its config.
-    unsafe { s.server().config_mut() }.cpu_affinity_available = cpus;
+    s.configure(|c| c.cpu_affinity_available = cpus);
     Ok(true)
 }
 

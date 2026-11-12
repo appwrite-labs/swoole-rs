@@ -352,6 +352,16 @@ impl CppString {
         unsafe { std::slice::from_raw_parts_mut(self.str.cast(), self.size) }
     }
 
+    /// The allocation's first `length` bytes, zeroed, for a read to fill before
+    /// `set_len`; `None` when the allocation is shorter. Content among them is zeroed
+    /// too, so every byte lent is initialized and stays so whatever is written.
+    pub fn zeroed(&mut self, length: usize) -> Option<&mut [u8]> {
+        let bytes = self.allocation().get_mut(..length)?;
+        bytes.fill(MaybeUninit::new(0));
+        // SAFETY: every byte was just written.
+        Some(unsafe { bytes.assume_init_mut() })
+    }
+
     /// The allocated bytes after the content, for a read to fill before `grow`. They are
     /// uninitialized, so safe code can only write them.
     pub fn spare(&mut self) -> &mut [MaybeUninit<u8>] {

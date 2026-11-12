@@ -321,21 +321,20 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         };
         return forward(h, &send);
     }
-    let conn = connection(h, id, 2)?;
-    if conn.is_null() {
+    // SAFETY: null, or a live connection record of the server's table. The handle reads
+    // and writes one field at a time through the table's own pointer, so onClose, which
+    // reaches the record by session, leaves it valid.
+    let Some(c) = (unsafe { crate::Connection::from_ptr(connection(h, id, 2)?) }) else {
         log::set_last_error(SESSION_NOT_EXIST);
         return Ok(false);
-    }
-    // SAFETY: a non-null lookup is a live connection record of the server's table; no
-    // native op runs while it is borrowed.
-    let c = unsafe { &mut *conn };
+    };
     if flags & CLOSE_RESET != 0 {
-        c.close_reset = 1;
+        c.set_close_reset(1);
     }
     if flags & CLOSE_ACTIVELY != 0 {
-        c.close_actively = 1;
+        c.set_close_actively(1);
     }
-    if c.closing != 0 {
+    if c.closing() != 0 {
         log::error_log(
             LOG_NOTICE,
             SESSION_CLOSING,
@@ -344,7 +343,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    if c.close_force == 0 && c.close_reset == 0 && c.closed.load(Ordering::Relaxed) != 0 {
+    if c.close_force() == 0 && c.close_reset() == 0 && c.closed().load(Ordering::Relaxed) != 0 {
         log::error_log(
             LOG_TRACE,
             SESSION_CLOSED,
@@ -353,22 +352,20 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    c.closing = 1;
+    c.set_closing(1);
     // `if_do_close_callback`: once, by whoever sets `closed`. The slot's presence
     // is Rust's fact, so nothing else reaches the record before onClose.
     if h.is(OP_HAS_ON_CLOSE)?
-        && c.closed
+        && c.closed()
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     {
-        let info = close_event((&mut *c).into(), id);
+        let info = close_event(c, id);
         h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
-    // SAFETY: as above, re-derived: onClose, which reaches it by session, has returned.
-    let c = unsafe { &mut *conn };
-    c.closing = 0;
-    c.close_errno = 0;
-    let socket = c.socket;
+    c.set_closing(0);
+    c.set_close_errno(0);
+    let socket = c.socket_ptr();
     if socket.is_null() {
         log::warning(
             c"BaseFactory::end",
@@ -376,12 +373,11 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    let now = c.close_reset != 0 || c.peer_closed != 0 || c.close_force != 0;
+    let now = c.close_reset() != 0 || c.peer_closed() != 0 || c.close_force() != 0;
     if h.op(OP_OUT_EMPTY, address(socket))? != 0 || now {
         return Ok(h.op(OP_CLOSE_SOCKET, address(socket))?.cast_signed() == SW_OK);
     }
-    // SAFETY: as above.
-    unsafe { &mut *conn }.close_queued = 1;
+    c.set_close_queued(1);
     Ok(h.op(OP_QUEUE_CLOSE, address(socket))? != 0)
 }
 

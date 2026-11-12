@@ -856,27 +856,24 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
     if single {
         // ZVAL_COPY_VALUE: the result takes the value.
         drop(task_co.result.replace(data));
-        let co = task_co.co;
-        drop(task_co);
-        // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
-        unsafe { co.wake(false) };
-        return Ok(());
+    } else {
+        let Some(index) = index else {
+            let text = message!("task[{id}] is invalid");
+            return event_warning(text.as_cstr());
+        };
+        if let Some(array) = task_co.result.borrow_mut().array_mut() {
+            array.update_index(index as u64, data);
+        }
+        pending(server, |p| p.coroutines.remove(&id));
+        let arrived = task_co.result.borrow().array().map_or(0, Array::count);
+        if arrived != task_co.count.get() {
+            return Ok(());
+        }
     }
-    let Some(index) = index else {
-        let text = message!("task[{id}] is invalid");
-        return event_warning(text.as_cstr());
-    };
-    if let Some(array) = task_co.result.borrow_mut().array_mut() {
-        array.update_index(index as u64, data);
-    }
-    pending(server, |p| p.coroutines.remove(&id));
-    let arrived = task_co.result.borrow().array().map_or(0, Array::count);
-    let (co, all) = (task_co.co, arrived == task_co.count.get());
+    let co = task_co.co;
     drop(task_co);
-    if all {
-        // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
-        unsafe { co.wake(false) };
-    }
+    // SAFETY: the waiting coroutine; this frame owns nothing that needs a drop.
+    unsafe { co.wake(false) };
     Ok(())
 }
 

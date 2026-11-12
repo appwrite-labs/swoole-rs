@@ -10,7 +10,7 @@ use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::Socket;
 use swoole_rs_timer::swr_v1_timer_add_plain;
 
@@ -93,10 +93,8 @@ fn pipe_socket<'b>(bus: &'b crate::objects::Bus, pipe: Option<Socket<'_>>) -> Op
 }
 
 /// The server's worker `id`, if it has one.
-fn worker<'a>(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<&'a mut WorkerRecord> {
-    let id = id.try_into().unwrap_or(u16::MAX);
-    // SAFETY: null past the last, else one of the server's live workers.
-    unsafe { serv.worker(id).as_mut() }
+fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
+    serv.worker_record(id.try_into().unwrap_or(u16::MAX))
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
@@ -246,10 +244,10 @@ pub(crate) fn answer(
                 port.connection_num.fetch_sub(1, SeqCst);
             } else {
                 let id = usize::from(reactor_id()?);
-                // SAFETY: base mode's per-reactor counts, one per reactor.
-                unsafe { (*gs.cells().wrapping_add(id)).fetch_sub(1, SeqCst) };
-                // SAFETY: as above.
-                unsafe { (*port.cells().wrapping_add(id)).fetch_sub(1, SeqCst) };
+                for cells in [gs.cells(), port.cells()] {
+                    // SAFETY: base mode's per-reactor counts, one per reactor.
+                    unsafe { &*cells.wrapping_add(id) }.fetch_sub(1, SeqCst);
+                }
             }
             0
         }
@@ -269,7 +267,7 @@ pub(crate) fn answer(
             0
         }
         OP_WORKER_START | OP_WORKER_STOP => {
-            let worker = worker(server, ctx.thread_record()?.id)?.into();
+            let worker = worker(server, ctx.thread_record()?.id)?;
             if op == OP_WORKER_START {
                 call_worker_start_callback(server, worker);
             } else {
@@ -278,7 +276,7 @@ pub(crate) fn answer(
             0
         }
         OP_STOP_THREAD_WORKER => {
-            stop_async_worker(server, worker(server, reactor_id()?)?.into());
+            stop_async_worker(server, worker(server, reactor_id()?)?);
             0
         }
         OP_THREAD_INIT | OP_THREAD0_INIT => {
@@ -286,8 +284,11 @@ pub(crate) fn answer(
                 ctx.thread = thread(state, 0);
             }
             let id = u16::try_from(ctx.thread_record()?.id).unwrap_or_default();
-            // SAFETY: the server's live thread and its new reactor.
-            let ret = unsafe { entry::thread_init(ctx.thread, server, handle, id) };
+            // `ReactorThread::init(serv, reactor, id)`, over the context's thread and
+            // its new reactor.
+            let mut init = ReactorContext::new(server, handle);
+            init.thread = ctx.thread;
+            let ret = entry::int(run(crate::ops::RUN_RT_INIT, u64::from(id), &mut init));
             sign(if op == OP_THREAD0_INIT { 0 } else { ret })
         }
         OP_THREAD_CLEAN => {
@@ -347,12 +348,9 @@ pub(crate) fn answer(
         }
         OP_RT_THREAD_WORKER => {
             let worker = worker(server, reactor_id()?)?;
-            crate::worker_methods::init_event_worker(server, (&mut *worker).into());
+            crate::worker_methods::init_event_worker(server, worker);
             let bus = ctx.thread_record()?.message_bus();
-            sign(add_read(pipe_socket(
-                &bus,
-                worker_pipe(worker.into(), false),
-            )));
+            sign(add_read(pipe_socket(&bus, worker_pipe(worker, false))));
             0
         }
         OP_RT_PIPE_COMMAND => {
@@ -390,7 +388,7 @@ pub(crate) fn answer(
             };
             let thread = ctx.thread_record()?;
             let bus = thread.message_bus();
-            let sock = pipe_socket(&bus, worker_pipe((&mut *worker).into(), true));
+            let sock = pipe_socket(&bus, worker_pipe(worker, true));
             if op == OP_WORKER_PIPE_UNREAD {
                 handle?.interest(sock?, 4, 0);
                 return Some(0);
@@ -400,7 +398,7 @@ pub(crate) fn answer(
             }
             // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
             if thread.notify_pipe.is_null() {
-                thread.notify_pipe = worker.pipe_worker.cast();
+                thread.notify_pipe = worker.pipe_worker().cast();
             }
             0
         }
@@ -503,7 +501,7 @@ pub(crate) fn answer(
                 + index * i64::from(config().reactor_num.get());
             // the session id, so the reactor verifies the connection before closing it
             send_event(
-                worker_pipe(worker(server, id)?.into(), false),
+                worker_pipe(worker(server, id)?, false),
                 session,
                 crate::ops::EVENT_CLOSE_FORCE,
             );

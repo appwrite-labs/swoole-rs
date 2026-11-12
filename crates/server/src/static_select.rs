@@ -285,10 +285,8 @@ impl Wire {
     fn bytes(&self, offset: usize, length: usize) -> Vec<u8> {
         // SAFETY: the request's live buffer.
         let start = unsafe { (*self.request().buffer).str };
-        // SAFETY: the parser's spans lie in the buffer.
-        let start = unsafe { start.add(offset) };
-        // SAFETY: as above, `length` bytes of it.
-        unsafe { core::slice::from_raw_parts(start, length) }.to_vec()
+        // SAFETY: the parser's spans lie in the buffer: `length` bytes of it at `offset`.
+        unsafe { core::slice::from_raw_parts(start.wrapping_add(offset), length) }.to_vec()
     }
 }
 

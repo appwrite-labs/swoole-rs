@@ -361,15 +361,20 @@ impl<'a> Server<'a> {
     /// The server's task pool, to run pool operations on.
     #[must_use]
     pub fn task_pool_ref(self) -> PoolRef<'a> {
-        // SAFETY: the pools live in the server's shared counters for its life.
-        unsafe { PoolRef::new(self.task_pool()) }
+        self.pool_ref(false)
     }
 
     /// The server's event pool, right after its task pool.
     #[must_use]
     pub fn event_pool_ref(self) -> PoolRef<'a> {
-        // SAFETY: as `task_pool_ref`.
-        unsafe { PoolRef::new(self.task_pool().wrapping_add(1)) }
+        self.pool_ref(true)
+    }
+
+    /// The server's task pool, or the event pool that follows it.
+    fn pool_ref(self, event: bool) -> PoolRef<'a> {
+        let pool = self.task_pool().wrapping_add(usize::from(event));
+        // SAFETY: both pools live in the server's shared record for its life.
+        unsafe { PoolRef::new(pool) }
     }
 
     /// The server's worker registry, which its configuration owns for the server's life.
@@ -430,10 +435,8 @@ impl<'a> Server<'a> {
     /// The listening socket of `serv->ports[index]`, or `None` past the last.
     #[must_use]
     pub(crate) fn port_socket_at(self, index: usize) -> Option<Socket<'a>> {
-        let port = self.port_at(index)?;
-        // SAFETY: null, or one of the server's live ports' listening socket, which the
-        // server keeps open while it serves.
-        unsafe { Socket::from_ptr(port.config().socket.cast()) }
+        // One of the server's live ports, whose socket it keeps open while it serves.
+        self.port_at(index)?.config().listening_socket()
     }
 
     /// `Server::task_notify_pipe(worker_id)`, or null.
@@ -460,10 +463,7 @@ impl<'a> Server<'a> {
     /// `server_fd`.
     #[must_use]
     pub fn port_by_server_fd(self, server_fd: c_int) -> Option<Port<'a>> {
-        // A listening socket's record holds its port.
-        let port = self.connection_field(c_long::from(server_fd), 0, Connection::object)?;
-        // SAFETY: null, or one of the server's ports, which live as long as it.
-        unsafe { Port::from_raw(port) }
+        self.state().port_by_server_fd(server_fd)
     }
 
     /// The settings of the `ListenPort` listening on `server_fd`, if there is one.
@@ -515,6 +515,17 @@ impl<'a> Server<'a> {
             .iter()
             .copied()
             .find(|port| wanted(port.config()))
+    }
+}
+
+impl ServerState {
+    /// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
+    /// `server_fd`.
+    pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
+        // A listening socket's record holds its port.
+        let port = self.connection(c_long::from(server_fd), 0)?.object();
+        // SAFETY: null, or one of the server's ports, which live as long as it.
+        unsafe { Port::from_raw(port) }
     }
 }
 
@@ -594,9 +605,8 @@ impl<'a> Port<'a> {
     /// it closes). The socket can't outlive `f`: a port's socket closes while the port
     /// lives (`OP_PORT_CLOSE_SOCKET`), so no handle to it is kept past a read.
     pub fn with_socket<R>(self, f: impl FnOnce(Socket<'_>) -> R) -> Option<R> {
-        // SAFETY: null, or the port's listening socket, live now: closing it frees it
-        // and nulls the field in one step, and the handle ends with `f`.
-        unsafe { Socket::from_ptr(self.config().socket.cast()) }.map(f)
+        // Live now, and the handle ends with `f`.
+        self.config().listening_socket().map(f)
     }
 
     /// `ListenPort::get_fd()`.

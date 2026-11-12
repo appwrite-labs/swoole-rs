@@ -7,6 +7,7 @@
 //! callback that sets a later key is seen, one it erases is not, and an earlier key it
 //! sets waits for the next walk.
 use crate::Running;
+use crate::event_api::running;
 use crate::reactor_state::ReactorState;
 use std::ffi::{c_int, c_void};
 
@@ -115,35 +116,27 @@ pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
 /// `Reactor::execute_end_callbacks(timed_out)`. A callback may change the reactor, which
 /// no reference to its state is held across.
 pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
-    let owner = reactor.state();
-    // SAFETY: the handle's live state; a single field write.
-    unsafe { (*owner).fields.timed_out = timed_out };
-    // Its fields' address, without a borrow: each borrow ends before a callback runs.
-    let fields = owner
-        .wrapping_byte_add(std::mem::offset_of!(ReactorState, fields))
-        .cast::<crate::ReactorFields>();
+    reactor.with(|state| state.fields.timed_out = timed_out);
     for slot in 0..END_SLOTS {
-        // SAFETY: the handle's live state; the copy is read before the callback runs.
-        let Some(end) = (unsafe { (*owner).callbacks.end.get(slot).copied().flatten() }) else {
+        // Each borrow ends, its copy read, before a callback runs.
+        let Some(end) = reactor.with(|state| state.callbacks.end.get(slot).copied().flatten())
+        else {
             continue;
         };
         match end {
             End::Call(call) => call(),
             End::Defer => crate::deferred::run_defer(reactor),
-            // SAFETY: a single field read.
-            End::Idle => run_task(unsafe { (*fields).idle_task }),
+            End::Idle => run_task(reactor.with(|state| state.fields.idle_task)),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
             End::TryExit => {
-                // SAFETY: a single field read.
-                let wait_exit = unsafe { (*fields).wait_exit };
-                if wait_exit && if_exit(reactor) {
-                    // SAFETY: a single field write.
-                    unsafe { (*fields).running = false };
+                if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
+                    reactor.with(|state| state.fields.running = false);
                 }
             }
             #[cfg(all(target_os = "linux", target_env = "gnu"))]
-            // SAFETY: the live reactor's field, which no reference holds.
-            End::MallocTrim => malloc_trim(unsafe { &mut (*fields).last_malloc_trim_time }),
+            End::MallocTrim => {
+                reactor.with(|state| malloc_trim(&mut state.fields.last_malloc_trim_time));
+            }
         }
     }
 }
@@ -173,11 +166,11 @@ fn malloc_trim(last: &mut libc::time_t) {
 /// `Reactor::if_exit()`: each exit condition in key order over the registered socket
 /// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
 pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
-    let owner = reactor.state();
     let mut event_num = reactor.registry().count();
     for slot in 0..EXIT_SLOTS {
-        // SAFETY: as above; the copy is read before the condition runs.
-        let Some(exit) = (unsafe { (*owner).callbacks.exit.get(slot).copied().flatten() }) else {
+        // As above: the copy is read before the condition runs.
+        let Some(exit) = reactor.with(|state| state.callbacks.exit.get(slot).copied().flatten())
+        else {
             continue;
         };
         let accepted = match exit {
@@ -190,13 +183,6 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
         }
     }
     true
-}
-
-/// The thread's reactor state, if it has a reactor.
-fn current() -> Option<&'static mut ReactorState> {
-    let owner = crate::event_api::current_prepared()?.owner;
-    // SAFETY: the live state; each caller's borrow ends before any callback runs.
-    unsafe { owner.as_mut() }
 }
 
 /// `Reactor::set_end_callback(id, callback)`, or `erase_end_callback(id)` without one.
@@ -228,29 +214,29 @@ pub extern "C" fn swr_v1_reactor_isset_exit(owner: &ReactorState, id: c_int) -> 
 
 /// `sw_reactor()->set_end_callback(id, callback)`.
 pub fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
-    if let Some(owner) = current() {
-        owner.callbacks.set_end(id, Some(End::Call(callback)));
+    if let Some(reactor) = running() {
+        reactor.with(|owner| owner.callbacks.set_end(id, Some(End::Call(callback))));
     }
 }
 
 /// `sw_reactor()->erase_end_callback(id)`.
 pub fn swr_v1_event_erase_end_callback(id: c_int) {
-    if let Some(owner) = current() {
-        owner.callbacks.set_end(id, None);
+    if let Some(reactor) = running() {
+        reactor.with(|owner| owner.callbacks.set_end(id, None));
     }
 }
 
 /// `sw_reactor()->set_exit_condition(id, condition)`.
 pub fn swr_v1_event_set_exit_condition(id: c_int, condition: ExitFn) {
-    if let Some(owner) = current() {
-        swr_v1_reactor_set_exit(owner, id, Some(condition));
+    if let Some(reactor) = running() {
+        reactor.with(|owner| swr_v1_reactor_set_exit(owner, id, Some(condition)));
     }
 }
 
 /// `sw_reactor()->remove_exit_condition(id)`.
 pub fn swr_v1_event_remove_exit_condition(id: c_int) {
-    if let Some(owner) = current() {
-        swr_v1_reactor_set_exit(owner, id, None);
+    if let Some(reactor) = running() {
+        reactor.with(|owner| swr_v1_reactor_set_exit(owner, id, None));
     }
 }
 
@@ -263,9 +249,9 @@ pub fn swr_v1_event_remove_exit_condition(id: c_int) {
     unsafe(export_name = "_Z18swoole_event_deferPFvPvES_")
 )]
 pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
-    if let Some(owner) = current() {
+    if let Some(reactor) = crate::event_api::current_prepared() {
         // SAFETY: the thread's live reactor; the loop runs `call(data)` as its caller set.
-        unsafe { crate::deferred::defer(&raw mut owner.fields, call, data, None) };
+        unsafe { crate::deferred::defer(reactor.fields, call, data, None) };
     }
 }
 
@@ -293,9 +279,7 @@ pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
 /// `Reactor::wait()` of the reactor `reactor` names.
 pub(crate) fn wait(reactor: Running<'_>) -> c_int {
     fn begin(reactor: Running<'_>) {
-        let owner = reactor.state();
-        // SAFETY: the handle's live state; a single read.
-        run_task(unsafe { (*owner).fields.future_task });
+        run_task(reactor.with(|state| state.fields.future_task));
     }
     let ops = crate::WaitOps {
         reactor,

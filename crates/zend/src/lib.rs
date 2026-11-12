@@ -42,8 +42,7 @@ pub use descriptor::{
     restore_shutdown,
 };
 pub use error::{
-    E_ERROR, E_WARNING, Message, report, throw_error, throw_exception, type_error, type_name,
-    zend_error,
+    E_ERROR, E_WARNING, Message, report, throw_error, type_error, type_name, zend_error,
 };
 pub use function::create_object_deny;
 pub use helpers::{

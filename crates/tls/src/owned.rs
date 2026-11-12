@@ -154,6 +154,17 @@ impl TlsContext {
         let owner = core::ptr::NonNull::new(swr_v1_tls_owner_new().owner.cast_mut());
         Self(owner.unwrap_or_else(|| std::process::abort()))
     }
+    /// A new owner holding `texts`, each set as [`set_text`] sets it.
+    #[must_use]
+    pub fn with_texts(texts: &[(Text, &[u8])]) -> Self {
+        let context = Self::new();
+        for &(which, value) in texts {
+            // SAFETY: the fresh owner, which nothing else holds yet, so the caller's
+            // `value` is none of its strings.
+            _ = unsafe { set_text(context.as_ptr(), which, value) };
+        }
+        context
+    }
     /// The owner, for native code and the raw-owner API; the handle keeps it live.
     #[must_use]
     pub fn as_ptr(&self) -> *const OwnedTlsContext {
@@ -448,14 +459,16 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     // SAFETY: the owner stays live through this operation.
     let owner_ref = unsafe { &*owner };
     let (context, disable_tls_host_name) = {
-        // SAFETY: exclusive leaf snapshot of the owner configuration.
+        // SAFETY: the exclusive caller's owner configuration, whose context is borrowed
+        // until the SSL is made; nothing writes the fields meanwhile.
         let fields = unsafe { &*owner_ref.fields.get() };
-        (fields.context_ptr(), fields.disable_tls_host_name)
+        (fields.context.as_deref(), fields.disable_tls_host_name)
     };
     let index = crate::swr_v1_tls_connection_index();
     let (status, error) = record.edit(|record| {
         let mut error = 0;
-        // SAFETY: the owner's live context; OpenSSL calls nothing back while making the SSL.
+        // SAFETY: the record's own socket as the SSL's ex data; OpenSSL calls nothing
+        // back while making the SSL.
         let status = unsafe {
             crate::swr_v1_socket_ssl_new(record, context, 0, index, socket.cast(), &mut error)
         };

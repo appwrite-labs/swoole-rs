@@ -322,7 +322,7 @@ pub(crate) fn functions() -> *const zend_function_entry {
 /// The token is the module's MINIT, which Zend runs after registering the
 /// module's functions.
 pub(crate) fn register_aliases(
-    _minit: &swoole_rs_zend::Minit,
+    minit: &swoole_rs_zend::Minit,
     flags: u32,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     if flags & SHORTNAME == 0 {
@@ -347,21 +347,12 @@ pub(crate) fn register_aliases(
     ];
     let count = if flags & STDEXT == 0 { 2 } else { 3 };
     for (origin, alias, arg_info) in aliases.iter().take(count) {
-        // SAFETY: Zend initializes the compiler function table before MINIT.
-        let target = unsafe { z::swr_zend_facade_compiler_functions() };
-        // SAFETY: at MINIT, these static binary names and arginfo remain live
-        // while the Rust registry performs the complete contained registration.
+        let target = minit.compiler_functions();
+        // SAFETY: at MINIT, after Zend registered the module's internal
+        // functions in the compiler's table; these static names and arginfo
+        // remain live while the registry performs the contained registration.
         unsafe {
-            swoole_rs_zend::registration::function_alias(
-                target,
-                origin.as_ptr(),
-                origin.count_bytes(),
-                target,
-                alias.as_ptr(),
-                alias.count_bytes(),
-                *arg_info,
-                None,
-            )
+            swoole_rs_zend::registration::function_alias(target, origin, target, alias, *arg_info)
         }?;
     }
     Ok(())
