@@ -14,7 +14,9 @@ swoole_rs_zend::handlers! {
 }
 
 /// Each name's latest `NAME=value` (or bare `NAME`) string.
-static ENVIRON: LazyLock<Mutex<HashMap<Vec<u8>, CString>>> = LazyLock::new(Mutex::default);
+static ENVIRON: LazyLock<Mutex<Table>> = LazyLock::new(Mutex::default);
+
+type Table = HashMap<Vec<u8>, CString>;
 
 /// `putenv(string $assignment): bool`.
 fn putenv(call: &Call) {
@@ -50,12 +52,7 @@ fn putenv(call: &Call) {
 /// Point the process environment at `stored` for `key` (or unset `key`), keeping
 /// `stored` in `environ`. libc holds the pointer it is given, so the name's previous
 /// string is freed only once libc has let go of it.
-fn store(
-    environ: &mut HashMap<Vec<u8>, CString>,
-    key: &[u8],
-    stored: CString,
-    unset: bool,
-) -> bool {
+fn store(environ: &mut Table, key: &[u8], stored: CString, unset: bool) -> bool {
     let pointer = stored.as_ptr().cast_mut();
     let previous = environ.insert(key.to_vec(), stored);
     if unset {
@@ -64,9 +61,12 @@ fn store(
     }
     // SAFETY: the string stays in `environ` until this name is set again.
     let set = unset || unsafe { libc::putenv(pointer) } == 0;
-    if !set && let Some(previous) = previous {
-        // libc still holds the previous string.
-        environ.insert(key.to_vec(), previous);
+    if !set {
+        // libc took nothing: it still holds the previous string, if there was one.
+        match previous {
+            Some(previous) => environ.insert(key.to_vec(), previous),
+            None => environ.remove(key),
+        };
     }
     set
 }
@@ -100,7 +100,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no putenv")]
     fn a_name_set_again_keeps_one_entry_then_unsets() {
         let name = b"SWR_PUTENV_TEST";
-        let mut map = HashMap::new();
+        let mut map = Table::new();
         for value in [
             "a-first-value-too-long-for-the-second-to-reuse-0123456789",
             "second",
