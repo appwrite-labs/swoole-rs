@@ -26,9 +26,16 @@ static ORIGINAL: [AtomicPtr<c_void>; 6] = [const { AtomicPtr::new(std::ptr::null
 /// MINIT: register `coroutine` as `async.tcp` .. `async.tls`.
 pub(crate) fn register_async(coroutine: *mut c_void) {
     for name in ASYNC {
-        // SAFETY: a static name and C++'s factory.
-        unsafe { swr_zend_runtime_set_transport(name.as_ptr(), coroutine, false) };
+        set(name, coroutine, false);
     }
+}
+
+/// Register `factory` as transport `name`, or with `remove` unregister it.
+/// `SUCCESS` or `FAILURE`.
+fn set(name: &CStr, factory: *mut c_void, remove: bool) -> i32 {
+    // SAFETY: a NUL-terminated name and a factory (or null) of PHP's or the
+    // coroutine one.
+    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) }
 }
 
 /// RINIT, on the main thread: remember what PHP registered.
@@ -52,8 +59,7 @@ pub(crate) fn register(index: usize, hook: bool, coroutine: *mut c_void) -> i32 
     } else {
         (original, index >= 4 && original.is_null())
     };
-    // SAFETY: a transport name and a factory (or null) of PHP's or C++'s.
-    unsafe { swr_zend_runtime_set_transport(name.as_ptr(), factory, remove) }
+    set(name, factory, remove)
 }
 
 /// The original, process-lived PHP factory for an exact borrowed protocol name,

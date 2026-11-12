@@ -17,7 +17,7 @@ use swoole_rs_server::{port_config, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
     message,
-    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zval},
+    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -333,34 +333,16 @@ fn get_socket(call: &Call) {
     socket(port, call);
 }
 
-/// `zsetting = sw_zend_read_and_convert_property_array(scope, object, "setting")`,
-/// then `SEPARATE_ARRAY(zsetting); php_array_merge(zsetting, settings)`: the
-/// merged property.
-pub(crate) fn merge_setting(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    settings: *mut zval,
-) -> Result<*mut zval, bailout::Bailout> {
-    // SAFETY: the object and its class, which declares `setting`.
-    let setting = unsafe { swoole_rs_zend::host::array_property_of(scope, object, c"setting") }?;
-    // SAFETY: the property, now an array, and the settings array.
-    bailout::trapped(unsafe { z::swr_zend_try_array_merge(setting, settings) })?;
-    Ok(setting)
-}
-
 /// `\Swoole\Server\Helper::checkOptions($settings)` when the library is
 /// enabled, then the merge into `$this->setting`.
 fn finish(call: &Call, settings: &Value) -> Result<(), bailout::Bailout> {
     if swoole_rs_phpswoole::enable_library() {
-        // `zval params[1] = {*zset}`: a copy without a reference.
-        // SAFETY: the live settings argument.
-        let mut params = [unsafe { settings.as_ptr().read() }];
-        // SAFETY: as above.
-        unsafe {
-            swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &mut params)
-        }?;
+        swoole_rs_zend::host::named_call(br"\Swoole\Server\Helper::checkOptions", &[settings])?;
     }
-    merge_setting(PORT.entry(), call.this(), settings.as_ptr()).map(drop)
+    if let Some(props) = call.props(Some(&PORT)) {
+        props.merge(c"setting", settings);
+    }
+    bailout::outcome(())
 }
 
 fn set(call: &Call) {

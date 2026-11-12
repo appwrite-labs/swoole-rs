@@ -330,6 +330,16 @@ pub extern "C" fn swoole_get_stdout_stream() -> *mut c_void {
     swr_v1_core_stdout()
 }
 
+/// `sw_printf("%s", ...)` of `bytes`: Swoole's stdout stream, which
+/// `swoole_set_stdout_stream` replaces; nothing before one is set.
+pub fn sw_print(bytes: &[u8]) {
+    let out = swr_v1_core_stdout();
+    if !out.is_null() {
+        // SAFETY: Swoole's open stdout stream; fwrite reads `bytes.len()` bytes of `bytes`.
+        unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), out.cast()) };
+    }
+}
+
 /// `swoole_set_trace_flags(long)`.
 #[cfg_attr(
     feature = "upstream-symbols",
