@@ -5,7 +5,7 @@ use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::destroy as pool_destroy;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
     OP_ADD_MASTER_TIMER, OP_ALL_WORKER_NUM, OP_CLOSE_CONNECTION, OP_CLOSE_EVENT_SOCKET,
     OP_CLOSE_SESSION, OP_CONN_AT, OP_CONN_CLOSE_FORCE, OP_CONN_CLOSE_QUEUED, OP_CONN_HEALTHY,
@@ -26,6 +26,7 @@ use swoole_rs_reactor::{Event, SocketRecord};
 use crate::ConnectionRecord;
 use crate::callbacks::CB_START;
 use crate::port_config::methods;
+use crate::reactor_handle::Reactor;
 use crate::reactor_ops::sign;
 use crate::view;
 
@@ -35,9 +36,9 @@ pub(crate) use native::start_reactor_processes;
 /// What an operation runs over.
 struct Context<'a> {
     serv: view::Server<'a>,
-    worker: *mut WorkerRecord,
-    reactor: *mut c_void,
-    event: *mut Event,
+    worker: Option<Worker<'a>>,
+    reactor: Option<Reactor>,
+    event: Option<&'a Event>,
     conn: *mut ConnectionRecord,
     now: f64,
 }
@@ -234,11 +235,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The context's reactor, or the thread's.
 fn reactor(ctx: &Context<'_>) -> *mut c_void {
-    if ctx.reactor.is_null() {
-        swoole_rs_corebase::thread_reactor()
-    } else {
-        ctx.reactor
-    }
+    ctx.reactor.unwrap_or_else(Reactor::thread).ptr()
 }
 
 /// The effects on the context's worker.
