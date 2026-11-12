@@ -134,8 +134,7 @@ fn install() {
         (read, readable as swoole_rs_reactor::Handler),
         (write, writable),
     ] {
-        // SAFETY: the handlers need only the live event of a registered c-ares wrapper.
-        unsafe { event_api::swoole_event_set_handler(FD, event, Some(handler)) };
+        event_api::swoole_event_set_handler(FD, event, Some(handler));
     }
     // SAFETY: `cleanup` runs once, when the reactor goes; it keeps no data.
     unsafe { event_api::on_destroy_with(cleanup, ptr::null_mut()) };

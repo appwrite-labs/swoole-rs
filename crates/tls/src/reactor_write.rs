@@ -5,13 +5,14 @@
 //! symbols over the Rust socket methods. `swoole_rs_reactor`'s
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
 use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Event, FlushEffects, ReactorPrepared, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects,
-    WritePayload,
+    Event, FlushEffects, ReactorPrepared, Running, SOCKET_DEFAULTS, Socket, SocketRecord,
+    WriteEffects, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -30,12 +31,12 @@ struct Write<'a> {
     payload: &'a WritePayload,
 }
 
-/// One flush or drain: the reactor, the socket and its event. Only the writable
-/// callback and the drain, whose callers promise the reactor and event live, build one.
+/// One flush or drain: the reactor, the socket and its event, which the close
+/// handler may change and the caller then sees.
 struct Flush<'a> {
-    reactor: *mut c_void,
+    reactor: Running<'a>,
     socket: Socket<'a>,
-    event: *mut Event,
+    event: &'a Cell<Event>,
 }
 
 impl WriteEffects for Write<'_> {
@@ -188,18 +189,20 @@ impl FlushEffects for Flush<'_> {
 
     fn close(&self) -> c_int {
         // The flush's live reactor.
-        let fields = ReactorPrepared::of(self.reactor).fields;
+        let fields = ReactorPrepared::of(self.reactor.as_ptr()).fields;
         // SAFETY: `reactor->close`, set at construction.
         let Some(close) = (unsafe { (*fields).close }) else {
             return -1;
         };
         // SAFETY: `reactor->close(reactor, socket)`.
-        unsafe { close(self.reactor, self.socket.as_ptr()) }
+        unsafe { close(self.reactor.as_ptr(), self.socket.as_ptr()) }
     }
 
     fn trigger_close(&self) -> c_int {
-        // SAFETY: the flush's live reactor and event.
-        unsafe { trigger_close_event(self.reactor, self.event.cast()) }
+        let mut event = self.event.get();
+        let result = trigger_close_event(self.reactor, &mut event);
+        self.event.set(event);
+        result
     }
 
     fn delete_timer(&self) {
@@ -210,7 +213,7 @@ impl FlushEffects for Flush<'_> {
 
     fn remove_write_event(&self) {
         // SAFETY: `reactor->remove_write_event(socket)` on the flush's live reactor.
-        unsafe { reactor_interest(self.reactor, self.socket.as_ptr(), REMOVE_WRITE, 0) };
+        unsafe { reactor_interest(self.reactor.as_ptr(), self.socket.as_ptr(), REMOVE_WRITE, 0) };
     }
 
     fn wait_writable(&self) -> c_int {
@@ -224,50 +227,41 @@ impl FlushEffects for Flush<'_> {
     }
 }
 
-/// `int Reactor::_writable_callback(Reactor *reactor, Event *ev)`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` and `event` a live event naming a live socket.
+/// `int Reactor::_writable_callback(Reactor *reactor, Event *ev)`: a reactor handler.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE")
 )]
-pub unsafe extern "C-unwind" fn reactor_writable_callback(
-    reactor: *mut c_void,
-    event: *mut Event,
+pub extern "C-unwind" fn reactor_writable_callback(
+    reactor: Running<'_>,
+    event: &mut Event,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { (*event).socket_ptr() }.cast::<SocketRecord>();
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+    let lent = Cell::new(*event);
+    let Some(socket) = event.socket() else {
         return -1;
     };
     let flush = Flush {
         reactor,
         socket,
-        event,
+        event: &lent,
     };
-    swoole_rs_reactor::swr_v1_reactor_flush(socket, &flush)
+    let result = swoole_rs_reactor::swr_v1_reactor_flush(socket, &flush);
+    *event = lent.get();
+    result
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")
 )]
-pub unsafe extern "C-unwind" fn reactor_drain_write_buffer(
-    reactor: *mut c_void,
-    record: Socket<'_>,
-) {
+pub extern "C-unwind" fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
     // SAFETY: a live socket, and the event lives for this call.
-    let mut event = unsafe { Event::new(record.fd(), 0, 0, record.as_ptr().cast()) };
+    let event = Cell::new(unsafe { Event::new(record.fd(), 0, 0, record.as_ptr().cast()) });
     let flush = Flush {
         reactor,
         socket: record,
-        event: &raw mut event,
+        event: &event,
     };
     swoole_rs_reactor::swr_v1_reactor_drain(record, &flush);
 }

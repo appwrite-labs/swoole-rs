@@ -6,7 +6,7 @@ use crate::parse::CAPABILITIES;
 use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use swoole_rs_deflate::{Allocator, DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -81,7 +81,7 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// of its own (`GC_TRY_ADDREF`). A value's `__toString` may reach the same
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
-fn property(response: &Slot, which: usize) -> Option<HeldArray> {
+pub(crate) fn property(response: &Slot, which: usize) -> Option<HeldArray> {
     let object = response.object()?;
     let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
     // OBJ_PROP: a declared slot of that object.
@@ -274,7 +274,7 @@ pub fn decimal(buffer: &mut [u8; 20], value: i64) -> &[u8] {
 /// value's `__toString`, which may reach the same context.
 fn build(
     mut ctx: crate::context::Ctx,
-    body: *const c_char,
+    body: &[u8],
     mut length: usize,
     out: &mut Vec<u8>,
 ) -> Result<(), bailout::Bailout> {
@@ -395,7 +395,7 @@ fn build(
             out.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
         }
     } else if length > 0 || state.parser.method != HEAD {
-        if compression && compress(state, body, length) {
+        if compression && compress(state, body) {
             length = compressed(state).len();
             let codecs = CAPABILITIES.load(Relaxed) & CODECS;
             let label = encoding(i32::from(state.compression_method), codecs);
@@ -415,14 +415,15 @@ fn build(
     Ok(())
 }
 
-/// `Context::build_header` of a `length`-byte body (compressing it when the
-/// response asks to), then `f(header)`. The buffer stays owned until `f`
-/// returns, including when sending yields to another request.
+/// `Context::build_header` of a `length`-byte body (compressing `body`, all
+/// of it or nothing, when the response asks to), then `f(header)`. The buffer
+/// stays owned until `f` returns, including when sending yields to another
+/// request.
 /// # Errors
 /// A header value's `__toString` bailed out.
 pub(crate) fn header<R>(
     ctx: crate::context::Ctx,
-    body: *const c_char,
+    body: &[u8],
     length: usize,
     f: impl FnOnce(&mut Vec<u8>) -> R,
 ) -> Result<R, bailout::Bailout> {
@@ -491,13 +492,13 @@ fn compress_warning(message: &str) {
 }
 
 /// `Context::compress`.
-fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
+fn compress(state: &mut State, input: &[u8]) -> bool {
     let capabilities = CAPABILITIES.load(Relaxed);
     let method = swr_v1_httpbindings_codec(
         i32::from(state.compression_method),
         capabilities & CODECS,
         u32::from(state.accept_compression),
-        length,
+        input.len(),
         state.compression_min_length,
     );
     if method == 0 {
@@ -507,12 +508,6 @@ fn compress(state: &mut State, data: *const c_char, length: usize) -> bool {
         compress_warning("Unknown compression method");
         return false;
     }
-    let input: &[u8] = if length == 0 {
-        &[]
-    } else {
-        // SAFETY: the body's span.
-        unsafe { std::slice::from_raw_parts(data.cast(), length) }
-    };
     let level = i32::from(state.compression_level);
     let compressed = match method {
         METHOD_BR => {
@@ -569,7 +564,7 @@ pub(crate) fn compress_body<'a>(
     state: &'a mut State,
     data: &[u8],
 ) -> Option<(&'static CStr, &'a [u8])> {
-    if !compress(state, data.as_ptr().cast(), data.len()) {
+    if !compress(state, data) {
         return None;
     }
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;

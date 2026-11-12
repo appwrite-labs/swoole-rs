@@ -14,11 +14,7 @@ use crate::{
     response::RESPONSE,
     state::State,
 };
-use std::{
-    ffi::{c_char, c_int},
-    io::Write,
-    ptr,
-};
+use std::{ffi::c_int, io::Write};
 use swoole_rs_zend::{
     ZStr,
     bailout::{self, Bailout},
@@ -81,7 +77,7 @@ fn file_type(mut ctx: Ctx, file: &ZStr) {
 
 /// Send a header without borrowing context state across the IO.
 fn send_header(ctx: Ctx, length: usize) -> Result<bool, Bailout> {
-    header::header(ctx, ptr::null(), length, |head| send(ctx, head))
+    header::header(ctx, &[], length, |head| send(ctx, head))
 }
 
 /// The bytes of an optional string argument.
@@ -173,12 +169,7 @@ fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
         crate::websocket::accept(ctx);
     }
     let raw = of(data);
-    let (pointer, length) = if data.is_none() {
-        (ptr::null(), 0)
-    } else {
-        (raw.as_ptr().cast::<c_char>(), raw.len())
-    };
-    let (large, sent) = header::header(ctx, pointer, length, |out| {
+    let (large, sent) = header::header(ctx, raw, raw.len(), |out| {
         let body = sent_body(ctx.state(), raw);
         let large = body.len() > MAX_APPEND_DATA;
         if !large {
@@ -198,7 +189,12 @@ fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
         ctx.state().send_header = 0;
         return Ok(false);
     }
-    let body = sent_body(ctx.state(), raw);
+    // The compressed body leaves the state: the send may yield to a coroutine
+    // that reaches the same context.
+    let state = ctx.state();
+    let compressed = (!raw.is_empty() && state.content_compressed != 0)
+        .then(|| state.compressed.take().unwrap_or_default());
+    let body = compressed.as_deref().map_or(raw, Vec::as_slice);
     if send(ctx, body) {
         return Ok(true);
     }
@@ -208,14 +204,11 @@ fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
 }
 
 /// The body as sent: the compressed bytes when the header compressed it.
-fn sent_body<'a>(state: &State, raw: &'a [u8]) -> &'a [u8] {
+fn sent_body<'a>(state: &'a State, raw: &'a [u8]) -> &'a [u8] {
     if raw.is_empty() || state.content_compressed == 0 {
         return raw;
     }
-    let compressed = header::compressed(state);
-    // SAFETY: the body `header` just compressed; it lives until the next
-    // compression of this context.
-    unsafe { std::slice::from_raw_parts(compressed.as_ptr(), compressed.len()) }
+    header::compressed(state)
 }
 
 /// `Context::send_file`: the header, then `length` bytes of `file` from

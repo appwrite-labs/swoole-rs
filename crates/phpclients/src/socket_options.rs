@@ -53,18 +53,14 @@ const SSL_GREASE: c_int = 1;
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header, or -1 past 65535.
-unsafe extern "C" fn fastcgi_length(
+extern "C" fn fastcgi_length(
     _protocol: *const Protocol,
     _socket: *mut c_void,
     pl: &mut PacketLength,
 ) -> isize {
-    const HEADER: u32 = 8;
-    if pl.buf_size < HEADER {
-        return 0;
-    }
-    // SAFETY: at least `HEADER` bytes are buffered.
-    let p = unsafe { pl.buf.cast::<[u8; HEADER as usize]>().read() };
-    fastcgi_record_length(p)
+    pl.bytes()
+        .first_chunk::<8>()
+        .map_or(0, |&p| fastcgi_record_length(p))
 }
 
 fn fastcgi_record_length(p: [u8; 8]) -> isize {

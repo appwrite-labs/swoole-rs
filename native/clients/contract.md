@@ -106,8 +106,8 @@ state (flags, server host and port, connect timer, watermarks, the TLS context
 and the proxies), operations, callbacks, reactor handlers and DNS lookup. The
 state starts with the public record (`ClientRecord`), so a client pointer is also
 its record's. The operations are `Handle::run` calls over typed `Op`s, which
-crates/phpclients runs inside its `zend_try` and the core-tests port runs directly. The callbacks are one `(listener, object)` pair and an
-event mask (`swr_v1_clients_listen`); a PHP bailout in one longjmps out, so no C++
+crates/phpclients runs inside its `zend_try` and the core-tests port runs directly. The callbacks are one listener closure and an
+event mask (`listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
 `onPackage` read. Warnings log under upstream's function names so the lines match.
 The socket IO, sendfile, reactor writes, framed reads and the socket's release call

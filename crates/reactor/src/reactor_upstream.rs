@@ -10,19 +10,13 @@ use std::ffi::{c_int, c_void};
 
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
 /// when none is set.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` and `event` an event its handler accepts.
-pub unsafe fn trigger_close_event(reactor: *mut c_void, event: *mut c_void) -> c_int {
-    let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the live reactor's handler tables; a copy of the error default.
+pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> c_int {
+    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
+    // SAFETY: the handle's live handler tables, which no reference holds; a copy of the
+    // error default.
     let Some(handler) = (unsafe { (*handlers).defaults[1] }) else {
         return -1;
     };
-    // SAFETY: as the caller promises, the live reactor on its thread.
-    let reactor = unsafe { crate::Running::new(reactor) };
-    // SAFETY: as the caller promises, an event lent for the call.
-    let event = unsafe { &mut *event.cast() };
     handler(reactor, event)
 }
 
@@ -76,21 +70,18 @@ pub unsafe extern "C" fn reactor_interest(
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
 /// upstream asserts the event names a table.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor11set_handlerEiiPFiPS0_PNS_5EventEE")
 )]
-pub unsafe extern "C" fn reactor_set_handler(
-    reactor: *const c_void,
+pub extern "C" fn reactor_set_handler(
+    reactor: crate::Running<'_>,
     fd_type: c_int,
     event: c_int,
     handler: Option<Handler>,
 ) {
-    let handlers = ReactorPrepared::of(reactor).handlers;
-    // SAFETY: the reactor's live handler tables.
+    let handlers = ReactorPrepared::of(reactor.as_ptr()).handlers;
+    // SAFETY: the handle's live handler tables, which no reference holds.
     let set = unsafe { &mut *handlers }.set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }

@@ -68,7 +68,8 @@ pub struct PoolRecord {
     pub on_worker_message: Option<EventFn>,
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
-    pub round_id: u32,
+    /// The round robin's next worker, which other processes update atomically.
+    pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
     pub(crate) pipes: *mut c_void,
     // `worker_num` and the pointers from `workers` on are crate-private, like
@@ -149,6 +150,16 @@ impl PoolRecord {
         Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
     }
 
+    /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
+    #[must_use]
+    pub fn own(&self, raw: *const WorkerRecord) -> Option<Worker<'_>> {
+        let offset = raw.addr().checked_sub(self.workers.addr())?;
+        if offset % size_of::<WorkerRecord>() != 0 {
+            return None;
+        }
+        self.worker(offset / size_of::<WorkerRecord>())
+    }
+
     /// Sets `workers`.
     ///
     /// # Safety
@@ -220,7 +231,17 @@ impl<'a> From<&'a mut PoolRecord> for PoolRef<'a> {
     }
 }
 
-impl PoolRef<'_> {
+impl<'a> PoolRef<'a> {
+    /// The pool's worker at `raw` ([`PoolRecord::own`]), or `None` when `raw` is
+    /// none of its records.
+    #[must_use]
+    pub fn worker_of(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
+        // SAFETY: `new`'s contract: a live pool for `'a`, whose records live as long
+        // (`set_workers`); the borrow only reads `workers` and `worker_num`.
+        let record: &'a PoolRecord = unsafe { &*self.raw };
+        record.own(raw)
+    }
+
     /// The pool at `raw`.
     ///
     /// # Safety
@@ -1007,21 +1028,23 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
+    /// -1 for a `worker` that is none of the pool's ([`PoolRecord::own`]).
     fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
-        // SAFETY: one of the pool's records.
-        let worker = unsafe { Worker::new(worker) };
-        let old = worker.pid();
+        let Some(old) = self.record().own(worker).map(Worker::pid) else {
+            return Ok(SW_ERR);
+        };
         self.with_registry(|registry| registry.unregister(old));
-        let pid = self.on(worker.raw(), OP_FORK, 0);
+        let pid = self.on(worker, OP_FORK, 0);
         if pid == 0 {
-            self.child(worker.raw())?;
+            self.child(worker)?;
             return Ok(0);
         }
         let pid = c_int::try_from(pid).unwrap_or(-1);
-        worker.set_pid(pid);
-        let record = worker.raw().cast();
+        if let Some(worker) = self.record().own(worker) {
+            worker.set_pid(pid);
+        }
         self.with_registry(|registry| {
-            registry.register(pid, record, 0);
+            registry.register(pid, worker.cast(), 0);
         });
         Ok(pid.into())
     }
@@ -1158,7 +1181,8 @@ impl<H: PoolHost> Pool<'_, H> {
         }
     }
 
-    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop.
+    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; -1 for
+    /// a `worker` that is none of the pool's.
     fn main(&mut self, worker: *mut WorkerRecord, protocol: c_int) -> i64 {
         if u64::from(protocol.cast_unsigned()) == MAIN_ASYNC {
             return self.run_async(worker);
@@ -1177,6 +1201,10 @@ impl<H: PoolHost> Pool<'_, H> {
             // A pool `create` never made.
             return SW_ERR;
         }
+        let Some(worker_id) = self.record().own(worker).map(Worker::id) else {
+            // None of the pool's workers.
+            return SW_ERR;
+        };
         let ipc_mode = if self.use_msgqueue() != 0 {
             IPC_MSGQUEUE
         } else if self.use_socket() != 0 {
@@ -1188,8 +1216,7 @@ impl<H: PoolHost> Pool<'_, H> {
             ipc: self.ipc(),
             pool: self.p.raw().cast(),
             worker: worker.cast(),
-            // SAFETY: one of the pool's records.
-            worker_id: unsafe { Worker::new(worker).id() },
+            worker_id,
             ipc_mode,
             schedule_by_sysvmsg: self.schedule_by_sysvmsg(),
             max_packet_size: self.max_packet_size(),
@@ -1411,14 +1438,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::schedule`: the next idle worker, round robin; the last one
     /// tried, with the scheduler warning set, when all are busy.
     fn schedule(&mut self) -> u32 {
-        let round = self
-            .p
-            .raw()
-            .wrapping_byte_add(std::mem::offset_of!(PoolRecord, round_id))
-            .cast::<u32>();
-        // SAFETY: the live pool's aligned counter, which other processes update
-        // atomically.
-        let round = unsafe { AtomicU32::from_ptr(round) };
+        let round = &self.record().round_id;
         let (target, warning) = crate::pool::pool_schedule(self.worker_num(), round, |target| {
             crate::pool::idle(self.worker_at(target))
         });
@@ -1607,6 +1627,18 @@ pub unsafe fn pool_run_op(
     operation: u32,
     arg: u64,
 ) -> i64 {
+    with(native, pool, |p| p.run(worker, operation, arg))
+}
+
+/// [`pool_run_op`] over `worker`, one of the pool's ([`PoolRef::worker_of`]), or none.
+pub(crate) fn run_op(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    worker: Option<Worker<'_>>,
+    operation: u32,
+    arg: u64,
+) -> i64 {
+    let worker = worker.map_or(ptr::null_mut(), Worker::raw);
     with(native, pool, |p| p.run(worker, operation, arg))
 }
 

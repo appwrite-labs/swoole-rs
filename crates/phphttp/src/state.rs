@@ -157,8 +157,11 @@ pub(crate) struct State {
     pub(crate) zsocket: Owned,
     /// The HTTP/2 stream, 0 once it is released.
     pub(crate) stream_id: u32,
-    /// The `Server` or the coroutine `Socket`.
+    /// The `Server` a server's context answers through (`private_data`).
     pub(crate) private_data: *mut c_void,
+    /// The coroutine socket of `zsocket`'s object, while that is bound; the
+    /// all-zeroes handle until then, which nothing reads.
+    pub(crate) socket: swoole_rs_phpruntime::co::Co,
     /// The response bytes being sent (upstream's `write_buffer`).
     #[expect(
         clippy::box_collection,
