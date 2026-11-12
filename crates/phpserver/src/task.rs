@@ -12,8 +12,8 @@ use crate::server::{DATA, TASK, fatal, running};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    ffi::{CStr, c_int, c_void},
-    mem::{ManuallyDrop, MaybeUninit},
+    ffi::{CStr, c_int},
+    mem::ManuallyDrop,
     ptr,
     rc::{Rc, Weak},
     sync::atomic::Ordering,
@@ -26,7 +26,7 @@ use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
     process_pool::{PoolRef, SW_IPC_MAX_SIZE},
-    task_file::{self, Packed},
+    task_file::{Packed, TaskBuffer},
     task_sync::{Bailed, MultiTask, TaskHost, Tasks},
 };
 use swoole_rs_server::{task_worker_ops::finish, view};
@@ -172,8 +172,8 @@ impl MultiTask for Multi<'_> {
             clippy::cast_ptr_alignment,
             reason = "task_sync's event is a zeroed Vec<u64> of SW_IPC_MAX_SIZE bytes"
         )]
-        let event = event.cast::<EventData>();
-        // SAFETY: as above, an initialized, aligned `EventData` it lends for the call.
+        let event = event.cast::<TaskBuffer>();
+        // SAFETY: as above, an aligned `EventData` buffer it lends for the call.
         let event = unsafe { &mut *event };
         encode(data, event).map_err(|Bailout| Bailed)
     }
@@ -187,28 +187,6 @@ impl MultiTask for Multi<'_> {
 
     fn fail(&mut self, index: u16) {
         self.out.update_index(u64::from(index), Owned::bool(false));
-    }
-}
-
-/// A `task_file::EventData` to pack into. Its payload is uninitialized, as
-/// upstream's stack `EventData`: `task_pack` writes the head and the payload its
-/// length counts.
-#[repr(C)]
-pub(crate) struct EventData {
-    head: DataHead,
-    _payload: MaybeUninit<[u8; size_of::<task_file::EventData>() - size_of::<DataHead>()]>,
-}
-
-impl EventData {
-    pub(crate) fn new() -> Self {
-        Self {
-            head: DataHead::default(),
-            _payload: MaybeUninit::uninit(),
-        }
-    }
-
-    pub(crate) fn ptr(&mut self) -> *mut c_void {
-        ptr::from_mut(self).cast()
     }
 }
 
@@ -283,15 +261,10 @@ fn encoded<R>(data: &Value, each: impl FnOnce(&[u8], bool) -> R) -> Result<Optio
 }
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
-fn encode(data: &Value, buf: &mut EventData) -> Result<i64, Bailout> {
+fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<i64, Bailout> {
     let packed = encoded(data, |payload, serialized| {
-        let task = buf.ptr().cast();
-        // SAFETY: a writable `EventData` and the payload's bytes.
-        if !unsafe { task_file::task_pack(task, payload.as_ptr().cast(), payload.len()) } {
-            buf.head.fd = -1;
-            buf.head.len = 0;
-        }
-        (buf.head.fd, serialized)
+        let id = if buf.pack(payload) { buf.head().fd } else { -1 };
+        (id, serialized)
     })?;
     let Some((id, serialized)) = packed else {
         return Ok(-1);
@@ -361,7 +334,7 @@ pub(crate) fn finish_task(
 
 /// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
 /// for the handler's end.
-pub(crate) fn pack(data: &Value, buf: &mut EventData) -> i64 {
+pub(crate) fn pack(data: &Value, buf: &mut TaskBuffer) -> i64 {
     encode(data, buf).unwrap_or_else(|bailout| {
         bailout.defer();
         -1
@@ -369,16 +342,16 @@ pub(crate) fn pack(data: &Value, buf: &mut EventData) -> i64 {
 }
 
 /// `buf->info.ext_flags |= flags`.
-fn flag(buf: &mut EventData, flags: u32) {
+fn flag(buf: &mut TaskBuffer, flags: u32) {
     #[expect(clippy::cast_possible_truncation, reason = "ext_flags is a uint16_t")]
     let flags = flags as u16;
-    buf.head.ext_flags |= flags;
+    buf.add_flags(flags);
 }
 
 /// `serv->task(buf, dst_worker_id)`.
-fn dispatch(server: view::Server<'_>, buf: &mut EventData, dst: &mut c_int) -> bool {
+fn dispatch(server: view::Server<'_>, buf: &mut TaskBuffer, dst: &mut c_int) -> bool {
     task_state(server, false)
-        .task(buf.ptr().cast(), dst, false)
+        .task(buf.as_mut_ptr().cast(), dst, false)
         .unwrap_or_else(|Bailed| {
             Bailout.defer();
             false
@@ -434,7 +407,7 @@ fn task(call: &Call) {
     let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
     };
-    let mut buf = EventData::new();
+    let mut buf = TaskBuffer::default();
     let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
@@ -478,7 +451,7 @@ fn taskwait(call: &Call) {
     let Some(data) = call.value(1).filter(|_| check(&facts, dst)) else {
         return call.set_bool(false);
     };
-    let mut buf = EventData::new();
+    let mut buf = TaskBuffer::default();
     let id = pack(data, &mut buf);
     if id < 0 {
         return call.set_bool(false);
@@ -490,7 +463,7 @@ fn taskwait(call: &Call) {
     let mut dst = dst as c_int;
     let Some(co) = Coroutine::current() else {
         let mut tasks = task_state(serv, true);
-        let done = match tasks.task_sync(buf.ptr().cast(), &mut dst, timeout) {
+        let done = match tasks.task_sync(buf.as_mut_ptr().cast(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
             Ok(true) => {
                 // SAFETY: the result the task worker packed into the slot.
@@ -608,7 +581,7 @@ fn task_co(call: &Call, fill_false: bool) {
     let mut list = Vec::with_capacity(n_task as usize);
     for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
         let index = list.len() as u64;
-        let mut buf = EventData::new();
+        let mut buf = TaskBuffer::default();
         let mut id = pack(ztask, &mut buf);
         let mut dispatched = false;
         if id < 0 {
@@ -663,18 +636,13 @@ fn pack_method(call: &Call) {
     let Some(data) = call.value(1) else {
         return call.set_bool(false);
     };
-    let mut buf = EventData::new();
+    let mut buf = TaskBuffer::default();
     if pack(data, &mut buf) < 0 {
         return call.set_bool(false);
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
-    // `EventData::size()`.
-    let size = size_of::<DataHead>() + buf.head.len as usize;
-    // RETURN_STRINGL: `size` bytes of the buffer, copied.
-    // SAFETY: the return slot and the buffer's bytes.
-    unsafe {
-        swoole_rs_zend::sys::swr_zval_stringl(call.return_value(), buf.ptr().cast(), size);
-    };
+    // RETURN_STRINGL of `EventData::size()` bytes, copied.
+    call.set_owned(Owned::string(ZString::new(buf.bytes())));
 }
 
 fn unpack_method(call: &Call) {

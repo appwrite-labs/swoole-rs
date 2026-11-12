@@ -690,23 +690,19 @@ pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int)
 const EVENT_PIPE_MESSAGE: u8 = 10;
 
 /// `Server::send_pipe_message(worker_id, msg)`: `msg` to that worker, through the master.
-///
-/// # Safety
-/// `serv` is a live `Server`, `worker_id` one of its workers and `msg` a live `EventData`.
-pub unsafe extern "C" fn send_pipe_message(
-    serv: *mut c_void,
+pub fn send_pipe_message(
+    serv: view::Server<'_>,
     worker_id: u32,
-    msg: *mut DataHead,
+    msg: &mut swoole_rs_process::task_file::TaskBuffer,
 ) -> bool {
-    // SAFETY: as the caller guarantees: an `EventData` starts with its `DataHead`.
-    let head = unsafe { &mut *msg };
-    head.kind = EVENT_PIPE_MESSAGE;
-    let mut ctx = NativeContext::new(serv);
+    msg.set_kind(EVENT_PIPE_MESSAGE);
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.number = worker_id.cast_signed();
-    ctx.object = msg.cast();
     // `EventData::size()`: the head and its payload.
-    ctx.length = 40 + head.len;
-    // SAFETY: as the caller guarantees.
+    ctx.length = 40 + msg.head().len;
+    ctx.object = msg.as_mut_ptr();
+    // SAFETY: the live server, and the packed message, which lives for the call and
+    // holds the payload its head counts.
     unsafe { run(RUN_NATIVE_OP, OP_PIPE_TO_WORKER.into(), &mut ctx) != 0 }
 }
 
@@ -1009,7 +1005,7 @@ mod tests {
             );
             on_base(factory_at, ptr::null_mut(), RUN_BASE_END, end_arg(7, 6));
             assert_eq!(sent().1, 7 | (6 << 48), "end packs flags above the session");
-            close_notify_and_pipe_messages(serv);
+            close_notify_and_pipe_messages();
         }
     }
 
@@ -1021,7 +1017,7 @@ mod tests {
             .unwrap_or(&(0, DataHead::default()))
     }
 
-    unsafe fn close_notify_and_pipe_messages(serv: *mut c_void) {
+    unsafe fn close_notify_and_pipe_messages() {
         unsafe {
             assert!(close(server(), 21, true), "close result");
             let (op, arg, _, _, _, _, session, ..) = sent();
@@ -1046,11 +1042,9 @@ mod tests {
                 "notify head keeps the low bits"
             );
 
-            let mut message = DataHead {
-                len: 3,
-                ..DataHead::default()
-            };
-            assert!(send_pipe_message(serv, 2, &raw mut message), "pipe result");
+            let mut message = swoole_rs_process::task_file::TaskBuffer::default();
+            assert!(message.pack(b"abc"), "packs inline");
+            assert!(send_pipe_message(server(), 2, &mut message), "pipe result");
             let (op, arg, _, _, data, length, ..) = sent();
             assert!(
                 op == RUN_NATIVE_OP

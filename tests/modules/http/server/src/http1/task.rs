@@ -401,13 +401,8 @@ impl TaskServer for Server {
     }
 
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool {
-        let mut buf = EventData::new();
-        // SAFETY: a writable EventData and `data`'s bytes.
-        if !unsafe { task_pack(buf.head(), data.as_ptr().cast(), data.len()) } {
-            return false;
-        }
-        // SAFETY: a live server and the packed message.
-        unsafe { server_methods::send_pipe_message(self.0, worker_id, buf.head().cast()) }
+        let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
+        buf.pack(data) && server_methods::send_pipe_message(self.view(), worker_id, &mut buf)
     }
 
     fn get_task_result(self) -> *mut EventData {
