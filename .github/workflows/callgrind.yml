@@ -77,7 +77,8 @@ jobs:
         options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/install
+      - id: install
+        uses: ./.github/actions/install
         with:
           packages: valgrind php-mysql
       - uses: actions/cache/restore@v6
@@ -89,11 +90,15 @@ jobs:
         run: python3 tools/build_upstream.py
       - name: Fetch crates
         run: cargo fetch --locked
+      # Cached on its arguments and PHP like every other profile (#3309): rebuilt on each run,
+      # it kept shard 4 the PR tier's last job.
       - name: Build configured upstream
+        id: configured
         if: matrix.configure
-        run: |
-          python3 tools/build_upstream.py ${{ matrix.configure }} | tee upstream.log
-          echo "UPSTREAM=$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" >> "$GITHUB_ENV"
+        uses: ./.github/actions/upstream
+        with:
+          args: ${{ matrix.configure }}
+          php: ${{ steps.install.outputs.php }}
       - name: Build cargo engine
         run: python3 tools/build_ext.py --profile release-lto ${{ matrix.configure }}
       - name: Run callgrind workloads
@@ -102,7 +107,7 @@ jobs:
           ${{ matrix.workloads }}
           ${{ matrix.extensions || '--php-extension pdo --php-extension pdo_sqlite --php-extension mysqlnd --php-extension pdo_mysql' }}
           --engine cargo=target/ext/swoole.so
-          --engine upstream=${UPSTREAM:-target/upstream/src/modules/swoole.so}
+          --engine upstream=${{ steps.configured.outputs.library || 'target/upstream/src/modules/swoole.so' }}
           --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         if: always()
