@@ -2,7 +2,7 @@
 //! the typed [`Co`] handle: its proxy, buffers and timeouts), files and
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
-use crate::native::{Co, Socket};
+use crate::native::Co;
 use libc::c_int;
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
@@ -105,11 +105,8 @@ impl Drop for Written {
 }
 
 /// The socket frames WebSocket packets from now on.
-/// # Safety
-/// `socket` is a live coroutine socket.
-pub unsafe fn websocket_protocol(socket: Socket) {
-    // SAFETY: per the caller.
-    unsafe { Co::new(socket) }.websocket_protocol();
+pub fn websocket_protocol(socket: co::Co) {
+    Co::from(socket).websocket_protocol();
 }
 
 /// What the HTTP client asks of its socket.

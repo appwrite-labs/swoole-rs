@@ -1023,9 +1023,8 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             &mut args,
             fd,
         )?;
-    } else {
-        // SAFETY: a coroutine-socket context's live socket.
-        unsafe { swoole_rs_phpclients::websocket_protocol(context.state().private_data) };
+    } else if let Some(socket) = context::socket(context.state()) {
+        swoole_rs_phpclients::websocket_protocol(socket);
     }
     let state = context.state();
     state.response.status = 101;
@@ -1283,12 +1282,6 @@ fn sock_recv(socket: co::Co, timeout: f64) -> (isize, *mut u8, usize) {
     // A packet read leaves it in the socket's read buffer.
     let (data, len) = socket.with_buffer(false, |buffer| (buffer.as_mut_ptr(), buffer.len()));
     (received, data, len)
-}
-
-/// `sock->get_fd()`.
-pub(crate) fn sock_fd(sock: *mut c_void) -> c_int {
-    // SAFETY: a live `SocketImpl *`.
-    unsafe { co::Co::of(sock) }.sock_fd()
 }
 
 /// A message being assembled from fragments: its payload so far, and the

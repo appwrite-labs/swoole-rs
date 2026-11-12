@@ -205,8 +205,7 @@ impl HttpServer {
         if let Some(response) = context.state().response.zobject.props() {
             response.value(c"socket", zconn);
         }
-        // SAFETY: a coroutine socket object.
-        unsafe { context::bind(context.state(), zconn) };
+        context::bind(context.state(), zconn);
         let state = context.state();
         state
             .compression_types
@@ -818,9 +817,9 @@ fn shutdown(call: &Call) {
     if let Some(connections) = server.clients.array() {
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
-            let socket = get_socket(connection);
-            // SAFETY: the object's live socket.
-            let socket = unsafe { Co::of(socket) };
+            let Some(socket) = get_socket(connection).map(swoole_rs_phpclients::Co::handle) else {
+                return;
+            };
             let waiting_now =
                 socket.with_network(|network| network.read(|record| record.recv_wait != 0));
             if waiting_now == Some(true) {
@@ -895,11 +894,14 @@ fn on_accept(call: &Call) {
         return;
     };
     let zconn: &Value = &held;
-    // SAFETY: the object's live socket, which the server's array keeps.
-    let socket = unsafe { Co::of(get_socket(zconn)) };
+    // The server's array keeps the object, and so its socket.
+    let Some(socket) = get_socket(zconn) else {
+        call.set_null();
+        return;
+    };
     // The request allocator first.
-    // SAFETY: the static zend string allocator.
-    unsafe { socket.set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator()) };
+    socket.use_zend_strings();
+    let socket = socket.handle();
     let buffer = socket.buffer(false);
     let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {

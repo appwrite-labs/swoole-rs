@@ -686,7 +686,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
             }
         } else if object.instance_of(swoole_rs_phpclients::socket()) {
             socket = Some(object);
-            fd = zend_long::from(websocket::sock_fd(swoole_rs_phpclients::get_socket(object)));
+            fd = swoole_rs_phpclients::get_socket(object)
+                .map_or(-1, |socket| zend_long::from(socket.handle().sock_fd()));
         } else {
             return refuse(
                 call,
@@ -727,8 +728,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if let Some(server) = server {
         context::bind_server(ctx.state(), server);
     } else if let Some(socket) = socket {
-        // SAFETY: a `Swoole\Coroutine\Socket`.
-        unsafe { context::bind(ctx.state(), socket) };
+        context::bind(ctx.state(), socket);
     }
     let held = ctx;
     let state = ctx.state();
