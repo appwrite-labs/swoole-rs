@@ -18,7 +18,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::SocketRecord;
-use swoole_rs_tls::OwnedBio;
+use swoole_rs_tls::{Bio, OwnedBio, Ssl};
 
 const EVENT_READ: u32 = 1 << 9;
 const EVENT_WRITE: u32 = 1 << 10;
@@ -76,22 +76,28 @@ pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
     if socket.socket().is_null() {
         return None;
     }
-    socket.net(|network| UringSocketOps {
-        socket,
-        tls: Tls {
-            uring,
+    socket.net(|network| {
+        let ssl = Ssl::of_fields(network);
+        // The session's own BIOs while they are the memory BIOs `tls_session` gave it
+        // (a stored one is stale once the SSL is freed), else none.
+        let current = |bio: Option<Bio>, stored: Option<Bio>| bio.filter(|_| bio == stored);
+        UringSocketOps {
             socket,
-            ssl: swoole_rs_tls::Ssl::of_fields(network),
-            rbio,
-            wbio,
-            fd: network.fd,
-            read_timeout: network.timeouts.read,
-            write_timeout: network.timeouts.write,
-        },
-        connect_timeout: network.timeouts.connect,
-        available,
-        check,
-        set_err,
+            tls: Tls {
+                uring,
+                socket,
+                ssl,
+                rbio: current(ssl.and_then(Ssl::read_bio), rbio),
+                wbio: current(ssl.and_then(Ssl::write_bio), wbio),
+                fd: network.fd,
+                read_timeout: network.timeouts.read,
+                write_timeout: network.timeouts.write,
+            },
+            connect_timeout: network.timeouts.connect,
+            available,
+            check,
+            set_err,
+        }
     })
 }
 
@@ -501,13 +507,14 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     if !create() {
         return false;
     }
-    let Some(session) = socket.with_network(swoole_rs_tls::Ssl::of).flatten() else {
+    let Some(session) = socket.with_network(Ssl::of).flatten() else {
         return false;
     };
     let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
         return false;
     };
-    let (rbio, wbio) = session.set_bio(rbio, Some(wbio));
+    // SAFETY: `create` just made the session, whose socket BIO no handle holds.
+    let (rbio, wbio) = unsafe { session.set_bio(rbio, Some(wbio)) };
     socket.with_extra(|extra| extra.bio = [Some(rbio), Some(wbio)]);
     if socket.ssl_is_server() {
         session.set_accept_state();

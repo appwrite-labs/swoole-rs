@@ -523,7 +523,9 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     }
     co.with_network(|network| {
         if !network.read(|record| record.ssl().is_null()) {
-            socket_ssl_close(network);
+            // SAFETY: handles to a session live only for the operation that took them,
+            // and the socket being released runs none.
+            unsafe { socket_ssl_close(network) };
         }
     });
     let network = co.socket();

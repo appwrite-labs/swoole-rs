@@ -1056,7 +1056,9 @@ fn close(this: Handle) -> c_int {
         && this.get().tls.get().is_some()
         && !saved.read(|socket| socket.ssl().is_null())
     {
-        socket_ssl_close(saved);
+        // SAFETY: handles to a session live only for the operation that took them,
+        // and none is running on the closing client.
+        unsafe { socket_ssl_close(saved) };
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
         let path = saved.read(|socket| socket.info.addr.unix().sun_path);

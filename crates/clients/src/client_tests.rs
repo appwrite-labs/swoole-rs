@@ -246,7 +246,7 @@ pub(super) fn socket_ssl_check_host(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl host");
     true
 }
-pub(super) fn socket_ssl_close(_: Socket<'_>) {
+pub(super) unsafe fn socket_ssl_close(_: Socket<'_>) {
     log("ssl close");
 }
 // crates/protocols-ffi's and OpenSSL's, which the hybrid links.

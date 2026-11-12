@@ -398,7 +398,8 @@ pub unsafe fn swr_v1_socket_ssl_new(
         return 1;
     };
     ssl.set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    if !ssl.set_fd(record.fd) {
+    // SAFETY: the new SSL has no BIOs yet, so none is freed.
+    if !unsafe { ssl.set_fd(record.fd) } {
         *error = peek_error();
         return 2;
     }

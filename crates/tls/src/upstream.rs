@@ -1357,12 +1357,17 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
 
 /// `void Socket::ssl_close()`: shuts down unless already closed (OpenSSL 1.0.2f
 /// complains about `SSL_shutdown` during a handshake), then frees the SSL.
-pub fn socket_ssl_close(socket: Socket<'_>) {
+///
+/// # Safety
+/// No [`Ssl`] or [`crate::Bio`] handle to the record's SSL or its BIOs is used
+/// afterwards: they are freed.
+pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
     if socket.read(|record| record.ssl_closed) == 0 {
         socket_ssl_shutdown(socket);
     }
     let ssl = socket.edit(swoole_rs_reactor::SocketFields::take_ssl);
-    // SAFETY: the record's SSL (or null), now released.
+    // SAFETY: the record's SSL (or null), now released; the caller promises no handle
+    // to it or its BIOs is used afterwards.
     unsafe { openssl_sys::SSL_free(ssl.cast()) };
 }
 

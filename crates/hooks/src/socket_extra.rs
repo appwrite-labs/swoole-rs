@@ -26,7 +26,8 @@ pub struct SocketExtra {
     /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
     pub(crate) uring: Option<&'static crate::uring::Host>,
-    /// A `UringSocket`'s TLS memory BIOs (read, write), which its session owns.
+    /// The TLS memory BIOs (read, write) `tls_session` gave a `UringSocket`'s session,
+    /// which owns them. Only compared with the session's own: stale once it is freed.
     #[cfg(feature = "iouring")]
     pub(crate) bio: [Option<swoole_rs_tls::Bio>; 2],
 }

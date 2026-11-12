@@ -2,7 +2,9 @@
 //! connection the socket record owns), [`Bio`] (a live BIO an SSL owns) and
 //! [`OwnedBio`] (one this side owns until an SSL takes it), [`CertRef`] and [`Cert`]
 //! (a borrowed and an owned certificate), and this thread's error queue. Callers go
-//! through their methods; only the constructors from raw pointers are unsafe.
+//! through their methods. `Ssl` and `Bio` are `Copy` and don't borrow their owner, so
+//! what frees an SSL or replaces its BIOs is unsafe: the constructors from raw
+//! pointers, `Ssl::set_fd` and `Ssl::set_bio`, and `upstream::socket_ssl_close`.
 use openssl_sys::{
     BIO, BIO_ctrl, BIO_free_all, BIO_new, BIO_read, BIO_s_mem, BIO_write, ERR_clear_error,
     ERR_get_error, ERR_reason_error_string, OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value,
@@ -85,7 +87,8 @@ pub fn error_string(error: c_ulong) -> String {
 }
 
 /// A live SSL on this thread. A socket record's is live while it is set:
-/// `Socket::ssl_create` sets it, and `ssl_close` frees it and clears it.
+/// `Socket::ssl_create` sets it, and the unsafe `ssl_close` frees it and clears it,
+/// its caller promising that no handle to the SSL or its BIOs is used afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ssl(NonNull<SSL>);
 
@@ -117,7 +120,8 @@ impl Ssl {
     pub fn of_fields(fields: &SocketFields) -> Option<Self> {
         // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
         // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
-        // contract) set it, and `ssl_close` takes it before freeing it.
+        // contract) set it, and the unsafe `ssl_close` takes it before freeing it, its
+        // caller promising that no handle to it is used afterwards.
         unsafe { Self::new(fields.ssl().cast()) }
     }
 
@@ -282,9 +286,13 @@ impl Ssl {
     }
 
     /// `SSL_set_fd`: false when OpenSSL fails.
+    ///
+    /// # Safety
+    /// No handle to the SSL's current BIOs is used afterwards: it frees them.
     #[must_use]
-    pub fn set_fd(self, fd: c_int) -> bool {
-        // SAFETY: a live SSL over the caller's descriptor.
+    pub unsafe fn set_fd(self, fd: c_int) -> bool {
+        // SAFETY: a live SSL over the caller's descriptor; the caller promises the
+        // BIOs it replaces have no handle in use.
         unsafe { SSL_set_fd(self.as_ptr(), fd) != 0 }
     }
 
@@ -302,10 +310,14 @@ impl Ssl {
 
     /// `SSL_set_bio`: the SSL takes both BIOs (one reference when they are the same
     /// BIO) and frees them with itself; the handles borrow them meanwhile.
-    pub fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio, Bio) {
+    ///
+    /// # Safety
+    /// No handle to the SSL's current BIOs is used afterwards: it frees them.
+    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio, Bio) {
         let read = read.into_bio();
         let write = write.map_or(read, OwnedBio::into_bio);
-        // SAFETY: a live SSL takes the references this side owned.
+        // SAFETY: a live SSL takes the references this side owned, and frees the BIOs
+        // it replaces, which the caller promises have no handle in use.
         unsafe { SSL_set_bio(self.as_ptr(), read.as_ptr(), write.as_ptr()) };
         (read, write)
     }
@@ -377,7 +389,8 @@ impl Ssl {
     }
 }
 
-/// A live BIO an SSL owns, borrowed while the SSL is live.
+/// A live BIO an SSL owns, borrowed until the SSL frees it: when the SSL is freed or
+/// the BIO replaced, which only unsafe calls do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bio(NonNull<BIO>);
 
@@ -438,17 +451,8 @@ impl OwnedBio {
         NonNull::new(unsafe { BIO_new(method) }).map(|bio| Self(Bio(bio)))
     }
 
-    /// A BIO this side owns from now on.
-    ///
-    /// # Safety
-    /// `bio` is null or a live BIO whose reference nothing else releases.
-    #[must_use]
-    pub unsafe fn from_raw(bio: *mut BIO) -> Option<Self> {
-        NonNull::new(bio).map(|bio| Self(Bio(bio)))
-    }
-
-    #[must_use]
-    pub fn bio(&self) -> Bio {
+    /// The BIO, which this side frees on drop; the handle stays inside this module.
+    fn bio(&self) -> Bio {
         self.0
     }
 
