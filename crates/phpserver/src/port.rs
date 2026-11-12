@@ -158,7 +158,8 @@ pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_serve
     // SAFETY: a live object, per the contract.
     let data = unsafe { custom_of::<PortData>(object) };
     data.and_then(PortData::port).unwrap_or_else(|| {
-        crate::server::invalid(object);
+        // Only this class's `create_object` makes the Server's Port objects.
+        crate::server::invalid(c"Swoole\\Server\\Port");
         // The `E_ERROR` above bailed out.
         std::process::abort()
     })
@@ -241,7 +242,7 @@ fn data(call: &Call) -> &PortData {
 /// return, when the port is not bound to a server. The caller owns nothing.
 fn invalid(call: &Call) {
     // `$this` of this call; the frames above own nothing to drop.
-    crate::server::invalid(call.this());
+    crate::server::invalid(crate::server::this_class(call));
 }
 
 /// The port's bound server; an `E_ERROR`, which does not return, when unbound.
