@@ -66,10 +66,6 @@ const THREAD_WORKER: u8 = 4;
 /// A task pool's `onWorkerStart` and `onWorkerStop`, and `main_loop`, whose result
 /// thread mode ignores.
 /// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the thread that owns them as workers.cc did"
-)]
 impl Context<'_> {
     fn state(&self) -> &crate::ServerState {
         self.server().state()
@@ -77,9 +73,8 @@ impl Context<'_> {
     fn config(&self) -> &crate::ServerConfig {
         self.server().config()
     }
-    fn tables(&self) -> &mut crate::records::ServerTables {
-        // SAFETY: the server's tables, which live as long as it.
-        unsafe { &mut *self.state().tables() }
+    fn tables(&self) -> &crate::records::ServerTables {
+        self.state().tables_ref()
     }
     fn workers(&self) -> ServerWorkers {
         self.server().workers()
@@ -287,17 +282,17 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The facts and effects on the server, its tables and its ports.
 fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
-    // `running` is shared state, read and set before any `&mut ServerConfig` exists.
-    if op == OP_RUNNING {
-        return Some(u64::from(ctx.state().running()));
-    }
     let serv = ctx.serv;
     let config = ctx.config();
+    // SAFETY: only the arms below that `create_thread_factory` and its teardown run
+    // call it, while the master is the server's only thread, and each as its arm's
+    // last tables access.
+    let tables_mut = || unsafe { &mut *ctx.state().tables() };
     let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
             let threads = crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num);
-            ctx.tables().reactor_threads = threads;
+            tables_mut().reactor_threads = threads;
             0
         }
         OP_DELETE_REACTOR_THREADS => {
@@ -313,6 +308,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
+        OP_RUNNING => u64::from(ctx.state().running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
@@ -327,18 +323,19 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SINGLE_REACTOR_PIPE => {
-            ctx.tables().reactor_pipe_num = 1;
+            tables_mut().reactor_pipe_num = 1;
             0
         }
         OP_CALLOC_CONNECTIONS => {
             // Private, as `sw_calloc`'s memory was.
-            let tables = ctx.tables();
             let size = size_of::<ConnectionRecord>();
-            tables.connection_list = Shm::calloc_private(tables.max_connection as usize, size);
-            u64::from(!tables.connection_list.is_null())
+            let list = Shm::calloc_private(ctx.tables().max_connection as usize, size);
+            let ready = !list.is_null();
+            tables_mut().connection_list = list;
+            u64::from(ready)
         }
         OP_FREE_THREAD_CONNECTIONS => {
-            ctx.tables().connection_list.free();
+            tables_mut().connection_list.free();
             0
         }
         OP_CREATE_WORKER_PIPES => {

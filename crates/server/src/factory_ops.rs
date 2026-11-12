@@ -82,9 +82,8 @@ impl<'a> Context<'a> {
     fn config(&self) -> &'a crate::ServerConfig {
         self.serv.config()
     }
-    fn tables(&self) -> &'a mut crate::ServerTables {
-        // SAFETY: its tables, written by the master before its threads and workers start.
-        unsafe { &mut *self.state().tables() }
+    fn tables(&self) -> &'a crate::ServerTables {
+        self.state().tables_ref()
     }
     fn workers(&self) -> swoole_rs_process::server_workers::ServerWorkers {
         self.server().workers()
@@ -205,10 +204,6 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     };
     let send = || (ctx.send().info, ctx.send().data);
     Some(match op {
-        OP_NEW_REACTOR_THREADS => {
-            tables.reactor_threads = new_reactor_threads(state, config.reactor_num);
-            0
-        }
         OP_DELETE_REACTOR_THREADS => {
             // SAFETY: the array `OP_NEW_REACTOR_THREADS` made, not used again.
             unsafe {
@@ -495,6 +490,10 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The server's setup and teardown: connections, the manager and the task workers.
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (tables, config) = (ctx.tables(), ctx.config());
+    // SAFETY: only the arms below that `create_process_factory` and
+    // `destroy_process_factory` run call it, while the master is the server's only
+    // thread, and each as its arm's last tables access.
+    let tables_mut = || unsafe { &mut *ctx.state().tables() };
     let gs = ctx.server().counters();
     let task_worker_pid = || {
         let pool = crate::shared::ServerShared::of(ctx.server()).task_pool();
@@ -503,10 +502,16 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     };
     let waitpid = |pid| signed(swoole_waitpid(pid, None, 0));
     Some(match op {
+        OP_NEW_REACTOR_THREADS => {
+            tables_mut().reactor_threads = new_reactor_threads(ctx.state(), config.reactor_num);
+            0
+        }
         OP_ALLOC_CONNECTIONS => {
             let size = size_of::<ConnectionRecord>();
-            tables.connection_list = Shm::calloc(tables.max_connection as usize, size);
-            u64::from(!tables.connection_list.is_null())
+            let list = Shm::calloc(tables.max_connection as usize, size);
+            let ready = !list.is_null();
+            tables_mut().connection_list = list;
+            u64::from(ready)
         }
         LOG_ALLOC_CONNECTIONS => {
             let (max, size) = (tables.max_connection, size_of::<ConnectionRecord>());
@@ -515,12 +520,12 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FREE_CONNECTIONS => {
-            tables.connection_list.free();
+            tables_mut().connection_list.free();
             0
         }
         OP_SET_REACTOR_PIPE_NUM => {
             let num = config.worker_num / u32::from(config.reactor_num);
-            tables.reactor_pipe_num = u16::try_from(num & 0xffff).unwrap_or_default();
+            tables_mut().reactor_pipe_num = u16::try_from(num & 0xffff).unwrap_or_default();
             0
         }
         OP_HAS_MESSAGE_BOX => {

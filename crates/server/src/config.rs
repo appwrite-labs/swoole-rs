@@ -4,8 +4,13 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_memory::members::Shm;
+
+const _: () = assert!(
+    size_of::<libc::time_t>() == size_of::<AtomicI64>(),
+    "`warning_time` mirrors C++'s `time_t`"
+);
 
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
@@ -46,16 +51,16 @@ pub struct ServerConfig {
     pub send_yield: bool,
     pub enable_coroutine: bool,
     pub single_thread: bool,
-    /// Cleared by whichever thread stops the server while the others read it. Rust reads
-    /// and sets it only through [`crate::ServerState::running`] and `set_running`, over a
-    /// shared reference: in thread mode the op contexts' `&mut ServerConfig` overlap.
+    /// Cleared by whichever thread stops the server while the others read it
+    /// ([`crate::ServerState::running`]).
     pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
     pub cpu_affinity_available: Vec<c_int>,
     pub pipe_command: *mut c_void,
     pub send_timeout: f64,
     pub heartbeat_check_interval: u16,
-    pub warning_time: libc::time_t,
+    /// `time_t`, reset with `scheduler_warning` by whichever thread dispatches.
+    pub warning_time: AtomicI64,
     pub timezone_: libc::c_long,
     /// Armed and deleted by the master (or a base-mode worker) after its threads
     /// start, so an atomic; only that thread uses the node.
@@ -148,7 +153,7 @@ impl Default for ServerConfig {
             pipe_command: core::ptr::null_mut(),
             send_timeout: 0.0,
             heartbeat_check_interval: 0,
-            warning_time: 0,
+            warning_time: AtomicI64::new(0),
             timezone_: 0,
             master_timer: AtomicPtr::new(core::ptr::null_mut()),
             heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
@@ -276,23 +281,14 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     ) {
         return None;
     }
-    // `running` is shared state, read and set before any `&mut ServerConfig` exists.
-    match op {
-        OP_RUNNING => return Some(u64::from(state.running())),
-        OP_SET_RUNNING => {
-            state.set_running(arg != 0);
-            return Some(0);
-        }
-        _ => {}
-    }
     let config = state.config_ref();
-    // SAFETY: no native callback runs during this leaf table access.
-    let tables = unsafe { &mut *state.tables() };
+    let tables = state.tables_ref();
     Some(match op {
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
+        OP_RUNNING => u64::from(state.running()),
         OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
@@ -335,11 +331,20 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             }
         }
         OP_SET_MAX_CONNECTION => {
-            tables.max_connection = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            let max = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
+            // SAFETY: `Server::create`, before any thread or process starts; `tables`
+            // isn't read after the write.
+            unsafe { &mut *state.tables() }.max_connection = max;
             0
         }
         OP_ACCEPT_TIMER_CLEAR => {
-            tables.enable_accept_timer = core::ptr::null_mut();
+            tables
+                .enable_accept_timer
+                .store(core::ptr::null_mut(), Relaxed);
+            0
+        }
+        OP_SET_RUNNING => {
+            state.set_running(arg != 0);
             0
         }
         OP_SET_WARNING => {

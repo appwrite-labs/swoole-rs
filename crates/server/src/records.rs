@@ -94,7 +94,8 @@ pub struct ServerTables {
     pub session_list: Shm,
     pub port_gs_list: Shm,
     pub max_connection: u32,
-    pub enable_accept_timer: *mut c_void,
+    /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
+    pub enable_accept_timer: core::sync::atomic::AtomicPtr<c_void>,
     pub reactor_pipe_num: u16,
     pub reactor_threads: *mut c_void,
     /// `Server::ports`.
@@ -165,7 +166,7 @@ impl Default for ServerTables {
             session_list: Shm::NULL,
             port_gs_list: Shm::NULL,
             max_connection: 0,
-            enable_accept_timer: core::ptr::null_mut(),
+            enable_accept_timer: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             reactor_pipe_num: 0,
             reactor_threads: core::ptr::null_mut(),
             ports: PortList {
