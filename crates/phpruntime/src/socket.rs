@@ -547,23 +547,28 @@ pub mod co {
         }
     }
 
-    /// `readv`, `readv_all`, `writev` or `writev_all` (`op` 0 to 3) over
-    /// `count` vectors, with the vector index and byte offset where it stopped.
-    /// # Safety
-    /// The vectors are valid for the operation.
+    /// What a vector operation moves: buffers `readv` fills, or bytes `writev` sends.
+    pub enum Vectors<'a, 'b> {
+        Read(&'a mut [std::io::IoSliceMut<'b>]),
+        Write(&'a [std::io::IoSlice<'b>]),
+    }
+
+    /// `readv` or `writev` over `vectors`, or with `all` `readv_all` or
+    /// `writev_all`, with the vector index and byte offset where it stopped.
     #[must_use]
-    pub unsafe fn vector(
-        socket: Co,
-        op: c_int,
-        vectors: *const iovec,
-        count: c_int,
-    ) -> (isize, c_int, usize) {
-        // SAFETY: per the caller, `count` vectors valid for the operation.
-        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, op >= 2) }) else {
+    pub fn vector(socket: Co, vectors: Vectors<'_, '_>, all: bool) -> (isize, c_int, usize) {
+        let (vectors, count, write) = match vectors {
+            Vectors::Read(read) => (read.as_ptr().cast::<iovec>(), read.len(), false),
+            Vectors::Write(written) => (written.as_ptr().cast::<iovec>(), written.len(), true),
+        };
+        let count = c_int::try_from(count).unwrap_or_else(|_| std::process::abort());
+        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so
+        // these are `count` vectors over live bytes, writable for a read.
+        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, write) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             std::process::abort();
         };
-        let result = socket.vector(&mut vector, op & 1 == 1);
+        let result = socket.vector(&mut vector, all);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }
