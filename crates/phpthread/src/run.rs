@@ -224,6 +224,12 @@ fn main_thread() -> bool {
     swoole_rs_zend::is_main_thread()
 }
 
+/// The main thread's script path, which its RINIT kept for new threads.
+#[must_use]
+pub fn main_script() -> Option<CString> {
+    request::main_path()
+}
+
 /// RINIT: the main thread keeps its script path and `$argv` for new threads.
 /// # Safety
 /// RINIT.
