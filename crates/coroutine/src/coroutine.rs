@@ -100,19 +100,19 @@ pub struct Canceler {
     pub data: *const c_void,
 }
 
-/// The effects the scheduler runs, each given a `swoole::Coroutine` record
-/// (`Coroutine::native`). Rust frames between these calls own nothing with a
-/// destructor, so a coroutine stack the bailout abandons, or a longjmp out of a
-/// callback, skips no cleanup.
+/// The effects the scheduler runs, the first three on a live coroutine (whose
+/// record, `Coroutine::native`, starts with it). Rust frames between these
+/// calls own nothing with a destructor, so a coroutine stack the bailout
+/// abandons, or a longjmp out of a callback, skips no cleanup.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Hooks {
     /// Switches into the coroutine; returns once it yields or ends, and whether it ended.
-    pub swap_in: unsafe extern "C" fn(*mut c_void) -> bool,
-    /// Switches out of the coroutine, back to whatever last switched in.
-    pub swap_out: Routine,
-    /// Frees an ended coroutine's record (and its stack).
-    pub destroy: Routine,
+    pub(crate) swap_in: fn(Co) -> bool,
+    /// Switches out of the running coroutine, back to whatever last switched in.
+    pub(crate) swap_out: fn(Co),
+    /// Frees an ended, released coroutine's record (and its stack).
+    pub(crate) destroy: fn(Co),
     /// The bailout callback (upstream's `on_bailout`), which PHP's longjmps out
     /// of, and its data; set while the scheduler bails out.
     pub bailout: Option<Routine>,
@@ -267,12 +267,6 @@ fn raw(co: Option<Co>) -> *mut Coroutine {
 pub(crate) struct Sched(NonNull<Scheduler>);
 
 impl Sched {
-    /// # Safety
-    /// `s` is null or a live scheduler, which stays live while the handle is used.
-    unsafe fn of(s: *mut Scheduler) -> Option<Self> {
-        NonNull::new(s).map(Self)
-    }
-
     /// This thread's scheduler, live for the thread's life.
     pub(crate) fn this() -> Self {
         Self(crate::scheduler::this())
@@ -393,9 +387,8 @@ fn effects(s: Sched) -> (Hooks, [SwapCallback; 3]) {
 /// runs the bailout callback (upstream's `check_end`).
 fn switch_in(s: Sched, co: Co) {
     let (hooks, [_, _, on_close]) = effects(s);
-    let native = co.with(|co| co.native);
-    // SAFETY: a live record; the switch runs the coroutine until it yields or ends.
-    let ended = unsafe { (hooks.swap_in)(native) };
+    // The switch runs the coroutine until it yields or ends.
+    let ended = (hooks.swap_in)(co);
     if ended {
         // `co` ended and is current again: it closes.
         co.with(|co| co.state = STATE_END);
@@ -405,9 +398,9 @@ fn switch_in(s: Sched, co: Co) {
             "only the current coroutine closes"
         );
         release(s, co);
-        // SAFETY: the record ended and is released; the facade is deleted
-        // here, and `co` with it.
-        unsafe { (hooks.destroy)(native) };
+        // The record ended and is released; the facade is deleted here, and
+        // `co` with it.
+        (hooks.destroy)(co);
         return;
     }
     // The hook as it is now: the coroutine that bailed out set it while it ran.
@@ -431,7 +424,7 @@ pub(crate) fn yield_(s: Sched, co: Co) {
         co.resume_code = RC_OK;
     });
     notify(on_yield, co);
-    let (origin, native) = co.with(|this| (Co::link(this.origin), this.native));
+    let origin = co.origin();
     s.with(|s| {
         debug_assert!(
             s.current == co.ptr() || s.bailout,
@@ -440,8 +433,8 @@ pub(crate) fn yield_(s: Sched, co: Co) {
         s.current = raw(origin);
     });
     charge(&hooks, Some(co), origin);
-    // SAFETY: the running record; the switch returns when it is resumed.
-    unsafe { (hooks.swap_out)(native) };
+    // The switch returns when `co` is resumed.
+    (hooks.swap_out)(co);
 }
 
 /// Run and resume: the current coroutine becomes `co`'s origin, its slice is
@@ -503,47 +496,26 @@ pub(crate) fn bailout(s: Sched) {
     yield_(s, co);
 }
 
-/// [`resume`], for C.
-///
-/// # Safety
-/// `s` and `co` are null or live, and not borrowed elsewhere for the call; `co`
-/// is suspended.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: as the caller promises.
-    let Some(s) = (unsafe { Sched::of(s) }) else {
-        return;
-    };
-    // SAFETY: as the caller promises.
-    if let Some(co) = unsafe { Co::of(co) } {
-        resume(s, co);
-    }
-}
-
-/// `Coroutine::yield`: waiting, with a clean resume code; the yield callback
-/// runs, control returns to `co`'s origin, and this returns once resumed.
-///
-/// # Safety
-/// `s` is null or live, and `co` null or its running coroutine; neither is
-/// borrowed elsewhere for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: as the caller promises.
-    let Some(s) = (unsafe { Sched::of(s) }) else {
-        return;
-    };
-    // SAFETY: as the caller promises.
-    if let Some(co) = unsafe { Co::of(co) } {
-        yield_(s, co);
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    impl Sched {
+        /// # Safety
+        /// `s` is null or a live scheduler, which stays live while the handle is used.
+        unsafe fn of(s: *mut Scheduler) -> Option<Self> {
+            NonNull::new(s).map(Self)
+        }
+    }
+
     // The operations over raw pointers, as the cases drive them.
+    unsafe fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
+        unsafe { resume(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
+    }
+    unsafe fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
+        unsafe { yield_(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
+    }
     unsafe fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
         unsafe { run(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
     }
@@ -573,18 +545,19 @@ pub(crate) mod tests {
         EVENTS.with_borrow_mut(core::mem::take)
     }
 
-    unsafe extern "C" fn swap_in(native: *mut c_void) -> bool {
+    fn swap_in(co: Co) -> bool {
+        let native = co.with(|co| co.native);
         event(format!("in {}", native as usize));
         ENDING.with_borrow_mut(|ending| {
             let at = ending.iter().position(|n| *n == native as usize);
             at.map(|at| ending.remove(at)).is_some()
         })
     }
-    unsafe extern "C" fn swap_out(native: *mut c_void) {
-        event(format!("out {}", native as usize));
+    fn swap_out(co: Co) {
+        event(format!("out {}", co.with(|co| co.native) as usize));
     }
-    unsafe extern "C" fn destroy(native: *mut c_void) {
-        event(format!("destroy {}", native as usize));
+    fn destroy(co: Co) {
+        event(format!("destroy {}", co.with(|co| co.native) as usize));
     }
     unsafe extern "C" fn bailout(_: *mut c_void) {
         event("bailout".into());

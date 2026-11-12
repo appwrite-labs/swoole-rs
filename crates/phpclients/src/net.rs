@@ -5,11 +5,10 @@
 //! in the pool. Each method parses as upstream's ZPP block does; operations
 //! that can run PHP code go through `Cli::run` inside `zend_try`.
 use crate::native::{self, Cli, ErrorKind};
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::{
     cell::Cell,
     ffi::{CStr, CString},
-    marker::PhantomData,
     ptr,
     rc::Rc,
     sync::{Mutex, MutexGuard, PoisonError},
@@ -25,17 +24,12 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
-    Array, Call, Class, E_ERROR, E_WARNING, Minit, Object, Owned, OwnedArray, Props, Value, ZStr,
-    ZString,
+    Array, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Props,
+    Value, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
-    sys::{
-        IS_ARRAY, IS_UNDEF, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, get_active_class_name,
-        get_active_function_name, zend_class_entry, zend_object, zend_object_handlers,
-        zend_type_error,
-    },
-    unset_property_deny,
+    sys::{IS_ARRAY, IS_UNDEF, ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -173,20 +167,30 @@ impl Drop for Conn {
     }
 }
 
-/// `ClientObject` without its `zend_object`; `Swoole\Async\Client` shares it.
-#[repr(C)]
+/// `ClientObject` without its `zend_object`; `Swoole\Async\Client` inherits
+/// it. Freeing the object drops it, and with it the async callbacks
+/// (`php_swoole_client_async_free_object`), each deferring a destructor's bailout.
 ///
 /// Cells, so PHP code a method runs can re-enter the same object's methods
 /// while it holds the data: nothing borrows it mutably.
+#[derive(Default)]
 pub(crate) struct Data {
-    /// The connection; all-zero is none.
     conn: Cell<Option<Rc<Conn>>>,
-    /// `getSocket()`'s socket (`IS_UNDEF`: none); zeroed bytes are `IS_UNDEF`.
+    /// `getSocket()`'s socket (`IS_UNDEF`: none).
     zsocket: Cell<Owned>,
-    /// The async callbacks, by [`crate::async_net`] slot; all-zero is none.
+    /// The async callbacks, by [`crate::async_net`] slot.
     pub(crate) callbacks: [Cell<Option<Rc<Callable>>>; 7],
     /// `on()` ran: the async client is initialised.
     pub(crate) listening: Cell<bool>,
+}
+
+impl Custom for Data {
+    fn class() -> &'static CustomClass<Self> {
+        &CLIENT
+    }
+    fn new() -> Self {
+        Self::default()
+    }
 }
 
 impl Data {
@@ -217,23 +221,25 @@ impl Data {
     }
 }
 
-/// A `Swoole\Client` (or `Swoole\Async\Client`, which shares its layout)
-/// object, live for `'a`.
+/// A `Swoole\Client` (or `Swoole\Async\Client`, which inherits its data)
+/// object, live for `'a`, and its data.
 #[derive(Clone, Copy)]
-pub(crate) struct Obj<'a>(*mut zend_object, PhantomData<&'a zend_object>);
+pub(crate) struct Obj<'a>(*mut zend_object, &'a Data);
 
 impl<'a> Obj<'a> {
     /// # Safety
     /// `object` is a live client or async client object for `'a`.
     pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
-        Self(object, PhantomData)
+        // SAFETY: per the caller.
+        let data = unsafe { swoole_rs_zend::custom_of::<Data>(object) };
+        Self(object, data.unwrap_or_else(|| std::process::abort()))
     }
 
-    /// `$this` of a client method.
+    /// `$this` of a client method: client methods are non-static, so `$this`
+    /// is a client object (or an async one), live for the call.
     pub(crate) fn this(call: &'a Call) -> Self {
-        // SAFETY: client methods are non-static, so `$this` is a client object
-        // (or an async one), live for the call.
-        unsafe { Self::new(call.this()) }
+        let data = call.custom::<Data>();
+        Self(call.this(), data.unwrap_or_else(|| std::process::abort()))
     }
 
     pub(crate) fn as_ptr(self) -> *mut zend_object {
@@ -241,8 +247,7 @@ impl<'a> Obj<'a> {
     }
 
     pub(crate) fn data(self) -> &'a Data {
-        // SAFETY: a live client object's data, only ever shared (its fields are cells).
-        unsafe { &*ClientObject::data_ptr(self.0) }
+        self.1
     }
 
     /// Property writes, under the object's own class.
@@ -264,9 +269,7 @@ impl<'a> Obj<'a> {
     }
 }
 
-pub(crate) type ClientObject = Object<Data>;
-
-pub(crate) static CLIENT: Class = Class::new();
+pub(crate) static CLIENT: CustomClass<Data> = CustomClass::new();
 static EXCEPTION: Class = Class::new();
 /// A persistent connection the pool owns until a client takes it back.
 struct Pooled(Box<Conn>);
@@ -280,30 +283,6 @@ static POOL: Mutex<Option<Pool<Pooled>>> = Mutex::new(None);
 
 fn long_connections() -> MutexGuard<'static, Option<Pool<Pooled>>> {
     POOL.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-unsafe extern "C" fn create(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: Zend creates this class or a subclass; zeroed data is no
-    // connection, no socket and no callbacks.
-    unsafe { ClientObject::create(&CLIENT, ce) }
-}
-
-unsafe extern "C" fn free(std: *mut zend_object) {
-    bailout::finish_after(|| {
-        // SAFETY: Zend frees a client object.
-        let object = unsafe { Obj::new(std) };
-        crate::async_net::free_callbacks(object);
-        // SAFETY: as above.
-        unsafe { ClientObject::dtor(std) };
-    });
-}
-
-fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
-    entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
-    // SAFETY: `create` makes a `ClientObject`; `free` ends with its `dtor`.
-    unsafe { ClientObject::install(entry, handlers, create, free) };
 }
 
 method_table! {
@@ -351,7 +330,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     } else {
         METHODS.without(&[c"getSocket"])
     };
-    minit.register(&CLIENT, c"Swoole\\Client", methods, configure);
+    minit.register_object::<Data>(c"Swoole\\Client", methods, 0);
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Client\\Exception",
@@ -532,26 +511,16 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
     None
 }
 
-/// `__construct`'s type check: the socket type, or a `TypeError` like upstream's.
-pub(crate) fn check_type(kind: i64) -> bool {
+/// `__construct`'s type check: the socket type, or a `TypeError` like upstream's,
+/// which names the active function: `class`'s `__construct`, which declares it.
+pub(crate) fn check_type(kind: i64, class: &str) -> bool {
     if (SOCK_TCP..=SOCK_UNIX_DGRAM).contains(&socket_type(kind)) {
         return true;
     }
-    let mut space: *const c_char = ptr::null();
-    // SAFETY: inside a method call; Zend returns static names.
-    let class = unsafe { get_active_class_name(&raw mut space) };
-    // SAFETY: as above.
-    let function = unsafe { get_active_function_name() };
-    // SAFETY: Zend's printf: those three NUL-terminated names and a `long long`.
-    unsafe {
-        zend_type_error(
-            c"%s%s%s() expects parameter 1 to be client type, unknown type %lld given".as_ptr(),
-            class,
-            space,
-            function,
-            kind,
-        );
-    }
+    let message = format!(
+        "{class}::__construct() expects parameter 1 to be client type, unknown type {kind} given"
+    );
+    swoole_rs_zend::type_error(&CString::new(message).unwrap_or_default());
     false
 }
 
@@ -658,7 +627,7 @@ fn construct(call: &Call) {
         call.throw_error(c"The $async parameter is not supported");
         return call.set_bool(false);
     }
-    if !check_type(kind) {
+    if !check_type(kind, "Swoole\\Client") {
         return call.set_bool(false);
     }
     let props = Obj::this(call).props();

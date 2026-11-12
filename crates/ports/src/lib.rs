@@ -14,7 +14,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_char};
 use std::slice;
 
 use swoole_rs_server::port_config::{self, PortMethods};
@@ -149,9 +149,8 @@ const EVENTS: &[(&[u8], &[u8])] = &[
 ];
 /// Complete immutable PHP Port declaration metadata. Names share the existing
 /// event catalog; no Zend pointer or mutable class/property registry enters Rust.
-#[repr(C)]
 pub struct PortsProperty {
-    pub name: PortsSpan,
+    pub name: &'static [u8],
     pub value: i64,
     pub kind: u32,
     pub private: u32,
@@ -179,27 +178,18 @@ pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
             (name, kind, value, 0)
         } else {
             return PortsProperty {
-                name: PortsSpan {
-                    data: std::ptr::null(),
-                    len: 0,
-                },
+                name: b"",
                 value: 0,
                 kind: 0,
                 private: 0,
             };
         };
     PortsProperty {
-        name: PortsSpan {
-            data: name.as_ptr(),
-            len: name.len(),
-        },
+        name,
         value,
         kind,
         private,
     }
-}
-unsafe extern "C" {
-    fn strncasecmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
 }
 
 /// The event `name` registers (`on()`): its index and callback property.
@@ -212,10 +202,7 @@ pub fn event(name: &[u8], native_casefold: bool) -> Option<(usize, &'static [u8]
         .find_map(|(index, &(key, property))| {
             let found = name.len() == key.len()
                 && if native_casefold {
-                    // SAFETY: both ranges hold `len` readable bytes (`name.len() == key.len()`).
-                    unsafe {
-                        strncasecmp(name.as_ptr().cast(), key.as_ptr().cast(), key.len()) == 0
-                    }
+                    swoole_rs_locale::strncasecmp_equal(name, key, key.len())
                 } else {
                     name == key
                 };

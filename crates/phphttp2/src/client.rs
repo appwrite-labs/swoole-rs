@@ -399,10 +399,14 @@ impl Client {
             }
             return false;
         };
-        // SAFETY: the new socket object's socket, which lives as long as it; the
-        // conn's reference to the object keeps it live until the close hook clears
-        // this handle.
-        let socket = unsafe { Co::of(swoole_rs_phpclients::get_socket(&zsocket)) };
+        // The new socket object's socket, which lives as long as it; the conn's
+        // reference to the object keeps it live until the close hook clears this
+        // handle.
+        let Some(socket) =
+            swoole_rs_phpclients::get_socket(&zsocket).map(swoole_rs_phpclients::Co::handle)
+        else {
+            return false;
+        };
         *self.conn.zsocket.borrow_mut() = zsocket;
         self.conn.socket.set(Some(socket));
         let conn = Rc::clone(&self.conn);

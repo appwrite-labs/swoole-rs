@@ -108,14 +108,7 @@ mod tests {
                     unsafe extern "C" fn keep(_: *mut c_void) {}
                     // `Buffer`'s first member is its Rust queue handle.
                     let handle = unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() };
-                    let status = unsafe {
-                        swoole_rs_buffer::swr_v1_buffer_typed_push(
-                            handle.as_mut(),
-                            1,
-                            std::ptr::dangling_mut(),
-                            Some(keep),
-                        )
-                    };
+                    let status = unsafe { (*handle).push(1, std::ptr::dangling_mut(), Some(keep)) };
                     assert_eq!(status, 0);
                 }
                 _ => unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) },

@@ -117,9 +117,15 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
     if !thread_mode(serv) {
         return Ok(());
     }
-    // SAFETY: the Server object, which declares `bootstrap`.
-    let slot = unsafe { swoole_rs_zend::property(object.raw(), c"bootstrap") };
-    if string_of(slot).is_empty() {
+    let mut this = object.zval();
+    let this = Value::of(&mut this);
+    // The Server class declares `bootstrap`; read again after the write.
+    let bootstrap = || {
+        this.property(c"bootstrap")
+            .map_or(&[][..], string_of)
+            .to_vec()
+    };
+    if bootstrap().is_empty() {
         let (mut path, mut argc): (*const c_char, c_int) = (ptr::null(), 0);
         // SAFETY: two writable out-parameters.
         unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
@@ -129,7 +135,7 @@ pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<()
             Props::own(object).string(c"bootstrap", path);
         }
     }
-    let bootstrap = string_of(slot).to_vec();
+    let bootstrap = bootstrap();
     let argv = init_arguments(object)?;
     set_start(Some(Start { bootstrap, argv }));
     set_worker_thread_start(Some(start_thread));

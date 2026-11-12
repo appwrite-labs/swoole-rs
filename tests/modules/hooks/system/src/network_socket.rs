@@ -199,8 +199,6 @@ unsafe extern "C-unwind" {
     fn buffer_length(buffer: *const c_void) -> u32;
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();
-    #[link_name = "_Z20swoole_random_stringPcm"]
-    fn swoole_random_string(buf: *mut c_char, size: usize);
     #[link_name = "_Z16swoole_event_addPN6swoole7network6SocketEi"]
     fn swoole_event_add(socket: *mut Record, events: c_int) -> c_int;
     #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
@@ -359,11 +357,6 @@ fn make_server_socket(kind: c_int, address: &str, port: c_int, backlog: c_int) -
 fn unlink_path(path: &CStr) {
     // SAFETY: a NUL-terminated path.
     unsafe { unlink(path.as_ptr()) };
-}
-
-fn random_string(buf: &mut [u8]) {
-    // SAFETY: `buf` is writable for its length.
-    unsafe { swoole_random_string(buf.as_mut_ptr().cast(), buf.len()) };
 }
 
 /// A `network::Socket *`; the cases share it across threads as upstream's lambdas do.
@@ -1063,7 +1056,8 @@ fn sendto_sync() {
     let (sock1, sock2) = unix_dgram_pair();
 
     let mut sendbuf = vec![0_u8; 65536];
-    random_string(&mut sendbuf[..65535]);
+    // `swoole_random_string(sendbuf, sizeof(sendbuf) - 1)`.
+    swoole_rs_corebase::swoole_random_string(&mut sendbuf);
     let sent = sendbuf.clone();
 
     let t1 = thread::spawn(move || {
@@ -1097,7 +1091,8 @@ fn clean() {
     let (sock1, sock2) = unix_dgram_pair();
 
     let mut sendbuf = vec![0_u8; 65536];
-    random_string(&mut sendbuf[..65535]);
+    // `swoole_random_string(sendbuf, sizeof(sendbuf) - 1)`.
+    swoole_rs_corebase::swoole_random_string(&mut sendbuf);
 
     let mut sock2_addr = Address::new();
     assert!(sock2_addr.assign(SW_SOCK_UNIX_DGRAM, "/tmp/udp_unix2.sock", 0, true));

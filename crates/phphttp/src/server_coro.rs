@@ -87,8 +87,8 @@ impl HttpServer {
     fn new(socket: Co) -> Self {
         Self {
             socket,
-            // SAFETY: the listening socket, which the server frees in its drop.
-            listener: unsafe { swoole_rs_phpclients::Co::new(socket.this()) },
+            // The listening socket, which the server frees in its drop.
+            listener: swoole_rs_phpclients::Co::from(socket),
             handlers: RefCell::new(Vec::new()),
             default_handler: RefCell::new(None),
             running: Cell::new(true),
@@ -162,11 +162,7 @@ impl HttpServer {
 
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
-        let request = &context.state().request;
-        // SAFETY: the request's path, `path_len` bytes.
-        let path = unsafe {
-            std::slice::from_raw_parts(request.path.cast::<u8>(), request.path_len as usize)
-        };
+        let path = crate::parse::request_path(&context.state().request);
         let default = self.default_handler.borrow().clone();
         let is_default =
             |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
@@ -205,8 +201,7 @@ impl HttpServer {
         if let Some(response) = context.state().response.zobject.props() {
             response.value(c"socket", zconn);
         }
-        // SAFETY: a coroutine socket object.
-        unsafe { context::bind(context.state(), zconn) };
+        context::bind(context.state(), zconn);
         let state = context.state();
         state
             .compression_types
@@ -428,8 +423,7 @@ fn construct(call: &Call) {
             bailout::Bailout.defer();
             return None;
         };
-        // SAFETY: the new socket, which the server owns until it drops.
-        let socket = unsafe { Co::of(socket) };
+        // The server owns the new socket until it drops.
         if data.0.set(HttpServer::new(socket)).is_err() {
             return None;
         }
@@ -818,9 +812,9 @@ fn shutdown(call: &Call) {
     if let Some(connections) = server.clients.array() {
         connections.for_each(|key, connection| {
             let ArrayKey::Index(index) = key else { return };
-            let socket = get_socket(connection);
-            // SAFETY: the object's live socket.
-            let socket = unsafe { Co::of(socket) };
+            let Some(socket) = get_socket(connection).map(swoole_rs_phpclients::Co::handle) else {
+                return;
+            };
             let waiting_now =
                 socket.with_network(|network| network.read(|record| record.recv_wait != 0));
             if waiting_now == Some(true) {
@@ -895,11 +889,14 @@ fn on_accept(call: &Call) {
         return;
     };
     let zconn: &Value = &held;
-    // SAFETY: the object's live socket, which the server's array keeps.
-    let socket = unsafe { Co::of(get_socket(zconn)) };
+    // The server's array keeps the object, and so its socket.
+    let Some(socket) = get_socket(zconn) else {
+        call.set_null();
+        return;
+    };
     // The request allocator first.
-    // SAFETY: the static zend string allocator.
-    unsafe { socket.set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator()) };
+    socket.use_zend_strings();
+    let socket = socket.handle();
     let buffer = socket.buffer(false);
     let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {

@@ -19,8 +19,7 @@ void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
  * sw_calloc/sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
- * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa,
- * swoole_random_string(char *, size_t), swoole_rand
+ * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa, swoole_rand
  * (both overloads), swoole_random_int, swoole::microtime and
  * swoole::DataHead::dump. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both

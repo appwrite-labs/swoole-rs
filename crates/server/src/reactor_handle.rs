@@ -43,6 +43,12 @@ impl Reactor {
     pub(crate) fn ptr(self) -> *mut c_void {
         self.0
     }
+    /// The handle the reactor's own operations take.
+    pub(crate) fn handle(self) -> Running<'static> {
+        // SAFETY: a live reactor, used by its own thread (the type's invariant), and no
+        // reference to its state outlives the call it is passed to.
+        unsafe { Running::new(self.0) }
+    }
     pub(crate) fn fields(&self) -> &mut ReactorFields {
         // A live reactor, which begins with its prepared state.
         let fields = ReactorPrepared::of(self.0).fields;
@@ -80,13 +86,10 @@ impl Reactor {
     }
     /// `reactor->trigger_close_event(event)`: the default error handler, or `-1` with none.
     pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> c_int {
-        let event = core::ptr::from_mut(event).cast();
-        // SAFETY: a live reactor on its thread, and an `Event`, which its handlers take.
-        unsafe { swoole_rs_reactor::reactor_upstream::trigger_close_event(self.0, event) }
+        swoole_rs_reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
-        // SAFETY: a live reactor.
-        unsafe { reactor_set_handler(self.0, fd_type, event, Some(handler)) };
+        reactor_set_handler(self.handle(), fd_type, event, Some(handler));
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {

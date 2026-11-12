@@ -40,9 +40,7 @@ use swoole_rs_zend::{
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
-use crate::instance::{
-    php_swoole_get_recv_data, php_swoole_server_get_callback, php_swoole_server_zval_ptr,
-};
+use crate::instance::{php_swoole_get_recv_data, php_swoole_server_get_callback};
 use swoole_rs_server::{server_methods, view};
 
 /// What the dispatch reads of the Server, per event.
@@ -168,8 +166,8 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
         return false;
     }
     let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
-    // SAFETY: initialised arguments.
-    unsafe { swoole_rs_zend::host::named_call(&name, args) }.is_err()
+    let args: Vec<&Value> = args.iter_mut().map(Value::of).collect();
+    swoole_rs_zend::host::named_call(&name, &args).is_err()
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -241,10 +239,7 @@ fn prepare_worker(server: view::Server<'_>) {
 /// that takes no reference.
 #[must_use]
 pub fn zserv() -> zval {
-    let zserv = php_swoole_server_zval_ptr();
-    // SAFETY: the server's live object zval; copied without a reference, as
-    // upstream's `args[0] = *zserv`.
-    unsafe { *zserv }
+    ServerObject::running().zval()
 }
 
 pub(crate) fn dtor(value: &mut zval) {
@@ -881,11 +876,12 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         send_wake(session_id, true);
     }
     let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
-    let Some(conn) = server.by_session(session_id).map(ptr::from_mut) else {
+    let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    // SAFETY: the session's live connection slot.
-    if unsafe { (*conn).websocket_status } != WEBSOCKET_ACTIVE {
+    let websocket_status = conn.websocket_status;
+    let conn = ptr::from_mut(conn);
+    if websocket_status != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
         if websocket
@@ -970,9 +966,9 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     props.long(c"master_pid", i64::from(gs.master_pid));
     props.long(c"manager_pid", i64::from(gs.manager_pid));
     if let Some(process) = process {
-        // SAFETY: the worker and its process object; this frame owns nothing that
-        // needs a drop, as the process exits through a bailout.
-        unsafe { swoole_rs_phpprocess::start_worker(worker.raw().cast(), process) };
+        // This frame owns nothing that needs a drop, as the process exits through a
+        // bailout.
+        swoole_rs_phpprocess::start_worker(worker, process);
     }
 }
 
@@ -1191,9 +1187,7 @@ pub(crate) unsafe extern "C" fn length_func(
     let owner = unsafe { (*protocol).private_data_1 };
     // SAFETY: a live handle.
     let cache = unsafe { callable::cache(owner.cast()) };
-    // SAFETY: per the caller.
-    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
-    let mut data = Owned::string(ZString::new(bytes)).into_zval();
+    let mut data = Owned::string(ZString::new(packet.bytes())).into_zval();
     let retval = Owned::default();
     let mut result = -1;
     match call_unlimited(cache, std::slice::from_mut(&mut data), retval.as_ptr()) {
@@ -1206,15 +1200,6 @@ pub(crate) unsafe extern "C" fn length_func(
     dtor(&mut data);
     bailout::finish();
     result
-}
-
-/// `*php_swoole_server_zval_ptr(serv) = *zserv`: no reference is taken.
-pub(crate) fn set_server_zval(zserv: *mut zval) {
-    let slot = php_swoole_server_zval_ptr();
-    // SAFETY: the live object zval.
-    let value = unsafe { *zserv };
-    // SAFETY: the server's instance slot.
-    unsafe { *slot = value };
 }
 
 /// The "`<class>->on<event> handler error`" warning of a failed call.
