@@ -28,8 +28,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     sys::{
-        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_property_not_null, swr_zend_sensitive_parameter,
-        zend_class_entry, zend_object, zval,
+        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -334,10 +334,7 @@ impl Client {
     /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.
     fn not_null(&self, name: &CStr) -> Option<&Value> {
         // SAFETY: the object outlives its client, and its class declares `name`.
-        let found =
-            unsafe { swr_zend_property_not_null(self.object, name.as_ptr(), name.count_bytes()) };
-        // SAFETY: null or a live property of the object.
-        unsafe { Value::from_ptr(found) }
+        unsafe { swoole_rs_zend::property_not_null(self.object, name) }
     }
 
     /// `zval_get_long` of a declared property of the client object.

@@ -23,8 +23,8 @@ use swoole_rs_zend::{
     ArrayMut, Call, Class, E_ERROR, E_WARNING, Message, Object, Owned, Value, ZString, bailout,
     class_name, message, report,
     sys::{
-        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zend_try_json_encode,
-        swr_zval_stringl, zend_class_entry, zend_object, zend_object_std_dtor, zval,
+        IS_NULL, swr_zend_instanceof, swr_zend_json_decode, swr_zval_stringl, zend_class_entry,
+        zend_object, zend_object_std_dtor, zval,
     },
 };
 
@@ -945,16 +945,11 @@ fn command(call: &Call) {
     let Ok((name, process_id, process_type, json_decode)) = parsed else {
         return call.set_bool(false);
     };
-    let mut encoded = ptr::null_mut();
-    // SAFETY: a passed argument and a writable slot.
-    if unsafe { swr_zend_try_json_encode(call.zval(4), &raw mut encoded) } != 0 {
-        return bailout::defer(Err(bailout::Bailout));
-    }
-    if encoded.is_null() {
-        return call.set_bool(false);
-    }
-    // SAFETY: the new string the encoder returned.
-    let encoded = unsafe { ZString::from_raw(encoded) };
+    let encoded = match call.value(4).map(Value::json_encode) {
+        Some(Ok(Some(encoded))) => encoded,
+        Some(Err(bailout)) => return bailout.defer(),
+        _ => return call.set_bool(false),
+    };
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
