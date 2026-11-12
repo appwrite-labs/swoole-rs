@@ -206,15 +206,15 @@ impl Co {
         self.0.is_closed()
     }
 
-    /// `errCode` and `errMsg`.
+    /// `errCode` and a copy of `errMsg`, which the socket may replace or free.
     #[must_use]
-    pub fn error<'a>(self) -> (c_int, &'a CStr) {
+    pub fn error(self) -> (c_int, CString) {
         let message = self.0.err_msg();
         let message = if message.is_null() {
-            c""
+            CString::default()
         } else {
-            // SAFETY: errMsg is a NUL-terminated string the socket keeps.
-            unsafe { CStr::from_ptr(message) }
+            // SAFETY: errMsg is a NUL-terminated string the socket keeps for this read.
+            unsafe { CStr::from_ptr(message) }.to_owned()
         };
         (self.0.err_code(), message)
     }

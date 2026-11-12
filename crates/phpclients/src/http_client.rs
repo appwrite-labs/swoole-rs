@@ -257,7 +257,7 @@ fn set_error_properties(props: Props, code: c_int, message: &CStr) {
 /// `php_swoole_socket_set_error_properties(zobject, socket)`.
 fn socket_error_properties(props: Props, socket: Co) -> c_int {
     let (code, message) = socket.error();
-    set_error_properties(props, code, message);
+    set_error_properties(props, code, &message);
     code
 }
 
@@ -418,7 +418,7 @@ impl Client {
 
     fn set_socket_error(&self, socket: Co, status: i64) {
         let (code, message) = socket.error();
-        self.set_error(code, message, status);
+        self.set_error(code, &message, status);
     }
 
     /// `is_available`: connected, else errCode says no connection.
