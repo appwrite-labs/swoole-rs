@@ -14,9 +14,9 @@ use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
-    Value,
+    Owned, Value,
     bailout::{self, Bailout},
-    sys::{swr_zend_callable_warning, zend_class_entry, zend_object, zval},
+    sys::{swr_zend_callable_warning, zend_class_entry, zval},
 };
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
@@ -137,7 +137,7 @@ pub(crate) fn event_wait() {
 }
 
 /// `php_swoole_dup_socket(fd, SW_SOCK_UNIX_STREAM or _DGRAM)`.
-pub(crate) fn dup_socket(fd: c_int, stream: bool) -> *mut zend_object {
+pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
     let kind = if stream {
         SOCK_UNIX_STREAM
     } else {
