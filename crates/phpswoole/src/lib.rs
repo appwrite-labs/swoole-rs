@@ -54,7 +54,7 @@ pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
     php_swoole_parse_to_size, php_swoole_set_global_option, set_global, sw_zval_is_serializable,
 };
-pub use serialize::{serialize, unserialize};
+pub use serialize::{serialize, unserialize, unserialize_from};
 pub use swoole_rs_corebase::{Switch, built_with};
 
 use std::{

@@ -686,10 +686,10 @@ extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c
 }
 
 extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Packed<'_>) {
-    let mut data = undef();
-    let (unpacked, mut bailed) = match crate::task::decode(message, &raw mut data) {
-        Ok(unpacked) => (unpacked, false),
-        Err(Bailout) => (false, true),
+    let (mut data, unpacked, mut bailed) = match crate::task::decode(message) {
+        Ok(Some((data, done))) => (data.into_zval(), done, false),
+        Ok(None) => (undef(), false, false),
+        Err(Bailout) => (undef(), false, true),
     };
     if unpacked {
         let info = message.head();
