@@ -422,7 +422,7 @@ mod tests {
     use std::os::raw::c_int;
 
     /// A test's live SSL.
-    fn handle(ssl: *mut SSL) -> Ssl {
+    fn handle(ssl: *mut SSL) -> Ssl<'static> {
         unsafe { Ssl::new(ssl) }.unwrap()
     }
 
@@ -717,9 +717,7 @@ mod shutdown_tests {
         ) -> c_int;
         fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
         fn BIO_new_file(filename: *const c_char, mode: *const c_char) -> *mut BIO;
-        fn ERR_peek_error() -> std::os::raw::c_ulong;
         fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
-        fn SSL_in_init(ssl: *const SSL) -> c_int;
     }
 
     /// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
@@ -755,7 +753,7 @@ mod shutdown_tests {
             } else {
                 self.injected
             };
-            self.last_error_queue = unsafe { ERR_peek_error() };
+            self.last_error_queue = crate::peek_error();
             self.last_error_class
         }
     }
@@ -892,13 +890,20 @@ mod shutdown_tests {
                 };
                 SSL_set_connect_state(client);
                 for _ in 0..1000 {
-                    if SSL_in_init(server) == 0 && SSL_in_init(client) == 0 {
+                    if [server, client]
+                        .iter()
+                        .all(|&ssl| !crate::Ssl::new(ssl).unwrap().in_init())
+                    {
                         break;
                     }
                     SSL_do_handshake(client);
                     SSL_do_handshake(server);
                 }
-                assert!(SSL_in_init(server) == 0 && SSL_in_init(client) == 0);
+                assert!(
+                    [server, client]
+                        .iter()
+                        .all(|&ssl| !crate::Ssl::new(ssl).unwrap().in_init())
+                );
                 ERR_clear_error();
                 Self {
                     server_ctx,

@@ -79,9 +79,8 @@ impl<'a> Context<'a> {
     fn state(&self) -> &'a crate::ServerState {
         self.serv.state()
     }
-    fn config(&self) -> &'a mut crate::ServerConfig {
-        // SAFETY: the context's live server.
-        unsafe { self.serv.config_mut() }
+    fn config(&self) -> &'a crate::ServerConfig {
+        self.serv.config()
     }
     fn tables(&self) -> &'a mut crate::ServerTables {
         // SAFETY: its tables, written by the master before its threads and workers start.
@@ -526,8 +525,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(!pool.message_box().is_null())
         }
         OP_INIT_IPC_MAX_SIZE => {
-            // `Server::init_ipc_max_size()`.
-            ctx.config().ipc_max_size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+            ctx.config().init_ipc_max_size();
             0
         }
         OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),
