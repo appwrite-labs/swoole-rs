@@ -266,7 +266,6 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         let mut commands = commands(h.state()?);
         let id = commands.next_request;
         commands.next_request = id.wrapping_add(1);
-        commands.callbacks.insert(id, send.callback.clone());
         id
     };
     if route.action == TO_MASTER {
@@ -284,6 +283,10 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         (send.callback)(&reply);
         return Ok(true);
     }
+    // Only a reply from another process looks the callback up.
+    commands(h.state()?)
+        .callbacks
+        .insert(request_id, send.callback.clone());
     let message = CommandSend {
         action: route.action,
         process_id: route.process_id,
@@ -447,6 +450,10 @@ mod tests {
         assert!(command(&mut s, &send(b"hi", EVENT_WORKER, &out)).unwrap());
         assert_eq!(*out.lock().unwrap(), b"re:ping");
         assert_eq!(s.called(OP_ST_CMD_SEND), 0);
+        assert!(
+            commands(&s.state).callbacks.is_empty(),
+            "an answered request keeps no callback"
+        );
     }
 
     #[test]
