@@ -588,6 +588,14 @@ def docker_image():
 # build, then dev.py with the image's PHP extensions unless the command names its own.
 DOCKER_SCRIPT = r'''set -e
 git config --global --add safe.directory '*'
+# Cargo builds into the target/docker of the worktree it runs in: worktrees sharing one
+# target dir hash a crate alike, so each takes the other's build of it as fresh.
+mkdir -p /tmp/swr-bin
+printf '%s\n' '#!/bin/sh' \
+    'top=$(git rev-parse --show-toplevel 2>/dev/null) && export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$top/$SWR_TARGET}"' \
+    "exec $(command -v cargo) \"\$@\"" > /tmp/swr-bin/cargo
+chmod +x /tmp/swr-bin/cargo
+export PATH="/tmp/swr-bin:$PATH"
 # Entries of one worktree and architecture share target/upstream: prepare it one at a time.
 {
 flock 9
@@ -638,7 +646,7 @@ def docker(arguments):
                *[part for mount in mounts for part in ('-v', f'{mount}:{mount}')], *builds,
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
-               '-e', f'CARGO_TARGET_DIR={private}/cargo',
+               '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 

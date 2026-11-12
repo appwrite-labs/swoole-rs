@@ -14,6 +14,18 @@ zend_object *swr_zend_objects_get(uint32_t handle) {
     return NULL;
 }
 
+bool swr_zend_objects_hold(uint32_t handle, const zend_object_handlers *handlers, zval *out) {
+    if (handle >= EG(objects_store).top) {
+        return false;
+    }
+    zend_object *obj = EG(objects_store).object_buckets[handle];
+    if (!obj || !IS_OBJ_VALID(obj) || obj->handlers != handlers || (OBJ_FLAGS(obj) & IS_OBJ_FREE_CALLED)) {
+        return false;
+    }
+    ZVAL_OBJ_COPY(out, obj);
+    return true;
+}
+
 uint32_t swr_zend_resource_count(void) {
     return zend_array_count(&EG(regular_list));
 }
