@@ -1,8 +1,7 @@
 //! `System::exec(command, get_error_stream, buffer, status)`: run `command` under
 //! `/bin/sh -c` and read its output through a coroutine socket over the
 //! pipe, as upstream does, then reap the child.
-use core::ffi::{CStr, c_char, c_int};
-use swoole_rs_buffer::string::CppString;
+use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_reactor::wait_upstream::system_waitpid_safe;
 
@@ -45,42 +44,4 @@ pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>>
     // SAFETY: the socket `make` made, which nothing uses afterwards.
     unsafe { crate::co_socket::swr_v1_hook_co_socket_free(socket.this()) };
     (system_waitpid_safe(pid, Some(status), 0) == pid).then_some(output)
-}
-
-/// `std::shared_ptr<T>`'s layout in libc++ and libstdc++: the object, then the
-/// control block.
-#[repr(C)]
-pub struct SharedPtr<T> {
-    pub object: *mut T,
-    pub control: *mut core::ffi::c_void,
-}
-
-/// `bool System::exec(const char *, bool, std::shared_ptr<String>, int *)`; the
-/// Itanium ABI passes the `shared_ptr` by address and the caller destroys it.
-///
-/// # Safety
-/// `command` is NUL-terminated and `buffer` names a live String.
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "macos"),
-    unsafe(
-        export_name = "_ZN6swoole9coroutine6System4execEPKcbNSt3__110shared_ptrINS_6StringEEEPi"
-    )
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "macos")),
-    unsafe(export_name = "_ZN6swoole9coroutine6System4execEPKcbSt10shared_ptrINS_6StringEEPi")
-)]
-pub unsafe extern "C" fn system_exec(
-    command: *const c_char,
-    errors: bool,
-    buffer: &SharedPtr<CppString>,
-    status: &mut c_int,
-) -> bool {
-    // SAFETY: a NUL-terminated command, as the caller promises.
-    let command = unsafe { CStr::from_ptr(command) };
-    // SAFETY: the shared_ptr names a live String.
-    let string = unsafe { &mut *buffer.object };
-    exec(command, errors, status)
-        .map(|output| string.append(&output))
-        .is_some()
 }
