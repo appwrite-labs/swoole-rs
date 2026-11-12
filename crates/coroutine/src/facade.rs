@@ -21,7 +21,7 @@ use std::io;
 use swoole_rs_corebase::{
     Switch, built_with, fatal_error,
     log::{self, set_last_error},
-    swoole_get_stdout_stream,
+    sw_print,
 };
 
 const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
@@ -263,8 +263,7 @@ pub unsafe fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
 /// `static void Coroutine::print_list()`.
 #[unsafe(export_name = "_ZN6swoole9Coroutine10print_listEv")]
 extern "C-unwind" fn print_list() {
-    // SAFETY: Swoole's open stdout stream.
-    with_scheduler(|s| unsafe { s.print_list(swoole_get_stdout_stream().cast()) });
+    sw_print(with_scheduler(|s| s.list_text()).as_bytes());
 }
 
 /// `static void Coroutine::print_socket_bound_error(int, const char *, long)`:

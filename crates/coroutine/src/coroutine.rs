@@ -267,12 +267,6 @@ fn raw(co: Option<Co>) -> *mut Coroutine {
 pub(crate) struct Sched(NonNull<Scheduler>);
 
 impl Sched {
-    /// # Safety
-    /// `s` is null or a live scheduler, which stays live while the handle is used.
-    unsafe fn of(s: *mut Scheduler) -> Option<Self> {
-        NonNull::new(s).map(Self)
-    }
-
     /// This thread's scheduler, live for the thread's life.
     pub(crate) fn this() -> Self {
         Self(crate::scheduler::this())
@@ -502,47 +496,26 @@ pub(crate) fn bailout(s: Sched) {
     yield_(s, co);
 }
 
-/// [`resume`], for C.
-///
-/// # Safety
-/// `s` and `co` are null or live, and not borrowed elsewhere for the call; `co`
-/// is suspended.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: as the caller promises.
-    let Some(s) = (unsafe { Sched::of(s) }) else {
-        return;
-    };
-    // SAFETY: as the caller promises.
-    if let Some(co) = unsafe { Co::of(co) } {
-        resume(s, co);
-    }
-}
-
-/// `Coroutine::yield`: waiting, with a clean resume code; the yield callback
-/// runs, control returns to `co`'s origin, and this returns once resumed.
-///
-/// # Safety
-/// `s` is null or live, and `co` null or its running coroutine; neither is
-/// borrowed elsewhere for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
-    // SAFETY: as the caller promises.
-    let Some(s) = (unsafe { Sched::of(s) }) else {
-        return;
-    };
-    // SAFETY: as the caller promises.
-    if let Some(co) = unsafe { Co::of(co) } {
-        yield_(s, co);
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
 
+    impl Sched {
+        /// # Safety
+        /// `s` is null or a live scheduler, which stays live while the handle is used.
+        unsafe fn of(s: *mut Scheduler) -> Option<Self> {
+            NonNull::new(s).map(Self)
+        }
+    }
+
     // The operations over raw pointers, as the cases drive them.
+    unsafe fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Coroutine) {
+        unsafe { resume(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
+    }
+    unsafe fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Coroutine) {
+        unsafe { yield_(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
+    }
     unsafe fn swr_v1_coroutine_run(s: *mut Scheduler, co: *mut Coroutine) -> c_long {
         unsafe { run(Sched::of(s).unwrap(), Co::of(co).unwrap()) }
     }

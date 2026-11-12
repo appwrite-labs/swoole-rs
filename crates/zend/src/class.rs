@@ -83,7 +83,7 @@ impl Class {
     /// # Errors
     /// The constructor bailed out.
     /// # Panics
-    /// The class is not registered.
+    /// The class is not registered, or more than two arguments.
     pub fn instantiate(
         &self,
         args: &[&crate::Value],

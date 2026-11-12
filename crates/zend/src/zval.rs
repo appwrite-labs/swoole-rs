@@ -239,12 +239,18 @@ impl Value {
     /// upstream leaves it.
     /// # Errors
     /// The method bailed out, or a bailout is pending.
+    /// # Panics
+    /// More than two arguments: `zend_call_method` takes at most two.
     pub fn call_method(
         &self,
         scope: Option<&crate::Class>,
         method: &[u8],
         args: &[&Self],
     ) -> Result<Owned, bailout::Bailout> {
+        assert!(
+            args.len() <= 2,
+            "zend_call_method takes at most two arguments"
+        );
         let result = Owned::default();
         let Some(object) = self.object() else {
             return Ok(result);

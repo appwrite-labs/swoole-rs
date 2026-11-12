@@ -25,18 +25,8 @@ use crate::sys::{close, dup2, errno, set_errno};
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
 /// `get_error_stream`) on a pipe. Returns the read end, or -1 when `pipe` or
-/// `fork` fails (the latter warns).
-/// # Safety
-/// `command` is a NUL-terminated string and `pid` is writable.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z17swoole_shell_execPKcPib")
-)]
-pub unsafe extern "C" fn swoole_shell_exec(
-    command: *const c_char,
-    pid: *mut libc::pid_t,
-    get_error_stream: bool,
-) -> c_int {
+/// `fork` fails (the latter warns). The child's pid goes in `pid`.
+pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream: bool) -> c_int {
     let Some([read, write]) = crate::sys::pipe() else {
         return -1;
     };
@@ -74,15 +64,14 @@ pub unsafe extern "C" fn swoole_shell_exec(
                 c"/bin/sh".as_ptr(),
                 c"sh".as_ptr(),
                 c"-c".as_ptr(),
-                command,
+                command.as_ptr(),
                 end,
             )
         };
         // SAFETY: exit(3) runs the process's exit handlers, as upstream's child did.
         unsafe { exit(127) };
     }
-    // SAFETY: the caller lends a writable `pid`.
-    unsafe { pid.write(child) };
+    *pid = child;
     close(write);
     read
 }
@@ -93,36 +82,21 @@ fn put(text: &str) {
 }
 
 /// `swoole_dump_ascii`: each byte as its native `(unsigned) char` value.
-/// # Safety
-/// `data` is readable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z17swoole_dump_asciiPKcm")
-)]
-pub unsafe extern "C" fn swoole_dump_ascii(data: *const c_char, size: usize) {
-    for index in 0..size {
-        // SAFETY: `index < size`, inside the caller's readable extent.
-        let byte = unsafe { data.wrapping_add(index).read() };
+pub fn swoole_dump_ascii(data: &[u8]) {
+    for &byte in data {
         // `%u` of the promoted char.
+        let byte = c_char::from_ne_bytes([byte]);
         put(&format!("{} ", c_int::from(byte).cast_unsigned()));
     }
     put("\n");
 }
 
 /// `swoole_dump_hex`: sixteen bytes per row, each row led by its offset.
-/// # Safety
-/// `data` is readable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_dump_hexPKhm")
-)]
-pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
-    for index in 0..size {
+pub fn swoole_dump_hex(data: &[u8]) {
+    for (index, byte) in data.iter().enumerate() {
         if index % 16 == 0 {
             put(&format!("{index:08X}: "));
         }
-        // SAFETY: `index < size`, inside the caller's readable extent.
-        let byte = unsafe { data.wrapping_add(index).read() };
         put(&format!("{byte:02X} "));
         if (index + 1) % 16 == 0 {
             put("\n");
@@ -133,13 +107,7 @@ pub unsafe extern "C" fn swoole_dump_hex(data: *const u8, size: usize) {
 
 /// `swoole_dump_bin`: each whole `kind`-sized value, unpacked as `swoole_unpack`
 /// does, printed as `%ld,`, then a newline; nothing for a type without a size.
-/// # Safety
-/// `data` is readable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_dump_binPKhcm")
-)]
-pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: usize) {
+pub fn swoole_dump_bin(data: &[u8], kind: c_char) {
     let Ok(width) = usize::try_from(crate::swoole_type_size(kind)) else {
         return;
     };
@@ -147,13 +115,7 @@ pub unsafe extern "C" fn swoole_dump_bin(data: *const u8, kind: c_char, size: us
         return;
     }
     let [format] = kind.to_ne_bytes();
-    let bytes = if data.is_null() || size < width {
-        &[][..]
-    } else {
-        // SAFETY: the caller's `size` readable bytes.
-        unsafe { core::slice::from_raw_parts(data, size) }
-    };
-    for field in bytes.chunks_exact(width) {
+    for field in data.chunks_exact(width) {
         let value = swoole_rs_framing::unpack(format, field).unwrap_or(-1);
         put(&format!("{},", value as c_long));
     }
@@ -245,18 +207,14 @@ pub struct DataHead {
 }
 
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
-/// result: at most `size - 1` bytes written, always NUL-terminated.
-/// # Safety
-/// `buffer` is writable for `size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole8DataHead4dumpEPcm")
-)]
-pub unsafe extern "C" fn datahead_dump(h: &DataHead, buffer: *mut c_char, size: usize) -> usize {
-    // SAFETY: the format's conversions match the promoted arguments one for one.
+/// result: at most `buffer.len() - 1` bytes written, always NUL-terminated.
+pub fn datahead_dump(h: &DataHead, buffer: &mut [u8]) -> usize {
+    let size = buffer.len();
+    // SAFETY: the format's conversions match the promoted arguments one for one, and
+    // `buffer` is writable for `size` bytes.
     let written = unsafe {
         snprintf(
-            buffer,
+            buffer.as_mut_ptr().cast(),
             size,
             c"DataHead[%p]\n{\n    long fd = %ld;\n    uint64_t msg_id = %llu;\n    uint32_t len = %d;\n    int16_t reactor_id = %d;\n    uint8_t type = %d;\n    uint8_t flags = %d;\n    uint16_t server_fd = %d;\n    uint16_t ext_flags = %d;\n    double time = %f;\n}\n".as_ptr(),
             ptr::from_ref(h),
@@ -275,8 +233,9 @@ pub unsafe extern "C" fn datahead_dump(h: &DataHead, buffer: *mut c_char, size: 
         return usize::try_from(written).unwrap_or(usize::MAX);
     }
     let Ok(written) = usize::try_from(written) else {
-        // SAFETY: `size > 0`, so the first byte is writable.
-        unsafe { buffer.write(0) };
+        if let Some(first) = buffer.first_mut() {
+            *first = 0;
+        }
         return 0;
     };
     written.min(size - 1)
@@ -471,15 +430,7 @@ pub extern "C" fn swoole_redirect_stdout(new_fd: c_int) {
 }
 
 /// `void swoole_redirect_stdout(const char *file)`: append to `file`, created 0644.
-/// # Safety
-/// `file` is a NUL-terminated path.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_redirect_stdoutPKc")
-)]
-pub unsafe extern "C" fn swoole_redirect_stdout_file(file: *const c_char) {
-    // SAFETY: a NUL-terminated path, as the caller promises.
-    let file = unsafe { CStr::from_ptr(file) };
+pub fn swoole_redirect_stdout_file(file: &CStr) {
     let fd = crate::sys::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644);
     if fd >= 0 {
         swoole_redirect_stdout(fd);
@@ -605,8 +556,7 @@ mod tests {
     }
     #[test]
     fn dump_bin_skips_types_without_a_size() {
-        // SAFETY: zero bytes are read for an unsized type.
-        unsafe { swoole_dump_bin(ptr::null(), c_char::from_ne_bytes(*b"x"), 0) };
+        swoole_dump_bin(&[], c_char::from_ne_bytes(*b"x"));
     }
 
     #[test]
@@ -657,17 +607,20 @@ mod tests {
             reserved: 0,
             time: 1.5,
         };
-        let mut buffer = [0 as c_char; 512];
-        let n = unsafe { datahead_dump(&head, buffer.as_mut_ptr(), 512) };
-        let text = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap();
+        let mut buffer = [0; 512];
+        let n = datahead_dump(&head, &mut buffer);
+        let text = CStr::from_bytes_until_nul(&buffer)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert_eq!(text.len(), n);
         let body = &text[text.find(']').unwrap() + 1..];
         assert_eq!(
             body,
             "\n{\n    long fd = -7;\n    uint64_t msg_id = 18446744073709551615;\n    uint32_t len = 12;\n    int16_t reactor_id = -1;\n    uint8_t type = 3;\n    uint8_t flags = 255;\n    uint16_t server_fd = 9;\n    uint16_t ext_flags = 65535;\n    double time = 1.500000;\n}\n"
         );
-        let mut short = [0x55 as c_char; 8];
-        let n = unsafe { datahead_dump(&head, short.as_mut_ptr(), 8) };
+        let mut short = [0x55; 8];
+        let n = datahead_dump(&head, &mut short);
         assert_eq!((n, short[7]), (7, 0));
     }
 
@@ -688,11 +641,9 @@ mod tests {
             reserved: 0,
             time: 0.0,
         };
-        let mut buffer = [0 as c_char; 128];
-        let n = unsafe { datahead_dump(&head, buffer.as_mut_ptr(), buffer.len()) };
-        let text = String::from_utf8_lossy(unsafe {
-            std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), n)
-        });
+        let mut buffer = [0; 128];
+        let n = datahead_dump(&head, &mut buffer);
+        let text = String::from_utf8_lossy(&buffer[..n]);
         assert!(text.find("int fd = 123;").unwrap_or(usize::MAX) > 1);
     }
 
@@ -700,8 +651,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn shell_exec_pipes_the_command_output() {
         let mut pid = 0;
-        let fd =
-            unsafe { swoole_shell_exec(c"echo out; echo err >&2".as_ptr(), &raw mut pid, true) };
+        let fd = swoole_shell_exec(c"echo out; echo err >&2", &mut pid, true);
         assert!(fd >= 0 && pid > 0, "spawned");
         let mut output = Vec::new();
         let mut chunk = [0u8; 64];

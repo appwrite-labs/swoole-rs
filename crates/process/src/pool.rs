@@ -785,17 +785,8 @@ pub(crate) fn swr_v1_process_pool_ipc_send(
 /// `ProcessPool::dispatch_sync(data, len)`: [`swr_v1_process_pool_ipc_send`]'s blocking
 /// send of raw bytes. Only core-tests' `os/process_pool.cpp` sends raw bytes; its Rust port
 /// (`tests/modules/hooks/system/src/process_pool.rs`) calls this.
-///
-/// # Safety
-/// `data` holds `len` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_process_pool_ipc_send_sync(
-    ipc: Option<&PoolIpc>,
-    data: *const u8,
-    len: u32,
-) -> bool {
-    // SAFETY: the caller's `len` bytes.
-    let data = unsafe { std::slice::from_raw_parts(data, len as usize) };
+#[must_use]
+pub fn swr_v1_process_pool_ipc_send_sync(ipc: Option<&PoolIpc>, data: &[u8]) -> bool {
     swr_v1_process_pool_ipc_send(ipc, data, true)
 }
 
