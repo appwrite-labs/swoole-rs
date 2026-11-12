@@ -127,16 +127,6 @@ impl Timer {
     }
 }
 
-unsafe fn zero<T: Default>(out: *mut T) -> bool {
-    if out.is_null() {
-        false
-    } else {
-        // SAFETY: the caller passes null or valid, aligned, writable output.
-        unsafe { out.write(T::default()) };
-        true
-    }
-}
-
 /// The queue's operations, which crates/timer's owner calls directly
 /// (docs/timer-abi-v1.md). Each returns a status and, where the operation has one, a
 /// view (the default when it has none).
@@ -389,16 +379,15 @@ impl Timer {
 
 /// Writes what `op` answers to `out` and returns its status: `INVALID`, without running
 /// `op`, when `out` is null, and `INVALID` with the default when `op` has no queue.
-///
-/// # Safety
-/// `out` is null or valid, aligned, writable output, disjoint from the queue.
-unsafe fn answer<T: Default>(out: *mut T, op: impl FnOnce() -> Option<(i32, T)>) -> i32 {
-    if out.is_null() {
+fn answer<T: Default>(
+    out: Option<&mut mem::MaybeUninit<T>>,
+    op: impl FnOnce() -> Option<(i32, T)>,
+) -> i32 {
+    let Some(out) = out else {
         return INVALID;
-    }
+    };
     let (status, value) = op().unwrap_or((INVALID, T::default()));
-    // SAFETY: as the caller promises; non-null (checked above).
-    unsafe { out.write(value) };
+    out.write(value);
     status
 }
 
@@ -409,35 +398,32 @@ pub extern "C" fn swr_v1_timer_token(queue: Option<&Timer>, id: i64) -> *mut c_v
     queue.map_or(ptr::null_mut(), |state| state.token(id))
 }
 
-/// # Safety
-/// `out` is null or valid, aligned output disjoint from the handle.
+/// The queue's stats into `out` (null, or output disjoint from the queue).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_timer_stats_get(
+pub extern "C" fn swr_v1_timer_stats_get(
     queue: Option<&Timer>,
-    out: *mut TimerStats,
+    out: Option<&mut mem::MaybeUninit<TimerStats>>,
 ) -> i32 {
-    // SAFETY: `out` is null or valid, aligned output disjoint from the handle.
-    unsafe { answer(out, || queue.map(|state| (OK, state.stats()))) }
+    answer(out, || queue.map(|state| (OK, state.stats())))
 }
 
 /// # Safety
-/// Count/ID storage must be valid, aligned and mutually disjoint per ABI v1.
+/// ID storage must be valid, aligned and disjoint from `count` per ABI v1.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_timer_ids(
     queue: Option<&Timer>,
     ids: *mut i64,
     capacity: usize,
-    count: *mut usize,
+    count: Option<&mut mem::MaybeUninit<usize>>,
 ) -> i32 {
-    // SAFETY: `count` is null or valid, aligned output disjoint from the handle.
-    if !unsafe { zero(count) } {
-        return INVALID;
-    }
-    let Some(state) = queue else {
+    let Some(count) = count else {
         return INVALID;
     };
-    // SAFETY: `count` is non-null (checked above), valid, aligned and writable.
-    unsafe { count.write(state.heap.len()) };
+    let Some(state) = queue else {
+        count.write(0);
+        return INVALID;
+    };
+    count.write(state.heap.len());
     if capacity > (isize::MAX as usize) / mem::size_of::<i64>() {
         return OVERFLOW;
     }
@@ -457,6 +443,13 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
 
 #[cfg(test)]
 mod kernel;
+
+/// Test output for the out-parameters: `value`, which the call overwrites.
+#[cfg(test)]
+fn out<T: Copy>(value: &mut T) -> &mut mem::MaybeUninit<T> {
+    // SAFETY: `MaybeUninit<T>` has `T`'s layout, and a `Copy` value has no drop to skip.
+    unsafe { &mut *ptr::from_mut(value).cast() }
+}
 
 #[cfg(test)]
 mod tests {
@@ -693,17 +686,38 @@ mod tests {
         let mut ids = [99, 99];
         let mut count = 99;
         assert_eq!(
-            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ptr::null_mut(), 0, &raw mut count) },
+            unsafe {
+                swr_v1_timer_ids(
+                    Some(&q.0.borrow()),
+                    ptr::null_mut(),
+                    0,
+                    Some(out(&mut count)),
+                )
+            },
             CAPACITY
         );
         assert_eq!(count, 2);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ids.as_mut_ptr(), 1, &raw mut count) },
+            unsafe {
+                swr_v1_timer_ids(
+                    Some(&q.0.borrow()),
+                    ids.as_mut_ptr(),
+                    1,
+                    Some(out(&mut count)),
+                )
+            },
             CAPACITY
         );
         assert_eq!(ids, [99, 99]);
         assert_eq!(
-            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ids.as_mut_ptr(), 2, &raw mut count) },
+            unsafe {
+                swr_v1_timer_ids(
+                    Some(&q.0.borrow()),
+                    ids.as_mut_ptr(),
+                    2,
+                    Some(out(&mut count)),
+                )
+            },
             OK
         );
         ids.sort_unstable();
@@ -713,7 +727,14 @@ mod tests {
             q.invariant();
         }
         assert_eq!(
-            unsafe { swr_v1_timer_ids(Some(&q.0.borrow()), ptr::null_mut(), 0, &raw mut count) },
+            unsafe {
+                swr_v1_timer_ids(
+                    Some(&q.0.borrow()),
+                    ptr::null_mut(),
+                    0,
+                    Some(out(&mut count)),
+                )
+            },
             OK
         );
         assert_eq!(count, 0);
@@ -956,20 +977,14 @@ mod tests {
             ..TimerStats::default()
         };
         assert_eq!(
-            unsafe { swr_v1_timer_stats_get(Some(&q.0.borrow()), &raw mut stats) },
+            swr_v1_timer_stats_get(Some(&q.0.borrow()), Some(out(&mut stats))),
             OK
         );
         assert_eq!(stats, q.stats());
         stats.count = 7;
-        assert_eq!(
-            unsafe { swr_v1_timer_stats_get(None, &raw mut stats) },
-            INVALID
-        );
+        assert_eq!(swr_v1_timer_stats_get(None, Some(out(&mut stats))), INVALID);
         assert_eq!(stats, TimerStats::default());
-        assert_eq!(
-            unsafe { swr_v1_timer_stats_get(Some(&q.0.borrow()), ptr::null_mut()) },
-            INVALID
-        );
+        assert_eq!(swr_v1_timer_stats_get(Some(&q.0.borrow()), None), INVALID);
     }
 
     #[test]

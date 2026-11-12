@@ -162,7 +162,7 @@ impl UringSocketOps {
     /// second availability check).
     ///
     /// # Safety
-    /// The buffers are valid as for the system call.
+    /// The buffers are valid as for the system call, and `buf` is not null.
     pub(crate) unsafe fn io(
         &self,
         op: c_int,
@@ -255,10 +255,8 @@ fn tls_vector(iovecs: &[libc::iovec], mut io: impl FnMut(*mut c_void, usize) -> 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
 pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
-    let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
-    // SAFETY: `buf` is `n` writable bytes.
-    ops.transfer(EVENT_READ, false, || unsafe {
-        uring::read(host, tls.fd, at, n, tls.read_timeout)
+    ops.transfer(EVENT_READ, false, || {
+        uring::read(host, tls.fd, buf, tls.read_timeout)
     })
 }
 
@@ -269,9 +267,7 @@ pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
         if ops.ssl() {
             return tls.recv(buf);
         }
-        let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
-        // SAFETY: `buf` is `n` writable bytes.
-        unsafe { uring::recv(host, tls.fd, at, n, 0, tls.read_timeout) }
+        uring::recv(host, tls.fd, buf, 0, tls.read_timeout)
     })
 }
 
@@ -279,13 +275,11 @@ pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
 /// it) from `buf`.
 pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
-    let (at, n, wt) = (buf.as_ptr().cast(), buf.len(), tls.write_timeout);
+    let wt = tls.write_timeout;
     ops.transfer(EVENT_WRITE, false, || match op {
-        // SAFETY: `buf` is `n` readable bytes.
-        WRITE => unsafe { uring::write(host, tls.fd, at, n, wt) },
+        WRITE => uring::write(host, tls.fd, buf, wt),
         _ if ops.ssl() => tls.send(buf),
-        // SAFETY: as above.
-        _ => unsafe { uring::send(host, tls.fd, at, n, 0, wt) },
+        _ => uring::send(host, tls.fd, buf, 0, wt),
     })
 }
 
@@ -448,8 +442,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
         .unwrap_or_default();
     conn.output.nonblock = 1;
     conn.cloexec = 1;
-    // SAFETY: the record the listening socket accepted.
-    let client = unsafe { socket.adopt(conn.into_raw()) };
+    let client = socket.adopt(Box::new(conn));
     crate::socket_extra::swr_v1_hook_co_socket_uring(client);
     Some(client)
 }

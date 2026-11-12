@@ -69,8 +69,8 @@ No C++ remains. The query is here (`dns.rs`, `cares.rs`); its coroutine side is
 `crates/hooks/src/resolve.rs`: `swoole_name_resolver_lookup` (the Rust list,
 `swr_v1_core_name_resolver_resolve`, then `System::gethostbyname` in a coroutine or
 the blocking lookup), `System::gethostbyname`/`getaddrinfo` over the async pool,
-`coroutine::dns_lookup` (`resolve::dns_lookup`, which phpswoole calls; the hooks system
-cases link it as `swr_v1_hook_dns_lookup`) and the pool's DNS handlers.
+`coroutine::dns_lookup` (`resolve::dns_lookup`, which phpswoole and the hooks system
+cases call) and the pool's DNS handlers.
 Upstream's `std::string` DNS API (`swoole_set_dns_server`, `swoole_get_dns_server`,
 `swoole_load_resolv_conf`, `swoole_set_hosts_path`, `get_ip_by_hosts`) is gone:
 callers use the `swr_v1_clients_*` exports. Resolvers are Rust functions, answering

@@ -91,33 +91,24 @@ unsafe fn mark(stack: *mut u8, size: usize) {
     }
 }
 
-/// # Safety
-/// `stack` names `size` native-owned bytes without concurrent mutation. Each
-/// sampled marker span is initialized, normally by `swr_v1_context_stack_alloc` before
-/// native stack execution. No other stack bytes are read; no borrow is retained.
-#[must_use]
-pub unsafe fn swr_v1_context_stack_usage(stack: *const u8, size: usize) -> usize {
-    // SAFETY: forwards the caller's `size` stack bytes with initialized marker spans.
-    unsafe { usage(stack, size) }
-}
-
-unsafe fn usage(stack: *const u8, size: usize) -> usize {
-    let mut usage = START;
-    for offset in offsets().take_while(|&offset| offset < size) {
-        let index = size - offset + MAGIC.len();
-        // SAFETY: as in `mark`, this marker span lies inside `size` and is initialized.
-        let marker = unsafe { std::slice::from_raw_parts(stack.wrapping_add(index), MAGIC.len()) };
-        let matches = marker == MAGIC;
-        if !matches {
-            usage = offset * 2;
-        }
-    }
-    usage
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Upstream's `Context::get_stack_usage`, which only its trace log read:
+    /// twice the last sampled marker that changed, or 64 KiB.
+    unsafe fn usage(stack: *const u8, size: usize) -> usize {
+        let mut usage = START;
+        for offset in offsets().take_while(|&offset| offset < size) {
+            let index = size - offset + MAGIC.len();
+            let marker =
+                unsafe { std::slice::from_raw_parts(stack.wrapping_add(index), MAGIC.len()) };
+            if marker != MAGIC {
+                usage = offset * 2;
+            }
+        }
+        usage
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no PROT_NONE guard pages")]
@@ -164,20 +155,14 @@ mod tests {
                     .unwrap_or(0xa5);
                 assert_eq!(byte, expected);
             }
-            assert_eq!(
-                unsafe { swr_v1_context_stack_usage(memory.as_ptr(), size) },
-                START
-            );
+            assert_eq!(unsafe { usage(memory.as_ptr(), size) }, START);
             let mut expected = START;
             for offset in offsets().take_while(|&offset| offset <= size) {
                 memory[size - offset + MAGIC.len()] ^= 1;
                 if offset < size {
                     expected = offset * 2;
                 }
-                assert_eq!(
-                    unsafe { swr_v1_context_stack_usage(memory.as_ptr(), size) },
-                    expected
-                );
+                assert_eq!(unsafe { usage(memory.as_ptr(), size) }, expected);
             }
         }
     }

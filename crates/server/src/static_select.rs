@@ -265,7 +265,7 @@ impl SendfileTask {
 
 /// The live request, connection and server of an HTTP/1 static response.
 struct Wire {
-    server: *mut c_void,
+    server: crate::view::Server<'static>,
     request: *const swoole_rs_http_ffi::HttpRequest,
     conn: *const crate::ConnectionRecord,
 }
@@ -324,8 +324,8 @@ impl Exchange for Wire {
                 data.as_ptr().cast()
             },
         };
-        // SAFETY: the live server and a `SendData` it reads during the call.
-        unsafe { crate::server_methods::send_to_connection(self.server, (&raw const send).cast()) };
+        // SAFETY: a `SendData` over `data`, which lives for the call.
+        unsafe { crate::server_methods::send_to_connection(self.server, &send) };
     }
 }
 
@@ -340,7 +340,8 @@ pub unsafe fn swr_v1_server_static_select(
     conn: *const crate::ConnectionRecord,
 ) -> bool {
     let wire = Wire {
-        server,
+        // SAFETY: per the caller; the server outlives the call and the handler.
+        server: unsafe { crate::view::Server::from_raw(server) },
         request,
         conn,
     };
@@ -348,9 +349,7 @@ pub unsafe fn swr_v1_server_static_select(
         wire.request().url_offset as usize,
         wire.request().url_length as usize,
     );
-    // SAFETY: the live server, per the caller.
-    let serv = unsafe { crate::view::Server::from_raw(server) };
-    let Some(handler) = StaticHandler::new(serv, &url) else {
+    let Some(handler) = StaticHandler::new(wire.server, &url) else {
         return false;
     };
     select(&handler, &wire)

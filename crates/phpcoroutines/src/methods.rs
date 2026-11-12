@@ -25,7 +25,7 @@ use swoole_rs_zend::{
         swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
         swr_zend_coroutine_stack_usage, swr_zend_object_addref, zend_class_entry,
         zend_exception_set_previous, zend_fetch_debug_backtrace, zend_objects_new,
-        zend_throw_exception_object, zval,
+        zend_throw_exception_object,
     },
 };
 
@@ -394,7 +394,8 @@ fn set_time_limit(call: &Call) {
     // Coroutine ids are positive.
     let data = ptr::without_provenance_mut(usize::try_from(cid).unwrap_or_default());
     // SAFETY: time_limit takes the id as its data.
-    let timer = unsafe { host::timer_add(timeout, data, time_limit) };
+    let timer =
+        unsafe { swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, time_limit, data) };
     if timer.is_null() {
         call.set_bool(false);
         return;
@@ -403,7 +404,7 @@ fn set_time_limit(call: &Call) {
     ctx.set_timer_limit(timer);
     if !old.is_null() {
         // SAFETY: the coroutine's armed timer.
-        unsafe { host::timer_del(old) };
+        unsafe { swoole_rs_timer::swoole_timer_del(old.cast()) };
     }
     call.set_bool(true);
 }
@@ -598,7 +599,7 @@ fn print_backtrace(
     cid: c_long,
     options: i64,
     limit: i64,
-    return_value: *mut zval,
+    call: Option<&Call>,
 ) -> Result<(), Bailout> {
     let (options, limit) = (narrow(options), narrow(limit));
     if cid == 0 || cid == runtime::get_cid() {
@@ -607,10 +608,8 @@ fn print_backtrace(
     }
     let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
-        if !return_value.is_null() {
-            // SAFETY: the caller's return slot.
-            let slot = unsafe { &mut *return_value };
-            slot.u1.type_info = swoole_rs_zend::sys::IS_FALSE;
+        if let Some(call) = call {
+            call.set_bool(false);
         }
         return Ok(());
     };
@@ -632,7 +631,7 @@ fn trapped(bailed: std::ffi::c_int) -> Result<(), Bailout> {
 /// # Errors
 /// The output bailed out.
 pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
-    print_backtrace(cid, 0, 0, ptr::null_mut())
+    print_backtrace(cid, 0, 0, None)
 }
 
 /// `Co::printBackTrace(int $cid = 0, int $options = 0, int $limit = 0)`.
@@ -641,7 +640,7 @@ fn print_back_trace(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if print_backtrace(cid, options, limit, call.return_value()).is_err() {
+    if print_backtrace(cid, options, limit, Some(call)).is_err() {
         runtime::raise();
     }
 }

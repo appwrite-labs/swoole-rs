@@ -14,7 +14,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{Registry, Socket as Handle, SocketFields, SocketRecord, reactor_upstream};
+use swoole_rs_reactor::{ReactorPrepared, Registry, Socket as Handle, SocketFields, SocketRecord};
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// `zend_memory_usage(true)`, from the PHP binding.
@@ -104,8 +104,8 @@ fn registry<'a>() -> Option<&'a Registry> {
     if reactor.is_null() {
         return None;
     }
-    // SAFETY: this thread's live reactor.
-    let registry = unsafe { reactor_upstream::prepared(reactor) }.registry;
+    // This thread's live reactor.
+    let registry = ReactorPrepared::of(reactor).registry;
     // SAFETY: its live registry, which only this thread changes.
     unsafe { registry.as_ref() }
 }
@@ -130,14 +130,12 @@ impl Live<'_> {
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.
     fn pool(&self, task: bool) -> &swoole_rs_process::process_pool::PoolRecord {
-        let workers = self.serv.workers();
-        let pool = if task {
-            workers.task_pool
+        let shared = crate::shared::ServerShared::of(self.serv);
+        if task {
+            shared.task_pool()
         } else {
-            workers.event_pool
-        };
-        // SAFETY: as above.
-        unsafe { &*pool }
+            shared.event_pool()
+        }
     }
 
     fn connection_record(&self, index: u64) -> &ConnectionRecord {

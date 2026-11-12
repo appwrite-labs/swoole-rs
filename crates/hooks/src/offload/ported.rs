@@ -151,7 +151,7 @@ fn park_for(seconds: f64) -> bool {
     }
     ok
 }
-unsafe extern "C" fn resume(_: *mut c_void) {
+unsafe extern "C-unwind" fn resume(_: *mut c_void) {
     record("resume".into());
 }
 extern "C" fn last_error() -> c_int {

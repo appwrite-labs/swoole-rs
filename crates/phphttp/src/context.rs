@@ -19,10 +19,7 @@ use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
     host::Then,
-    sys::{
-        swr_zend_efree, swr_zend_http_property_offset, swr_zend_http_release_objects,
-        zend_class_entry, zend_object, zend_string, zval,
-    },
+    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zend_string, zval},
     value::set_long,
 };
 
@@ -84,10 +81,9 @@ impl Ctx {
 static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
 
 /// MINIT, once `Swoole\Http\Response` is registered.
-pub(crate) fn response_minit(ce: *mut zend_class_entry) {
-    // SAFETY: the registered class, which declares `fd`.
+pub(crate) fn response_minit() {
     RESPONSE_FD.store(
-        unsafe { swr_zend_http_property_offset(ce, c"fd".as_ptr(), 2) },
+        parse::property_offset(&crate::response::RESPONSE, c"fd"),
         Relaxed,
     );
 }
@@ -200,15 +196,22 @@ pub(crate) fn co_socket(state: &State) -> bool {
     !state.zsocket.is_null()
 }
 
+/// The coroutine socket the context is bound to, which outlives the borrow
+/// of its state (the context holds the socket's object), or None for a
+/// server's context.
+pub(crate) fn socket(state: &State) -> Option<co::Co> {
+    // SAFETY: `bind`'s contract: a socket-bound context's `private_data` is
+    // the live socket of the object it holds.
+    co_socket(state).then(|| unsafe { co::Co::of(state.private_data) })
+}
+
 /// `ctx->send`: the server's send to the session, or the coroutine socket's.
 pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
     let state = ctx.state();
-    let (target, fd) = (state.private_data, state.fd);
-    if co_socket(state) {
-        // SAFETY: the context's live socket; true once every byte is sent.
-        unsafe { co::Co::of(target) }.send_all(data).cast_unsigned() == data.len()
-    } else {
-        server_send(server(state), fd, data)
+    match socket(state) {
+        // True once every byte is sent.
+        Some(socket) => socket.send_all(data).cast_unsigned() == data.len(),
+        None => server_send(server(state), state.fd, data),
     }
 }
 
@@ -231,29 +234,23 @@ pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> boo
 /// `ctx->sendfile`.
 pub(crate) fn sendfile(mut ctx: Ctx, file: *mut zend_string, offset: i64, length: usize) -> bool {
     let state = ctx.state();
-    let (target, fd) = (state.private_data, state.fd);
-    if co_socket(state) {
-        // SAFETY: the context's live socket.
-        let socket = unsafe { co::Co::of(target) };
+    if let Some(socket) = socket(state) {
         // SAFETY: a live, NUL-terminated file name.
         let file = unsafe { std::ffi::CStr::from_ptr(string::val(file).cast()) };
         socket.sendfile(file, offset, length)
     } else {
         // SAFETY: a live file name.
         let name = unsafe { swoole_rs_zend::string::bytes(file) };
-        server_methods::sendfile(server(state), fd, name, offset, length)
+        server_methods::sendfile(server(state), state.fd, name, offset, length)
     }
 }
 
 /// `ctx->close`.
 pub(crate) fn close(mut ctx: Ctx) -> bool {
     let state = ctx.state();
-    let (target, fd) = (state.private_data, state.fd);
-    if co_socket(state) {
-        // SAFETY: the context's live socket.
-        unsafe { co::Co::of(target) }.close()
-    } else {
-        server_methods::close(server(state), fd, false)
+    match socket(state) {
+        Some(socket) => socket.close(),
+        None => server_methods::close(server(state), state.fd, false),
     }
 }
 

@@ -103,8 +103,8 @@ fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
 
 /// A live context: the thread's main one, or a coroutine's from [`open`] until
 /// [`on_close`]. Only this module makes one, from the thread-local main context
-/// and the host's task pointers. Each method reads or writes through the
-/// pointer for that one access and keeps no reference.
+/// and the host's task pointers. Each method borrows the context for that one
+/// access and keeps no reference.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ctx(NonNull<Context>);
 
@@ -115,14 +115,12 @@ macro_rules! fields {
             $(
                 #[inline]
                 pub(crate) fn $field(self) -> $ty {
-                    // SAFETY: a live context (the handle's invariant); a field read.
-                    unsafe { (*self.0.as_ptr()).$field }
+                    self.with(|ctx| ctx.$field)
                 }
 
                 #[inline]
                 pub(crate) fn $set(self, value: $ty) {
-                    // SAFETY: as above; a field write.
-                    unsafe { (*self.0.as_ptr()).$field = value };
+                    self.with(|ctx| ctx.$field = value);
                 }
             )*
         }
@@ -180,10 +178,17 @@ impl Ctx {
             .cast()
     }
 
-    /// The VM state, borrowed for `f`, which neither switches nor reaches the context.
+    /// The context, borrowed for `f`, which neither switches nor reaches the
+    /// context through another handle or pointer.
+    #[inline]
+    fn with<R>(self, f: impl FnOnce(&mut Context) -> R) -> R {
+        // SAFETY: a live context (the handle's invariant); the borrow ends with `f`.
+        f(unsafe { &mut *self.ptr() })
+    }
+
+    /// The VM state, borrowed for `f`, as [`Ctx::with`].
     fn with_vm<R>(self, f: impl FnOnce(&mut swr_zend_coroutine_vm) -> R) -> R {
-        // SAFETY: a live context's VM state; the borrow ends with `f`.
-        f(unsafe { &mut *self.vm() })
+        self.with(|ctx| f(&mut ctx.vm))
     }
 
     /// The VM state saved by the last switch out: the frame it stopped in.
@@ -219,10 +224,9 @@ impl Ctx {
         });
     }
 
-    /// The defer tasks, borrowed for `f`, which neither switches nor reaches the context.
+    /// The defer tasks, borrowed for `f`, as [`Ctx::with`].
     fn defers<R>(self, f: impl FnOnce(&mut Vec<*mut swr_zend_callable>) -> R) -> R {
-        // SAFETY: a live context's own Vec; the borrow ends with `f`.
-        f(unsafe { &mut (*self.ptr()).defer })
+        self.with(|ctx| f(&mut ctx.defer))
     }
 }
 
@@ -240,8 +244,7 @@ pub(crate) fn main() -> Ctx {
 /// the main context.
 #[inline]
 pub(crate) fn current_task() -> Option<Ctx> {
-    // SAFETY: the host's tasks are contexts from `open`, live until `on_close`.
-    unsafe { Ctx::of(host::current_task()) }
+    host::current_task()
 }
 
 /// `PHPCoroutine::get_context()`: the running coroutine's, or the main one.
@@ -252,8 +255,7 @@ pub(crate) fn current() -> Ctx {
 
 /// The context of coroutine `cid`, if it exists.
 pub(crate) fn task(cid: c_long) -> Option<Ctx> {
-    // SAFETY: as in `current_task`.
-    unsafe { Ctx::of(host::task_by_cid(cid)) }
+    host::task_by_cid(cid)
 }
 
 /// `get_context_by_cid`: -1 is the main context.
@@ -264,8 +266,7 @@ pub(crate) fn by_cid(cid: c_long) -> Option<Ctx> {
 /// `get_origin_context`: the context that resumed `ctx`'s coroutine.
 #[inline]
 fn origin(ctx: Ctx) -> Ctx {
-    // SAFETY: as in `current_task`.
-    unsafe { Ctx::of(host::origin_task(ctx.co())) }.unwrap_or_else(main)
+    host::origin_task(ctx.co()).unwrap_or_else(main)
 }
 
 /// `record_last_msec`.
@@ -368,7 +369,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     this.set_co(co);
     this.set_pcid(pcid);
     this.set_enable_scheduler(true);
-    host::set_task(co, ctx.cast());
+    swoole_rs_coroutine::set_current_task(ctx.cast());
     if host::flag(host::FIBER_MOCK) {
         fiber_init(this);
     }
@@ -431,9 +432,7 @@ pub(crate) fn defer_next(ctx: Ctx) -> *mut swr_zend_callable {
     };
     let return_value = ctx.return_value();
     // SAFETY: the context's return value.
-    let value = unsafe { &*return_value };
-    // SAFETY: a zval's type tag.
-    if unsafe { value.u1.type_info } != IS_UNDEF {
+    if swoole_rs_zend::kind(unsafe { &*return_value }) != IS_UNDEF {
         // SAFETY: a kept callable.
         let task = unsafe { &mut *task };
         task.fci.param_count = 1;
@@ -485,7 +484,7 @@ pub(crate) fn close(ctx: Ctx) {
     ctx.set_timer_limit(ptr::null_mut());
     if !timer.is_null() {
         // SAFETY: the coroutine's armed timer.
-        unsafe { host::timer_del(timer) };
+        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
     }
     // SAFETY: the coroutine's own VM stack.
     unsafe { swr_zend_coroutine_vm_destroy() };
@@ -538,8 +537,7 @@ fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
     if fiber.is_null() {
         return;
     }
-    // SAFETY: the context's own fiber.
-    unsafe { (*fiber).status = zend_fiber_status_ZEND_FIBER_STATUS_DEAD };
+    set_status(fiber, zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
     fiber_switch_try_notify(ctx, origin);
     // SAFETY: as above.
     unsafe { zend_observer_fiber_destroy_notify(fiber) };

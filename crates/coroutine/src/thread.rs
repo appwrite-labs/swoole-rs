@@ -4,12 +4,11 @@
 //! hands a baton from one thread to the next, so exactly one runs at a time.
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
-
-use crate::context::Context;
-use core::ffi::c_int;
-use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Condvar, Mutex, PoisonError};
+use crate::Routine;
+use core::cell::RefCell;
+use core::ffi::{c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use swoole_rs_corebase::{SharedThread, adopt_shared_thread, shared_thread};
 
@@ -44,160 +43,158 @@ static MAIN: Baton = Baton {
     ready: Mutex::new(false),
     wake: Condvar::new(),
 };
-/// The running thread's baton, null while coroutines are inactive.
-static CURRENT: AtomicPtr<Baton> = AtomicPtr::new(ptr::null_mut());
+
+/// Whether coroutines are active on threads of their own.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// The activating thread's `SwooleTG` members each coroutine thread adopts.
 static SHARED: Mutex<Option<SharedThread>> = Mutex::new(None);
 
-/// One coroutine's thread; `Context::fctx` owns it while `Context::flags` has
-/// [`THREAD`].
+thread_local! {
+    /// A coroutine thread's own record; none on the activating thread.
+    static ME: RefCell<Option<Arc<Thread>>> = const { RefCell::new(None) };
+}
+
+/// One coroutine's thread, shared by the thread and its context.
+#[derive(Default)]
 struct Thread {
     baton: Baton,
-    /// The baton of the thread that last switched this one in.
-    swap: *const Baton,
+    /// The thread that last switched this one in, none for the activating
+    /// thread; taken when this one switches back.
+    swap: Mutex<Option<Arc<Thread>>>,
+    end: AtomicBool,
+}
+
+impl Thread {
+    /// Posts the baton of the thread that switched this one in.
+    fn hand_back(&self) {
+        let swap = self
+            .swap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        swap.as_deref().map_or(&MAIN, |swap| &swap.baton).post();
+    }
+}
+
+/// Waits for the calling thread's baton.
+fn wait_mine() {
+    ME.with_borrow(|me| me.as_deref().map_or(&MAIN, |me| &me.baton).wait());
+}
+
+/// A [`THREAD`] context's thread, which `Context` owns; dropping it joins the
+/// thread, which must have ended or be about to.
+pub(crate) struct Started {
+    thread: Arc<Thread>,
     handle: Option<JoinHandle<()>>,
 }
 
 /// `SWR_CTX_THREAD` (`SW_USE_THREAD_CONTEXT`): the context is a thread, not a stack.
 pub const THREAD: u32 = 4;
 
-struct Start(*mut Context, *mut Thread);
-// SAFETY: the record outlives its thread (free joins it), and only the thread
-// holding the baton touches it.
-unsafe impl Send for Start {}
+/// The entry a coroutine thread runs.
+struct Entry(Routine, *mut c_void);
+
+// SAFETY: only the coroutine's thread uses the creator's entry and data, while
+// it holds the baton, so no two threads touch the data at once.
+unsafe impl Send for Entry {}
 
 /// `thread_context_init`: the calling thread holds the baton, and coroutine
 /// threads share its reactor, timer, buffer stack and async threads.
 pub fn swr_v1_thread_context_init() {
     *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = Some(shared_thread());
-    CURRENT.store(ptr::from_ref(&MAIN).cast_mut(), Ordering::Release);
+    ACTIVE.store(true, Ordering::Release);
 }
 
 /// Whether coroutines run on threads of their own (`SW_USE_THREAD_CONTEXT`, active).
 #[must_use]
 pub fn thread_context_active() -> bool {
-    !CURRENT.load(Ordering::Acquire).is_null()
+    ACTIVE.load(Ordering::Acquire)
 }
 
 /// `thread_context_clean`.
 pub fn swr_v1_thread_context_clean() {
     *SHARED.lock().unwrap_or_else(PoisonError::into_inner) = None;
-    CURRENT.store(ptr::null_mut(), Ordering::Release);
+    ACTIVE.store(false, Ordering::Release);
 }
 
-/// Starts `ctx`'s thread, which waits for the baton. Returns the spawn's errno.
+/// Starts a thread that waits for the baton, then runs `entry(data)`; the
+/// spawn's errno when it fails.
 ///
 /// # Safety
-/// `ctx` is initialized apart from `fctx` and stays at this address until free.
-pub(crate) unsafe fn start(ctx: *mut Context) -> c_int {
-    let thread = Box::into_raw(Box::new(Thread {
-        baton: Baton::default(),
-        swap: ptr::null(),
-        handle: None,
-    }));
-    let start = Start(ctx, thread);
-    let spawned = std::thread::Builder::new()
+/// `entry` takes `data`.
+pub(crate) unsafe fn start(entry: Routine, data: *mut c_void) -> Result<Box<Started>, c_int> {
+    let thread = Arc::new(Thread::default());
+    let own = Arc::clone(&thread);
+    let entry = Entry(entry, data);
+    let handle = std::thread::Builder::new()
         .stack_size(THREAD_STACK)
         .spawn(move || {
-            let start = start;
+            let entry = entry;
             swoole_rs_corebase::signal_block_all();
-            // SAFETY: the record and its thread live until free joins this one.
-            unsafe { run(start.0, start.1) };
-        });
-    match spawned {
-        Ok(handle) => {
-            // SAFETY: fresh from Box::into_raw; the new thread waits for the baton.
-            unsafe { (*thread).handle = Some(handle) };
-            // SAFETY: `ctx` is writable, as the caller promises.
-            unsafe { (*ctx).fctx = thread.cast() };
-            0
-        }
-        Err(error) => {
-            // SAFETY: fresh from Box::into_raw and never shared.
-            drop(unsafe { Box::from_raw(thread) });
-            error.raw_os_error().unwrap_or(libc::EAGAIN)
-        }
+            run(&own, entry);
+        })
+        .map_err(|error| error.raw_os_error().unwrap_or(libc::EAGAIN))?;
+    Ok(Box::new(Started {
+        thread,
+        handle: Some(handle),
+    }))
+}
+
+impl Started {
+    /// Switches onto the thread, returning when it switches back: whether it ended.
+    ///
+    /// # Safety
+    /// The thread has not ended and is not running; the caller holds the baton.
+    pub(crate) unsafe fn swap_in(&self) -> bool {
+        *self
+            .thread
+            .swap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = ME.with_borrow(Clone::clone);
+        self.thread.baton.post();
+        wait_mine();
+        self.thread.end.load(Ordering::Acquire)
+    }
+
+    /// Switches back to the thread that last switched this one in.
+    ///
+    /// # Safety
+    /// This is the running thread, called on it.
+    pub(crate) unsafe fn swap_out(&self) {
+        self.thread.hand_back();
+        self.thread.baton.wait();
     }
 }
 
-/// # Safety
-/// `ctx` came from [`start`]; its thread has ended or will.
-pub(crate) unsafe fn free(ctx: *mut Context) {
-    // SAFETY: as the caller promises.
-    let thread = unsafe { (*ctx).fctx.cast::<Thread>() };
-    // SAFETY: from Box::into_raw in `start`, freed once.
-    let thread = unsafe { Box::from_raw(thread) };
-    // A panic can't cross the entry's extern "C" frame, so join never errs.
-    if let Some(Err(_)) = thread.handle.map(JoinHandle::join) {
-        std::process::abort();
+impl Drop for Started {
+    fn drop(&mut self) {
+        // A panic can't cross the entry's extern "C" frame, so join never errs.
+        if let Some(Err(_)) = self.handle.take().map(JoinHandle::join) {
+            std::process::abort();
+        }
     }
-}
-
-/// # Safety
-/// `ctx` came from [`start`], has not ended, and is not running.
-pub(crate) unsafe fn swap_in(ctx: *mut Context) {
-    // SAFETY: as the caller promises.
-    let thread = unsafe { (*ctx).fctx.cast::<Thread>() };
-    let swap = CURRENT.load(Ordering::Acquire).cast_const();
-    // SAFETY: this thread holds the baton, so the record is its alone.
-    unsafe { (*thread).swap = swap };
-    let baton = thread
-        .wrapping_byte_add(core::mem::offset_of!(Thread, baton))
-        .cast::<Baton>()
-        .cast_const();
-    CURRENT.store(baton.cast_mut(), Ordering::Release);
-    // SAFETY: the baton lives as long as its record; the activating thread's is static.
-    unsafe { (*baton).post() };
-    // SAFETY: as above.
-    unsafe { (*swap).wait() };
-}
-
-/// # Safety
-/// `ctx` is the running context.
-pub(crate) unsafe fn swap_out(ctx: *mut Context) {
-    // SAFETY: as the caller promises.
-    let thread = unsafe { (*ctx).fctx.cast::<Thread>() };
-    // SAFETY: this thread holds the baton.
-    let swap = unsafe { (*thread).swap };
-    CURRENT.store(swap.cast_mut(), Ordering::Release);
-    // SAFETY: the switching-in thread's baton outlives this switch.
-    unsafe { (*swap).post() };
-    // SAFETY: a live thread record.
-    unsafe { (*thread).baton.wait() };
 }
 
 /// The thread's body: wait for the baton, run the entry, mark the end and hand
 /// the baton back for good.
-///
-/// # Safety
-/// `ctx` and `thread` came from [`start`].
-unsafe fn run(ctx: *mut Context, thread: *mut Thread) {
-    // SAFETY: a live thread record.
-    unsafe { (*thread).baton.wait() };
+fn run(thread: &Arc<Thread>, Entry(entry, data): Entry) {
+    thread.baton.wait();
     // The first swap_in follows activation, which records SHARED.
     if let Some(shared) = *SHARED.lock().unwrap_or_else(PoisonError::into_inner) {
         adopt_shared_thread(shared);
     }
-    let (entry, data) = {
-        // SAFETY: this thread holds the baton; the borrow ends here.
-        let ctx = unsafe { &*ctx };
-        (ctx.entry, ctx.data)
-    };
-    // SAFETY: C++'s entry over its own data.
+    ME.set(Some(Arc::clone(thread)));
+    // SAFETY: the creator's entry over its own data, as `start`'s caller promised.
     unsafe { entry(data) };
-    // SAFETY: this thread still holds the baton.
-    unsafe { (*ctx).end = true };
-    // SAFETY: as above.
-    let swap = unsafe { (*thread).swap };
-    CURRENT.store(swap.cast_mut(), Ordering::Release);
-    // SAFETY: the switching-in thread's baton outlives this switch.
-    unsafe { (*swap).post() };
+    ME.take();
+    thread.end.store(true, Ordering::Release);
+    thread.hand_back();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn a_baton_hands_off_between_threads() {
@@ -214,42 +211,41 @@ mod tests {
     }
 
     struct Log {
-        ctx: core::mem::MaybeUninit<Context>,
+        thread: Option<Box<Started>>,
         steps: Vec<&'static str>,
     }
 
-    unsafe extern "C" fn entry(data: *mut core::ffi::c_void) {
+    unsafe extern "C" fn entry(data: *mut c_void) {
         let log = data.cast::<Log>();
         // SAFETY: the test's log; this thread holds the baton.
-        unsafe { (*log).steps.push("entry") };
-        // SAFETY: the running context.
-        unsafe { swap_out((*log).ctx.as_mut_ptr()) };
-        // SAFETY: as above.
-        unsafe { (*log).steps.push("resumed") };
+        unsafe {
+            (*log).steps.push("entry");
+            (*log).thread.as_deref().unwrap().swap_out();
+            (*log).steps.push("resumed");
+        }
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_context_runs_one_side_at_a_time() {
         let mut log = Log {
-            ctx: core::mem::MaybeUninit::uninit(),
+            thread: None,
             steps: Vec::new(),
         };
-        let data = (&raw mut log).cast();
-        let ctx = log.ctx.as_mut_ptr();
+        let log = &raw mut log;
         swr_v1_thread_context_init();
+        assert!(thread_context_active());
         // The thread backend's own entry points, which context.rs's dispatch on THREAD reaches.
         unsafe {
-            ctx.write(Context::threaded(THREAD, entry, data));
-            assert_eq!(start(ctx), 0);
-            swap_in(ctx);
-            log.steps.push("main");
-            assert!(!(*ctx).end);
-            swap_in(ctx);
-            assert!((*ctx).end);
-            free(ctx);
+            (*log).thread = Some(start(entry, log.cast()).unwrap());
+            let thread: *const Started = (*log).thread.as_deref().unwrap();
+            assert!(!(*thread).swap_in());
+            (*log).steps.push("main");
+            assert!((*thread).swap_in());
+            (*log).thread = None;
+            assert_eq!((*log).steps, ["entry", "main", "resumed"]);
         }
         swr_v1_thread_context_clean();
-        assert_eq!(log.steps, ["entry", "main", "resumed"]);
+        assert!(!thread_context_active());
     }
 }

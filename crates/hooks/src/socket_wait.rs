@@ -176,8 +176,8 @@ pub(crate) fn wait_barrier(socket: Co, event: u32, barrier: &mut dyn FnMut() -> 
 
 /// [`wait`] with no barrier and no buffer.
 pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
-    // SAFETY: no buffer.
-    unsafe { wait(socket, event, core::ptr::null_mut(), 0) }
+    let co = (NATIVE.current)();
+    !co.is_null() && Wait(socket).wait(co, event, core::ptr::null_mut(), 0)
 }
 
 /// The readable (`event` read) or writable callback: the coroutine to resume, or

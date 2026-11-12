@@ -7,6 +7,7 @@ use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
+    mem::ManuallyDrop,
     ptr,
     sync::OnceLock,
 };
@@ -236,7 +237,10 @@ fn prepare_worker(server: view::Server<'_>) {
     bus_uses_zend_strings(message_bus(server));
 }
 
-pub(crate) fn zserv() -> zval {
+/// The running server's object zval, as a callback's first argument: a copy
+/// that takes no reference.
+#[must_use]
+pub fn zserv() -> zval {
     let zserv = php_swoole_server_zval_ptr();
     // SAFETY: the server's live object zval; copied without a reference, as
     // upstream's `args[0] = *zserv`.
@@ -264,14 +268,14 @@ fn receive_args(
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", info.time);
         let mut data = undef();
-        php_swoole_get_recv_data(server, &mut data, request);
+        php_swoole_get_recv_data(server, Value::of(&mut data), request);
         props.value(c"data", &mut data);
         dtor(&mut data);
         2
     } else {
         args[1] = long_zval(fd);
         args[2] = long_zval(reactor_id);
-        php_swoole_get_recv_data(server, &mut args[3], request);
+        php_swoole_get_recv_data(server, Value::of(&mut args[3]), request);
         4
     }
 }
@@ -785,9 +789,9 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     let Some(redis) = crate::server::redis_receive() else {
         return php_swoole_server_on_receive(server, request);
     };
+    // The empty zval `data` owns takes the payload.
     let data = Owned::default();
-    // SAFETY: the empty zval `data` owns, which takes the payload.
-    php_swoole_get_recv_data(server, unsafe { &mut *data.as_ptr() }, request);
+    php_swoole_get_recv_data(server, &data, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     // The relay's longjmp would skip `data`'s release.
     drop(data);
@@ -859,16 +863,15 @@ extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
 /// its output drained, or cancel them when it closed (each leaves the queue
 /// as it wakes).
 fn send_wake(session_id: i64, cancel: bool) {
-    // Raw handles only: a woken coroutine may bail out across this frame.
-    let waiters = crate::lifecycle::send_waiters(session_id);
-    if waiters.is_null() {
+    // Nothing to drop: a woken coroutine may bail out across this frame.
+    let Some(waiters) = crate::lifecycle::send_waiters(session_id) else {
         return;
-    }
-    while let Some(co) = crate::lifecycle::send_next(waiters, !cancel) {
+    };
+    while let Some(co) = crate::lifecycle::send_next(&waiters, !cancel) {
         // SAFETY: a coroutine parked in `send_yield`, until it wakes.
         unsafe { co.wake(cancel) };
     }
-    crate::lifecycle::send_waiters_free(waiters);
+    drop(ManuallyDrop::into_inner(waiters));
 }
 
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).

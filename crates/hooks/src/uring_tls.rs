@@ -6,6 +6,7 @@
 //! `check_return_value(-1)` where upstream calls it).
 
 use std::ffi::{CStr, c_char, c_int, c_ulong};
+use std::mem::MaybeUninit;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
 
@@ -75,16 +76,9 @@ impl<S: TlsSocket> Tls<S> {
             while written < nread {
                 let rest = buf.wrapping_add(written);
                 // SAFETY: the first `nread` bytes of `buf` are filled.
-                let n = unsafe {
-                    uring::send(
-                        self.uring,
-                        self.fd,
-                        rest.cast(),
-                        nread - written,
-                        0,
-                        self.write_timeout,
-                    )
-                };
+                let rest =
+                    unsafe { core::slice::from_raw_parts(rest.cast::<u8>(), nread - written) };
+                let n = uring::send(self.uring, self.fd, rest, 0, self.write_timeout);
                 if n > 0 {
                     written += n.unsigned_abs();
                 } else if n == 0 {
@@ -103,9 +97,10 @@ impl<S: TlsSocket> Tls<S> {
     pub(crate) fn bio_read(&self) -> bool {
         let (buf, size) = self.socket.buffer(false);
         loop {
-            // SAFETY: `buf` holds `size` bytes.
-            let rv =
-                unsafe { uring::recv(self.uring, self.fd, buf.cast(), size, 0, self.read_timeout) };
+            // SAFETY: `buf` holds `size` writable bytes, which the receive may only write.
+            let slots =
+                unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
+            let rv = uring::recv(self.uring, self.fd, slots, 0, self.read_timeout);
             if rv > 0 {
                 let rv = c_int::try_from(rv).unwrap_or(c_int::MAX);
                 // SAFETY: the first `rv` bytes of `buf` were received.

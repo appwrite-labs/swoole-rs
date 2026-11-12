@@ -504,23 +504,21 @@ impl ReactorState {
     }
 }
 /// Actual kernel wait over the owner's stable arrays. No native callbacks run.
-/// # Safety
-/// owner is live/exclusive; entries is writable for one int.
 // Its one caller, the wait loop, runs it once per iteration (#1435).
 #[inline(always)]
-pub(crate) unsafe fn kernel_wait(
-    owner: *mut ReactorState,
+pub(crate) fn kernel_wait(
+    reactor: crate::Running<'_>,
     deferred: bool,
-    entries: *mut c_int,
+    entries: &mut c_int,
 ) -> c_int {
-    // SAFETY: the kernel operation exclusively borrows state, without native callbacks.
-    let owner = unsafe { &mut *owner };
+    // SAFETY: the handle's live state, which no reference holds; the kernel wait runs
+    // no native callback, so this borrow is the only one.
+    let owner = unsafe { &mut *reactor.state() };
     match &mut owner.backend {
         Backend::None => -1,
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
-            // SAFETY: the caller lends an entry-count slot.
-            unsafe { entries.write(count) };
+            *entries = count;
             // SAFETY: poll initializes revents in the first count valid records.
             unsafe {
                 libc::poll(
@@ -645,6 +643,10 @@ pub(crate) mod tests {
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
         unsafe { swr_v1_reactor_delete(owner.cast()) };
     }
+    /// The test's state as the handle its operations take.
+    pub(crate) fn running(owner: *mut ReactorState) -> crate::Running<'static> {
+        unsafe { crate::Running::new(owner.cast()) }
+    }
     #[test]
     fn owner_keeps_stable_public_slots_and_socket_registry() {
         unsafe {
@@ -730,7 +732,7 @@ pub(crate) mod tests {
                 (*state.fields).timeout_msec = 0;
                 let view = (*state.owner).backend_view();
                 let mut entries = 0;
-                assert_eq!(kernel_wait(state.owner, false, &raw mut entries), 1);
+                assert_eq!(kernel_wait(running(state.owner), false, &mut entries), 1);
                 assert_eq!(view.events, (*state.owner).backend_view().events);
                 if kind == 3 {
                     assert_eq!(entries, 1);

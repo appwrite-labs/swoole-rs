@@ -84,25 +84,14 @@ pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) 
     }
 }
 
-/// `int Socket::connect_sync(const Address &sa)`.
-/// # Safety
-/// `socket` is null or a live socket on this thread.
+/// `int Socket::connect_sync(const Address &sa)` of `this`, a live socket on this
+/// thread; it waits outside any borrow.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket12connect_syncERKNS0_7AddressE")
 )]
-pub unsafe extern "C" fn socket_connect_sync(
-    socket: *mut SocketRecord,
-    address: &SocketAddress,
-) -> c_int {
-    // SAFETY: as the caller promises: `this`, a live socket.
-    unsafe { crate::Socket::from_ptr(socket) }.map_or(ERR, |socket| connect_sync(socket, address))
-}
-
-/// [`socket_connect_sync`] over a socket's handle; it waits outside any borrow.
-#[must_use]
-pub fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
+pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
     match socket.edit(|record| socket_connect_async(record, address)) {
         WAIT => {}
         READY => return OK,
@@ -330,9 +319,7 @@ pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
 #[must_use]
 pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)> {
     let reactor = crate::event_api::swr_v1_event_reactor();
-    // SAFETY: null or a live `Reactor`, which begins with its prepared state.
-    let prepared = unsafe { reactor.cast::<crate::ReactorPrepared>().as_ref() }.copied();
-    prepared.map(|prepared| (reactor, prepared))
+    (!reactor.is_null()).then(|| (reactor, crate::ReactorPrepared::of(reactor)))
 }
 
 #[cfg(test)]

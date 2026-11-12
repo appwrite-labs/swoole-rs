@@ -114,18 +114,14 @@ mod registry {
 }
 
 /// `Iouring::waitpid`, the last error set from errno when it fails.
-///
-/// # Safety
-/// `status` is writable.
-unsafe fn iouring_waitpid(
+fn iouring_waitpid(
     uring: &crate::UringOps,
     pid: libc::pid_t,
-    status: *mut c_int,
+    status: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
 ) -> libc::pid_t {
-    // SAFETY: as the caller promises.
-    let result = unsafe { (uring.waitpid)(pid, status, options, timeout) };
+    let result = (uring.waitpid)(pid, status, options, timeout);
     if result < 0 {
         log::set_last_error(errno());
     }
@@ -142,8 +138,7 @@ pub extern "C" fn system_waitpid(
     timeout: f64,
 ) -> libc::pid_t {
     if let Some(uring) = crate::wait_loop::uring() {
-        // SAFETY: a writable status.
-        return unsafe { iouring_waitpid(uring, pid, status, options, timeout) };
+        return iouring_waitpid(uring, pid, Some(status), options, timeout);
     }
     // SAFETY: the static table of native coroutine operations.
     let waited = unsafe {
@@ -166,6 +161,7 @@ pub extern "C" fn system_wait(status: &mut c_int, timeout: f64) -> libc::pid_t {
 /// `waitpid(WNOHANG)` between coroutine sleeps that back off, without SIGCHLD.
 /// `status` may be null, as `waitpid`'s.
 #[unsafe(export_name = "_ZN6swoole9coroutine6System12waitpid_safeEiPii")]
+#[must_use]
 pub extern "C" fn system_waitpid_safe(
     pid: libc::pid_t,
     status: Option<&mut c_int>,
@@ -187,9 +183,7 @@ pub extern "C" fn system_waitpid_safe(
         return sys::waitpid(pid, status, options);
     }
     if let Some(uring) = crate::wait_loop::uring() {
-        let status = status.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-        // SAFETY: null or a writable status.
-        return unsafe { iouring_waitpid(uring, pid, status, options, -1.0) };
+        return iouring_waitpid(uring, pid, status, options, -1.0);
     }
     let mut second = LOCK_DEFAULT_SECOND;
     loop {

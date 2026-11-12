@@ -125,8 +125,8 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
 fn host_maxsize() -> usize {
-    let addr: libc::sockaddr_un = swoole_rs_corebase::sys::zeroed();
-    size_of_val(&addr.sun_path)
+    // `sun_path` is the struct's last field, with no padding after its bytes.
+    size_of::<libc::sockaddr_un>() - core::mem::offset_of!(libc::sockaddr_un, sun_path)
 }
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
@@ -1272,12 +1272,19 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
             let name = o.ctx.buffer.wrapping_add(SENDFILE_TASK_SIZE);
+            let room = IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE;
+            // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes from its head, which
+            // nothing else reads or writes meanwhile.
+            let field = unsafe { core::slice::from_raw_parts_mut(name.cast::<u8>(), room) };
+            // The name, cut to leave room for its NUL, then the NUL. One copy: a loop
+            // over the bytes costs the static handler about 800 instructions a file.
             let source = o.data_bytes();
-            let length = source.len().min(IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
-            // SAFETY: the task buffer holds `SW_IPC_BUFFER_SIZE` bytes after its head.
-            unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), name.cast(), length) };
-            // SAFETY: as above; `length` leaves room for the NUL.
-            unsafe { name.wrapping_add(length).write(0) };
+            let (name_bytes, _) = source.split_at(source.len().min(room - 1));
+            let (target, rest) = field.split_at_mut(name_bytes.len());
+            target.copy_from_slice(name_bytes);
+            if let Some(nul) = rest.first_mut() {
+                *nul = 0;
+            }
             name.expose_provenance() as u64
         }
         // Lifecycle effects over process-wide state Rust owns: hooks, the
@@ -2128,7 +2135,6 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const EVENT_BUFFER_FULL: c_int = 13;
     const EVENT_INCOMING: u8 = 15;
     const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
-    let serv = o.ctx.serv;
     // The connection's session and reactor in a head of `kind` (C++'s uint8_t).
     #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint8_t) arg")]
     let head = |kind: u64| {
@@ -2162,15 +2168,13 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 info: head(arg),
                 data: core::ptr::null(),
             };
-            // SAFETY: the live server and the send it delivers.
-            let sent = unsafe {
-                crate::server_methods::send_to_connection(serv, (&raw const send).cast())
-            };
+            // SAFETY: the send it delivers, with no data.
+            let sent = unsafe { crate::server_methods::send_to_connection(o.server(), &send) };
             u64::from(i64::from(sent) == crate::SW_OK)
         }
         OP_SEND_HERE => {
-            // SAFETY: the live server and the context's send.
-            sign(unsafe { crate::server_methods::send_to_connection(serv, o.ctx.send) })
+            // SAFETY: the context's send and its data.
+            sign(unsafe { crate::server_methods::send_to_connection(o.server(), o.send()) })
         }
         OP_SC_NOTIFY_FULL => {
             crate::server_methods::notify(o.server(), o.conn(), EVENT_BUFFER_FULL);
@@ -2298,8 +2302,9 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_DESTROY_TASK_WORKERS => {
-            // SAFETY: as above.
-            unsafe { crate::worker_methods::destroy_task_workers(o.server()) };
+            // `Server::destroy_task_workers()`: free the task results, then destroy the task pool.
+            o.config().task_results.free();
+            swoole_rs_process::methods::destroy(o.server().task_pool_ref());
             0
         }
         OP_TASK_POOL_CREATE => {
@@ -2333,8 +2338,9 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_TASK_POOL_LISTEN => {
-            // SAFETY: the created task pool and the NUL-terminated path `arg` lends.
-            sign(unsafe { pool_listen(o.task_pool().cast(), ptr_of(arg), 2048) })
+            // SAFETY: the NUL-terminated path `arg` lends.
+            let file = unsafe { CStr::from_ptr(ptr_of(arg)) };
+            sign(pool_listen(o.task_pool_record(), file, 2048))
         }
         OP_TASK_PIPE => {
             let ready = o.state.push_task_pipe();
@@ -2527,20 +2533,17 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 }
                 let sent = if c.action == TO_TASK_WORKER {
                     let mut dst = c_int::from(process_id);
-                    let (gs, pool) = (o.gs(), o.task_pool());
+                    let (gs, pool) = (o.gs(), o.server().task_pool_ref());
+                    // SAFETY: the packed task, which nothing writes while it is sent.
+                    let task = unsafe {
+                        swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
+                    };
                     swoole_rs_process::task_sync::count_task(
                         &gs.tasking_num,
                         &gs.task_count,
                         || {
-                            // SAFETY: the live task pool and the packed task.
-                            let sent = unsafe {
-                                swoole_rs_process::methods::dispatch(
-                                    pool,
-                                    (&raw mut buf).cast(),
-                                    &raw mut dst,
-                                    false,
-                                )
-                            };
+                            let sent =
+                                swoole_rs_process::methods::dispatch(pool, task, &mut dst, false);
                             Ok(sent == 0)
                         },
                     )
@@ -2572,7 +2575,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 worker.pipe_master()
             };
-            let bus = server_message_bus(o.state);
+            let bus = o.state.message_bus();
             // SAFETY: a worker pipe and the message.
             u64::from(unsafe {
                 bus.rust()
@@ -2593,20 +2596,12 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// The server's own `MessageBus`: its Rust bus, then its allocator.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn server_message_bus(state: &ServerState) -> crate::objects::Bus {
-    let bus = state.tables_ref().message_bus;
-    // SAFETY: the server's live `MessageBus`.
-    unsafe { crate::objects::Bus::of(bus) }
-}
-
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size;
-    if server_message_bus(state).alloc_buffer(size as usize) {
+    if state.message_bus().alloc_buffer(size as usize) {
         0
     } else {
         -1
@@ -2616,7 +2611,7 @@ pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
 /// `MessageBus::free_buffer()` of the server's bus.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn release_pipe_buffers(state: &ServerState) {
-    server_message_bus(state).free_buffer();
+    state.message_bus().free_buffer();
 }
 
 /// `Server::accept_command_result`: the master's command pipe is readable; a
@@ -2635,7 +2630,7 @@ extern "C" fn accept_command_result(
         .ptr;
     // SAFETY: the master reactor's live server.
     let state = unsafe { crate::view::Server::from_raw(serv) }.state();
-    let bus = server_message_bus(state);
+    let bus = state.message_bus();
     let Some(sock) = event.socket() else {
         return 0;
     };

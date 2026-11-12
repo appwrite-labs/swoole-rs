@@ -8,10 +8,7 @@ use core::ffi::{c_int, c_long, c_void};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{
-    RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_PIPE_READ,
-    RUN_REACTOR_THREAD_MAIN, RUN_RT_PIPE_WRITE, RUN_START_REACTOR_THREADS, RUN_THREAD_SHUTDOWN,
-};
+use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE, RUN_THREAD_SHUTDOWN};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
@@ -180,7 +177,7 @@ pub(crate) unsafe fn thread_init(
 )]
 pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     run(
-        RUN_INIT_REACTOR,
+        crate::ops::RUN_INIT_REACTOR,
         0,
         &mut ReactorContext::new(serv, Some(reactor)),
     );
@@ -190,7 +187,7 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
 #[must_use]
 pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
     let mut ctx = ReactorContext::new(serv, None);
-    int(run(RUN_START_REACTOR_THREADS, 0, &mut ctx))
+    int(run(crate::ops::RUN_START_REACTOR_THREADS, 0, &mut ctx))
 }
 
 /// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
@@ -198,7 +195,7 @@ pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
 pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
     let mut ctx = ReactorContext::new(serv, None);
     let id = i64::from(reactor_id).cast_unsigned();
-    run(RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
+    run(crate::ops::RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
@@ -293,5 +290,5 @@ pub unsafe extern "C-unwind" fn dispatch_task(
 /// `void Server::join_reactor_thread()`, in the server's master.
 pub fn join_reactor_thread(serv: view::Server<'_>) {
     let mut ctx = ReactorContext::new(serv, None);
-    run(RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
+    run(crate::ops::RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

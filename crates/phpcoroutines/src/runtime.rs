@@ -240,7 +240,7 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
         && enabled
         && host::absolute_msec() - last > MAX_EXEC_MSEC
     {
-        host::defer(interrupt_resume, co);
+        host::defer(InterruptResume(co));
         host::yield_(co);
     }
     if let Some(original) = original_interrupt() {
@@ -255,11 +255,17 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
     }
 }
 
-/// `coro_interrupt_resume`.
-extern "C-unwind" fn interrupt_resume(co: *mut c_void) {
-    if !co.is_null() && !host::is_end(co) {
-        host::resume(co);
+/// `coro_interrupt_resume`: the loop resumes the coroutine the interrupt yielded.
+struct InterruptResume(*mut c_void);
+
+impl swoole_rs_reactor::event_api::Deferred for InterruptResume {
+    fn run(self) {
+        let co = self.0;
+        if !co.is_null() && !host::is_end(co) {
+            host::resume(co);
+        }
     }
+    fn dispose(self) {}
 }
 
 /// Re-raise a trapped bailout from a handler's outermost Rust frame, which

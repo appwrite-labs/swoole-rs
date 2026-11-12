@@ -17,10 +17,9 @@ use swoole_rs_httpbindings::{
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
 use swoole_rs_zend::sys::{
-    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, swr_zend_http_property_offset,
-    zend_class_entry, zend_string, zval,
+    swr_zend_efree, swr_zend_emalloc, swr_zend_http_get_string, zend_string, zval,
 };
-use swoole_rs_zend::{Array, HeldArray, Key, Value, ZStr, ZString, bailout, string};
+use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout, string};
 
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
@@ -58,11 +57,9 @@ pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
 }
 
 /// MINIT (from the response class's): find the array properties' slots.
-pub(crate) fn minit(ce: *mut zend_class_entry) {
-    for (slot, name) in OFFSETS.iter().zip(["header", "cookie", "trailer"]) {
-        // SAFETY: the registered class, which declares the property.
-        let offset = unsafe { swr_zend_http_property_offset(ce, name.as_ptr().cast(), name.len()) };
-        slot.store(offset, Relaxed);
+pub(crate) fn minit(class: &Class) {
+    for (slot, name) in OFFSETS.iter().zip([c"header", c"cookie", c"trailer"]) {
+        slot.store(crate::parse::property_offset(class, name), Relaxed);
     }
 }
 

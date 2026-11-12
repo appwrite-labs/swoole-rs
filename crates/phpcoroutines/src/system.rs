@@ -9,9 +9,8 @@ use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING, Minit, Owned, OwnedArray, ZString,
-    bailout::Bailout,
-    sys::{zend_value_error, zval},
+    Call, Class, E_WARNING, Minit, Owned, OwnedArray, Value, ZString, bailout::Bailout,
+    sys::zend_value_error,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -24,7 +23,7 @@ pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
 unsafe extern "C" {
     // crates/phpevents': declared, since crates/phpevents depends on this crate.
-    fn php_swoole_convert_to_fd(value: *mut zval) -> c_int;
+    safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
 /// `SW_EVENT_READ`.
@@ -449,8 +448,7 @@ fn wait_event(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a passed argument.
-    let fd = unsafe { php_swoole_convert_to_fd(call.zval(1)) };
+    let fd = php_swoole_convert_to_fd(call.value(1));
     if fd < 0 {
         host::fatal_error(E_WARNING, c"unknown fd type");
         call.set_bool(false);

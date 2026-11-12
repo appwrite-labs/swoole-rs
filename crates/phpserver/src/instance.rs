@@ -21,7 +21,7 @@ use swoole_rs_corebase::{
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{event_worker_ops, server_methods, view};
 use swoole_rs_zend::{
-    Object, bailout, object_of, string,
+    Object, Value, bailout, string,
     sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
@@ -50,14 +50,16 @@ pub fn php_swoole_server_zval_ptr() -> *mut zval {
     }
 }
 
-/// `php_swoole_server_get_ptr`: the `Server` of a Server object, or null.
-/// # Safety
-/// `zobject` is a live Server object zval.
-pub unsafe fn php_swoole_server_get_ptr(zobject: *mut zval) -> *mut c_void {
-    // SAFETY: per the caller.
-    let object = unsafe { object_of(zobject) };
-    // SAFETY: C++ and Rust allocate Servers as `Object<ServerData>`.
-    unsafe { Object::<ServerData>::data(object) }.serv
+/// `php_swoole_server_get_ptr`: the `Server` of a Server object, or null
+/// (also for any other value).
+#[must_use]
+pub fn php_swoole_server_get_ptr(value: &Value) -> *mut c_void {
+    let Some(object) = value.object_of(&crate::server::SERVER) else {
+        return ptr::null_mut();
+    };
+    // SAFETY: an object with the Server class's handlers, which only
+    // `lifecycle::create` makes, as an `Object<ServerData>`; the value holds it.
+    unsafe { (*Object::<ServerData>::data_ptr(object)).serv }
 }
 
 /// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
@@ -125,10 +127,12 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 
 /// `php_swoole_get_recv_data`: a request's payload into `zdata`, taking the
 /// message bus's packet or the connection's receive buffer when it holds them.
-pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &mut zval, req: &RecvData) {
+/// What `zdata` held is overwritten, not released.
+pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &Value, req: &RecvData) {
+    let zdata = zdata.as_ptr();
     let (flags, length) = (req.info.flags, req.info.len as usize);
     if length == 0 {
-        // SAFETY: per the caller.
+        // SAFETY: a live zval; the interned string needs no reference.
         unsafe { set_str(zdata, empty_string()) };
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
