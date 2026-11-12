@@ -11,7 +11,7 @@
 //! in a forked worker as well as in this process once the server stops.
 
 use super::*;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::SharedMutex;
@@ -438,12 +438,19 @@ fn listen(serv: Server) {
     }
 }
 
+/// Set once `task_worker` has checked the count `serv.task` left, so the
+/// worker's own count comes after that check rather than racing it.
+static TASK_COUNTED: AtomicBool = AtomicBool::new(false);
+
 unsafe extern "C" fn task_worker_on_task(
     _: *mut c_void,
     serv: *mut c_void,
     task: *mut c_void,
 ) -> c_int {
     let serv = Server(serv);
+    while !TASK_COUNTED.load(Ordering::SeqCst) {
+        sleep_us(1000);
+    }
     check(serv.get_tasking_num() == 1, "serv->get_tasking_num() == 1");
     check(
         data(task).payload() == PACKET,
@@ -496,6 +503,7 @@ fn task_worker() {
 
     assert!(serv.task(&mut buf, &mut dst_worker_id));
     assert_eq!(serv.task_count(), 1);
+    TASK_COUNTED.store(true, Ordering::SeqCst);
 
     t1.join().unwrap();
     // The task pool, whose worker loop has ended.
