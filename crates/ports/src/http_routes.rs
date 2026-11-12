@@ -194,7 +194,7 @@ pub mod exports {
             if frame.opcode == 0 {
                 // SAFETY: the port's live server, as the caller guarantees.
                 let serv = unsafe { view::Server::from_raw(serv) };
-                let max = swoole_rs_server::server_methods::package_max_length(serv, conn);
+                let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd);
                 context.package_max_length = max as usize;
             }
         }

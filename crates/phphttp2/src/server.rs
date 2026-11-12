@@ -18,7 +18,7 @@ use swoole_rs_http2::{
     sw_rs_http2_window_action, sw_rs_http2_window_plan,
 };
 use swoole_rs_phpserver::RecvData;
-use swoole_rs_server::{ConnectionRecord, view};
+use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::{Array, HeldArray, Owned, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
@@ -874,11 +874,11 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvData) -> c_int {
+fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) -> c_int {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
-        let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn);
+        let max_body_size = swoole_rs_server::server_methods::package_max_length(view, conn.fd());
         crate::session::session_own(
             session_id,
             default_ctx,

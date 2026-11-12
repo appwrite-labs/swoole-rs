@@ -776,15 +776,17 @@ impl Server {
 
     fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
         // SAFETY: the crate's record, whose layout `check_layout` matched this one's.
-        self.view().healthy(now, unsafe {
-            &*ptr::from_ref(conn).cast::<ConnectionRecord>()
-        })
+        let conn = unsafe {
+            swoole_rs_server::Connection::from_ptr(ptr::from_ref(conn).cast_mut().cast())
+        };
+        self.view()
+            .healthy(now, conn.unwrap_or_else(|| std::process::abort()))
     }
 
     fn feedback(self, conn: &mut Connection, event: c_int) -> bool {
         // SAFETY: as above.
         let record = unsafe { &mut *ptr::from_mut(conn).cast::<ConnectionRecord>() };
-        server_methods::feedback(self.view(), record, event)
+        server_methods::feedback(self.view(), record.into(), event)
     }
 
     /// The crates' view of this server.

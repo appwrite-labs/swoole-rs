@@ -33,10 +33,6 @@ const FD_PIPE: c_int = 3;
 const SW_ERR: u64 = u64::MAX;
 
 /// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the process that owns them as workers.cc did"
-)]
 impl Context<'_> {
     pub(super) fn state(&self) -> &crate::ServerState {
         self.server().state()
@@ -90,9 +86,9 @@ impl Context<'_> {
         self.event().socket()
     }
     /// The connection `OP_CONN_AT` or `OP_EVENT_CONN_ACTIVE` selected, if any.
-    pub(super) fn conn(&self) -> Option<&mut crate::ConnectionRecord> {
+    pub(super) fn conn(&self) -> Option<crate::Connection<'_>> {
         // SAFETY: null or the connection selected, a live slot of the server's table.
-        unsafe { self.conn.as_mut() }
+        unsafe { crate::Connection::from_ptr(self.conn) }
     }
 }
 
@@ -200,7 +196,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(ctx.event_socket()?)),
         OP_CLOSE_NOTIFY => {
             let conn = ctx.conn()?;
-            let event = conn.event(i16::from(conn.reactor_id), FD_SESSION);
+            let event = conn.event(i16::from(conn.reactor_id()), FD_SESSION);
             run(
                 ctx.reactor_handle(),
                 Some(&event),

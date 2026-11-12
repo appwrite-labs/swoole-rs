@@ -20,7 +20,6 @@ use crate::ops::{
     RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS,
     RUN_TASKING,
 };
-use crate::records::ConnectionRecord;
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
 
@@ -234,16 +233,15 @@ pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) 
 pub unsafe fn connection_incoming(
     serv: view::Server<'_>,
     reactor: *mut c_void,
-    conn: &mut ConnectionRecord,
+    conn: crate::Connection<'_>,
 ) -> c_int {
-    let record = &*conn;
     let mut ctx = NativeContext::new(serv.raw());
     ctx.reactor = reactor;
     ctx.port = serv
-        .port_by_server_fd(record.server_fd)
+        .port_by_server_fd(conn.server_fd())
         .map_or(ptr::null_mut(), view::Port::raw);
-    ctx.sock = record.socket;
-    ctx.conn = ptr::from_mut(conn).cast();
+    ctx.sock = conn.socket_ptr();
+    ctx.conn = conn.as_ptr().cast();
     // SAFETY: as the caller guarantees.
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
 }
@@ -297,9 +295,10 @@ pub fn set_max_connection(serv: view::Server<'_>, max: u32) {
 }
 
 /// `Server::feedback(conn, event)`, over one of `serv`'s connections.
-pub fn feedback(serv: view::Server<'_>, conn: &mut ConnectionRecord, event: c_int) -> bool {
+#[must_use]
+pub fn feedback(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
     let mut ctx = NativeContext::new(serv.raw());
-    ctx.conn = ptr::from_mut(conn).cast();
+    ctx.conn = conn.as_ptr().cast();
     // SAFETY: the live server and its connection, lent for the call.
     unsafe { run(RUN_FEEDBACK, i64::from(event).cast_unsigned(), &mut ctx) != 0 }
 }
@@ -477,7 +476,7 @@ pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
     };
     let mut ctx = NativeContext::new(serv.raw());
     // SAFETY: as the caller guarantees.
-    let record = unsafe { &*conn.cast::<ConnectionRecord>() };
+    let record = unsafe { &*conn.cast::<crate::ConnectionRecord>() };
     ctx.port = serv
         .port_by_server_fd(record.server_fd)
         .map_or(ptr::null_mut(), view::Port::raw);
@@ -527,7 +526,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
     // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
     let pipes = i64::from(state.tables_ref().reactor_pipe_num);
     let index = session_id % pipes;
-    let id = i64::from(conn.reactor_id) + index * i64::from(config.reactor_num);
+    let id = i64::from(conn.reactor_id()) + index * i64::from(config.reactor_num);
     let id = u16::try_from(id).unwrap_or(u16::MAX);
     serv.worker_pipe(id, false)
         .is_some_and(|pipe| pipe.take_kernel_nobufs())
@@ -634,11 +633,11 @@ pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
     run_on(serv, RUN_NATIVE_OP, crate::ops::OP_REACTOR_BARRIER.into());
 }
 
-/// `Server::get_package_max_length(conn)`, over one of `serv`'s connections.
+/// `Server::get_package_max_length(conn)`, over the fd of one of `serv`'s connections.
 #[must_use]
-pub fn package_max_length(serv: view::Server<'_>, conn: &ConnectionRecord) -> u32 {
+pub fn package_max_length(serv: view::Server<'_>, fd: c_int) -> u32 {
     // The connection's live port, as in C++, which doesn't check it either.
-    serv.port_of_fd(conn.fd)
+    serv.port_of_fd(fd)
         .map_or(0, |port| port.protocol.package_max_length)
 }
 
@@ -660,17 +659,21 @@ pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
 }
 
 /// `Server::notify(conn, event)`: the factory hears `event` for `conn`.
-pub fn notify(serv: view::Server<'_>, conn: &ConnectionRecord, event: c_int) -> bool {
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "DataHead's uint8_t type and uint16_t server_fd keep the low bits, as the C++ assignments did"
     )]
     let mut head = DataHead {
-        fd: conn.fd.into(),
-        reactor_id: conn.reactor_id.into(),
+        fd: conn.fd().into(),
+        reactor_id: conn.reactor_id().into(),
         kind: event as u8,
-        server_fd: conn.server_fd as u16,
+        server_fd: conn.server_fd() as u16,
         ..DataHead::default()
     };
     let mut ctx = NativeContext::new(serv.raw());
@@ -754,6 +757,7 @@ pub fn swr_v1_server_command_result(serv: view::Server<'_>, request_id: i64, mes
 mod tests {
     use super::*;
     use crate::ops::{RUN_BASE_DISPATCH, RUN_BASE_END, RUN_BASE_NOTIFY};
+    use crate::records::ConnectionRecord;
     use std::sync::Mutex;
 
     /// The last call the fake runner saw: op, arg and the context's fields.
@@ -903,7 +907,10 @@ mod tests {
             );
             // SAFETY: a zeroed record is a valid connection.
             let mut conn: ConnectionRecord = core::mem::zeroed();
-            assert!(!feedback(server(), &mut conn, 5), "feedback result");
+            assert!(
+                !feedback(server(), (&mut conn).into(), 5),
+                "feedback result"
+            );
             assert_eq!(last().1, 5, "event arg");
             send_family_and_base_factory(serv);
         }
@@ -1029,7 +1036,7 @@ mod tests {
             conn.fd = 22;
             conn.reactor_id = 3;
             conn.server_fd = 0x1_0005;
-            assert!(notify(server(), &conn, 0x104), "notify result");
+            assert!(notify(server(), (&mut conn).into(), 0x104), "notify result");
             assert_eq!(sent().1, u64::from(OP_FACTORY_NOTIFY), "notify op");
             let (_, h) = head();
             assert!(

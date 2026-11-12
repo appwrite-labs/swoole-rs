@@ -79,19 +79,19 @@ fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>
     }
     Ok(state
         .session(id)
-        .map(|slot| (slot.reactor_bits & 0xff, slot.fd)))
+        .map(|slot| (slot.reactor_bits() & 0xff, slot.fd())))
 }
 
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
-fn close_event(c: &ConnectionRecord, fd: c_long) -> DataHead {
+fn close_event(c: crate::Connection<'_>, fd: c_long) -> DataHead {
     DataHead {
         fd,
-        reactor_id: if c.close_actively != 0 {
+        reactor_id: if c.close_actively() != 0 {
             -1
         } else {
-            i16::from(c.reactor_id)
+            i16::from(c.reactor_id())
         },
-        server_fd: low16(c.server_fd),
+        server_fd: low16(c.server_fd()),
         ..DataHead::default()
     }
 }
@@ -105,15 +105,15 @@ fn close_event(c: &ConnectionRecord, fd: c_long) -> DataHead {
     expect(dead_code, reason = "only process mode's factory ops call it")
 )]
 pub(crate) fn on_close<'a>(
-    conn: impl Fn() -> Option<&'a mut ConnectionRecord>,
+    conn: impl Fn() -> Option<crate::Connection<'a>>,
     fd: c_long,
     call: impl FnOnce(&mut DataHead),
 ) -> Option<()> {
     let c = conn()?;
     let mut info = close_event(c, fd);
-    c.closing = 1;
+    c.set_closing(1);
     call(&mut info);
-    conn()?.closing = 0;
+    conn()?.set_closing(0);
     Some(())
 }
 
@@ -160,7 +160,7 @@ pub(crate) fn dispatch<H: Host>(
             return Ok(false);
         };
         // server active close, discard data.
-        if c.closed.load(Ordering::Relaxed) != 0 {
+        if c.closed().load(Ordering::Relaxed) != 0 {
             log::warning(
                 c"BaseFactory::dispatch",
                 format_args!(
@@ -170,8 +170,8 @@ pub(crate) fn dispatch<H: Host>(
             );
             return Ok(false);
         }
-        info.fd = c.session_id;
-        info.server_fd = low16(c.server_fd);
+        info.fd = c.session_id();
+        info.server_fd = low16(c.server_fd());
     }
     // Upstream marks a payload that is the whole receive buffer `SW_EVENT_DATA_POP_PTR`
     // here, but `MessageBus::pass` replaces the flags of every payload with
@@ -209,7 +209,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
         None
     } else {
         let conn = h.state()?.connection(task.info.fd, VERIFIED_TLS);
-        let Some(c) = conn.filter(|c| c.closed.load(Ordering::Relaxed) == 0) else {
+        let Some(c) = conn.filter(|c| c.closed().load(Ordering::Relaxed) == 0) else {
             return Ok(false);
         };
         Some(c)
@@ -219,10 +219,10 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     worker.set_status(WORKER_BUSY);
     if let Some(c) = conn {
         if task.info.len > 0 {
-            c.recv_queued_bytes
+            c.recv_queued_bytes()
                 .fetch_sub(task.info.len, Ordering::SeqCst);
         }
-        c.last_dispatch_time = task.info.time;
+        c.set_last_dispatch_time(task.info.time);
     }
     let mut recv = SendData {
         info: task.info,
@@ -256,18 +256,19 @@ pub(crate) fn notify<H: Host>(h: &mut H, info: *mut DataHead) -> crate::Effect<b
         );
         return Ok(false);
     };
-    if c.closed.load(Ordering::Relaxed) != 0 {
+    if c.closed().load(Ordering::Relaxed) != 0 {
         log::warning(
             c"BaseFactory::notify",
             format_args!(
                 "dispatch[type={}] failed, session#{} is closed by server",
-                head.kind, c.session_id
+                head.kind,
+                c.session_id()
             ),
         );
         return Ok(false);
     }
-    head.fd = c.session_id;
-    head.server_fd = low16(c.server_fd);
+    head.fd = c.session_id();
+    head.server_fd = low16(c.server_fd());
     head.flags = 0;
     h.op(OP_ACCEPT_EVENT, address(info))?;
     Ok(true)
@@ -360,7 +361,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     {
-        let info = close_event(c, id);
+        let info = close_event((&mut *c).into(), id);
         h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
     // SAFETY: as above, re-derived: onClose, which reaches it by session, has returned.
@@ -699,10 +700,10 @@ mod tests {
         let mut seen = None;
         let call = |info: &mut DataHead| {
             let c = s.state.connection(1, crate::records::BY_SESSION).unwrap();
-            seen = Some((info.fd, info.reactor_id, info.server_fd, c.closing));
-            c.close_errno = 104;
+            seen = Some((info.fd, info.reactor_id, info.server_fd, c.closing()));
+            c.set_close_errno(104);
         };
-        on_close(|| unsafe { conn.as_mut() }, 1, call).unwrap();
+        on_close(|| unsafe { crate::Connection::from_ptr(conn) }, 1, call).unwrap();
         assert_eq!(seen, Some((1, -1, 7, 1)), "closing during onClose");
         assert_eq!((t.conn().closing, t.conn().close_errno), (0, 104));
     }

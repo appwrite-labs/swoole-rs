@@ -1389,7 +1389,9 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
     let conn = serv.get_connection_by_session_id(session);
     // SAFETY: the running server's live connection, laid out as the crate's record.
-    let conn = unsafe { &*ptr::from_ref(conn).cast::<swoole_rs_server::ConnectionRecord>() };
+    let conn =
+        unsafe { swoole_rs_server::Connection::from_ptr(ptr::from_ref(conn).cast_mut().cast()) };
+    let conn = conn.unwrap_or_else(|| std::process::abort());
     let addr = swoole_rs_server::local_addr::get_local_addr(serv.view(), conn);
     expect(addr != c"unknown", "serv->get_local_addr(conn) != unknown");
 

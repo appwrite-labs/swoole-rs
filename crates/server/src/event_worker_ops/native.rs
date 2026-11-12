@@ -62,9 +62,9 @@ impl Context<'_> {
         self.state().tables_ref()
     }
     /// The connection `OP_CONN_AT` selected, if any.
-    pub(super) fn conn(&self) -> Option<&crate::ConnectionRecord> {
+    pub(super) fn conn(&self) -> Option<crate::Connection<'_>> {
         // SAFETY: null or the connection selected, a live slot of the server's table.
-        unsafe { self.conn.as_ref() }
+        unsafe { crate::Connection::from_ptr(self.conn) }
     }
     pub(super) fn info(&self) -> &DataHead {
         // SAFETY: the ops reading it run with the event's live head.
@@ -99,7 +99,7 @@ impl Context<'_> {
         }
     }
     /// The connection the head's session names, verified (and TLS-ready when `tls`).
-    fn session(&self, tls: bool) -> Option<&mut crate::ConnectionRecord> {
+    fn session(&self, tls: bool) -> Option<crate::Connection<'_>> {
         let kind = if tls { VERIFIED_TLS } else { VERIFIED };
         self.state().connection(self.info().fd, kind)
     }
@@ -151,10 +151,11 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             if info.len > 0 {
                 let length = ctx.bus().packet().length;
                 let length = u32::try_from(length).unwrap_or(u32::MAX);
-                conn.recv_queued_bytes.fetch_sub(length, Ordering::Relaxed);
+                conn.recv_queued_bytes()
+                    .fetch_sub(length, Ordering::Relaxed);
             }
-            conn.last_dispatch_time = info.time;
-            if conn.closed.load(Ordering::Relaxed) == 0 {
+            conn.set_last_dispatch_time(info.time);
+            if conn.closed().load(Ordering::Relaxed) == 0 {
                 1
             } else {
                 2
@@ -179,20 +180,20 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_STORE_CLIENT_CERT => {
             if let Some(conn) = ctx.session(false) {
                 let packet = ctx.bus().packet();
-                conn.ssl_client_cert = client_cert(packet.data.cast(), packet.length).cast();
-                conn.ssl_client_cert_pid = swoole_get_worker_pid();
+                conn.set_ssl_client_cert(client_cert(packet.data.cast(), packet.length).cast());
+                conn.set_ssl_client_cert_pid(swoole_get_worker_pid());
             }
             0
         }
         OP_FREE_CLIENT_CERT => {
             if let Some(conn) = ctx.session(false)
-                && !conn.ssl_client_cert.is_null()
-                && conn.ssl_client_cert_pid == swoole_get_worker_pid()
+                && !conn.ssl_client_cert().is_null()
+                && conn.ssl_client_cert_pid() == swoole_get_worker_pid()
             {
                 // SAFETY: this worker's certificate, which `client_cert` made.
-                let mut cert = unsafe { Box::from_raw(conn.ssl_client_cert.cast::<CppString>()) };
+                let mut cert = unsafe { Box::from_raw(conn.ssl_client_cert().cast::<CppString>()) };
                 cert.dispose();
-                conn.ssl_client_cert = core::ptr::null_mut();
+                conn.set_ssl_client_cert(core::ptr::null_mut());
             }
             0
         }

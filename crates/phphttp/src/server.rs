@@ -25,7 +25,7 @@ use swoole_rs_phpserver::{
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
-use swoole_rs_server::{ConnectionRecord, view};
+use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_class_entry, zend_long, zval,
@@ -128,12 +128,12 @@ pub(crate) fn new_zval() -> zval {
     swoole_rs_zend::UNDEF
 }
 
-fn address(server: view::Server<'_>, conn: &ConnectionRecord, local: bool) -> ZString {
+fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZString {
     if local {
         let text = swoole_rs_server::local_addr::get_local_addr(server, conn);
         return ZString::new(text.to_bytes());
     }
-    with_host(&conn.info, |text| ZString::new(text.to_bytes()))
+    with_host(&conn.info(), |text| ZString::new(text.to_bytes()))
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
@@ -144,7 +144,7 @@ fn address(server: view::Server<'_>, conn: &ConnectionRecord, local: bool) -> ZS
 #[expect(clippy::too_many_arguments, reason = "upstream's request facts")]
 fn addresses(
     server: view::Server<'_>,
-    conn: &ConnectionRecord,
+    conn: Connection<'_>,
     state: &mut State,
     session: i64,
     local_port: i64,
@@ -177,7 +177,7 @@ fn addresses(
 /// `None` when the cache can't grow.
 fn cached(
     server: view::Server<'_>,
-    conn: &ConnectionRecord,
+    conn: Connection<'_>,
     fd: usize,
     session: i64,
 ) -> Option<[ZString; 2]> {
@@ -237,14 +237,14 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let http = config.open_http_protocol && isset(ON_REQUEST);
     let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
     let mut facts = Receive {
-        last_recv_time: conn.last_recv_time,
-        local_port: i64::from(conn.local_port),
+        last_recv_time: conn.last_recv_time(),
+        local_port: i64::from(conn.local_port()),
         remote_port: 0,
         loopback: 0,
-        websocket_status: conn.websocket_status,
+        websocket_status: conn.websocket_status(),
         http,
         websocket,
-        http2: conn.http2_stream != 0,
+        http2: conn.http2_stream() != 0,
         cache: None,
         coroutine: false,
     };
@@ -252,12 +252,12 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     if route != REQUEST {
         return route;
     }
-    facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info));
-    if swr_v1_clients_address_loopback(&conn.info) {
-        facts.loopback = if conn.info.kind == SOCK_TCP6 { 6 } else { 4 };
+    facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
+    if swr_v1_clients_address_loopback(&conn.info()) {
+        facts.loopback = if conn.info().kind == SOCK_TCP6 { 6 } else { 4 };
     }
     facts.cache = can_cache_session_addr(server)
-        .then(|| usize::try_from(conn.fd).ok())
+        .then(|| usize::try_from(conn.fd()).ok())
         .flatten();
     facts.coroutine = enable_coroutine(server);
     let mut ctx = context::context_new(session);
@@ -467,7 +467,7 @@ fn handle(
     // Parsing an upgrade request sets the connection's status.
     let handshake = server
         .by_session(session)
-        .is_some_and(|conn| conn.websocket_status == STATUS_CONNECTION);
+        .is_some_and(|conn| conn.websocket_status() == STATUS_CONNECTION);
     let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
     let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         if handshake {
@@ -504,23 +504,23 @@ struct Http2Connection {
 fn http2_connection(
     server: view::Server<'_>,
     fd: i64,
-) -> Option<(&ConnectionRecord, Http2Connection)> {
+) -> Option<(Connection<'_>, Http2Connection)> {
     let conn = server.by_session(fd)?;
-    let remote_port = i64::from(swr_v1_clients_address_port(&conn.info));
-    let loopback = if swr_v1_clients_address_loopback(&conn.info) {
-        if conn.info.kind == SOCK_TCP6 { 6 } else { 4 }
+    let remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
+    let loopback = if swr_v1_clients_address_loopback(&conn.info()) {
+        if conn.info().kind == SOCK_TCP6 { 6 } else { 4 }
     } else {
         0
     };
     let counters = server.counters();
     let facts = Http2Connection {
-        last_recv_time: conn.last_recv_time,
-        local_port: i64::from(conn.local_port),
+        last_recv_time: conn.last_recv_time(),
+        local_port: i64::from(conn.local_port()),
         remote_port,
         loopback,
-        server_fd: conn.server_fd,
+        server_fd: conn.server_fd(),
         cache: can_cache_session_addr(server)
-            .then(|| usize::try_from(conn.fd).ok())
+            .then(|| usize::try_from(conn.fd()).ok())
             .flatten(),
         static_handler: server.config().enable_static_handler,
         unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency.load(SeqCst),
@@ -609,7 +609,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
 pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     let session = info.fd;
     if let Some(conn) = server.by_session(session)
-        && let Ok(fd) = usize::try_from(conn.fd)
+        && let Ok(fd) = usize::try_from(conn.fd())
     {
         ADDRESSES.with_borrow_mut(|cached| {
             if cached.get(fd).is_some_and(|(owner, _)| *owner == session) {

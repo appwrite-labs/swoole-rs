@@ -241,22 +241,22 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         let conn = ctx
             .server()
             .at(fd)
-            .filter(|conn| crate::reactor_ops::valid(Some(conn)));
+            .filter(|conn| crate::reactor_ops::valid(Some(*conn)));
         let valid = conn.is_some();
-        ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| &raw mut *conn);
+        ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
         return Some(u64::from(valid));
     }
     let conn = ctx.conn()?;
     Some(match op {
         OP_CONN_READABLE => {
             let removed = conn.socket().is_none_or(|s| s.read(|s| s.removed != 0));
-            u64::from(conn.peer_closed == 0 && !removed)
+            u64::from(conn.peer_closed() == 0 && !removed)
         }
-        OP_CONN_REACTOR => u64::from(conn.reactor_id),
+        OP_CONN_REACTOR => u64::from(conn.reactor_id()),
         OP_CLOSE_CONNECTION => {
             let reactor = swoole_rs_corebase::thread_reactor();
             // SAFETY: the thread's live reactor and the connection's session socket.
-            unsafe { crate::reactor_entry::close_connection(reactor, conn.socket.cast()) };
+            unsafe { crate::reactor_entry::close_connection(reactor, conn.socket_ptr().cast()) };
             0
         }
         _ => return None,

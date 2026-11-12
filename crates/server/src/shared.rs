@@ -126,9 +126,9 @@ pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCount
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
     // Kind 1 is `get_connection_by_session_id`, kind 0 `get_connection(server_fd)`.
-    let server_fd = state.connection(session_id, 1)?.server_fd;
+    let server_fd = state.connection(session_id, 1)?.server_fd();
     // A listening socket's record holds its `ListenPort` as the object.
-    let port = state.connection(server_fd.into(), 0)?.object;
+    let port = state.connection(server_fd.into(), 0)?.object();
     // SAFETY: null, or one of the server's ports, which live as long as it.
     let port = unsafe { crate::view::Port::from_raw(port) }?;
     port.config().counters()

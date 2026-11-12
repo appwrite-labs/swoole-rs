@@ -178,9 +178,10 @@ impl<'a> Objects<'a> {
         // SAFETY: the server's shared counters, mapped for its life.
         unsafe { &*gs }
     }
-    fn conn(&self) -> &mut ConnectionRecord {
+    fn conn(&self) -> crate::Connection<'_> {
         // SAFETY: the ops reading it run with a live connection in the context.
-        unsafe { &mut *self.ctx.conn.cast::<ConnectionRecord>() }
+        let conn = unsafe { crate::Connection::from_ptr(self.ctx.conn.cast()) };
+        conn.unwrap_or_else(|| std::process::abort())
     }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
@@ -374,8 +375,8 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_EVENT_FD => sign(o.ctx.server_fd),
         OP_CONN_RESET => {
             let fd = o.edit_sock(|s| s.fd);
-            let conn = o.tables().connection_slot(fd)?;
-            o.ctx.conn = conn.cast();
+            let conn = o.state.tables_ref().connection_at(fd)?;
+            o.ctx.conn = conn.as_ptr().cast();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -387,15 +388,13 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (fd % c_int::from(o.config().reactor_num)) as u8
             };
             o.ctx.reactor_id = reactor_id;
-            // SAFETY: the connection slot of a live fd.
-            let slot = unsafe { &*conn };
             // The fd's last connection, closed on a reactor thread, published the slot with
             // its last write (OP_CC_FINISH): acquire that before reusing it.
-            slot.closed.load(Acquire);
+            conn.closed().load(Acquire);
             // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
-            slot.active.store(0, Relaxed);
+            conn.active().store(0, Relaxed);
             let start = core::mem::offset_of!(ConnectionRecord, socket_type);
-            let bytes = conn.cast::<u8>().wrapping_add(start);
+            let bytes = conn.as_ptr().cast::<u8>().wrapping_add(start);
             // SAFETY: the same slot, from after `active` up to `closed`.
             unsafe {
                 bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start);
@@ -404,17 +403,18 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SESSION_CLAIM => {
             let session = state.session(arg.cast_signed())?;
-            if session.fd != 0 {
+            if session.fd() != 0 {
                 return Some(0);
             }
-            session.fd = o.edit_sock(|s| s.fd);
-            session.id = arg.cast_signed();
-            session.reactor_bits = (session.reactor_bits & !0xff) | u32::from(o.ctx.reactor_id);
+            session.set_fd(o.edit_sock(|s| s.fd));
+            session.set_id(arg.cast_signed());
+            session
+                .set_reactor_bits((session.reactor_bits() & !0xff) | u32::from(o.ctx.reactor_id));
             1
         }
         OP_SESSION_BIND => {
             o.gs().session_round.store(arg.cast_signed(), Relaxed);
-            o.conn().session_id = arg.cast_signed();
+            o.conn().set_session_id(arg.cast_signed());
             let buffer_size = o.port().socket_buffer_size.cast_unsigned();
             let conn = o.ctx.conn;
             o.edit_sock(|sock| {
@@ -450,7 +450,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // The accepted address goes to the connection before getsockname
             // replaces it with the local one, which is read in place.
             let (fd, ssl, local_port, local_addr_index) = o.sock()?.edit(|sock| {
-                conn.info = sock.info;
+                conn.set_info(sock.info);
                 sock.get_name();
                 let info = &sock.info;
                 let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
@@ -468,29 +468,29 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 let index = crate::local_addr::index(state, v6, addr);
                 (sock.fd, !sock.ssl().is_null(), port, index)
             });
-            conn.fd = fd;
-            conn.reactor_id = o.ctx.reactor_id;
+            conn.set_fd(fd);
+            conn.set_reactor_id(o.ctx.reactor_id);
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let server_fd = arg as c_int;
-            conn.server_fd = server_fd;
+            conn.set_server_fd(server_fd);
             let now = swoole_rs_corebase::microtime();
-            conn.last_recv_time = now;
-            conn.connect_time = now;
-            conn.active.store(1, Relaxed);
-            conn.closed.store(0, Relaxed);
-            conn.worker_id = -1;
-            conn.socket_type = o.port().r#type;
-            conn.socket = o.ctx.sock;
-            conn.ssl = u8::from(ssl);
-            conn.info.kind = conn.socket_type;
+            conn.set_last_recv_time(now);
+            conn.set_connect_time(now);
+            conn.active().store(1, Relaxed);
+            conn.closed().store(0, Relaxed);
+            conn.set_worker_id(-1);
+            conn.set_socket_type(o.port().r#type);
+            conn.set_socket(o.ctx.sock);
+            conn.set_ssl(u8::from(ssl));
+            conn.info().kind = conn.socket_type();
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "C++'s uint16_t local_port"
             )]
             let local_port = local_port as u16;
-            conn.local_port = local_port;
-            conn.local_addr_index = local_addr_index;
+            conn.set_local_port(local_port);
+            conn.set_local_addr_index(local_addr_index);
             0
         }
         OP_OUT_EMPTY => {
@@ -1135,7 +1135,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_SC_SOCKET_OVERFLOW => {
-            let m = format_args!("socket#{} output buffer overflow", o.conn().fd);
+            let m = format_args!("socket#{} output buffer overflow", o.conn().fd());
             error(
                 SW_LOG_WARNING,
                 E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
@@ -1145,7 +1145,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_SC_CLOSED_BY_CLIENT => {
-            let m = format_args!("socket#{} is closed by client", o.conn().fd);
+            let m = format_args!("socket#{} is closed by client", o.conn().fd());
             error(
                 SW_LOG_NOTICE,
                 E::SW_ERROR_SESSION_CLOSED_BY_CLIENT,
@@ -1155,7 +1155,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_SC_CONN_OVERFLOW => {
-            let m = format_args!("connection#{} output buffer overflow", o.conn().fd);
+            let m = format_args!("connection#{} output buffer overflow", o.conn().fd());
             error(
                 SW_LOG_WARNING,
                 E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
@@ -1284,24 +1284,24 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // The context's connection.
         OP_LAST_RECEIVED => o.read_conn_socket(|s| s.last_received_time.to_bits()),
         OP_LAST_SENT => o.read_conn_socket(|s| s.last_sent_time.to_bits()),
-        OP_CONN_PROTECT => u64::from(o.conn().protect),
+        OP_CONN_PROTECT => u64::from(o.conn().protect()),
         OP_CONN_CLOSING => {
-            u64::from(o.conn().closed.load(Relaxed) != 0 || o.conn().close_force != 0)
+            u64::from(o.conn().closed().load(Relaxed) != 0 || o.conn().close_force() != 0)
         }
-        OP_CONN_UID => u64::from(o.conn().uid),
-        OP_CONN_WORKER => sign(o.conn().worker_id),
+        OP_CONN_UID => u64::from(o.conn().uid()),
+        OP_CONN_WORKER => sign(o.conn().worker_id()),
         OP_PIN_WORKER => {
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let worker = arg as c_int;
-            o.conn().worker_id = worker;
+            o.conn().set_worker_id(worker);
             0
         }
         OP_SC_OVERFLOW => {
-            o.conn().overflow = 1;
+            o.conn().set_overflow(1);
             0
         }
         OP_SC_HIGH_WATERMARK => {
-            o.conn().high_watermark = 1;
+            o.conn().set_high_watermark(1);
             0
         }
         OP_FD_CONN | OP_VERIFY_CONN => {
@@ -1311,7 +1311,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (arg.cast_signed(), 3)
             };
             let conn = state.connection(key, kind);
-            o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| (&raw mut *conn).cast());
+            o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast());
             u64::from(!o.ctx.conn.is_null())
         }
 
@@ -1391,7 +1391,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SC_FLAGS => send_flags(o),
         OP_SC_VERIFY => verify(o),
         OP_SC_TOUCH_SEND => {
-            o.conn().last_send_time = swoole_rs_corebase::microtime();
+            o.conn().set_last_send_time(swoole_rs_corebase::microtime());
             0
         }
 
@@ -1488,7 +1488,7 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ST_PIPE_BIND => {
             let fd = c_int::try_from(arg).ok()?;
-            o.tables().connection_at(fd)?.object = o.ctx.object;
+            o.tables().connection_at(fd)?.set_object(o.ctx.object);
             0
         }
         OP_ABORT => {
@@ -1641,12 +1641,12 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SC_APPEND => {
             // SAFETY: the context lends `length` bytes at `data`.
             unsafe { swr_cpp_buffer_append(out(), o.ctx.data.cast(), o.ctx.length) };
-            o.conn().send_queued_bytes = swr_cpp_buffer_length(out());
+            o.conn().set_send_queued_bytes(swr_cpp_buffer_length(out()));
             0
         }
         OP_SC_QUEUE_CLOSE => {
             swr_cpp_buffer_typed_close(out());
-            o.conn().close_queued = 1;
+            o.conn().set_close_queued(1);
             0
         }
         op => return sockets(o, op, arg),
@@ -1662,24 +1662,21 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     } else {
         3
     };
-    let mut conn = o.state.connection(o.ctx.session_id, kind);
-    o.ctx.conn = conn
-        .as_deref_mut()
-        .map_or(core::ptr::null_mut(), core::ptr::from_mut)
-        .cast();
+    let conn = o.state.connection(o.ctx.session_id, kind);
+    o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast());
     let Some(conn) = conn else {
         return 0;
     };
     o.ctx.reactor = swoole_rs_corebase::thread_reactor();
     o.ctx.port = o
         .server()
-        .port_by_server_fd(conn.server_fd)
+        .port_by_server_fd(conn.server_fd())
         .map_or(core::ptr::null_mut(), crate::view::Port::raw);
-    o.ctx.sock = conn.socket;
+    o.ctx.sock = conn.socket_ptr();
     let config = o.config();
     debug_assert!(
         config.single_thread
-            || i64::from(conn.fd) % i64::from(config.reactor_num)
+            || i64::from(conn.fd()) % i64::from(config.reactor_num)
                 == i64::from(swoole_rs_corebase::thread_id()),
         "a connection is sent to on its own reactor thread"
     );
@@ -1716,13 +1713,13 @@ fn send_flags(o: &Objects<'_>) -> u64 {
             .is_some_and(CallbackSlot::is_set)
     };
     [
-        (conn.overflow != 0, send::OVERFLOW),
-        (conn.close_reset != 0, send::CLOSE_RESET),
-        (conn.close_force != 0, send::CLOSE_FORCE),
-        (conn.peer_closed != 0, send::PEER_CLOSED),
-        (conn.closed.load(Relaxed) != 0, send::CLOSED),
-        (conn.close_queued != 0, send::CLOSE_QUEUED),
-        (conn.high_watermark != 0, send::HIGH_WATERMARK),
+        (conn.overflow() != 0, send::OVERFLOW),
+        (conn.close_reset() != 0, send::CLOSE_RESET),
+        (conn.close_force() != 0, send::CLOSE_FORCE),
+        (conn.peer_closed() != 0, send::PEER_CLOSED),
+        (conn.closed().load(Relaxed) != 0, send::CLOSED),
+        (conn.close_queued() != 0, send::CLOSE_QUEUED),
+        (conn.high_watermark() != 0, send::HIGH_WATERMARK),
         (removed, send::REMOVED),
         (
             cfg!(feature = "halfclose") && notified,
@@ -1760,7 +1757,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_IP_KEY => {
             let fd = libc::c_long::from(o.ctx.server_fd);
             let addr = if let Some(conn) = o.state.connection(fd, 0) {
-                &conn.info
+                conn.info()
             } else {
                 // No connection: the context sends a datagram.
                 let packet = o.send().data;
@@ -1770,7 +1767,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 )]
                 let packet = packet.cast::<DgramPacket>();
                 // SAFETY: the datagram's payload starts with its `DgramPacket`.
-                unsafe { &(*packet).socket_addr }
+                unsafe { (*packet).socket_addr }
             };
             if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
                 u64::from(u32::from_be(addr.addr.v4().sin_addr.s_addr))
@@ -1949,12 +1946,12 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = o.server().port_socket_at(index)?;
             let fd = socket.fd();
             let conn = o.tables().connection_at(fd)?;
-            conn.fd = fd;
-            conn.socket = port.socket.cast();
-            conn.socket_type = port.r#type;
-            conn.object = ls;
-            conn.info.kind = port.r#type;
-            let info = &mut conn.info;
+            conn.set_fd(fd);
+            conn.set_socket(port.socket.cast());
+            conn.set_socket_type(port.r#type);
+            conn.set_object(ls);
+            let mut info = conn.info();
+            info.kind = port.r#type;
             let error = assign(
                 &mut info.addr,
                 &mut info.len,
@@ -1963,6 +1960,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 port.port,
                 true,
             );
+            conn.set_info(info);
             if error != 0 {
                 log::set_last_error(error);
             }
@@ -2025,14 +2023,14 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             EVENT_CONNECT,
         )),
         OP_CLOSE_CONNECTION => {
-            let socket = o.conn().socket.cast();
+            let socket = o.conn().socket_ptr().cast();
             // SAFETY: the context's live reactor and the connection's socket.
             unsafe { crate::reactor_entry::close_connection(o.ctx.reactor, socket) };
             0
         }
         OP_FORCE_CLOSE => {
             let conn = o.conn();
-            conn.close_force = 1;
+            conn.set_close_force(1);
             let mut event = conn.event(0, 0);
             o.reactor().trigger_close(&mut event);
             0
@@ -2184,8 +2182,8 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let head = |kind: u64| {
         let conn = o.conn();
         DataHead {
-            fd: conn.session_id,
-            reactor_id: conn.reactor_id.into(),
+            fd: conn.session_id(),
+            reactor_id: conn.reactor_id().into(),
             kind: kind as u8,
             ..DataHead::default()
         }
@@ -2222,7 +2220,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_NOTIFY_FULL => {
             crate::server_methods::notify(o.server(), o.conn(), EVENT_BUFFER_FULL);
-            o.conn().high_watermark = 1;
+            o.conn().set_high_watermark(1);
             0
         }
         OP_ACCEPT_EVENT => {
@@ -2291,7 +2289,7 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     let Some(session) = o.state.session(send.info.fd) else {
         return 0;
     };
-    let id = session.reactor_bits & 0xff;
+    let id = session.reactor_bits() & 0xff;
     let Some(pipe) = o
         .server()
         .worker_pipe(u16::try_from(id).unwrap_or(u16::MAX), true)
@@ -2879,7 +2877,7 @@ mod tests {
             let nums = (*gs).cells();
             assert_eq!((*nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
-            assert_eq!((*tables.sessions().add(5)).fd, 0, "zeroed");
+            assert_eq!((*tables.sessions()[5].get()).fd, 0, "zeroed");
             config.user_workers = Shm::calloc(1, 8);
             answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());

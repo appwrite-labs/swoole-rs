@@ -119,9 +119,9 @@ impl<'a> Context<'a> {
         self.status.unwrap_or_else(|| std::process::abort())
     }
     /// The connection selected by `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN`, if any.
-    fn conn(&self) -> Option<&'a mut ConnectionRecord> {
+    fn conn(&self) -> Option<crate::Connection<'a>> {
         // SAFETY: null or a slot of the live connection table.
-        unsafe { self.conn.as_mut() }
+        unsafe { crate::Connection::from_ptr(self.conn) }
     }
     /// The server's worker registry.
     fn registry(&self) -> &'a swoole_rs_corebase::worker_registry::WorkerRegistry {
@@ -242,7 +242,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();
             // The op runs with the session's connection selected.
-            info.reactor_id = i16::from(ctx.conn()?.reactor_id);
+            info.reactor_id = i16::from(ctx.conn()?.reactor_id());
             info.server_fd = low16(swoole_get_worker_id().cast_signed());
             // `serv->get_reactor_pipe_socket(info.fd, info.reactor_id)`.
             let pipes = i64::from(tables.reactor_pipe_num);
@@ -307,7 +307,9 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SEND_CONN_ACTIVE => {
             ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
-            return Some(u64::from(ctx.conn().is_some_and(|c| c.is_active())));
+            return Some(u64::from(
+                ctx.conn().is_some_and(crate::Connection::is_active),
+            ));
         }
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
@@ -329,44 +331,44 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     }
     let conn = ctx.conn()?;
     Some(match op {
-        OP_CONN_CLOSED => u64::from(conn.closed.load(Ordering::Relaxed)),
-        OP_CONN_CLOSE_FORCE => u64::from(conn.close_force),
-        OP_CONN_PEER_CLOSED => u64::from(conn.peer_closed),
-        OP_CONN_OVERFLOW => u64::from(conn.overflow),
-        OP_CONN_CLOSE_ACTIVELY => u64::from(conn.close_actively),
-        OP_CONN_CLOSING => u64::from(conn.closing),
-        OP_CONN_CLOSE_RESET => u64::from(conn.close_reset),
-        OP_CONN_FD => signed(conn.fd),
+        OP_CONN_CLOSED => u64::from(conn.closed().load(Ordering::Relaxed)),
+        OP_CONN_CLOSE_FORCE => u64::from(conn.close_force()),
+        OP_CONN_PEER_CLOSED => u64::from(conn.peer_closed()),
+        OP_CONN_OVERFLOW => u64::from(conn.overflow()),
+        OP_CONN_CLOSE_ACTIVELY => u64::from(conn.close_actively()),
+        OP_CONN_CLOSING => u64::from(conn.closing()),
+        OP_CONN_CLOSE_RESET => u64::from(conn.close_reset()),
+        OP_CONN_FD => signed(conn.fd()),
         OP_TO_SESSION => {
             // converted fd to session_id
             let info = &mut ctx.send_mut().info;
-            info.fd = conn.session_id;
-            info.server_fd = low16(conn.server_fd);
+            info.fd = conn.session_id();
+            info.server_fd = low16(conn.server_fd());
             0
         }
         OP_SCHEDULE_CONN => {
             // SAFETY: the live server.
             signed(unsafe {
-                crate::server_methods::schedule_worker(serv, conn.fd, core::ptr::null_mut())
+                crate::server_methods::schedule_worker(serv, conn.fd(), core::ptr::null_mut())
             })
         }
         OP_SET_CLOSE_RESET => {
-            conn.close_reset = 1;
+            conn.set_close_reset(1);
             0
         }
         OP_SET_CLOSE_ACTIVELY => {
-            conn.close_actively = 1;
+            conn.set_close_actively(1);
             0
         }
         OP_CLEAR_CLOSE_ERRNO => {
-            conn.close_errno = 0;
+            conn.set_close_errno(0);
             0
         }
         OP_DO_CLOSE_CALLBACK => {
             // `Server::if_do_close_callback`.
             let set = ctx.slot(CB_CLOSE).is_some_and(CallbackSlot::is_set);
             let won = || {
-                conn.closed
+                conn.closed()
                     .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
             };
@@ -376,7 +378,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let ev = DataHead {
                 kind: EVENT_CLOSE,
                 fd: ctx.send().info.fd,
-                reactor_id: i16::from(conn.reactor_id),
+                reactor_id: i16::from(conn.reactor_id()),
                 ..DataHead::default()
             };
             let Some(target) = ctx.worker_at(worker_id(arg)) else {

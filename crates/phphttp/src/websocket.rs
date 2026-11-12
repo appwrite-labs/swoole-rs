@@ -174,7 +174,7 @@ pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
 /// `conn->websocket_status = status` of the session's slot.
 fn set_status(server: view::Server<'_>, fd: zend_long, status: i64) {
     if let Some(conn) = server.by_session(fd) {
-        conn.websocket_status = u8::try_from(status).unwrap_or_default();
+        conn.set_websocket_status(u8::try_from(status).unwrap_or_default());
     }
 }
 
@@ -195,7 +195,9 @@ fn close(server: view::Server<'_>, fd: zend_long, reset: bool) -> bool {
 /// the session is gone (`get_port_by_session_id`).
 fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
     let conn = server.by_session(fd)?;
-    server.port_of_fd(conn.fd).map(|port| port.websocket_frames)
+    server
+        .port_of_fd(conn.fd())
+        .map(|port| port.websocket_frames)
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
@@ -765,10 +767,10 @@ fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<C
         server.by_session(fd)
     }?;
     Some(Connection {
-        status: conn.websocket_status,
-        server_fd: conn.server_fd,
-        compression: conn.websocket_compression != 0,
-        closed: conn.closed.load(Relaxed) != 0,
+        status: conn.websocket_status(),
+        server_fd: conn.server_fd(),
+        compression: conn.websocket_compression() != 0,
+        closed: conn.closed().load(Relaxed) != 0,
     })
 }
 
@@ -1146,7 +1148,7 @@ pub(crate) fn accept(mut context: Ctx) {
     if !crate::context::co_socket(state)
         && let Some(conn) = crate::context::server(state).verified(state.fd)
     {
-        conn.websocket_compression = u8::from(accepted);
+        conn.set_websocket_compression(u8::from(accepted));
     }
 }
 

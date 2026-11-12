@@ -350,7 +350,7 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
     }
     crate::context::server(state)
         .by_session(state.fd)
-        .is_some_and(|conn| conn.closed.load(Relaxed) == 0 && conn.peer_closed == 0)
+        .is_some_and(|conn| conn.closed().load(Relaxed) == 0 && conn.peer_closed() == 0)
 }
 
 /// The context's own references to its request and response objects,

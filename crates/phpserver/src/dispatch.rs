@@ -783,7 +783,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
         return SW_ERR;
     };
     if !server
-        .port_of_fd(conn.fd)
+        .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_redis_protocol)
     {
         return php_swoole_server_on_receive(server, request);
@@ -831,7 +831,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
             address: matches!(socket_type, UDP | UDP6 | UNIX_DGRAM).then_some(address),
             port,
             server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
-                i64::from(swr_v1_clients_address_port(&sock.info))
+                i64::from(swr_v1_clients_address_port(&sock.info()))
             }),
         };
         relay(on_packet(
@@ -885,8 +885,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    let websocket_status = conn.websocket_status;
-    let conn = ptr::from_mut(conn);
+    let websocket_status = conn.websocket_status();
     if websocket_status != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
@@ -902,12 +901,11 @@ fn close(server: view::Server<'_>, info: &DataHead) {
             server, &cb, true, session_id, reactor_id, info.time,
         ));
     }
-    // SAFETY: as above; the callback may have changed it.
-    let conn = unsafe { &*conn };
-    if conn.http2_stream != 0
+    // The callback may have changed it.
+    if conn.http2_stream() != 0
         && let Some(families) = swoole_rs_phpswoole::families()
     {
-        (families.http.http2_on_close)(conn.session_id);
+        (families.http.http2_on_close)(conn.session_id());
     }
 }
 
