@@ -139,13 +139,11 @@ impl<'a> Context<'a> {
     fn registry(&self) -> &'a registry::WorkerRegistry {
         self.server().registry()
     }
-    /// The event pool's reload task, for the ops that run while the manager reloads.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "the pool's reload task, which only the manager's reload ops write, one at a time"
-    )]
-    fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
-        // SAFETY: the reload task the manager started.
+    /// The event pool's reload task, for the ops that run while the manager reloads,
+    /// lent for as long as the context is.
+    fn reload_task(&mut self) -> &mut swoole_rs_process::reload_task::ReloadTask {
+        // SAFETY: the reload task the manager started, which only the manager's ops
+        // touch, one at a time.
         unsafe { &mut *self.pool().reload_task() }
     }
 }
