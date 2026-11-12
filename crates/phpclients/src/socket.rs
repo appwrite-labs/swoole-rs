@@ -22,10 +22,7 @@ use swoole_rs_zend::{
     ZString,
     bailout::Bailout,
     string::ZBuf,
-    sys::{
-        E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zend_object,
-        zval,
-    },
+    sys::{E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -960,16 +957,6 @@ fn created(result: Result<Option<Owned>, Bailout>) -> Option<Owned> {
     })
 }
 
-/// The object `value` holds, carrying the reference the value gives up; null for none.
-fn into_object(value: Option<Owned>) -> *mut zend_object {
-    let Some(value) = value else {
-        return ptr::null_mut();
-    };
-    let object = value.object().unwrap_or(ptr::null_mut());
-    let _reference = value.into_zval();
-    object
-}
-
 /// `php_swoole_create_socket(type)`: a new socket object of a native Swoole
 /// socket kind, or none with `errno` or a bailout pending.
 #[must_use]
@@ -987,10 +974,10 @@ pub unsafe fn create_from_fd(fd: i32, kind: i32) -> Option<Owned> {
 }
 
 /// `php_swoole_dup_socket(fd, type)`: an object over a duplicate of `fd`,
-/// which stays the caller's; null as [`create_socket`].
+/// which stays the caller's; none as [`create_socket`].
 #[must_use]
-pub fn dup(fd: i32, kind: i32) -> *mut zend_object {
-    into_object(created(owner::duplicate(fd, kind)))
+pub fn dup(fd: i32, kind: i32) -> Option<Owned> {
+    created(owner::duplicate(fd, kind))
 }
 
 /// `php_swoole_get_socket(zobject)`: the object's core socket, or null.
