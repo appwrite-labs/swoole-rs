@@ -17,11 +17,12 @@ use crate::{
         swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
         swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
         swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_read_property,
-        swr_zend_try_symtable_update, swr_zend_zval_value_name, swr_zval_is_true,
-        swr_zval_try_addref, zend_array_count, zend_class_entry, zend_double_to_str,
-        zend_hash_add_new, zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert,
-        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
-        zend_string, zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
+        zval, zval_ptr_dtor,
     },
     value,
 };
@@ -762,6 +763,17 @@ impl ZString {
     pub fn url_encode(bytes: &[u8]) -> Self {
         // SAFETY: Zend reads the bytes and returns a new string.
         Self(unsafe { php_url_encode(bytes.as_ptr().cast(), bytes.len()) })
+    }
+
+    /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.
+    #[must_use]
+    pub fn url_decode(bytes: &[u8]) -> Self {
+        let string = crate::string::copy(bytes);
+        // SAFETY: a fresh string of `bytes.len()` bytes and a NUL, decoded in place.
+        let length = unsafe { swr_zend_url_decode(crate::string::val(string).cast(), bytes.len()) };
+        // SAFETY: the string is new and unshared, and decoding only shortens it.
+        unsafe { crate::string::truncate(string, length) };
+        Self(string)
     }
 
     /// `zend_double_to_str`: `value` as PHP prints a float.

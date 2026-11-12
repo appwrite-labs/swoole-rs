@@ -5,11 +5,8 @@
 //! `onReceive` and `onClose` for its HTTP/2 connections. The HTTP contexts are
 //! crates/phphttp's.
 use crate::session::{Session, SessionState, Stream};
-use libc::{c_char, c_int};
-use std::{
-    ffi::{CStr, CString},
-    ptr,
-};
+use libc::c_int;
+use std::ffi::{CStr, CString};
 use swoole_rs_http2::{
     Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan,
     hpack::{Encoder, Error},
@@ -22,10 +19,7 @@ use swoole_rs_http2::{
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
-use swoole_rs_zend::{
-    Array, HeldArray, Owned, Value as Zval, ZString, bailout, string,
-    sys::{add_assoc_str_ex, add_assoc_stringl_ex, swr_zend_url_decode, zval},
-};
+use swoole_rs_zend::{Array, HeldArray, Owned, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
 const FRAME_HEADER: usize = 9;
@@ -117,10 +111,6 @@ fn send(ctx: Ctx, data: &[u8]) -> bool {
 
 fn close(ctx: Ctx) {
     ctx.close();
-}
-
-pub(crate) fn zval_of(ctx: Ctx, which: Value) -> *mut zval {
-    ctx.value(which)
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
@@ -232,15 +222,6 @@ fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
     let sent = send(ctx, &frame);
     session.shutting_down.set(true);
     sent
-}
-
-/// `length` bytes at `data`, empty for null.
-fn bytes<'a>(data: *const c_char, length: usize) -> &'a [u8] {
-    if data.is_null() || length == 0 {
-        return &[];
-    }
-    // SAFETY: the caller lends `length` bytes.
-    unsafe { std::slice::from_raw_parts(data.cast(), length) }
 }
 
 // --- the response header block ---
@@ -423,16 +404,16 @@ fn build_trailer(ctx: Ctx, session: &Session) -> Option<Headers> {
     Some(headers.deflate(session))
 }
 
-/// The body a response header announces: its bytes (null for a file sent
+/// The body a response header announces: its bytes (none for a file sent
 /// later) and length.
 #[derive(Clone, Copy)]
-struct Body {
-    data: *const c_char,
+struct Body<'a> {
+    data: &'a [u8],
     length: usize,
 }
 
 /// `http2_server_build_header`.
-fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Headers> {
+fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<Headers> {
     let zheader = property(ctx, ResponseArray::Header);
     let zcookie = property(ctx, ResponseArray::Cookie);
     let mut headers =
@@ -511,7 +492,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body>) -> Option<Heade
     }
     if let Some(body) = body {
         let mut content_length = body.length;
-        if let Some((encoding, compressed)) = ctx.compress(bytes(body.data, body.length)) {
+        if let Some((encoding, compressed)) = ctx.compress(body.data) {
             content_length = compressed;
             headers.add(b"content-encoding", encoding.to_bytes());
         }
@@ -554,7 +535,7 @@ fn send_header(
     ctx: Ctx,
     session: &Session,
     stream: &Stream,
-    body: Option<Body>,
+    body: Option<Body<'_>>,
     end_stream: bool,
 ) -> bool {
     send_header_then(ctx, session, stream, body, end_stream, |_| ())
@@ -566,7 +547,7 @@ fn send_header_then(
     ctx: Ctx,
     session: &Session,
     stream: &Stream,
-    body: Option<Body>,
+    body: Option<Body<'_>>,
     end_stream: bool,
     then: impl FnOnce(&mut Vec<u8>),
 ) -> bool {
@@ -744,7 +725,7 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
         match action {
             RESP_HEADER => {
                 let announced = Body {
-                    data: data.as_ptr().cast(),
+                    data,
                     length: data.len(),
                 };
                 let mut appended = 0;
@@ -852,10 +833,7 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     if !typed {
         ctx.set_header(b"content-type", content_type);
     }
-    let body = Body {
-        data: ptr::null(),
-        length,
-    };
+    let body = Body { data: &[], length };
     if !send_header(ctx, &session, &stream, Some(body), !trailer) {
         return -1;
     }
@@ -915,7 +893,7 @@ fn on_receive(view: view::Server<'_>, conn: &ConnectionRecord, request: &RecvDat
     swoole_rs_phpserver::php_swoole_get_recv_data(view, &zdata, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
-    let result = session.map_or(SW_ERR, |session| parse(&session, data.as_ptr()));
+    let result = session.map_or(SW_ERR, |session| parse(&session, data));
     // Released before a deferred bailout can jump past it.
     drop(zdata);
     bailout::finish();
@@ -931,7 +909,7 @@ pub fn server_on_close(session_id: i64) {
 /// frame from the peer of connection `fd`, which `frame` starts with; a bailout
 /// stays pending for the caller's `finish`.
 fn session_receive(fd: i64, frame: &[u8]) -> c_int {
-    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, frame.as_ptr()))
+    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, frame))
 }
 
 /// The entry points crates/phphttp's HTTP/1 code calls.
@@ -949,11 +927,13 @@ pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::h
     session_free: crate::session::session_free,
 };
 
-fn parse(session: &Session, buf: *const u8) -> c_int {
+/// One frame, which `frame` starts with. `SW_ERR` for one shorter than its
+/// header says.
+fn parse(session: &Session, frame: &[u8]) -> c_int {
     let last_stream_id = session.last_stream_id.get();
-    // SAFETY: nine readable header bytes.
-    let head = unsafe { std::slice::from_raw_parts(buf, FRAME_HEADER) };
-    let facts = sw_rs_http2_decode_frame(head, last_stream_id, 0).unwrap_or_default();
+    let Some(facts) = sw_rs_http2_decode_frame(frame, last_stream_id, 0) else {
+        return SW_ERR;
+    };
     let stream_id = facts.stream_id;
     let new_stream = facts.publish_last_id != 0;
     if facts.kind == TYPE_HEADERS && new_stream {
@@ -973,36 +953,46 @@ fn parse(session: &Session, buf: *const u8) -> c_int {
         );
         return SW_ERR;
     }
-    let length = facts.length as usize;
-    // SAFETY: the payload follows the header in the frame.
-    let payload = unsafe { buf.add(FRAME_HEADER) };
+    // The payload follows the header in the frame.
+    let body = frame.get(FRAME_HEADER..).unwrap_or_default();
+    let Some(payload) = body.get(..facts.length as usize) else {
+        return SW_ERR;
+    };
     let flags = facts.flags & 0xff;
     match facts.action {
-        ACTION_SETTINGS => return settings(session, payload, length),
-        ACTION_HEADERS => return headers(session, stream_id, flags, payload, length, new_stream),
+        ACTION_SETTINGS => return settings(session, payload),
+        ACTION_HEADERS => return headers(session, stream_id, flags, payload, new_stream),
         _ if facts.kind == TYPE_CONTINUATION => {
             let stream = session.stream(stream_id, false);
             let Some(stream) = stream.filter(|_| pending == stream_id) else {
                 return SW_ERR;
             };
-            return header_block(session, &stream, flags & FLAG_END_HEADERS, payload, length);
+            return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
         }
-        ACTION_DATA => return data(session, stream_id, flags, payload, length),
+        ACTION_DATA => return data(session, stream_id, flags, payload),
         ACTION_PING_REPLY => {
-            let mut frame = [0; FRAME_HEADER + PING_PAYLOAD];
-            frame[..FRAME_HEADER].copy_from_slice(&frame_header(
+            // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
+            // other length is a FRAME_SIZE_ERROR.
+            let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
+                return SW_ERR;
+            };
+            let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
+            ack[..FRAME_HEADER].copy_from_slice(&frame_header(
                 TYPE_PING,
                 PING_PAYLOAD,
                 FLAG_ACK,
                 stream_id,
             ));
-            // SAFETY: the frame's eight payload bytes.
-            frame[FRAME_HEADER..]
-                .copy_from_slice(unsafe { std::slice::from_raw_parts(payload, PING_PAYLOAD) });
-            send(session.default_ctx, &frame);
+            ack[FRAME_HEADER..].copy_from_slice(&echo);
+            send(session.default_ctx, &ack);
         }
         ACTION_WINDOW_UPDATE => {
-            let value = read_u32(payload);
+            // RFC 9113 6.9: the increment's four bytes; any other length is a
+            // FRAME_SIZE_ERROR.
+            let Ok(increment) = <[u8; 4]>::try_from(payload) else {
+                return SW_ERR;
+            };
+            let value = u32::from_be_bytes(increment);
             if stream_id == 0 {
                 session
                     .remote_window_size
@@ -1028,8 +1018,7 @@ fn headers(
     session: &Session,
     stream_id: u32,
     flags: u32,
-    payload: *const u8,
-    length: usize,
+    payload: &[u8],
     new_stream: bool,
 ) -> c_int {
     let stream = match session.stream(stream_id, false) {
@@ -1042,36 +1031,30 @@ fn headers(
         None => return SW_ERR,
     };
     session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
-    let (mut payload, mut length) = (payload, length);
+    let mut block = payload;
     if flags & FLAG_PADDED != 0 {
-        let Some(&pad) = bytes(payload.cast(), length).first() else {
+        // The pad length, the block, then that much padding.
+        let Some((&pad, rest)) = payload.split_first() else {
             return SW_ERR;
         };
-        let pad = usize::from(pad);
-        if pad >= length {
+        let kept = rest.len().checked_sub(usize::from(pad));
+        let Some(kept) = kept.and_then(|kept| rest.get(..kept)) else {
             return SW_ERR;
-        }
-        length -= pad + 1;
-        payload = payload.wrapping_add(1);
+        };
+        block = kept;
     }
-    header_block(session, &stream, flags, payload, length)
+    header_block(session, &stream, flags, block)
 }
 
 /// One HEADERS or CONTINUATION frame's part of a header block. At the block's
 /// end the request is configured from its headers and, with `END_STREAM`,
 /// dispatched.
-fn header_block(
-    session: &Session,
-    stream: &Stream,
-    flags: u32,
-    payload: *const u8,
-    length: usize,
-) -> c_int {
+fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) -> c_int {
     if stream.request_received.get() {
         return SW_ERR;
     }
     let discard = stream.headers_received.get();
-    if parse_header(session, stream, flags, payload, length, discard) < 0 {
+    if parse_header(session, stream, flags, payload, discard) < 0 {
         return SW_ERR;
     }
     if flags & FLAG_END_HEADERS == 0 {
@@ -1154,11 +1137,6 @@ fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
     string_of(&entry)
 }
 
-fn read_u32(at: *const u8) -> u32 {
-    // SAFETY: four readable bytes of the frame.
-    u32::from_be_bytes(unsafe { at.cast::<[u8; 4]>().read_unaligned() })
-}
-
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
     sw_rs_http2_window_plan(current, amount, initial, u32::from(credit))
 }
@@ -1168,12 +1146,13 @@ fn credit(current: u32, amount: u32) -> u32 {
 }
 
 /// A SETTINGS frame: apply each, then acknowledge.
-fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
-    let mut left = isize::try_from(length).unwrap_or(isize::MAX);
-    while left > 0 {
-        // SAFETY: six readable bytes, as upstream reads them.
-        let entry = unsafe { at.cast::<[u8; 6]>().read_unaligned() };
-        let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(&entry);
+fn settings(session: &Session, payload: &[u8]) -> c_int {
+    // RFC 9113 6.5: six bytes a setting; any other length is a FRAME_SIZE_ERROR.
+    let (entries, &[]) = payload.as_chunks::<6>() else {
+        return SW_ERR;
+    };
+    for entry in entries {
+        let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
         let mut deflater = session.deflater.borrow_mut();
         let old = if id == SETTING_HEADER_TABLE_SIZE {
             session.remote[0].get()
@@ -1197,9 +1176,6 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
             encoder.set_table_size(value);
         }
         drop(deflater);
-        // SAFETY: the next setting, as upstream steps.
-        at = unsafe { at.add(6) };
-        left -= 6;
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
@@ -1211,7 +1187,7 @@ fn settings(session: &Session, mut at: *const u8, length: usize) -> c_int {
 
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
-fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, length: usize) -> c_int {
+fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int {
     let Some(stream) = session.stream(stream_id, false) else {
         log(
             LOG_WARNING,
@@ -1225,6 +1201,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
         return SW_ERR;
     }
     let ctx = stream.ctx;
+    let length = payload.len();
     if length > 0 {
         let buffered = ctx.data_start();
         let ended = get(ctx, Field::End);
@@ -1233,8 +1210,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: *const u8, lengt
             session.remove(stream_id);
             return SW_OK;
         }
-        // SAFETY: a live context and the frame's payload.
-        ctx.data_append(bytes(payload.cast(), length));
+        ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);
     }
     if flags & FLAG_END_STREAM != 0 {
@@ -1268,12 +1244,9 @@ fn parse_header(
     session: &Session,
     stream: &Stream,
     flags: u32,
-    input: *const u8,
-    length: usize,
+    mut input: &[u8],
     discard: bool,
 ) -> c_int {
-    // SAFETY: the frame's `length` payload bytes.
-    let mut input = unsafe { std::slice::from_raw_parts(input, length) };
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
         let Some(block) = input.get(5..) else {
@@ -1281,8 +1254,7 @@ fn parse_header(
         };
         input = block;
     }
-    let zheader = zval_of(stream.ctx, Value::Header);
-    let zserver = zval_of(stream.ctx, Value::Server);
+    stream.ctx.header_arrays();
     let mut inflater = session.inflater.borrow_mut();
     loop {
         let step = match inflater.decode(input, flags & FLAG_END_HEADERS != 0) {
@@ -1298,7 +1270,7 @@ fn parse_header(
         let inflate_flags = step.flags();
         // Trailers are decoded for the HPACK table but never exposed or acted on.
         if let Some((name, value)) = step.header.filter(|_| !discard)
-            && !request_header(session, stream, zheader, zserver, name, value)
+            && !request_header(session, stream, name, value)
         {
             continue;
         }
@@ -1314,37 +1286,22 @@ fn parse_header(
     SW_OK
 }
 
-fn add_string(array: *mut zval, key: &[u8], value: &[u8]) {
-    // SAFETY: a live array; Zend copies both.
-    unsafe {
-        add_assoc_stringl_ex(
-            array,
-            key.as_ptr().cast(),
-            key.len(),
-            value.as_ptr().cast(),
-            value.len(),
-        );
-    };
+/// `add_assoc_stringl_ex` on the request's `$server` or `$header`.
+fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
+    ctx.insert(array, key, ZString::new(value));
 }
 
 /// One request header; `false` skips the rest of the step (a Cookie, parsed
 /// into `$cookie` and never kept in `$header`, or a Content-Length, checked
 /// here and judged once the block is complete).
-fn request_header(
-    session: &Session,
-    stream: &Stream,
-    zheader: *mut zval,
-    zserver: *mut zval,
-    name: &[u8],
-    value: &[u8],
-) -> bool {
+fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
     let ctx = stream.ctx;
     let kind = header_plan(REQUEST_HEADERS, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
-            HEADER_METHOD => add_string(zserver, b"request_method", value),
-            HEADER_PATH => path(ctx, zserver, value),
-            HEADER_AUTHORITY => add_string(zheader, b"host", value),
+            HEADER_METHOD => add_string(ctx, Value::Server, b"request_method", value),
+            HEADER_PATH => path(ctx, value),
+            HEADER_AUTHORITY => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
         return true;
@@ -1360,26 +1317,26 @@ fn request_header(
                 stream.bad_length.set(true);
             }
             // The header keeps the last value.
-            add_string(zheader, b"content-length", value);
+            add_string(ctx, Value::Header, b"content-length", value);
             false
         }
         _ => {
             if matches!(kind, HEADER_CONTENT_TYPE | HEADER_ACCEPT_ENCODING) {
                 stream.negotiates.set(true);
             }
-            add_string(zheader, name, value);
+            add_string(ctx, Value::Header, name, value);
             true
         }
     }
 }
 
 /// `:path`: `request_uri`, `path_info` (decoded), `query_string` and `$get`.
-fn path(ctx: Ctx, zserver: *mut zval, value: &[u8]) {
+fn path(ctx: Ctx, value: &[u8]) {
     let question = value.iter().position(|&byte| byte == b'?');
     let path = match question.and_then(|question| value.split_at_checked(question)) {
         Some((path, query)) => {
             let query = query.get(1..).unwrap_or_default();
-            add_string(zserver, b"query_string", query);
+            add_string(ctx, Value::Server, b"query_string", query);
             // SAFETY: the request's `$get`.
             ctx.treat_query(Value::Get, query);
             path
@@ -1388,15 +1345,8 @@ fn path(ctx: Ctx, zserver: *mut zval, value: &[u8]) {
     };
     // SAFETY: a live context without a path.
     ctx.set_path(value);
-    // SAFETY: a live array taking the new string.
-    unsafe { add_assoc_str_ex(zserver, c"request_uri".as_ptr(), 11, string::copy(path)) };
-    let decoded = string::copy(path);
-    // SAFETY: a fresh string of `path.len()` bytes, decoded in place.
-    let length = unsafe { swr_zend_url_decode(string::val(decoded).cast(), path.len()) };
-    // SAFETY: as above; decoding only shortens.
-    unsafe { string::truncate(decoded, length) };
-    // SAFETY: a live array taking the string.
-    unsafe { add_assoc_str_ex(zserver, c"path_info".as_ptr(), 9, decoded) };
+    add_string(ctx, Value::Server, b"request_uri", path);
+    ctx.insert(Value::Server, b"path_info", ZString::url_decode(path));
 }
 
 /// `std::strtol(value, &end, 10)` and whether it consumed the whole value.
