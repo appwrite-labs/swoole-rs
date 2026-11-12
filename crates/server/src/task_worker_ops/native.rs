@@ -167,7 +167,7 @@ extern "C" fn on_pipe_receive(
     };
     let mut task = MaybeUninit::<EventData>::uninit();
     let mut ctx = Context::of(pool, worker);
-    ctx.socket = event.socket_ptr().cast();
+    ctx.socket = event.socket();
     ctx.buf = task.as_mut_ptr().cast();
     run(&mut ctx, RUN_TASK_ON_PIPE)
 }
@@ -207,6 +207,6 @@ pub fn finish(
         .or(latest.as_ref())
         .map_or(core::ptr::null(), core::ptr::from_ref);
     ctx.buf = buf.as_mut_ptr().cast();
-    (ctx.data, ctx.data_len) = (data.as_ptr(), data.len());
+    ctx.data = data;
     run_with(&mut ctx, RUN_FINISH, u64::from(flags.cast_unsigned())) != 0
 }
