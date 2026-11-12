@@ -1186,9 +1186,7 @@ pub(crate) unsafe extern "C" fn length_func(
     let owner = unsafe { (*protocol).private_data_1 };
     // SAFETY: a live handle.
     let cache = unsafe { callable::cache(owner.cast()) };
-    // SAFETY: per the caller.
-    let bytes = unsafe { std::slice::from_raw_parts(packet.buf, packet.buf_size as usize) };
-    let mut data = Owned::string(ZString::new(bytes)).into_zval();
+    let mut data = Owned::string(ZString::new(packet.bytes())).into_zval();
     let retval = Owned::default();
     let mut result = -1;
     match call_unlimited(cache, std::slice::from_mut(&mut data), retval.as_ptr()) {

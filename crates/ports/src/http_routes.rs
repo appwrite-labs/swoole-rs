@@ -91,17 +91,12 @@ pub mod exports {
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
     /// crates/phphttp's coroutine server.
-    ///
-    /// # Safety
-    /// `pl.buf` holds `pl.buf_size` readable bytes.
-    pub unsafe extern "C" fn http2_length(
+    pub extern "C" fn http2_length(
         _proto: *const Protocol,
         _socket: *mut c_void,
         pl: &mut PacketLength,
     ) -> isize {
-        // SAFETY: as the caller promises.
-        let buffered = unsafe { std::slice::from_raw_parts(pl.buf, pl.buf_size as usize) };
-        swoole_rs_http2::frame_length(buffered)
+        swoole_rs_http2::frame_length(pl.bytes())
     }
 
     /// The connection a server socket's `object` holds.
@@ -355,12 +350,8 @@ pub mod exports {
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket.cast()) };
         match route(conn, || Some(true), || Some(false), None) {
-            // SAFETY: upstream's arguments, forwarded.
-            Some(true) => unsafe {
-                swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket, pl)
-            },
-            // SAFETY: as above.
-            Some(false) => unsafe { http2_length(proto, socket, pl) },
+            Some(true) => swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket, pl),
+            Some(false) => http2_length(proto, socket, pl),
             None => -1,
         }
     }

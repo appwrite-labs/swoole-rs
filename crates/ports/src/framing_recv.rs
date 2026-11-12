@@ -81,11 +81,7 @@ impl Packages for Callbacks {
     const HEAD: Option<u32> = None;
     #[inline(always)]
     fn length(r: &Recv<'_>, p: &Protocol, bytes: &[u8]) -> i64 {
-        let mut pl = PacketLength {
-            buf: bytes.as_ptr(),
-            buf_size: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
-            header_len: 0,
-        };
+        let mut pl = PacketLength::new(bytes);
         let Some(get) = p.get_package_length else {
             return -1;
         };
@@ -484,12 +480,7 @@ pub unsafe extern "C" fn default_length_func(
         Some(size) => unsafe { size(socket) },
         None => p.package_length_size,
     };
-    let bytes = if pl.buf.is_null() || pl.buf_size == 0 {
-        &[][..]
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { core::slice::from_raw_parts(pl.buf, pl.buf_size as usize) }
-    };
+    let bytes = pl.bytes();
     match default_length(
         p.package_length_type,
         bytes,
