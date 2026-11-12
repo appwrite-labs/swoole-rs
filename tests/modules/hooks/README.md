@@ -278,7 +278,7 @@ lambdas; a failed assertion in one aborts the process it runs in (the master or 
 worker), as GoogleTest's does only in the master. core-tests' counters are
 `sw_mem_pool()` memory (crates/memory's `members::pool::alloc`, by path), so workers'
 increments reach the master. `tcp_raw` calls the
-raw-bytes `swr_v1_process_pool_ipc_send_sync` and `_listener`, as core-tests' adapted
+raw-bytes `swr_v1_process_pool_ipc_send_sync` (by path) and `_listener`, as core-tests' adapted
 copy did; `msgqueue_2` discards its child's status, as `spawn_exec_and_wait`'s caller
 does. `SyncClient` becomes `std::net::TcpStream` and `UnixStream`. The Server
 worker-retirement witness (formerly `tests/modules/process/worker_retirement.cc`, then
