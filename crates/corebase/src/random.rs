@@ -2,8 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/core/base.cc (Swoole contributors).
 //! `swoole_random_string`: alphanumerics drawn one at a time with `swoole_rand(0, 61)`.
 use crate::host::swoole_rand;
-use std::ffi::{c_char, c_int};
-use std::slice;
+use std::ffi::c_int;
 
 /// Upstream's `characters` table.
 const CHARACTERS: &[u8; 62] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -28,16 +27,9 @@ fn fill(buffer: &mut [u8], draw: &mut impl FnMut(c_int, c_int) -> c_int) {
     }
 }
 
-/// `void swoole_random_string(char *buf, size_t len)`: `len` characters, then a NUL.
-/// # Safety
-/// `buf` is writable for `len + 1` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_random_stringPcm")
-)]
-pub unsafe extern "C" fn swoole_random_string(buf: *mut c_char, len: usize) {
-    // SAFETY: the caller lends `len + 1` writable bytes.
-    let buffer = unsafe { slice::from_raw_parts_mut(buf.cast::<u8>(), len + 1) };
+/// `void swoole_random_string(char *buf, size_t len)` over `buffer`, `len + 1`
+/// bytes long: `len` characters, then a NUL.
+pub fn swoole_random_string(buffer: &mut [u8]) {
     fill(buffer, &mut |low, high| swoole_rand(low, high));
 }
 
@@ -165,10 +157,10 @@ mod tests {
     }
 
     #[test]
-    fn exported_overloads_draw_from_the_table() {
+    fn random_string_draws_from_the_table() {
         assert_eq!(CHARACTERS, UPSTREAM);
         let mut buffer = [0xa5_u8; 66];
-        unsafe { swoole_random_string(buffer.as_mut_ptr().cast(), 64) };
+        swoole_random_string(&mut buffer[..65]);
         assert!(buffer[..64].iter().all(|byte| UPSTREAM.contains(byte)));
         assert_eq!(buffer[64..], [0, 0xa5]);
     }

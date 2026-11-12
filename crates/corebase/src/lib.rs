@@ -597,7 +597,7 @@ mod tests {
     fn base_mkdir_recursive() {
         let max = libc::PATH_MAX as usize;
         let (mut dir, mut scratch) = (vec![0u8; max + 1], vec![0u8; max]);
-        unsafe { crate::random::swoole_random_string(dir.as_mut_ptr().cast(), max) };
+        crate::random::swoole_random_string(&mut dir);
         let status = swr_v1_corebase_mkdir_complete(&dir[..max], &mut scratch);
         assert_ne!(status, 0);
     }

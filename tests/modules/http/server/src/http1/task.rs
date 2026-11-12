@@ -962,8 +962,8 @@ fn task_sync_multi_task() {
         let MultiTasks { tasks, results } = &mut *multi;
         for _ in 0..n_task {
             let mut data = vec![0u8; len_task];
-            // SAFETY: `len_task - 1` characters and their NUL.
-            unsafe { swoole_random_string(data.as_mut_ptr().cast(), len_task - 1) };
+            // `len_task - 1` characters and their NUL.
+            swoole_random_string(&mut data);
             data.truncate(len_task - 1);
             tasks.push(data);
         }
