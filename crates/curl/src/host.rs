@@ -156,10 +156,7 @@ pub(crate) unsafe fn timer_del(timer: *mut c_void) {
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {
-    // SAFETY: this thread's scheduler.
-    let current = unsafe { (*scheduler()).current };
-    // SAFETY: null or the live running coroutine.
-    unsafe { current.as_ref() }.map_or(std::ptr::null_mut(), |co| co.native)
+    swoole_rs_coroutine::current_native()
 }
 
 /// `co->yield_ex(timeout)`, then whether it was canceled.
@@ -167,9 +164,9 @@ pub(crate) fn current() -> *mut c_void {
 /// `co` is the running coroutine; the caller's frames own nothing with a destructor.
 pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
     // SAFETY: per the caller.
-    unsafe { swoole_rs_coroutine::yield_ex(co, timeout) };
-    // SAFETY: a facade starts with its Rust state, and `co` runs again.
-    unsafe { (*co.cast::<Coroutine>()).resume_code == RC_CANCELED }
+    let code = unsafe { swoole_rs_coroutine::yield_timed(co, timeout) };
+    // `yield_ex`: the last error of a timeout or a cancel.
+    !swoole_rs_coroutine::yield_resumed(code) && code == RC_CANCELED
 }
 
 /// # Safety

@@ -65,8 +65,10 @@ pub extern "C" fn swr_v1_core_thread_global() -> *mut ThreadGlobal {
 /// `&SwooleTG.timer`, for crates/timer and crates/server.
 #[must_use]
 pub fn swr_v1_core_timer_slot() -> *mut *mut c_void {
-    // SAFETY: this thread's live record; only the field's address is taken.
-    unsafe { &raw mut (*swr_v1_core_thread_global()).timer }
+    // The field's address inside this thread's live record; computing it reads nothing.
+    swr_v1_core_thread_global()
+        .wrapping_byte_add(std::mem::offset_of!(ThreadGlobal, timer))
+        .cast()
 }
 
 /// `SwooleTG.timer`: this thread's timer, or null.

@@ -136,22 +136,15 @@ fn insert(set: &RefCell<Vec<*mut Socket>>, socket: *mut Socket) {
     }
 }
 
-/// Free a socket [`Multi::set_event`] made.
-/// # Safety
-/// `socket` came from `Box::into_raw` and nothing uses it afterwards.
-unsafe fn free_socket(socket: *mut Socket) {
-    // SAFETY: per the caller.
-    drop(unsafe { Box::from_raw(socket) });
-}
-
 impl Multi {
     /// `Multi::Multi`: a multi handle whose socket and timer callbacks reach
     /// this multi, which therefore lives in a box until
     /// [`swr_v1_curl_multi_free`].
     fn create() -> *mut Self {
+        // SAFETY: no preconditions.
+        let handle = unsafe { curl_multi_init() };
         let multi = Box::into_raw(Box::new(Self {
-            // SAFETY: no preconditions.
-            handle: unsafe { curl_multi_init() },
+            handle,
             timer: Cell::new(ptr::null_mut()),
             co: Cell::new(ptr::null_mut()),
             running: Cell::new(0),
@@ -163,18 +156,16 @@ impl Multi {
             release: RefCell::new(Vec::new()),
             sockets: RefCell::new(BTreeMap::new()),
         }));
-        // SAFETY: made above.
-        let handle = unsafe { (*multi).handle };
         let on_socket: curl_socket_callback = handle_socket;
         let on_timer: curl_multi_timer_callback = handle_timeout;
         // SAFETY: the handle just made; the callbacks match curl's types.
         unsafe { curl_multi_setopt(handle, CURLMOPT_SOCKETFUNCTION, on_socket) };
         // SAFETY: as above.
         unsafe { curl_multi_setopt(handle, CURLMOPT_TIMERFUNCTION, on_timer) };
-        // SAFETY: as above; the box outlives the handle.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_SOCKETDATA, multi.cast::<c_void>()) };
-        // SAFETY: as above.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_TIMERDATA, multi.cast::<c_void>()) };
+        for data in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
+            // SAFETY: as above; the box outlives the handle.
+            unsafe { curl_multi_setopt(handle, data, multi.cast::<c_void>()) };
+        }
         multi
     }
 
@@ -183,11 +174,7 @@ impl Multi {
     }
 
     fn add_timer(&self, timeout_ms: c_long) {
-        let timer = self.timer.get();
-        if !timer.is_null() && host::timer_available() {
-            // SAFETY: a timer this multi added and still holds.
-            unsafe { host::timer_del(timer) };
-        }
+        self.del_timer();
         self.timer.set(host::timer_add(timeout_ms, self));
     }
 
@@ -200,11 +187,23 @@ impl Multi {
         }
     }
 
+    /// `curl_multi_timeout`: its result and the timeout, `unset` if curl wrote none.
+    fn timeout(&self, unset: c_long) -> (CURLMcode, c_long) {
+        let mut timeout_ms = unset;
+        // SAFETY: this multi's handle, live until `swr_v1_curl_multi_free`.
+        let result = unsafe { curl_multi_timeout(self.handle, &raw mut timeout_ms) };
+        (result, timeout_ms)
+    }
+
+    /// `curl_multi_assign`: `socket` is what curl's socket callback gets for `sockfd`.
+    fn assign(&self, sockfd: curl_socket_t, socket: *mut Socket) -> CURLMcode {
+        // SAFETY: this multi's handle, live until `swr_v1_curl_multi_free`; curl
+        // stores the pointer and never reads through it.
+        unsafe { curl_multi_assign(self.handle, sockfd, socket.cast()) }
+    }
+
     fn set_timer(&self) {
-        let mut timeout_ms: c_long = 0;
-        // SAFETY: this multi's handle.
-        unsafe { curl_multi_timeout(self.handle, &raw mut timeout_ms) };
-        self.on_timeout(timeout_ms);
+        self.on_timeout(self.timeout(0).1);
     }
 
     /// `Multi::handle_timeout`.
@@ -241,12 +240,11 @@ impl Multi {
                 action: Cell::new(0),
                 deleted: Cell::new(false),
             }));
-            // SAFETY: this multi's handle, and a socket curl reports.
-            if unsafe { curl_multi_assign(self.handle, sockfd, socket.cast()) } != CURLM_OK {
+            if self.assign(sockfd, socket) != CURLM_OK {
                 // SAFETY: made above, and never registered.
                 unsafe { reactor.free() };
-                // SAFETY: made above; curl does not hold it.
-                unsafe { free_socket(socket) };
+                // SAFETY: boxed above; curl does not hold it.
+                drop(unsafe { Box::from_raw(socket) });
                 return -1;
             }
             // The reactor socket carries the box it reports.
@@ -271,8 +269,7 @@ impl Multi {
     /// `Multi::del_event`.
     fn del_event(&self, socket: *mut Socket, sockfd: curl_socket_t) -> c_int {
         self.sockets.borrow_mut().remove(&sockfd);
-        // SAFETY: this multi's handle.
-        unsafe { curl_multi_assign(self.handle, sockfd, ptr::null_mut()) };
+        self.assign(sockfd, ptr::null_mut());
         if socket.is_null() {
             return ERR;
         }
@@ -285,8 +282,9 @@ impl Multi {
             curl_socket.deleted.set(true);
             insert(&self.release, socket);
         } else {
-            // SAFETY: curl let go of it above and the selector holds no copy.
-            unsafe { free_socket(socket) };
+            // SAFETY: the box `set_event` made; curl let go of it above and the
+            // selector holds no copy.
+            drop(unsafe { Box::from_raw(socket) });
         }
         OK
     }
@@ -419,9 +417,7 @@ impl Multi {
 
     /// `Multi::perform` (`curl_multi_exec`), once C++ checked the coroutine.
     fn perform(&self) -> CURLMcode {
-        let mut timeout_ms: c_long = -1;
-        // SAFETY: this multi's handle.
-        let result = unsafe { curl_multi_timeout(self.handle, &raw mut timeout_ms) };
+        let (result, timeout_ms) = self.timeout(-1);
         if result != CURLM_OK {
             return result;
         }
@@ -477,8 +473,9 @@ impl Multi {
         self.executing.set(false);
         self.active.borrow_mut().clear();
         for socket in std::mem::take(&mut *self.release.borrow_mut()) {
-            // SAFETY: deleted while executing; nothing references it now.
-            unsafe { free_socket(socket) };
+            // SAFETY: the box `set_event` made, deleted while executing; nothing
+            // references it now.
+            drop(unsafe { Box::from_raw(socket) });
         }
         result
     }

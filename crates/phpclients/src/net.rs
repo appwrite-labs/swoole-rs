@@ -541,22 +541,17 @@ pub(crate) fn check_type(kind: i64) -> bool {
     // SAFETY: inside a method call; Zend returns static names.
     let class = unsafe { get_active_class_name(&raw mut space) };
     // SAFETY: as above.
-    let class = unsafe { CStr::from_ptr(class) };
-    // SAFETY: as above.
-    let space = unsafe { CStr::from_ptr(space) };
-    // SAFETY: as above.
     let function = unsafe { get_active_function_name() };
-    // SAFETY: as above.
-    let function = unsafe { CStr::from_ptr(function) };
-    let message = format!(
-        "{}{}{}() expects parameter 1 to be client type, unknown type {kind} given",
-        class.to_string_lossy(),
-        space.to_string_lossy(),
-        function.to_string_lossy(),
-    );
-    let message = CString::new(message).unwrap_or_default();
-    // SAFETY: "%s" takes the NUL-terminated message.
-    unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+    // SAFETY: Zend's printf: those three NUL-terminated names and a `long long`.
+    unsafe {
+        zend_type_error(
+            c"%s%s%s() expects parameter 1 to be client type, unknown type %lld given".as_ptr(),
+            class,
+            space,
+            function,
+            kind,
+        );
+    }
     false
 }
 

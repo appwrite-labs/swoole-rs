@@ -60,8 +60,8 @@ pub(crate) fn save_origin(signo: c_int, previous: Option<libc::sigaction>) {
 pub(crate) fn restore_origin(signo: c_int) {
     origin(signo, |action| {
         if let Some(action) = action.take() {
-            // SAFETY: an action sigaction returned.
-            unsafe { libc::sigaction(signo, &raw const action, std::ptr::null_mut()) };
+            // An action sigaction returned.
+            sigaction(signo, &action);
         } else {
             install(signo, SIG_DFL, false, false);
         }
@@ -123,7 +123,6 @@ pub(crate) fn install(
     mask: bool,
 ) -> Option<libc::sigaction> {
     let mut action: libc::sigaction = swoole_rs_corebase::sys::zeroed();
-    let mut previous: libc::sigaction = swoole_rs_corebase::sys::zeroed();
     action.sa_sigaction = func;
     let fill: unsafe extern "C" fn(*mut libc::sigset_t) -> c_int = if mask {
         libc::sigfillset
@@ -133,8 +132,15 @@ pub(crate) fn install(
     // SAFETY: `sa_mask` is a valid sigset_t.
     unsafe { fill(&raw mut action.sa_mask) };
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
-    // SAFETY: both actions are valid; `func` is a handler or SIG_IGN/SIG_DFL.
-    let installed = unsafe { libc::sigaction(signo, &raw const action, &raw mut previous) };
+    // `func` is a handler or SIG_IGN/SIG_DFL.
+    sigaction(signo, &action)
+}
+
+/// `sigaction(2)`: the previous action, or none if it failed.
+fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> {
+    let mut previous: libc::sigaction = swoole_rs_corebase::sys::zeroed();
+    // SAFETY: both actions are valid for the call.
+    let installed = unsafe { libc::sigaction(signo, action, &raw mut previous) };
     (installed == 0).then_some(previous)
 }
 

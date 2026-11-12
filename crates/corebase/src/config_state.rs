@@ -94,24 +94,29 @@ pub fn task_tmpfile() -> Arc<CStr> {
     task_slot().clone().unwrap_or_else(|| Arc::from(c""))
 }
 
+/// `change` over `SwooleG`'s fields, for `swoole_init` and `swoole_clean` alone.
+fn edit(change: impl FnOnce(&mut Global)) {
+    // SAFETY: init and clean, this function's only callers, run with no other thread
+    // using `SwooleG`, and `change` calls nothing that reads it.
+    change(unsafe { &mut *global() });
+}
+
 /// `SwooleG = {}`: the fields and the paths (lifecycle.rs clears the name resolvers with them).
 pub(crate) fn reset() {
-    // SAFETY: init and clean run with no other thread using `SwooleG`.
-    unsafe { global().write(Global::ZERO) };
+    edit(|global| *global = Global::ZERO);
     *task_slot() = None;
 }
 
 /// `swoole_init`'s first step: libc's allocator.
 pub(crate) fn init_allocator() {
-    // SAFETY: as `reset`.
-    unsafe {
-        (*global()).std_allocator = CoreAllocator {
+    edit(|global| {
+        global.std_allocator = CoreAllocator {
             malloc: Some(libc::malloc),
             calloc: Some(libc::calloc),
             realloc: Some(libc::realloc),
             free: Some(libc::free),
         };
-    };
+    });
 }
 
 /// `swoole_init`'s configuration once the logger exists: the resolver and task
@@ -119,8 +124,7 @@ pub(crate) fn init_allocator() {
 pub(crate) fn init() {
     let observed = crate::swr_v1_core_max_sockets(SW_SESSION_LIST_SIZE);
     let limit = u32::try_from(observed).unwrap_or(crate::constants::SW_MAX_SOCKETS_DEFAULT);
-    // SAFETY: as `reset`.
-    unsafe { (*global()).max_sockets = limit };
+    edit(|global| global.max_sockets = limit);
     if observed < 0 {
         crate::log::sys_warning(c"swoole_init", format_args!("getrlimit() failed"));
     }

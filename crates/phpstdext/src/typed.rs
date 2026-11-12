@@ -18,10 +18,10 @@ use swoole_rs_zend::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
         swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof, swr_zend_try_lookup_class,
-        zend_class_entry, zend_execute_data, zend_function, zend_get_type_by_const,
-        zend_internal_function, zend_long, zend_throw_error, zend_type_error, zend_value,
-        zif_handler, zval, zval_ptr_dtor,
+        zend_class_entry, zend_execute_data, zend_function, zend_internal_function, zend_long,
+        zend_value, zif_handler, zval, zval_ptr_dtor,
     },
+    throw_error, type_error,
     value::{self, table},
 };
 
@@ -256,7 +256,7 @@ fn parse_value(text: &[u8], start: usize, len: usize) -> Option<TypeValue> {
         Ok(value) => Some(value),
         Err(rest) => {
             let rest = text.get(rest..).unwrap_or_default();
-            throw(&message(&[
+            throw_error(&message(&[
                 b"The key type of array must be string or int, but got ",
                 rest,
             ]));
@@ -299,7 +299,7 @@ fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize
 /// `ArrayTypeInfo::parse`.
 fn parse(source: &[u8]) -> Result<Parsed, Failure> {
     if u16::try_from(source.len()).is_err() || source.len() == usize::from(u16::MAX) {
-        throw(c"The type definition string is too long (must be less than 65535 characters)");
+        throw_error(c"The type definition string is too long (must be less than 65535 characters)");
         return Err(Failure::Thrown);
     }
     // `zend_string_tolower`, then `remove_all_spaces`.
@@ -310,7 +310,7 @@ fn parse(source: &[u8]) -> Result<Parsed, Failure> {
         .collect();
     let len = text.len();
     if text.first() != Some(&b'<') || text.last() != Some(&b'>') {
-        throw(c"The type definition of typed array must start with '<' and end with '>'");
+        throw_error(c"The type definition of typed array must start with '<' and end with '>'");
         return Err(Failure::Thrown);
     }
     text.push(0);
@@ -335,22 +335,10 @@ fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
         return Err(Failure::Bailout(Bailout));
     }
     if ce.is_null() {
-        throw(&message(&[b"Class '", name.bytes(), b"' not found"]));
+        throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
         return Err(Failure::Thrown);
     }
     Ok(ce)
-}
-
-/// `zend_throw_error(NULL, "%s", message)`.
-pub(crate) fn throw(message: &CStr) {
-    // SAFETY: "%s" takes the NUL-terminated message.
-    unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
-}
-
-/// `zend_type_error("%s", message)`.
-fn type_error(message: &CStr) {
-    // SAFETY: "%s" takes the NUL-terminated message.
-    unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
 }
 
 /// The parts in a row, each as printf's `%s` (or `%.*s`) prints it: up to its
@@ -364,14 +352,8 @@ pub(crate) fn message(parts: &[&[u8]]) -> CString {
 
 /// `zend_get_type_by_const`, as printf's `%s` shows it.
 fn type_name(kind: u32) -> &'static [u8] {
-    // SAFETY: Zend's name table.
-    let name = unsafe { zend_get_type_by_const(kind.cast_signed()) };
-    if name.is_null() {
-        // What Zend's printf shows for a null string.
-        return b"(null)";
-    }
-    // SAFETY: a static, NUL-terminated name.
-    unsafe { CStr::from_ptr(name) }.to_bytes()
+    // "(null)" is what Zend's printf shows for a null string.
+    swoole_rs_zend::type_name(kind).map_or(b"(null)", CStr::to_bytes)
 }
 
 /// A key as [`check`] reads it: its type and, for an int, its value.
@@ -421,7 +403,7 @@ pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
         return false;
     }
     match (value.class(), Typed::of(&value)) {
-        (Some(actual), _) => check_object(typed.header().ce, actual),
+        (Some(actual), _) => check_object(typed, &value, actual),
         (None, element) if expected == IS_ARRAY => check_array(typed, element),
         _ => true,
     }
@@ -446,7 +428,7 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
         if key.index > i64::from(typed.count()) {
             // `%ld` of the key.
             let index = (key.index as c_long).to_string();
-            throw(&message(&[
+            throw_error(&message(&[
                 b"Incorrect array key `",
                 index.as_bytes(),
                 b"`, out of the permitted range",
@@ -454,30 +436,33 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
             return false;
         }
     } else if !matches!(key.kind, IS_UNDEF | IS_NULL) {
-        throw(c"Incorrect array key, must be undef or int");
+        throw_error(c"Incorrect array key, must be undef or int");
         return false;
     }
     true
 }
 
-/// Whether an object of class `actual` is a `ce`.
-fn check_object(ce: *mut zend_class_entry, actual: *mut zend_class_entry) -> bool {
-    // SAFETY: live classes.
+/// Whether `value`, an object of class `actual`, is of the class `typed`'s
+/// values have.
+fn check_object(typed: Typed, value: &Value, actual: *mut zend_class_entry) -> bool {
+    let ce = typed.header().ce;
+    // SAFETY: live classes: `value`'s own, and the one the definition's parse
+    // looked up for its object values.
     if unsafe { swr_zend_instanceof(actual, ce) } {
         return true;
     }
-    // SAFETY: live classes.
-    let expected_name = unsafe { (*ce).name };
-    // SAFETY: as above.
-    let actual_name = unsafe { (*actual).name };
-    // SAFETY: printf arguments: two class names.
-    unsafe {
-        zend_type_error(
-            c"Array value type mismatch, expected `%s`, got `%s`".as_ptr(),
-            swoole_rs_zend::string::val(expected_name),
-            swoole_rs_zend::string::val(actual_name),
-        );
-    }
+    // SAFETY: that live class.
+    let expected = unsafe { (*ce).name };
+    // SAFETY: a class's name lives as long as the class.
+    let expected = unsafe { swoole_rs_zend::string::bytes(expected) };
+    type_error(&message(&[
+        b"Array value type mismatch, expected `",
+        expected,
+        b"`, got `",
+        // An object's value name is its class's.
+        value.value_name().to_bytes(),
+        b"`",
+    ]));
     false
 }
 
@@ -561,7 +546,7 @@ pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -
     };
     match Typed::of(array) {
         Some(typed) if typed.this().key == 0 => {
-            throw(c"The typed array list do not support random deletion of elements");
+            throw_error(c"The typed array list do not support random deletion of elements");
             CONTINUE
         }
         _ => DISPATCH,
@@ -579,7 +564,9 @@ pub unsafe extern "C" fn swr_v1_phpstdext_foreach_begin(frame: *mut zend_execute
     if op.op1_container().and_then(Typed::of).is_none() {
         return DISPATCH;
     }
-    throw(c"The type array do not support using references for element value during iteration");
+    throw_error(
+        c"The type array do not support using references for element value during iteration",
+    );
     if let Some(result) = op.result() {
         let mut undefined = UNDEF;
         undefined.u2 = _zval_struct__bindgen_ty_2 {
@@ -630,7 +617,7 @@ fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure>
     if parsed.equals(typed) {
         call.set_owned(init.copy());
     } else {
-        throw(c"The type definition of the typed array does not match the initial values");
+        throw_error(c"The type definition of the typed array does not match the initial values");
     }
     Ok(())
 }
@@ -751,12 +738,14 @@ unsafe fn replace(function: *mut zend_function, handler: zif_handler) -> zif_han
 /// # Safety
 /// At MINIT.
 pub(crate) unsafe fn install() {
+    type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
+    let [push, unshift, splice] = [
+        (c"array_push", push as Handler),
+        (c"array_unshift", unshift),
+        (c"array_splice", splice),
+    ]
     // SAFETY: a core function, at MINIT.
-    let push = unsafe { replace(compiled_function(c"array_push"), Some(push)) };
-    // SAFETY: as above.
-    let unshift = unsafe { replace(compiled_function(c"array_unshift"), Some(unshift)) };
-    // SAFETY: as above.
-    let splice = unsafe { replace(compiled_function(c"array_splice"), Some(splice)) };
+    .map(|(name, handler)| unsafe { replace(compiled_function(name), Some(handler)) });
     let originals = Originals {
         push,
         unshift,

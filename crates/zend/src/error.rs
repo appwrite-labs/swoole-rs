@@ -2,12 +2,42 @@
 use crate::{
     Call, Class,
     bailout::{self, Bailout},
-    sys::{zend_class_entry, zend_long, zend_throw_error, zend_throw_exception},
+    sys::{
+        IS_NULL, IS_RESOURCE, zend_class_entry, zend_get_type_by_const, zend_long,
+        zend_throw_error, zend_throw_exception, zend_type_error,
+    },
 };
 use std::{
     ffi::{CStr, CString},
     ptr,
 };
+
+/// `zend_throw_error(NULL, "%s", message)`: an `Error`. Like [`Class::throw`], from a
+/// handler or a callback Zend runs under one: with a frame executing, Zend only sets
+/// the exception.
+pub fn throw_error(message: &CStr) {
+    // SAFETY: "%s" takes the NUL-terminated message, which Zend copies.
+    unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
+}
+
+/// `zend_type_error("%s", message)`: a `TypeError`, as [`throw_error`].
+pub fn type_error(message: &CStr) {
+    // SAFETY: "%s" takes the NUL-terminated message, which Zend copies.
+    unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+}
+
+/// `zend_get_type_by_const(kind)`: Zend's name of a value's type (`IS_NULL` to
+/// `IS_RESOURCE`), or None for any other code.
+#[must_use]
+pub fn type_name(kind: u32) -> Option<&'static CStr> {
+    if !(IS_NULL..=IS_RESOURCE).contains(&kind) {
+        return None;
+    }
+    // SAFETY: a value type, each of which Zend's switch names.
+    let name = unsafe { zend_get_type_by_const(kind.cast_signed()) };
+    // SAFETY: null, or one of Zend's static NUL-terminated names.
+    (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) })
+}
 
 /// `zend_throw_exception(ce, message, code)`.
 /// # Safety
@@ -20,19 +50,14 @@ pub unsafe fn throw_exception(ce: *mut zend_class_entry, message: &CStr, code: z
 impl Call {
     /// `zend_throw_error(NULL, "%s", message)`: an `Error`, from this handler.
     pub fn throw_error(&self, message: &CStr) {
-        // SAFETY: a handler's frame is executing; "%s" takes the NUL-terminated message.
-        unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
+        throw_error(message);
     }
 
     /// `zend_throw_exception(class, message, code)`, from this handler.
     /// # Panics
     /// `class` is not registered.
     pub fn throw(&self, class: &Class, message: &CStr, code: zend_long) {
-        let entry = class.entry();
-        assert!(!entry.is_null(), "throw a registered class");
-        // SAFETY: a handler's frame is executing, and the class is registered; Zend
-        // copies the message.
-        unsafe { zend_throw_exception(entry, message.as_ptr(), code) };
+        class.throw(message, code);
     }
 
     /// Swoole's "Constructor of %s can only be called once" `Error`, for `$this`.

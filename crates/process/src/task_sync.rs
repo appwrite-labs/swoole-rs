@@ -127,6 +127,14 @@ impl<H: TaskHost> Tasks<'_, H> {
         trapped(|| self.host.read_notify())
     }
 
+    /// Zeroes the result slot's head. Upstream zeroes the whole slot; its head is
+    /// what is read before a result lands (the task id), and the data is read only
+    /// up to the head's length.
+    fn clear_result(&mut self) {
+        // SAFETY: this worker's result slot starts with its `DataHead`.
+        unsafe { self.result.write_bytes(0, HEAD) };
+    }
+
     fn result_task_id(&self) -> i64 {
         // SAFETY: `info.fd` heads this worker's result slot.
         unsafe { self.result.cast::<i64>().read_unaligned() }
@@ -143,10 +151,7 @@ impl<H: TaskHost> Tasks<'_, H> {
         worker_id: &mut c_int,
         timeout: f64,
     ) -> Result<bool, Bailed> {
-        // Upstream zeroes the whole slot; its head is what is read before a result
-        // lands (the task id), and the data is read only up to the head's length.
-        // SAFETY: this worker's result slot starts with its `DataHead`.
-        unsafe { self.result.write_bytes(0, HEAD) };
+        self.clear_result();
         // SAFETY: `info.fd` heads the task.
         let task_id = unsafe { task.cast::<i64>().read_unaligned() };
         // One trap for the whole wait: the body owns nothing a bailout skips, and
@@ -180,8 +185,7 @@ impl<H: TaskHost> Tasks<'_, H> {
         multi: &mut impl MultiTask,
         timeout: f64,
     ) -> Result<bool, Bailed> {
-        // SAFETY: the result slot starts with its `DataHead`.
-        unsafe { self.result.write_bytes(0, HEAD) };
+        self.clear_result();
         let mut path = [0; TASK_TMP_PATH_SIZE];
         let fd = make_tmpfile(&task_tmpfile(), &mut path);
         if fd < 0 {

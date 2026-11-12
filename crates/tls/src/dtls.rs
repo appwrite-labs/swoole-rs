@@ -358,11 +358,11 @@ unsafe extern "C" fn bio_ctrl(
     plan.result
 }
 
-unsafe extern "C" fn bio_create(_bio: *mut BIO) -> c_int {
+extern "C" fn bio_create(_bio: *mut BIO) -> c_int {
     1
 }
 
-unsafe extern "C" fn bio_destroy(_bio: *mut BIO) -> c_int {
+extern "C" fn bio_destroy(_bio: *mut BIO) -> c_int {
     1
 }
 

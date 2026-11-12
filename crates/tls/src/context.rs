@@ -83,6 +83,12 @@ impl From<swoole_rs_corebase::CoreStringView> for TlsStr {
 }
 
 impl TlsStr {
+    /// An unset string.
+    const NONE: Self = Self {
+        data: ptr::null(),
+        length: 0,
+    };
+
     const fn is_empty(self) -> bool {
         self.length == 0
     }
@@ -188,6 +194,13 @@ impl Method<'_> {
         unsafe { SSL_CTX_set_verify_depth(self.ctx, c_int::from(depth)) };
     }
 
+    /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
+    fn load_verify_locations(&self, file: TlsStr, path: TlsStr) -> c_int {
+        // SAFETY: the method's live context; each is null or a NUL-terminated `c_str()`
+        // of the configuration, which outlives the method.
+        unsafe { SSL_CTX_load_verify_locations(self.ctx, file.or_null(), path.or_null()) }
+    }
+
     /// `SSL_CTX_set_verify`.
     fn set_verify(&self, mode: c_int, callback: Option<VerifyCallback>) {
         // SAFETY: the method's live context; the callback is a safe function.
@@ -220,15 +233,7 @@ impl Method<'_> {
     fn set_capath(&self) -> bool {
         let config = self.config;
         if !config.cafile.is_empty() || !config.capath.is_empty() {
-            // SAFETY: a live context and NUL-terminated paths or null.
-            let loaded = unsafe {
-                SSL_CTX_load_verify_locations(
-                    self.ctx,
-                    config.cafile.or_null(),
-                    config.capath.or_null(),
-                )
-            };
-            if loaded == 0 {
+            if self.load_verify_locations(config.cafile, config.capath) == 0 {
                 return false;
             }
         } else {
@@ -274,8 +279,8 @@ impl Method<'_> {
         let file = self.config.client_cert_file;
         self.set_verify(SSL_VERIFY_PEER, Some(verify_callback));
         self.set_verify_depth(self.config.verify_depth);
-        // SAFETY: a live context and a NUL-terminated path.
-        if unsafe { SSL_CTX_load_verify_locations(self.ctx, file.data, ptr::null()) } == 0 {
+        // `configure` calls this for a file that is set, and with no directory.
+        if self.load_verify_locations(file, TlsStr::NONE) == 0 {
             self.ssl_error(&quoted(
                 b"SSL_CTX_load_verify_locations(\"",
                 file,

@@ -21,7 +21,7 @@ use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, handlers, push_string,
     set_key,
-    sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long, zend_string},
+    sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -169,10 +169,6 @@ fn or_false(call: &Call, done: Option<()>) {
     if done.is_none() {
         call.set_bool(false);
     }
-}
-
-fn nullable(string: Option<*mut zend_string>) -> *mut zend_string {
-    string.unwrap_or(ptr::null_mut())
 }
 
 fn property(mut ctx: Ctx, which: i32) -> *mut swoole_rs_zend::sys::zval {
@@ -420,9 +416,9 @@ fn disconnect(call: &Call) {
         let ctx = websocket(call)?;
         let parsed = call
             .arity(0, 2)
-            .and_then(|()| Ok((call.long(1, CLOSE_NORMAL)?, call.str(2)?)));
+            .and_then(|()| Ok((call.long(1, CLOSE_NORMAL)?, call.zstr(2)?)));
         let (code, reason) = parsed.ok()?;
-        call.set_bool(websocket::response_disconnect(ctx, code, nullable(reason)));
+        call.set_bool(websocket::response_disconnect(ctx, code, reason));
         Some(())
     };
     or_false(call, run());

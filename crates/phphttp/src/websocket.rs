@@ -30,11 +30,9 @@ use swoole_rs_zend::{
     string::{self},
     sys::{
         _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_ws_property_not_null, swr_zval_str,
-        zend_ce_stringable, zend_class_entry, zend_class_implements, zend_long, zend_object,
-        zend_string, zend_value, zval, zval_ptr_dtor,
+        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, swr_zend_ws_property_not_null, zend_class_entry,
+        zend_long, zend_object, zend_value, zval, zval_ptr_dtor,
     },
-    value::empty_string,
 };
 
 static SERVER: Class = Class::new();
@@ -260,11 +258,7 @@ pub fn websocket_minit(args: &MinitArgs) {
         &FRAME_METHODS.0,
         |_, _| {},
     );
-    let ce = FRAME.entry();
-    // SAFETY: Stringable is registered by the engine before any extension.
-    let stringable = unsafe { zend_ce_stringable };
-    // SAFETY: MINIT, with the class just registered.
-    unsafe { zend_class_implements(ce, 1, stringable) };
+    minit.implements(&FRAME, minit.stringable());
     for (name, value) in [
         (c"fd", 0),
         (c"opcode", i64::from(OPCODE_TEXT)),
@@ -680,12 +674,9 @@ fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
     frame
 }
 
-/// A zval holding `string`'s reference.
-pub(crate) fn zval_of(string: *mut zend_string) -> zval {
-    let mut out = new_zval();
-    // SAFETY: an empty slot takes the reference.
-    unsafe { swr_zval_str(&raw mut out, string) };
-    out
+/// A value holding `string`, or the empty string for none.
+fn string_or_empty(string: Option<&ZStr>) -> Owned {
+    Owned::string(string.map_or_else(ZString::empty, ZStr::to_owned))
 }
 
 /// `swoole_websocket_server_pack`'s body: the packed frame, or `""`.
@@ -879,14 +870,8 @@ fn ping(call: &Call) {
         let server = server(call)?;
         call.arity(1, 2).ok()?;
         let fd = call.long(1, 0).ok()?;
-        let payload = call.str(2).ok()?;
-        let mut data = zval_of(payload.unwrap_or_else(empty_string));
-        let frame = FrameObject::new(
-            Some(Value::of(&mut data)),
-            i64::from(OPCODE_PING),
-            i64::from(FLAG_FIN),
-            0,
-        );
+        let data = string_or_empty(call.zstr(2).ok()?);
+        let frame = FrameObject::new(Some(&data), i64::from(OPCODE_PING), i64::from(FLAG_FIN), 0);
         let Some(packed) = pack(&frame) else {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
             return None;
@@ -1136,14 +1121,10 @@ fn send_frame(context: Ctx, frame: &FrameObject) -> Option<bool> {
 }
 
 /// The coroutine `Response::disconnect`: a close frame, then close.
-pub(crate) fn response_disconnect(context: Ctx, code: i64, reason: *mut zend_string) -> bool {
-    let mut data = zval_of(if reason.is_null() {
-        empty_string()
-    } else {
-        reason
-    });
+pub(crate) fn response_disconnect(context: Ctx, code: i64, reason: Option<&ZStr>) -> bool {
+    let data = string_or_empty(reason);
     let frame = FrameObject::new(
-        Some(Value::of(&mut data)),
+        Some(&data),
         i64::from(OPCODE_CLOSE),
         i64::from(FLAG_FIN),
         code,
@@ -1300,11 +1281,11 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         })
     }
 
-    fn recv(&self, socket: swoole_rs_phpclients::Co, call: &Call, timeout: f64) {
+    fn recv(&self, socket: swoole_rs_phpclients::Co, timeout: f64) -> Owned {
         let mut message = self.message.take();
         let frame = recv(self.frames.get(), &mut message, socket.handle(), timeout);
         self.message.set(message);
-        call.set_owned(frame);
+        frame
     }
 }
 

@@ -31,22 +31,20 @@ pub unsafe fn swr_v1_process_server_workers_start(
     server: *mut c_void,
     pending: *const *mut WorkerRecord,
 ) {
-    let pool = view.event_pool;
-    {
-        // SAFETY: startup exclusively owns the event pool before factory start.
-        let pool = unsafe { &mut *pool };
-        pool.ptr = server;
-        // The canonical event array, live for the pool's worker count.
-        pool.workers = view.event_workers;
-        pool.worker_num = view.event_count;
-        // This original event pool uses its pipes rather than a message queue.
-        pool.use_msgqueue = 0;
-    }
+    // SAFETY: startup exclusively owns the event pool before factory start.
+    let pool = unsafe { &mut *view.event_pool };
+    pool.ptr = server;
+    // The canonical event array, live for the pool's worker count.
+    pool.workers = view.event_workers;
+    pool.worker_num = view.event_count;
+    // This original event pool uses its pipes rather than a message queue.
+    pool.use_msgqueue = 0;
     for index in 0..view.event_count {
-        let worker = view.event_workers.wrapping_add(index as usize);
-        // SAFETY: the index is inside the live canonical event array.
-        let worker = unsafe { Worker::new(worker) };
-        worker.set_pool(pool.cast());
+        // The array just published holds `event_count` records.
+        let Some(worker) = pool.worker(index as usize) else {
+            break;
+        };
+        worker.set_pool(view.event_pool.cast());
         worker.set_id(index);
         worker.set_kind(2);
     }

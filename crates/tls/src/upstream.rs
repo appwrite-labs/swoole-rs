@@ -10,7 +10,10 @@ use crate::{
     swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_pem, swr_v1_socket_ssl_recv,
     swr_v1_socket_ssl_send, swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
-use openssl_sys::{SSL, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509};
+use openssl_sys::{
+    SSL, SSL_CIPHER_get_bits, SSL_CIPHER_get_name, SSL_CIPHER_get_version, SSL_get_current_cipher,
+    SSL_version, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK, stack_st_X509,
+};
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::ptr::NonNull;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
@@ -165,6 +168,41 @@ unsafe extern "C" fn native_ssl_get_peer_cert_chain(
 ) -> *mut stack_st_X509 {
     // SAFETY: as the caller promises.
     unsafe { Socket::from_ptr(socket) }.map_or(std::ptr::null_mut(), socket_ssl_get_peer_cert_chain)
+}
+
+/// A connection's negotiated protocol and cipher. Before the handshake picks a
+/// cipher, OpenSSL names it `(NONE)` with 0 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Session {
+    /// `SSL_version`: `TLS1_3_VERSION` and the like.
+    pub version: c_int,
+    pub cipher_name: &'static CStr,
+    pub cipher_bits: c_int,
+    pub cipher_version: &'static CStr,
+}
+
+/// The session of `socket`'s SSL, or None without one.
+#[must_use]
+pub fn socket_ssl_session(socket: Socket<'_>) -> Option<Session> {
+    let ssl = Ssl::of(socket)?.as_ptr();
+    // SAFETY: the record's live SSL.
+    let version = unsafe { SSL_version(ssl) };
+    // SAFETY: as above; null before the handshake, which the getters below take.
+    let cipher = unsafe { SSL_get_current_cipher(ssl) };
+    // SAFETY: null or an entry of OpenSSL's static cipher table.
+    let cipher_bits = unsafe { SSL_CIPHER_get_bits(cipher, std::ptr::null_mut()) };
+    // SAFETY: as above.
+    let name = unsafe { SSL_CIPHER_get_name(cipher) };
+    // SAFETY: as above.
+    let cipher_version = unsafe { SSL_CIPHER_get_version(cipher) };
+    Some(Session {
+        version,
+        // SAFETY: the table's name or the `(NONE)` literal: static and NUL-terminated.
+        cipher_name: unsafe { CStr::from_ptr(name) },
+        cipher_bits,
+        // SAFETY: a static NUL-terminated literal.
+        cipher_version: unsafe { CStr::from_ptr(cipher_version) },
+    })
 }
 
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
@@ -1647,6 +1685,36 @@ mod tests {
             crate::swr_v1_tls_owner_free(owner.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);
+        }
+    }
+
+    #[test]
+    fn session_of_an_ssl_before_its_handshake() {
+        let (mut socket, peer) = pair();
+        let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
+        assert_eq!(socket_ssl_session(handle), None);
+        unsafe {
+            let owner = crate::swr_v1_tls_owner_new();
+            (*owner.fields).context = openssl_sys::SSL_CTX_new(openssl_sys::TLS_method());
+            assert_eq!(socket_ssl_create(&raw mut socket, owner.owner, 2), 0);
+            let session = socket_ssl_session(handle).unwrap();
+            assert_eq!(
+                session.version,
+                openssl_sys::SSL_version(socket.ssl().cast())
+            );
+            assert_eq!(
+                (
+                    session.cipher_name,
+                    session.cipher_bits,
+                    session.cipher_version
+                ),
+                (c"(NONE)", 0, c"(NONE)")
+            );
+            socket_ssl_close(handle);
+            assert_eq!(socket_ssl_session(handle), None);
+            crate::swr_v1_tls_owner_free(owner.owner);
+            libc::close(socket.fd);
+            libc::close(peer.fd);
         }
     }
 

@@ -10,7 +10,7 @@ use crate::{
     native::{Co, UNCONSTRUCTED, swoole_rs_php_error},
     socket::Sock,
 };
-use libc::{c_int, c_void};
+use libc::c_int;
 use std::{
     cell::{Cell, OnceCell, RefCell, RefMut},
     ffi::{CStr, CString},
@@ -18,18 +18,18 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
-    ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, UNDEF,
+    Value, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
+    set_object,
     sys::{
         E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-        zval,
+        zval, zval_ptr_dtor,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -99,16 +99,8 @@ struct Conn {
     object: *mut zend_object,
     socket: Cell<Option<Co>>,
     zsocket: RefCell<Owned>,
-    /// The write buffer the closed socket left (`tmp_write_buffer`): a popped
-    /// `new String` the conn owns, or null.
-    written: Cell<*mut c_void>,
-}
-
-impl Drop for Conn {
-    fn drop(&mut self) {
-        // SAFETY: the saved write buffer, which only the conn owns, freed once.
-        unsafe { native::swoole_http_client_coro_buffer_free(self.written.get()) };
-    }
+    /// The write buffer the closed socket left (`tmp_write_buffer`).
+    written: RefCell<native::Written>,
 }
 
 /// Upstream's `swoole::coroutine::http::Client`. Every method takes `&self`:
@@ -274,12 +266,8 @@ fn return_property(call: &Call, name: &CStr) {
 /// The socket's close hook (`Client::socket_dtor`): keep the written bytes,
 /// drop the socket and say so on the object.
 fn socket_closed(conn: &Conn, socket: Co) {
-    let written = socket.handle().write_buffer();
-    // SAFETY: null, as before the socket's first write; the conn owns the old buffer.
-    unsafe { socket.handle().set_write_buffer(ptr::null_mut()) };
-    let saved = conn.written.replace(written);
-    // SAFETY: the buffer the conn took from its last socket, freed once.
-    unsafe { native::swoole_http_client_coro_buffer_free(saved) };
+    // The buffer the conn took from its last socket goes.
+    drop(conn.written.replace(socket.take_write_buffer()));
     conn.socket.set(None);
     conn.props().bool(c"connected", false);
     conn.props().null(c"socket");
@@ -333,6 +321,24 @@ impl Client {
         unsafe { swoole_rs_zend::property_not_null(self.object, name) }
     }
 
+    /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
+    /// 2 if it bailed out.
+    fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
+        let mut args = [UNDEF; 2];
+        // SAFETY: the object outlives its client, so the call; it is borrowed
+        // for the call as upstream's `ZVAL_OBJ`.
+        unsafe { set_object(&raw mut args[0], self.object) };
+        args[1] = Owned::string(ZString::new(data)).into_zval();
+        let result = match crate::native::call(callable, &mut args, ptr::null_mut(), false) {
+            Ok(true) => 0,
+            Ok(false) => 1,
+            Err(bailout::Bailout) => 2,
+        };
+        // SAFETY: the string argument's reference.
+        unsafe { zval_ptr_dtor(&raw mut args[1]) };
+        result
+    }
+
     /// `zval_get_long` of a declared property of the client object.
     fn get_long(&self, name: &CStr) -> i64 {
         self.property(name).long()
@@ -349,7 +355,7 @@ impl Client {
             object,
             socket: Cell::new(None),
             zsocket: RefCell::default(),
-            written: Cell::new(ptr::null_mut()),
+            written: RefCell::default(),
         });
         let mut host = host.to_vec();
         Self {
@@ -552,12 +558,14 @@ impl Client {
         // SAFETY: the client's resolve context outlives its socket, and no
         // borrow of it is held while the socket writes it.
         unsafe {
-            socket.configure_http(
-                self.connect_timeout.get(),
-                self.resolve.as_ptr().cast(),
-                Box::new(move |_| socket_closed(&conn, socket)),
-            );
+            socket
+                .handle()
+                .set_resolve_context(self.resolve.as_ptr().cast());
         }
+        socket.configure_http(
+            self.connect_timeout.get(),
+            Box::new(move |_| socket_closed(&conn, socket)),
+        );
         if !socket.connect_http(&self.host, c_int::from(self.port)) {
             self.set_socket_error(socket, CONNECT_FAILED);
             self.close(true);
@@ -1067,17 +1075,14 @@ impl Client {
         let Some(ws) = &self.ws else {
             return call.set_bool(false);
         };
-        ws.recv(socket, call, timeout);
-        let value = call.return_value();
+        let frame = ws.recv(socket, timeout);
+        let kind = frame.kind();
+        let empty = frame.bytes().is_some_and(<[u8]>::is_empty);
+        call.set_owned(frame);
         if bailout::pending() {
             return;
         }
-        // SAFETY: the return slot recv_frame filled, live for the handler.
-        let Some(frame) = (unsafe { Value::from_ptr(value) }) else {
-            return;
-        };
-        let kind = frame.kind();
-        if frame.bytes().is_some_and(<[u8]>::is_empty) {
+        if empty {
             self.close(true);
             return;
         }
@@ -1448,10 +1453,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
         };
         let chunk = decoded.as_deref().unwrap_or(data);
         client.in_callback.set(true);
-        // SAFETY: the client's object, which lives until the call returns; the
-        // callable is held.
-        let result =
-            unsafe { native::swoole_http_client_coro_call(&callable, client.object, chunk) };
+        let result = client.call_write(&callable, chunk);
         // Cleared after the call, keeping the buffer.
         match decoded {
             Some(mut decoded) => {
@@ -2072,12 +2074,11 @@ fn get_status_code(call: &Call) {
 /// `getHeaderOut(): string|false`: the request head last written.
 fn get_header_out(call: &Call) {
     let client = client(call);
-    let buffer = if let Some(socket) = client.co() {
-        Some(&*socket.write_buffer())
-    } else {
-        // SAFETY: the buffer the socket's close left, or null, which the conn
-        // keeps until the next close.
-        unsafe { client.conn.written.get().cast::<CppString>().as_ref() }
+    // The buffer the socket's close left, which the conn keeps until the next close.
+    let written = client.conn.written.borrow();
+    let buffer = match client.co() {
+        Some(socket) => Some(&*socket.write_buffer()),
+        None => written.buffer(),
     };
     let Some(buffer) = buffer else {
         return call.set_bool(false);

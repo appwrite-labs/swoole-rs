@@ -7,7 +7,6 @@ use crate::host;
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
-    ptr,
     sync::Mutex,
 };
 use swoole_rs_corebase::sys;
@@ -16,7 +15,7 @@ use swoole_rs_zend::{
     sys::{
         IS_RESOURCE_EX, PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
         swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
-        swr_zend_stream_fd, swr_zend_stream_open, swr_zend_thread_main_request, zend_value,
+        swr_zend_stream_fd, swr_zend_stream_open, zend_value,
     },
     value,
 };
@@ -182,21 +181,14 @@ fn request() -> std::sync::MutexGuard<'static, Request> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The main thread's RINIT: keep its script path, and `$argv` (when set)
+/// The main thread's RINIT keeps its script path, and `$argv` (when set)
 /// serialized with `argc`. A bailout while serializing is deferred.
-/// # Safety
-/// The main thread's RINIT.
-pub(crate) unsafe fn keep() {
-    let (mut path, mut argc) = (ptr::null(), 0);
-    // SAFETY: the main thread's request.
-    let argv = unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
+pub(crate) fn keep(path: Option<&CStr>, argv: Option<&Value>, argc: c_int) {
     let mut request = request();
-    if !path.is_null() {
-        // SAFETY: SAPI's NUL-terminated script path.
-        request.path = Some(unsafe { CStr::from_ptr(path) }.to_owned());
+    if let Some(path) = path {
+        request.path = Some(path.to_owned());
     }
-    // SAFETY: null or `$argv`, live for the request.
-    let Some(argv) = (unsafe { Value::from_ptr(argv) }) else {
+    let Some(argv) = argv else {
         return;
     };
     // A bailout is deferred.

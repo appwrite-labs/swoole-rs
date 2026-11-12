@@ -12,7 +12,6 @@ use swoole_rs_error::ErrorCode::{
 use swoole_rs_zend::{
     E_ERROR, Owned, Value,
     bailout::{self, Bailout},
-    sys::swr_zend_instanceof,
 };
 
 /// `php_swoole_serialize`: the serialized bytes, or `None`; a bailout is
@@ -34,35 +33,27 @@ pub(crate) fn unserialize(data: &[u8]) -> Owned {
 /// descriptor and its type, or -1; `None` when `object` is no coroutine socket
 /// (`sw_zval_is_co_socket`).
 pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
-    let class = swoole_rs_phpclients::socket_class();
-    let ce = object.class()?;
-    // SAFETY: a live object's class and a registered one.
-    if class.is_null() || !unsafe { swr_zend_instanceof(ce, class) } {
+    if !object.instance_of(swoole_rs_phpclients::socket()) {
         return None;
     }
-    let socket = swoole_rs_phpclients::get_socket(object);
-    if socket.is_null() {
+    let Some((descriptor, kind)) = swoole_rs_phpclients::socket_descriptor(object) else {
+        return Some((-1, 0));
+    };
+    if descriptor < 0 {
         return Some((-1, 0));
     }
-    // SAFETY: the object's live socket, used only in this call.
-    let socket = unsafe { swoole_rs_phpclients::Co::new(socket) }.handle();
-    if socket.sock_fd() < 0 {
-        return Some((-1, 0));
-    }
-    let fd = swoole_rs_corebase::sys::dup(socket.sock_fd());
+    let fd = swoole_rs_corebase::sys::dup(descriptor);
     if fd < 0 {
         return Some((-1, 0));
     }
-    Some((fd, socket.kind()))
+    Some((fd, kind))
 }
 
 /// A coroutine socket of type `kind` over `fd`, which it takes; `None` on
 /// failure.
 pub(crate) fn co_socket_create(fd: c_int, kind: c_int) -> Option<Owned> {
     // SAFETY: a descriptor the new socket takes, in a request.
-    let object = unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) };
-    // SAFETY: the new object, whose one reference this takes.
-    (!object.is_null()).then(|| unsafe { Owned::object(object) })
+    unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) }
 }
 
 /// A duplicate of an ext/sockets Socket's descriptor: -1 after throwing

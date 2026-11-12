@@ -5,6 +5,7 @@
 //! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
 //! fails when that header is stale. See #629.
 
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
 
@@ -228,8 +229,10 @@ impl Worker<'_> {
     /// As [`Worker::new`], when `raw` is not null.
     #[must_use]
     pub unsafe fn from_raw(raw: *const WorkerRecord) -> Option<Self> {
-        // SAFETY: as the caller guarantees.
-        (!raw.is_null()).then(|| unsafe { Self::new(raw) })
+        (!raw.is_null()).then_some(Self {
+            raw: raw.cast_mut(),
+            life: core::marker::PhantomData,
+        })
     }
 
     /// The record's address.
@@ -310,14 +313,23 @@ impl Worker<'_> {
     /// counts, then the concurrency.
     #[must_use]
     pub fn counters(self) -> [i64; 4] {
-        // SAFETY: `new`'s contract: a live record; only the field is read.
-        let concurrency = unsafe { (*self.raw).concurrency };
         [
             self.request_count(),
             self.response_count(),
             self.dispatch_count(),
-            i64::from(concurrency),
+            i64::from(self.concurrency().load(Ordering::Relaxed)),
         ]
+    }
+
+    /// `worker->concurrency`, which native workers access atomically.
+    fn concurrency(&self) -> &AtomicU32 {
+        let slot = self
+            .raw
+            .wrapping_byte_add(core::mem::offset_of!(WorkerRecord, concurrency))
+            .cast::<u32>();
+        // SAFETY: `new`'s contract: a live record, for longer than this borrow, whose
+        // concurrency is an aligned u32 that native workers access atomically.
+        unsafe { AtomicU32::from_ptr(slot) }
     }
 
     /// `worker->request_count++`, with the native unsigned wrapping.
@@ -356,15 +368,8 @@ impl Worker<'_> {
     /// Resets one retired worker's counters and removes its concurrency from the
     /// server's shared `total`. The CAS and underflow clamp keep the native reset
     /// protocol.
-    pub fn reset_counters(self, total: &core::sync::atomic::AtomicU32) {
-        use core::sync::atomic::{AtomicU32, Ordering};
-        let slot = self
-            .raw
-            .wrapping_byte_add(core::mem::offset_of!(WorkerRecord, concurrency))
-            .cast::<u32>();
-        // SAFETY: `new`'s contract: a live record whose concurrency is an aligned
-        // u32 that native workers access atomically.
-        let concurrency = unsafe { AtomicU32::from_ptr(slot) };
+    pub fn reset_counters(self, total: &AtomicU32) {
+        let concurrency = self.concurrency();
         let value = concurrency.load(Ordering::SeqCst);
         if value > 0
             && concurrency

@@ -2,7 +2,7 @@
 //! and its PHP classes.
 use crate::server::entries;
 use crate::session::IdMap;
-use libc::{c_char, c_int};
+use libc::c_int;
 use request::{Field, Held, Request};
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -26,7 +26,7 @@ use swoole_rs_inflate::Inflate;
 use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString, string,
+    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
     sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object, zend_wrong_parameter_class_error},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -391,16 +391,14 @@ impl Client {
             let erase = kind.erase.min(host.len());
             host.drain(..erase);
         }
-        let object = swoole_rs_phpclients::create_socket(kind.socket_type);
-        if object.is_null() {
+        // The conn takes the new object's reference.
+        let Some(zsocket) = swoole_rs_phpclients::create_socket(kind.socket_type) else {
             if !swoole_rs_zend::bailout::pending() {
                 let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 self.update_error(error, strerror(error).as_bytes());
             }
             return false;
-        }
-        // SAFETY: the conn takes the new object's reference.
-        let zsocket = unsafe { Owned::object(object) };
+        };
         // SAFETY: the new socket object's socket, which lives as long as it; the
         // conn's reference to the object keeps it live until the close hook clears
         // this handle.
@@ -578,7 +576,7 @@ impl Client {
     fn build_header(&self, request: Request<'_>) -> Vec<u8> {
         let text = |field| {
             request
-                .property(field)
+                .property(field)?
                 .bytes()
                 .filter(|text| !text.is_empty())
         };
@@ -633,14 +631,18 @@ impl Client {
 
     /// `send_request`: the new stream's id, or 0.
     fn send_request(&self, request: Request<'_>) -> u32 {
-        // SAFETY: a live request object of the registered class.
-        let props = unsafe { Props::new(REQUEST.entry(), request.0) };
+        // The class declares every field, so a request has its data.
+        let Some(data) = request.property(Field::Data) else {
+            return 0;
+        };
         // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
         // the type is added.
-        let headers = unsafe { props.array(c"headers") };
-        let data = request.property(Field::Data);
-        let pipeline = request.property(Field::Pipeline).truthy();
-        let use_pipeline_read = request.property(Field::UsePipelineRead).truthy();
+        let headers = request
+            .props()
+            .and_then(|props| unsafe { props.array(c"headers") });
+        let truthy = |field| request.property(field).is_some_and(Value::truthy);
+        let pipeline = truthy(Field::Pipeline);
+        let use_pipeline_read = truthy(Field::UsePipelineRead);
         let empty = match data.bytes() {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
@@ -719,11 +721,12 @@ impl Client {
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
             };
-            if recv_packet(socket, timeout) <= 0 {
+            let received = recv_packet(socket, timeout);
+            if received <= 0 {
                 self.io_error(socket);
                 return call.set_bool(false);
             }
-            match self.parse_frame(call, socket, pipeline_read) {
+            match self.parse_frame(call, socket, received.unsigned_abs(), pipeline_read) {
                 Frame::Continue => {}
                 Frame::Ready => return,
                 Frame::Fail => {
@@ -734,17 +737,18 @@ impl Client {
         }
     }
 
-    fn parse_frame(&self, call: &Call, socket: Co, pipeline_read: bool) -> Frame {
-        // A received packet left the read buffer allocated, holding one whole frame.
+    /// The frame in the `received` bytes `recv_packet` left in the read buffer.
+    fn parse_frame(&self, call: &Call, socket: Co, received: usize, pipeline_read: bool) -> Frame {
         let buffer = socket.with_buffer(false, |buffer| buffer.as_ptr());
-        // SAFETY: the buffer holds at least the frame header.
-        let head = unsafe { std::slice::from_raw_parts(buffer, FRAME_HEADER) };
+        // SAFETY: the packet `recv_packet` just returned starts the read buffer,
+        // which nothing writes until the next receive.
+        let packet = unsafe { std::slice::from_raw_parts(buffer, received) };
+        let (head, body) = packet.split_at_checked(FRAME_HEADER).unwrap_or_default();
         let facts =
             sw_rs_http2_decode_frame(head, self.last_stream_id.get(), 1).unwrap_or_default();
         let length = facts.length as usize;
-        // SAFETY: the packet holds the header and `length` payload bytes.
-        let payload =
-            unsafe { std::slice::from_raw_parts(buffer.wrapping_add(FRAME_HEADER), length) };
+        // The length protocol's packet is the header and `length` payload bytes.
+        let payload = body.get(..length).unwrap_or(body);
         let id = facts.stream_id;
         if facts.publish_last_id != 0 {
             self.last_stream_id.set(id);
@@ -1172,7 +1176,7 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Http2\\Client\\Exception")?;
     }
-    minit.register_object::<Plain<0>>(c"Swoole\\Http2\\Request", &NO_METHODS.0, 0);
+    minit.register_object::<Plain<0>>(REQUEST_NAME, &NO_METHODS.0, 0);
     minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", &NO_METHODS.0, 0);
     let public = ZEND_ACC_PUBLIC;
     minit.property_long(&CLIENT, c"errCode", 0, public);
@@ -1293,12 +1297,12 @@ fn close(call: &Call) {
 /// `Swoole\Http2\Request` arguments. Outside this module a request's
 /// `headers` and `cookies` are readable only held ([`Request::array`]).
 mod request {
-    use std::{ffi::CStr, marker::PhantomData};
-    use swoole_rs_zend::{Call, HeldArray, Value, sys::zend_object};
+    use std::ffi::CStr;
+    use swoole_rs_zend::{HeldArray, Props, Value};
 
     /// A `Swoole\Http2\Request` argument, live for the call.
     #[derive(Clone, Copy)]
-    pub(super) struct Request<'a>(pub(super) *mut zend_object, PhantomData<&'a Call>);
+    pub(super) struct Request<'a>(&'a Value);
 
     /// The request properties read in place: none is a header array.
     #[derive(Clone, Copy)]
@@ -1318,16 +1322,22 @@ mod request {
     }
 
     impl<'a> Request<'a> {
-        pub(super) fn new(object: *mut zend_object) -> Self {
-            Self(object, PhantomData)
+        /// `object` holds an instance of the request class.
+        pub(super) fn new(object: &'a Value) -> Self {
+            Self(object)
         }
 
-        fn slot(self, name: &CStr) -> &'a Value {
-            // SAFETY: a live request object, which declares every name read.
-            unsafe { swoole_rs_zend::property(self.0, name) }
+        /// Property writes, under the request class.
+        pub(super) fn props(self) -> Option<Props<'a>> {
+            self.0.props(Some(&super::REQUEST))
         }
 
-        pub(super) fn property(self, field: Field) -> &'a Value {
+        /// The slot of a property the request class declares.
+        fn slot(self, name: &CStr) -> Option<&'a Value> {
+            self.0.property(name)
+        }
+
+        pub(super) fn property(self, field: Field) -> Option<&'a Value> {
             self.slot(match field {
                 Field::Method => c"method",
                 Field::Path => c"path",
@@ -1344,29 +1354,25 @@ mod request {
             self.slot(match which {
                 Held::Headers => c"headers",
                 Held::Cookies => c"cookies",
-            })
+            })?
             .hold()
         }
     }
 }
 
+/// The name `Swoole\Http2\Request` is registered under.
+const REQUEST_NAME: &CStr = c"Swoole\\Http2\\Request";
+
 /// `Z_PARAM_OBJECT_OF_CLASS(.., Swoole\Http2\Request)` of the first argument.
 fn request_arg(call: &Call) -> Option<Request<'_>> {
     let arg = call.value(1)?;
-    let ce = REQUEST.entry();
-    if let Some(object) = arg.object().filter(|_| arg.instance_of(&REQUEST)) {
-        return Some(Request::new(object));
+    if arg.instance_of(&REQUEST) {
+        return Some(Request::new(arg));
     }
-    // SAFETY: from a handler, as Zend's macro reports it; the name is the
-    // class's NUL-terminated name.
-    unsafe { zend_wrong_parameter_class_error(1, class_name_of(ce), arg.as_ptr()) };
+    // SAFETY: from a handler, as Zend's macro reports it, with the name the
+    // class is registered under.
+    unsafe { zend_wrong_parameter_class_error(1, REQUEST_NAME.as_ptr(), arg.as_ptr()) };
     None
-}
-
-fn class_name_of(ce: *mut zend_class_entry) -> *const c_char {
-    // SAFETY: a registered class entry.
-    let name = unsafe { (*ce).name };
-    string::val(name).cast()
 }
 
 /// `send(Swoole\Http2\Request $request): int|false`.
