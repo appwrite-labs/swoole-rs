@@ -2877,7 +2877,7 @@ mod tests {
             let nums = (*gs).cells();
             assert_eq!((*nums.add(2)).load(Relaxed), 0, "zeroed");
             let tables = &mut *(*state).tables();
-            assert_eq!((*tables.sessions()[5].get()).fd, 0, "zeroed");
+            assert_eq!((*tables.session_slot(5).unwrap().get()).fd, 0, "zeroed");
             config.user_workers = Shm::calloc(1, 8);
             answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());

@@ -272,15 +272,20 @@ impl ServerTables {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
     }
 
-    /// The session slots, `SW_SESSION_LIST_SIZE` of them, or none before they're mapped.
-    pub(crate) fn sessions(&self) -> &[UnsafeCell<SessionRecord>] {
-        let base = self.session_list.as_ptr();
+    /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
+    /// mapped. Only that slot is borrowed: a unit test maps a smaller table.
+    pub(crate) fn session_slot(&self, index: usize) -> Option<&UnsafeCell<SessionRecord>> {
+        let base = self
+            .session_list
+            .as_ptr()
+            .cast::<UnsafeCell<SessionRecord>>();
         if base.is_null() {
-            return &[];
+            return None;
         }
-        // SAFETY: every factory maps the table with 1,048,576 zeroed records and frees it
-        // only by nulling `session_list`; `UnsafeCell` has the record's layout.
-        unsafe { core::slice::from_raw_parts(base.cast(), 1_048_576) }
+        // SAFETY: a factory maps the table with 1,048,576 zeroed records, which the
+        // modulo keeps `index` within, and frees it only by nulling `session_list`;
+        // `UnsafeCell` has the record's layout.
+        Some(unsafe { &*base.wrapping_add(index) })
     }
 
     /// The listen ports.
@@ -330,7 +335,7 @@ impl crate::ServerState {
     /// or `None` before the table is mapped.
     pub(crate) fn session(&self, id: libc::c_long) -> Option<Session<'_>> {
         let index = usize::try_from(id % 1_048_576).ok()?;
-        Some(self.tables_ref().sessions().get(index)?.into())
+        Some(self.tables_ref().session_slot(index)?.into())
     }
 
     /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
