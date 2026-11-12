@@ -77,7 +77,7 @@ pub(crate) trait Connection {
     /// Hands on `length` bytes from the buffer's start; the connection's request is
     /// read afresh afterwards. Negative closes the connection.
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64;
-    /// `conn->active && !socket->removed`.
+    /// `!socket->removed && conn->active`: a closed connection's slot is not read.
     fn active(&mut self) -> bool;
     fn upgrade(&mut self) -> Upgrade;
     /// Sets `websocket_status = STATUS_ACTIVE` and `http_upgrade = 1`.
