@@ -413,10 +413,24 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 /// The result is freed once, as a `Box`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
+    let (config, tables) = fresh_records();
+    boxed(config, tables)
+}
+
+/// A new server's records, before a state owns them: the defaults and an empty
+/// worker registry.
+pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
     let mut config = crate::config::ServerConfig::default();
     config.worker_registry =
         Box::into_raw(Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default()).cast();
-    let tables = crate::records::ServerTables::default();
+    (config, crate::records::ServerTables::default())
+}
+
+/// The state of a server with these records, freed by `swr_v1_server_state_free`.
+pub(crate) fn boxed(
+    config: crate::config::ServerConfig,
+    tables: crate::records::ServerTables,
+) -> *mut ServerState {
     Box::into_raw(Box::new(ServerState::with(config, tables)))
 }
 
