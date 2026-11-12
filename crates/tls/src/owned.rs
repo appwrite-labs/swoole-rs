@@ -387,19 +387,15 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
 /// Configure and create a coroutine socket's context from its authoritative owner.
 /// 0 success, 1 unsupported DTLS, 2 context creation failure.
 /// # Safety
-/// owner and socket are live/exclusive; native TLS initialization has succeeded.
+/// owner is live/exclusive; native TLS initialization has succeeded.
 pub unsafe fn swr_v1_tls_owner_socket_context(
     owner: *const OwnedTlsContext,
-    socket: *mut swoole_rs_reactor::SocketRecord,
+    socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
 ) -> c_int {
     // SAFETY: the owner is live throughout the operation.
     let owner_ref = unsafe { &*owner };
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
-        return 2;
-    };
     let kind = socket.read(|record| record.socket_type);
     let dtls = swoole_rs_reactor::type_is(kind, swoole_rs_reactor::CLASS_DGRAM);
     if dtls && !dtls_supported {
@@ -439,16 +435,10 @@ pub struct OwnedTlsSessionResult {
 /// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
 pub unsafe fn swr_v1_tls_owner_socket_session(
     owner: *const OwnedTlsContext,
-    socket: *mut swoole_rs_reactor::SocketRecord,
+    record: swoole_rs_reactor::Socket<'_>,
     hostname: *const StringSlot,
 ) -> OwnedTlsSessionResult {
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket) }) else {
-        return OwnedTlsSessionResult {
-            status: 1,
-            error: 0,
-        };
-    };
+    let socket = record.as_ptr();
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return OwnedTlsSessionResult {
             status: 0,
@@ -473,7 +463,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
                 &mut error,
             )
         };
-        (status, error, record.ssl().cast::<openssl_sys::SSL>())
+        (status, error, crate::Ssl::of_fields(record))
     });
     if status != 0 {
         return OwnedTlsSessionResult { status, error };
@@ -488,9 +478,9 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     } else {
         None
     };
-    if let Some(name) = selected {
-        // SAFETY: terminated owner bytes remain stable through this OpenSSL call.
-        unsafe { openssl_sys::SSL_set_tlsext_host_name(ssl, name.data.cast_mut()) };
+    if let (Some(name), Some(ssl)) = (selected, ssl) {
+        // SAFETY: a slot's view is NUL-terminated, and stays unchanged meanwhile.
+        _ = ssl.set_host_name(unsafe { CStr::from_ptr(name.data) });
     }
     OwnedTlsSessionResult {
         status: 0,
@@ -732,14 +722,15 @@ mod tests {
                 );
                 let socket =
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
+                let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
                 assert_eq!(
-                    swr_v1_tls_owner_socket_context(prepared.owner, socket, true, true),
+                    swr_v1_tls_owner_socket_context(prepared.owner, handle, true, true),
                     0
                 );
                 assert_eq!((*socket).fields.output.ssl_send, 1);
                 assert_eq!((*prepared.fields).http_v2, 1);
                 let result =
-                    swr_v1_tls_owner_socket_session(prepared.owner, socket, Arc::as_ptr(&hostname));
+                    swr_v1_tls_owner_socket_session(prepared.owner, handle, Arc::as_ptr(&hostname));
                 assert_eq!(result.status, 0);
                 let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
                 assert_eq!(
@@ -759,7 +750,7 @@ mod tests {
                     0
                 );
                 assert_eq!(
-                    swr_v1_tls_owner_socket_session(ptr::null(), socket, ptr::null()).status,
+                    swr_v1_tls_owner_socket_session(ptr::null(), handle, ptr::null()).status,
                     0
                 );
                 openssl_sys::SSL_free(ssl);

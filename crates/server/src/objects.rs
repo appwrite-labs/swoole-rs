@@ -198,7 +198,7 @@ impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.
     pub(crate) fn drain(self, sock: Socket<'_>) {
         // SAFETY: as above.
-        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock.as_ptr()) };
+        unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock) };
     }
     pub(crate) fn if_exit(self) -> bool {
         reactor_if_exit(self.handle())
