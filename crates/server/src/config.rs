@@ -4,6 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
+use core::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_memory::members::Shm;
 
 /// The independently configurable server fields and borrowed native handles.
@@ -44,7 +45,9 @@ pub struct ServerConfig {
     pub send_yield: bool,
     pub enable_coroutine: bool,
     pub single_thread: bool,
-    pub running: bool,
+    /// Cleared by whichever thread stops the server while the others read it: in thread
+    /// mode the master thread, the manager thread and the workers share this record.
+    pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
     pub cpu_affinity_available: Vec<c_int>,
     pub pipe_command: *mut c_void,
@@ -134,7 +137,7 @@ impl Default for ServerConfig {
             send_yield: true,
             enable_coroutine: true,
             single_thread: false,
-            running: true,
+            running: AtomicBool::new(true),
             cpu_affinity_available: Vec::new(),
             pipe_command: core::ptr::null_mut(),
             send_timeout: 0.0,
@@ -186,6 +189,16 @@ impl ServerConfig {
         // SAFETY: null, or the pair that op boxed, which nothing frees while the
         // configuration lives.
         unsafe { pipe.as_ref() }
+    }
+
+    /// `serv->running`.
+    pub(crate) fn running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+
+    /// `serv->running = running`, seen by every thread's next [`Self::running`].
+    pub(crate) fn set_running(&self, running: bool) {
+        self.running.store(running, Ordering::Release);
     }
 }
 
@@ -263,7 +276,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         OP_SINGLE_THREAD => u64::from(config.single_thread),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive),
         OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(config.running()),
         OP_LC_DAEMONIZE => u64::from(config.daemonize),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
@@ -314,7 +327,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             0
         }
         OP_SET_RUNNING => {
-            config.running = arg != 0;
+            config.set_running(arg != 0);
             0
         }
         OP_SET_WARNING => {
@@ -382,7 +395,7 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
             assert_eq!((*config).worker_num, 19);
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
-            assert!(!(*config).running);
+            assert!(!(*config).running());
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
             free_state(state);
         }

@@ -308,7 +308,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_NUM => u64::from(config.worker_num),
         OP_TASK_WORKER_NUM => u64::from(config.task_worker_num),
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
-        OP_RUNNING => u64::from(config.running),
+        OP_RUNNING => u64::from(config.running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {

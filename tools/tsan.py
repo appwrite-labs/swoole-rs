@@ -33,8 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
-# Reports outside upstream's run that main's run has (31 in run 43092061417). Lower it with each fix.
-LIMIT = 31
+# Reports outside upstream's run that main's run has. Lower it with each fix. 18 locally once the
+# master pid and running flag stopped racing (#3343), plus 5 for the runs' swing in reports that only
+# hold TSan's "can't find longjmp buf" (1 on main's local run, 6 on the next).
+LIMIT = 23
 
 
 def sanitized(reports, name):
