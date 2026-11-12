@@ -9,9 +9,9 @@
 #include "ext/pcre/php_pcre.h"
 #include "thirdparty/php/zend/zend_execute.c"
 
-uint8_t swr_phpstdext_undefined_cv(zend_execute_data *execute_data, uint32_t var, zval **result) {
+uint8_t swr_phpstdext_undefined_cv(zend_execute_data *execute_data, uint32_t var) {
     volatile uint8_t bailed = 0;
-    zend_try { *result = zval_undefined_cv(var EXECUTE_DATA_CC); }
+    zend_try { zval_undefined_cv(var EXECUTE_DATA_CC); }
     zend_catch { bailed = 1; } zend_end_try();
     return bailed;
 }
