@@ -589,7 +589,8 @@ mod tests {
         for fd in [reader, writer, copy] {
             assert_eq!(close(fd), 0);
         }
-        assert_eq!(close(copy), -1);
+        // Not `copy` again: a test on another thread may already hold that number.
+        assert_eq!(close(-1), -1);
         assert_eq!(errno(), libc::EBADF);
     }
 
