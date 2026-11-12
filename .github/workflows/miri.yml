@@ -41,7 +41,7 @@ concurrency:
 jobs:
   miri:
     runs-on: gcrunner=${{ github.run_id }}/runner=build
-    timeout-minutes: 30
+    timeout-minutes: 40
     env:
       TOOLCHAIN: nightly-2026-10-24
     steps:
