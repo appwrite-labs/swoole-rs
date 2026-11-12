@@ -159,10 +159,8 @@ impl Ctx {
     }
 
     /// `$request->post` from the whole body (`PARSE_STRING`).
-    pub fn treat_post(mut self) {
-        let data = self.state().request.h2_data.take();
-        self.treat_query(Value::Post, data.as_deref().map_or(&[], Vec::as_slice));
-        self.state().request.h2_data = data;
+    pub fn treat_post(self) {
+        self.treat(Value::Post, None);
     }
 
     /// The `key` entry of `$request->server`, `header`, `get`, `post` or
@@ -388,10 +386,19 @@ impl Ctx {
     /// `sapi_module.treat_data(PARSE_STRING, ...)`: a query string's pairs into
     /// the request's `which` array.
     pub fn treat_query(self, which: Value, query: &[u8]) {
+        self.treat(which, Some(query));
+    }
+
+    /// `PARSE_STRING` of `query`, or of the request body for `None`, into the
+    /// request's `which` array.
+    fn treat(mut self, which: Value, query: Option<&[u8]>) {
         let array = self.value(which);
-        // The query's bytes, copied into request memory the SAPI frees.
-        let text = parse::estrndup(query);
-        // SAFETY: a fresh copy and the request's live array.
+        let body = self.state().request.h2_data.as_deref();
+        // The bytes, copied into request memory the SAPI frees.
+        let text = parse::estrndup(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
+        // SAFETY: a fresh copy and the request's live array. Neither the state
+        // nor anything this frame owns is held while PHP parses it, which may
+        // bail out.
         unsafe { swr_zend_treat_string(text, array) };
     }
 }
