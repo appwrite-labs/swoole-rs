@@ -4,6 +4,7 @@
 #include <Zend/zend_exceptions.h>
 #include <climits>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <mutex>
@@ -52,6 +53,13 @@ struct DiagnosticSink {
     }
 };
 
+// Logger::put dates a record by std::chrono::system_clock. ::time() reads Linux's
+// coarse clock, which can trail it by a tick, so a record written just after a
+// second boundary could fall outside a ::time() bracket taken on either side.
+static time_t record_clock() {
+    return std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+}
+
 static bool date_prefix(const std::string &record, const char *format, time_t before, time_t after) {
     for (time_t observed : {before, after}) {
         char date[SW_LOG_DATE_STRLEN];
@@ -75,7 +83,7 @@ static ConfigResults configuration_normal() {
     for (const auto &format : formats) {
         check(configured.set_date_format("KEEP"), "configuration retained baseline");
         const size_t offset = contents(records.value).size();
-        time_t before = ::time(nullptr);
+        time_t before = record_clock();
         char date[SW_LOG_DATE_STRLEN];
         const bool expected = std::strftime(date, sizeof(date), format.c_str(), std::localtime(&before)) != 0;
         std::string input = format;
@@ -85,7 +93,7 @@ static ConfigResults configuration_normal() {
         // A successful date must have been copied; rejection must retain KEEP.
         input.assign(512, 'Z');
         configured.put(SW_LOG_INFO, "configuration", 13);
-        time_t after = ::time(nullptr);
+        time_t after = record_clock();
         const auto record = contents(records.value).substr(offset);
         check(date_prefix(record, accepted ? format.c_str() : "KEEP", before, after), "date copy or rejection retention");
         check(record.find("\tINFO\tconfiguration\n") != std::string::npos, "configuration output record");
@@ -106,10 +114,10 @@ static ConfigResults configuration_normal() {
         configured.reset();
         check(configured.get_level() == SW_LOG_INFO, "reset restores level");
         const size_t offset = contents(records.value).size();
-        time_t before = ::time(nullptr);
+        time_t before = record_clock();
         const auto path = configured.gen_real_file("reset");
         configured.put(SW_LOG_INFO, "configuration-reset", 19);
-        time_t after = ::time(nullptr);
+        time_t after = record_clock();
         const auto record = contents(records.value).substr(offset);
         check(date_prefix(record, SW_LOG_DEFAULT_DATE_FORMAT, before, after), "reset restores date and disables microseconds");
         check(record.find("\tINFO\tconfiguration-reset\n") != std::string::npos, "reset retains caller stream");
