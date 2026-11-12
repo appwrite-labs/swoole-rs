@@ -18,7 +18,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
 use swoole_rs_phpruntime::co;
-use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_get_ptr, zserv};
+use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
@@ -156,8 +156,8 @@ struct Connection {
 /// `_held`, which holds the object (the method's frame, or the value), is
 /// borrowed.
 pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
-    let server = php_swoole_server_get_ptr(object);
-    if server.is_null() {
+    let server = php_swoole_server_of(object);
+    if server.is_none() {
         // SAFETY: a live object, which the value holds; its class outlives it.
         let name = object
             .object()
@@ -167,10 +167,8 @@ pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = std::ffi::CString::new(message).unwrap_or_default();
         bailout::defer(swoole_rs_zend::report(swoole_rs_zend::E_ERROR, &message));
-        return None;
     }
-    // SAFETY: a constructed server object's live server.
-    Some(unsafe { view::Server::from_raw(server) })
+    server
 }
 
 /// `conn->websocket_status = status` of the session's slot.

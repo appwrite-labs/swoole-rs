@@ -105,7 +105,7 @@ pub use state::{
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub use server_object::{swr_v1_server_delete, swr_v1_server_new};
+pub use server_object::{SharedServer, swr_v1_server_delete, swr_v1_server_new};
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
 

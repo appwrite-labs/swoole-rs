@@ -177,6 +177,24 @@ pub fn destroy(serv: view::Server<'_>) {
     }
 }
 
+/// `delete serv`'s first step: [`destroy`] a server still running in its master,
+/// which runs its shutdown callbacks. Nothing the second time.
+pub fn destroy_running(serv: view::Server<'_>) {
+    let counters = serv.counters();
+    let master = std::process::id().cast_signed()
+        == counters
+            .master_pid
+            .load(core::sync::atomic::Ordering::Relaxed);
+    if master
+        && counters
+            .shutdown
+            .load(core::sync::atomic::Ordering::Relaxed)
+            == 0
+    {
+        destroy(serv);
+    }
+}
+
 /// `Server::start_master_thread(reactor)`, on the master's reactor.
 #[cfg_attr(
     test,

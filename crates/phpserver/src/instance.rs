@@ -10,7 +10,7 @@ use crate::server::THREAD;
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::Cell,
-    ffi::{CStr, CString, c_int, c_long, c_void},
+    ffi::{CStr, CString, c_int, c_long},
     ptr,
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
@@ -21,7 +21,7 @@ use swoole_rs_corebase::{
     log,
 };
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
-use swoole_rs_server::{event_worker_ops, server_methods, view};
+use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     Value, bailout, string,
@@ -60,11 +60,11 @@ pub(crate) fn set_server_object(object: *mut zend_object) {
     }
 }
 
-/// `php_swoole_server_get_ptr`: the `Server` of a Server object, or null
-/// (also for any other value).
+/// `php_swoole_server_get_ptr`: the `Server` of a Server object, which `value`
+/// keeps live; none before `__construct`, and for any other value.
 #[must_use]
-pub fn php_swoole_server_get_ptr(value: &Value) -> *mut c_void {
-    ServerObject::of(value).map_or(ptr::null_mut(), ServerObject::serv)
+pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
+    ServerObject::server_of(value)
 }
 
 /// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
@@ -205,11 +205,11 @@ const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 /// `die()` or a fatal error) drains its pipe, shuts down and logs why.
 pub extern "C" fn php_swoole_server_rshutdown() {
     let worker = worker_globals::current_worker();
-    // SAFETY: a worker's server, which its object keeps past the request's end; the
-    // view ends here.
-    let Some(serv) = unsafe { view::Server::current() }.filter(|_| !worker.is_null()) else {
+    // A worker's server, which its object keeps past the request's end.
+    let Some(share) = SharedServer::current().filter(|_| !worker.is_null()) else {
         return;
     };
+    let serv = share.view();
     event_worker_ops::drain_worker_pipe(serv);
     let kind = crate::server::worker_type();
     if !serv.is_started() || !worker_is_running() || kind == USER_WORKER {

@@ -107,19 +107,19 @@ fn pipe(ctx: &Context<'_>, op: u32) -> Option<u64> {
 /// worker pool and `Server::start` the server. That worker is the process that made
 /// both, with no manager or other worker to share them, so this frees the pool and
 /// what `destroy` would, without the shutdown callbacks upstream never runs on that
-/// path, and returns the server for its owner to delete. Any other server is left alone.
+/// path. True when `server` is that server, which its owner then deletes; any other
+/// server is left alone.
 #[must_use]
-pub fn release_abandoned_server() -> Option<*mut c_void> {
-    // SAFETY: MSHUTDOWN deletes the server only after this returns, and the view
-    // ends here.
-    let server = unsafe { view::Server::current() }?;
-    if !server.ran_its_single_worker_here() {
-        return None;
+pub fn release_abandoned(server: view::Server<'_>) -> bool {
+    if server.raw() != swoole_rs_corebase::swr_v1_core_server()
+        || !server.ran_its_single_worker_here()
+    {
+        return false;
     }
     // The live event pool only this process uses; destroy frees each part once.
     pool_destroy(server.event_pool_ref());
     crate::master_ops::release_abandoned_base(server);
-    Some(server.raw())
+    true
 }
 
 /// `Socket::is_stream(type)`.

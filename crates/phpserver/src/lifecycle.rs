@@ -136,7 +136,7 @@ impl PortInfo {
 // unconstructed one; and a copy of `sw_error`.
 use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
-use swoole_rs_server::{admin_register, swr_v1_server_delete, swr_v1_server_new};
+use swoole_rs_server::{SharedServer, admin_register};
 
 /// `instanceof_function(ce, parent)`.
 fn instance_of(ce: *const zend_class_entry, parent: *const zend_class_entry) -> bool {
@@ -351,21 +351,42 @@ impl ServerObject {
         unsafe { Object::<ServerData>::data(self.0) }
     }
 
-    /// The bound `Server`, or null before `__construct`.
-    pub(crate) fn serv(self) -> *mut c_void {
-        self.data().serv
-    }
-
     /// The bound `Server`, or none before `__construct`, borrowed for as long as
-    /// the handle is: the handle's contract keeps the object, and so its server, live.
+    /// the handle is: the handle's contract keeps the object, and so its share, live.
     pub(crate) fn server(&self) -> Option<view::Server<'_>> {
-        let serv = self.serv();
-        // SAFETY: the object's live server, which it keeps until `free`.
-        (!serv.is_null()).then(|| unsafe { view::Server::from_raw(serv) })
+        self.data().serv.as_ref().map(SharedServer::view)
     }
 
-    fn set_serv(self, serv: *mut c_void) {
-        self.data().serv = serv;
+    /// [`ServerObject::server`] of a Server method's `$this`, which the call holds.
+    pub(crate) fn this_server(call: &Call) -> Option<view::Server<'_>> {
+        Self::this(call)
+            .data()
+            .serv
+            .as_ref()
+            .map(SharedServer::view)
+    }
+
+    /// [`ServerObject::server`] of the Server object `value` holds, if it is one.
+    pub(crate) fn server_of(value: &Value) -> Option<view::Server<'_>> {
+        Self::of(value)?
+            .data()
+            .serv
+            .as_ref()
+            .map(SharedServer::view)
+    }
+
+    /// A share in the bound `Server`, for an object that names it.
+    pub(crate) fn share(self) -> Option<SharedServer> {
+        self.data().serv.clone()
+    }
+
+    /// The object's own share, which leaves it unbound.
+    fn take_serv(self) -> Option<SharedServer> {
+        self.data().serv.take()
+    }
+
+    fn set_serv(self, serv: SharedServer) {
+        self.data().serv = Some(serv);
     }
 
     /// `init_arguments` as the object holds it (no reference taken).
@@ -489,10 +510,10 @@ pub(crate) fn owns_shared() -> bool {
 /// Zend frees a Server object.
 pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
     bailout::finish_after(|| {
-        // The object's live server; the master deletes it below.
+        // A share of its own in the object's server, which outlives the object's.
         let handle = ServerObject(object);
-        let server = handle.server();
-        if let Some(server) = server {
+        let share = handle.share();
+        if let Some(server) = share.as_ref().map(SharedServer::view) {
             if owns_shared() {
                 // SAFETY: freeing the object on the one thread that owns the config's slots.
                 let dispatch = std::mem::replace(
@@ -511,49 +532,51 @@ pub(crate) unsafe extern "C" fn free(object: *mut zend_object) {
                 // SAFETY: a Port object `add_port` made, which `$server->ports` keeps.
                 unsafe { crate::port::deref(port) };
             }
-            handle.set_serv(ptr::null_mut());
+            drop(handle.take_serv());
         }
         // The commands' callables go with it.
         drop(handle.take_property());
         // SAFETY: the object Zend is freeing.
         unsafe { zend_object_std_dtor(object) };
-        if let Some(server) = server {
+        if let Some(share) = share {
+            let server = share.view();
             if fact(server, fact::MASTER) {
                 crate::thread::free_setting(server);
-                delete(server.raw());
-            } else if !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null() {
+                // Its shutdown callbacks run now, while they can reach this object.
+                // The server is deleted with its last share: here, unless a Port,
+                // an iterator or a task PHP still holds names it.
+                server_methods::destroy_running(server);
+            } else if owns_shared() {
                 // Never started, or a base-mode start returned: upstream keeps it to the
-                // exit. A `Connection\Iterator` may still name it, so MSHUTDOWN deletes it.
-                orphans().push(server.raw() as usize);
+                // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
+                let orphan = !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null();
+                kept().push((share, orphan));
             }
+            // A worker thread's share in the master's server just goes.
         }
     });
 }
 
-/// `delete serv`, by its owner, once nothing refers to it.
-fn delete(serv: *mut c_void) {
-    // SAFETY: the master's server whose object went, or one MSHUTDOWN deletes; once.
-    unsafe { swr_v1_server_delete(serv) };
-}
-
-/// The servers [`free`] leaves to [`php_swoole_server_mshutdown`], and those a
-/// failed `__construct` never bound: upstream keeps them, as `SwooleG.server` too.
-fn orphans() -> std::sync::MutexGuard<'static, Vec<usize>> {
-    static ORPHANS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-    ORPHANS
-        .lock()
+/// The shares [`free`] leaves to [`php_swoole_server_mshutdown`], and those a failed
+/// `__construct` never bound: upstream keeps their servers, as `SwooleG.server` too.
+/// Each is true when MSHUTDOWN deletes its server.
+fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
+    static KEPT: std::sync::Mutex<Vec<(SharedServer, bool)>> = std::sync::Mutex::new(Vec::new());
+    KEPT.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// MSHUTDOWN: the server and event worker pool a bailed-out single worker left, then the
-/// servers whose objects went in a process that isn't their master, now that no
-/// object can name them.
+/// MSHUTDOWN: the servers whose objects went in a process that isn't their master, and
+/// the server and event worker pool a bailed-out single worker left, are deleted with
+/// their last share now that no object names them. A started server some other process
+/// runs stays to the exit, as upstream's.
 pub extern "C" fn php_swoole_server_mshutdown() {
-    // `free` leaves a server with a factory out of the orphans, so it joins them once.
-    let abandoned = swoole_rs_server::reactor_process_ops::release_abandoned_server();
-    orphans().extend(abandoned.map(|serv| serv as usize));
-    for serv in std::mem::take(&mut *orphans()) {
-        delete(serv as *mut c_void);
+    for (share, orphan) in std::mem::take(&mut *kept()) {
+        let delete =
+            orphan || swoole_rs_server::reactor_process_ops::release_abandoned(share.view());
+        if !delete {
+            std::mem::forget(share);
+        }
     }
 }
 
@@ -647,11 +670,8 @@ impl<'a> Props<'a> {
 
     /// A `Connection\Iterator` over `serv` (and `port`, or all of them) in the
     /// object's `connections` property.
-    fn connections(self, serv: view::Server<'_>, port: *mut c_void) {
-        self.set(
-            c"connections",
-            &crate::server::new_iterator(serv.raw(), port),
-        );
+    fn connections(self, serv: SharedServer, port: *mut c_void) {
+        self.set(c"connections", &crate::server::new_iterator(serv, port));
     }
 }
 
@@ -659,14 +679,18 @@ impl<'a> Props<'a> {
 /// object and appended to `$server->ports`; undefined unless `port` is one of
 /// the object's server's ports.
 pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
-    let Some(serv) = object.server() else {
+    let Some(serv) = object.share() else {
         return Owned::default();
     };
-    if !serv.ports().iter().any(|own| own.raw() == port.raw()) {
+    if !serv
+        .view()
+        .ports()
+        .iter()
+        .any(|own| own.raw() == port.raw())
+    {
         return Owned::default();
     }
-    // SAFETY: a live server and, checked above, one of its ports.
-    let (zport, port_object) = unsafe { crate::port::new_object(serv.raw(), port.raw()) };
+    let (zport, port_object) = crate::port::new_object(serv.clone(), port);
     object.property(|p| p.ports.push(port_object));
     let info = PortInfo::of(port);
     if let Some(props) = Props::of_value(&zport) {
@@ -684,15 +708,16 @@ pub(crate) fn add_port(object: ServerObject, port: view::Port<'_>) -> Owned {
 }
 
 /// `server_ctor`: bind `object` to `serv` and describe its primary port.
-fn bind(call: &Call, serv: view::Server<'_>) {
+fn bind(call: &Call, share: &SharedServer) {
     let object = ServerObject::this(call);
     crate::instance::set_server_object(call.this());
-    object.set_serv(serv.raw());
+    object.set_serv(share.clone());
+    let serv = share.view();
     for &port in serv.ports() {
         add_port(object, port);
     }
     let props = Props::server(object);
-    props.connections(serv, ptr::null_mut());
+    props.connections(share.clone(), ptr::null_mut());
     props.long(c"mode", number(serv, fact::MODE));
     if let Some(primary) = serv.port_at(0) {
         props.port_info(&PortInfo::of(primary), None);
@@ -715,7 +740,7 @@ pub(crate) fn class(object: ServerObject) -> String {
 
 fn construct(call: &Call) {
     let object = ServerObject::this(call);
-    if !object.serv().is_null() {
+    if object.server().is_some() {
         call.throw_constructed_twice();
         return call.set_bool(false);
     }
@@ -751,7 +776,7 @@ fn construct(call: &Call) {
         0 => {}
         1 => {
             if let Some(server) = existing {
-                bind(call, server);
+                bind(call, &server);
             }
             return;
         }
@@ -772,9 +797,8 @@ fn construct(call: &Call) {
         }
     }
     // A supported mode.
-    let serv = swr_v1_server_new(c_int::try_from(mode).unwrap_or_default());
-    // SAFETY: the server just made.
-    let server = unsafe { view::Server::from_raw(serv) };
+    let share = SharedServer::new(c_int::try_from(mode).unwrap_or_default());
+    let server = share.view();
     if mode == MODE_BASE {
         // SAFETY: nothing else holds the new server's config yet.
         let config = unsafe { server.config_mut() };
@@ -784,7 +808,7 @@ fn construct(call: &Call) {
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
         if server_methods::add_systemd_socket(server) <= 0 {
             call.throw_error(c"failed to add systemd socket");
-            orphans().push(serv as usize);
+            kept().push((share, true));
             return call.set_bool(false);
         }
     } else if {
@@ -808,10 +832,10 @@ fn construct(call: &Call) {
         text.push(reason.to_bytes());
         text.push(format!("[{code}]").as_bytes());
         exception(call, text.as_cstr(), code.into());
-        orphans().push(serv as usize);
+        kept().push((share, true));
         return call.set_bool(false);
     }
-    bind(call, server);
+    bind(call, &share);
 }
 
 fn add_process(call: &Call) {

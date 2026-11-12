@@ -11,7 +11,7 @@ use std::{
 use swoole_rs_corebase::Thread;
 use swoole_rs_phpthread::Arguments;
 use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
-use swoole_rs_server::view;
+use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
@@ -54,14 +54,13 @@ fn thread_mode(serv: view::Server<'_>) -> bool {
 
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server
 /// (in `existing`), 2 not the main thread, 3 a server already exists.
-pub(crate) fn admit(existing: &mut Option<view::Server<'static>>) -> c_int {
-    // SAFETY: the process's server, which outlives every request.
-    let current = unsafe { view::Server::current() };
+pub(crate) fn admit(existing: &mut Option<SharedServer>) -> c_int {
+    let current = SharedServer::current();
     if !crate::server::THREAD.load(Ordering::Relaxed) {
         return if current.is_none() { 0 } else { 3 };
     }
     if let Some(server) = current
-        && server.is_worker_thread()
+        && server.view().is_worker_thread()
     {
         *existing = Some(server);
         return 1;
