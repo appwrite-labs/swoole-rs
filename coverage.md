@@ -1,69 +1,69 @@
 # Coverage of crates/
 
-Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `a8d8c0b` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
+Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus apps and swoole/library's suite, measured on `72bc36e` (`tools/coverage.py`, nightly `.github/workflows/coverage.yml`). A process that exits by a signal or `_exit` records nothing.
 
 | crate | lines | covered | entry points not reached |
 | --- | ---: | ---: | ---: |
-| phpthread | 1,872 | 0.0% | 52 |
-| websocket-ffi | 235 | 23.0% | 8 |
-| protocols-ffi | 506 | 30.8% | 15 |
-| utilities | 981 | 32.1% | 20 |
+| phpthread | 1,674 | 0.0% | 52 |
+| websocket-ffi | 250 | 9.6% | 9 |
+| protocols-ffi | 494 | 29.1% | 16 |
+| utilities | 943 | 29.8% | 18 |
 | base64 | 99 | 33.3% | 0 |
+| error-ffi | 84 | 39.3% | 7 |
 | crc32 | 42 | 45.2% | 0 |
-| ossupport | 928 | 52.8% | 24 |
-| http-ffi | 878 | 58.8% | 7 |
-| phplocks | 469 | 60.1% | 20 |
-| buffer | 857 | 61.0% | 2 |
-| corebase | 2,054 | 61.2% | 9 |
+| corebase | 2,371 | 60.4% | 23 |
+| phplocks | 468 | 60.7% | 17 |
+| http-ffi | 738 | 64.1% | 6 |
+| buffer | 870 | 64.4% | 2 |
 | odbc | 238 | 65.5% | 0 |
 | protocols | 449 | 66.1% | 0 |
 | phpevents | 730 | 67.1% | 0 |
 | phpredis | 204 | 67.6% | 0 |
-| error | 133 | 68.4% | 3 |
-| locks | 482 | 68.9% | 6 |
-| coroutine | 1,073 | 69.2% | 0 |
-| ssh2 | 122 | 71.3% | 0 |
-| phpswoole | 1,712 | 71.6% | 10 |
-| memory | 1,630 | 72.3% | 0 |
-| phpcoroutines | 2,916 | 72.7% | 6 |
-| process | 4,948 | 74.1% | 1 |
-| server | 11,518 | 74.3% | 16 |
-| clients | 2,324 | 74.5% | 11 |
-| http | 3,905 | 75.4% | 0 |
-| tls | 2,759 | 76.3% | 5 |
-| timer | 1,001 | 77.2% | 3 |
-| phpruntime | 2,497 | 77.6% | 1 |
-| phpprocess | 2,077 | 77.8% | 2 |
-| ports | 2,141 | 77.9% | 2 |
-| phpcollections | 572 | 79.2% | 2 |
-| reactor | 3,310 | 80.0% | 5 |
-| phpserver | 4,861 | 80.0% | 11 |
-| phpclients | 6,903 | 80.1% | 12 |
-| phphelpers | 545 | 80.6% | 1 |
-| hooks | 4,950 | 80.6% | 2 |
-| pgsql | 382 | 81.4% | 0 |
-| phptimer | 173 | 82.1% | 0 |
+| locks | 489 | 69.7% | 6 |
+| ssh2 | 118 | 70.3% | 0 |
+| clients | 2,292 | 70.9% | 16 |
+| ossupport | 756 | 71.4% | 2 |
+| coroutine | 1,147 | 72.3% | 0 |
+| phpcoroutines | 2,848 | 73.6% | 2 |
+| phpruntime | 2,154 | 74.4% | 1 |
+| process | 5,099 | 74.5% | 2 |
+| server | 11,374 | 74.5% | 15 |
+| tls | 2,716 | 75.0% | 3 |
+| http | 3,980 | 75.4% | 0 |
+| memory | 1,681 | 75.6% | 0 |
+| ports | 1,866 | 76.3% | 4 |
+| phpprocess | 2,033 | 76.3% | 2 |
+| error | 96 | 77.1% | 0 |
+| timer | 1,000 | 77.2% | 3 |
+| reactor | 3,470 | 78.4% | 13 |
+| phpswoole | 1,676 | 80.0% | 0 |
+| hooks | 4,804 | 81.3% | 1 |
+| pgsql | 381 | 81.4% | 0 |
 | firebird | 51 | 82.4% | 0 |
-| zend | 2,291 | 82.9% | 0 |
+| phpclients | 6,637 | 82.5% | 0 |
+| phptimer | 172 | 83.1% | 0 |
+| phpserver | 4,690 | 83.3% | 1 |
+| zend | 2,904 | 83.7% | 1 |
 | sqlite | 74 | 83.8% | 0 |
-| httpbindings | 427 | 85.5% | 0 |
-| phphttp2 | 2,492 | 85.9% | 2 |
 | inflate | 100 | 86.0% | 0 |
-| phphttp | 5,521 | 87.9% | 4 |
+| phpcollections | 572 | 86.0% | 0 |
 | brotli | 58 | 87.9% | 0 |
-| framing | 382 | 88.5% | 0 |
-| bus | 445 | 90.1% | 0 |
-| zlib | 105 | 90.5% | 0 |
+| zlib | 108 | 88.0% | 0 |
+| phphttp2 | 2,309 | 88.0% | 0 |
+| httpbindings | 301 | 88.7% | 0 |
+| phphttp | 5,177 | 88.7% | 0 |
+| bus | 442 | 89.6% | 0 |
+| framing | 374 | 90.4% | 0 |
 | deflate | 54 | 90.7% | 0 |
 | http2 | 710 | 91.3% | 0 |
-| ffi | 60 | 91.7% | 1 |
-| curl | 633 | 92.3% | 0 |
+| ffi | 61 | 91.8% | 1 |
+| curl | 629 | 92.4% | 0 |
 | websocket | 312 | 95.5% | 0 |
 | oci | 124 | 97.6% | 0 |
 | curl-sys | 4 | 100.0% | 0 |
 | ext | 3 | 100.0% | 0 |
-| locale | 39 | 100.0% | 0 |
-| **crates/** | 87,361 | 74.4% | 263 |
+| locale | 46 | 100.0% | 0 |
+| **crates/** | 85,546 | 75.3% | 223 |
 
 # Entry points no run reached
 
@@ -76,35 +76,58 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## clients
 
+- `swr_v1_clients_address_assign`
 - `swr_v1_clients_address_empty`
 - `swr_v1_clients_address_set_port`
+- `swr_v1_clients_address_string`
 - `swr_v1_clients_address_type`
 - `swr_v1_clients_dns_server`
 - `swr_v1_clients_flag`
 - `swr_v1_clients_hosts_lookup`
+- `swr_v1_clients_http_format`
 - `swr_v1_clients_load_resolv_conf`
 - `swr_v1_clients_proxy_fields`
+- `swr_v1_clients_set_dns_server`
 - `swr_v1_clients_set_hosts_path`
+- `swr_v1_clients_ssl_context`
 - `swr_v1_clients_url`
 - `swr_v1_clients_watermark`
 
 ## corebase
 
+- `swr_v1_clients_gethostbyname`
 - `swr_v1_core_format_result`
 - `swr_v1_core_last_error`
 - `swr_v1_core_proxy_assign`
+- `swr_v1_core_proxy_configure`
+- `swr_v1_core_proxy_new`
+- `swr_v1_core_resolver_assign`
+- `swr_v1_core_resolver_create`
+- `swr_v1_core_resolver_finish`
+- `swr_v1_core_resolver_host`
+- `swr_v1_core_resolver_lookup`
+- `swr_v1_core_resolver_new`
+- `swr_v1_core_resolver_next`
 - `swr_v1_core_resolver_resize`
+- `swr_v1_core_resolver_span`
+- `swr_v1_core_set_task_tmpdir`
 - `swr_v1_core_signal_alarm`
 - `swr_v1_core_string_clone`
 - `swr_v1_core_string_free`
+- `swr_v1_core_string_set`
+- `swr_v1_core_string_view`
 - `swr_v1_core_trace_flags`
 - `swr_v1_corebase_parse_stoi`
 
-## error
+## error-ffi
 
+- `swr_v1_abi_version`
+- `swr_v1_error_buffer`
 - `swr_v1_error_ignored_release`
 - `swr_v1_error_message`
 - `swr_v1_error_resolve`
+- `swr_v1_error_strerror`
+- `swr_v1_feature_bits`
 
 ## ffi
 
@@ -113,7 +136,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 ## hooks
 
 - `swr_v1_hook_co_socket_uring`
-- `swr_v1_hook_dns_lookup`
 
 ## http-ffi
 
@@ -122,7 +144,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_http_method_string`
 - `swr_v1_http_multipart_disposition`
 - `swr_v1_http_multipart_filename`
-- `swr_v1_http_proxy_owned_authorization`
 - `swr_v1_http_static_location`
 
 ## locks
@@ -136,81 +157,16 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## ossupport
 
-- `swr_v1_os_async_file_assign`
-- `swr_v1_os_async_file_clone`
-- `swr_v1_os_async_file_fd`
-- `swr_v1_os_async_file_free`
-- `swr_v1_os_async_file_new`
-- `swr_v1_os_async_file_offset`
-- `swr_v1_os_async_file_open`
-- `swr_v1_os_async_file_read`
-- `swr_v1_os_async_file_stat`
-- `swr_v1_os_async_file_sync`
-- `swr_v1_os_async_file_truncate`
-- `swr_v1_os_async_file_write`
-- `swr_v1_os_file_get_contents`
-- `swr_v1_os_file_read_content`
-- `swr_v1_os_file_record_assign`
-- `swr_v1_os_file_record_clone`
-- `swr_v1_os_file_record_close`
-- `swr_v1_os_file_record_control`
 - `swr_v1_os_file_record_fd`
-- `swr_v1_os_file_record_free`
-- `swr_v1_os_file_record_io`
-- `swr_v1_os_file_record_new`
-- `swr_v1_os_file_record_open`
 - `swr_v1_os_set_isolation`
-
-## phpclients
-
-- `zif_swoole_name_resolver_add`
-- `zif_swoole_name_resolver_lookup`
-- `zif_swoole_name_resolver_remove`
-- `zim_swoole_client_coro_getPeerCert`
-- `zim_swoole_client_coro_peek`
-- `zim_swoole_client_coro_verifyPeerCert`
-- `zim_swoole_client_getPeerCert`
-- `zim_swoole_client_isConnected`
-- `zim_swoole_client_verifyPeerCert`
-- `zim_swoole_http_client_coro_getDefer`
-- `zim_swoole_http_client_coro_getpeername`
-- `zim_swoole_name_resolver_context___construct`
-
-## phpcollections
-
-- `zim_swoole_channel_coro_isFull`
-- `zim_swoole_table_getSize`
 
 ## phpcoroutines
 
 - `zif_swoole_exit`
-- `zif_swoole_tracer_leak_detect`
-- `zif_swoole_tracer_prof_begin`
-- `zif_swoole_tracer_prof_end`
 - `zim_swoole_coroutine_getExecuteTime`
-- `zim_swoole_coroutine_getStackUsage`
-
-## phphelpers
-
-- `swr_v1_phphelpers_zval_dup`
-
-## phphttp
-
-- `zim_swoole_http_cookie_toString`
-- `zim_swoole_http_response_disconnect`
-- `zim_swoole_http_response_initHeader`
-- `zim_swoole_websocket_server_unpack`
-
-## phphttp2
-
-- `zim_swoole_http2_client_coro_isStreamExist`
-- `zim_swoole_http2_client_coro_stats`
 
 ## phplocks
 
-- `zim_swoole_atomic_long_cmpset`
-- `zim_swoole_atomic_long_set`
-- `zim_swoole_atomic_long_sub`
 - `zim_swoole_thread_atomic___construct`
 - `zim_swoole_thread_atomic_add`
 - `zim_swoole_thread_atomic_cmpset`
@@ -240,30 +196,7 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## phpserver
 
-- `zim_swoole_connection_iterator___construct`
-- `zim_swoole_connection_iterator_offsetExists`
-- `zim_swoole_connection_iterator_offsetGet`
-- `zim_swoole_connection_iterator_offsetSet`
-- `zim_swoole_connection_iterator_offsetUnset`
-- `zim_swoole_server_bind`
-- `zim_swoole_server_getClientList`
-- `zim_swoole_server_heartbeat`
 - `zim_swoole_server_port___construct`
-- `zim_swoole_server_port_getSocket`
-- `zim_swoole_server_protect`
-
-## phpswoole
-
-- `zif_swoole_get_object_by_handle`
-- `zif_swoole_get_objects`
-- `zif_swoole_get_vm_status`
-- `zif_swoole_hashcode`
-- `zif_swoole_implicit_fn`
-- `zif_swoole_mime_type_delete`
-- `zif_swoole_mime_type_exists`
-- `zif_swoole_mime_type_get`
-- `zif_swoole_mime_type_list`
-- `zif_swoole_mime_type_set`
 
 ## phpthread
 
@@ -322,15 +255,19 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## ports
 
+- `swr_v1_ports_callback_property`
+- `swr_v1_ports_event`
 - `swr_v1_ports_protocol`
 - `swr_v1_ports_protocol_name`
 
 ## process
 
 - `swr_v1_process_pool_ipc_send_sync`
+- `swr_v1_worker_globals`
 
 ## protocols-ffi
 
+- `swr_v1_mqtt_frame_length`
 - `swr_v1_resp_extend_size`
 - `swr_v1_resp_format`
 - `swr_v1_resp_handler_key`
@@ -349,22 +286,29 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## reactor
 
+- `swr_v1_reactor_deferred_push`
+- `swr_v1_reactor_handlers_default`
 - `swr_v1_reactor_handlers_get`
 - `swr_v1_reactor_iov_advance`
+- `swr_v1_reactor_iov_destroy`
 - `swr_v1_reactor_iov_length`
+- `swr_v1_reactor_iov_prepare`
 - `swr_v1_reactor_isset_exit`
+- `swr_v1_reactor_registry_count`
 - `swr_v1_reactor_registry_get`
+- `swr_v1_reactor_set_end`
+- `swr_v1_socket_default_timeouts`
+- `swr_v1_socket_host_type`
 
 ## server
 
-- `swr_v1_server_admin_register`
 - `swr_v1_server_connection`
 - `swr_v1_server_port_shared_init`
 - `swr_v1_server_record_layout`
-- `swr_v1_server_run`
 - `swr_v1_server_session`
 - `swr_v1_server_set_document_root`
-- `swr_v1_server_startup_error`
+- `swr_v1_server_state_free`
+- `swr_v1_server_static_config`
 - `swr_v1_server_static_mime`
 - `swr_v1_server_static_owner`
 - `swr_v1_server_static_owner_clone`
@@ -382,11 +326,9 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 
 ## tls
 
-- `swr_v1_tls_set_capath`
-- `swr_v1_tls_set_ciphers`
-- `swr_v1_tls_set_client_certificate`
-- `swr_v1_tls_set_dhparam`
-- `swr_v1_tls_set_ecdh_curve`
+- `swr_v1_tls_owner_clone`
+- `swr_v1_tls_owner_free`
+- `swr_v1_tls_owner_set_path`
 
 ## utilities
 
@@ -396,6 +338,8 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_logger_is_opened`
 - `swr_v1_logger_level`
 - `swr_v1_logger_new`
+- `swr_v1_logger_open`
+- `swr_v1_logger_put`
 - `swr_v1_logger_redirect`
 - `swr_v1_logger_reopen`
 - `swr_v1_logger_rotation_date`
@@ -403,10 +347,6 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_logger_set_date_format`
 - `swr_v1_logger_set_level`
 - `swr_v1_logger_set_stream`
-- `swr_v1_utils_hash`
-- `swr_v1_utils_log_label`
-- `swr_v1_utils_log_micros`
-- `swr_v1_utils_log_rotation`
 - `swr_v1_utils_pretty_range`
 - `swr_v1_utils_wait`
 - `swr_v1_utils_wakeup`
@@ -416,8 +356,13 @@ Lines of `crates/` the Cargo swoole.so ran under the PHPT corpus, the corpus app
 - `swr_v1_ws_control_invalid`
 - `swr_v1_ws_decide`
 - `swr_v1_ws_decode`
+- `swr_v1_ws_encode`
 - `swr_v1_ws_encode_close`
 - `swr_v1_ws_encoded_size`
 - `swr_v1_ws_mask`
 - `swr_v1_ws_message_policy`
 - `swr_v1_ws_pack_policy`
+
+## zend
+
+- `swr_v1_phphelpers_zval_dup`
