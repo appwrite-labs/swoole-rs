@@ -266,7 +266,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     state.before_request = 1;
     state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
     // The data moves into the request's own zval.
-    php_swoole_get_recv_data(server, &state.request.zdata, request);
+    state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
     let result = handle(server, ctx, session, server_fd, &facts).and_then(|route| {
         if route != REQUEST {

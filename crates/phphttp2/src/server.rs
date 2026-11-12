@@ -19,7 +19,7 @@ use swoole_rs_http2::{
 };
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
-use swoole_rs_zend::{Array, HeldArray, Owned, Value as Zval, ZString, bailout};
+use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
 
 /// Frame sizes, types and flags (`swoole_http2.h`).
 const FRAME_HEADER: usize = 9;
@@ -887,9 +887,7 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) 
         );
         SessionState::find(session_id)
     });
-    // The empty slot `zdata` owns takes a new string.
-    let zdata = Owned::default();
-    swoole_rs_phpserver::php_swoole_get_recv_data(view, &zdata, request);
+    let zdata = swoole_rs_phpserver::php_swoole_get_recv_data(view, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
     let result = session.map_or(SW_ERR, |session| parse(&session, data));

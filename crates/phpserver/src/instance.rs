@@ -22,9 +22,9 @@ use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_recor
 use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
-    Owned, Value, bailout, string,
-    sys::{swr_zend_mkdir_recursive, swr_zval_stringl, zval},
-    value::{empty_string, set_str},
+    Owned, Value, ZString, bailout,
+    string::{self, ZBuf},
+    sys::{swr_zend_mkdir_recursive, zval},
 };
 
 thread_local! {
@@ -115,38 +115,29 @@ pub fn php_swoole_server_get_callback(
     port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))
 }
 
-/// `serv->get_worker_message_bus()->move_packet()`.
-fn move_packet(serv: view::Server<'_>) {
-    // SAFETY: the worker's live bus; the packet is now the caller's.
-    unsafe { swoole_rs_server::bus_move_packet(crate::dispatch::message_bus(serv)) };
-}
-
-/// `zend::assign_zend_string_by_val`: the zend string whose bytes start at
-/// `data`, cut to `length`, into `zdata`.
+/// The zend string whose bytes start at `data`, cut to `length`.
 /// # Safety
-/// `data` is `ZSTR_VAL` of a live, unshared string of at least `length` bytes;
-/// `zdata` is writable.
-unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
-    let text = string::from_val(data);
+/// `data` is `ZSTR_VAL` of a live, unshared string of at least `length` bytes,
+/// whose only reference the caller hands over.
+unsafe fn adopt(data: *mut u8, length: usize) -> Owned {
     // SAFETY: per the caller.
-    unsafe { string::truncate(text, length) };
-    // SAFETY: per the caller; `zdata` takes the reference.
-    unsafe { set_str(zdata, text) };
+    let text = unsafe { ZBuf::from_raw(string::from_val(data), length) };
+    Owned::string(text.into_zstring())
 }
 
-/// `php_swoole_get_recv_data`: a request's payload into `zdata`, taking the
-/// message bus's packet or the connection's receive buffer when it holds them.
-/// What `zdata` held is overwritten, not released.
-pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &Value, req: &RecvData) {
-    let zdata = zdata.as_ptr();
+/// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
+/// packet or the connection's receive buffer when it holds them.
+#[must_use]
+pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned {
     let (flags, length) = (req.info().flags, req.info().len as usize);
     if length == 0 {
-        // SAFETY: a live zval; the interned string needs no reference.
-        unsafe { set_str(zdata, empty_string()) };
+        Owned::string(ZString::empty())
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
-        // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
-        unsafe { assign_by_val(zdata, req.data().cast_mut().cast(), length) };
-        move_packet(serv);
+        // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string, which
+        // the bus hands over next.
+        let data = unsafe { adopt(req.data().cast_mut().cast(), length) };
+        serv.move_worker_packet();
+        data
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
         .then(|| serv.by_session(req.info().fd))
         .flatten()
@@ -157,10 +148,9 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &Value, req: &Rec
         // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
         let data = unsafe { &mut *buffer.cast::<CppString>() }.pop(size);
         // SAFETY: `pop` hands over its zend-allocated block of the payload.
-        unsafe { assign_by_val(zdata, data, length) };
+        unsafe { adopt(data, length) }
     } else {
-        // SAFETY: `length` bytes at `data`.
-        unsafe { swr_zval_stringl(zdata, req.data().cast(), length) };
+        Owned::string(ZString::new(req.payload()))
     }
 }
 

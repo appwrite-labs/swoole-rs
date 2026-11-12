@@ -263,15 +263,12 @@ fn receive_args(
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", info.time);
-        let mut data = undef();
-        php_swoole_get_recv_data(server, Value::of(&mut data), request);
-        props.value(c"data", &mut data);
-        dtor(&mut data);
+        props.set(c"data", &php_swoole_get_recv_data(server, request));
         2
     } else {
         args[1] = long_zval(fd);
         args[2] = long_zval(reactor_id);
-        php_swoole_get_recv_data(server, Value::of(&mut args[3]), request);
+        args[3] = php_swoole_get_recv_data(server, request).into_zval();
         4
     }
 }
@@ -773,9 +770,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     let Some(redis) = crate::server::redis_receive() else {
         return php_swoole_server_on_receive(server, request);
     };
-    // The empty zval `data` owns takes the payload.
-    let data = Owned::default();
-    php_swoole_get_recv_data(server, &data, request);
+    let data = php_swoole_get_recv_data(server, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     // The relay's longjmp would skip `data`'s release.
     drop(data);

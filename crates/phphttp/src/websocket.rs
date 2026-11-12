@@ -911,9 +911,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
     let Some(settings) = port_frames(server, fd) else {
         return Ok(ERR);
     };
-    // The empty slot `data` owns takes the payload.
-    let mut data = Owned::default();
-    php_swoole_get_recv_data(view, &data, request);
+    let mut data = php_swoole_get_recv_data(view, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
     if delivery != 0 {
