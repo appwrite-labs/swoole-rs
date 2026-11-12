@@ -34,6 +34,13 @@ impl Co {
             .unwrap_or(core::ptr::null())
     }
 
+    /// A reference of the caller's own to the socket's `SSLContext` owner, which keeps
+    /// it live whatever happens to the socket; none without one.
+    #[must_use]
+    pub fn tls_context(self) -> Option<TlsContext> {
+        self.with_extra(|extra| extra.tls.clone()).flatten()
+    }
+
     /// `read` over the `SSLContext` owner's fields, or none without one.
     pub(crate) fn tls_fields<R>(self, read: impl FnOnce(&OwnedTlsFields) -> R) -> Option<R> {
         let owner = self.tls_owner();
@@ -43,7 +50,7 @@ impl Co {
 
     /// The `SSLContext` owner's `tls_host_name`, empty without one.
     pub(crate) fn tls_host_name(self) -> Vec<u8> {
-        let Some(owner) = self.with_extra(|extra| extra.tls.clone()).flatten() else {
+        let Some(owner) = self.tls_context() else {
             return Vec::new();
         };
         let name = owner_tls_host_name(&owner);
@@ -68,7 +75,7 @@ impl Co {
     /// The accepting constructor's TLS: `self`, accepted on `server`, shares the
     /// server's context and gets a session over it, or is closed when that fails.
     pub(crate) fn share_tls(self, server: Self) {
-        let Some(shared) = server.with_extra(|extra| extra.tls.clone()).flatten() else {
+        let Some(shared) = server.tls_context() else {
             return;
         };
         let owner = shared.as_ptr();

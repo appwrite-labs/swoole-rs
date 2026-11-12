@@ -221,6 +221,33 @@ pub unsafe fn owner_fields<'a>(owner: *const OwnedTlsContext) -> &'a OwnedTlsFie
 pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreStringView {
     owner.strings[TLS_HOST_NAME].view()
 }
+/// An owner whose caller serializes it: the borrow every operation here takes once,
+/// instead of each field access promising it again.
+struct Lent<'a>(&'a OwnedTlsContext);
+impl Lent<'_> {
+    /// # Safety
+    /// `owner` is live while the guard is, and until the guard goes only its holder
+    /// reaches the owner's fields and retained password: no other thread does, and
+    /// what the holder calls meanwhile (OpenSSL, the logger, native code reading its
+    /// view) runs while no borrow the guard lent is in use.
+    unsafe fn new(owner: *const OwnedTlsContext) -> Self {
+        // SAFETY: as the caller promises.
+        Self(unsafe { &*owner })
+    }
+    fn fields(&self) -> &OwnedTlsFields {
+        // SAFETY: the guard's contract: nothing writes the fields while it lends them.
+        unsafe { &*self.0.fields.get() }
+    }
+    fn fields_mut(&mut self) -> &mut OwnedTlsFields {
+        // SAFETY: the guard's contract: only its holder reaches the fields, and this
+        // borrow of the guard is its only one.
+        unsafe { &mut *self.0.fields.get() }
+    }
+    fn password(&mut self) -> &mut Option<Arc<StringSlot>> {
+        // SAFETY: as `fields_mut`, for the retained password.
+        unsafe { &mut *self.0.context_password.get() }
+    }
+}
 /// The owner's strings, as views, and the scalar `fields` copied from it.
 fn configuration(owner: &OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig {
     let strings = owner.strings.each_ref().map(|slot| slot.view());
@@ -261,11 +288,15 @@ unsafe extern "C" fn slot_password(
 /// # Safety
 /// owner is live/exclusive, and its logger does not throw.
 pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
-    // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
-    let state = unsafe { &*owner };
-    // SAFETY: the exclusive caller serializes field writes; `configuration` copies
-    // them, so no borrow of the fields is kept across OpenSSL/log callbacks.
-    let mut config = configuration(state, unsafe { &*state.fields.get() });
+    // SAFETY: as the caller promises.
+    create(&mut unsafe { Lent::new(owner) })
+}
+/// [`swr_v1_tls_owner_create`] over the lent owner, whose logger does not throw.
+fn create(owner: &mut Lent<'_>) -> bool {
+    let state = owner.0;
+    // `configuration` copies the fields, so no borrow of them is kept across
+    // OpenSSL/log callbacks.
+    let mut config = configuration(state, owner.fields());
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.length == 0 {
         None
@@ -279,19 +310,16 @@ pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: local configuration, stable string slots and a live password binding.
     let ctx = unsafe { create_context(&mut config, Some(password)) };
     if let Some(ctx) = &ctx {
-        // SAFETY: the new context; each of its sessions registers its canonical network
-        // socket (`info`'s contract) before callbacks run.
-        unsafe { crate::info::SSL_CTX_set_info_callback(ctx.as_ptr(), Some(crate::info::info)) };
+        crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
     }
     let created = ctx.is_some();
-    // SAFETY: the callbacks have returned, and the caller's exclusive owner lends its
-    // fields for these two writes.
-    let fields = unsafe { &mut *state.fields.get() };
+    // The callbacks have returned.
+    let fields = owner.fields_mut();
     // The old OpenSSL reference gives way to the new one, released as it goes.
     fields.context = ctx;
     fields.protocols = config.protocols;
-    // SAFETY: the new context's live password data is retained independently of native views.
-    unsafe { *state.context_password.get() = retained_password };
+    // The new context's live password data is retained independently of native views.
+    *owner.password() = retained_password;
     created
 }
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
@@ -357,11 +385,11 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
             index: 0,
         };
     }
-    // SAFETY: two live shared owners, exposing mutation only through interior slots.
-    let destination = unsafe { &*destination };
-    // SAFETY: source remains unchanged for the configuration copy.
-    let source = unsafe { &*source };
-    let slots = source.strings.iter().zip(&destination.strings);
+    // SAFETY: a live owner its caller serializes, distinct from the source.
+    let mut destination = unsafe { Lent::new(destination) };
+    // SAFETY: as above; the source remains unchanged for the configuration copy.
+    let mut source = unsafe { Lent::new(source) };
+    let slots = source.0.strings.iter().zip(&destination.0.strings);
     for (index, (from, to)) in slots.enumerate() {
         let value = from.bytes();
         // SAFETY: the destination slot is exclusive (a distinct owner) and the source's
@@ -374,21 +402,21 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
             };
         }
     }
-    // SAFETY: copy scalar values after string allocation/cache updates have succeeded;
-    // the destination takes its own reference to the source's context.
-    let Some(fields) = unsafe { &*source.fields.get() }.try_clone() else {
+    // Copy scalar values after string allocation/cache updates have succeeded; the
+    // destination takes its own reference to the source's context.
+    let Some(fields) = source.fields().try_clone() else {
         return OwnedTlsCopy {
             status: -2,
             index: 0,
         };
     };
-    // SAFETY: independent retention of the context's actual live password value.
-    let password = unsafe { &*source.context_password.get() }.clone();
-    // SAFETY: slots are stable and exclusive; publish the copied scalar values and
-    // reference, releasing the destination's previous one.
-    unsafe { *destination.fields.get() = fields };
-    // SAFETY: release old password ownership only after releasing its OpenSSL reference.
-    unsafe { *destination.context_password.get() = password };
+    // Independent retention of the context's actual live password value.
+    let password = source.password().clone();
+    // Publish the copied scalar values and reference, releasing the destination's
+    // previous one.
+    *destination.fields_mut() = fields;
+    // Release old password ownership only after releasing its OpenSSL reference.
+    *destination.password() = password;
     OwnedTlsCopy {
         status: 0,
         index: 0,
@@ -405,17 +433,16 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
     http2: bool,
     dtls_supported: bool,
 ) -> c_int {
-    // SAFETY: the owner is live throughout the operation.
-    let owner_ref = unsafe { &*owner };
+    // SAFETY: as the caller promises.
+    let mut owner = unsafe { Lent::new(owner) };
     let kind = socket.read(|record| record.socket_type);
     let dtls = swoole_rs_reactor::type_is(kind, swoole_rs_reactor::CLASS_DGRAM);
     if dtls && !dtls_supported {
         return 1;
     }
     {
-        // SAFETY: the exclusive owner lends its fields for these leaf updates, before
-        // OpenSSL callbacks may run.
-        let fields = unsafe { &mut *owner_ref.fields.get() };
+        // Leaf updates, before OpenSSL callbacks may run.
+        let fields = owner.fields_mut();
         if dtls {
             fields.protocols = crate::SslVersion::SW_SSL_DTLS as u32;
         }
@@ -427,8 +454,7 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
             record.chunk_size = swoole_rs_corebase::constants::SW_SSL_BUFFER_SIZE;
         });
     }
-    // SAFETY: initialization and exclusive owner access are the caller contract.
-    if !unsafe { swr_v1_tls_owner_create(owner) } {
+    if !create(&mut owner) {
         return 2;
     }
     socket.edit(|record| record.output.ssl_send = 1);
@@ -456,12 +482,13 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
             error: 0,
         };
     }
-    // SAFETY: the owner stays live through this operation.
-    let owner_ref = unsafe { &*owner };
+    // SAFETY: as the caller promises.
+    let owner = unsafe { Lent::new(owner) };
+    let owner_ref = owner.0;
     let (context, disable_tls_host_name) = {
-        // SAFETY: the exclusive caller's owner configuration, whose context is borrowed
-        // until the SSL is made; nothing writes the fields meanwhile.
-        let fields = unsafe { &*owner_ref.fields.get() };
+        // The context is borrowed until the SSL is made; nothing writes the fields
+        // meanwhile.
+        let fields = owner.fields();
         (fields.context.as_deref(), fields.disable_tls_host_name)
     };
     let index = crate::swr_v1_tls_connection_index();
@@ -549,8 +576,9 @@ fn readable(path: &[u8], origin: &CStr, what: &str) -> bool {
 /// # Safety
 /// owner is live and exclusive, and `value` is none of its own strings.
 pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
-    // SAFETY: the caller lends the live owner.
-    let state = unsafe { &*owner };
+    // SAFETY: as the caller promises.
+    let mut owner = unsafe { Lent::new(owner) };
+    let state = owner.0;
     // The slot, and for a file its setter's log origin and name.
     let (slot, file) = match which {
         Text::CertFile => (&state.strings[4], Some((c"set_cert_file", "cert"))),
@@ -580,8 +608,7 @@ pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8])
         std::process::abort();
     }
     if matches!(which, Text::HostName) {
-        // SAFETY: the exclusive caller serializes field writes.
-        unsafe { (*state.fields.get()).disable_tls_host_name = value.is_empty().into() };
+        owner.fields_mut().disable_tls_host_name = value.is_empty().into();
     }
     true
 }
@@ -590,10 +617,9 @@ pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8])
 /// # Safety
 /// owner is live and exclusive.
 pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
-    // SAFETY: the caller lends the live owner.
-    let state = unsafe { &*owner };
-    // SAFETY: the exclusive caller serializes field writes.
-    let fields = unsafe { &mut *state.fields.get() };
+    // SAFETY: as the caller promises.
+    let mut owner = unsafe { Lent::new(owner) };
+    let fields = owner.fields_mut();
     match value {
         #[expect(
             clippy::cast_possible_truncation,

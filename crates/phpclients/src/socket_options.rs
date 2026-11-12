@@ -16,7 +16,7 @@ use std::{
     ptr,
 };
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
-use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
+use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
     sys::{
@@ -412,11 +412,12 @@ fn throw_unsupported(message: &CStr) {
 
 /// `php_swoole_socket_set_ssl`.
 fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
-    let owner = socket.ssl_context().cast::<OwnedTlsContext>();
-    if owner.is_null() {
+    // A reference of this call's own: the context outlives whatever the settings run.
+    let Some(context) = socket.handle().tls_context() else {
         return Ok(true);
-    }
-    // SAFETY: the live socket's context, which nothing else writes during the call.
+    };
+    let owner = context.as_ptr();
+    // SAFETY: the context `context` keeps live, which nothing else writes during the call.
     let set = |value| unsafe { tls::set_value(owner, value) };
     // SAFETY: as above.
     let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
@@ -448,8 +449,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
             }
         }
     }
-    // SAFETY: the live context.
-    match tls::has_files(unsafe { &*owner }) {
+    match tls::has_files(&context) {
         (true, false) => fatal(E_WARNING, b"ssl require key file")?,
         (false, true) => fatal(E_WARNING, b"ssl require cert file")?,
         _ => {}

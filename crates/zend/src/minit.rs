@@ -23,8 +23,10 @@ use std::{
 };
 
 unsafe extern "C" {
-    static spl_ce_ArrayIterator: *mut zend_class_entry;
-    static spl_ce_ArrayObject: *mut zend_class_entry;
+    /// SPL's classes: null until its MINIT, which runs before that of any
+    /// extension depending on it, registers them; never written again.
+    safe static spl_ce_ArrayIterator: *mut zend_class_entry;
+    safe static spl_ce_ArrayObject: *mut zend_class_entry;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -395,8 +397,7 @@ impl Minit {
     /// SPL's `ArrayObject`.
     #[must_use]
     pub fn array_object(&self) -> Parent {
-        // SAFETY: SPL registers it at its MINIT, before any extension that depends on it.
-        Parent(unsafe { spl_ce_ArrayObject })
+        Parent(spl_ce_ArrayObject)
     }
 
     /// Zend's `Iterator`.
@@ -438,8 +439,7 @@ impl Minit {
     /// SPL's `ArrayIterator`.
     #[must_use]
     pub fn array_iterator(&self) -> Parent {
-        // SAFETY: SPL registers it at its MINIT, before any extension that depends on it.
-        Parent(unsafe { spl_ce_ArrayIterator })
+        Parent(spl_ce_ArrayIterator)
     }
 }
 

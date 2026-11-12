@@ -4,6 +4,7 @@
 //! exactly once, its destructor runs only after the queue call that released it has
 //! returned, and callbacks run between `select_next` and `complete` with no borrow of
 //! the queue held.
+use super::tests::out;
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;

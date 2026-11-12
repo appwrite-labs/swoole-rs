@@ -68,8 +68,6 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr};
 
 unsafe extern "C" {
-    fn strtoul(input: *const c_char, end: *mut *mut c_char, base: c_int) -> c_ulong;
-    fn strncasecmp(left: *const c_char, right: *const c_char, count: usize) -> c_int;
     fn toupper(value: c_int) -> c_int;
 }
 
@@ -254,10 +252,6 @@ fn gcd(mut left: u32, mut right: u32) -> u32 {
     left
 }
 
-unsafe extern "C" {
-    fn strndup(input: *const c_char, length: usize) -> *mut c_char;
-}
-
 /// `char *swoole_dec2hex(ulong_t value, int base)`: the digits in a fresh
 /// `strndup` allocation the caller frees.
 /// # Panics
@@ -272,9 +266,10 @@ pub extern "C" fn swoole_dec2hex(value: c_ulong, base: c_int) -> *mut c_char {
     let mut buffer = [0_u8; c_ulong::BITS as usize + 1];
     // The capacity `radix` requires, and `base` is checked, so it returns an offset inside.
     let first = radix(value, base.cast_unsigned(), &mut buffer);
-    let digits = buffer.get(first..).unwrap_or(&[0]);
-    // SAFETY: the NUL-terminated digits `radix` just wrote into `buffer`, and their count.
-    unsafe { strndup(digits.as_ptr().cast(), digits.len() - 1) }
+    // The NUL-terminated digits `radix` just wrote into `buffer`.
+    let digits = buffer.get(first..).unwrap_or_default();
+    let digits = CStr::from_bytes_until_nul(digits).unwrap_or_default();
+    sys::strndup(digits, digits.count_bytes())
 }
 
 /// format.c's printf family under its public names, which swoole.h's inline logging
@@ -421,18 +416,19 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
 pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize) -> c_ulong {
     // The compiler's plain `char` signedness, as the C++ facade saw it.
     let native_char_signed = c_char::MIN != 0;
-    let mut current = input;
     let mut value = 0_usize;
-    // `current` walks the caller's NUL-terminated string and stops at the first non-digit
-    // (at the latest, the NUL), so every read below is inside it.
     *parsed = 0;
-    // SAFETY: `input` is NUL-terminated, so strncasecmp stops at its end; the literal is too.
-    if unsafe { strncasecmp(input, c"0x".as_ptr(), 2) } == 0 {
-        current = current.wrapping_add(2);
-    }
-    loop {
-        // SAFETY: see above; `current` has not passed the NUL.
-        let byte = unsafe { current.cast::<u8>().read() };
+    // SAFETY: the caller's NUL-terminated string.
+    let text = unsafe { CStr::from_ptr(input) };
+    // strncasecmp stops at the text's NUL, so a match means two bytes precede it.
+    let prefix = if sys::strncasecmp(text, c"0x", 2) == 0 {
+        2
+    } else {
+        0
+    };
+    let mut count = prefix;
+    // The walk stops at the first non-digit: at the latest, the NUL.
+    for &byte in text.to_bytes_with_nul().get(prefix..).unwrap_or_default() {
         let digit = if byte.is_ascii_digit() {
             (byte - b'0') as usize
         } else {
@@ -456,9 +452,9 @@ pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize
             (byte - c_int::from(b'A')).unsigned_abs() as usize + 10
         };
         value = value.wrapping_mul(16).wrapping_add(digit);
-        current = current.wrapping_add(1);
+        count += 1;
     }
-    *parsed = current.addr() - input.addr();
+    *parsed = count;
     value as c_ulong
 }
 
@@ -471,33 +467,33 @@ pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize
     unsafe(export_name = "_Z22swoole_version_comparePKcS0_")
 )]
 pub unsafe extern "C" fn swoole_version_compare(
-    mut left: *const c_char,
-    mut right: *const c_char,
+    left: *const c_char,
+    right: *const c_char,
 ) -> c_int {
-    // `left` and `right` always point into the caller's NUL-terminated strings: strtoul
-    // ends on a non-digit, and the code steps past it only when it isn't the NUL.
+    // What follows the byte a component ended on, which isn't the NUL.
+    fn after(rest: &CStr) -> &CStr {
+        let next = rest.to_bytes_with_nul().get(1..).unwrap_or(&[0]);
+        CStr::from_bytes_until_nul(next).unwrap_or_default()
+    }
+    // SAFETY: the caller's NUL-terminated string.
+    let mut left = unsafe { CStr::from_ptr(left) };
+    // SAFETY: as above.
+    let mut right = unsafe { CStr::from_ptr(right) };
     loop {
-        let (mut left_end, mut right_end) = (ptr::null_mut(), ptr::null_mut());
-        // SAFETY: see above; `left_end` is a live local.
-        let first = unsafe { strtoul(left, &raw mut left_end, 10) };
-        // SAFETY: see above; `right_end` is a live local.
-        let second = unsafe { strtoul(right, &raw mut right_end, 10) };
+        let (first, left_rest) = sys::strtoul(left, 10);
+        let (second, right_rest) = sys::strtoul(right, 10);
         match first.cmp(&second) {
             Ordering::Less => return -1,
             Ordering::Greater => return 1,
             Ordering::Equal => {}
         }
-        // SAFETY: strtoul set `left_end` inside the left string.
-        let left_done = unsafe { left_end.read() } == 0;
-        // SAFETY: strtoul set `right_end` inside the right string.
-        let right_done = unsafe { right_end.read() } == 0;
-        match (left_done, right_done) {
+        match (left_rest.is_empty(), right_rest.is_empty()) {
             (true, true) => return 0,
             (true, false) => return -1,
             (false, true) => return 1,
             (false, false) => {
-                left = left_end.wrapping_add(1);
-                right = right_end.wrapping_add(1);
+                left = after(left_rest);
+                right = after(right_rest);
             }
         }
     }
@@ -584,10 +580,7 @@ pub fn swr_v1_corebase_mkdir_complete(input: &[u8], scratch: &mut [u8]) -> i32 {
         let Ok(prefix) = CStr::from_bytes_until_nul(scratch) else {
             return 3;
         };
-        if sys::access(prefix, libc::R_OK) != 0
-            // SAFETY: a NUL-terminated path.
-            && unsafe { libc::mkdir(prefix.as_ptr(), 0o755) } == -1
-        {
+        if sys::access(prefix, libc::R_OK) != 0 && sys::mkdir(prefix, 0o755) == -1 {
             return 1;
         }
     }
@@ -715,6 +708,24 @@ mod tests {
             assert_eq!(parsed, 6);
             assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &mut parsed), 0);
             assert_eq!(parsed, 2);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no strtoul")]
+    fn versions_compare_component_by_component() {
+        for (left, right, expected) in [
+            (c"1.2.3", c"1.2.3", 0),
+            (c"1.2", c"1.10", -1),
+            (c"2", c"1.9", 1),
+            (c"1.2", c"1.2.1", -1),
+            (c"1.2.1", c"1.2", 1),
+            (c"", c"", 0),
+            (c"6.2.5-dev", c"6.2.5", 1),
+            (c"1.0-beta", c"1.0-rc", 1),
+        ] {
+            let result = unsafe { swoole_version_compare(left.as_ptr(), right.as_ptr()) };
+            assert_eq!(result, expected, "{left:?} against {right:?}");
         }
     }
 

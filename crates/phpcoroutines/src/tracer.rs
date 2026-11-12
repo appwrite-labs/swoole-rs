@@ -23,9 +23,8 @@ use swoole_rs_zend::{
     string::bytes,
     sys::{
         self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
-        swr_zend_number_format, swr_zend_string_release, swr_zend_tracer_lineno,
-        swr_zend_try_write, zend_execute_data, zend_long, zend_observer_fcall_handlers,
-        zend_string, zval,
+        swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
+        zend_observer_fcall_handlers, zend_string, zval,
     },
 };
 
@@ -617,8 +616,7 @@ fn blocking_end(func: Func<'_>) {
     if span.switch_count != switches || duration <= config.blocking_threshold {
         return;
     }
-    // SAFETY: Zend's number formatting.
-    let duration = unsafe { swr_zend_number_format(duration) };
+    let duration = ZString::number_format(duration);
     let trace_text = trace_to_string(&backtrace(0));
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
@@ -627,15 +625,13 @@ fn blocking_end(func: Func<'_>) {
     .into_bytes();
     message.extend_from_slice(&func.name());
     message.extend_from_slice(b"()` blocked for ");
-    message.extend_from_slice(c_bytes(duration));
+    message.extend_from_slice(until_nul(duration.bytes()));
     message.extend_from_slice(b" us]\n");
     if let Some(text) = &trace_text {
         message.extend_from_slice(until_nul(text.bytes()));
     }
     // `sw_printf("%s")`, which stops at a NUL.
     swoole_rs_corebase::sw_print(until_nul(&message));
-    // SAFETY: our reference.
-    unsafe { swr_zend_string_release(duration) };
 }
 
 // --- observer ---------------------------------------------------------------

@@ -33,8 +33,8 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use access::{key_ptr, set_key, string_of};
-pub use call::{Call, Invalid, kind, type_of};
+pub use access::{key_ptr, set_key};
+pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, class_name, unset_property_deny};
 pub use descriptor::{
@@ -47,7 +47,7 @@ pub use error::{
 pub use function::create_object_deny;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, property,
-    property_not_null, time, update_property, zeroed,
+    property_not_null, time, zeroed,
 };
 pub use local::Php;
 pub use minit::{Minit, Parent};

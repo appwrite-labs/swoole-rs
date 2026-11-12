@@ -352,6 +352,12 @@ impl Client {
         unsafe { Socket::from_ptr(self.record().socket) }
     }
 
+    /// The client's TLS context, which `set()` configures; none while TLS is off.
+    #[must_use]
+    pub fn tls_context(&self) -> Option<&TlsContext> {
+        self.tls.get()
+    }
+
     /// Edit a copy of the public record and write it back, so no reference
     /// into the record is live while `edit` runs.
     pub fn edit_record<R>(&self, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {

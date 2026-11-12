@@ -4,8 +4,8 @@ use crate::{
     Value,
     sys::{
         module_registry, php_time, swr_zend_property_not_null, swr_zend_property_slot,
-        swr_zend_tsrm_is_main_thread, zend_class_entry, zend_fcall_info, zend_fcall_info_cache,
-        zend_hash_str_find, zend_object, zval,
+        swr_zend_tsrm_is_main_thread, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find,
+        zend_object, zval,
     },
 };
 use std::ffi::CStr;
@@ -89,24 +89,6 @@ pub unsafe fn property_not_null<'a>(object: *mut zend_object, name: &CStr) -> Op
     let found = unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
     // SAFETY: null or a live property.
     unsafe { Value::from_ptr(found) }
-}
-
-/// `zend_update_property(scope, object, name, value)`: the property takes a copy.
-/// # Safety
-/// `object` is live and `scope` null or a registered class ([`crate::Props::new`]),
-/// and `value` is live.
-pub unsafe fn update_property(
-    scope: *mut zend_class_entry,
-    object: *mut zend_object,
-    name: &CStr,
-    value: *mut zval,
-) {
-    // SAFETY: per the caller.
-    let props = unsafe { crate::Props::new(scope, object) };
-    // SAFETY: a live value, per the caller.
-    if let Some(value) = unsafe { Value::from_ptr(value) } {
-        props.value(name, value);
-    }
 }
 
 /// `is_numeric_string(text, len, &lval, &dval, false)`: the kind (`IS_LONG`,

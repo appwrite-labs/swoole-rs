@@ -1,32 +1,29 @@
 //! OpenSSL info callback over the authoritative reactor Socket record. Upstream's
 //! renegotiation `swoole_debug` exists only in `SW_DEBUG` builds, which the hybrid isn't.
-use crate::Ssl;
-use openssl_sys::{SSL, SSL_CTX};
+use crate::{Ssl, SslCtx};
 use std::ffi::c_int;
 use swoole_rs_reactor::Socket;
-// SAFETY: OpenSSL's declaration; openssl-sys does not bind this entry point.
+// SAFETY: OpenSSL's declaration; openssl-sys does not bind this entry point. It
+// stores the callback in the live context, and calls it with the live, non-null SSL
+// whose state changed, which is what a callback of this type takes.
 unsafe extern "C" {
-    pub(crate) fn SSL_CTX_set_info_callback(
-        ctx: *mut SSL_CTX,
-        callback: Option<unsafe extern "C" fn(*const SSL, c_int, c_int)>,
+    pub(crate) safe fn SSL_CTX_set_info_callback(
+        ctx: &SslCtx,
+        callback: Option<extern "C" fn(Ssl<'_>, c_int, c_int)>,
     );
 }
-/// # Safety
-/// `ssl` is OpenSSL's live SSL for the call, whose connection `ex_data` (which
-/// `Socket::ssl_create` registers before handshake callbacks) is null or its live
-/// socket record, dispatched by its owning event loop.
-pub(crate) unsafe extern "C" fn info(ssl: *const SSL, where_: c_int, _result: c_int) {
+/// The info callback of every context `swr_v1_tls_owner_create` makes: `ssl` is
+/// OpenSSL's live SSL for the call.
+pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     let renegotiating = where_ & 0x10 != 0;
     let handshake_done = where_ & 0x2001 == 0x2001;
     if !renegotiating && !handshake_done {
         return;
     }
-    // SAFETY: per the caller, live throughout its callback.
-    let Some(ssl) = (unsafe { Ssl::new(ssl.cast_mut()) }) else {
-        return;
-    };
     let socket = ssl.ex_data(crate::swr_v1_tls_connection_index());
-    // SAFETY: per the caller.
+    // SAFETY: the SSL's connection ex data is null or its live socket record, as
+    // `swr_v1_socket_ssl_new`'s caller promised when it registered it, before any
+    // handshake callback; its owning event loop dispatches this.
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return;
     };

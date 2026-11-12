@@ -23,7 +23,7 @@ use swoole_rs_zend::{
     set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
-        swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect, swr_zend_coroutine_set_frame,
+        swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect,
         swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
         zend_fetch_debug_backtrace, zend_objects_new, zend_throw_exception_object,
     },
@@ -601,13 +601,8 @@ fn print_backtrace(
         }
         return Ok(());
     };
-    // SAFETY: the coroutine's frame, restored below unless output bailed.
-    let backup = unsafe { swr_zend_coroutine_set_frame(ctx.execute_data()) };
-    // SAFETY: as above.
-    trapped(unsafe { swr_zend_coroutine_print_trace(0, options, limit) })?;
-    // SAFETY: restores the running frame.
-    unsafe { swr_zend_coroutine_set_frame(backup) };
-    Ok(())
+    // SAFETY: in the coroutine's frame; output handlers run inside the shim's zend_try.
+    ctx.in_frame(|| trapped(unsafe { swr_zend_coroutine_print_trace(0, options, limit) }))
 }
 
 /// A shim's trapped-bailout flag.

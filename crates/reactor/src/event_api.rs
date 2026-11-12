@@ -366,7 +366,7 @@ unsafe extern "C-unwind" fn cycle_task(data: *mut c_void) {
     let slot = unsafe { &*data.cast::<Slot>() };
     slot.running.set(slot.running.get() + 1);
     slot.task.run();
-    // Skipped when `run` bails out, so the count stays up: `release_cycle_tasks`
+    // Skipped when `run` bails out, so the count stays up: `take_cycle_tasks`
     // frees the slot if the reactor still holds it when freed; once replaced, it is
     // deferred pass after pass and kept (`Retired`), never freed.
     slot.running.set(slot.running.get() - 1);
@@ -450,13 +450,12 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
     Some(Retired(unsafe { Rc::from_raw(ours) }))
 }
 
-/// The reactor is being freed: drop the cycle tasks [`swoole_event_cycle`] gave it.
+/// The reactor is being freed: the cycle tasks [`swoole_event_cycle`] gave it, taken
+/// out of it for the caller to drop once it no longer borrows the reactor.
 /// No pass of a reactor is under way while it is freed, so a run still counted
 /// was left by a bailout (`exit()` in the callback) and borrows nothing now.
-pub(crate) fn release_cycle_tasks(fields: &mut crate::ReactorFields) {
-    for task in [&mut fields.idle_task, &mut fields.future_task] {
-        drop(replace_slot(task, None));
-    }
+pub(crate) fn take_cycle_tasks(fields: &mut crate::ReactorFields) -> impl Sized + use<> {
+    [&mut fields.idle_task, &mut fields.future_task].map(|task| replace_slot(task, None))
 }
 
 /// Whether the thread reactor's future (`before`) or idle task is set.

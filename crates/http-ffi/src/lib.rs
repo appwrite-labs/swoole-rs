@@ -8,7 +8,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::ffi::c_char;
 use std::{ptr, slice};
 use swoole_rs_http::{HttpSpan, HttpStaticContext, HttpStaticPath, STATUS_CODES};
@@ -87,7 +87,7 @@ pub extern "C" fn swr_v1_http_method_string(method: i32) -> *const c_char {
 #[unsafe(export_name = "_ZN6swoole11http_server19list_of_status_codeE")]
 pub static mut NATIVE_STATUS_CODES: [i32; 128] = STATUS_CODES;
 thread_local! {
-    static UNKNOWN: UnsafeCell<[u8; 128]> = const { UnsafeCell::new([0; 128]) };
+    static UNKNOWN: [Cell<u8>; 128] = const { [const { Cell::new(0) }; 128] };
 }
 /// Known messages have immutable static backing. Unknown messages share this
 /// thread's 128-byte fallback until the next unknown call, as the pinned function's
@@ -99,18 +99,19 @@ pub extern "C" fn swr_v2_http_status_message(code: i32) -> *const c_char {
         // The table's messages are C strings; the NUL follows the borrowed bytes.
         return known.as_ptr().cast();
     }
-    UNKNOWN.with(|cell| {
-        // SAFETY: this thread's array; no reference from an earlier call survives,
-        // and this one ends before the pointer returns.
-        let unknown = unsafe { &mut *cell.get() };
+    UNKNOWN.with(|unknown| {
+        // Each byte is a cell, so the pointer an earlier call returned stays usable
+        // while this one rewrites the text; the last cell keeps its NUL.
         let length = message.len().min(unknown.len() - 1);
-        if let (Some(to), Some(from)) = (unknown.get_mut(..length), message.get(..length)) {
-            to.copy_from_slice(from);
+        let text = message
+            .iter()
+            .copied()
+            .take(length)
+            .chain(std::iter::once(0));
+        for (to, from) in unknown.iter().zip(text) {
+            to.set(from);
         }
-        if let Some(nul) = unknown.get_mut(length) {
-            *nul = 0;
-        }
-        cell.get().cast::<c_char>()
+        unknown.as_ptr().cast::<c_char>()
     })
 }
 

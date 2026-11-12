@@ -497,9 +497,10 @@ struct Accept {
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
-    // SAFETY: plain data (an undefined name), filled below.
-    let mut accept: Box<Accept> = Box::new(unsafe { std::mem::zeroed() });
-    accept.callback = Owned::string(ZString::new(b"onAccept"));
+    let mut accept = Box::new(Accept {
+        callback: Owned::string(ZString::new(b"onAccept")),
+        cache: swoole_rs_zend::zeroed(),
+    });
     let mut callable = false;
     // SAFETY: the name, `$this`, this method's frame and local outputs; the
     // shim traps what Zend raises.

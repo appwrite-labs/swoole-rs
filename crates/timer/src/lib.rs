@@ -465,16 +465,15 @@ pub unsafe extern "C" fn swr_v1_timer_ids(
 #[cfg(test)]
 mod kernel;
 
-/// Test output for the out-parameters: `value`, which the call overwrites.
-#[cfg(test)]
-fn out<T: Copy>(value: &mut T) -> &mut mem::MaybeUninit<T> {
-    // SAFETY: `MaybeUninit<T>` has `T`'s layout, and a `Copy` value has no drop to skip.
-    unsafe { &mut *ptr::from_mut(value).cast() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test output for the out-parameters: `value`, which the call overwrites.
+    pub(super) fn out<T: Copy>(value: &mut T) -> &mut mem::MaybeUninit<T> {
+        // SAFETY: `MaybeUninit<T>` has `T`'s layout, and a `Copy` value has no drop to skip.
+        unsafe { &mut *ptr::from_mut(value).cast() }
+    }
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::{Cell, RefCell, RefMut};
 

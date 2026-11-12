@@ -86,7 +86,21 @@ unsafe extern "C" {
     #[cfg_attr(ossl300, link_name = "SSL_get1_peer_certificate")]
     #[cfg_attr(not(ossl300), link_name = "SSL_get_peer_certificate")]
     safe fn peer_certificate(ssl: Ssl<'_>) -> Option<Cert>;
-    fn BIO_int_ctrl(bio: *mut BIO, command: c_int, large: c_long, integer: c_int) -> c_long;
+    /// `BioIntCtrl`'s one command reads only its integers, and a BIO that doesn't
+    /// buffer ignores it.
+    safe fn BIO_int_ctrl(
+        bio: Bio<'_>,
+        command: BioIntCtrl,
+        large: c_long,
+        integer: c_int,
+    ) -> c_long;
+}
+
+/// The `BIO_int_ctrl` command behind `BIO_set_write_buffer_size`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum BioIntCtrl {
+    SetBufferSize = 117,
 }
 
 /// The `SSL_ctrl` commands behind `SSL_set_mode` and `SSL_set_tlsext_host_name`.
@@ -471,8 +485,7 @@ impl Bio<'_> {
 
     /// `BIO_set_write_buffer_size` (`BIO_C_SET_BUFF_SIZE`, 117) of a buffering BIO.
     pub fn set_write_buffer_size(self, size: c_long) {
-        // SAFETY: a live BIO; a BIO that doesn't buffer ignores the command.
-        unsafe { BIO_int_ctrl(self.as_ptr(), 117, size, 1) };
+        BIO_int_ctrl(self, BioIntCtrl::SetBufferSize, size, 1);
     }
 }
 

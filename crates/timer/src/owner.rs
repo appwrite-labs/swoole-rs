@@ -606,17 +606,6 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     crate::wrapper::swoole_timer_free();
 }
 
-/// `delete timer`.
-///
-/// # Safety
-/// `timer` is a live timer from [`Owner::create`], freed once.
-pub(crate) unsafe fn free(timer: *mut Owner) {
-    // SAFETY: as the caller promises.
-    unsafe { &*timer }.destroy();
-    // SAFETY: Owner::create's allocation, no longer referenced.
-    drop(unsafe { Box::from_raw(timer) });
-}
-
 /// The timer's queue, for `Server::get_timer_stats`.
 #[must_use]
 pub fn owner_queue(timer: &Owner) -> *mut Queue {
@@ -654,6 +643,13 @@ mod tests {
     #[unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")]
     extern "C" fn socket_free() {
         unreachable!("a manual timer frees no socket");
+    }
+
+    /// `delete timer`, as `swoole_timer_free` does of the thread's: these timers are
+    /// never published.
+    unsafe fn free(timer: *mut Owner) {
+        unsafe { &*timer }.destroy();
+        drop(unsafe { Box::from_raw(timer) });
     }
 
     type Call = Box<dyn FnMut(&Owner, *mut TimerNode)>;

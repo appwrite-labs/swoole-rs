@@ -11,7 +11,6 @@ use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
 
-use openssl_sys::{SSL, SSL_CTX_set_tlsext_servername_callback__fixed_rust};
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
@@ -172,13 +171,12 @@ pub unsafe fn ssl_init(port: *const c_void) -> bool {
         return false;
     }
     if has_sni {
-        // SAFETY: the context's live SSL_CTX and a callback of OpenSSL's signature.
-        unsafe {
-            SSL_CTX_set_tlsext_servername_callback__fixed_rust(
-                edit(&context, |fields| fields.context_ptr()),
-                Some(sni_callback),
-            );
-        }
+        // The SSL_CTX `context_create` just made.
+        edit(&context, |fields| {
+            if let Some(ctx) = fields.context.as_deref() {
+                ctx.set_servername_callback(sni_callback);
+            }
+        });
     }
     true
 }
@@ -238,18 +236,16 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
 
 /// OpenSSL's servername callback, as `ListenPort::ssl_server_sni_callback`: the
 /// first SNI context whose name matches wins.
-unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_void) -> c_int {
-    // SAFETY: OpenSSL's live handshake.
-    let Some(ssl) = (unsafe { Ssl::new(ssl) }) else {
-        return TLSEXT_NOACK;
-    };
+extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> c_int {
     let Some(name) = ssl.servername() else {
         return TLSEXT_NOACK;
     };
     let name = name.as_slice();
     // `ssl_create` stored its port.
     let port = ssl.ex_data(swr_v1_tls_port_index());
-    // SAFETY: the port the handshake's connection belongs to, live while it serves.
+    // SAFETY: the port the handshake's connection belongs to, live while it serves:
+    // only a port's own contexts hold this callback, and `ssl_create` names the port
+    // on each SSL it makes from one.
     let config = unsafe { port_config::of(port) };
     let Some((_, context)) = sni(config)
         .iter()

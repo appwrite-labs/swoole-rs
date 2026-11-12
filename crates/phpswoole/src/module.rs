@@ -24,8 +24,8 @@ use swoole_rs_zend::{
         swr_zend_module_globals, swr_zend_module_globals_init, swr_zend_print_stack_trace,
         swr_zend_register_shutdown_function, swr_zend_runtime_call_handler,
         swr_zend_signals_uncheck, swr_zend_stream_constant_no_close, swr_zend_temporary_directory,
-        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data, zend_function,
-        zval,
+        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data,
+        zend_internal_function, zval,
     },
 };
 
@@ -642,10 +642,9 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
     let call = unsafe { Call::new(frame, value) };
     let function = call.php().function_table().find(b"cli_set_process_title");
     if let Some(function) = function.and_then(Value::pointer) {
-        // SAFETY: a function table's values point at its live functions.
-        let function = unsafe { &*function.cast::<zend_function>() };
-        // SAFETY: an internal function (the CLI SAPI's).
-        let handler = unsafe { function.internal_function.handler };
+        // SAFETY: a function table's values point at its live functions; this
+        // one is internal (the CLI SAPI's).
+        let handler = unsafe { (*function.cast::<zend_internal_function>()).handler };
         // SAFETY: its handler, with this call's frame and return slot; the
         // shim traps a bailout.
         if unsafe { swr_zend_runtime_call_handler(handler, frame, value) } != 0 {

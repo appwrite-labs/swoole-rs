@@ -3,7 +3,7 @@ use crate::{
     Value, ZString,
     bailout::Bailout,
     string,
-    sys::{self as z, HashTable, zend_class_entry, zend_function, zend_internal_arg_info},
+    sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info, zend_internal_function},
 };
 use std::{
     ffi::{CStr, c_char, c_int},
@@ -38,19 +38,10 @@ pub unsafe fn function_alias(
         return Ok(-1);
     };
     // SAFETY: the source table owns this live function, which remains live and
-    // unchanged throughout this registration.
-    let entry = unsafe { &*function.cast::<zend_function>() };
-    let kind = {
-        // SAFETY: all function variants initialize their common header.
-        let common = unsafe { entry.common };
-        common.type_
-    };
-    let (handler, args) = {
-        // SAFETY: the caller's source function is internal: this operation's
-        // contract selects this union member.
-        let internal = unsafe { &entry.internal_function };
-        (internal.handler, internal.num_args)
-    };
+    // unchanged throughout this registration; per the caller it is internal,
+    // the union member that begins, as every member does, with the common header.
+    let internal = unsafe { &*function.cast::<zend_internal_function>() };
+    let (kind, handler, args) = (internal.type_, internal.handler, internal.num_args);
     let mut entries = crate::zeroed::<[z::zend_function_entry; 2]>();
     entries[0].fname = alias.as_ptr();
     entries[0].handler = handler;

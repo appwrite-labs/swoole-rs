@@ -190,6 +190,13 @@ pub unsafe extern "C" fn swr_v1_clients_address_string(
     address_string(family, address)
 }
 
+/// `Address::verify_ip` for Rust: whether `host` is an IP literal of `family`. The
+/// address goes to this call's own buffer rather than the thread's scratch.
+#[must_use]
+pub fn verify_ip(family: c_int, host: &CStr) -> bool {
+    parse_ip(family, host, &mut [0; 16])
+}
+
 /// `Address::verify_ip`, writing the same scratch as `addr_str` does.
 /// # Safety
 /// `host` is a live NUL-terminated string.

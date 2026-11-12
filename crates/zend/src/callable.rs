@@ -5,7 +5,7 @@ use crate::{
     bailout::{self, Bailout},
     sys::{
         IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
-        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, swr_zval_try_addref,
+        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, zend_fcall_info,
         zend_fcall_info_cache, zend_value, zval,
     },
 };
@@ -80,6 +80,24 @@ impl Callable {
         )
     }
 
+    /// The kept callable's call record, copied: its function name, bound
+    /// arguments and result slot, for a caller that calls it with others.
+    /// The copy owns nothing; the callable still holds what it names.
+    #[must_use]
+    pub fn fci(&self) -> zend_fcall_info {
+        // SAFETY: a parsed callable, live while this holds it; the record is
+        // plain data.
+        unsafe { (*self.0).fci }
+    }
+
+    /// The kept callable's cache, for a call.
+    #[must_use]
+    pub fn fcc_ptr(&self) -> *mut zend_fcall_info_cache {
+        self.0
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
+            .cast()
+    }
+
     /// The callback and destructor of a C owner, such as a timer, whose data is
     /// this callable's [`Callable::as_raw`]: each runs `H`'s with the callable.
     #[must_use]
@@ -131,12 +149,12 @@ impl Parsed {
             for index in 0..count {
                 // `index` is below the frame's argument count.
                 let source = callable.fci.params.wrapping_add(index);
-                // SAFETY: a live argument; `ZVAL_COPY` takes a reference.
-                unsafe { swr_zval_try_addref(source) };
-                // SAFETY: as above.
-                let value = unsafe { source.read() };
+                // SAFETY: a live argument, which the frame holds for this call.
+                let value = unsafe { &*source.cast::<crate::Value>() };
+                // `ZVAL_COPY` takes a reference.
+                let copy = value.copy().into_zval();
                 // SAFETY: `params` has room for `count + lead` zvals.
-                unsafe { params.wrapping_add(index + lead).write(value) };
+                unsafe { params.wrapping_add(index + lead).write(copy) };
             }
             if let Some(value) = first {
                 // SAFETY: as above; `ZVAL_LONG(params, value)`.

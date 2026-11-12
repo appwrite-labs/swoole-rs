@@ -1038,7 +1038,6 @@ name = "swoole-rs-ports"
 version = "0.1.0"
 dependencies = [
  "libc",
- "openssl-sys",
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",

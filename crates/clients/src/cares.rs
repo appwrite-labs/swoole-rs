@@ -122,8 +122,9 @@ fn process(event: &Event, write: u8) -> i32 {
     0
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
-unsafe extern "C-unwind" fn cleanup(_: *mut c_void) {
-    // SAFETY: the reactor runs this once, after its c-ares handlers retire.
+extern "C-unwind" fn cleanup(_: *mut c_void) {
+    // SAFETY: the reactor runs this once, after its c-ares handlers retire. It takes
+    // nothing, and c-ares counts its initialisations: a call without one does nothing.
     unsafe { sdk::ares_library_cleanup() };
 }
 /// The first query of a reactor's lifetime: its handlers and library cleanup.
@@ -136,8 +137,8 @@ fn install() {
     ] {
         event_api::swoole_event_set_handler(FD, event, Some(handler));
     }
-    // SAFETY: `cleanup` runs once, when the reactor goes; it keeps no data.
-    unsafe { event_api::on_destroy_with(cleanup, ptr::null_mut()) };
+    // `cleanup` runs once, when the reactor goes.
+    event_api::on_destroy(cleanup);
 }
 const FD: i32 = FdType::SW_FD_CARES as i32;
 /// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the

@@ -388,15 +388,19 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     let state = reactor.cast::<ReactorState>();
-    // SAFETY: as the caller promises; this borrow ends before the callbacks run.
-    let fields = unsafe { &mut (*state).fields };
-    fields.destroyed = true;
-    crate::event_api::release_cycle_tasks(fields);
-    let queue = fields.destroy_callbacks;
+    // SAFETY: as the caller promises: the live reactor, on its thread, which no
+    // reference holds. Each borrow below ends before a callback, hook or disposer runs.
+    let handle = unsafe { crate::Running::new(reactor) };
+    let cycle_tasks = handle.with(|state| {
+        state.fields.destroyed = true;
+        crate::event_api::take_cycle_tasks(&mut state.fields)
+    });
+    // Dropping a task may run its owner's code, which may reach the reactor.
+    drop(cycle_tasks);
+    let queue = handle.with(|state| state.fields.destroy_callbacks);
     // SAFETY: the state's own queue, which only the drain below frees.
     unsafe { crate::deferred::deferred_run(queue) };
-    // SAFETY: the live state, which no reference holds; the callbacks have returned.
-    unsafe { (*state).close_backend() };
+    handle.with(ReactorState::close_backend);
     if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_DESTROY) {
         // SAFETY: hooks receive the live `Reactor`.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_DESTROY, reactor) };
@@ -405,8 +409,7 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
     // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.
     loop {
-        // SAFETY: the live state; the borrow ends before any disposer runs.
-        let queues = unsafe { (*state).detach_queues() };
+        let queues = handle.with(ReactorState::detach_queues);
         if queues.is_empty() {
             break;
         }

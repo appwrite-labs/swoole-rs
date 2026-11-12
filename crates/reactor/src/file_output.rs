@@ -23,7 +23,7 @@ impl SocketFileRequest {
     /// still a request, which [`Self::check`] refuses; `None` when out of memory.
     #[must_use]
     pub fn open(path: &CStr, offset: off_t) -> Option<Box<Self>> {
-        let mut request = crate::owner::try_owner(|| Self {
+        let mut request = swoole_rs_buffer::try_box(|| Self {
             file: FileRecord::empty(),
             open_error: 0,
             fields: SocketFileFields {

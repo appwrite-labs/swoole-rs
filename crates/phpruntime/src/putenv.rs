@@ -46,8 +46,8 @@ fn putenv(call: &Call) {
     // SAFETY: the string stays in ENVIRON until this name is set again.
     let set = assignment.is_none() || unsafe { libc::putenv(pointer) } == 0;
     if set && key.eq_ignore_ascii_case(b"TZ") {
-        // SAFETY: TZ changed; under the environment lock.
-        unsafe { tzset() };
+        // TZ changed; under the environment lock.
+        tzset();
     }
     drop(environ);
     // SAFETY: taken above.
@@ -56,5 +56,6 @@ fn putenv(call: &Call) {
 }
 
 unsafe extern "C" {
-    fn tzset();
+    /// libc's `tzset`: no arguments, and it only reads the environment.
+    safe fn tzset();
 }

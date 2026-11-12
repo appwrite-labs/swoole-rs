@@ -1512,14 +1512,18 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     let text = host.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);
     let error = assign(storage, length, kind, text, port, |family| {
-        // SAFETY: the platform's.
+        // SAFETY: the platform's, which reads the NUL-terminated source and writes at
+        // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
         unsafe extern "C" {
-            fn inet_pton(family: c_int, source: *const c_char, destination: *mut c_void) -> c_int;
+            safe fn inet_pton(
+                family: c_int,
+                source: CText<'_>,
+                destination: &mut [u8; 16],
+            ) -> c_int;
         }
         let mut bytes = [0; 16];
-        // SAFETY: the NUL-terminated host and room for either family's address.
-        let parsed = platform_parses(family, text)
-            && unsafe { inet_pton(family, host.as_ptr(), bytes.as_mut_ptr().cast()) } == 1;
+        let parsed =
+            platform_parses(family, text) && inet_pton(family, host.into(), &mut bytes) == 1;
         if parsed {
             Ok(bytes)
         } else {

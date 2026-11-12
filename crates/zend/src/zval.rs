@@ -12,19 +12,17 @@ use crate::{
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
         swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
-        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_property_slot,
-        swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
-        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
-        swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
-        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_read_property,
-        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
-        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
-        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
-        zval, zval_ptr_dtor,
+        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_separate_array,
+        swr_zend_serialize, swr_zend_string_release, swr_zend_try_array_merge,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
+        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_json_encode,
+        swr_zend_try_ptr_dtor, swr_zend_try_read_property, swr_zend_try_symtable_update,
+        swr_zend_url_decode, swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref,
+        zend_array_count, zend_class_entry, zend_double_to_str, zend_hash_add_new,
+        zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
+        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string,
+        zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
-    value,
 };
 use std::{
     borrow::{Borrow, Cow},
@@ -69,8 +67,25 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn kind(&self) -> u32 {
-        // SAFETY: a live zval.
-        unsafe { crate::type_of(self.as_ptr()) }
+        // SAFETY: a live zval, borrowed only for this read.
+        crate::kind(unsafe { &*self.as_ptr() })
+    }
+
+    /// The value union's first word as a pointer: what `Z_STR_P`, `Z_ARRVAL_P`,
+    /// `Z_OBJ_P`, `Z_REF_P` and `Z_PTR_P` read. Only [`Value::kind`] says what
+    /// it points to, if anything.
+    #[inline]
+    fn payload<T>(&self) -> *mut T {
+        // SAFETY: a live zval, which its value union leads (`value`'s
+        // assertion); any eight bytes are a raw pointer.
+        unsafe { self.as_ptr().cast::<*mut T>().read() }
+    }
+
+    /// The value union's first word as bits: what `Z_LVAL_P` and `Z_DVAL_P` read.
+    #[inline]
+    fn bits(&self) -> u64 {
+        // SAFETY: as `payload`; any eight bytes are a `u64`.
+        unsafe { self.as_ptr().cast::<u64>().read() }
     }
 
     /// `Z_TYPE_P(value) == IS_NULL`.
@@ -103,9 +118,8 @@ impl Value {
         if self.kind() != IS_REFERENCE {
             return self.as_ptr();
         }
-        // SAFETY: a reference zval holds `ref`, at offset 0.
-        let reference = unsafe { self.as_ptr().cast::<*mut zend_reference>().read() };
-        reference
+        // A reference zval holds `ref`.
+        self.payload::<zend_reference>()
             .wrapping_byte_add(std::mem::offset_of!(zend_reference, val))
             .cast()
     }
@@ -114,16 +128,16 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn as_long(&self) -> Option<zend_long> {
-        // SAFETY: an int zval holds `lval`, at offset 0.
-        (self.kind() == IS_LONG).then(|| unsafe { self.as_ptr().cast::<zend_long>().read() })
+        // An int zval holds `lval`.
+        (self.kind() == IS_LONG).then(|| self.bits().cast_signed())
     }
 
     /// `Z_DVAL_P` of a float, with no conversion.
     #[must_use]
     #[inline]
     pub fn as_double(&self) -> Option<f64> {
-        // SAFETY: a float zval holds `dval`, at offset 0.
-        (self.kind() == IS_DOUBLE).then(|| unsafe { self.as_ptr().cast::<f64>().read() })
+        // A float zval holds `dval`.
+        (self.kind() == IS_DOUBLE).then(|| f64::from_bits(self.bits()))
     }
 
     /// `Z_STR_P` of a string.
@@ -133,18 +147,16 @@ impl Value {
         if self.kind() != IS_STRING {
             return None;
         }
-        // SAFETY: a live string zval.
-        let string = unsafe { value::str_of(self.as_ptr()) };
-        // SAFETY: the zval holds the string while borrowed.
-        unsafe { ZStr::from_ptr(string) }
+        // SAFETY: a string zval holds `str`, which it keeps alive while borrowed.
+        unsafe { ZStr::from_ptr(self.payload()) }
     }
 
     /// `Z_OBJ_P` of an object.
     #[must_use]
     #[inline]
     pub fn object(&self) -> Option<*mut zend_object> {
-        // SAFETY: a live object zval.
-        (self.kind() == IS_OBJECT).then(|| unsafe { value::obj_of(self.as_ptr()) })
+        // An object zval holds `obj`.
+        (self.kind() == IS_OBJECT).then(|| self.payload())
     }
 
     /// `Z_OBJ_P` of an object with `class`'s handlers: one that `class`'s
@@ -169,8 +181,8 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn pointer(&self) -> Option<*mut c_void> {
-        // SAFETY: a pointer zval holds `ptr`, at offset 0.
-        (self.kind() == IS_PTR).then(|| unsafe { self.as_ptr().cast::<*mut c_void>().read() })
+        // A pointer zval holds `ptr`.
+        (self.kind() == IS_PTR).then(|| self.payload())
     }
 
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
@@ -204,11 +216,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn property(&self, name: &CStr) -> Option<&Self> {
-        let object = self.object()?;
-        // SAFETY: the zval holds the object while borrowed; Zend reads `name` only.
-        let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
-        // SAFETY: null, or a slot of the object, which the borrow keeps alive.
-        unsafe { Self::from_ptr(slot) }
+        self.props(None)?.slot(name)
     }
 
     /// `zend_read_property(scope, object, name, silent)` of an object, in
@@ -246,6 +254,44 @@ impl Value {
         Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
     }
 
+    /// [`Value::read_property`], not silent (`zend_read_property`'s `silent`
+    /// 0): an undefined property warns, as PHP code reading it does, and reads
+    /// as null.
+    /// # Errors
+    /// The bailout a `__get` or the warning's error handler raised, trapped.
+    pub fn read_property_loud(
+        &self,
+        scope: Option<&crate::Class>,
+        name: &CStr,
+    ) -> Result<Option<Owned>, bailout::Bailout> {
+        let Some(object) = self.object() else {
+            return Ok(None);
+        };
+        let scope = scope.map_or_else(|| self.class(), |scope| Some(scope.entry()));
+        let rv = Owned::default();
+        let mut found = ptr::null_mut();
+        // SAFETY: as `read_property`: the zval holds the object while borrowed;
+        // a class or null; Zend reads `name`, and writes `rv` (undefined, this
+        // frame's) or nothing.
+        bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_facade_read(
+                scope.unwrap_or(ptr::null_mut()),
+                object,
+                name.as_ptr(),
+                name.count_bytes(),
+                false,
+                rv.as_ptr(),
+                &raw mut found,
+            )
+        })?;
+        if found == rv.as_ptr() {
+            return Ok(Some(rv));
+        }
+        // SAFETY: null, or a property slot of the object, which the borrow keeps
+        // alive, or the executor's null, which lives as long as it does.
+        Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
+    }
+
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
     /// object this holds, inside `zend_try` (at most two arguments, which Zend
     /// copies into the call): `scope`'s method (`None`: the object's class's).
@@ -273,12 +319,29 @@ impl Value {
         if scope.is_some_and(|scope| !self.instance_of(scope)) {
             return Ok(result);
         }
+        if bailout::pending() {
+            // Nothing is called, as upstream never ran past a bailout.
+            return Err(bailout::Bailout);
+        }
         let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
-        let args: Vec<_> = args.iter().map(|arg| arg.as_ptr()).collect();
+        let arg = |n: usize| args.get(n).map_or(ptr::null_mut(), |arg| arg.as_ptr());
+        #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
+        let argc = args.len() as u32;
         // SAFETY: the zval holds the object while borrowed, `scope` is null or
         // a class it is an instance of, the result a slot this owns, and the
-        // arguments live values.
-        let called = unsafe { bailout::call_method(object, scope, method, result.as_ptr(), &args) };
+        // arguments live values; Zend runs in the C shim's frame.
+        let called = bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_call_method(
+                object,
+                scope,
+                method.as_ptr().cast(),
+                method.len(),
+                result.as_ptr(),
+                argc,
+                arg(0),
+                arg(1),
+            )
+        });
         match called {
             Ok(()) => Ok(result),
             Err(bailout) => {
@@ -467,11 +530,9 @@ impl Value {
         if self.kind() != IS_ARRAY {
             return None;
         }
-        // SAFETY: a live array zval.
-        let table = unsafe { value::table(self.as_ptr()) };
-        // SAFETY: the zval holds the table while borrowed; `Array` is a
-        // transparent table.
-        Some(unsafe { &*table.cast::<Array>() })
+        // SAFETY: an array zval holds `arr`, which it keeps while borrowed;
+        // `Array` is a transparent table.
+        Some(unsafe { &*self.payload::<Array>() })
     }
 
     /// `ZVAL_COPY`: the same value with a reference of its own.
@@ -484,6 +545,14 @@ impl Value {
         // SAFETY: as above.
         unsafe { swr_zval_try_addref(owned.as_ptr()) };
         owned
+    }
+
+    /// `ZVAL_COPY(slot, value)`: `slot` takes the value, with a reference of its
+    /// own, in place of what it held, which is not released (as the macro
+    /// leaves it): a slot that owned something gives it up first.
+    #[inline]
+    pub fn copy_to(&self, slot: &mut zval) {
+        *slot = self.copy().into_zval();
     }
 }
 
@@ -832,12 +901,14 @@ impl ZString {
     /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.
     #[must_use]
     pub fn url_decode(bytes: &[u8]) -> Self {
-        let string = crate::string::copy(bytes);
-        // SAFETY: a fresh string of `bytes.len()` bytes and a NUL, decoded in place.
-        let length = unsafe { swr_zend_url_decode(crate::string::val(string).cast(), bytes.len()) };
-        // SAFETY: the string is new and unshared, and decoding only shortens it.
-        unsafe { crate::string::truncate(string, length) };
-        Self(string)
+        let mut buffer = crate::string::ZBuf::with_capacity(bytes.len());
+        buffer.extend_from_slice(bytes);
+        // SAFETY: the buffer's `bytes.len()` written bytes, decoded in place; the
+        // NUL the decoder ends them with fits the string's own.
+        let length = unsafe { swr_zend_url_decode(buffer.as_mut_ptr().cast(), bytes.len()) };
+        // Decoding only shortens.
+        buffer.truncate(length);
+        buffer.into_zstring()
     }
 
     /// `zend_double_to_str`: `value` as PHP prints a float.
@@ -845,6 +916,13 @@ impl ZString {
     pub fn from_double(value: f64) -> Self {
         // SAFETY: Zend returns a new string.
         Self(unsafe { zend_double_to_str(value) })
+    }
+
+    /// `number_format(number)`: `number` with a `,` between its thousands.
+    #[must_use]
+    pub fn number_format(number: zend_long) -> Self {
+        // SAFETY: Zend formats the int into a new string; no PHP code runs.
+        Self(unsafe { crate::sys::swr_zend_number_format(number) })
     }
 
     /// `php_format_date`: `timestamp` as `date()` (`local`) or `gmdate()`
@@ -1010,10 +1088,10 @@ impl Owned {
     #[must_use]
     #[inline]
     pub unsafe fn object(std: *mut zend_object) -> Self {
-        let owned = Self::default();
-        // SAFETY: per the caller, into a slot this owns.
-        unsafe { crate::set_object(owned.as_ptr(), std) };
-        owned
+        let mut zval = UNDEF;
+        zval.value = zend_value { obj: std };
+        zval.u1.type_info = crate::sys::IS_OBJECT_EX;
+        Self(Value(UnsafeCell::new(zval)))
     }
 
     /// Give up the zval to whoever takes it (`RETVAL_ZVAL(value, 0, 0)`),
@@ -1355,10 +1433,7 @@ impl From<ZString> for Owned {
     /// `ZVAL_STR`: the zval takes over the string's reference.
     #[inline]
     fn from(string: ZString) -> Self {
-        let owned = Self::default();
-        // SAFETY: a slot this owns takes the reference `string` gives up.
-        unsafe { crate::value::set_str(owned.as_ptr(), string.into_raw()) };
-        owned
+        Self::string(string)
     }
 }
 

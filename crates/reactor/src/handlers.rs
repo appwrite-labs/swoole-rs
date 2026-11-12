@@ -79,13 +79,13 @@ impl Running<'_> {
     #[track_caller]
     pub(crate) fn with<R>(self, f: impl FnOnce(&mut crate::ReactorState) -> R) -> R {
         #[cfg(debug_assertions)]
-        assert!(!BORROWED.replace(true), "a reactor's state borrowed twice");
+        let _borrowing = {
+            assert!(!BORROWED.replace(true), "a reactor's state borrowed twice");
+            Borrowing
+        };
         // SAFETY: the handle's live state, which no reference holds across a call that
         // takes the handle (its contract); this borrow ends with `f`, which takes none.
-        let result = f(unsafe { &mut *self.state() });
-        #[cfg(debug_assertions)]
-        BORROWED.set(false);
-        result
+        f(unsafe { &mut *self.state() })
     }
 
     /// Whether the reactor has deferred tasks waiting (`defer_tasks`).
@@ -100,6 +100,17 @@ impl Running<'_> {
 thread_local! {
     /// Whether a [`Running::with`] borrow is live on this thread.
     static BORROWED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A [`Running::with`] borrow, which ends when `f` returns or unwinds.
+#[cfg(debug_assertions)]
+struct Borrowing;
+
+#[cfg(debug_assertions)]
+impl Drop for Borrowing {
+    fn drop(&mut self) {
+        BORROWED.set(false);
+    }
 }
 
 /// `SW_MAX_FDTYPE`.

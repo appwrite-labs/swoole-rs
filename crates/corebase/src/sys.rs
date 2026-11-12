@@ -14,7 +14,7 @@ use std::mem::MaybeUninit;
 /// read or write, or a NUL-terminated string, and keep none of them: they have no
 /// memory preconditions, so they are declared `safe`.
 mod c {
-    use libc::{c_char, c_int, c_long, c_uint, pid_t, useconds_t};
+    use libc::{c_char, c_int, c_long, c_uint, c_ulong, c_void, mode_t, pid_t, useconds_t};
     use std::ffi::CStr;
     use std::marker::PhantomData;
     use std::ptr::NonNull;
@@ -33,7 +33,8 @@ mod c {
 
     // SAFETY: POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or writes the one object its
-    // reference names.
+    // reference names. `calloc` and `strndup` return null or a fresh
+    // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn shutdown(fd: c_int, how: c_int) -> c_int;
@@ -52,6 +53,13 @@ mod c {
         pub(crate) safe fn unlink(path: Text<'_>) -> c_int;
         pub(crate) safe fn access(path: Text<'_>, mode: c_int) -> c_int;
         pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
+        pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
+        pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
+        pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
+        /// At most `length` bytes of `text`, in a `malloc` allocation.
+        pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
+        pub(crate) safe fn strncasecmp(left: Text<'_>, right: Text<'_>, count: usize) -> c_int;
+        pub(crate) safe fn strtoul(text: Text<'_>, end: &mut *mut c_char, base: c_int) -> c_ulong;
         pub(crate) safe fn if_nametoindex(name: Text<'_>) -> c_uint;
         pub(crate) safe fn sysconf(name: c_int) -> c_long;
         pub(crate) safe fn kill(pid: pid_t, signo: c_int) -> c_int;
@@ -71,7 +79,7 @@ mod c {
         pub(crate) safe fn errno_location() -> *mut c_int;
     }
 }
-pub(crate) use c::{srandom, uname};
+pub(crate) use c::{calloc, srandom, uname};
 
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
@@ -530,6 +538,43 @@ pub fn access(path: &CStr, mode: c_int) -> c_int {
 #[must_use]
 pub fn chdir(path: &CStr) -> c_int {
     c::chdir(path.into())
+}
+
+/// `chroot(2)`.
+#[must_use]
+pub fn chroot(path: &CStr) -> c_int {
+    c::chroot(path.into())
+}
+
+/// `mkdir(2)`.
+#[must_use]
+pub fn mkdir(path: &CStr, mode: libc::mode_t) -> c_int {
+    c::mkdir(path.into(), mode)
+}
+
+/// `strndup(3)`: at most `length` bytes of `text` in a `malloc` allocation the
+/// caller frees, or null.
+#[must_use]
+pub(crate) fn strndup(text: &CStr, length: usize) -> *mut libc::c_char {
+    c::strndup(text.into(), length)
+}
+
+/// `strncasecmp(3)` of at most `count` bytes, in the current locale.
+#[must_use]
+pub(crate) fn strncasecmp(left: &CStr, right: &CStr, count: usize) -> c_int {
+    c::strncasecmp(left.into(), right.into(), count)
+}
+
+/// `strtoul(3)` of `text` in `base`: the value (errno as libc leaves it) and the
+/// text from where the number ended.
+#[must_use]
+pub(crate) fn strtoul(text: &CStr, base: c_int) -> (libc::c_ulong, &CStr) {
+    let mut end = text.as_ptr().cast_mut();
+    let value = c::strtoul(text.into(), &mut end, base);
+    // strtoul ends inside the text, at the latest on its NUL.
+    let parsed = end.addr().wrapping_sub(text.as_ptr().addr());
+    let rest = text.to_bytes_with_nul().get(parsed..).unwrap_or(&[0]);
+    (value, CStr::from_bytes_until_nul(rest).unwrap_or_default())
 }
 
 /// `stat(2)`: the path's status, or `None` with errno set.

@@ -4,7 +4,6 @@
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::{c_int, c_void};
-use std::ptr::NonNull;
 use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
@@ -306,8 +305,9 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
     if !proxies(cli, &options) {
         return Some(false);
     }
-    if let Some(owner) = cli.handle().ssl_context() {
-        apply_ssl(owner, settings);
+    // A reference of this call's own: the context outlives whatever the settings run.
+    if let Some(owner) = cli.get().tls_context().cloned() {
+        apply_ssl(&owner, settings);
     }
     Some(true)
 }
@@ -361,11 +361,11 @@ fn proxy(
     swoole_rs_clients::client::set_proxy(cli.get(), http, host.bytes(), port, user, password);
 }
 
-/// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `owner`,
-/// a client's live `SSLContext` (crates/tls).
-pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: &Array) {
-    let owner = owner.as_ptr().cast_const();
-    // SAFETY: the live client's context, which nothing else writes during the call.
+/// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `context`,
+/// a client's `SSLContext` (crates/tls).
+pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
+    let owner = context.as_ptr();
+    // SAFETY: the context `context` keeps live, which nothing else writes during the call.
     let value = |value| unsafe { tls::set_value(owner, value) };
     let options = Options(settings);
     // SAFETY: as above.
@@ -412,8 +412,7 @@ pub(crate) fn apply_ssl(owner: NonNull<tls::OwnedTlsContext>, settings: &Array) 
         value(Value::VerifyDepth(u8::try_from(depth).unwrap_or(u8::MAX)));
     }
     text("ssl_ciphers", Text::Ciphers);
-    // SAFETY: as above.
-    match tls::has_files(unsafe { &*owner }) {
+    match tls::has_files(context) {
         (true, false) => report(ErrorKind::Fatal, E_ERROR, "ssl require key file"),
         (false, true) => report(ErrorKind::Fatal, E_ERROR, "ssl require cert file"),
         _ => {}

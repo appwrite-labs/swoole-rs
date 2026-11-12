@@ -10,7 +10,7 @@ use crate::co_socket::{Co, CoSocket, reinit};
 use crate::packet::recv_packet;
 use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_char, c_int};
 use core::ptr::null_mut;
 
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -19,11 +19,6 @@ use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
 use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::upstream::socket_free;
-
-// SAFETY: libc's declaration; the libc crate doesn't bind it.
-unsafe extern "C" {
-    fn inet_pton(family: c_int, source: *const c_char, destination: *mut c_void) -> c_int;
-}
 
 /// Swoole error codes this sequence sets.
 const WRONG_OPERATION: c_int = 509;
@@ -119,15 +114,14 @@ pub trait Connecting {
     fn handshake(&mut self) -> bool;
 }
 
-/// `Address::verify_ip`: `inet_pton` of the host's `c_str()` for `family` succeeds.
+/// `Address::verify_ip`: the host's `c_str()` is an IP literal of `family`, as
+/// `inet_pton` reads one.
 fn is_ip(family: c_int, host: &[u8]) -> bool {
     let text = host.split(|&b| b == 0).next().unwrap_or_default();
     let Ok(text) = std::ffi::CString::new(text) else {
         return false;
     };
-    let mut address = [0u8; 16];
-    // SAFETY: a NUL-terminated host and 16 writable bytes, enough for either family.
-    unsafe { inet_pton(family, text.as_ptr(), address.as_mut_ptr().cast()) == 1 }
+    swoole_rs_clients::address::verify_ip(family, &text)
 }
 
 /// Outcomes of [`resolve`] besides 0 (assigned, or the second try fell through as
