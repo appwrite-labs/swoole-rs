@@ -61,7 +61,9 @@ def main():
     # zend_portability.h prefers the RTLD_GROUP branch, which glibc lacks: defining its flags as
     # 0 leaves a plain dlopen(RTLD_GLOBAL).
     deepbind = ' -DRTLD_GROUP=0 -DRTLD_WORLD=0 -DRTLD_PARENT=0'
-    subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-zts'],
+    # PCRE's JIT is off, as in tools/asan.py: its generated code reports races that have no
+    # frame of Swoole's or this repository's, in whichever PHPTs reach preg_* (#3344).
+    subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-zts', '--without-pcre-jit'],
                    env={**compilers, 'CFLAGS': SANITIZE + deepbind}, check=True)
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
