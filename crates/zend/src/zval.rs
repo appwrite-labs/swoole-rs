@@ -676,10 +676,12 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn c_str(&self) -> &CStr {
-        CStr::from_bytes_until_nul(self.bytes()).unwrap_or_else(|_| {
-            // SAFETY: a live string, NUL-terminated after its bytes.
-            unsafe { CStr::from_ptr(crate::string::val(self.as_ptr()).cast()) }
-        })
+        let length = self.bytes().len() + 1;
+        // SAFETY: a live string holds its bytes at `val` and a NUL after them.
+        let whole =
+            unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) };
+        // One scan, which ends at that NUL when none comes before it.
+        CStr::from_bytes_until_nul(whole).unwrap_or_default()
     }
 
     /// `zend_string_copy`: a new reference.
