@@ -310,8 +310,7 @@ fn set_error(call: &Call, code: c_int, message: &CStr) {
 
 /// `socket_coro_sync_properties`: errCode and errMsg from the socket.
 fn sync(call: &Call, socket: Co) {
-    let (code, message) = socket.error();
-    set_error(call, code, &message);
+    socket.with_error(|code, message| set_error(call, code, message));
 }
 
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.

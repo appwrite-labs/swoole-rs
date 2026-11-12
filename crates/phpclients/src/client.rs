@@ -171,8 +171,7 @@ fn report_code(call: &Call, code: c_int) {
 
 /// `php_swoole_socket_set_error_properties(ZEND_THIS, socket)`.
 fn report_socket(call: &Call, socket: Co) {
-    let (code, message) = socket.error();
-    report(call, code, &message);
+    socket.with_error(|code, message| report(call, code, message));
 }
 
 /// The client's `setting` property, if it is an array.
@@ -388,7 +387,7 @@ fn send(call: &Call) {
         report_socket(call, socket);
         return call.set_bool(false);
     };
-    if count < data.len() && socket.error().0 != 0 {
+    if count < data.len() && socket.err_code() != 0 {
         report_socket(call, socket);
     }
     call.set_long(sent as i64);

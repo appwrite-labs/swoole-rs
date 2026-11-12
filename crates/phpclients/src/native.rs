@@ -206,10 +206,17 @@ impl Co {
         self.0.is_closed()
     }
 
-    /// `errCode` and a copy of `errMsg`, which the socket may replace or free.
-    #[must_use]
-    pub fn error(self) -> (c_int, CString) {
-        (self.0.err_code(), self.0.err_message().unwrap_or_default())
+    /// `f` over `errCode` and a copy of `errMsg` (empty when null), which the socket
+    /// may replace or free.
+    pub fn with_error<T>(self, f: impl FnOnce(c_int, &CStr) -> T) -> T {
+        let code = self.0.err_code();
+        self.0
+            .with_err_message(|message| f(code, message.unwrap_or_default()))
+    }
+
+    /// `errCode`.
+    pub(crate) fn err_code(self) -> c_int {
+        self.0.err_code()
     }
 
     /// `set_err(code)`: the code's message.
