@@ -975,21 +975,23 @@ impl<H: PoolHost> Pool<H> {
     }
 
     /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
+    /// -1 for a `worker` that is none of the pool's ([`PoolRecord::own`]).
     fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
-        // SAFETY: one of the pool's records.
-        let worker = unsafe { Worker::new(worker) };
-        let old = worker.pid();
+        let Some(old) = self.record().own(worker).map(Worker::pid) else {
+            return Ok(SW_ERR);
+        };
         self.with_registry(|registry| registry.unregister(old));
-        let pid = self.on(worker.raw(), OP_FORK, 0);
+        let pid = self.on(worker, OP_FORK, 0);
         if pid == 0 {
-            self.child(worker.raw())?;
+            self.child(worker)?;
             return Ok(0);
         }
         let pid = c_int::try_from(pid).unwrap_or(-1);
-        worker.set_pid(pid);
-        let record = worker.raw().cast();
+        if let Some(worker) = self.record().own(worker) {
+            worker.set_pid(pid);
+        }
         self.with_registry(|registry| {
-            registry.register(pid, record, 0);
+            registry.register(pid, worker.cast(), 0);
         });
         Ok(pid.into())
     }
@@ -1126,7 +1128,8 @@ impl<H: PoolHost> Pool<H> {
         }
     }
 
-    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop.
+    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; -1 for
+    /// a `worker` that is none of the pool's.
     fn main(&mut self, worker: *mut WorkerRecord, protocol: c_int) -> i64 {
         if u64::from(protocol.cast_unsigned()) == MAIN_ASYNC {
             return self.run_async(worker);
@@ -1145,6 +1148,10 @@ impl<H: PoolHost> Pool<H> {
             // A pool `create` never made.
             return SW_ERR;
         }
+        let Some(worker_id) = self.record().own(worker).map(Worker::id) else {
+            // None of the pool's workers.
+            return SW_ERR;
+        };
         let ipc_mode = if self.use_msgqueue() != 0 {
             IPC_MSGQUEUE
         } else if self.use_socket() != 0 {
@@ -1156,8 +1163,7 @@ impl<H: PoolHost> Pool<H> {
             ipc: self.ipc(),
             pool: self.p.cast(),
             worker: worker.cast(),
-            // SAFETY: one of the pool's records.
-            worker_id: unsafe { Worker::new(worker).id() },
+            worker_id,
             ipc_mode,
             schedule_by_sysvmsg: self.schedule_by_sysvmsg(),
             max_packet_size: self.max_packet_size(),
