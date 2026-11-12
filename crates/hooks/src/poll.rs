@@ -303,14 +303,13 @@ pub use tests::Socket as TestSocket;
 
 #[cfg(not(test))]
 pub(crate) mod native {
-    use super::{Registered, Task, Timer};
+    use super::{Registered, Timer};
     use crate::wait_event::Watch;
-    use core::ffi::c_void;
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_coroutine::resume;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
-    use swoole_rs_timer::{swoole_timer_del, swr_v1_timer_add_plain_sec};
+    use swoole_rs_timer::{add_fn_sec, swoole_timer_del};
 
     pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
         let task = task.0.as_ptr().cast();
@@ -318,18 +317,14 @@ pub(crate) mod native {
         unsafe { Watch::add(fd, FdType::SW_FD_CO_POLL as i32, events, task) }.ok()
     }
 
-    /// The timer's callback: `task` is the parked poll `timer_add` was given.
-    unsafe extern "C-unwind" fn timed_out(task: *mut c_void) {
-        // SAFETY: the task outlives its timer, which fires or is deleted first.
-        let co = super::timeout(unsafe { &*task.cast::<Task<'_>>() });
-        // SAFETY: the poll's parked coroutine; nothing borrows its task now.
-        unsafe { resume(co) };
-    }
-
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {
-        let task = task.0.as_ptr().cast();
-        // SAFETY: the task outlives the timer, which fires or is deleted first.
-        let timer = unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, task) };
+        let task = task.0;
+        let timer = add_fn_sec(timeout, false, move || {
+            // SAFETY: the task outlives its timer, which fires or is deleted first.
+            let co = super::timeout(unsafe { task.as_ref() });
+            // SAFETY: the poll's parked coroutine; nothing borrows its task now.
+            unsafe { resume(co) };
+        });
         core::ptr::NonNull::new(timer).map(Timer)
     }
 

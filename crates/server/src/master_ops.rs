@@ -4,7 +4,7 @@
 //! answers them before any native call, so master.cc no longer has a case for
 //! them. Logs name the upstream function that wrote them.
 use core::ffi::{CStr, c_char, c_int};
-use core::sync::atomic::Ordering::{Relaxed, SeqCst};
+use core::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
 
 use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
@@ -385,10 +385,18 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 (fd % c_int::from(o.config().reactor_num)) as u8
             };
             o.ctx.reactor_id = reactor_id;
-            // SAFETY: the connection slot of a live fd; upstream zeroes it up to `closed`.
+            // SAFETY: the connection slot of a live fd.
+            let slot = unsafe { &*conn };
+            // The fd's last connection, closed on a reactor thread, published the slot with
+            // its last write (OP_CC_FINISH): acquire that before reusing it.
+            slot.closed.load(Acquire);
+            // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
+            slot.active.store(0, Relaxed);
+            let start = core::mem::offset_of!(ConnectionRecord, socket_type);
+            let bytes = conn.cast::<u8>().wrapping_add(start);
+            // SAFETY: the same slot, from after `active` up to `closed`.
             unsafe {
-                conn.cast::<u8>()
-                    .write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed));
+                bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start);
             }
             u64::from(reactor_id)
         }
@@ -466,7 +474,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let now = swoole_rs_corebase::microtime();
             conn.last_recv_time = now;
             conn.connect_time = now;
-            conn.active = 1;
+            conn.active.store(1, Relaxed);
             conn.closed.store(0, Relaxed);
             conn.worker_id = -1;
             conn.socket_type = o.port().r#type;

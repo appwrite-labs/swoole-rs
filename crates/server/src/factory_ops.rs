@@ -41,15 +41,15 @@ use crate::{ConnectionRecord, view};
 /// status it reads.
 struct Context<'a> {
     serv: view::Server<'a>,
-    worker: *mut WorkerRecord,
-    send: *mut SendData,
-    status: *const ExitStatus,
+    worker: Option<Worker<'a>>,
+    send: Option<&'a mut SendData>,
+    status: Option<&'a ExitStatus>,
     conn: *mut ConnectionRecord,
     fd: c_int,
 }
 
-impl Context<'_> {
-    fn server(&self) -> view::Server<'_> {
+impl<'a> Context<'a> {
+    fn server(&self) -> view::Server<'a> {
         self.serv
     }
 }
@@ -69,21 +69,21 @@ const DISPATCH_CO_CONN_LB: u8 = 8;
 const EVENT_CLOSE: u8 = 4;
 const PIPE_MASTER: c_int = 1;
 
-/// Only [`run`] makes a `Context`, whose caller keeps whichever of its worker, send
-/// and status the operation reads live for the call.
+/// Only [`run`] makes a `Context`, from the worker, send and status its caller lends.
+/// An op that reads one its caller didn't lend aborts, as a null dereference would.
 #[expect(
     clippy::mut_from_ref,
     reason = "native records shared with C++, written under the server's own synchronization as workers.cc did"
 )]
-impl Context<'_> {
-    fn state(&self) -> &crate::ServerState {
-        self.server().state()
+impl<'a> Context<'a> {
+    fn state(&self) -> &'a crate::ServerState {
+        self.serv.state()
     }
-    fn config(&self) -> &mut crate::ServerConfig {
+    fn config(&self) -> &'a mut crate::ServerConfig {
         // SAFETY: the context's live server.
-        unsafe { self.server().config_mut() }
+        unsafe { self.serv.config_mut() }
     }
-    fn tables(&self) -> &mut crate::ServerTables {
+    fn tables(&self) -> &'a mut crate::ServerTables {
         // SAFETY: its tables, written by the master before its threads and workers start.
         unsafe { &mut *self.state().tables() }
     }
@@ -96,22 +96,37 @@ impl Context<'_> {
         unsafe { self.server().worker(id).as_mut() }
     }
     /// The data sent, for the ops that run with it.
-    fn send(&self) -> &mut SendData {
-        // SAFETY: the ops that read it run with the live data sent.
-        unsafe { &mut *self.send }
+    fn send(&self) -> &SendData {
+        self.send
+            .as_deref()
+            .unwrap_or_else(|| std::process::abort())
+    }
+    /// The data sent, to write.
+    fn send_mut(&mut self) -> &mut SendData {
+        self.send
+            .as_deref_mut()
+            .unwrap_or_else(|| std::process::abort())
+    }
+    /// The data sent, for the native-shaped calls that take it, or null.
+    fn send_ptr(&mut self) -> *mut SendData {
+        self.send
+            .as_deref_mut()
+            .map_or(core::ptr::null_mut(), core::ptr::from_mut)
     }
     /// The context's worker, for the ops that run with one.
-    fn worker(&self) -> Worker<'_> {
-        // SAFETY: the ops that read it run with a live worker.
-        unsafe { Worker::new(self.worker) }
+    fn worker(&self) -> Worker<'a> {
+        self.worker.unwrap_or_else(|| std::process::abort())
+    }
+    /// The context's worker, for the native-shaped calls that take it, or null.
+    fn worker_ptr(&self) -> *mut WorkerRecord {
+        self.worker.map_or(core::ptr::null_mut(), Worker::raw)
     }
     /// The exit status, for the ops that run with one.
     fn status(&self) -> &ExitStatus {
-        // SAFETY: the ops that read it run with the live exit status.
-        unsafe { &*self.status }
+        self.status.unwrap_or_else(|| std::process::abort())
     }
     /// The connection selected by `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN`, if any.
-    fn conn(&self) -> Option<&mut ConnectionRecord> {
+    fn conn(&self) -> Option<&'a mut ConnectionRecord> {
         // SAFETY: null or a slot of the live connection table.
         unsafe { self.conn.as_mut() }
     }
@@ -136,15 +151,12 @@ fn worker_id(arg: u64) -> u16 {
 
 /// Runs factory operation `op` (a `RUN_*` of crates/process's `workers::ops`) with
 /// `arg` over `serv` and the worker, send and exit status it reads.
-///
-/// # Safety
-/// The worker, send and status `op` reads are live for the call.
-pub(crate) unsafe fn run(
-    serv: view::Server<'_>,
+pub(crate) fn run<'a>(
+    serv: view::Server<'a>,
     op: u32,
-    worker: *mut WorkerRecord,
-    send: *mut SendData,
-    status: *const ExitStatus,
+    worker: Option<Worker<'a>>,
+    send: Option<&'a mut SendData>,
+    status: Option<&'a ExitStatus>,
     arg: u64,
 ) -> i64 {
     let mut ctx = Context {
@@ -160,9 +172,7 @@ pub(crate) unsafe fn run(
 
 /// [`run`] of an op that reads the server alone.
 pub(crate) fn run_server(serv: view::Server<'_>, op: u32) -> i64 {
-    let null = core::ptr::null_mut();
-    // SAFETY: the op reads no worker, send or status.
-    unsafe { run(serv, op, null, null.cast(), core::ptr::null(), 0) }
+    run(serv, op, None, None, None, 0)
 }
 
 /// Each factory op over the objects [`run`]'s caller lent: the ops after
@@ -180,7 +190,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
 
 /// The reactor threads, barriers, pipes and message box the factory makes and
 /// frees, and its writes to the workers and reactor threads.
-fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
+fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv.raw();
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
     let barriers = |init: bool| {
@@ -256,7 +266,7 @@ fn native(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
         }
-        OP_FINISH_CLOSE => u64::from(crate::factory::finish(state, ctx.send.cast())),
+        OP_FINISH_CLOSE => u64::from(crate::factory::finish(state, ctx.send_ptr().cast())),
         _ => return None,
     })
 }
@@ -300,14 +310,14 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // The task's info.fd is the real fd, not the session id; dispatch converts it.
             let fd = ctx.send().info.fd;
             ctx.fd = c_int::from_ne_bytes(low32(fd.cast_unsigned()).to_ne_bytes());
+            let send = ctx.send_ptr().cast();
             // SAFETY: the live server and the data sent.
-            let worker =
-                unsafe { crate::server_methods::schedule_worker(serv, ctx.fd, ctx.send.cast()) };
+            let worker = unsafe { crate::server_methods::schedule_worker(serv, ctx.fd, send) };
             return Some(signed(worker));
         }
         OP_SEND_CONN_ACTIVE => {
             ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
-            return Some(u64::from(ctx.conn().is_some_and(|c| c.active != 0)));
+            return Some(u64::from(ctx.conn().is_some_and(|c| c.is_active())));
         }
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
@@ -328,7 +338,6 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         _ => {}
     }
     let conn = ctx.conn()?;
-    let send = || &mut ctx.send().info;
     Some(match op {
         OP_CONN_CLOSED => u64::from(conn.closed.load(Ordering::Relaxed)),
         OP_CONN_CLOSE_FORCE => u64::from(conn.close_force),
@@ -340,7 +349,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_FD => signed(conn.fd),
         OP_TO_SESSION => {
             // converted fd to session_id
-            let info = send();
+            let info = &mut ctx.send_mut().info;
             info.fd = conn.session_id;
             info.server_fd = low16(conn.server_fd);
             0
@@ -376,7 +385,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_FORWARD_CLOSE => {
             let ev = DataHead {
                 kind: EVENT_CLOSE,
-                fd: send().fd,
+                fd: ctx.send().info.fd,
                 reactor_id: i16::from(conn.reactor_id),
                 ..DataHead::default()
             };
@@ -406,7 +415,7 @@ fn low32(value: u64) -> u32 {
 
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv.raw(), ctx.worker);
+    let (serv, worker) = (ctx.serv.raw(), ctx.worker_ptr());
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;

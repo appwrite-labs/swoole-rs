@@ -6,7 +6,7 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::PoolRef;
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
     OP_ADD_HEARTBEAT_TIMER, OP_ADD_PIPES, OP_BUS_POP, OP_BUS_READ, OP_CLOSE_NOTIFY,
     OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CREATE_PIPE_BUFFERS, OP_INFO_REACTOR_ID,
@@ -63,12 +63,11 @@ impl Context<'_> {
         self.state().tables_ref()
     }
     pub(super) fn reactor_handle(&self) -> Reactor {
-        // SAFETY: the context's (or the thread's) live reactor, on this thread.
-        unsafe { Reactor::of(super::reactor(self)) }
+        self.reactor.unwrap_or_else(Reactor::thread)
     }
+    /// The context's worker; the ops reading it run with one.
     pub(super) fn worker(&self) -> Worker<'_> {
-        // SAFETY: the ops reading it run with the context's live worker.
-        unsafe { Worker::new(self.worker) }
+        self.worker.unwrap_or_else(|| std::process::abort())
     }
     /// `serv->get_worker(id)`, or `None` past the last.
     fn other(&self, id: u64) -> Option<Worker<'_>> {
@@ -87,8 +86,7 @@ impl Context<'_> {
     }
     /// The context's event, which the ops reading it run with.
     pub(super) fn event(&self) -> &Event {
-        // SAFETY: the context's live event.
-        unsafe { &*self.event }
+        self.event.unwrap_or_else(|| std::process::abort())
     }
     pub(super) fn event_socket(&self) -> *mut c_void {
         self.event().socket_ptr().cast()
@@ -108,8 +106,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_RUN_SINGLE_WORKER => {
             let worker = crate::shared::ServerShared::of(ctx.server())
                 .event_pool()
-                .workers();
-            swoole_rs_process::worker_globals::set_current_worker(worker);
+                .worker(0);
+            let raw = worker.map_or(core::ptr::null_mut(), Worker::raw);
+            swoole_rs_process::worker_globals::set_current_worker(raw);
             let mut ctx = over(ctx.serv, worker);
             sign(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN))
         }
@@ -203,10 +202,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(socket(ctx.event_socket())?)),
         OP_CLOSE_NOTIFY => {
             let conn = ctx.conn()?;
-            let mut event = conn.event(i16::from(conn.reactor_id), FD_SESSION);
+            let event = conn.event(i16::from(conn.reactor_id), FD_SESSION);
             run(
                 ctx.reactor_handle(),
-                &raw mut event,
+                Some(&event),
                 RUN_REACTOR_PROCESS_CLOSE,
             );
             0
@@ -256,7 +255,7 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
 extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     // SAFETY: a reactor process pool's `ptr` is its live server.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    let mut ctx = over(serv, worker.raw());
+    let mut ctx = over(serv, Some(worker));
     c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_MAIN)).unwrap_or(-1)
 }
 
@@ -273,12 +272,12 @@ unsafe extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitSta
 }
 
 /// Runs `operation` over a context of `reactor`'s server and `event`.
-fn run(reactor: Reactor, event: *mut Event, operation: u32) -> c_int {
+fn run(reactor: Reactor, event: Option<&Event>, operation: u32) -> c_int {
     let mut ctx = Context {
         // SAFETY: a reactor process's reactor holds its live server.
         serv: unsafe { crate::reactor_entry::server(reactor) },
-        worker: core::ptr::null_mut(),
-        reactor: reactor.ptr(),
+        worker: None,
+        reactor: Some(reactor),
         event,
         conn: core::ptr::null_mut(),
         now: 0.0,
@@ -292,12 +291,12 @@ fn run_over(ctx: &mut Context<'_>, operation: u32) -> i64 {
 }
 
 /// The context over `serv` and `worker` alone.
-fn over(serv: view::Server<'_>, worker: *mut WorkerRecord) -> Context<'_> {
+fn over<'a>(serv: view::Server<'a>, worker: Option<Worker<'a>>) -> Context<'a> {
     Context {
         serv,
         worker,
-        reactor: core::ptr::null_mut(),
-        event: core::ptr::null_mut(),
+        reactor: None,
+        event: None,
         conn: core::ptr::null_mut(),
         now: 0.0,
     }
@@ -305,7 +304,7 @@ fn over(serv: view::Server<'_>, worker: *mut WorkerRecord) -> Context<'_> {
 
 /// `Server::start_reactor_processes()`.
 pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
-    let mut ctx = over(serv, core::ptr::null_mut());
+    let mut ctx = over(serv, None);
     c_int::try_from(run_over(&mut ctx, RUN_REACTOR_PROCESS_START)).unwrap_or(-1)
 }
 
@@ -313,14 +312,18 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     run(
         Reactor::running(reactor),
-        event,
+        Some(event),
         RUN_REACTOR_PROCESS_PIPE_READ,
     )
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.
 extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
-    run(Reactor::running(reactor), event, RUN_REACTOR_PROCESS_CLOSE)
+    run(
+        Reactor::running(reactor),
+        Some(event),
+        RUN_REACTOR_PROCESS_CLOSE,
+    )
 }
 
 /// `ReactorProcess_onTimeout`: the heartbeat check.
@@ -330,5 +333,5 @@ extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
 unsafe extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
     // SAFETY: per the caller.
     let reactor = unsafe { Reactor::of(reactor) };
-    run(reactor, core::ptr::null_mut(), RUN_REACTOR_PROCESS_TIMEOUT);
+    run(reactor, None, RUN_REACTOR_PROCESS_TIMEOUT);
 }

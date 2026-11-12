@@ -205,11 +205,11 @@ impl Facts for Live<'_> {
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
         let worker = swoole_rs_process::worker_globals::current_worker();
         // Server::foreach_connection: each valid connection, max_fd read afresh.
-        let mut fd = gs.min_fd;
-        while fd <= gs.max_fd {
+        let mut fd = gs.min_fd();
+        while fd <= gs.max_fd() {
             let conn = self.serv.at(fd);
             fd += 1;
-            let Some(conn) = conn.filter(|conn| conn.active != 0 && !conn.socket.is_null()) else {
+            let Some(conn) = conn.filter(|conn| conn.is_active() && !conn.socket.is_null()) else {
                 continue;
             };
             let owner = i64::from(conn.reactor_id);

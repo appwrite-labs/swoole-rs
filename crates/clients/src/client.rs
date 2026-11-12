@@ -653,9 +653,9 @@ impl Handle {
 
 // The unit tests log timers instead.
 #[cfg(not(test))]
-use swoole_rs_timer::{swoole_timer_del, swr_v1_timer_add_plain_sec};
+use swoole_rs_timer::{add_fn_sec, swoole_timer_del};
 #[cfg(test)]
-use tests::{swoole_timer_del, swr_v1_timer_add_plain_sec};
+use tests::{add_fn_sec, swoole_timer_del};
 
 /// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
 #[repr(C)]
@@ -1474,11 +1474,8 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
             // A finished connect needs no timeout timer; either way the write
             // handler runs the proxy and TLS handshakes.
             if ret < 0 && timeout > 0.0 {
-                // SAFETY: `on_timeout` takes the live client, which deletes the
-                // timer before it goes.
-                let timer = unsafe {
-                    swr_v1_timer_add_plain_sec(timeout, false, on_timeout, this.0.cast())
-                };
+                // The client deletes the timer before it goes.
+                let timer = add_fn_sec(timeout, false, move || on_timeout(this));
                 this.get().timer.set(timer);
                 if timer.is_null() {
                     return ERR;
@@ -2003,12 +2000,8 @@ fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     OK
 }
 
-/// `Client_onTimeout`: the async connect of the client at `data` timed out.
-///
-/// # Safety
-/// `data` is a live client.
-unsafe extern "C-unwind" fn on_timeout(data: *mut c_void) {
-    let this = Handle(data.cast());
+/// `Client_onTimeout`: the async connect of the client timed out.
+fn on_timeout(this: Handle) {
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(core::ptr::null_mut());
     if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
