@@ -312,15 +312,13 @@ impl CppString {
         strnstr(self.view().get(start..)?, delimiter)
     }
 
-    /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`.
-    ///
-    /// # Safety
-    /// `delimiter` is not empty; `call` is safe with `handler`; `0 <= offset() <= len()`.
-    pub unsafe fn split(
+    /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`,
+    /// as its start in the buffer and its length, until `handler` returns false. An
+    /// empty `delimiter` matches everywhere, so only `handler` ends that loop.
+    pub fn split(
         &mut self,
         delimiter: &[u8],
-        call: SplitCall,
-        handler: *const c_void,
+        mut handler: impl FnMut(*const u8, usize) -> bool,
     ) -> isize {
         let delimiter_length = delimiter.len();
         let mut start = unsigned(self.offset);
@@ -329,8 +327,7 @@ impl CppString {
         while let Some(position) = found {
             let length = position + delimiter_length;
             let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
-            // SAFETY: the chunk lies inside `str`; `call` accepts `handler`.
-            if !unsafe { call(handler, chunk.cast(), length.wrapping_add(unsigned(first))) } {
+            if !handler(chunk, length.wrapping_add(unsigned(first))) {
                 return -1;
             }
             self.offset = self.offset.wrapping_add(signed(length));
@@ -764,8 +761,10 @@ pub unsafe extern "C" fn swr_v1_string_split(
     let string = unsafe { &mut *this };
     // SAFETY: as above.
     let delimiter = unsafe { bytes(delimiter, delimiter_length) };
-    // SAFETY: as above.
-    unsafe { string.split(delimiter, call, handler) }
+    // SAFETY: each chunk lies inside the String; `call` accepts `handler`.
+    string.split(delimiter, |chunk, length| unsafe {
+        call(handler, chunk.cast(), length)
+    })
 }
 
 /// Fresh boxed storage for one String, which [`delete_string`] frees.
@@ -824,29 +823,19 @@ mod tests {
         s.dispose();
     }
 
-    unsafe extern "C" fn collect(
-        handler: *const c_void,
-        data: *const c_char,
-        length: usize,
-    ) -> bool {
-        let chunks = unsafe { &mut *handler.cast_mut().cast::<Vec<Vec<u8>>>() };
-        chunks.push(unsafe { bytes(data.cast(), length) }.to_vec());
-        true
-    }
-
     #[test]
     fn split_hands_each_chunk_and_keeps_the_tail() {
         let mut s = new(b"a\r\nbc\r\nd\r");
         let mut chunks: Vec<Vec<u8>> = Vec::new();
-        let ret = unsafe { s.split(b"\r\n", collect, (&raw mut chunks).cast()) };
+        let ret = s.split(b"\r\n", |data, length| {
+            chunks.push(unsafe { bytes(data, length) }.to_vec());
+            true
+        });
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
         assert_eq!((ret, s.offset), (7, 7));
         // No delimiter after the offset: it moves to the last place one could start.
-        assert_eq!(
-            unsafe { s.split(b"\r\n", collect, (&raw mut chunks).cast()) },
-            0
-        );
-        assert_eq!((chunks.len(), s.offset), (2, 7));
+        assert_eq!(s.split(b"\r\n", |_, _| false), 0);
+        assert_eq!(s.offset, 7);
         s.dispose();
     }
 

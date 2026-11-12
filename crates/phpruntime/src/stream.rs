@@ -229,6 +229,12 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
     swoole_rs_hooks::timeval(seconds, micros)
 }
 
+/// `PHP_STREAM_CONTEXT(stream)`: the stream's context, or null.
+fn context(stream: *mut php_stream) -> *mut php_stream_context {
+    // SAFETY: a live stream.
+    unsafe { swr_zend_stream_context(stream) }
+}
+
 /// A copy of the stream's context option, if set.
 fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<Owned> {
     // SAFETY: a live stream; Zend copies nothing.
@@ -589,8 +595,7 @@ fn xport_api(
         }
         xport::BIND => {
             if socket.domain() != libc::AF_UNIX {
-                // SAFETY: a live stream.
-                if unsafe { swr_zend_stream_context(stream) }.is_null() {
+                if context(stream).is_null() {
                     return Ok(());
                 }
                 socket.set_option(libc::SOL_SOCKET, libc::SO_REUSEADDR, 1, false);
@@ -660,7 +665,7 @@ fn xport_api(
                 return oob(p);
             }
             p.outputs.returncode = if p.inputs.flags & STREAM_PEEK == STREAM_PEEK {
-                returncode(receive(socket, RecvOp::Peek, p))
+                returncode(socket.recv(RecvOp::Peek, buffer(p)))
             } else {
                 recvfrom(socket, p)
             };
@@ -839,30 +844,24 @@ fn name_slots(
     (textaddr, addr, addrlen)
 }
 
-/// One `op` receive into the transport parameter's buffer.
-fn receive(socket: &Socket, op: RecvOp, param: &php_stream_xport_param) -> isize {
+/// The receive buffer Zend lends the transport parameter for the call.
+fn buffer(param: &mut php_stream_xport_param) -> &mut [u8] {
     let (buf, length) = (param.inputs.buf, param.inputs.buflen);
-    let out: &mut [u8] = if length == 0 {
-        &mut []
-    } else {
-        // SAFETY: Zend lends `buflen` writable bytes at `buf` for the call.
-        unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
-    };
-    socket.recv(op, out)
+    if length == 0 {
+        return &mut [];
+    }
+    // SAFETY: Zend lends `buflen` writable bytes at `buf` for the call.
+    unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
 }
 
 /// `socket_recvfrom`.
 fn recvfrom(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
-    let (buf, length) = (param.inputs.buf, param.inputs.buflen);
     let (want_textaddr, want_addr) = (param.want_textaddr() != 0, param.want_addr() != 0);
     if !want_textaddr && !want_addr {
-        return returncode(receive(socket, RecvOp::Recv, param));
+        return returncode(socket.recv(RecvOp::Recv, buffer(param)));
     }
     let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-    let mut size = size_of::<sockaddr_storage>() as socklen_t;
-    // SAFETY: as above, and the address holds `size` bytes.
-    let received = unsafe { socket.recvfrom(buf, length, (&raw mut peer).cast(), &raw mut size) };
+    let (received, size) = socket.recvfrom(buffer(param), &mut peer);
     if size != 0 {
         let (textaddr, addr, addrlen) = name_slots(param);
         // SAFETY: the address and the output slots Zend asked for.
@@ -894,8 +893,7 @@ fn enable_crypto(
     socket: &Socket,
     activate: bool,
 ) -> Result<c_int, Bailout> {
-    // SAFETY: a live stream.
-    let context = unsafe { swr_zend_stream_context(stream) };
+    let context = context(stream);
     if activate && !socket.ssl_available() {
         socket.enable_ssl();
         if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
