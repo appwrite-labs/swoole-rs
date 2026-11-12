@@ -35,6 +35,14 @@ use std::collections::{HashMap, VecDeque};
 static DATE_CACHE: u8 = 0;
 pub(crate) struct Cached;
 fn flags(open: Vec<bool>, fixed: [bool; 4]) {}
+pub fn fields(self) -> &'static mut Record {}
+pub(crate) fn slot(&self, index: usize) -> Option<&mut u8> {}
+fn edit(&mut self) -> &mut u8 {}
+fn pick<'a>(slots: &'a mut [u8]) -> &'a mut u8 {}
+fn with(field: fn(&mut Record) -> &mut u8) {}
+fn unit(_: ()) -> &'static mut u8 {}
+fn paired(pair: (u8, u8)) -> &'static mut u8 {}
+fn borrow<'a>(arg: (&'a mut u8,)) -> &'a mut u8 {}
 '''
 
 
@@ -56,6 +64,9 @@ class Budget(unittest.TestCase):
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
                 'bools': {'one': 2}, 'caches': {'one': 2}, 'unforbidden': {'one': 1},
+                # fields, slot, unit and paired; edit, pick and borrow lend a `&mut` they were
+                # given, and with's is a parameter type.
+                'mints': {'one': 4},
             })
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
