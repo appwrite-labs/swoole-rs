@@ -332,7 +332,7 @@ fn write_facts(o: &mut Objects<'_, '_>) -> u64 {
         return 0;
     };
     o.ctx.conn = &raw mut *conn;
-    if conn.active == 0 {
+    if !conn.is_active() {
         return 0;
     }
     let pending = o.read_sock(|sock| !sock.ssl().is_null() && sock.tls.state != SSL_READY);
@@ -356,7 +356,7 @@ fn peer_close_facts(o: &mut Objects<'_, '_>) -> u64 {
         return 0;
     };
     o.ctx.conn = &raw mut *conn;
-    if conn.active == 0 {
+    if !conn.is_active() {
         return 0;
     }
     let config = o.config();
@@ -444,7 +444,7 @@ pub(crate) fn facts(ctx: &mut ReactorContext<'_>, state: &ServerState, which: Fa
 
 /// `Server::is_valid_connection`.
 pub(crate) fn valid(conn: Option<&ConnectionRecord>) -> bool {
-    let Some(conn) = conn.filter(|conn| conn.active != 0) else {
+    let Some(conn) = conn.filter(|conn| conn.is_active()) else {
         return false;
     };
     conn.socket()
@@ -1035,11 +1035,14 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CC_FINISH => {
+            use core::sync::atomic::Ordering::{Relaxed, Release};
             let conn = o.conn()?;
-            conn.active = 0;
-            conn.closed.store(1, SeqCst);
+            conn.active.store(0, Relaxed);
             conn.socket = core::ptr::null_mut();
             conn.object = core::ptr::null_mut();
+            // The slot's last write before close(fd): an accept that gets the fd back
+            // acquires it (OP_CONN_RESET) before reusing the slot.
+            conn.closed.store(1, Release);
             let (reactor, sock) = (o.handle()?.ptr(), o.sock()?.as_ptr());
             // SAFETY: the closing socket, which nothing uses afterwards.
             sign(unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor, sock) })
