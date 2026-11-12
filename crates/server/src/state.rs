@@ -53,14 +53,19 @@ pub struct ServerState {
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
-    task_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    #[expect(
+        clippy::vec_box,
+        reason = "`task_pipe` hands out addresses that outlive the lock"
+    )]
+    task_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
     /// `swr_v1_server_delete` closes, as `~Server` did.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
-    worker_pipes: std::sync::Mutex<Vec<AtomicPtr<SocketPair>>>,
+    #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
+    worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// A worker thread asked to shut down: the thread manager respawns no worker.
     pub(crate) stopping: AtomicBool,
 }
@@ -125,8 +130,12 @@ impl ServerState {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
-        let pipe = Box::into_raw(pair);
-        lock(&self.worker_pipes).push(AtomicPtr::new(pipe));
+        let mut pipes = lock(&self.worker_pipes);
+        pipes.push(pair);
+        // The box keeps the pair at this address while the list owns it.
+        let pipe = pipes
+            .last_mut()
+            .map_or(core::ptr::null_mut(), |pair| &raw mut **pair);
         worker.pipe_master = master.cast();
         worker.pipe_worker = end.cast();
         worker.pipe_object = pipe.cast();
@@ -146,11 +155,7 @@ impl ServerState {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
         }
-        let pipe = Box::into_raw(pair);
-        self.task_pipes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(AtomicPtr::new(pipe));
+        lock(&self.task_pipes).push(pair);
         true
     }
 
@@ -160,17 +165,16 @@ impl ServerState {
     pub(crate) fn close_pipes(&self) {
         let task = core::mem::take(&mut *lock(&self.task_pipes));
         let worker = core::mem::take(&mut *lock(&self.worker_pipes));
-        for pipe in task.into_iter().chain(worker) {
-            // SAFETY: a pipe `push_task_pipe` or `push_worker_pipe` boxed, now out of its list.
-            swoole_rs_tls::socket_pair::drop(&mut *unsafe { Box::from_raw(pipe.into_inner()) });
+        for mut pipe in task.into_iter().chain(worker) {
+            swoole_rs_tls::socket_pair::drop(&mut pipe);
         }
     }
 
     /// `task_notify_pipes.at(index)`, or null past the end.
     pub(crate) fn task_pipe(&self, index: usize) -> *mut SocketPair {
         lock(&self.task_pipes)
-            .get(index)
-            .map_or(core::ptr::null_mut(), |pipe| pipe.load(Ordering::Relaxed))
+            .get_mut(index)
+            .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
     }
 
     /// One of `texts`' slots.
@@ -411,9 +415,10 @@ pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
 /// A new server's records, before a state owns them: the defaults and an empty
 /// worker registry.
 pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
-    let mut config = crate::config::ServerConfig::default();
-    config.worker_registry =
-        Box::into_raw(Box::<swoole_rs_corebase::worker_registry::WorkerRegistry>::default()).cast();
+    let config = crate::config::ServerConfig {
+        worker_registry: Some(Box::default()),
+        ..Default::default()
+    };
     (config, crate::records::ServerTables::default())
 }
 

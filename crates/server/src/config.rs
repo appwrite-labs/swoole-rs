@@ -3,8 +3,10 @@
 //! C++ retains borrowed reference views for the original embedding API. The
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
+use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU32, Ordering::Relaxed};
+use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
 
 const _: () = assert!(
@@ -83,7 +85,9 @@ pub struct ServerConfig {
     pub task_max_request: u32,
     pub task_max_request_grace: u32,
     pub task_results: Shm,
-    pub worker_registry: *mut c_void,
+    /// The server's worker registry, which crates/process and the manager write
+    /// through `registry`'s pointer; native sees only a `void *` handle.
+    pub worker_registry: Option<Box<UnsafeCell<WorkerRegistry>>>,
     pub user_workers: Shm,
     pub workers: Shm,
     pub gs: Shm,
@@ -95,19 +99,6 @@ pub struct ServerConfig {
     pub message_queue_key: u64,
     /// `Server::Mode`, fixed by the constructor.
     pub mode_: u8,
-}
-
-impl Drop for ServerConfig {
-    fn drop(&mut self) {
-        let registry = self
-            .worker_registry
-            .cast::<swoole_rs_corebase::worker_registry::WorkerRegistry>();
-        if !registry.is_null() {
-            // SAFETY: ServerState boxed this registry; native configuration views
-            // only borrow its handle and have ended before the owning config is freed.
-            drop(unsafe { Box::from_raw(registry) });
-        }
-    }
 }
 
 impl Default for ServerConfig {
@@ -176,7 +167,7 @@ impl Default for ServerConfig {
             task_max_request: 0,
             task_max_request_grace: 0,
             task_results: Shm::NULL,
-            worker_registry: core::ptr::null_mut(),
+            worker_registry: None,
             user_workers: Shm::NULL,
             workers: Shm::NULL,
             gs: Shm::NULL,
@@ -192,6 +183,13 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// The worker registry's address, or null before a state gives the config one.
+    pub(crate) fn registry(&self) -> *mut WorkerRegistry {
+        self.worker_registry
+            .as_deref()
+            .map_or(core::ptr::null_mut(), UnsafeCell::get)
+    }
+
     /// `serv->ipc_max_size`.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn ipc_max_size(&self) -> u32 {

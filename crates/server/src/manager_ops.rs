@@ -237,7 +237,7 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .worker(index(arg))
                 .map_or(0, swoole_rs_process::worker_record::Worker::pid),
         ),
-        OP_WORKER_REGISTRY => config.worker_registry as u64,
+        OP_WORKER_REGISTRY => config.registry() as u64,
         OP_RUNNING => u64::from(ctx.state().running()),
         OP_RELOAD_INIT => u64::from(pool.reload_init()),
         OP_RELOAD_TASK => pool.reload_task() as u64,
