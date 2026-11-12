@@ -20,7 +20,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -128,15 +128,17 @@ impl Hasher for IdHasher {
     }
 }
 
+/// Its methods take `&self`: the server lends the bus through a `Copy` handle, so
+/// each field is a cell, borrowed for one call at a time.
 pub struct Bus {
-    buffer: *mut BusHead,
-    buffer_size: usize,
-    always_chunked: bool,
-    packets: HashMap<u64, Packet, BuildHasherDefault<IdHasher>>,
+    buffer: Cell<*mut BusHead>,
+    buffer_size: Cell<usize>,
+    always_chunked: Cell<bool>,
+    packets: RefCell<HashMap<u64, Packet, BuildHasherDefault<IdHasher>>>,
     /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes.
-    pipe_sockets: Vec<*mut SocketRecord>,
+    pipe_sockets: RefCell<Vec<*mut SocketRecord>>,
     /// `id_generator_`: the counter that numbers each written message.
-    next_id: Option<&'static AtomicU64>,
+    next_id: Cell<Option<&'static AtomicU64>>,
 }
 
 impl Drop for Bus {
@@ -146,9 +148,9 @@ impl Drop for Bus {
         // timers, buffers or loop: `Socket::free` is the record's deallocation.
         #[cfg(not(all(feature = "upstream-symbols", not(test))))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
-        for fd in 0..self.pipe_sockets.len() {
-            // The record `init_pipe_socket` made for `fd`, if any.
-            let Some(record) = c_int::try_from(fd).ok().and_then(|fd| self.pipe(fd)) else {
+        for &socket in self.pipe_sockets.get_mut().iter() {
+            // SAFETY: null or a record `init_pipe_socket` made, used by nothing else now.
+            let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
                 continue;
             };
             record.edit(|record| record.fd = -1);
@@ -192,12 +194,12 @@ fn waits(nobufs: &mut bool) -> bool {
 impl Bus {
     fn new(buffer_size: usize) -> Self {
         Self {
-            buffer: ptr::null_mut(),
-            buffer_size,
-            always_chunked: false,
-            packets: HashMap::default(),
-            pipe_sockets: Vec::new(),
-            next_id: None,
+            buffer: Cell::new(ptr::null_mut()),
+            buffer_size: Cell::new(buffer_size),
+            always_chunked: Cell::new(false),
+            packets: RefCell::new(HashMap::default()),
+            pipe_sockets: RefCell::new(Vec::new()),
+            next_id: Cell::new(None),
         }
     }
 
@@ -205,8 +207,9 @@ impl Bus {
     /// buffer's pointer; `None` while no buffer is set.
     fn head_cell(&self) -> Option<&Cell<BusHead>> {
         // SAFETY: `set_buffer`'s contract: null, or a buffer that starts with the
-        // header `set_buffer` wrote, live until `set_buffer` (`&mut self`) replaces it.
-        unsafe { self.buffer.cast::<Cell<BusHead>>().as_ref() }
+        // header `set_buffer` wrote, live until `set_buffer` replaces it, which no
+        // caller of this does while it holds the header.
+        unsafe { self.buffer.get().cast::<Cell<BusHead>>().as_ref() }
     }
 
     /// The current message's head; an empty one while no buffer is set.
@@ -224,23 +227,32 @@ impl Bus {
     }
 
     fn data(&self) -> *mut u8 {
-        self.buffer.cast::<u8>().wrapping_add(HEAD)
+        self.buffer.get().cast::<u8>().wrapping_add(HEAD)
     }
 
-    /// The first `length` bytes of the set buffer (at most all of it) for a read to
-    /// fill; empty while no buffer is set.
-    fn slots(&mut self, length: usize) -> &mut [MaybeUninit<u8>] {
-        if self.buffer.is_null() {
-            return &mut [];
+    /// `fill` over the first `length` bytes of the set buffer (at most all of it);
+    /// empty while no buffer is set. `fill` reads into them and leaves the bus alone.
+    fn fill(&self, length: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> isize) -> isize {
+        let buffer = self.buffer.get();
+        if buffer.is_null() {
+            return fill(&mut []);
         }
+        let length = length.min(self.buffer_size.get());
         // SAFETY: `set_buffer`'s contract: a set buffer holds `buffer_size` writable
-        // bytes, live until `set_buffer` (`&mut self`) replaces it.
-        unsafe { std::slice::from_raw_parts_mut(self.buffer.cast(), length.min(self.buffer_size)) }
+        // bytes, live until `set_buffer` replaces it; `fill` doesn't touch the bus, so
+        // nothing else reaches them meanwhile.
+        fill(unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) })
     }
 
     #[must_use]
     pub fn memory_size(&self) -> usize {
-        self.buffer_size + self.packets.values().map(|p| p.size).sum::<usize>()
+        self.buffer_size.get()
+            + self
+                .packets
+                .borrow()
+                .values()
+                .map(|p| p.size)
+                .sum::<usize>()
     }
 
     /// `MessageBus::get_packet`.
@@ -251,7 +263,7 @@ impl Bus {
             // SAFETY: `pass` stored a `BusPacket` at the start of the data.
             unsafe { self.data().cast::<BusPacket>().read_unaligned() }
         } else if head.flags & OBJ_PTR != 0 {
-            self.packets.get(&head.msg_id).map_or(
+            self.packets.borrow().get(&head.msg_id).map_or(
                 BusPacket {
                     length: 0,
                     data: ptr::null_mut(),
@@ -290,18 +302,21 @@ impl Bus {
     }
 
     /// `MessageBus::move_packet`: the current packet's block, now the caller's.
-    pub fn move_packet(&mut self) -> *mut c_char {
+    pub fn move_packet(&self) -> *mut c_char {
         let id = self.head().msg_id;
-        self.packets.get_mut(&id).map_or(ptr::null_mut(), |p| {
-            std::mem::replace(&mut p.data, ptr::null_mut()).cast()
-        })
+        self.packets
+            .borrow_mut()
+            .get_mut(&id)
+            .map_or(ptr::null_mut(), |p| {
+                std::mem::replace(&mut p.data, ptr::null_mut()).cast()
+            })
     }
 
     /// `MessageBus::pop`: frees the current packet once its last chunk arrived.
-    pub fn pop(&mut self) {
+    pub fn pop(&self) {
         let head = self.head();
         if head.flags & END != 0 {
-            self.packets.remove(&head.msg_id);
+            self.packets.borrow_mut().remove(&head.msg_id);
         }
     }
 
@@ -310,9 +325,10 @@ impl Bus {
     /// # Safety
     /// The buffer is set; `data` holds `size` bytes from `allocator` (a
     /// `swoole::Allocator` that outlives the bus), which the packet now owns.
-    pub unsafe fn adopt(&mut self, data: *mut c_void, size: usize, allocator: *const c_void) {
+    pub unsafe fn adopt(&self, data: *mut c_void, size: usize, allocator: *const c_void) {
         let (data, allocator) = (data.cast::<u8>(), allocator.cast::<Allocator>());
-        let packet = self.packets.entry(self.head().msg_id).or_insert(Packet {
+        let mut packets = self.packets.borrow_mut();
+        let packet = packets.entry(self.head().msg_id).or_insert(Packet {
             data: ptr::null_mut(),
             length: 0,
             size: 0,
@@ -326,9 +342,9 @@ impl Bus {
     /// `MessageBus::read` (stream pipes, `dgram == false`) and
     /// `MessageBus::read_with_buffer` (datagram pipes): >0 a whole packet, 0 wait
     /// (or allocate, see `state.event`), -1 an error or no buffer set.
-    fn read(&mut self, fd: c_int, dgram: bool, state: &mut BusRead, nobufs: &mut bool) -> isize {
+    fn read(&self, fd: c_int, dgram: bool, state: &mut BusRead, nobufs: &mut bool) -> isize {
         state.event = 0;
-        if self.buffer.is_null() {
+        if self.buffer.get().is_null() {
             return -1;
         }
         loop {
@@ -336,9 +352,9 @@ impl Bus {
                 state.resume = false;
             } else {
                 let n = if dgram {
-                    sys::read(fd, self.slots(usize::MAX))
+                    self.fill(usize::MAX, |slots| sys::read(fd, slots))
                 } else {
-                    sys::recv(fd, self.slots(HEAD), libc::MSG_PEEK)
+                    self.fill(HEAD, |slots| sys::recv(fd, slots, libc::MSG_PEEK))
                 };
                 if n < 0 {
                     return if waits(nobufs) { 0 } else { -1 };
@@ -356,12 +372,14 @@ impl Bus {
                     if dgram {
                         return n;
                     }
-                    return sys::read(fd, self.slots(HEAD + head.len as usize));
+                    return self.fill(HEAD + head.len as usize, |slots| sys::read(fd, slots));
                 }
             }
             let head = self.head();
-            let (buffer, payload, buffer_size) = (self.buffer, self.data(), self.buffer_size);
-            let Some(packet) = self.packets.get_mut(&head.msg_id) else {
+            let (buffer, payload) = (self.buffer.get(), self.data());
+            let buffer_size = self.buffer_size.get();
+            let mut packets = self.packets.borrow_mut();
+            let Some(packet) = packets.get_mut(&head.msg_id) else {
                 if head.flags & BEGIN != 0 {
                     return Self::allocate(state, ptr::null_mut(), ptr::null(), head.len as usize);
                 }
@@ -370,7 +388,7 @@ impl Bus {
                     return -1;
                 }
                 // Read the chunk's header from the pipe and discard it.
-                sys::recv(fd, self.slots(HEAD), 0);
+                self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
                 return 0;
             };
             let n = if dgram {
@@ -455,13 +473,13 @@ impl Bus {
         mut send: impl FnMut(&[libc::iovec]) -> isize,
         mut reduce: impl FnMut() -> bool,
     ) -> bool {
-        let maximum = u32::try_from(self.buffer_size - HEAD).unwrap_or(u32::MAX);
+        let maximum = u32::try_from(self.buffer_size.get() - HEAD).unwrap_or(u32::MAX);
         let Some(mut writer) = BusWriter::new(
             head.len,
             maximum,
             IPC_MSG_MIN,
             !data.is_null(),
-            self.always_chunked,
+            self.always_chunked.get(),
         ) else {
             return false;
         };
@@ -609,17 +627,17 @@ impl Bus {
         Box::new(Self::new(buffer_size))
     }
 
-    pub fn set_buffer_size(&mut self, size: usize) {
-        self.buffer_size = size;
+    pub fn set_buffer_size(&self, size: usize) {
+        self.buffer_size.set(size);
     }
 
     #[must_use]
     pub fn buffer_size(&self) -> usize {
-        self.buffer_size
+        self.buffer_size.get()
     }
 
-    pub fn set_always_chunked(&mut self) {
-        self.always_chunked = true;
+    pub fn set_always_chunked(&self) {
+        self.always_chunked.set(true);
     }
 
     /// Sets the receive buffer, `buffer_size` bytes the caller allocated and frees,
@@ -628,40 +646,35 @@ impl Bus {
     /// # Safety
     /// A non-null `buffer` holds `buffer_size` writable bytes and stays valid until
     /// it is replaced; the reads, packets and passes below need one set.
-    pub unsafe fn set_buffer(&mut self, buffer: *mut c_void) {
-        self.buffer = buffer.cast();
+    pub unsafe fn set_buffer(&self, buffer: *mut c_void) {
+        let buffer = buffer.cast::<BusHead>();
+        self.buffer.set(buffer);
         if !buffer.is_null() {
             // SAFETY: the caller lends a buffer that starts with a writable header.
-            unsafe { self.buffer.write(BusHead::default()) };
+            unsafe { buffer.write(BusHead::default()) };
         }
     }
 
     /// The receive buffer, which starts with the current message's head.
     #[must_use]
     pub fn buffer(&self) -> *mut BusHead {
-        self.buffer
+        self.buffer.get()
     }
 
     /// Packets being reassembled.
     #[must_use]
     pub fn count(&self) -> usize {
-        self.packets.len()
+        self.packets.borrow().len()
     }
 
-    pub fn clear(&mut self) {
-        self.packets.clear();
+    pub fn clear(&self) {
+        self.packets.borrow_mut().clear();
     }
 
     /// Reads from the pipe `fd`; see `Bus::read`. On `BUS_ALLOCATE` the caller
     /// allocates (or reallocates) `state.size` bytes, calls [`Bus::adopt`], and
     /// calls this again with the same `state`.
-    pub fn receive(
-        &mut self,
-        fd: c_int,
-        dgram: bool,
-        nobufs: &mut bool,
-        state: &mut BusRead,
-    ) -> isize {
+    pub fn receive(&self, fd: c_int, dgram: bool, nobufs: &mut bool, state: &mut BusRead) -> isize {
         let n = self.read(fd, dgram, state, nobufs);
         let origin = if dgram {
             c"MessageBus::read_with_buffer"
@@ -697,8 +710,8 @@ impl Bus {
 
     /// `MessageBus::count_ids`: numbers each message written from `counter`, an
     /// atomic `sw_atomic_long_t` that buses in other processes may share.
-    pub fn count_ids(&mut self, counter: &'static AtomicU64) {
-        self.next_id = Some(counter);
+    pub fn count_ids(&self, counter: &'static AtomicU64) {
+        self.next_id.set(Some(counter));
     }
 
     /// `MessageBus::write`: numbers the message, then writes it through the event
@@ -732,7 +745,7 @@ impl Bus {
             let error = errno();
             record.is_some_and(|socket| socket.catch_pipe_error(error) == REDUCE_SIZE)
         };
-        if let Some(counter) = self.next_id {
+        if let Some(counter) = self.next_id.get() {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
         }
         // SAFETY: the caller's contract.
@@ -741,12 +754,13 @@ impl Bus {
 
     /// `MessageBus::init_pipe_socket`: this bus's own nonblocking record of the pipe
     /// `fd`, with no send-buffer limit.
-    pub fn init_pipe_socket(&mut self, fd: c_int) {
+    pub fn init_pipe_socket(&self, fd: c_int) {
         let Ok(index) = usize::try_from(fd) else {
             return;
         };
-        if index >= self.pipe_sockets.len() {
-            self.pipe_sockets.resize(index + 1, ptr::null_mut());
+        let mut pipe_sockets = self.pipe_sockets.borrow_mut();
+        if index >= pipe_sockets.len() {
+            pipe_sockets.resize(index + 1, ptr::null_mut());
         }
         // `make_socket`: a new record, which the bus frees on drop.
         let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
@@ -754,7 +768,7 @@ impl Bus {
         if socket.output.nonblock == 0 {
             swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
         }
-        if let Some(slot) = self.pipe_sockets.get_mut(index) {
+        if let Some(slot) = pipe_sockets.get_mut(index) {
             *slot = socket;
         }
     }
@@ -764,7 +778,7 @@ impl Bus {
     pub fn pipe_socket(&self, fd: c_int) -> *mut SocketRecord {
         usize::try_from(fd)
             .ok()
-            .and_then(|index| self.pipe_sockets.get(index).copied())
+            .and_then(|index| self.pipe_sockets.borrow().get(index).copied())
             .unwrap_or(ptr::null_mut())
     }
 
@@ -805,7 +819,7 @@ mod tests {
 
     #[test]
     fn a_bus_without_a_buffer_reads_nothing_and_has_no_packet() {
-        let mut bus = Bus::new(64);
+        let bus = Bus::new(64);
         let mut state = BusRead {
             received: 0,
             size: 0,
@@ -881,10 +895,10 @@ mod tests {
                     };
                 }
             }
-            let mut bus = Bus::new(size);
-            bus.always_chunked = always;
+            let bus = Bus::new(size);
+            bus.always_chunked.set(always);
             let mut buffer = vec![0u64; size / 8];
-            bus.buffer = buffer.as_mut_ptr().cast();
+            bus.buffer.set(buffer.as_mut_ptr().cast());
             Self { bus, buffer, fds }
         }
         fn write(&self, id: u64, payload: &[u8]) -> bool {
@@ -966,7 +980,7 @@ mod tests {
             assert!(pipe.write(id, &data));
             assert_eq!(pipe.read(false).unwrap(), data, "packet {id}");
         }
-        assert!(pipe.bus.packets.is_empty());
+        assert!(pipe.bus.packets.borrow().is_empty());
     }
 
     #[test]
@@ -978,13 +992,13 @@ mod tests {
             assert!(pipe.write(id, &data));
             assert_eq!(pipe.read(true).unwrap(), data, "packet {id}");
         }
-        assert!(pipe.bus.packets.is_empty());
+        assert!(pipe.bus.packets.borrow().is_empty());
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options on a socketpair")]
     fn moved_packets_are_not_freed_and_memory_counts_reassembly() {
-        let mut pipe = Pipe::new(libc::SOCK_STREAM, 4096, true);
+        let pipe = Pipe::new(libc::SOCK_STREAM, 4096, true);
         assert!(pipe.write(9, &payload(5000)));
         let mut state = BusRead {
             received: 0,
@@ -1027,14 +1041,14 @@ mod tests {
         let sent = unsafe { libc::send(pipe.fds[0], ptr::from_ref(&head).cast(), HEAD, 0) };
         assert_eq!(sent.cast_unsigned(), HEAD);
         assert_eq!(pipe.read(true), None);
-        assert_eq!(pipe.bus.packets.len(), 0);
+        assert_eq!(pipe.bus.packets.borrow().len(), 0);
     }
 
     #[test]
     fn pass_points_at_the_payload() {
         let mut buffer = [0u64; 16];
-        let mut bus = Bus::new(128);
-        bus.buffer = buffer.as_mut_ptr().cast();
+        let bus = Bus::new(128);
+        bus.buffer.set(buffer.as_mut_ptr().cast());
         let data = b"hello";
         let info = BusHead {
             len: 5,
@@ -1197,10 +1211,10 @@ mod tests {
             q: Vec::new(),
         };
         let mut buffer = vec![0u64; 65536 / 8];
-        pipe.bus.buffer = buffer.as_mut_ptr().cast();
+        pipe.bus.buffer.set(buffer.as_mut_ptr().cast());
         let sent = vec![
             mb_packet(DATA_SIZE, 1),
-            mb_packet(pipe.bus.buffer_size, 2),
+            mb_packet(pipe.bus.buffer_size.get(), 2),
             mb_packet(2341, 3),
         ];
         let writer = Bus::new(65536);
@@ -1225,7 +1239,7 @@ mod tests {
         for fd in fds {
             unsafe { libc::close(fd) };
         }
-        pipe.bus.buffer = ptr::null_mut();
+        pipe.bus.buffer.set(ptr::null_mut());
         drop(buffer);
         (pipe.bus, pipe.q, sent)
     }
