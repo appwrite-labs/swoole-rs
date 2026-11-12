@@ -3,12 +3,11 @@
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, IS_OBJECT, IS_OBJECT_EX,
-        object_init_ex, object_properties_init, swr_zend_class_set_create_object,
-        swr_zend_object_alloc, swr_zend_objects_find, swr_zend_objects_hold,
-        swr_zend_property_slot, swr_zend_try_facade_update, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        _zval_struct__bindgen_ty_1, IS_OBJECT, IS_OBJECT_EX, object_init_ex,
+        object_properties_init, swr_zend_class_set_create_object, swr_zend_object_alloc,
+        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -201,25 +200,6 @@ impl<T: Custom> Weak<T> {
         // the empty zval `found` owns only with a counted object.
         unsafe { swr_zend_objects_hold(self.0, T::class().handlers(), found.as_ptr()) }
             .then_some(found)
-    }
-
-    /// The object as a zval that takes no reference (`ZVAL_OBJ` without
-    /// `GC_ADDREF`), as upstream's uncounted copies are, or `None`. It costs no
-    /// reference taken and released, which [`Weak::get`]'s `Owned` does.
-    /// # Safety
-    /// The zval is used only while something else keeps the object live, and
-    /// nothing releases it: no reference comes with it.
-    #[must_use]
-    pub unsafe fn zval(&self) -> Option<zval> {
-        // SAFETY: reads the executor's object store on its thread.
-        let object = unsafe { swr_zend_objects_find(self.0, T::class().handlers()) };
-        (!object.is_null()).then_some(zval {
-            value: zend_value { obj: object },
-            u1: _zval_struct__bindgen_ty_1 {
-                type_info: IS_OBJECT_EX,
-            },
-            u2: _zval_struct__bindgen_ty_2 { next: 0 },
-        })
     }
 }
 
