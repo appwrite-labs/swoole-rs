@@ -78,8 +78,9 @@ fn process(factory: *mut c_void, op: u32, send: *mut SendData, arg: u64) -> bool
     let serv = unsafe { (*factory.cast::<Factory>()).server };
     // SAFETY: as above.
     let serv = unsafe { crate::view::Server::from_raw(serv) };
-    // SAFETY: as above.
-    unsafe { run(serv, op, ptr::null_mut(), send, ptr::null(), arg) != 0 }
+    // SAFETY: as above: null or the live send, which nothing else borrows during the op.
+    let send = unsafe { send.as_mut() };
+    run(serv, op, None, send, None, arg) != 0
 }
 
 /// `BaseFactory`'s member `op` over `factory` with `arg`, lending `send`.
