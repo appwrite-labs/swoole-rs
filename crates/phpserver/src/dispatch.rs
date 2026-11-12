@@ -598,14 +598,6 @@ const WEBSOCKET_ACTIVE: u8 = 3;
 /// can't make one whose payload pointer and length disagree.
 pub use swoole_rs_server::reactor_entry::RecvData;
 
-/// `DgramPacket`'s head; the datagram follows.
-#[repr(C)]
-struct DgramPacket {
-    socket_type: c_int,
-    socket_addr: SocketAddress,
-    length: u32,
-}
-
 fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> Option<Callable> {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
@@ -792,14 +784,9 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
 }
 
 extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    let packet = request.data();
-    let dgram = packet.cast::<DgramPacket>();
-    // SAFETY: an onPacket event's payload is its `DgramPacket`.
-    let DgramPacket {
-        socket_type,
-        socket_addr,
-        length,
-    } = unsafe { dgram.read_unaligned() };
+    let Some((socket_type, socket_addr, data)) = request.datagram() else {
+        return SW_ERR;
+    };
     let info = request.info();
     // The sender, of the packet's socket type: an IP address and port, or a path.
     let sender = SocketAddress {
@@ -811,9 +798,6 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
     } else {
         -1
     };
-    let data = packet.wrapping_add(size_of::<DgramPacket>()).cast::<u8>();
-    // SAFETY: the datagram's `length` bytes follow its head.
-    let data = unsafe { std::slice::from_raw_parts(data, length as usize) };
     with_host(&sender, |address| {
         let sender = Packet {
             data,
@@ -1131,9 +1115,8 @@ extern "C" fn on_dispatch(
     ];
     let mut argc = 3;
     if let Some(send) = send.filter(|_| max_num_args(cache) > 3) {
-        let length = (send.info().len as usize).min(SW_IPC_BUFFER_SIZE);
-        // SAFETY: the payload holds `info.len` bytes.
-        let bytes = unsafe { std::slice::from_raw_parts(send.data().cast::<u8>(), length) };
+        let payload = send.payload();
+        let bytes = payload.get(..SW_IPC_BUFFER_SIZE).unwrap_or(payload);
         args[3] = Owned::string(ZString::new(bytes)).into_zval();
         argc = 4;
     }

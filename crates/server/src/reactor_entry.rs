@@ -6,6 +6,7 @@
 use core::ffi::{c_int, c_long, c_void};
 
 use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
 use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE, RUN_THREAD_SHUTDOWN};
@@ -33,6 +34,39 @@ impl RecvData {
     pub fn data(&self) -> *const c_void {
         self.data
     }
+
+    /// The payload's `info.len` bytes; none for a null `data`.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        if self.data.is_null() {
+            return &[];
+        }
+        // SAFETY: whoever lends a `RecvData` points `data` at `info.len` bytes live
+        // for the borrow, and its fields are private to this crate.
+        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
+    }
+
+    /// An `onPacket` payload: the `DgramPacket` head's socket type and sender,
+    /// and the datagram that follows it; `None` if the payload is too short.
+    #[must_use]
+    pub fn datagram(&self) -> Option<(c_int, SocketAddress, &[u8])> {
+        let payload = self.payload();
+        let head = payload.get(..size_of::<DgramPacket>())?;
+        // SAFETY: `size_of::<DgramPacket>()` bytes, read unaligned; every field is
+        // plain data.
+        let head = unsafe { head.as_ptr().cast::<DgramPacket>().read_unaligned() };
+        let start = size_of::<DgramPacket>();
+        let data = payload.get(start..start + head.length as usize)?;
+        Some((head.socket_type, head.socket_addr, data))
+    }
+}
+
+/// `DgramPacket`'s head; the datagram follows.
+#[repr(C)]
+struct DgramPacket {
+    socket_type: c_int,
+    socket_addr: SocketAddress,
+    length: u32,
 }
 
 /// `serv->get_thread(id)`.
