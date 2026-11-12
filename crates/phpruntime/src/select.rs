@@ -6,10 +6,7 @@ use std::{collections::HashMap, ptr};
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
-    sys::{
-        swr_zend_runtime_select_args, swr_zend_stream_from_zval, zend_argument_value_error,
-        zend_long, zend_ulong, zval,
-    },
+    sys::{swr_zend_runtime_select_args, swr_zend_stream_from_zval, zend_long, zend_ulong, zval},
 };
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
@@ -149,13 +146,7 @@ fn select(call: &Call, frame: *mut swoole_rs_zend::sys::zend_execute_data) -> Re
         return Ok(());
     }
     if seconds_null && !micros_null && micros != 0 {
-        // SAFETY: a handler's context; the message has no conversions.
-        unsafe {
-            zend_argument_value_error(
-                5,
-                c"must be null when argument #4 ($seconds) is null".as_ptr(),
-            );
-        }
+        call.argument_value_error(5, c"must be null when argument #4 ($seconds) is null");
         return Ok(());
     }
     let mut timeout = -1.0;

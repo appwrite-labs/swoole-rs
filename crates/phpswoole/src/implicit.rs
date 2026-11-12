@@ -10,7 +10,6 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     handlers,
     sys::{swr_zend_set_exit_status, swr_zval_facade_refcount, zend_function},
-    throw_exception,
 };
 
 handlers! {
@@ -84,13 +83,6 @@ fn implicit_fn(call: &Call) {
         message.push(b"unknown fn '");
         message.push(name);
         message.push(b"'");
-        // SAFETY: a handler, with Swoole\Exception registered at MINIT.
-        unsafe {
-            throw_exception(
-                EXCEPTION.entry(),
-                message.as_cstr(),
-                SW_ERROR_INVALID_PARAMS as i64,
-            );
-        }
+        EXCEPTION.throw(message.as_cstr(), SW_ERROR_INVALID_PARAMS as i64);
     }
 }

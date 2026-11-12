@@ -301,24 +301,6 @@ impl std::fmt::Write for LogSink<'_> {
     }
 }
 
-// printf precision is a signed int: negative means read through the terminator.
-pub(crate) unsafe fn log_bytes<'a>(data: *const u8, precision: i32) -> &'a [u8] {
-    if precision == 0 {
-        return &[];
-    }
-    if precision < 0 {
-        // SAFETY: negative precision requires a NUL-terminated input.
-        return unsafe { std::ffi::CStr::from_ptr(data.cast()) }.to_bytes();
-    }
-    let (mut length, limit) = (0, precision.unsigned_abs() as usize);
-    // SAFETY: the input is readable through its first NUL or `precision` bytes.
-    while length < limit && unsafe { data.wrapping_add(length).read() } != 0 {
-        length += 1;
-    }
-    // SAFETY: the loop read exactly these `length` bytes.
-    unsafe { std::slice::from_raw_parts(data, length) }
-}
-
 /// `bytes` through its first NUL, as printf's `%.*s` reads it.
 fn through_nul(bytes: &[u8]) -> &[u8] {
     memchr::memchr(0, bytes).map_or(bytes, |end| bytes.get(..end).unwrap_or_default())

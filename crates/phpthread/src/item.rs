@@ -11,7 +11,6 @@ use swoole_rs_zend::{
         IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
         IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp, zend_binary_strcmp, zend_throw_error,
     },
-    throw_exception,
 };
 
 // Upstream's item types beyond Zend's (php_swoole_thread.h).
@@ -383,8 +382,7 @@ impl Item {
 /// `zend_throw_exception(swoole_exception_ce, message, errno)`.
 fn socket_error(message: &std::ffi::CStr) {
     let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    // SAFETY: in a request, with Swoole's exception class.
-    unsafe { throw_exception(host::exception(), message, i64::from(errno)) };
+    swoole_rs_phpswoole::exception().throw(message, i64::from(errno));
 }
 
 fn sign(ordering: Ordering) -> i32 {

@@ -7,11 +7,11 @@
 use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Event, FlushEffects, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects, WritePayload,
+    Event, FlushEffects, ReactorPrepared, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects,
+    WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;

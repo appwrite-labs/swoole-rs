@@ -3,7 +3,7 @@
 //! callables. WebSocket framing is crates/phphttp's, which registers it here
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::native::{Co, Socket};
-use libc::{c_char, c_int, c_void, size_t};
+use libc::{c_int, c_void};
 use std::{ffi::CStr, sync::OnceLock};
 use swoole_rs_buffer::string::{CppString, delete_string};
 use swoole_rs_corebase::{ProxyState, log};
@@ -174,26 +174,25 @@ impl Co {
         self.handle().send_all(data).cast_unsigned() == data.len()
     }
 
+    /// The write or read buffer, made on first use.
+    fn buffer<'a>(self, write: bool) -> &'a mut CppString {
+        // SAFETY: the live socket's buffer, which lives as long.
+        unsafe { &mut *self.handle().buffer(write) }
+    }
+
     /// `get_write_buffer()`, made on first use.
     pub(crate) fn write_buffer<'a>(self) -> &'a mut CppString {
-        // SAFETY: its write buffer, which lives as long.
-        unsafe { &mut *self.handle().buffer(true) }
+        self.buffer(true)
     }
 
     /// `get_read_buffer()`, made on first use.
     pub(crate) fn input<'a>(self) -> &'a mut CppString {
-        // SAFETY: its read buffer, which lives as long.
-        unsafe { &mut *self.handle().buffer(false) }
+        self.buffer(false)
     }
 
     /// `recv` into the read buffer's room past its length.
     pub(crate) fn recv_input(self) -> isize {
-        let buffer = self.input();
-        let room = buffer.size() - buffer.len();
-        let at = buffer.as_mut_ptr().wrapping_add(buffer.len());
-        // SAFETY: the buffer's `room` writable bytes at `at`.
-        self.handle()
-            .recv(unsafe { std::slice::from_raw_parts_mut(at, room) })
+        self.handle().recv(self.input().spare())
     }
 
     /// A read `TimeoutController` (0: the default read timeout).
@@ -271,14 +270,11 @@ pub(crate) fn swoole_http_client_coro_file_close(fd: c_int) {
 pub(crate) unsafe fn swoole_http_client_coro_call(
     callable: &Callable,
     client: *mut zend_object,
-    data: *const c_char,
-    length: size_t,
+    data: &[u8],
 ) -> c_int {
     let mut args = [UNDEF; 2];
     // SAFETY: the client object, borrowed for the call as upstream's `ZVAL_OBJ`.
     unsafe { set_object(&raw mut args[0], client) };
-    // SAFETY: the caller's bytes.
-    let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
     args[1] = Owned::string(ZString::new(data)).into_zval();
     let result = match crate::native::call(callable, &mut args, std::ptr::null_mut(), false) {
         Ok(true) => 0,

@@ -61,8 +61,7 @@ pub struct Waited {
 }
 
 fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t {
-    // SAFETY: `status` is writable.
-    unsafe { libc::waitpid(pid, status, options) }
+    swoole_rs_corebase::sys::waitpid(pid, Some(status), options)
 }
 
 /// `System::waitpid(pid, status, options, timeout)`: an already reaped child first;

@@ -151,15 +151,7 @@ fn set_task_path(
         return Err(TaskDir::Relative);
     }
     if crate::sys::access(dir, libc::R_OK) < 0 {
-        // SAFETY: `dir` lends its bytes; `scratch` is disjoint and writable.
-        let status = unsafe {
-            crate::swr_v1_corebase_mkdir_complete(
-                bytes.as_ptr(),
-                bytes.len(),
-                scratch.as_mut_ptr(),
-                scratch.len(),
-            )
-        };
+        let status = crate::swr_v1_corebase_mkdir_complete(bytes, scratch);
         if status != 0 {
             return Err(TaskDir::Mkdir(status));
         }

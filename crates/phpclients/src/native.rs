@@ -3,7 +3,7 @@
 //! reporting; and `Swoole\Client`'s `network::Client`, whose operations
 //! crates/clients runs.
 use crate::settings::php_swoole_length_func;
-use libc::{c_char, c_int, c_void, iovec, size_t, ssize_t};
+use libc::{c_int, c_void, iovec, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -47,27 +47,15 @@ const WRONG_OPERATION: c_int = 509;
 const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 40) as u16;
 
 /// `php_swoole_error(level, "%s", message)`, or with `fatal`
-/// `php_swoole_fatal_error`; a bailout of the error handler goes on.
-/// # Safety
-/// PHP is running and `message` is NUL-terminated; the caller owns nothing a
-/// bailout would skip.
-pub(crate) unsafe extern "C" fn swoole_rs_php_error(
-    level: c_int,
-    fatal: bool,
-    message: *const c_char,
-) {
+/// `php_swoole_fatal_error`; a bailout of the error handler is deferred. Nothing is
+/// reported, and the last error stays, while one is pending.
+pub(crate) fn swoole_rs_php_error(level: c_int, fatal: bool, message: &CStr) {
     let kind = if fatal { Report::Fatal } else { Report::Swoole };
-    // SAFETY: per the caller.
-    bailout::raise(report(kind, level, unsafe { CStr::from_ptr(message) }));
+    bailout::defer(bailout::outcome(()).and_then(|()| report(kind, level, message)));
 }
 
-/// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
-/// # Safety
-/// It may longjmp: the frames it skips own nothing.
-pub(crate) unsafe fn unconstructed() {
-    // SAFETY: per the caller.
-    unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
-}
+/// `swoole_fatal_error`'s arguments for a method called before the constructor.
+pub(crate) const UNCONSTRUCTED: (c_int, &CStr) = (WRONG_OPERATION, c"must call constructor first");
 
 /// `new SocketImpl(...)`: by family (`domain`, `kind`, `protocol`) or by
 /// `swSocketType` (`kind`), over `fd` unless it is negative.
@@ -133,6 +121,13 @@ pub(crate) fn ssl_supports(option: c_int) -> bool {
 /// whole call.
 #[derive(Clone, Copy)]
 pub struct Co(Handle);
+
+/// crates/hooks' handle is the same record under the same promise.
+impl From<Handle> for Co {
+    fn from(handle: Handle) -> Self {
+        Self(handle)
+    }
+}
 
 impl Co {
     /// # Safety
@@ -211,14 +206,15 @@ impl Co {
         self.0.is_closed()
     }
 
-    /// `errCode` and `errMsg`.
-    pub(crate) fn error<'a>(self) -> (c_int, &'a CStr) {
+    /// `errCode` and a copy of `errMsg`, which the socket may replace or free.
+    #[must_use]
+    pub fn error(self) -> (c_int, CString) {
         let message = self.0.err_msg();
         let message = if message.is_null() {
-            c""
+            CString::default()
         } else {
-            // SAFETY: errMsg is a NUL-terminated string the socket keeps.
-            unsafe { CStr::from_ptr(message) }
+            // SAFETY: errMsg is a NUL-terminated string the socket keeps for this read.
+            unsafe { CStr::from_ptr(message) }.to_owned()
         };
         (self.0.err_code(), message)
     }

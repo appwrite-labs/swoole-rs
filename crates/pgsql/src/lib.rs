@@ -92,7 +92,7 @@ impl Conn {
         let mut pairs = Vec::new();
         let mut option = options;
         while !option.is_null() {
-            // SAFETY: libpq's array, which ends with a null keyword.
+            // SAFETY: an entry of libpq's array, at or before the null keyword that ends it.
             let entry = unsafe { &*option };
             if entry.keyword.is_null() {
                 break;
@@ -104,8 +104,8 @@ impl Conn {
                 let value = unsafe { CStr::from_ptr(entry.val) };
                 pairs.push((keyword.to_bytes().to_vec(), value.to_bytes().to_vec()));
             }
-            // SAFETY: the array continues to its terminator.
-            option = unsafe { option.add(1) };
+            // The array continues to its terminator, where the loop ends.
+            option = option.wrapping_add(1);
         }
         if !options.is_null() {
             // SAFETY: the array PQconninfo returned.

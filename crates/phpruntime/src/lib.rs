@@ -108,8 +108,7 @@ fn exception() -> *mut zend_class_entry {
 
 /// `sw_is_main_thread()`.
 fn main_thread() -> bool {
-    // SAFETY: no preconditions.
-    unsafe { swoole_rs_zend::sys::swr_zend_tsrm_is_main_thread() }
+    swoole_rs_zend::is_main_thread()
 }
 
 /// `sw_callable_create(value)`: a `swoole_rs_zend::host` callable, or null after a
@@ -518,8 +517,7 @@ fn class(name: &CStr) -> Option<*mut zend_class_entry> {
 /// `zend_throw_exception(swoole_exception_ce, message, code)`.
 #[cfg(not(test))]
 fn throw(message: &Message, code: i64) {
-    // SAFETY: a handler's context; Zend copies the message.
-    unsafe { swoole_rs_zend::throw_exception(exception(), message.as_cstr(), code) };
+    swoole_rs_phpswoole::exception().throw(message.as_cstr(), code);
 }
 
 /// Swap the plain-files wrapper (0) or the stdio ops (1).

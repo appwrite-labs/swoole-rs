@@ -3,7 +3,7 @@
 //! `swoole_get_objects()` and `swoole_get_object_by_handle()`.
 use std::ptr::NonNull;
 use swoole_rs_zend::{
-    Call, handlers, set_object,
+    Call, Php, handlers, set_object,
     sys::{
         add_next_index_object, swr_zend_object_addref, swr_zend_objects_get, swr_zend_objects_top,
         swr_zend_resource_count, zend_object,
@@ -16,10 +16,15 @@ handlers! {
     zif_swoole_get_object_by_handle => object_by_handle;
 }
 
+/// `EG(objects_store).top`, on the thread running PHP.
+fn objects_top(_php: Php<'_>) -> u32 {
+    // SAFETY: the executor's object store, which this thread's PHP owns.
+    unsafe { swr_zend_objects_top() }
+}
+
 /// The live objects of the store, in handle order (`objects_store_foreach`).
-fn live_objects() -> impl Iterator<Item = NonNull<zend_object>> {
-    // SAFETY: the executor's object store.
-    let top = unsafe { swr_zend_objects_top() };
+fn live_objects(php: Php<'_>) -> impl Iterator<Item = NonNull<zend_object>> {
+    let top = objects_top(php);
     // SAFETY: each handle is below the store's top.
     (0..top).filter_map(|handle| NonNull::new(unsafe { swr_zend_objects_get(handle) }))
 }
@@ -27,7 +32,7 @@ fn live_objects() -> impl Iterator<Item = NonNull<zend_object>> {
 fn vm_status(call: &Call) {
     call.set_array();
     // At most the store's u32 top.
-    let count = u32::try_from(live_objects().count()).unwrap_or(u32::MAX);
+    let count = u32::try_from(live_objects(call.php()).count()).unwrap_or(u32::MAX);
     call.add_assoc_long(c"object_num", i64::from(count));
     // SAFETY: the executor's resource list.
     call.add_assoc_long(
@@ -37,13 +42,12 @@ fn vm_status(call: &Call) {
 }
 
 fn objects(call: &Call) {
-    // SAFETY: the executor's object store.
-    if unsafe { swr_zend_objects_top() } <= 1 {
+    if objects_top(call.php()) <= 1 {
         call.set_bool(false);
         return;
     }
     call.set_array();
-    for object in live_objects() {
+    for object in live_objects(call.php()) {
         // SAFETY: a live object; the array takes the new reference.
         unsafe { swr_zend_object_addref(object.as_ptr()) };
         // SAFETY: as above.
@@ -64,8 +68,7 @@ fn object_by_handle(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the executor's object store.
-    let top = unsafe { swr_zend_objects_top() };
+    let top = objects_top(call.php());
     // SAFETY: the handle is below the store's top.
     let object = in_store(handle, top)
         .and_then(|handle| NonNull::new(unsafe { swr_zend_objects_get(handle) }));

@@ -10,13 +10,12 @@ use crate::{
     net::{self, warn_sys},
     socket::open,
 };
-use libc::{c_char, c_int, c_void, socklen_t};
+use libc::{c_char, c_int, c_void};
 use std::{
     ffi::{CStr, CString},
-    mem::size_of,
     ptr,
 };
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
@@ -155,6 +154,13 @@ pub(crate) fn apply(socket: Co, settings: &Array, which: c_int) -> bool {
         _ => set_ssl(settings, socket),
     };
     applied.unwrap_or(false)
+}
+
+/// `php_swoole_socket_set(socket, settings)`: every setting, as [`socket_settings`].
+pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> bool {
+    let applied = apply(socket.into(), settings, ALL);
+    bailout::finish();
+    applied
 }
 
 /// [`apply`] for callers that raise no bailout of their own: it raises one.
@@ -504,6 +510,7 @@ pub(crate) fn errno() -> c_int {
 }
 
 pub(crate) use swoole_rs_corebase::sys::getsockopt;
+use swoole_rs_corebase::sys::{setsockopt, setsockopt_bytes};
 
 /// `getOption(int $level, int $opt_name): mixed`.
 fn get_option(call: &Call) {
@@ -665,9 +672,8 @@ fn set_option(call: &Call) {
             _ => return call.set_bool(false),
         }
     }
-    let linger;
-    let int;
-    let (option, length): (*const c_void, usize) = if !plain && name == i64::from(libc::SO_LINGER) {
+    // The option, set once every argument is read.
+    let set: &dyn Fn(c_int) -> c_int = if !plain && name == i64::from(libc::SO_LINGER) {
         let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
@@ -683,11 +689,11 @@ fn set_option(call: &Call) {
                 return;
             }
         }
-        linger = libc::linger {
+        let linger = libc::linger {
             l_onoff: c_int::from(clamp_u16(on)),
             l_linger: c_int::from(clamp_u16(wait)),
         };
-        ((&raw const linger).cast(), size_of::<libc::linger>())
+        &move |fd| setsockopt(fd, level_int, name_int, &linger)
     } else if !plain
         && (name == i64::from(libc::SO_RCVTIMEO) || name == i64::from(libc::SO_SNDTIMEO))
     {
@@ -715,30 +721,18 @@ fn set_option(call: &Call) {
         return call.set_bool(true);
     } else if !plain && bind_to_device(name) {
         let device = value.bytes().unwrap_or_default();
-        (device.as_ptr().cast(), device.len())
+        &move |fd| setsockopt_bytes(fd, level_int, name_int, device)
     } else {
         let Ok(number) = long(value) else { return };
         #[expect(
             clippy::cast_possible_truncation,
             reason = "an int option, as upstream's"
         )]
-        {
-            int = number as c_int;
-        }
-        ((&raw const int).cast(), size_of::<c_int>())
+        let int = number as c_int;
+        &move |fd| setsockopt(fd, level_int, name_int, &int)
     };
     let fd = fd(socket);
-    // SAFETY: `option` is readable for `length` bytes.
-    let status = unsafe {
-        libc::setsockopt(
-            fd,
-            level_int,
-            name_int,
-            option,
-            socklen_t::try_from(length).unwrap_or(0),
-        )
-    };
-    if status != 0 {
+    if set(fd) != 0 {
         warn_sys(&format!("setsockopt({fd}) failed"), errno());
         return call.set_bool(false);
     }
@@ -781,11 +775,8 @@ fn domain(fd: c_int) -> Option<c_int> {
             return Some(domain);
         }
     }
-    let mut address: libc::sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    let mut length = socklen_t::try_from(size_of::<libc::sockaddr_storage>()).unwrap_or(0);
-    // SAFETY: `address` is writable for `length` bytes.
-    let status = unsafe { libc::getsockname(fd, (&raw mut address).cast(), &raw mut length) };
-    (status == 0).then_some(c_int::from(address.ss_family))
+    let mut address = SocketAddress::default();
+    (address.local_name(fd) == 0).then(|| c_int::from(address.addr.family()))
 }
 
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.

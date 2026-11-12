@@ -60,12 +60,9 @@ pub struct Waited {
 #[must_use]
 pub fn wait_child(nonblock: bool) -> Waited {
     let mut status = 0;
-    let pid = if nonblock {
-        swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), libc::WNOHANG)
-    } else {
-        // SAFETY: wait(2) into a local.
-        unsafe { libc::wait(&raw mut status) }
-    };
+    // `wait(&status)` is `waitpid(-1, &status, 0)`.
+    let options = if nonblock { libc::WNOHANG } else { 0 };
+    let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options);
     let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     Waited { pid, status, error }
 }

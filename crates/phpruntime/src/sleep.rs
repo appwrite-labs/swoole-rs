@@ -6,7 +6,7 @@ use swoole_rs_hooks::sleep::{
     CoroutineSleep, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep, swr_v1_hooks_sleep_until,
     swr_v1_hooks_usleep,
 };
-use swoole_rs_zend::{Call, E_WARNING, message, sys::zend_argument_value_error};
+use swoole_rs_zend::{Call, E_WARNING, message};
 
 swoole_rs_zend::handlers! {
     zif_swoole_sleep => sleep;
@@ -27,16 +27,10 @@ fn sleeper() -> Option<CoroutineSleep> {
 }
 
 /// `zend_argument_value_error(number, "must be greater than or equal to 0")`.
-fn negative(number: i64) {
+fn negative(call: &Call, number: i64) {
     #[expect(clippy::cast_possible_truncation, reason = "an argument number")]
     #[expect(clippy::cast_sign_loss, reason = "an argument number")]
-    // SAFETY: a handler's context; the format has no conversions.
-    unsafe {
-        zend_argument_value_error(
-            number as u32,
-            c"must be greater than or equal to 0".as_ptr(),
-        );
-    }
+    call.argument_value_error(number as u32, c"must be greater than or equal to 0");
 }
 
 /// `sleep(int $seconds): int`.
@@ -46,7 +40,7 @@ fn sleep(call: &Call) {
     };
     let outcome = swr_v1_hooks_sleep(seconds, sleeper());
     if outcome.status == INVALID {
-        negative(outcome.value);
+        negative(call, outcome.value);
         return;
     }
     call.set_long(outcome.value);
@@ -60,7 +54,7 @@ fn usleep(call: &Call) {
     };
     let outcome = swr_v1_hooks_usleep(microseconds, sleeper());
     if outcome.status == INVALID {
-        negative(outcome.value);
+        negative(call, outcome.value);
     }
 }
 
@@ -76,7 +70,7 @@ fn time_nanosleep(call: &Call) {
     };
     let outcome = swr_v1_hooks_nanosleep(seconds, nanoseconds, sleeper());
     if outcome.status == INVALID {
-        negative(outcome.value);
+        negative(call, outcome.value);
         return;
     }
     if outcome.status == WARN {
@@ -102,8 +96,7 @@ fn time_sleep_until(call: &Call) {
     match outcome.status {
         INVALID => {
             let message = message!("must be between 0 and {TOP}");
-            // SAFETY: a handler's context; "%s" takes the NUL-terminated message.
-            unsafe { zend_argument_value_error(1, c"%s".as_ptr(), message.as_cstr().as_ptr()) };
+            call.argument_value_error(1, message.as_cstr());
         }
         WARN => {
             swoole_rs_zend::bailout::defer(swoole_rs_zend::report(

@@ -41,7 +41,8 @@ pub type ExecCallback =
     Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>;
 
 unsafe extern "C" {
-    fn sqlite3_threadsafe() -> c_int;
+    /// The library's compile-time option: no arguments, no state.
+    safe fn sqlite3_threadsafe() -> c_int;
     fn sqlite3_open_v2(
         filename: *const c_char,
         db: *mut *mut Sqlite3,
@@ -79,8 +80,7 @@ thread_local! {
 /// needs a library built thread-safe; otherwise it warns and stays blocking.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_sqlite_set_blocking(blocking: bool) {
-    // SAFETY: a plain query of the library's compile-time option.
-    if !blocking && unsafe { sqlite3_threadsafe() } == 0 {
+    if !blocking && sqlite3_threadsafe() == 0 {
         swoole_rs_corebase::log::warning(
             c"swoole_sqlite_set_blocking",
             format_args!("hook sqlite coroutine failed because thread safe mode is single-thread."),

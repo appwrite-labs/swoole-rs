@@ -30,12 +30,6 @@ use swoole_rs_reactor::{
 
 // SAFETY: libc's, libssl's and libcrypto's own declarations.
 unsafe extern "C" {
-    fn inet_ntop(
-        family: c_int,
-        address: *const c_void,
-        buffer: *mut c_char,
-        size: libc::socklen_t,
-    ) -> *const c_char;
     fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
     fn X509_verify_cert_error_string(error: c_long) -> *const c_char;
     fn SSL_get_peer_cert_chain(ssl: *const SSL) -> *mut stack_st_X509;
@@ -70,52 +64,54 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// A C string for `%s`, which glibc prints as `(null)` when null.
-///
-/// # Safety
-/// `text` is null or NUL-terminated.
-pub(crate) unsafe fn text(text: *const c_char) -> String {
-    if text.is_null() {
-        return "(null)".into();
-    }
-    // SAFETY: as the caller promises.
-    unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
 #[must_use]
 pub fn peer(info: &SocketAddress) -> (String, c_int) {
-    let mut buffer = [0 as c_char; 46];
-    let (family, address, port): (c_int, *const c_void, u16) = match info.kind {
-        // SAFETY: TCP, UDP and raw sockets hold the IPv4 union member.
-        1 | 2 | 7 => unsafe {
+    // The address in network order, as `inet_ntop` reads it.
+    let (family, address, port): (c_int, &[u8], u16) = match info.kind {
+        // TCP, UDP and raw sockets hold the IPv4 member.
+        1 | 2 | 7 => {
+            let v4 = info.addr.v4();
             (
                 libc::AF_INET,
-                (&raw const info.addr.inet_v4.sin_addr).cast(),
-                info.addr.inet_v4.sin_port,
+                &v4.sin_addr.s_addr.to_ne_bytes(),
+                v4.sin_port,
             )
-        },
-        // SAFETY: TCP6, UDP6 and raw6 sockets hold the IPv6 union member.
-        3 | 4 | 8 => unsafe {
-            (
-                libc::AF_INET6,
-                (&raw const info.addr.inet_v6.sin6_addr).cast(),
-                info.addr.inet_v6.sin6_port,
-            )
-        },
+        }
+        // TCP6, UDP6 and raw6 sockets hold the IPv6 member.
+        3 | 4 | 8 => {
+            let v6 = info.addr.v6();
+            (libc::AF_INET6, &v6.sin6_addr.s6_addr, v6.sin6_port)
+        }
         5 | 6 => {
-            // SAFETY: Unix sockets hold the Unix union member's NUL-terminated path.
-            let path = unsafe { text((&raw const info.addr.un.sun_path).cast()) };
-            return (path, 0);
+            // Unix sockets hold the Unix member, whose path `%s` prints up to its NUL.
+            let path = info.addr.unix().sun_path;
+            let path: Vec<u8> = path
+                .iter()
+                .flat_map(|unit| unit.to_ne_bytes())
+                .take_while(|&byte| byte != 0)
+                .collect();
+            return (String::from_utf8_lossy(&path).into_owned(), 0);
         }
         _ => return ("unknown".into(), 0),
     };
-    // SAFETY: the address is the selected family's, and the buffer holds the longest IPv6 text.
-    let host = unsafe { inet_ntop(family, address, buffer.as_mut_ptr(), 46) };
-    // SAFETY: inet_ntop returned null or the NUL-terminated buffer.
-    (unsafe { text(host) }, c_int::from(u16::from_be(port)))
+    let mut binary = [0; 16];
+    for (to, from) in binary.iter_mut().zip(address) {
+        *to = c_char::from_ne_bytes([*from]);
+    }
+    // inet_ntop's NUL-terminated text, or `(null)` as `%s` prints its null.
+    let host = swoole_rs_corebase::ntop(family, &binary).map_or_else(
+        || "(null)".into(),
+        |text| {
+            let text: Vec<u8> = text
+                .iter()
+                .flat_map(|unit| unit.to_ne_bytes())
+                .take_while(|&byte| byte != 0)
+                .collect();
+            String::from_utf8_lossy(&text).into_owned()
+        },
+    );
+    (host, c_int::from(u16::from_be(port)))
 }
 
 /// `step` over a copy of the record's TLS group and its SSL (None without one), then
@@ -192,8 +188,13 @@ pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
     } else {
         // SAFETY: OpenSSL's static string table.
         let reason = unsafe { X509_verify_cert_error_string(error) };
-        // SAFETY: null or NUL-terminated.
-        let reason = unsafe { text(reason) };
+        // `%s`, which glibc prints as `(null)` when null.
+        let reason = if reason.is_null() {
+            "(null)".into()
+        } else {
+            // SAFETY: a NUL-terminated string of that table.
+            unsafe { CStr::from_ptr(reason) }.to_string_lossy()
+        };
         log::error_log(
             LOG_NOTICE,
             VERIFY_FAILED,
@@ -242,39 +243,6 @@ fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> isize {
     result.value
 }
 
-/// `ssize_t Socket::ssl_recv(void *buf, size_t n)`.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes.
-unsafe fn socket_ssl_recv(socket: Socket<'_>, buffer: *mut c_void, length: usize) -> isize {
-    let result = with_tls(socket, |tls, ssl| {
-        // SAFETY: the caller's buffer.
-        unsafe { swr_v1_socket_ssl_recv(tls, ssl, buffer, length) }
-    });
-    ssl_io(socket, result)
-}
-
-/// `ssize_t Socket::ssl_send(const void *buf, size_t n)`: a DTLS socket sends at
-/// most `chunk_size` bytes.
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes.
-unsafe fn socket_ssl_send(socket: Socket<'_>, buffer: *const c_void, length: usize) -> isize {
-    let length = socket.read(|record| {
-        let chunk = record.chunk_size as usize;
-        if record.dtls != 0 && chunk != 0 && length > chunk {
-            chunk
-        } else {
-            length
-        }
-    });
-    let result = with_tls(socket, |tls, ssl| {
-        // SAFETY: the caller's buffer.
-        unsafe { swr_v1_socket_ssl_send(tls, ssl, buffer, length) }
-    });
-    ssl_io(socket, result)
-}
-
 /// The reactor's TLS read over the record it was given, and
 /// `ssize_t Socket::ssl_recv(void *buf, size_t n)`.
 ///
@@ -289,12 +257,16 @@ unsafe extern "C" fn tls_recv(socket: *mut c_void, buffer: *mut c_void, length: 
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return -1;
     };
-    // SAFETY: as the caller promises.
-    unsafe { socket_ssl_recv(socket, buffer, length) }
+    let result = with_tls(socket, |tls, ssl| {
+        // SAFETY: the caller's buffer.
+        unsafe { swr_v1_socket_ssl_recv(tls, ssl, buffer, length) }
+    });
+    ssl_io(socket, result)
 }
 
 /// The reactor's TLS write over the record it was given, and
-/// `ssize_t Socket::ssl_send(const void *buf, size_t n)`.
+/// `ssize_t Socket::ssl_send(const void *buf, size_t n)`: a DTLS socket sends at
+/// most `chunk_size` bytes.
 ///
 /// # Safety
 /// `socket` is a live record and `buffer` denotes `length` readable bytes.
@@ -307,8 +279,19 @@ unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: 
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return -1;
     };
-    // SAFETY: as the caller promises.
-    unsafe { socket_ssl_send(socket, buffer, length) }
+    let length = socket.read(|record| {
+        let chunk = record.chunk_size as usize;
+        if record.dtls != 0 && chunk != 0 && length > chunk {
+            chunk
+        } else {
+            length
+        }
+    });
+    let result = with_tls(socket, |tls, ssl| {
+        // SAFETY: the caller's buffer, of which `length` is at most its size.
+        unsafe { swr_v1_socket_ssl_send(tls, ssl, buffer, length) }
+    });
+    ssl_io(socket, result)
 }
 
 /// `ssize_t Socket::readv(IOVector *)` and `writev`, which upstream's `ssl_readv` and
@@ -971,17 +954,16 @@ pub unsafe extern "C" fn socket_ssl_get_peer_certificate_string(
     socket: *const SocketRecord,
     buffer: *mut c_void,
 ) -> bool {
-    let buffer = buffer.cast::<NativeString>();
-    // SAFETY: the caller's live String.
-    let string = unsafe { &*buffer };
+    // SAFETY: the caller's live String, lent for the call; the PEM goes to the bytes
+    // it owns at `str`, outside these fields.
+    let string = unsafe { &mut *buffer.cast::<NativeString>() };
     let (str, size) = (string.str, string.size);
     // SAFETY: as the caller promises; the String owns `size` bytes at `str`.
     let n = unsafe { socket_ssl_get_peer_certificate_pem(socket, str, size) };
     let Ok(n) = usize::try_from(n) else {
         return false;
     };
-    // SAFETY: the caller's live String.
-    unsafe { (*buffer).length = n };
+    string.length = n;
     true
 }
 
@@ -1561,36 +1543,29 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     // SAFETY: as the caller promises.
     let address = unsafe { CStr::from_ptr(address) };
     let host = address.to_string_lossy();
-    if bind_host(record, address, port) < 0 {
+    // Bound, listening when a stream, and named; else the warning for what failed.
+    let served = if bind_host(record, address, port) < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
-    }
-    if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
+        false
+    } else if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
         );
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
-    }
-    if record.edit(SocketFields::get_name) < 0 {
+        false
+    } else if record.edit(SocketFields::get_name) < 0 {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
-        // SAFETY: the new record, which nothing else holds.
-        return unsafe { discard(socket) };
+        false
+    } else {
+        true
+    };
+    if served {
+        return socket;
     }
-    socket
-}
-
-/// Frees a socket `make_server_socket` gave up on.
-///
-/// # Safety
-/// As `Socket::free`.
-unsafe fn discard(socket: *mut SocketRecord) -> *mut SocketRecord {
-    // SAFETY: as the caller promises.
+    // SAFETY: the new record, which nothing else holds; `Socket::free`.
     unsafe { socket_free(socket) };
     std::ptr::null_mut()
 }

@@ -2507,8 +2507,10 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 info.server_fd = c.command_id as u16;
             };
             if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
-                // SAFETY: an all-zero `EventData` is valid.
-                let mut buf: EventData = unsafe { core::mem::zeroed() };
+                let mut buf = EventData {
+                    info: swoole_rs_corebase::DataHead::default(),
+                    data: [0; IPC_BUFFER_SIZE],
+                };
                 let sent = if c.action == TO_TASK_WORKER {
                     // SAFETY: a writable `EventData` and the message's bytes.
                     unsafe {

@@ -96,34 +96,6 @@ impl Ssl {
         // SAFETY: a live SSL, and its last I/O result.
         unsafe { SSL_get_error(self.as_ptr(), result) }
     }
-
-    /// `SSL_read` into `length` bytes at `buffer`.
-    ///
-    /// # Safety
-    /// `buffer` denotes `length` writable bytes.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "upstream passes its size_t to SSL_read's int the same way"
-    )]
-    unsafe fn read(self, buffer: *mut c_void, length: usize) -> c_int {
-        // SAFETY: the caller lends `length` writable bytes to a live SSL.
-        unsafe { SSL_read(self.as_ptr(), buffer, length as c_int) }
-    }
-
-    /// `SSL_write` of `length` bytes at `buffer`.
-    ///
-    /// # Safety
-    /// `buffer` denotes `length` readable bytes.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "upstream passes its size_t to SSL_write's int the same way"
-    )]
-    unsafe fn write(self, buffer: *const c_void, length: usize) -> c_int {
-        // SAFETY: the caller lends `length` readable bytes to a live SSL.
-        unsafe { SSL_write(self.as_ptr(), buffer, length as c_int) }
-    }
 }
 
 /// Clears this thread's OpenSSL error queue.
@@ -206,6 +178,11 @@ fn classify(tls: &mut SocketTls, ssl: Ssl, n: c_int, write: bool) -> SslIoResult
 ///
 /// # Safety
 /// `buffer` denotes `length` writable bytes.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "upstream passes its size_t to SSL_read's int the same way"
+)]
 pub unsafe fn swr_v1_socket_ssl_recv(
     tls: &mut SocketTls,
     ssl: Ssl,
@@ -213,8 +190,8 @@ pub unsafe fn swr_v1_socket_ssl_recv(
     length: usize,
 ) -> SslIoResult {
     clear_errors();
-    // SAFETY: as the caller promises.
-    let n = unsafe { ssl.read(buffer, length) };
+    // SAFETY: the caller lends `length` writable bytes to a live SSL.
+    let n = unsafe { SSL_read(ssl.as_ptr(), buffer, length as c_int) };
     classify(tls, ssl, n, false)
 }
 
@@ -223,6 +200,11 @@ pub unsafe fn swr_v1_socket_ssl_recv(
 ///
 /// # Safety
 /// `buffer` denotes `length` readable bytes.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "upstream passes its size_t to SSL_write's int the same way"
+)]
 pub unsafe fn swr_v1_socket_ssl_send(
     tls: &mut SocketTls,
     ssl: Ssl,
@@ -230,8 +212,8 @@ pub unsafe fn swr_v1_socket_ssl_send(
     length: usize,
 ) -> SslIoResult {
     clear_errors();
-    // SAFETY: as the caller promises.
-    let n = unsafe { ssl.write(buffer, length) };
+    // SAFETY: the caller lends `length` readable bytes to a live SSL.
+    let n = unsafe { SSL_write(ssl.as_ptr(), buffer, length as c_int) };
     classify(tls, ssl, n, true)
 }
 
@@ -421,8 +403,8 @@ pub unsafe fn swr_v1_socket_ssl_pem(
         unsafe { BIO_free_all(bio) };
     }
     if consume {
-        // SAFETY: drops the reference the caller handed over.
-        unsafe { X509_free(cert) };
+        // The reference the caller handed over, released as this side's own.
+        drop(NonNull::new(cert).map(Cert));
     }
     written
 }

@@ -3,6 +3,7 @@
 //! (a `Swoole\NameResolver` object's `lookup()`, then its cluster's `pop()`).
 //! The context and the resolver list are crates/corebase's (`NameResolverContext`,
 //! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup.
+use crate::native::UNCONSTRUCTED;
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{
@@ -134,7 +135,7 @@ fn context_of(held: Option<&Held>) -> Option<*mut NameResolverContext> {
     let context = held.map(|held| held.0.get());
     if context.is_none() {
         // SAFETY: C++'s fatal-error report.
-        unsafe { crate::native::unconstructed() };
+        unsafe { swoole_rs_corebase::fatal_error(UNCONSTRUCTED.0, UNCONSTRUCTED.1) };
     }
     context
 }

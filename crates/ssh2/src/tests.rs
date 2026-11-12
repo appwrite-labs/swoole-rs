@@ -41,9 +41,7 @@ fn eagain_waits_and_retries() {
     reset(i32::MAX);
     let mut results = [LIBSSH2_ERROR_EAGAIN, LIBSSH2_ERROR_EAGAIN, 7].into_iter();
     let result = unsafe {
-        retry(&raw const OPS, ptr::null_mut(), WRITE, || {
-            results.next().unwrap()
-        })
+        Wait::new(&raw const OPS, ptr::null_mut()).retry(WRITE, || results.next().unwrap())
     };
     assert_eq!(result, 7, "the final result");
     assert_eq!(waits(), 2, "one wait per EAGAIN");
@@ -57,11 +55,8 @@ fn eagain_waits_and_retries() {
 #[test]
 fn a_failed_wait_reports_no_socket() {
     reset(0);
-    let result = unsafe {
-        retry(&raw const OPS, ptr::null_mut(), READ, || {
-            LIBSSH2_ERROR_EAGAIN
-        })
-    };
+    let result =
+        unsafe { Wait::new(&raw const OPS, ptr::null_mut()).retry(READ, || LIBSSH2_ERROR_EAGAIN) };
     assert_eq!(result, LIBSSH2_ERROR_SOCKET_NONE, "socket none");
     assert_eq!(waits(), 1, "one wait");
 }
@@ -69,7 +64,7 @@ fn a_failed_wait_reports_no_socket() {
 #[test]
 fn other_errors_return_at_once() {
     reset(i32::MAX);
-    let result = unsafe { retry(&raw const OPS, ptr::null_mut(), READ, || -18) };
+    let result = unsafe { Wait::new(&raw const OPS, ptr::null_mut()).retry(READ, || -18) };
     assert_eq!(result, -18, "passed through");
     assert_eq!(waits(), 0, "no wait");
 }
@@ -81,9 +76,7 @@ fn null_with_eagain_waits_and_retries() {
     let target = &raw mut value;
     let mut results = [ptr::null_mut(), target].into_iter();
     let handle = unsafe {
-        retry_pointer(
-            &raw const OPS,
-            ptr::null_mut(),
+        Wait::new(&raw const OPS, ptr::null_mut()).retry_pointer(
             READ,
             || results.next().unwrap(),
             || LIBSSH2_ERROR_EAGAIN,
@@ -97,25 +90,14 @@ fn null_with_eagain_waits_and_retries() {
 fn null_with_another_error_or_a_failed_wait_is_null() {
     reset(i32::MAX);
     let handle = unsafe {
-        retry_pointer(
-            &raw const OPS,
-            ptr::null_mut(),
-            READ,
-            ptr::null_mut::<u8>,
-            || -18,
-        )
+        Wait::new(&raw const OPS, ptr::null_mut()).retry_pointer(READ, ptr::null_mut::<u8>, || -18)
     };
     assert!(handle.is_null(), "another error");
     assert_eq!(waits(), 0, "no wait");
     reset(0);
     let handle = unsafe {
-        retry_pointer(
-            &raw const OPS,
-            ptr::null_mut(),
-            READ,
-            ptr::null_mut::<u8>,
-            || LIBSSH2_ERROR_EAGAIN,
-        )
+        Wait::new(&raw const OPS, ptr::null_mut())
+            .retry_pointer(READ, ptr::null_mut::<u8>, || LIBSSH2_ERROR_EAGAIN)
     };
     assert!(handle.is_null(), "a failed wait");
     assert_eq!(waits(), 1, "one wait");

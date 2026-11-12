@@ -21,7 +21,23 @@ struct Buffer {
     data: [u8; 0],
 }
 
+/// One queued datagram: an allocation that begins with an initialized `Buffer` header,
+/// as `swr_v1_tls_dtls_append` makes and `swr_v1_tls_dtls_append_buffer`'s caller promises.
 struct Datagram(*mut Buffer);
+impl Datagram {
+    /// The payload's length, from the header.
+    fn length(&self) -> u16 {
+        // SAFETY: the datagram owns its allocation, whose header is initialized.
+        unsafe { (*self.0).length }
+    }
+}
+
+/// Where a datagram's payload begins: right after its header. Computing it reads nothing.
+fn payload(buffer: *mut Buffer) -> *mut u8 {
+    buffer
+        .wrapping_byte_add(core::mem::offset_of!(Buffer, data))
+        .cast()
+}
 impl Drop for Datagram {
     fn drop(&mut self) {
         // SAFETY: each queued datagram owns one sw_malloc/libc-compatible allocation.
@@ -78,7 +94,8 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
 }
 
 /// # Safety
-/// buffer is an exclusively transferred sw_malloc-compatible datagram.
+/// buffer is an exclusively transferred sw_malloc-compatible datagram, its header
+/// initialized.
 /// On allocation failure ownership remains with the caller.
 pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_void) -> c_int {
     let mut queue = owner.queue.borrow_mut();
@@ -111,10 +128,10 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
     let length = length as u16;
     // SAFETY: malloc provided at least the Buffer header plus length payload bytes.
     unsafe { (*buffer).length = length };
-    // SAFETY: the fresh header is valid and its payload immediately follows it.
-    let out = unsafe { ptr::addr_of_mut!((*buffer).data).cast::<u8>() };
+    let out = payload(buffer);
     if length > 0 {
-        // SAFETY: the source covers `length` bytes; fresh storage cannot overlap it.
+        // SAFETY: the source covers `length` bytes, and malloc provided as many after the
+        // header, which fresh storage cannot overlap.
         unsafe { ptr::copy_nonoverlapping(data.as_ptr(), out, usize::from(length)) };
     }
     queue.push_back(Datagram(buffer));
@@ -125,10 +142,7 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
 pub fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
     let queue = owner.queue.borrow();
     let peek = owner.peek.get();
-    let length = queue.front().map_or(0, |front| {
-        // SAFETY: every queued pointer owns an initialized Buffer.
-        unsafe { (*front.0).length }
-    });
+    let length = queue.front().map_or(0, Datagram::length);
     DtlsReadView {
         length,
         empty: queue.is_empty(),
@@ -152,14 +166,13 @@ pub unsafe fn swr_v1_tls_dtls_read(
             retry: 1,
         };
     };
-    // SAFETY: each queued pointer owns an initialized Buffer header.
-    let length = unsafe { (*front.0).length };
+    let length = front.length();
     let plan = crate::read_plan(0, length, requested, u8::from(peek));
     if let Ok(length) = usize::try_from(plan.length) {
-        // SAFETY: the initialized payload begins immediately after its header.
-        let source = unsafe { ptr::addr_of!((*front.0).data).cast::<u8>() };
+        let source = payload(front.0);
         if length > 0 {
-            // SAFETY: the requested output is writable and the owned front covers length bytes; memmove permits overlap.
+            // SAFETY: the requested output is writable and the owned front's payload, after
+            // its header, covers length bytes; memmove permits overlap.
             unsafe { ptr::copy(source, data, length) };
         }
         if plan.consume != 0 {
@@ -172,8 +185,7 @@ pub unsafe fn swr_v1_tls_dtls_read(
 /// The queued datagrams' total length.
 pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
     owner.queue.borrow().iter().fold(0usize, |total, buffer| {
-        // SAFETY: each queued pointer owns an initialized Buffer.
-        total.wrapping_add(usize::from(unsafe { (*buffer.0).length }))
+        total.wrapping_add(usize::from(buffer.length()))
     })
 }
 
@@ -270,10 +282,12 @@ fn control_tag(command: c_int) -> u32 {
 /// The session `swr_v1_tls_dtls_init` made the BIO for.
 ///
 /// # Safety
-/// `bio` is one of those BIOs.
-unsafe fn session_of(bio: *mut BIO) -> *mut DtlsSession {
+/// `bio` is one of those BIOs, whose session is live for `'a`.
+unsafe fn session_of<'a>(bio: *mut BIO) -> &'a DtlsSession {
     // SAFETY: as the caller promises.
-    unsafe { BIO_get_data(bio) }.cast()
+    let session = unsafe { BIO_get_data(bio) }.cast::<DtlsSession>();
+    // SAFETY: as the caller promises: `swr_v1_tls_dtls_init` set it to the live session.
+    unsafe { &*session }
 }
 
 /// The session's socket, or None for a null one.
@@ -289,7 +303,7 @@ unsafe fn socket_of<'a>(owner: *const DtlsSession) -> Option<Socket<'a>> {
 
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
 unsafe extern "C" fn bio_write(bio: *mut BIO, data: *const c_char, length: c_int) -> c_int {
-    // SAFETY: OpenSSL calls this for the session's BIO.
+    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
     // SAFETY: a live session, whose socket is a live record.
     let Some(socket) = (unsafe { socket_of(session) }) else {
@@ -305,10 +319,8 @@ unsafe extern "C" fn bio_write(bio: *mut BIO, data: *const c_char, length: c_int
 unsafe extern "C" fn bio_read(bio: *mut BIO, data: *mut c_char, length: c_int) -> c_int {
     // SAFETY: OpenSSL's live BIO.
     unsafe { BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY) };
-    // SAFETY: OpenSSL calls this for the session's BIO.
+    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
-    // SAFETY: the BIO's live session.
-    let session = unsafe { &*session };
     // SAFETY: OpenSSL lends `length` writable bytes.
     let plan = unsafe { swr_v1_tls_dtls_read(session, data.cast(), length) };
     if plan.retry != 0 {
@@ -332,10 +344,8 @@ unsafe extern "C" fn bio_ctrl(
     } else {
         0
     };
-    // SAFETY: OpenSSL calls this for the session's BIO.
+    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
     let session = unsafe { session_of(bio) };
-    // SAFETY: the BIO's live session.
-    let session = unsafe { &*session };
     // SAFETY: OpenSSL lends `pointer` as the command defines.
     let plan = unsafe { swr_v1_tls_dtls_control(session, tag, observed, value, pointer) };
     match plan.effect {

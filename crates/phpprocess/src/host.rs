@@ -16,10 +16,7 @@ use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     Value,
     bailout::{self, Bailout},
-    sys::{
-        swr_zend_callable_warning, swr_zend_tsrm_is_main_thread, zend_class_entry, zend_object,
-        zval,
-    },
+    sys::{swr_zend_callable_warning, zend_class_entry, zend_object, zval},
 };
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
@@ -276,10 +273,7 @@ pub extern "C" fn enable_coroutine() -> bool {
 
 /// `tsrm_is_main_thread()`, true without threads.
 pub(crate) fn main_thread() -> bool {
-    !built_with(Switch::Thread) || {
-        // SAFETY: no preconditions.
-        unsafe { swr_zend_tsrm_is_main_thread() }
-    }
+    !built_with(Switch::Thread) || swoole_rs_zend::is_main_thread()
 }
 
 /// `swoole_signal_set(signo, handler, safety)`: the handler it replaced.
