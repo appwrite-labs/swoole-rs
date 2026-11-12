@@ -12,7 +12,7 @@ use crate::{
 use std::{
     borrow::Cow,
     cell::Cell,
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     mem::MaybeUninit,
     ptr, slice,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
