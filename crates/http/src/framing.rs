@@ -180,7 +180,10 @@ pub fn header_value(
                     at += 1;
                     continue;
                 }
-                if !error && starts(tail(input, at), name) {
+                // Only a name at `index` 0 or 1 can be the value's: past that, a match
+                // only sets `error`, which nothing reads before the line's CRLF clears it.
+                // Skipping those compares keeps `strncasecmp` to two per line (#3411).
+                if !error && index <= 1 && starts(tail(input, at), name) {
                     let colon = at + name_length;
                     if input.get(colon) != Some(&b':') || colon >= end || index > 1 {
                         error = true;
@@ -265,6 +268,74 @@ mod tests {
             );
         }
         assert!(expect(b"GET / HTTP/1.1\r\nExpect: 100-continue\r\n\r\n"));
+    }
+    /// The native loop, comparing the name at every byte of a line.
+    fn header_value_reference(input: &[u8], start: usize, end: usize, name: &[u8]) -> HttpSpan {
+        let input = &input[..end];
+        let (mut at, mut state, mut index, mut buffer, mut error) = (start, 0, 0usize, 0, false);
+        while at < input.len() {
+            match state {
+                0 => {
+                    if input[at..].starts_with(b"\r\n") {
+                        (index, error) = (0, false);
+                        at += 1;
+                        continue;
+                    }
+                    if !error && starts(&input[at..], name) {
+                        let colon = at + name.len();
+                        if input.get(colon) != Some(&b':') || colon >= end || index > 1 {
+                            error = true;
+                            at += 1;
+                            continue;
+                        }
+                        at = colon;
+                        state = 1;
+                    }
+                    index += 1;
+                }
+                1 if !c_space(input[at]) => (buffer, state) = (at, 2),
+                2 if input[at..].starts_with(b"\r\n") => {
+                    return HttpSpan {
+                        offset: buffer,
+                        length: at - buffer,
+                    };
+                }
+                _ => {}
+            }
+            at += 1;
+        }
+        HttpSpan::default()
+    }
+    #[test]
+    fn header_value_matches_the_native_loop() {
+        // Every string over the bytes the loop branches on, up to six long.
+        let alphabet = b"\r\naA: ";
+        let mut inputs = vec![Vec::new()];
+        for _ in 0..6 {
+            let longer: Vec<Vec<u8>> = inputs
+                .iter()
+                .filter(|s| s.len() == inputs.last().map_or(0, Vec::len))
+                .flat_map(|s| alphabet.iter().map(move |&b| [s.as_slice(), &[b]].concat()))
+                .collect();
+            inputs.extend(longer);
+        }
+        for name in [&b"a"[..], b"aa", b"Aa:"] {
+            for input in &inputs {
+                for start in 0..input.len().min(3) {
+                    let mut got = HttpSpan::default();
+                    let found = header_value(input, start, input.len(), name, &mut got);
+                    let want = header_value_reference(input, start, input.len(), name);
+                    assert_eq!(found, i32::from(want != HttpSpan::default()));
+                    assert_eq!(
+                        got,
+                        want,
+                        "{:?} in {:?}",
+                        name,
+                        String::from_utf8_lossy(input)
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn request_line_retains_permissive_prefix_matching_and_partial_mutations() {

@@ -148,7 +148,7 @@ pub(crate) fn dispatch<H: Host>(
     // SAFETY: native code lends a live `SendData` for the call.
     let info = unsafe { &mut (*task).info };
     if is_stream_event(info.kind) {
-        let Some(c) = h.state()?.connection(info.fd, 0).filter(|c| c.active != 0) else {
+        let Some(c) = h.state()?.connection(info.fd, 0).filter(|c| c.is_active()) else {
             log::warning(
                 c"BaseFactory::dispatch",
                 format_args!(
@@ -244,7 +244,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
 pub(crate) fn notify<H: Host>(h: &mut H, info: *mut DataHead) -> crate::Effect<bool> {
     // SAFETY: native code lends a live `DataHead` for the call.
     let head = unsafe { &mut *info };
-    let Some(c) = h.state()?.connection(head.fd, 0).filter(|c| c.active != 0) else {
+    let Some(c) = h.state()?.connection(head.fd, 0).filter(|c| c.is_active()) else {
         log::warning(
             c"BaseFactory::notify",
             format_args!(
@@ -462,7 +462,7 @@ mod tests {
             };
             t.sessions[1].fd = 2;
             let c = &mut t.connections[2];
-            c.active = 1;
+            c.active.store(1, Ordering::Relaxed);
             c.fd = 2;
             c.session_id = 1;
             c.server_fd = 7;
@@ -543,7 +543,7 @@ mod tests {
             !dispatch(&mut s, &raw mut task, true).unwrap(),
             "closed by server"
         );
-        t.conn().active = 0;
+        t.conn().active.store(0, Ordering::Relaxed);
         assert!(!dispatch(&mut s, &raw mut task, true).unwrap(), "inactive");
         let mut far = send(3, 4, 0);
         assert!(
@@ -665,7 +665,7 @@ mod tests {
         t.conn().close_force = 1;
         t.conn().socket = core::ptr::null_mut();
         assert!(!end(&mut s, 1, 0).unwrap(), "no socket");
-        t.conn().active = 0;
+        t.conn().active.store(0, Ordering::Relaxed);
         assert!(!end(&mut s, 1, 0).unwrap(), "no connection");
     }
 

@@ -184,12 +184,11 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
-    use core::ptr::NonNull;
     use swoole_rs_corebase::log;
-    use swoole_rs_reactor::SocketRecord;
     use swoole_rs_reactor::event_api::{
         swoole_event_add, swoole_event_del, swoole_event_is_available,
     };
+    use swoole_rs_reactor::{Socket, SocketRecord};
 
     pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
 
@@ -217,7 +216,7 @@ pub(crate) mod native {
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
     /// the thread's reactor with an object the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
-    pub struct Watch(NonNull<SocketRecord>);
+    pub struct Watch(Socket<'static>);
 
     impl Watch {
         /// Registers `fd`, typed `fd_type`, for `events` with `object`.
@@ -239,7 +238,8 @@ pub(crate) mod native {
             }
             let mut record = SocketRecord::with_fd(fd, fd_type);
             record.object = object;
-            let watch = Self(NonNull::from(Box::leak(Box::new(record))));
+            // The record is this watch's until `release` frees it.
+            let watch = Self(Socket::new(Box::leak(Box::new(record))));
             // SAFETY: a fresh record this watch owns, on the thread's live reactor.
             if unsafe { swoole_event_add(watch.0.as_ptr(), events) } < 0 {
                 let error = log::last_error();
@@ -251,11 +251,10 @@ pub(crate) mod native {
 
         /// Frees the record, off the reactor, without closing the fd it borrows.
         fn release(self) {
-            let socket = core::mem::ManuallyDrop::new(self).0.as_ptr();
-            // SAFETY: the watch's own record, which nothing else uses.
-            unsafe { (*socket).fields.fd = -1 };
-            // SAFETY: as above; nothing uses it afterwards.
-            unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+            let socket = core::mem::ManuallyDrop::new(self).0;
+            socket.edit(|record| record.fd = -1);
+            // SAFETY: the watch's own record, which nothing uses afterwards.
+            unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
         }
     }
 

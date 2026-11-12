@@ -59,6 +59,11 @@ impl PollSnapshot {
         self.entries.as_mut_ptr()
     }
 
+    /// The filled pollfd entries, for `poll()`.
+    pub(crate) fn filled(&mut self) -> &mut [libc::pollfd] {
+        &mut self.entries
+    }
+
     /// The socket of each pollfd entry.
     pub(crate) fn sockets(&mut self) -> *mut *mut c_void {
         self.sockets.as_mut_ptr()
