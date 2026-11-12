@@ -383,7 +383,7 @@ impl<'a> Props<'a> {
     /// result is borrowed.
     #[must_use]
     #[inline]
-    pub unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
+    unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
         let slot = self.array_slot(name)?;
         // SAFETY: an array slot of a live object; per the caller.
         Some(unsafe { ArrayMut::from_ptr(slot.as_ptr()) })
