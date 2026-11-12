@@ -65,7 +65,8 @@ operations over it and deletes their upstream bodies, and it only ever moves int
 Rust.
 
 1. If `python3 tools/ci.py stuck` lists a PR (conflicting, a required check
-   failed, or the merge queue dropped it), fix the oldest one first, whoever opened it. Otherwise claim the first
+   failed, or the merge queue dropped it), fix the oldest one first, whoever opened it. If it
+   reports main's merge tier waiting on a runner, run the `gh run cancel` it prints first. Otherwise claim the first
    issue `python3 tools/ci.py next` prints (see Tickets).
 2. Branch from `main` and commit; `git config core.hooksPath .githooks` enables
    the quick pre-commit checks.

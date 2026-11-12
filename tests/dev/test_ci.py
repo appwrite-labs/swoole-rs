@@ -127,7 +127,9 @@ elif args[:2] == ['run', 'list']:
         print('[]')
 elif args[:2] == ['run', 'view']:
     jobs = data.get('jobs', {}).get(args[2], [['rust', 'success']])
-    print(json.dumps({'jobs': [{'name': name, 'databaseId': index + 100, 'status': 'completed', 'conclusion': conclusion,
+    # A job without a conclusion is still waiting for a runner.
+    print(json.dumps({'jobs': [{'name': name, 'databaseId': index + 100, 'status': 'queued' if conclusion is None else 'completed',
+                                'conclusion': conclusion,
                                 'startedAt': '2026-10-25T21:00:00Z', 'completedAt': '2026-10-25T21:00:31Z'}
                                for index, (name, conclusion) in enumerate(jobs)]}))
 '''
@@ -291,7 +293,9 @@ class Ci(unittest.TestCase):
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue)
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
-        self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))], ['api -i graphql'])
+        # The PRs in one GraphQL query, and main's merge-tier runs for a stalled one.
+        self.assertEqual([call.split(' -F')[0].split(' --')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
+                         ['api -i graphql', 'run list'])
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[])
         self.assertEqual((code, result), (2, []))
 
@@ -310,6 +314,13 @@ class Ci(unittest.TestCase):
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
                          (0, [(8, ['left the merge queue: failed status checks', 'u8']),
                               (12, ['left the merge queue: no reason given'])]))
+        # A merge-tier run on main held open by a job no runner took (#3553) comes first, with no PR stuck too.
+        history = [{'databaseId': 5, 'status': 'queued', 'createdAt': '2026-10-01T00:00:00Z', 'url': 'u5'},
+                   {'databaseId': 4, 'status': 'in_progress', 'createdAt': '2999-01-01T00:00:00Z', 'url': 'u4'}]
+        code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[], history=history,
+                                  jobs={'5': [['rust', 'success'], ['phpt / cargo 2', None]]})
+        self.assertEqual((code, result['pulls'], result['stalled_main']['run'], result['stalled_main']['waiting']),
+                         (0, [], 5, ['phpt / cargo 2']))
 
     def test_phpt_baseline_answers_from_the_saved_cache_without_the_api(self):
         with tempfile.TemporaryDirectory() as repo, tempfile.TemporaryDirectory() as cache:

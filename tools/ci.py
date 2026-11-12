@@ -11,7 +11,9 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check, have
                              a review requesting changes (answer it), or whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), and PRs the merge queue dropped (fix what their run
-                             broke, then queue them again), oldest first (exit 2 when there are none)
+                             broke, then queue them again), oldest first (exit 2 when there are none);
+                             first, a merge-tier run on main that a job waiting for a runner holds
+                             open (cancel it: every later push to main waits behind it)
   ci.py phpt-baseline [--variant NAME] [--php VERSION] [--saved DIR]
                              `RUN SHA` of main's newest merge-tier run whose upstream PHPT reports
                              still stand for upstream at HEAD, so it needn't run (exit 2: none)
@@ -35,7 +37,7 @@ Exit codes: 0 passed, 1 failed, 2 no run, still running or timed out, 3 cancelle
 Needs only `gh` (authenticated) and Python.
 """
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import re
@@ -525,6 +527,30 @@ def stuck():
                   key=lambda row: row['created'])
 
 
+# A merge-tier run is done well inside this; one still waiting for a runner after it is stuck.
+STALL_MINUTES = 45
+
+
+def stalled_main():
+    """A merge-tier run on main that a job waiting for a runner keeps unfinished (#3553). It holds
+    main's concurrency group, so each later push to main queues a run the next push replaces, and
+    no merge-tier run on main completes. A job's timeout-minutes only counts once a runner takes it."""
+    runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--event', 'push',
+                         '--limit', '20', '--json', 'databaseId,status,createdAt,url'))
+    for run in runs:
+        if run.get('status') not in ('queued', 'in_progress'):
+            continue
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00')))
+        minutes = int(age.total_seconds() // 60)
+        if minutes < STALL_MINUTES:
+            continue
+        jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--json', 'jobs'))['jobs']
+        waiting = [job['name'] for job in jobs if job['status'] in ('queued', 'waiting', 'pending')]
+        if waiting:
+            return {'run': run['databaseId'], 'url': run['url'], 'minutes': minutes, 'waiting': waiting}
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -557,11 +583,17 @@ def main(argv=None):
     if args.command in ('next', 'stuck'):
         try:
             queue = claimable() if args.command == 'next' else stuck()
+            stall = stalled_main() if args.command == 'stuck' else None
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
-        print(json.dumps(queue, indent=1) if args.json else '\n'.join(
-            f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}" for row in queue))
-        return 0 if queue else 2
+        if stall and not args.json:
+            print(f"main's merge tier has waited {stall['minutes']} min for a runner for "
+                  f"{', '.join(stall['waiting'])}; cancel it so main's next run starts: "
+                  f"gh run cancel {stall['run']}  {stall['url']}")
+        print(json.dumps({'stalled_main': stall, 'pulls': queue} if stall else queue, indent=1) if args.json else
+              '\n'.join(f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}"
+                        for row in queue))
+        return 0 if queue or stall else 2
     deadline = time.monotonic() + args.timeout
     RETRY_DEADLINE, RETRY_BASE = deadline, min(RETRY_BASE, args.poll) if args.poll else 0.0
     try:
