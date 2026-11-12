@@ -12,7 +12,6 @@ use std::{
     borrow::Cow,
     cell::Cell,
     ffi::{CStr, CString},
-    ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_phpstubs::socket_coro;
