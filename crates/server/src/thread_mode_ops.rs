@@ -245,7 +245,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the new bus, used by this thread alone.
             let handle = unsafe { Bus::of(bus) };
             handle.set_always_chunked();
-            if !handle.alloc_buffer(ctx.config().ipc_max_size as usize) {
+            if !handle.alloc_buffer(ctx.config().ipc_max_size() as usize) {
                 std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
             }
             // SAFETY: a started server and its new bus.

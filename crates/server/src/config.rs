@@ -4,7 +4,7 @@
 //! configuration allocation and defaults belong to `ServerState`; Rust server
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering::Relaxed};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, Ordering::Relaxed};
 use swoole_rs_memory::members::Shm;
 
 /// The independently configurable server fields and borrowed native handles.
@@ -65,7 +65,8 @@ pub struct ServerConfig {
     pub output_buffer_size: u32,
     pub input_buffer_size: u32,
     pub max_queued_bytes: u32,
-    pub ipc_max_size: u32,
+    /// Raised at start, by whichever factory starts; read through [`Self::ipc_max_size`].
+    pub ipc_max_size: AtomicU32,
     pub private_data_1: *mut c_void,
     pub private_data_2: *mut c_void,
     pub private_data_3: *mut c_void,
@@ -154,11 +155,11 @@ impl Default for ServerConfig {
             output_buffer_size: u32::MAX,
             input_buffer_size: 2 * 1024 * 1024,
             max_queued_bytes: 0,
-            ipc_max_size: if cfg!(target_vendor = "apple") {
+            ipc_max_size: AtomicU32::new(if cfg!(target_vendor = "apple") {
                 2048
             } else {
                 8192
-            },
+            }),
             private_data_1: core::ptr::null_mut(),
             private_data_2: core::ptr::null_mut(),
             private_data_3: core::ptr::null_mut(),
@@ -186,6 +187,19 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// `serv->ipc_max_size`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn ipc_max_size(&self) -> u32 {
+        self.ipc_max_size.load(Relaxed)
+    }
+
+    /// `Server::init_ipc_max_size()`.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn init_ipc_max_size(&self) {
+        let size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+        self.ipc_max_size.store(size, Relaxed);
+    }
+
     /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self

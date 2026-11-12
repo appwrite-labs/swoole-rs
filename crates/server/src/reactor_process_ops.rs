@@ -170,10 +170,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
         OP_INIT_IPC_MAX_SIZE => {
-            // SAFETY: `start_reactor_processes`, in the master before it forks or
-            // starts a thread, and `config` isn't read across the write.
-            unsafe { serv.config_mut() }.ipc_max_size =
-                swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+            config.init_ipc_max_size();
             0
         }
         OP_SINGLE_WORKER => u64::from(ctx.server().is_single_worker()),

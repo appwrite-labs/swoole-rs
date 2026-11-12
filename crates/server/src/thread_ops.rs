@@ -377,7 +377,7 @@ pub(crate) fn answer(
             u64::from(
                 thread
                     .message_bus()
-                    .alloc_buffer(config().ipc_max_size as usize),
+                    .alloc_buffer(config().ipc_max_size() as usize),
             )
         }
         OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {

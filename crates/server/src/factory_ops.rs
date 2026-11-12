@@ -525,11 +525,7 @@ fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(!pool.message_box().is_null())
         }
         OP_INIT_IPC_MAX_SIZE => {
-            // `Server::init_ipc_max_size()`.
-            // SAFETY: `ProcessFactory::start`, in the master before it forks the
-            // manager or starts its reactor threads.
-            unsafe { ctx.serv.config_mut() }.ipc_max_size =
-                swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
+            ctx.config().init_ipc_max_size();
             0
         }
         OP_START_MANAGER => signed(crate::manager_ops::start_manager_process(ctx.server())),

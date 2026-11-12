@@ -2576,7 +2576,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
     let state = serv.state();
-    let size = state.config_ref().ipc_max_size;
+    let size = state.config_ref().ipc_max_size();
     if state.message_bus().alloc_buffer(size as usize) {
         0
     } else {
