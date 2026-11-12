@@ -12,6 +12,7 @@ use std::{
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{ConnectionRecord, view};
 use swoole_rs_zend::{
+    HeldArray, Owned,
     bailout::Bailout,
     sys::{swr_zend_treat_string, zval},
 };
@@ -48,6 +49,14 @@ pub enum Value {
     Get,
     Post,
     Cookie,
+}
+
+/// A response array property.
+#[derive(Clone, Copy)]
+pub enum ResponseArray {
+    Header = 0,
+    Cookie = 1,
+    Trailer = 2,
 }
 
 /// The HTTP/2 server's entry points that this crate's HTTP/1 code calls.
@@ -134,18 +143,43 @@ impl Ctx {
         parse::property(state, property)
     }
 
-    /// The request body's bytes so far (none without a body).
-    /// # Safety
-    /// The bytes are read before the next append.
+    /// The response's `header`, `cookie` or `trailer` array, with a reference
+    /// of its own: a value's `__toString` may replace or unset the property
+    /// while the array is walked, and no borrow of the state outlives this.
     #[must_use]
-    pub unsafe fn data<'a>(self) -> &'a [u8] {
-        // SAFETY: the handle's live context, and per the caller, the bytes
-        // are read before the next append.
-        unsafe { &*self.raw().cast::<crate::state::State>() }
-            .request
-            .h2_data
-            .as_deref()
-            .map_or(&[], Vec::as_slice)
+    pub fn response_array(mut self, which: ResponseArray) -> Option<HeldArray> {
+        header::property(&self.state().response.zobject, which as usize)
+    }
+
+    /// Whether the request body has bytes.
+    #[must_use]
+    pub fn has_body(mut self) -> bool {
+        let data = self.state().request.h2_data.as_deref();
+        data.is_some_and(|data| !data.is_empty())
+    }
+
+    /// `$request->post` from the whole body (`PARSE_STRING`).
+    pub fn treat_post(mut self) {
+        let data = self.state().request.h2_data.take();
+        self.treat_query(Value::Post, data.as_deref().map_or(&[], Vec::as_slice));
+        self.state().request.h2_data = data;
+    }
+
+    /// The `key` entry of `$request->server`, `header`, `get`, `post` or
+    /// `cookie`, with a reference of its own: no borrow of the state outlives
+    /// the lookup. None before the array is made.
+    #[must_use]
+    pub fn entry(mut self, which: Value, key: &[u8]) -> Option<Owned> {
+        let request = &self.state().request;
+        let slot = match which {
+            Value::Server => &request.zserver,
+            Value::Header => &request.zheader,
+            Value::Get => &request.zget,
+            Value::Post => &request.zpost,
+            Value::Cookie => &request.zcookie,
+            Value::Response => return None,
+        };
+        Some(slot.get()?.array()?.find(key)?.copy())
     }
 
     /// Start the request body (`SW_HTTP2_DATA_BUFFER_SIZE` reserved), unless

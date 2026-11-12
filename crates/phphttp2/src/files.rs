@@ -2,16 +2,14 @@
 //! `http2_server_is_static_file` and `http2_server_send_range_file`) and
 //! `Response::sendfile`'s (`http2_server_send_file`), over crates/server's
 //! `StaticHandler`.
-use crate::server::{
-    Value, begin_file, current, finish_file, of, respond, send_body, set, zval_of,
-};
+use crate::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
 use std::ffi::CString;
 use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
-use swoole_rs_zend::{Value as Zval, bailout};
+use swoole_rs_zend::bailout;
 
 /// `sw_rs_http2_file_mode`'s modes.
 const MODE_EMPTY: u32 = 0;
@@ -65,12 +63,8 @@ fn set_header(ctx: Ctx, name: &[u8], value: &[u8]) {
 }
 
 /// A string entry of one of the request's arrays (`$server`, `$header`).
-fn entry<'a>(ctx: Ctx, array: Value, key: &[u8]) -> Option<&'a [u8]> {
-    // SAFETY: the context's live array, which outlives the request's handling.
-    unsafe { Zval::from_ptr(zval_of(ctx, array)) }?
-        .array()?
-        .find(key)?
-        .bytes()
+fn entry(ctx: Ctx, array: Value, key: &[u8]) -> Option<Vec<u8>> {
+    Some(ctx.entry(array, key)?.bytes()?.to_vec())
 }
 
 fn body(ctx: Ctx, data: &[u8], end_stream: bool) -> bool {
@@ -89,7 +83,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
-    let Some(handler) = StaticHandler::new(server, uri) else {
+    let Some(handler) = StaticHandler::new(server, &uri) else {
         return false;
     };
     if !handler.try_serve() {
@@ -112,13 +106,19 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     set_header(ctx, b"Last-Modified", &handler.date_last_modified());
     if let Some(since) = entry(ctx, Value::Header, b"if-modified-since")
         && !since.is_empty()
-        && handler.is_modified(since)
+        && handler.is_modified(&since)
     {
         set(ctx, Field::Status, NOT_MODIFIED);
         return true;
     }
-    let text = |key: &[u8]| entry(ctx, Value::Header, key).map(c_text);
-    handler.parse_range(text(b"range"), text(b"if-range"));
+    let (range, if_range) = (
+        entry(ctx, Value::Header, b"range"),
+        entry(ctx, Value::Header, b"if-range"),
+    );
+    handler.parse_range(
+        range.as_deref().map(c_text),
+        if_range.as_deref().map(c_text),
+    );
     let status = handler.status();
     set(
         ctx,

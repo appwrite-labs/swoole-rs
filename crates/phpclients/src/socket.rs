@@ -7,7 +7,7 @@ use crate::{
     constants,
     native::{self, Co, NewSocket, Socket, Transfer},
 };
-use libc::{c_int, iovec};
+use libc::c_int;
 use std::{
     borrow::Cow,
     cell::Cell,
@@ -15,6 +15,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_zend::{
@@ -653,13 +654,9 @@ fn write_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64)
             );
             return call.set_bool(false);
         }
-        vectors.push(iovec {
-            iov_base: bytes.as_ptr().cast_mut().cast(),
-            iov_len: bytes.len(),
-        });
+        vectors.push(std::io::IoSlice::new(bytes));
     }
-    // SAFETY: the writes only read the elements' bytes.
-    let (written, _, _) = unsafe { socket.vector(op, &vectors, timeout) };
+    let (written, _, _) = socket.vector(co::Vectors::Write(&vectors), op & 1 == 1, timeout);
     if written < 0 {
         call.set_bool(false);
     } else {
@@ -709,15 +706,13 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
         buffers.push(ZBuf::with_capacity(length));
     }
     let total: usize = buffers.iter().map(ZBuf::capacity).sum();
-    let vectors: Vec<iovec> = buffers
+    let mut vectors: Vec<_> = buffers
         .iter_mut()
-        .map(|buffer| iovec {
-            iov_base: buffer.as_mut_ptr().cast(),
-            iov_len: buffer.capacity(),
-        })
+        .map(|buffer| std::io::IoSliceMut::new(native::room(buffer)))
         .collect();
-    // SAFETY: unshared buffers of the listed lengths.
-    let (read, stopped, offset) = unsafe { socket.vector(op, &vectors, timeout) };
+    let (read, stopped, offset) =
+        socket.vector(co::Vectors::Read(&mut vectors), op & 1 == 1, timeout);
+    drop(vectors);
     let read = match usize::try_from(read) {
         Ok(0) => return call.set_empty_array(),
         Err(_) => return call.set_bool(false),

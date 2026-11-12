@@ -526,17 +526,8 @@ upstream! {
     /// # Safety
     /// `data` holds `length` bytes.
     pub unsafe extern "C" fn swr_string_from(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
-        let string = this.write(CppString::EMPTY);
-        string.alloc(length.wrapping_add(1), None);
         // SAFETY: as the caller promises.
-        let data = unsafe { bytes(data, length) };
-        // The allocation holds `length + 1` bytes.
-        if let Some((end, to)) = string.spare().get_mut(..=length).and_then(<[MaybeUninit<u8>]>::split_last_mut) {
-            to.write_copy_of_slice(data);
-            end.write(0);
-            string.length = length;
-        }
-        string
+        from_bytes(this, unsafe { bytes(data, length) })
     }
     "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
     /// The base-object `String(const char *, size_t)`: the header's
@@ -767,19 +758,33 @@ pub unsafe extern "C" fn swr_v1_string_split(
     })
 }
 
+/// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
+fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut CppString {
+    let length = data.len();
+    let string = this.write(CppString::EMPTY);
+    string.alloc(length.wrapping_add(1), None);
+    // The allocation holds `length + 1` bytes.
+    if let Some((end, to)) = string
+        .spare()
+        .get_mut(..=length)
+        .and_then(<[MaybeUninit<u8>]>::split_last_mut)
+    {
+        to.write_copy_of_slice(data);
+        end.write(0);
+        string.length = length;
+    }
+    string
+}
+
 /// Fresh boxed storage for one String, which [`delete_string`] frees.
 fn new_storage() -> &'static mut MaybeUninit<CppString> {
     Box::leak(Box::new_uninit())
 }
 
-/// `new String(data, length)`.
-///
-/// # Safety
-/// `data` holds `length` readable bytes.
+/// `new String(data.data(), data.size())`.
 #[must_use]
-pub unsafe fn new_string(data: *const u8, length: usize) -> *mut CppString {
-    // SAFETY: the caller's bytes.
-    unsafe { swr_string_from(new_storage(), data, length) }
+pub fn new_string(data: &[u8]) -> *mut CppString {
+    from_bytes(new_storage(), data)
 }
 
 /// `new String(size, with)`.
@@ -888,7 +893,7 @@ mod tests {
 
     #[test]
     fn new_and_delete_string() {
-        let s = unsafe { new_string(b"abc".as_ptr(), 3) };
+        let s = new_string(b"abc");
         assert_eq!(unsafe { &*s }.view(), b"abc");
         unsafe { delete_string(s) };
         let s = new_sized_string(16, None);

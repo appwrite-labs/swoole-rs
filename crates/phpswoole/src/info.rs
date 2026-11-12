@@ -21,7 +21,8 @@ pub(crate) struct Info {
     zstd: *const c_char,
 }
 unsafe extern "C" {
-    fn swr_phpswoole_versions(info: *mut Info);
+    /// Fills every field with a static string, or leaves it null.
+    safe fn swr_phpswoole_versions(info: &mut Info);
 }
 
 fn contained(bailed: impl Into<i32>) -> Result<(), Bailout> {
@@ -140,7 +141,6 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) 
         zlib: null,
         zstd: null,
     };
-    // SAFETY: host.c fills it with static strings.
-    unsafe { swr_phpswoole_versions(&raw mut info) };
+    swr_phpswoole_versions(&mut info);
     bailout::raise(info.output(module.cast()));
 }
