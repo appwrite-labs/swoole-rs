@@ -11,7 +11,8 @@ extern "C" {
 /* The scheduler and each coroutine's state (crates/coroutine/src/coroutine.rs,
  * live.rs, scheduler.rs, facade.rs). Rust owns both: this thread's scheduler, and each
  * swoole::Coroutine record (a swr_v1_coroutine, then its context). C++ reads
- * fields inline; Rust does every write. The hooks take a record. */
+ * fields inline; Rust does every write. The hooks are Rust functions over a
+ * live coroutine, sized here for the layout; C++ never calls them. */
 typedef struct swr_v1_coroutine swr_v1_coroutine;
 struct swr_v1_coroutine {
     void *native; /* the swoole::Coroutine record */

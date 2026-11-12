@@ -201,11 +201,9 @@ impl Reactor {
         unsafe { swoole_rs_tls::reactor_write::reactor_drain_write_buffer(self.0, sock) };
     }
     pub(crate) fn if_exit(self) -> bool {
-        // SAFETY: a live reactor.
-        unsafe { reactor_if_exit(self.0) }
+        reactor_if_exit(self.handle())
     }
     pub(crate) fn wait(self) -> c_int {
-        // SAFETY: a live reactor.
-        unsafe { reactor_wait(self.0) }
+        reactor_wait(self.handle())
     }
 }
