@@ -2528,7 +2528,8 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     .unwrap_or(false)
                 } else {
                     let pool = o.server().event_pool_ref();
-                    swoole_rs_process::methods::push_event(pool, task) >= 0
+                    let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
+                    swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0
                 };
                 return Some(u64::from(sent));
             }

@@ -16,6 +16,7 @@ use crate::worker_record::Worker;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
+use swoole_rs_corebase::DataHead;
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -125,6 +126,18 @@ impl PoolRecord {
     #[must_use]
     pub fn message_box(&self) -> *mut c_void {
         self.message_box
+    }
+
+    /// The pool's message box, which the workers push to and the master pops from.
+    pub(crate) fn message_box_channel(&self) -> Option<&swoole_rs_memory::channel::Record> {
+        // SAFETY: `message_box` is crate-private: null, or the channel `new_box` made
+        // in shared memory until `free_box` forgets and frees it. Its SW_CHAN_LOCK
+        // mutex serializes the processes that use it.
+        unsafe {
+            self.message_box
+                .cast::<swoole_rs_memory::channel::Record>()
+                .as_ref()
+        }
     }
 
     /// The pool's message bus, or null.
@@ -433,6 +446,38 @@ const EVENT_LEN: usize = 16;
 const EVENT_TYPE: usize = 22;
 const EVENT_DATA: usize = 40;
 const HEAD_SIZE: u32 = 40;
+const _: () = assert!(
+    size_of::<DataHead>() == EVENT_DATA,
+    "DataHead heads an EventData"
+);
+
+/// `head`'s bytes, in its C layout.
+fn head_bytes(head: &DataHead) -> [u8; EVENT_DATA] {
+    macro_rules! at {
+        ($field:ident) => {
+            core::mem::offset_of!(DataHead, $field)
+        };
+    }
+    let mut bytes = [0; EVENT_DATA];
+    let fields: [(usize, &[u8]); 10] = [
+        (at!(fd), &head.fd.to_ne_bytes()),
+        (at!(msg_id), &head.msg_id.to_ne_bytes()),
+        (at!(len), &head.len.to_ne_bytes()),
+        (at!(reactor_id), &head.reactor_id.to_ne_bytes()),
+        (at!(kind), &[head.kind]),
+        (at!(flags), &[head.flags]),
+        (at!(server_fd), &head.server_fd.to_ne_bytes()),
+        (at!(ext_flags), &head.ext_flags.to_ne_bytes()),
+        (at!(reserved), &head.reserved.to_ne_bytes()),
+        (at!(time), &head.time.to_ne_bytes()),
+    ];
+    for (at, field) in fields {
+        if let Some(to) = bytes.get_mut(at..at + field.len()) {
+            to.copy_from_slice(field);
+        }
+    }
+    bytes
+}
 
 // The effects (crates/server/src/pool_native.rs), the callbacks and the worker loop.
 pub const OP_HAVE_MSGQUEUE: u32 = 0;
@@ -514,7 +559,7 @@ pub const RUN_DESTROY: u32 = 15;
 pub const RUN_SET_TYPE: u32 = 16;
 pub const RUN_SET_START_ID: u32 = 17;
 pub const RUN_SET_MAX_REQUEST: u32 = 18;
-pub const RUN_PUSH_MESSAGE: u32 = 19;
+pub const RUN_FREE_MESSAGE_BOX: u32 = 19;
 pub const RUN_SIGNAL: u32 = 20;
 
 /// What a pool operation asks of native code.
@@ -530,11 +575,18 @@ pub(crate) trait PoolHost {
     fn event_size(&self) -> usize;
     /// The native socket free.
     fn close(&self, socket: *mut c_void);
+    /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
+    /// pool's new message box, or null.
+    fn new_box(&mut self, size: u64) -> *mut c_void;
+    /// `message_box->push(message)`, under the box's lock: 0, or -1.
+    fn push_box(&mut self, message: &[u8]) -> i64;
+    /// Frees the pool's message box, if it has one, and forgets it.
+    fn free_box(&mut self);
 }
 
 struct Native<'a> {
     native: &'a dyn PoolNative,
-    pool: *mut c_void,
+    pool: PoolRef<'a>,
 }
 
 impl PoolHost for Native<'_> {
@@ -548,11 +600,12 @@ impl PoolHost for Native<'_> {
             return result;
         }
         // A native effect on the live pool this export runs over.
-        self.native.call(&PoolCall::new(self.pool, worker), op, arg)
+        self.native
+            .call(&PoolCall::new(self.pool.raw().cast(), worker), op, arg)
     }
 
     fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed> {
-        let mut call = PoolCall::new(self.pool, worker);
+        let mut call = PoolCall::new(self.pool.raw().cast(), worker);
         call.flags = cb;
         crate::pool::run(self.native, |native, call| native.callback(call), &mut call)?;
         Ok(call.result)
@@ -576,10 +629,73 @@ impl PoolHost for Native<'_> {
     }
 
     fn close(&self, socket: *mut c_void) {
-        let mut call = PoolCall::new(self.pool, ptr::null_mut());
+        let mut call = PoolCall::new(self.pool.raw().cast(), ptr::null_mut());
         call.socket = socket;
         self.native.close(&call);
     }
+
+    fn new_box(&mut self, size: u64) -> *mut c_void {
+        let size = usize::try_from(size).unwrap_or(usize::MAX);
+        new_message_box(size, self.native.event_size())
+    }
+
+    fn push_box(&mut self, message: &[u8]) -> i64 {
+        self.pool
+            .record()
+            .message_box_channel()
+            .map_or(SW_ERR, |channel| channel.push(message).into())
+    }
+
+    fn free_box(&mut self) {
+        let channel = self
+            .pool
+            .message_box()
+            .cast::<swoole_rs_memory::channel::Record>();
+        if channel.is_null() {
+            return;
+        }
+        // The field is null from here on, so nothing in this process reaches the box again.
+        self.pool.set_message_box(ptr::null_mut());
+        // SAFETY: the box `new_box` made (the field is crate-private), which the pool
+        // has just forgotten.
+        unsafe { swoole_rs_memory::swr_v1_memory_channel_close(channel) };
+        // SAFETY: the mapping `new_box` made it in, freed once.
+        unsafe { swoole_rs_memory::members::sw_shm_free(channel.cast()) };
+    }
+}
+
+/// `Channel::make(size, maxlen, SW_CHAN_LOCK | SW_CHAN_SHM)`: a channel in fresh
+/// shared memory, or null.
+fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
+    use swoole_rs_corebase::log;
+    use swoole_rs_memory::members::Shm;
+    /// `SW_CHAN_LOCK | SW_CHAN_SHM`.
+    const FLAGS: c_int = 2 | 8;
+    let total = swoole_rs_memory::swr_v1_memory_channel_bytes(size, maxlen);
+    if total == 0 {
+        return ptr::null_mut();
+    }
+    let mut memory = Shm::malloc(total);
+    if memory.is_null() {
+        log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
+        return ptr::null_mut();
+    }
+    let record = memory.as_ptr().cast();
+    // SAFETY: fresh shared memory of the size the record needs.
+    match unsafe { swoole_rs_memory::swr_v1_memory_channel_init(record, size, maxlen, FLAGS) } {
+        0 => return memory.into_raw(),
+        1 => {
+            log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
+            log::warning(c"Channel::make", format_args!("notify_fd init failed"));
+        }
+        2 => log::warning(
+            c"Channel::make",
+            format_args!("pthread_mutex_init() failed"),
+        ),
+        _ => {}
+    }
+    memory.free();
+    ptr::null_mut()
 }
 
 /// The `OP_*` effects that are calls into the process-wide worker and signal state:
@@ -917,7 +1033,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::create_message_box`.
     fn create_message_box(&mut self, size: u64) -> i64 {
-        let message_box = pointer::<c_void>(self.op(OP_NEW_MESSAGE_BOX, size));
+        let message_box = self.h.new_box(size);
         if message_box.is_null() {
             return SW_ERR;
         }
@@ -1343,9 +1459,18 @@ impl<H: PoolHost> Pool<'_, H> {
         Ok(SW_OK)
     }
 
-    /// `ProcessPool::push_message(msg)`: into the message box, then wake the master.
-    fn push_message(&mut self, message: *const u8) -> i64 {
-        if self.op(OP_BOX_PUSH, message as u64) < 0 {
+    /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
+    /// the message box, then wake the master.
+    fn push_event(&mut self, head: &DataHead, data: &[u8]) -> i64 {
+        if self.message_box().is_null() || data.len() > self.h.event_size() - EVENT_DATA {
+            return SW_ERR;
+        }
+        let head = DataHead {
+            len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            ..*head
+        };
+        let message = [&head_bytes(&head)[..], data].concat();
+        if self.h.push_box(&message) < 0 {
             return SW_ERR;
         }
         kill(self.master_pid(), libc::SIGIO).into()
@@ -1356,33 +1481,16 @@ impl<H: PoolHost> Pool<'_, H> {
         if self.message_box().is_null() {
             return SW_ERR;
         }
-        let size = self.h.event_size();
         assert!(
-            data.len() < size - EVENT_DATA,
+            data.len() < self.h.event_size() - EVENT_DATA,
             "the message fits in EventData"
         );
-        let mut bytes = vec![0u8; size.next_multiple_of(8)];
-        let len = u32::try_from(data.len()).unwrap_or(u32::MAX).to_ne_bytes();
-        let fields = [
-            (EVENT_TYPE, &[kind][..]),
-            (EVENT_LEN, &len),
-            (EVENT_DATA, data),
-        ];
-        for (at, field) in fields {
-            if let Some(to) = bytes.get_mut(at..at + field.len()) {
-                to.copy_from_slice(field);
-            }
-        }
-        // The message box copies the event out of 8-aligned words, as `EventData` is.
-        let message: Vec<u64> = bytes
-            .as_chunks::<8>()
-            .0
-            .iter()
-            .map(|word| u64::from_ne_bytes(*word))
-            .collect();
-        self.push_message(message.as_ptr().cast())
+        let head = DataHead {
+            kind,
+            ..DataHead::default()
+        };
+        self.push_event(&head, data)
     }
-
     /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
     /// listener, or a worker's pipe or queue (scheduled when `*worker_id` is
     /// negative). An `event` shorter than its head's length is refused.
@@ -1469,10 +1577,7 @@ impl<H: PoolHost> Pool<'_, H> {
             drop(unsafe { Box::from_raw(self.registry()) });
         }
         self.set_registry(ptr::null_mut());
-        if !self.message_box().is_null() {
-            self.op(OP_FREE_MESSAGE_BOX, 0);
-            self.set_message_box(ptr::null_mut());
-        }
+        self.h.free_box();
         if !self.message_bus().is_null() {
             self.op(OP_FREE_MESSAGE_BUS, 0);
             self.set_message_bus(ptr::null_mut());
@@ -1555,10 +1660,7 @@ fn with<T>(
     f: impl FnOnce(&mut Pool<'_, Native<'_>>) -> T,
 ) -> T {
     let mut pool = Pool {
-        h: Native {
-            native,
-            pool: pool.raw().cast(),
-        },
+        h: Native { native, pool },
         p: pool,
     };
     f(&mut pool)
@@ -1587,6 +1689,16 @@ pub fn swr_v1_process_pool_push(
     data: &[u8],
 ) -> i64 {
     with(native, pool, |p| p.push(kind, data))
+}
+
+/// `ProcessPool::push_message(EventData *)` of the event with `head` and `data`.
+pub fn swr_v1_process_pool_push_event(
+    native: &dyn PoolNative,
+    pool: PoolRef<'_>,
+    head: &DataHead,
+    data: &[u8],
+) -> i64 {
+    with(native, pool, |p| p.push_event(head, data))
 }
 
 /// `ProcessPool::dispatch` (`blocking`: `dispatch_sync`) of the `EventData` at the
@@ -1700,7 +1812,10 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.signal(c_int::try_from(signed).unwrap_or(0), worker)
                     .map(|()| SW_OK),
             ),
-            RUN_PUSH_MESSAGE => self.push_message(pointer::<u8>(signed).cast_const()),
+            RUN_FREE_MESSAGE_BOX => {
+                self.h.free_box();
+                SW_OK
+            }
             RUN_SET_MAX_REQUEST => {
                 self.set_max_request(u32::try_from(arg & 0xffff_ffff).unwrap_or(0));
                 self.set_max_request_grace(u32::try_from(arg >> 32).unwrap_or(0));
@@ -1794,6 +1909,22 @@ mod tests {
             8192
         }
         fn close(&self, _: *mut c_void) {}
+        fn new_box(&mut self, size: u64) -> *mut c_void {
+            pointer(self.op(ptr::null_mut(), OP_NEW_MESSAGE_BOX, size))
+        }
+        fn push_box(&mut self, message: &[u8]) -> i64 {
+            self.op(ptr::null_mut(), OP_BOX_PUSH, message.len() as u64)
+        }
+        fn free_box(&mut self) {
+            if let Some(mut record) = self.record
+                // SAFETY: the fixture's record, which outlives its pool.
+                && !unsafe { record.as_ref() }.message_box.is_null()
+            {
+                self.op(ptr::null_mut(), OP_FREE_MESSAGE_BOX, 0);
+                // SAFETY: as above.
+                unsafe { record.as_mut() }.message_box = ptr::null_mut();
+            }
+        }
     }
 
     fn close(_: *mut c_void) {}
@@ -1851,6 +1982,9 @@ mod tests {
     fn the_kill_timer_stays_armed_for_workers_still_stopping_until_the_pool_goes() {
         // Two workers: `wait` SIGTERMs both and reaps only the first (the script's
         // `OP_WAITPID`), so the second may still be stopping when it returns.
+        let _children = crate::wait::tests::CHILDREN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut children: Vec<_> = (0..2)
             .map(|_| {
                 std::process::Command::new("sleep")

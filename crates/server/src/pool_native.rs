@@ -1,4 +1,4 @@
-//! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`): its worker pipes, message box, message bus,
+//! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`): its worker pipes, message bus,
 //! timers, event loop and callbacks. crates/process decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
 //! [`PoolNative`] side [`swr_v1_process_pool_native`] returns. It lives here because these objects are
@@ -24,11 +24,7 @@ use swoole_rs_corebase::CoreAllocator;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
-use swoole_rs_memory::channel::Record as ChannelRecord;
-use swoole_rs_memory::members::{Shm, pool as mem_pool, sw_shm_free};
-use swoole_rs_memory::{
-    swr_v1_memory_channel_bytes, swr_v1_memory_channel_close, swr_v1_memory_channel_init,
-};
+use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::armed_timer::ArmedTimer;
 use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, pop_message, push_stop, reload_warn,
@@ -40,14 +36,14 @@ use swoole_rs_process::pool::{
 };
 use swoole_rs_process::process_pool::{
     CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP,
-    OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BOX_PUSH, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_AVAILABLE,
-    OP_EVENT_INIT, OP_EVENT_WAIT, OP_EXIT_CALLBACK, OP_FREE_MESSAGE_BOX, OP_FREE_MESSAGE_BUS,
-    OP_FREE_PIPES, OP_FREE_WORKERS, OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP,
-    OP_NEW_MESSAGE_BOX, OP_NEW_MESSAGE_BUS, OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD,
-    OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND, OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP,
-    OP_RELOAD_TIMER, OP_REMOVE_PIPE, OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_FREE, OP_TIMER_INIT,
-    OP_TIMER_SELECT, OP_UNLIMIT_PIPES, OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT,
-    OP_WORKER_SHUTDOWN, PoolNative, PoolRef, RAISE, RUN_MAIN, RecvData, pool_run_op,
+    OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_AVAILABLE,
+    OP_EVENT_INIT, OP_EVENT_WAIT, OP_EXIT_CALLBACK, OP_FREE_MESSAGE_BUS, OP_FREE_PIPES,
+    OP_FREE_WORKERS, OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP, OP_NEW_MESSAGE_BUS,
+    OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD, OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND,
+    OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP, OP_RELOAD_TIMER, OP_REMOVE_PIPE,
+    OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_FREE, OP_TIMER_INIT, OP_TIMER_SELECT, OP_UNLIMIT_PIPES,
+    OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT, OP_WORKER_SHUTDOWN, PoolNative, PoolRef, RAISE,
+    RUN_MAIN, RecvData, pool_run_op,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -75,8 +71,6 @@ const TIMEOUT_READ: c_int = 4;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
 const PRIORITY_TRY_EXIT: c_int = 4;
 const SW_WORKER: c_int = 2;
-const CHAN_LOCK: c_int = 2;
-const CHAN_SHM: c_int = 8;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
@@ -276,63 +270,6 @@ fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
     1
 }
 
-/// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`.
-fn new_message_box(size: usize) -> *mut c_void {
-    let flags = CHAN_LOCK | CHAN_SHM;
-    let total = swr_v1_memory_channel_bytes(size, EVENT_SIZE);
-    if total == 0 {
-        return ptr::null_mut();
-    }
-    let mut memory = Shm::malloc(total);
-    if memory.is_null() {
-        log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
-        return ptr::null_mut();
-    }
-    // SAFETY: fresh shared memory of the size the record needs.
-    match unsafe {
-        swr_v1_memory_channel_init(
-            memory.as_ptr().cast::<ChannelRecord>(),
-            size,
-            EVENT_SIZE,
-            flags,
-        )
-    } {
-        0 => return memory.into_raw(),
-        1 => {
-            log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
-            log::warning(c"Channel::make", format_args!("notify_fd init failed"));
-        }
-        2 => log::warning(
-            c"Channel::make",
-            format_args!("pthread_mutex_init() failed"),
-        ),
-        _ => {}
-    }
-    memory.free();
-    ptr::null_mut()
-}
-
-/// `message_box->push(msg, msg->size())`, under the box's lock.
-fn box_push(pool: Pool<'_>, message: *const u8) -> i64 {
-    // SAFETY: an `EventData`, whose `info.len` counts the bytes after its head.
-    let length =
-        unsafe { message.cast::<DataHead>().read_unaligned() }.len as usize + size_of::<DataHead>();
-    // SAFETY: as above, the message's bytes.
-    let message = unsafe { std::slice::from_raw_parts(message, length) };
-    // SAFETY: the box `new_message_box` made, live while the pool is; its SW_CHAN_LOCK
-    // mutex serializes the processes that push to and pop from it.
-    let channel = unsafe { &*pool.message_box().cast::<ChannelRecord>() };
-    i64::from(channel.push(message))
-}
-
-pub(crate) fn free_message_box(pool: Pool<'_>) {
-    let channel = pool.message_box().cast::<ChannelRecord>();
-    // SAFETY: the box `new_message_box` made, with no other user.
-    unsafe { swr_v1_memory_channel_close(channel) };
-    // SAFETY: `new_message_box`'s mapping, which the pool's `message_box` only names.
-    unsafe { sw_shm_free(channel.cast()) };
-}
-
 // ---------------------------------------------------------------- timers and loop
 
 /// The pool's `max_wait_time`, in the milliseconds a timer takes.
@@ -490,7 +427,6 @@ fn objects(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
             let size = arg as usize * size_of::<WorkerRecord>();
             address(mem_pool::alloc(size as u32))
         }
-        OP_NEW_MESSAGE_BOX => address(new_message_box(arg as usize)),
         OP_NEW_PIPES => address(Box::into_raw(Box::new(Pipes::new()))),
         OP_MAIN_LOOP => {
             pool.set_main_loop(Some(match arg {
@@ -503,13 +439,8 @@ fn objects(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
         }
         OP_NEW_MESSAGE_BUS => address(new_message_bus()),
         OP_BUS_BUFFER => bus_buffer(pool, arg),
-        OP_BOX_PUSH => box_push(pool, ptr::with_exposed_provenance(arg as usize)),
         OP_FREE_PIPES => {
             free_pipes(pool);
-            0
-        }
-        OP_FREE_MESSAGE_BOX => {
-            free_message_box(pool);
             0
         }
         OP_FREE_MESSAGE_BUS => {
