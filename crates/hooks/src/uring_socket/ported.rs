@@ -11,6 +11,7 @@
 use super::*;
 use crate::co_socket::TestSocket;
 use crate::uring::testing::{HOST, with_engine};
+use openssl_sys as ssl;
 use std::ffi::CString;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::{mem, ptr, thread};
@@ -47,9 +48,9 @@ impl Sock {
             tls: Tls {
                 uring: &HOST,
                 socket: socket.co(),
-                ssl: ptr::null_mut(),
-                rbio: ptr::null_mut(),
-                wbio: ptr::null_mut(),
+                ssl: None,
+                rbio: None,
+                wbio: None,
                 fd,
                 read_timeout: 10.0,
                 write_timeout: 10.0,
@@ -103,16 +104,20 @@ impl Sock {
             } else {
                 ssl::SSL_set_connect_state(session);
             }
-            self.ops.tls.ssl = session;
-            self.ops.tls.rbio = rbio;
-            self.ops.tls.wbio = wbio;
+            self.ops.tls.ssl = swoole_rs_tls::Ssl::new(session);
+            self.ops.tls.rbio = swoole_rs_tls::Bio::new(rbio);
+            self.ops.tls.wbio = swoole_rs_tls::Bio::new(wbio);
         }
     }
 
     /// `ssl_handshake()`.
     fn ssl_handshake(&self) -> bool {
         loop {
-            let rc = unsafe { ssl::SSL_do_handshake(self.ops.tls.ssl) };
+            let rc = self
+                .ops
+                .tls
+                .ssl
+                .map_or(-1, swoole_rs_tls::Ssl::do_handshake);
             if rc == 1 {
                 return true;
             }
@@ -125,7 +130,7 @@ impl Sock {
     /// `connect(host, port)`: the ring's connect, then the TLS handshake when enabled.
     fn connect(&self, addr: &Address) -> bool {
         let ok = unsafe { swr_v1_hook_uring_connect(&self.ops, addr.as_ptr(), addr.len) };
-        ok && (self.ops.tls.ssl.is_null() || self.ssl_handshake())
+        ok && (self.ops.tls.ssl.is_none() || self.ssl_handshake())
     }
 
     fn io(&self, op: c_int, buf: &mut [u8]) -> isize {
@@ -187,8 +192,8 @@ impl Sock {
 impl Drop for Sock {
     fn drop(&mut self) {
         unsafe {
-            if !self.ops.tls.ssl.is_null() {
-                ssl::SSL_free(self.ops.tls.ssl);
+            if let Some(session) = self.ops.tls.ssl {
+                ssl::SSL_free(session.as_ptr());
             }
             libc::close(self.ops.tls.fd);
         }
@@ -370,11 +375,14 @@ fn ssl_connect() {
             ssl::SSL_CTX_set_verify(ctx, ssl::SSL_VERIFY_PEER, None);
             sock.attach(ctx, false);
             assert_eq!(
-                ssl::SSL_set_tlsext_host_name(sock.ops.tls.ssl, host.as_ptr().cast_mut()),
+                ssl::SSL_set_tlsext_host_name(
+                    sock.ops.tls.ssl.unwrap().as_ptr(),
+                    host.as_ptr().cast_mut()
+                ),
                 1
             );
             // The verification checks the certificate's name, as upstream's ssl_verify does.
-            let param = ssl::SSL_get0_param(sock.ops.tls.ssl);
+            let param = ssl::SSL_get0_param(sock.ops.tls.ssl.unwrap().as_ptr());
             assert_eq!(ssl::X509_VERIFY_PARAM_set1_host(param, host.as_ptr(), 0), 1);
         }
 
@@ -834,7 +842,10 @@ fn ssl_readv() {
             let ctx = ssl::SSL_CTX_new(ssl::TLS_client_method());
             client.attach(ctx, false);
             assert_eq!(
-                ssl::SSL_set_tlsext_host_name(client.ops.tls.ssl, host.as_ptr().cast_mut()),
+                ssl::SSL_set_tlsext_host_name(
+                    client.ops.tls.ssl.unwrap().as_ptr(),
+                    host.as_ptr().cast_mut()
+                ),
                 1
             );
         }

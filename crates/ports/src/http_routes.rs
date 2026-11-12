@@ -269,11 +269,12 @@ pub mod exports {
                 let size = payload.map_or(0, |payload| {
                     encode_parts(payload.len(), payload, 8, 1, &mut reply)
                 });
-                if size != 0 {
-                    // SAFETY: a live socket and the encoded reply.
-                    unsafe {
-                        swoole_rs_tls::upstream::socket_send(socket, reply.as_ptr().cast(), size, 0)
-                    };
+                // SAFETY: as the caller guarantees, a live connection socket.
+                let socket = unsafe { Socket::from_ptr(socket) };
+                if let Some(socket) = socket.filter(|_| size != 0) {
+                    let reply = reply.as_ptr().cast();
+                    // SAFETY: the encoded reply's `size` bytes.
+                    _ = unsafe { swoole_rs_tls::upstream::socket_send(socket, reply, size, 0) };
                 }
                 return -1;
             }

@@ -329,9 +329,9 @@ impl Socket {
         self.co().enable_ssl()
     }
 
-    /// The connection's `SSL *`, or null.
-    pub(crate) fn ssl(&self) -> *mut openssl_sys::SSL {
-        self.with_record(std::ptr::null_mut(), |record| record.ssl().cast())
+    /// Whether the connection holds an `SSL`.
+    pub(crate) fn has_ssl(&self) -> bool {
+        self.with_record(false, |record| !record.ssl().is_null())
     }
 
     /// The connection's negotiated protocol and cipher, None without an SSL.
@@ -348,7 +348,11 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        self.co().with_network(socket_ssl_close);
+        self.co().with_network(|network| {
+            // SAFETY: handles to a session live only for the operation that took them,
+            // and closing runs none.
+            unsafe { socket_ssl_close(network) };
+        });
     }
 
     /// The peer certificate's PEM, empty without one.
@@ -358,37 +362,10 @@ impl Socket {
     /// The peer's certificate chain: `ssl_get_peer_cert_chain(INT_MAX)`, each
     /// certificate as PEM, skipping one that fails.
     pub(crate) fn peer_chain(&self) -> Vec<Vec<u8>> {
-        use openssl_sys::{OPENSSL_STACK, OPENSSL_sk_num, OPENSSL_sk_value};
-        use swoole_rs_tls::upstream::{
-            socket_ssl_get_peer_cert_chain, swr_v1_socket_ssl_read_x509,
-        };
-        let chain = self.co().with_network(socket_ssl_get_peer_cert_chain);
-        let chain = chain
-            .unwrap_or(std::ptr::null_mut())
-            .cast::<OPENSSL_STACK>();
-        if chain.is_null() {
-            return Vec::new();
-        }
-        // SAFETY: the SSL's live chain.
-        let count = unsafe { OPENSSL_sk_num(chain) };
-        let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
-        (0..count)
-            .filter_map(|index| {
-                // SAFETY: an index within the live chain.
-                let cert = unsafe { OPENSSL_sk_value(chain, index) };
-                // SAFETY: that certificate, written into the local buffer.
-                let written = unsafe {
-                    swr_v1_socket_ssl_read_x509(
-                        cert.cast(),
-                        pem.as_mut_ptr().cast(),
-                        pem.len(),
-                        false,
-                    )
-                };
-                let written = usize::try_from(written).ok().filter(|&n| n > 0)?;
-                pem.get(..written).map(<[u8]>::to_vec)
-            })
-            .collect()
+        let chain = self
+            .co()
+            .with_network(swoole_rs_tls::upstream::socket_ssl_peer_chain_pem);
+        chain.unwrap_or_default()
     }
 
     /// `php_swoole_socket_set_ssl(socket, settings)`.
