@@ -4,7 +4,7 @@
 //! operations read the authoritative Rust owner.
 use crate::context::{PasswordBinding, copy_password, create_context};
 use crate::{TlsConfig, Warn};
-use openssl_sys::{SSL_CTX, SSL_CTX_free};
+use openssl_sys::SSL_CTX;
 use std::{
     cell::UnsafeCell,
     ffi::{CStr, c_char, c_int, c_void},
@@ -15,7 +15,7 @@ use swoole_rs_corebase::StringSlot;
 const STRING_COUNT: usize = 11;
 const PASSPHRASE: usize = 6;
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 pub struct OwnedTlsFields {
     pub http: u8,
     pub http_v2: u8,
@@ -31,7 +31,26 @@ pub struct OwnedTlsFields {
     pub allow_self_signed: u8,
     pub protocols: u32,
     pub create_flag: u8,
-    pub context: *mut SSL_CTX,
+    /// The owner's reference to its `SSL_CTX`, released with the fields; native
+    /// reads it as a pointer, null without one.
+    pub context: Option<crate::SslContext>,
+}
+impl OwnedTlsFields {
+    /// The context, or null without one.
+    #[must_use]
+    pub fn context_ptr(&self) -> *mut SSL_CTX {
+        self.context
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |context| context.as_ptr())
+    }
+    /// A copy that takes its own reference to the context, None when OpenSSL fails to.
+    fn try_clone(&self) -> Option<Self> {
+        let context = match &self.context {
+            Some(context) => Some(context.try_clone()?),
+            None => None,
+        };
+        Some(Self { context, ..*self })
+    }
 }
 pub struct OwnedTlsContext {
     fields: UnsafeCell<OwnedTlsFields>,
@@ -45,15 +64,6 @@ unsafe impl Send for OwnedTlsContext {}
 // SAFETY: callers serialize mutations against borrowed native fields/OpenSSL
 // configuration; no safe Rust method exposes the UnsafeCell contents.
 unsafe impl Sync for OwnedTlsContext {}
-impl Drop for OwnedTlsContext {
-    fn drop(&mut self) {
-        let ctx = self.fields.get_mut().context;
-        if !ctx.is_null() {
-            // SAFETY: the last owner releases its OpenSSL reference; all borrowed API uses ended.
-            unsafe { SSL_CTX_free(ctx) };
-        }
-    }
-}
 #[repr(C)]
 pub struct OwnedTlsPrepared {
     pub owner: *const OwnedTlsContext,
@@ -185,15 +195,15 @@ pub fn reason_text(error: std::os::raw::c_ulong) -> String {
 }
 /// `tls_host_name`'s slot.
 const TLS_HOST_NAME: usize = 8;
-/// The owner's scalar fields, copied.
+/// The owner's fields, borrowed.
 /// # Safety
-/// owner is live and no field write runs during the call.
+/// owner is live for `'a` and no field write runs while the borrow is used.
 #[must_use]
-pub unsafe fn owner_fields(owner: *const OwnedTlsContext) -> OwnedTlsFields {
+pub unsafe fn owner_fields<'a>(owner: *const OwnedTlsContext) -> &'a OwnedTlsFields {
     // SAFETY: as the caller promises.
     let owner = unsafe { &*owner };
-    // SAFETY: as the caller promises; a copy, no borrow is kept.
-    unsafe { *owner.fields.get() }
+    // SAFETY: as the caller promises.
+    unsafe { &*owner.fields.get() }
 }
 /// `tls_host_name`'s NUL-terminated bytes, read while the name stays unchanged.
 #[must_use]
@@ -201,7 +211,7 @@ pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreS
     owner.strings[TLS_HOST_NAME].view()
 }
 /// The owner's strings, as views, and the scalar `fields` copied from it.
-fn configuration(owner: &OwnedTlsContext, fields: OwnedTlsFields) -> TlsConfig {
+fn configuration(owner: &OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig {
     let strings = owner.strings.each_ref().map(|slot| slot.view());
     TlsConfig {
         ciphers: strings[0].into(),
@@ -242,9 +252,9 @@ unsafe extern "C" fn slot_password(
 pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
     // SAFETY: the live Arc owns interior-mutable slots; no exclusive borrow survives callbacks.
     let state = unsafe { &*owner };
-    // SAFETY: the exclusive caller serializes field writes; a copy, so no borrow of the
-    // fields is kept across OpenSSL/log callbacks.
-    let mut config = configuration(state, unsafe { *state.fields.get() });
+    // SAFETY: the exclusive caller serializes field writes; `configuration` copies
+    // them, so no borrow of the fields is kept across OpenSSL/log callbacks.
+    let mut config = configuration(state, unsafe { &*state.fields.get() });
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.length == 0 {
         None
@@ -256,26 +266,22 @@ pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
         callback: slot_password,
     };
     // SAFETY: local configuration, stable string slots and a live password binding.
-    let ctx = unsafe { create_context(&mut config, Some(password)) }
-        .map_or(std::ptr::null_mut(), crate::SslContext::into_raw);
-    if !ctx.is_null() {
+    let ctx = unsafe { create_context(&mut config, Some(password)) };
+    if let Some(ctx) = &ctx {
         // SAFETY: the new context; each of its sessions registers its canonical network
         // socket (`info`'s contract) before callbacks run.
-        unsafe { crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info)) };
+        unsafe { crate::info::SSL_CTX_set_info_callback(ctx.as_ptr(), Some(crate::info::info)) };
     }
+    let created = ctx.is_some();
     // SAFETY: the callbacks have returned, and the caller's exclusive owner lends its
     // fields for these two writes.
     let fields = unsafe { &mut *state.fields.get() };
-    // The old OpenSSL reference, still owned, gives way to the new one.
-    let previous = std::mem::replace(&mut fields.context, ctx);
+    // The old OpenSSL reference gives way to the new one, released as it goes.
+    fields.context = ctx;
     fields.protocols = config.protocols;
-    if !previous.is_null() {
-        // SAFETY: replacement releases the previous owned context reference.
-        unsafe { SSL_CTX_free(previous) };
-    }
     // SAFETY: the new context's live password data is retained independently of native views.
     unsafe { *state.context_password.get() = retained_password };
-    !ctx.is_null()
+    created
 }
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
 ///
@@ -357,26 +363,19 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
             };
         }
     }
-    // SAFETY: copy scalar values after string allocation/cache updates have succeeded.
-    let fields = unsafe { *source.fields.get() };
+    // SAFETY: copy scalar values after string allocation/cache updates have succeeded;
+    // the destination takes its own reference to the source's context.
+    let Some(fields) = unsafe { &*source.fields.get() }.try_clone() else {
+        return OwnedTlsCopy {
+            status: -2,
+            index: 0,
+        };
+    };
     // SAFETY: independent retention of the context's actual live password value.
     let password = unsafe { &*source.context_password.get() }.clone();
-    if !fields.context.is_null() {
-        // SAFETY: source owns a valid OpenSSL reference; destination acquires its own.
-        if unsafe { openssl_sys::SSL_CTX_up_ref(fields.context) } != 1 {
-            return OwnedTlsCopy {
-                status: -2,
-                index: 0,
-            };
-        }
-    }
     // SAFETY: slots are stable and exclusive; publish the copied scalar values and
-    // reference, taking back the destination's previous one.
-    let previous = std::mem::replace(unsafe { &mut *destination.fields.get() }, fields).context;
-    if !previous.is_null() {
-        // SAFETY: the destination releases its replaced OpenSSL reference.
-        unsafe { SSL_CTX_free(previous) };
-    }
+    // reference, releasing the destination's previous one.
+    unsafe { *destination.fields.get() = fields };
     // SAFETY: release old password ownership only after releasing its OpenSSL reference.
     unsafe { *destination.context_password.get() = password };
     OwnedTlsCopy {
@@ -448,21 +447,17 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     }
     // SAFETY: the owner stays live through this operation.
     let owner_ref = unsafe { &*owner };
-    // SAFETY: exclusive leaf snapshot of the owner configuration.
-    let fields = unsafe { *owner_ref.fields.get() };
+    let (context, disable_tls_host_name) = {
+        // SAFETY: exclusive leaf snapshot of the owner configuration.
+        let fields = unsafe { &*owner_ref.fields.get() };
+        (fields.context_ptr(), fields.disable_tls_host_name)
+    };
     let index = crate::swr_v1_tls_connection_index();
     let (status, error, ssl) = record.edit(|record| {
         let mut error = 0;
         // SAFETY: the owner's live context; OpenSSL calls nothing back while making the SSL.
         let status = unsafe {
-            crate::swr_v1_socket_ssl_new(
-                record,
-                fields.context,
-                0,
-                index,
-                socket.cast(),
-                &mut error,
-            )
+            crate::swr_v1_socket_ssl_new(record, context, 0, index, socket.cast(), &mut error)
         };
         (status, error, crate::Ssl::of_fields(record))
     });
@@ -472,7 +467,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     let explicit = owner_ref.strings[8].view();
     let selected = if explicit.length != 0 {
         Some(explicit)
-    } else if fields.disable_tls_host_name == 0 {
+    } else if disable_tls_host_name == 0 {
         // SAFETY: the enclosing socket lends its live automatic hostname slot.
         let automatic = unsafe { &*hostname }.view();
         (automatic.length != 0).then_some(automatic)
@@ -774,12 +769,12 @@ mod tests {
                 0
             );
             assert!(swr_v1_tls_owner_create(source.owner));
-            let context = (*source.fields).context;
+            let context = (*source.fields).context_ptr();
             assert_eq!(
                 swr_v1_tls_owner_assign(destination.owner, source.owner).status,
                 0
             );
-            assert_eq!((*destination.fields).context, context);
+            assert_eq!((*destination.fields).context_ptr(), context);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
                     destination.strings[PASSPHRASE],
@@ -806,7 +801,7 @@ mod tests {
             assert_eq!(&output[..7], b"source\0");
             assert_eq!(
                 openssl_sys::SSL_CTX_get_options(context),
-                openssl_sys::SSL_CTX_get_options((*destination.fields).context)
+                openssl_sys::SSL_CTX_get_options((*destination.fields).context_ptr())
             );
             swr_v1_tls_owner_free(destination.owner);
         }
@@ -826,7 +821,7 @@ mod tests {
                 0
             );
             assert!(swr_v1_tls_owner_create(owner));
-            let ctx = (*prepared.fields).context;
+            let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
             assert!(password_binding_matches(ctx, slot, slot_password));
             for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
