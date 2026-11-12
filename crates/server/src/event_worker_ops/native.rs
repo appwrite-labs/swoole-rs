@@ -228,7 +228,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_THREAD_SHUTDOWN => {
             let reactor = Reactor::thread();
-            let id = usize::from(reactor.fields().id);
+            let id = usize::from(reactor.handle().id());
             let threads = ctx
                 .tables()
                 .reactor_threads
@@ -288,20 +288,22 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
 fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_REACTOR_STOP => {
-            ctx.reactor().fields().running = false;
+            ctx.reactor().handle().set_running(false);
             0
         }
-        OP_REACTOR_WAIT_EXIT => u64::from(ctx.reactor().fields().wait_exit),
-        OP_REACTOR_ID => u64::from(ctx.reactor().fields().id),
-        OP_REACTOR_TIMEOUT => i64::from(ctx.reactor().fields().timeout_msec).cast_unsigned(),
+        OP_REACTOR_WAIT_EXIT => u64::from(ctx.reactor().handle().wait_exit()),
+        OP_REACTOR_ID => u64::from(ctx.reactor().handle().id()),
+        OP_REACTOR_TIMEOUT => i64::from(ctx.reactor().handle().timeout_msec()).cast_unsigned(),
         OP_SET_REACTOR_TIMEOUT => {
-            ctx.reactor().fields().timeout_msec = i32::try_from(arg.cast_signed()).unwrap_or(-1);
+            ctx.reactor()
+                .handle()
+                .set_timeout_msec(i32::try_from(arg.cast_signed()).unwrap_or(-1));
             0
         }
         OP_REACTOR_IF_EXIT => u64::from(ctx.reactor().if_exit()),
         OP_REACTOR_WAIT => i64::from(Reactor::thread().wait()).cast_unsigned(),
         OP_REACTOR_DESTROYED => {
-            Reactor::thread().fields().destroyed = true;
+            Reactor::thread().handle().set_destroyed(true);
             0
         }
         OP_UNREAD_PIPE_WORKER => {
@@ -330,7 +332,7 @@ fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ARM_EXIT => {
-            ctx.reactor().fields().wait_exit = true;
+            ctx.reactor().handle().set_wait_exit(true);
             swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
             let now = swoole_rs_corebase::time_now();
             with_globals(|globals| globals.exit_time.store(now, Ordering::Relaxed));
@@ -362,7 +364,7 @@ fn reactor_op(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let pipe = worker_pipe(ctx.worker(), false)?;
             let reactor = Reactor::thread();
             set_nonblock(pipe);
-            reactor.fields().ptr = ctx.serv.raw();
+            reactor.handle().set_object(ctx.serv.raw());
             reactor.add(pipe, EVENT_READ);
             reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
             0
@@ -411,7 +413,7 @@ extern "C-unwind" fn count_coroutines() {
 /// The context over this thread's worker and `reactor`, whose `ptr` is the server
 /// (or, in a task worker, its pool, whose `ptr` is).
 fn worker_context<'a>(reactor: Reactor) -> Context<'a> {
-    let mut serv = reactor.fields().ptr;
+    let mut serv = reactor.handle().object();
     if swoole_get_worker_type() == SW_TASK_WORKER {
         // SAFETY: a task worker's reactor holds its live pool.
         serv = unsafe { (*serv.cast::<swoole_rs_process::process_pool::PoolRecord>()).ptr };

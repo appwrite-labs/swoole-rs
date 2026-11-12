@@ -322,7 +322,7 @@ extern "C-unwind" fn worker_exit() {
     // The loop running this end callback.
     let reactor = crate::objects::Reactor::thread();
     if reactor.if_exit() {
-        reactor.fields().running = false;
+        reactor.handle().set_running(false);
     }
 }
 
@@ -399,7 +399,9 @@ fn loop_ops(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
                 return Some(-1);
             }
             // The loop just made.
-            crate::objects::Reactor::thread().fields().ptr = pool.raw().cast();
+            crate::objects::Reactor::thread()
+                .handle()
+                .set_object(pool.raw().cast());
             // SAFETY: the pool outlives the loop its worker runs on this thread, and
             // only that loop's handlers read the handle.
             LOOP_POOL.set(Some(unsafe { PoolRef::new(pool.raw()) }));

@@ -270,7 +270,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SET_MASTER_THREAD_ID => {
             let id = u16::try_from(ctx.all_worker_num() + 1).unwrap_or(u16::MAX);
             swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
-            Reactor::thread().fields().id = id;
+            Reactor::thread().handle().set_id(id);
             0
         }
         OP_START_MASTER_THREAD => {

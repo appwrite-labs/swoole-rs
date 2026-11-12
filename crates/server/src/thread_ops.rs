@@ -129,7 +129,7 @@ pub(crate) fn answer(
     let (server, handle) = (ctx.serv, ctx.reactor);
     let (serv, reactor) = (server.raw(), handle.map_or(ptr::null_mut(), Reactor::ptr));
     let config = || state.config_ref();
-    let reactor_id = || handle.map(|handle| handle.fields().id);
+    let reactor_id = || handle.map(|handle| handle.handle().id());
     // `reactor->add(socket, SW_EVENT_READ)`.
     let add_read = |socket: Option<Socket<'_>>| match (socket, handle) {
         (Some(socket), Some(handle)) => handle.change(socket, 0, SW_EVENT_READ),
@@ -208,10 +208,9 @@ pub(crate) fn answer(
             (&raw mut ctx.task).expose_provenance() as u64
         }
         OP_DESTROY_CALLBACK => {
-            let handle = handle?;
-            let fields = handle.fields();
+            let running = handle?.handle();
             // SAFETY: the call takes the reactor, which outlives it.
-            unsafe { swoole_rs_reactor::defer_destroy(fields, close_connections, reactor) };
+            unsafe { swoole_rs_reactor::defer_destroy(running, close_connections, reactor) };
             0
         }
         OP_CLOSE_FORWARD => {
@@ -637,7 +636,7 @@ unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
     // `ptr` is its live server.
     let mut ctx = unsafe { entry::reactor_context(reactor) };
     if let Some(reactor) = ctx.reactor {
-        ctx.thread = thread(ctx.serv.state(), usize::from(reactor.fields().id));
+        ctx.thread = thread(ctx.serv.state(), usize::from(reactor.handle().id()));
     }
     run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
 }

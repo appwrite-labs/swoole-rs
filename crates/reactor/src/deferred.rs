@@ -186,12 +186,12 @@ pub unsafe fn defer(
     }
 }
 
-/// `Reactor::add_destroy_callback(fn, data)` on the reactor whose fields these are.
+/// `reactor->add_destroy_callback(fn, data)`.
 ///
 /// # Safety
 /// `call(data)` is sound when the reactor is destroyed.
-pub unsafe fn defer_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) {
-    push_destroy(fields, call, data);
+pub unsafe fn defer_destroy(reactor: crate::Running<'_>, call: DeferCall, data: *mut c_void) {
+    reactor.with(|state| push_destroy(&mut state.fields, call, data));
 }
 
 /// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that is sound with any data.

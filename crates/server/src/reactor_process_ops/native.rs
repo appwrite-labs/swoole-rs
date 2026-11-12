@@ -121,7 +121,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_STOP_ASYNC => {
-            let worker = ctx.other(u64::from(ctx.reactor_handle().fields().id))?;
+            let worker = ctx.other(u64::from(ctx.reactor_handle().handle().id()))?;
             crate::event_worker_ops::stop_async_worker(ctx.server(), worker);
             0
         }
@@ -158,11 +158,11 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_REACTOR_SETUP => {
             let reactor = ctx.reactor_handle();
-            let fields = reactor.fields();
-            fields.id = u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX);
-            fields.ptr = ctx.serv.raw();
-            fields.max_socket = ctx.tables().max_connection;
-            fields.close = Some(crate::reactor_entry::close_connection);
+            let running = reactor.handle();
+            running.set_id(u16::try_from(ctx.worker().id()).unwrap_or(u16::MAX));
+            running.set_object(ctx.serv.raw());
+            running.set_max_socket(ctx.tables().max_connection);
+            running.set_close(Some(crate::reactor_entry::close_connection));
             let accept = crate::server_methods::accept_connection;
             reactor.set_handler(FD_STREAM_SERVER, EVENT_READ, accept);
             reactor.set_error_handler(on_close);

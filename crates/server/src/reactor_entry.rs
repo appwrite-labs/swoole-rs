@@ -106,7 +106,7 @@ pub(crate) fn int(value: i64) -> c_int {
 /// `reactor` is a server's reactor, whose `ptr` is the live `Server` for `'a`.
 pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     // SAFETY: per the caller.
-    unsafe { view::Server::from_raw(reactor.fields().ptr) }
+    unsafe { view::Server::from_raw(reactor.handle().object()) }
 }
 
 /// A context over the server reactor at `reactor` and its server.
@@ -162,7 +162,7 @@ pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ReactorThread_onPipeRead`: a worker's message.
 pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let mut ctx = context(reactor, event);
-    let id = usize::from(Reactor::running(reactor).fields().id);
+    let id = usize::from(reactor.id());
     ctx.thread = thread(ctx.serv.state(), id);
     int(run(RUN_PIPE_READ, 0, &mut ctx))
 }
