@@ -8,12 +8,11 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::VecDeque,
     ffi::CStr,
-    ptr,
     rc::Rc,
 };
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
-    Http2Settings, Http2WindowPlan,
+    Http2FrameFacts, Http2Settings, Http2WindowPlan,
     hpack::{Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
@@ -165,14 +164,13 @@ struct Stream {
 /// A stream's `Swoole\Http2\Response`, which this owns.
 struct Response {
     zval: Owned,
-    object: *mut zend_object,
 }
 
 impl Response {
     fn new(id: u32) -> Self {
-        let zval = RESPONSE.create_object();
-        let object = zval.object().unwrap_or_else(ptr::null_mut);
-        let response = Self { zval, object };
+        let response = Self {
+            zval: RESPONSE.create_object(),
+        };
         if let Some(props) = response.props() {
             props.long(c"streamId", i64::from(id));
         }
@@ -183,6 +181,34 @@ impl Response {
     fn props(&self) -> Option<Props<'_>> {
         self.zval.props(Some(&RESPONSE))
     }
+}
+
+/// What a frame's payload held, read while the read buffer was on loan.
+enum Payload {
+    /// Nothing that outlives the read.
+    Unread,
+    /// A PING's eight bytes, if it had eight.
+    Ping(Option<[u8; PING_PAYLOAD]>),
+    Goaway {
+        server_last: u32,
+        code: u32,
+        debug: Vec<u8>,
+    },
+    /// A header block, decoded, and its failure.
+    Headers(Option<Error>),
+    /// A DATA frame's length and what buffering it came to.
+    Data(usize, Buffered),
+}
+
+/// A DATA frame's payload on its stream.
+#[derive(Clone, Copy)]
+enum Buffered {
+    /// No stream, or no bytes.
+    Nothing,
+    /// The body did not decompress.
+    Failed,
+    /// Buffered: the stream's window plan.
+    Window(Http2WindowPlan),
 }
 
 /// `ReturnCode` of `parse_frame`.
@@ -740,12 +766,10 @@ impl Client {
         }
     }
 
-    /// The frame in the `received` bytes `recv_packet` left in the read buffer.
-    fn parse_frame(&self, call: &Call, socket: Co, received: usize, pipeline_read: bool) -> Frame {
-        let buffer = socket.with_buffer(false, |buffer| buffer.as_ptr());
-        // SAFETY: the packet `recv_packet` just returned starts the read buffer,
-        // which nothing writes until the next receive.
-        let packet = unsafe { std::slice::from_raw_parts(buffer, received) };
+    /// What the frame at the front of `packet` holds, with everything its
+    /// payload is needed for done: the read buffer is on loan to the caller, so
+    /// nothing here yields or runs PHP code.
+    fn read_frame(&self, packet: &[u8]) -> (Http2FrameFacts, Payload) {
         let (head, body) = packet.split_at_checked(FRAME_HEADER).unwrap_or_default();
         let facts =
             sw_rs_http2_decode_frame(head, self.last_stream_id.get(), 1).unwrap_or_default();
@@ -756,8 +780,8 @@ impl Client {
         if facts.publish_last_id != 0 {
             self.last_stream_id.set(id);
         }
-        match facts.action {
-            ACTION_SETTINGS_ACK | ACTION_PING_ACK | ACTION_IGNORE_PUSH => return Frame::Continue,
+        let known = || self.streams.borrow().contains_key(&id);
+        let read = match facts.action {
             ACTION_SETTINGS => {
                 for setting in payload.chunks(6) {
                     let mut raw = [0_u8; 6];
@@ -768,10 +792,7 @@ impl Client {
                     let number = u32::from_be_bytes([raw[2], raw[3], raw[4], raw[5]]);
                     self.apply_remote_setting(key, number);
                 }
-                if !self.send(&frame_header(TYPE_SETTINGS, 0, FLAG_ACK, id)) {
-                    return Frame::Fail;
-                }
-                return Frame::Continue;
+                Payload::Unread
             }
             ACTION_WINDOW_UPDATE => {
                 let credit = read_u32(payload);
@@ -782,12 +803,48 @@ impl Client {
                     stream.remote_window =
                         window(stream.remote_window, credit as usize, 0, true).value;
                 }
+                Payload::Unread
+            }
+            // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
+            // other length is a FRAME_SIZE_ERROR.
+            ACTION_PING_REPLY => Payload::Ping(<[u8; PING_PAYLOAD]>::try_from(payload).ok()),
+            ACTION_GOAWAY => Payload::Goaway {
+                server_last: read_u32(payload),
+                code: read_u32(payload.get(4..).unwrap_or_default()),
+                debug: payload.get(GOAWAY_SIZE..).unwrap_or_default().to_vec(),
+            },
+            ACTION_HEADERS if known() => {
+                Payload::Headers(self.parse_header(id, facts.flags, payload))
+            }
+            ACTION_DATA if known() => {
+                Payload::Data(payload.len(), self.buffer_data(id, facts.flags, payload))
+            }
+            _ => Payload::Unread,
+        };
+        (facts, read)
+    }
+
+    /// The frame in the `received` bytes `recv_packet` left in the read buffer.
+    fn parse_frame(&self, call: &Call, socket: Co, received: usize, pipeline_read: bool) -> Frame {
+        // The packet `recv_packet` just returned starts the read buffer. It is
+        // read under the buffer's loan; what sends or runs PHP code comes after.
+        let (facts, read) = socket.with_buffer(false, |buffer| {
+            let buffered = buffer.view();
+            self.read_frame(buffered.get(..received).unwrap_or(buffered))
+        });
+        let id = facts.stream_id;
+        match facts.action {
+            ACTION_SETTINGS_ACK | ACTION_PING_ACK | ACTION_IGNORE_PUSH | ACTION_WINDOW_UPDATE => {
+                return Frame::Continue;
+            }
+            ACTION_SETTINGS => {
+                if !self.send(&frame_header(TYPE_SETTINGS, 0, FLAG_ACK, id)) {
+                    return Frame::Fail;
+                }
                 return Frame::Continue;
             }
             ACTION_PING_REPLY => {
-                // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
-                // other length is a FRAME_SIZE_ERROR.
-                let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
+                let Payload::Ping(Some(echo)) = read else {
                     return Frame::Fail;
                 };
                 let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, FLAG_ACK, id).to_vec();
@@ -799,13 +856,17 @@ impl Client {
                 };
             }
             ACTION_GOAWAY => {
-                let server_last = read_u32(payload);
-                let code = read_u32(payload.get(4..).unwrap_or_default());
-                let debug = payload.get(GOAWAY_SIZE..).unwrap_or_default();
-                let props = self.props();
-                props.long(c"errCode", i64::from(code));
-                props.bytes(c"errMsg", debug);
-                props.long(c"serverLastStreamId", i64::from(server_last));
+                if let Payload::Goaway {
+                    server_last,
+                    code,
+                    debug,
+                } = read
+                {
+                    let props = self.props();
+                    props.long(c"errCode", i64::from(code));
+                    props.bytes(c"errMsg", &debug);
+                    props.long(c"serverLastStreamId", i64::from(server_last));
+                }
                 self.close();
                 return Frame::Fail;
             }
@@ -825,12 +886,17 @@ impl Client {
             ));
             return Frame::Continue;
         }
-        if facts.action == ACTION_HEADERS {
-            self.parse_header(id, facts.flags, payload);
-        } else if facts.action == ACTION_DATA
-            && let Err(frame) = self.receive_data(id, facts.flags, payload)
-        {
-            return frame;
+        match read {
+            Payload::Headers(Some(error)) => {
+                let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
+                self.update_error(Error::CODE, text.as_bytes());
+            }
+            Payload::Data(length, buffered) => {
+                if let Err(frame) = self.open_windows(id, length, buffered) {
+                    return frame;
+                }
+            }
+            _ => {}
         }
         let ready = {
             let mut streams = self.streams.borrow_mut();
@@ -907,38 +973,51 @@ impl Client {
     }
 
     /// A DATA frame: buffer (inflating gzip) and replenish the windows.
-    fn receive_data(&self, id: u32, flags: u32, payload: &[u8]) -> Result<(), Frame> {
+    /// A DATA frame's payload onto its stream's body, and the stream's window
+    /// after it.
+    fn buffer_data(&self, id: u32, flags: u32, payload: &[u8]) -> Buffered {
+        let mut streams = self.streams.borrow_mut();
+        let Some(stream) = streams.get_mut(&id) else {
+            return Buffered::Nothing;
+        };
+        stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM, 1);
+        if payload.is_empty() {
+            return Buffered::Nothing;
+        }
+        let buffered = if let Some(gzip) = &mut stream.gzip {
+            gzip.decode(payload)
+                .map(|output| stream.buffer.extend_from_slice(output))
+        } else {
+            stream.buffer.extend_from_slice(payload);
+            Some(())
+        };
+        if buffered.is_none() {
+            return Buffered::Failed;
+        }
+        stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
+        Buffered::Window(window(
+            stream.local_window,
+            0,
+            self.local.init_window_size,
+            false,
+        ))
+    }
+
+    /// The window updates a buffered DATA frame of `length` bytes calls for.
+    fn open_windows(&self, id: u32, length: usize, buffered: Buffered) -> Result<(), Frame> {
         let initial = self.local.init_window_size;
-        // The stream's borrow ends before the warning and the window updates.
-        let stream_window = {
-            let mut streams = self.streams.borrow_mut();
-            let Some(stream) = streams.get_mut(&id) else {
-                return Ok(());
-            };
-            stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM, 1);
-            if payload.is_empty() {
-                return Ok(());
+        let stream_window = match buffered {
+            Buffered::Nothing => return Ok(()),
+            Buffered::Failed => {
+                swoole_rs_corebase::log::warning(
+                    c"Client::parse_frame",
+                    format_args!("decompress failed"),
+                );
+                return Err(Frame::Fail);
             }
-            let buffered = if let Some(gzip) = &mut stream.gzip {
-                gzip.decode(payload)
-                    .map(|output| stream.buffer.extend_from_slice(output))
-            } else {
-                stream.buffer.extend_from_slice(payload);
-                Some(())
-            };
-            buffered.map(|()| {
-                stream.local_window = window(stream.local_window, payload.len(), 0, false).value;
-                window(stream.local_window, 0, initial, false)
-            })
+            Buffered::Window(window) => window,
         };
-        let Some(stream_window) = stream_window else {
-            swoole_rs_corebase::log::warning(
-                c"Client::parse_frame",
-                format_args!("decompress failed"),
-            );
-            return Err(Frame::Fail);
-        };
-        let connection = window(self.local_window.get(), payload.len(), initial, false);
+        let connection = window(self.local_window.get(), length, initial, false);
         self.local_window.set(connection.value);
         if connection.increment != 0 {
             if !self.send_window_update(0, connection.increment) {
@@ -958,20 +1037,18 @@ impl Client {
     }
 
     /// `parse_header`: HPACK-decode a HEADERS block onto the stream's response.
-    fn parse_header(&self, id: u32, flags: u32, mut input: &[u8]) {
+    /// Its failure is the caller's to report.
+    fn parse_header(&self, id: u32, flags: u32, mut input: &[u8]) -> Option<Error> {
         if flags & FLAG_PRIORITY != 0 {
             input = input.get(5..).unwrap_or_default();
         }
-        let Some(response) = self
+        // The response, held apart from the streams' borrow.
+        let response = self
             .streams
             .borrow()
             .get(&id)
-            .map(|stream| stream.response.object)
-        else {
-            return;
-        };
-        // SAFETY: a live response object of the registered class.
-        let props = unsafe { Props::new(RESPONSE.entry(), response) };
+            .map(|stream| stream.response.zval.copy());
+        let props = response.as_ref()?.props(Some(&RESPONSE))?;
         // SAFETY: three properties nothing else borrows; no PHP code runs while
         // the block is decoded.
         let property = |name| unsafe { props.array(name) };
@@ -980,15 +1057,13 @@ impl Client {
             property(c"cookies"),
             property(c"set_cookie_headers"),
         ) else {
-            return;
+            return None;
         };
         // Nothing in the loop yields or runs user code: the response is this
         // client's alone until a receive returns it. A failure is reported once
         // the codecs' borrow ends.
         let mut hpack = self.hpack.borrow_mut();
-        let Some((decoder, _)) = hpack.as_mut() else {
-            return;
-        };
+        let (decoder, _) = hpack.as_mut()?;
         let failed = loop {
             let step = match decoder.decode(input, true) {
                 Ok(step) => step,
@@ -1026,10 +1101,7 @@ impl Client {
             }
         };
         drop(hpack);
-        if let Some(error) = failed {
-            let text = format!("nghttp2_hd_inflate_hd failed with error: {error}");
-            self.update_error(Error::CODE, text.as_bytes());
-        }
+        failed
     }
 }
 
