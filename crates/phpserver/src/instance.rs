@@ -9,7 +9,7 @@ use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_int, c_long},
+    ffi::{CString, c_int, c_long},
     ptr,
     rc::Rc,
 };
@@ -23,7 +23,7 @@ use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     Owned, Value, Weak, bailout, string,
-    sys::{swr_zend_last_fatal_error, swr_zend_mkdir_recursive, swr_zval_stringl, zval},
+    sys::{swr_zend_mkdir_recursive, swr_zval_stringl, zval},
     value::{empty_string, set_str},
 };
 
@@ -151,16 +151,16 @@ unsafe fn assign_by_val(zdata: *mut zval, data: *mut u8, length: usize) {
 /// What `zdata` held is overwritten, not released.
 pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &Value, req: &RecvData) {
     let zdata = zdata.as_ptr();
-    let (flags, length) = (req.info.flags, req.info.len as usize);
+    let (flags, length) = (req.info().flags, req.info().len as usize);
     if length == 0 {
         // SAFETY: a live zval; the interned string needs no reference.
         unsafe { set_str(zdata, empty_string()) };
     } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
         // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string.
-        unsafe { assign_by_val(zdata, req.data.cast_mut().cast(), length) };
+        unsafe { assign_by_val(zdata, req.data().cast_mut().cast(), length) };
         move_packet(serv);
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
-        .then(|| serv.by_session(req.info.fd))
+        .then(|| serv.by_session(req.info().fd))
         .flatten()
         .map(|conn| view::recv_buffer(conn))
         .filter(|buffer| !buffer.is_null())
@@ -172,7 +172,7 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, zdata: &Value, req: &Rec
         unsafe { assign_by_val(zdata, data, length) };
     } else {
         // SAFETY: `length` bytes at `data`.
-        unsafe { swr_zval_stringl(zdata, req.data.cast(), length) };
+        unsafe { swr_zval_stringl(zdata, req.data().cast(), length) };
     }
 }
 
@@ -241,13 +241,8 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     if kind == crate::server::EVENT_WORKER {
         event_worker_ops::clean_worker_connections(serv, worker);
     }
-    let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
-    // SAFETY: writable outputs; PHP's globals during RSHUTDOWN.
-    if unsafe { swr_zend_last_fatal_error(&raw mut message, &raw mut file, &raw mut line) } {
-        // SAFETY: a NUL-terminated string PHP holds until the next error.
-        let message = unsafe { CStr::from_ptr(message) };
-        // SAFETY: as above.
-        let file = unsafe { CStr::from_ptr(file) };
+    if let Some(error) = swoole_rs_zend::fatal_error() {
+        let (message, file, line) = (error.message, error.file, error.line);
         log::error_log(
             LOG_ERROR,
             crate::server::SW_ERROR_PHP_FATAL_ERROR,

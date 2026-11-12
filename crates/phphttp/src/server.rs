@@ -28,7 +28,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
-    zend_class_entry, zend_long, zval,
+    zend_long, zval,
 };
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
 
@@ -37,8 +37,8 @@ pub(crate) static SERVER: Class = Class::new();
 
 /// `Swoole\Http\Server`, once MINIT registered it.
 #[must_use]
-pub fn server_class() -> *mut zend_class_entry {
-    SERVER.entry()
+pub fn server_class() -> &'static Class {
+    &SERVER
 }
 
 /// `php_swoole_http_server_minit`, after `Swoole\Server`'s.

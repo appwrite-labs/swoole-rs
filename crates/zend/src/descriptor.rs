@@ -7,9 +7,10 @@ use crate::{
         IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_property,
         swr_zend_event_restore_shutdown, swr_zend_event_socket_fd, swr_zend_instanceof,
         swr_zend_last_fatal_error, swr_zend_stream_from_zval, swr_zend_stream_select_fd, zend_long,
+        zend_memory_usage,
     },
 };
-use std::ffi::{c_int, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
 
 impl Value {
@@ -76,12 +77,47 @@ impl Value {
     }
 }
 
-/// `php_swoole_is_fatal_error()`: the last error was fatal.
-#[must_use]
-pub fn last_fatal_error() -> bool {
+/// The executor's last error, when it was fatal: where PHP keeps its message
+/// and file until the next error, and its line.
+fn fatal_parts() -> Option<(*const c_char, *const c_char, c_int)> {
     let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
     // SAFETY: writable slots; the executor's last error is only read.
     unsafe { swr_zend_last_fatal_error(&raw mut message, &raw mut file, &raw mut line) }
+        .then_some((message, file, line))
+}
+
+/// `php_swoole_is_fatal_error()`: the last error was fatal.
+#[must_use]
+pub fn last_fatal_error() -> bool {
+    fatal_parts().is_some()
+}
+
+/// A fatal error's message, file and line.
+pub struct FatalError {
+    pub message: CString,
+    pub file: CString,
+    pub line: c_int,
+}
+
+/// The last error, when it was fatal: copies, since PHP replaces its own at
+/// the next error.
+#[must_use]
+pub fn fatal_error() -> Option<FatalError> {
+    let (message, file, line) = fatal_parts()?;
+    Some(FatalError {
+        // SAFETY: a fatal error's NUL-terminated message, live until the next error.
+        message: unsafe { CStr::from_ptr(message) }.to_owned(),
+        // SAFETY: as above, its file.
+        file: unsafe { CStr::from_ptr(file) }.to_owned(),
+        line,
+    })
+}
+
+/// `zend_memory_usage(real)`: the bytes this thread's PHP heap holds.
+#[must_use]
+pub fn memory_usage(real: bool) -> usize {
+    // SAFETY: the allocator's statistics, read on the thread that owns the heap.
+    unsafe { zend_memory_usage(real) }
 }
 
 /// Clear the executor's in-shutdown flag, as a loop waiting in a shutdown
