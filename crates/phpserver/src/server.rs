@@ -678,8 +678,8 @@ fn stats(call: &Call) {
     for (key, value) in STATS.into_iter().zip(values) {
         call.add_assoc_long(key, value);
     }
-    if let Some(worker) = swoole_rs_process::worker_globals::current() {
-        let [request, response, dispatch, concurrency] = worker.counters();
+    let counters = swoole_rs_process::worker_globals::with_current(|worker| worker.counters());
+    if let Some([request, response, dispatch, concurrency]) = counters {
         call.add_assoc_long(c"worker_request_count", request);
         call.add_assoc_long(c"worker_response_count", response);
         call.add_assoc_long(c"worker_dispatch_count", dispatch);

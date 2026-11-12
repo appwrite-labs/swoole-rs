@@ -79,13 +79,15 @@ pub fn current_worker() -> *mut WorkerRecord {
     with_globals(|globals| globals.worker.load(Relaxed))
 }
 
-/// `SwooleWG.worker` as a handle, or `None` while this thread runs no worker.
-#[must_use]
-pub fn current() -> Option<crate::worker_record::Worker<'static>> {
-    // SAFETY: each `set_current_worker` stores the live record of the worker
-    // loop this thread runs, and clears or replaces it before that record goes;
-    // the loop orders the field writes made through the handle.
-    unsafe { crate::worker_record::Worker::from_raw(current_worker()) }
+/// `f` over `SwooleWG.worker`, or `None` while this thread runs no worker. The
+/// handle lives only for the call: `f` can't keep it.
+pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -> Option<R> {
+    // SAFETY: each `set_current_worker` stores the live record of the worker loop
+    // this thread runs, which the loop's own stop (`worker_global_stopped`), after
+    // its body, frees; no `f` here runs that stop, so the record outlives the call.
+    // The loop orders the field writes made through the handle.
+    let worker = unsafe { crate::worker_record::Worker::from_raw(current_worker()) };
+    worker.as_ref().map(f)
 }
 
 /// `SwooleWG.worker = worker`.

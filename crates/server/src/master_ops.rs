@@ -1512,9 +1512,9 @@ fn thread_mode(serv: crate::view::Server<'_>, operation: u32) -> i64 {
 fn stop_single_worker(serv: crate::view::Server<'_>) {
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     {
-        if let Some(worker) = swoole_rs_process::worker_globals::current() {
-            crate::event_worker_ops::stop_async_worker(serv, worker);
-        }
+        swoole_rs_process::worker_globals::with_current(|worker| {
+            crate::event_worker_ops::stop_async_worker(serv, *worker);
+        });
     }
     #[cfg(not(all(feature = "upstream-symbols", not(test))))]
     {

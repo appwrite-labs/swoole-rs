@@ -141,9 +141,7 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
         gs.response_count.fetch_add(1, SeqCst);
         gs.total_send_bytes.fetch_add(len.into(), SeqCst);
     }
-    if let Some(worker) = swoole_rs_process::worker_globals::current() {
-        worker.add_response_count();
-    }
+    swoole_rs_process::worker_globals::with_current(|worker| worker.add_response_count());
 }
 
 /// Initializes a new shared allocation's server counter prefix, and returns it.

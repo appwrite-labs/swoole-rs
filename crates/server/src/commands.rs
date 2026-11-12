@@ -234,7 +234,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
-    let worker = swoole_rs_process::worker_globals::current();
+    let worker_id = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
     let input = CommandInput {
         started,
         found: found.is_some(),
@@ -242,9 +242,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         base_mode: mode == MODE_BASE,
         master: swoole_rs_process::methods::swoole_get_worker_type() == SW_MASTER,
         accepted_types: found.map_or(0, |(_, types)| types),
-        worker_id: worker
-            .filter(|_| mode == MODE_BASE)
-            .map_or(0, swoole_rs_process::worker_record::Worker::id),
+        worker_id: worker_id.filter(|_| mode == MODE_BASE).unwrap_or(0),
         process_id: send.process_id,
         process_type: send.process_type,
         reactor_num: field(h, FIELD_REACTOR_NUM)?,
