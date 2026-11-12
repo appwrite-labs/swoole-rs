@@ -96,20 +96,10 @@ fn now() -> (libc::time_t, i64) {
     )
 }
 
-/// `std::localtime(&time)`: its static record, or null; read it at once, as upstream did.
-fn localtime(time: libc::time_t) -> *const libc::tm {
-    // SAFETY: localtime has no memory preconditions beyond its argument.
-    unsafe { libc::localtime(&raw const time) }
-}
-
-/// `std::strftime(out, format, std::localtime(&time))`.
+/// `std::strftime(out, format, std::localtime(&time))`, through the reentrant
+/// `localtime_r`: the same calendar, without libc's shared record.
 fn strftime(out: &mut [u8], format: &CStr, time: libc::time_t) -> usize {
-    let tm = localtime(time);
-    if tm.is_null() {
-        return 0;
-    }
-    // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
-    unsafe { libc::strftime(out.as_mut_ptr().cast(), out.len(), format.as_ptr(), tm) }
+    sys::localtime_r(time).map_or(0, |tm| sys::strftime(out, format, &tm))
 }
 
 /// `Logger::gen_real_file`'s date suffix for `rotation`.
@@ -504,12 +494,12 @@ pub unsafe extern "C" fn swr_v1_logger_set_date_format(
     // Upstream hands `format` to strftime unmeasured, which stops reading once the date
     // overflows, and measures it only to keep it or for a warning that logs: its own
     // test passes an unterminated one.
-    let tm = localtime(now().0);
     let mut date = [0u8; SW_LOG_DATE_STRLEN];
-    let fits = !tm.is_null()
+    let fits = sys::localtime_r(now().0).is_some_and(|tm| {
         // SAFETY: `date` is writable for its length, `tm` is live and strftime reads
         // `format` only as far as upstream's did.
-        && unsafe { libc::strftime(date.as_mut_ptr().cast(), date.len(), format, tm) } != 0;
+        unsafe { libc::strftime(date.as_mut_ptr().cast(), date.len(), format, &raw const tm) != 0 }
+    });
     if !fits && LOG_WARNING < logger.level.load(Relaxed) {
         log::set_last_error(INVALID_PARAMS);
         return false;

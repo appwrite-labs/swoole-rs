@@ -480,6 +480,14 @@ pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
     unsafe { libc::setitimer(which as _, value, std::ptr::null_mut()) }
 }
 
+/// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.
+#[must_use]
+pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
+    let mut tm = zeroed::<libc::tm>();
+    // SAFETY: `time` and `tm` are live locals; localtime_r writes only `tm`.
+    (!unsafe { libc::localtime_r(&raw const time, &raw mut tm) }.is_null()).then_some(tm)
+}
+
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
 pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
     // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
