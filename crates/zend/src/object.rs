@@ -383,11 +383,29 @@ impl<'a> Props<'a> {
     #[must_use]
     #[inline]
     pub unsafe fn array(self, name: &CStr) -> Option<&'a mut ArrayMut> {
+        let slot = self.array_slot(name)?;
+        // SAFETY: an array slot of a live object; per the caller.
+        Some(unsafe { ArrayMut::from_ptr(slot.as_ptr()) })
+    }
+
+    /// [`Props::array`], lent to `edit` out of its property: the property
+    /// reads null while `edit` runs, so nothing `edit` does can free or
+    /// replace the array under it, and takes the array back when `edit`
+    /// returns, in place of whatever was put there meanwhile. None as
+    /// [`Props::array`].
+    pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.array_slot(name)?
+            .lend(|held| held.array_mut().map(|array| edit(array)))
+    }
+
+    /// The slot of the declared property `name`, holding an array, as
+    /// [`Props::array`] converts it.
+    fn array_slot(self, name: &CStr) -> Option<&'a Value> {
         let array = || {
             // SAFETY: a live object; Zend reads `name` only.
             let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
-            // SAFETY: null, or a slot of the live object.
-            unsafe { Value::from_ptr(slot) }?.array().map(|_| slot)
+            // SAFETY: null, or a slot of the object, live for `'a`.
+            unsafe { Value::from_ptr(slot) }.filter(|slot| slot.array().is_some())
         };
         let slot = match array() {
             Some(slot) => slot,
@@ -413,8 +431,7 @@ impl<'a> Props<'a> {
                 array()?
             }
         };
-        // SAFETY: an array slot of a live object; per the caller.
-        Some(unsafe { ArrayMut::from_ptr(slot) })
+        Some(slot)
     }
 }
 

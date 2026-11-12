@@ -25,8 +25,8 @@ use swoole_rs_inflate::Inflate;
 use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak, ZString,
-    sys::ZEND_ACC_PUBLIC,
+    ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak,
+    ZString, sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -672,11 +672,16 @@ impl Client {
         let Some(data) = request.property(Field::Data) else {
             return 0;
         };
-        // SAFETY: nothing else borrows `headers`, and no PHP code runs, until
-        // the type is added.
-        let headers = request
-            .props()
-            .and_then(|props| unsafe { props.array(c"headers") });
+        // `headers` becomes an array, and a form's type is added to it.
+        let form = data.array().is_some();
+        if let Some(props) = request.props() {
+            props.edit_array(c"headers", |headers| {
+                if form {
+                    headers
+                        .insert_bytes(b"content-type", Some(b"application/x-www-form-urlencoded"));
+                }
+            });
+        }
         let truthy = |field| request.property(field).is_some_and(Value::truthy);
         let pipeline = truthy(Field::Pipeline);
         let use_pipeline_read = truthy(Field::UsePipelineRead);
@@ -684,9 +689,6 @@ impl Client {
             Some(text) => text.is_empty(),
             None => !data.truthy(),
         };
-        if let Some(headers) = headers.filter(|_| data.array().is_some()) {
-            headers.insert_bytes(b"content-type", Some(b"application/x-www-form-urlencoded"));
-        }
         let mut frame = self.build_header(request);
         let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
         // The id is taken before a send yields or the body's conversion runs PHP
@@ -1058,19 +1060,32 @@ impl Client {
             .get(&id)
             .map(|stream| stream.response.zval.copy());
         let props = response.as_ref()?.props(Some(&RESPONSE))?;
-        // SAFETY: three properties nothing else borrows; no PHP code runs while
-        // the block is decoded.
-        let property = |name| unsafe { props.array(name) };
-        let (Some(headers), Some(cookies), Some(set_cookie_headers)) = (
-            property(c"headers"),
-            property(c"cookies"),
-            property(c"set_cookie_headers"),
-        ) else {
-            return None;
-        };
+        // The three arrays the block fills, out of their properties meanwhile.
+        props
+            .edit_array(c"headers", |headers| {
+                props.edit_array(c"cookies", |cookies| {
+                    props.edit_array(c"set_cookie_headers", |set_cookie_headers| {
+                        self.decode_headers(id, input, headers, cookies, set_cookie_headers)
+                    })
+                })
+            })
+            .flatten()
+            .flatten()
+            .flatten()
+    }
+
+    /// A header block onto the response's `headers`, `cookies` and
+    /// `set_cookie_headers`; its failure.
+    fn decode_headers(
+        &self,
+        id: u32,
+        mut input: &[u8],
+        headers: &mut ArrayMut,
+        cookies: &mut ArrayMut,
+        set_cookie_headers: &mut ArrayMut,
+    ) -> Option<Error> {
         // Nothing in the loop yields or runs user code: the response is this
-        // client's alone until a receive returns it. A failure is reported once
-        // the codecs' borrow ends.
+        // client's alone until a receive returns it.
         let mut hpack = self.hpack.borrow_mut();
         let (decoder, _) = hpack.as_mut()?;
         let failed = loop {
