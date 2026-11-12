@@ -165,7 +165,7 @@ impl ServerState {
         let worker = core::mem::take(&mut *lock(&self.worker_pipes));
         for pipe in task.into_iter().chain(worker) {
             // SAFETY: a pipe `push_task_pipe` or `push_worker_pipe` boxed, now out of its list.
-            unsafe { free_pipe(pipe.into_inner()) };
+            swoole_rs_tls::socket_pair::drop(&mut *unsafe { Box::from_raw(pipe.into_inner()) });
         }
     }
 
@@ -421,17 +421,6 @@ pub(crate) use swr_v1_server_state_free as free_state;
 fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     list.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// `delete pipe`. Only the hybrid makes pipes: the unit tests link no C++
-/// for `Socket::free` to call.
-///
-/// # Safety
-/// `pipe` is a pair `push_task_pipe` or `push_worker_pipe` boxed, not used again.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-unsafe fn free_pipe(pipe: *mut SocketPair) {
-    // SAFETY: as the caller promises; the box `push_task_pipe` made.
-    swoole_rs_tls::socket_pair::drop(&mut *unsafe { Box::from_raw(pipe) });
 }
 
 impl Drop for ServerState {

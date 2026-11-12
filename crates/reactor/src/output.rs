@@ -203,12 +203,12 @@ pub unsafe fn handle_send_owned(
         unsafe { std::slice::from_raw_parts(front.data, front.length as usize) }
     };
     output.result = handle_send(hooks, data, front.offset);
+    // SAFETY: the live, exclusive queue. The effect has returned, so the observed front
+    // identity is committed only now, and the socket's flags are not part of the queue.
+    let mut queue = unsafe { buffer.as_mut() };
     if output.result.set_offset {
-        // SAFETY: the live, exclusive queue; the observed front identity is committed only
-        // after the effect returned.
-        let queue = unsafe { buffer.as_mut() };
         output.status = swoole_rs_buffer::swr_v1_buffer_typed_consume(
-            queue,
+            queue.as_deref_mut(),
             front.generation,
             front.offset,
             output.result.offset.wrapping_sub(front.offset),
@@ -219,9 +219,7 @@ pub unsafe fn handle_send_owned(
     }
     socket.edit(|record| output.result.publish(&mut record.output));
     if output.result.pop {
-        // SAFETY: the live, exclusive queue; detach transfers custody to the caller without
-        // invoking a disposer.
-        let queue = unsafe { buffer.as_mut() };
+        // Detach transfers custody to the caller without invoking a disposer.
         output.status =
             swoole_rs_buffer::swr_v1_buffer_typed_pop(queue, Some(&mut output.detached));
     }

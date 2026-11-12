@@ -8,7 +8,7 @@ use crate::shutdown::SocketState;
 use crate::socket_extra::SocketExtra;
 use core::cell::{Cell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
-use core::mem::{offset_of, size_of};
+use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
 use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
@@ -392,22 +392,6 @@ impl CoSocket {
         self.sock_fd == -1
     }
 
-    /// The `network::Socket` record.
-    ///
-    /// # Safety
-    /// The socket is open (constructed with a `network::Socket`) and no other
-    /// reference to that record is live.
-    #[cfg(test)]
-    #[must_use]
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "the network::Socket record is its own allocation, which this record only points to"
-    )]
-    pub unsafe fn record(&self) -> &mut SocketFields {
-        // SAFETY: as the caller promises.
-        unsafe { &mut (*self.socket).fields }
-    }
-
     fn new(state: *mut Bound) -> Self {
         Self {
             err_code: 0,
@@ -475,9 +459,8 @@ impl CoSocket {
 
     /// `init_options`: `TCP_NODELAY` for TCP, the default buffer size for UDP, and
     /// the default length protocol.
-    fn init_options(&mut self, network: Socket<'_>) -> u32 {
-        let (tcp, fd, socket_type) =
-            network.read(|record| (record.is_tcp(), record.fd, record.socket_type));
+    fn init_options(&mut self, record: &SocketFields) -> u32 {
+        let (tcp, fd, socket_type) = (record.is_tcp(), record.fd, record.socket_type);
         let mut result = 0;
         if tcp {
             let on: c_int = 1;
@@ -528,28 +511,28 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
 /// `socket` is a live record, not used afterwards; its buffers came from `new String`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
-    // SAFETY: as the caller promises; the callback runs before anything is freed.
-    crate::socket_extra::run_close_hook(unsafe { Co::new(socket) });
     // SAFETY: as the caller promises.
-    let record = unsafe { &mut *socket };
-    for buffer in [record.read_buffer, record.write_buffer] {
+    let co = unsafe { Co::new(socket) };
+    // The callback runs before anything is freed.
+    crate::socket_extra::run_close_hook(co);
+    for buffer in [co.read_buffer(), co.write_buffer()] {
         if !buffer.is_null() {
             // SAFETY: the socket's own `new String`, deleted once.
             unsafe { delete_string(buffer.cast()) };
         }
     }
-    let network = record.socket;
-    // SAFETY: the socket's live network record, if any.
-    if let Some(socket) = unsafe { Socket::from_ptr(network) }
-        && !socket.read(|record| record.ssl().is_null())
-    {
-        socket_ssl_close(socket);
-    }
+    co.with_network(|network| {
+        if !network.read(|record| record.ssl().is_null()) {
+            socket_ssl_close(network);
+        }
+    });
+    let network = co.socket();
     if !network.is_null() {
         // SAFETY: the live record, which nothing uses afterwards.
         unsafe { socket_free(network) };
     }
-    record.fini();
+    // SAFETY: as the caller promises; no handle reaches the record any more.
+    unsafe { &mut *socket }.fini();
 }
 
 /// `new SocketImpl(...)` for the sockets Rust hands out: by `domain`, `kind` and
@@ -627,10 +610,11 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     kind: c_int,
     protocol: c_int,
 ) -> u32 {
-    // SAFETY: as the caller promises.
-    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
-    // SAFETY: just written; the native object owns it for its lifetime.
-    unsafe { &mut *socket }.construct(owner, how, fd, socket_type, domain, kind, protocol)
+    // SAFETY: as the caller promises: storage for one record, which needn't be
+    // initialized yet; the native object owns it for its lifetime.
+    let storage = unsafe { &mut *socket.cast::<MaybeUninit<CoSocket>>() };
+    let record = storage.write(CoSocket::new(Bound::alloc()));
+    record.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
 impl CoSocket {
@@ -687,7 +671,7 @@ impl CoSocket {
             }
             result |= set_nonblock(network);
         }
-        result | socket.init_options(network)
+        result | network.read(|record| socket.init_options(record))
     }
 }
 
@@ -727,8 +711,7 @@ impl CoSocket {
 /// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
 /// `server`, with the server's type, framing and timeouts, connected; `accept`
 /// shares the TLS context after. [`swr_v1_hook_co_socket_free`] releases it.
-pub(crate) fn accepted(server: Co, conn: Box<SocketRecord>) -> Co {
-    let conn = Box::into_raw(conn);
+pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
     let mut socket = Box::new(CoSocket::new(Bound::alloc()));
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
@@ -737,21 +720,16 @@ pub(crate) fn accepted(server: Co, conn: Box<SocketRecord>) -> Co {
     socket.sock_domain = server.sock_domain();
     socket.sock_type = server.sock_type();
     socket.sock_protocol = server.sock_protocol();
-    socket.socket = conn;
-    let mut result = OPENED;
-    // SAFETY: the accepted record, which the new socket owns from here.
-    if let Some(network) = unsafe { Socket::from_ptr(conn) } {
-        socket.sock_fd = network.edit(|record| {
-            record.object = owner;
-            record.socket_type = kind;
-            record.fd_type = FD_CO_SOCKET;
-            record.fd
-        });
-        result |= socket.init_options(network);
-        if let Some(timeouts) = timeouts {
-            network.edit(|record| record.timeouts = timeouts);
-        }
+    // The accepted record, still this function's own: the new socket owns it below.
+    conn.object = owner;
+    conn.socket_type = kind;
+    conn.fd_type = FD_CO_SOCKET;
+    socket.sock_fd = conn.fd;
+    let result = OPENED | socket.init_options(&conn);
+    if let Some(timeouts) = timeouts {
+        conn.timeouts = timeouts;
     }
+    socket.socket = Box::into_raw(conn);
     socket.open_length_check = server.open_length_check();
     socket.open_eof_check = server.open_eof_check();
     socket.http2 = server.http2();
@@ -810,55 +788,76 @@ pub(crate) fn peer_name(socket: Co, address: &mut SocketAddress) -> c_int {
     0
 }
 
-/// Writes a fresh record (not open, nothing bound) into `socket`'s storage.
+/// The tests' records, here and in the operations' modules.
 #[cfg(test)]
-pub(crate) unsafe fn init(socket: *mut CoSocket) {
-    unsafe { socket.write(CoSocket::new(Bound::alloc())) };
-}
+mod test_support {
+    use super::*;
 
-/// An open record over a `network::Socket` record without a descriptor, for the
-/// operations' tests.
-#[cfg(test)]
-pub(crate) struct TestSocket(pub Box<CoSocket>);
-
-#[cfg(test)]
-impl TestSocket {
-    pub(crate) fn new() -> Self {
-        let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
-        unsafe { init(storage.as_mut_ptr()) };
-        let mut socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
-        socket.socket = SocketRecord::with_fd(-1, FD_CO_SOCKET).into_raw();
-        socket.sock_fd = 100;
-        Self(socket)
+    impl CoSocket {
+        /// The `network::Socket` record.
+        ///
+        /// # Safety
+        /// The socket is open (constructed with a `network::Socket`) and no other
+        /// reference to that record is live.
+        #[must_use]
+        #[expect(
+            clippy::mut_from_ref,
+            reason = "the network::Socket record is its own allocation, which this record only points to"
+        )]
+        pub unsafe fn record(&self) -> &mut SocketFields {
+            // SAFETY: as the caller promises.
+            unsafe { &mut (*self.socket).fields }
+        }
     }
 
-    pub(crate) fn ptr(&mut self) -> *mut CoSocket {
-        &raw mut *self.0
+    /// Writes a fresh record (not open, nothing bound) into `socket`'s storage.
+    pub(crate) unsafe fn init(socket: *mut CoSocket) {
+        unsafe { socket.write(CoSocket::new(Bound::alloc())) };
     }
 
-    pub(crate) fn co(&mut self) -> Co {
-        unsafe { Co::new(self.ptr()) }
+    /// An open record over a `network::Socket` record without a descriptor, for the
+    /// operations' tests.
+    pub(crate) struct TestSocket(pub Box<CoSocket>);
+
+    impl TestSocket {
+        pub(crate) fn new() -> Self {
+            let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
+            unsafe { init(storage.as_mut_ptr()) };
+            let mut socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
+            socket.socket = SocketRecord::with_fd(-1, FD_CO_SOCKET).into_raw();
+            socket.sock_fd = 100;
+            Self(socket)
+        }
+
+        pub(crate) fn ptr(&mut self) -> *mut CoSocket {
+            &raw mut *self.0
+        }
+
+        pub(crate) fn co(&mut self) -> Co {
+            unsafe { Co::new(self.ptr()) }
+        }
+
+        pub(crate) fn state(&self) -> *mut SocketState {
+            self.0.state.cast()
+        }
     }
 
-    pub(crate) fn state(&self) -> *mut SocketState {
-        self.0.state.cast()
-    }
-}
-
-#[cfg(test)]
-impl Drop for TestSocket {
-    fn drop(&mut self) {
-        unsafe {
-            for buffer in [self.0.read_buffer, self.0.write_buffer] {
-                if !buffer.is_null() {
-                    delete_string(buffer.cast());
+    impl Drop for TestSocket {
+        fn drop(&mut self) {
+            unsafe {
+                for buffer in [self.0.read_buffer, self.0.write_buffer] {
+                    if !buffer.is_null() {
+                        delete_string(buffer.cast());
+                    }
                 }
+                SocketRecord::free(self.0.socket);
+                self.0.fini();
             }
-            SocketRecord::free(self.0.socket);
-            self.0.fini();
         }
     }
 }
+#[cfg(test)]
+pub(crate) use test_support::{TestSocket, init};
 
 #[cfg(test)]
 mod tests {

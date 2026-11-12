@@ -17,14 +17,12 @@ use std::{
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
+use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, handlers, push_string,
     set_key,
-    sys::{
-        IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_class_entry, zend_long, zend_string,
-    },
+    sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long, zend_string},
 };
-use swoole_rs_zend::{bailout::Bailout, string::bytes};
 use swoole_rs_zend::{method_table, sys as z};
 
 pub(crate) static RESPONSE: CustomClass<Data> = CustomClass::new();
@@ -82,7 +80,7 @@ fn release(mut ctx: Ctx) -> bool {
             state.response.status = INTERNAL_SERVER_ERROR;
         }
         if context::available(ctx) {
-            bailed = send::end(ctx, ptr::null_mut()).is_err();
+            bailed = send::end(ctx, None).is_err();
         }
     }
     ctx.state().response.zobject.ptr = ptr::null_mut();
@@ -207,11 +205,11 @@ fn sent(call: &Call, result: &Result<bool, Bailout>) {
 
 fn write(call: &Call) {
     let run = || -> Option<Result<bool, Bailout>> {
-        let data = call.arity(1, 1).and_then(|()| call.str(1)).ok()??;
+        let data = call.arity(1, 1).and_then(|()| call.zstr(1)).ok()??;
         let mut ctx = checked(call)?;
         // Compressing a chunked body would compress the chunks, not the stream.
         ctx.state().accept_compression = 0;
-        Some(send::write(ctx, data))
+        Some(send::write(ctx, Some(data)))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -240,8 +238,8 @@ fn after(ctx: Ctx) -> Result<(), Bailout> {
 fn end(call: &Call) {
     let run = || -> Option<Result<bool, Bailout>> {
         let ctx = checked(call)?;
-        let data = call.arity(0, 1).and_then(|()| call.str_or_null(1)).ok()?;
-        Some(after(ctx).and_then(|()| send::end(ctx, nullable(data))))
+        let data = call.arity(0, 1).and_then(|()| call.zstr_or_null(1)).ok()?;
+        Some(after(ctx).and_then(|()| send::end(ctx, data)))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -310,7 +308,7 @@ fn send_file(call: &Call) {
             _ => return None,
         }
         let length = usize::try_from(length).unwrap_or_default();
-        Some(after(ctx).and_then(|()| send::send_file(ctx, file.as_ptr(), offset, length)))
+        Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
     };
     match run() {
         Some(result) => sent(call, &result),
@@ -478,7 +476,7 @@ fn ping(call: &Call) {
             return None;
         }
         if flags & HTTP2 != 0 {
-            match send::http2(ctx, send::HTTP2_PING, ptr::null_mut(), 0, 0) {
+            match send::http2(ctx, send::HTTP2_PING, None, 0, 0) {
                 Ok(done) => call.set_bool(done),
                 Err(bailout) => bailout.defer(),
             }
@@ -505,15 +503,9 @@ fn goaway(call: &Call) {
         }
         let parsed = call
             .arity(0, 2)
-            .and_then(|()| Ok((call.long(1, 0)?, call.str_or_null(2)?)));
+            .and_then(|()| Ok((call.long(1, 0)?, call.zstr_or_null(2)?)));
         let (code, debug) = parsed.ok()?;
-        let debug = nullable(debug);
-        let debug = if debug.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: a live string argument.
-            unsafe { bytes(debug) }
-        };
+        let debug = debug.map_or(&[][..], ZStr::bytes);
         let server = crate::http2::server();
         call.set_bool(server.is_some_and(|server| (server.goaway)(ctx, code, debug)));
         Some(())
@@ -660,14 +652,6 @@ fn refuse(call: &Call, message: &str) {
     call.set_bool(false);
 }
 
-/// An object of `ce` or a subclass.
-fn instance_of(object: &Value, ce: *mut zend_class_entry) -> bool {
-    // SAFETY: a live class and a registered one.
-    object
-        .class()
-        .is_some_and(|class| unsafe { z::swr_zend_instanceof(class, ce) })
-}
-
 /// `Response::create($server|$socket|[$server|$socket, $request]|$fd, $fd)`:
 /// a response on a server connection or a coroutine socket, sharing the
 /// request's context when one is given.
@@ -679,7 +663,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     if let Some(pair) = object.array() {
         let Some(request) = pair
             .index(1)
-            .filter(|found| instance_of(found, crate::request::entry()))
+            .filter(|found| found.instance_of(&crate::request::REQUEST))
             .and_then(Value::custom::<crate::request::Data>)
         else {
             return refuse(call, "parameter $1.second must be instanceof Http\\Request");
@@ -695,9 +679,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         ctx = request.0.get();
     }
     if object.object().is_some() {
-        let server_ce = swoole_rs_phpserver::server_class_entry();
-        let socket_ce = swoole_rs_phpclients::socket_class();
-        if instance_of(object, server_ce) {
+        if object.instance_of(swoole_rs_phpserver::server_class_ref()) {
             let Some(checked) = websocket::server_of(object) else {
                 return;
             };
@@ -708,7 +690,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                     &format!("parameter $2 ({fd}) must be valid connection session_id"),
                 );
             }
-        } else if instance_of(object, socket_ce) {
+        } else if object.instance_of(swoole_rs_phpclients::socket()) {
             socket = Some(object);
             fd = zend_long::from(websocket::sock_fd(swoole_rs_phpclients::get_socket(object)));
         } else {
@@ -793,7 +775,7 @@ fn redirect(call: &Call) {
             bailed = true;
             return Some(());
         }
-        match send::end(ctx, ptr::null_mut()) {
+        match send::end(ctx, None) {
             Ok(done) => call.set_bool(done),
             Err(_) => bailed = true,
         }

@@ -77,9 +77,9 @@ use crate::records::{ConnectionRecord, SessionRecord};
 use crate::send;
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
+use crate::view::ServerHook;
 use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
-use swoole_rs_corebase::hook;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::PoolRecord;
@@ -102,10 +102,6 @@ const SW_MASTER: c_int = 1;
 const SW_EVENT_READ: c_int = 1 << 9;
 /// `SW_FD_STREAM_SERVER`.
 const SW_FD_STREAM_SERVER: c_int = 1;
-/// `SW_GLOBAL_HOOK_BEFORE_SERVER_START`, `_AFTER_SERVER_SHUTDOWN` and `_AFTER_SERVER_CREATE`.
-const HOOK_BEFORE_SERVER_START: c_int = 0;
-const HOOK_AFTER_SERVER_SHUTDOWN: c_int = 7;
-const HOOK_AFTER_SERVER_CREATE: c_int = 11;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `SW_SERVER_EVENT_CLOSE`.
 const EVENT_CLOSE: u8 = 4;
@@ -145,11 +141,10 @@ unsafe fn text<'a>(text: *const c_char) -> std::borrow::Cow<'a, str> {
     unsafe { CStr::from_ptr(text) }.to_string_lossy()
 }
 
-/// `if (swoole_isset_hook(kind)) swoole_call_hook(kind, serv)`.
-fn call_hook(kind: c_int, serv: *mut core::ffi::c_void) {
-    if hook::swoole_isset_hook(kind) {
-        // SAFETY: the server hooks take the server.
-        unsafe { hook::swoole_call_hook(kind, serv) };
+/// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`, over the context's server.
+fn call_hook(o: &Objects<'_>, hook: ServerHook) {
+    if let Some(serv) = o.server {
+        serv.call_hook(hook);
     }
 }
 
@@ -1290,15 +1285,15 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // Lifecycle effects over process-wide state Rust owns: hooks, the
         // worker globals, the master reactor and the server's shared allocations.
         OP_LC_BEFORE_START => {
-            call_hook(HOOK_BEFORE_SERVER_START, o.ctx.serv);
+            call_hook(o, ServerHook::BeforeStart);
             0
         }
         OP_AFTER_CREATE => {
-            call_hook(HOOK_AFTER_SERVER_CREATE, o.ctx.serv);
+            call_hook(o, ServerHook::AfterCreate);
             0
         }
         OP_AFTER_SHUTDOWN => {
-            call_hook(HOOK_AFTER_SERVER_SHUTDOWN, o.ctx.serv);
+            call_hook(o, ServerHook::AfterShutdown);
             0
         }
         OP_SIGNAL_ACTIVE => {
@@ -1725,9 +1720,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
-            let pipe = o.config().pipe_command.cast::<SocketPair>();
-            // SAFETY: null or the server's live command pipe.
-            if let Some(pipe) = unsafe { pipe.as_ref() } {
+            if let Some(pipe) = o.config().command_pipe() {
                 let (reactor, kind, events) = if op == OP_PIPE_COMMAND_ADD {
                     (o.reactor(), 0, SW_EVENT_READ)
                 } else {
@@ -1753,15 +1746,13 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SSL_CREATE, OP_ST_SOCK_FREE, OP_ST_TIMER_DEL,
         OP_TIMER_DETACHED, OP_TIMER_REINIT,
     };
-    use swoole_rs_timer::{owner_reactor, owner_reinit, swoole_timer_del};
+    use swoole_rs_timer::swoole_timer_del;
     /// `SW_FD_PIPE`.
     const SW_FD_PIPE: c_int = 3;
     use swoole_rs_error::swoole_clear_last_error_msg;
     use swoole_rs_reactor::event_api::swoole_event_wait;
     use swoole_rs_reactor::signal_upstream::{self, Handler};
     use swoole_rs_reactor::swoole_event_free;
-    // `SwooleTG.timer`.
-    let timer = swoole_rs_corebase::thread_timer;
     Some(match op {
         OP_LC_CLEAR_ERROR => {
             log::set_last_error(0);
@@ -1773,17 +1764,9 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_EVENT_WAIT => sign(swoole_event_wait()),
-        OP_TIMER_DETACHED => {
-            let timer = timer();
-            // SAFETY: this thread's live timer.
-            u64::from(
-                !timer.is_null()
-                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
-            )
-        }
+        OP_TIMER_DETACHED => u64::from(crate::objects::timer_detached()),
         OP_TIMER_REINIT => {
-            // SAFETY: this thread's live timer.
-            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
+            crate::objects::timer_reinit(false);
             0
         }
         OP_ST_TIMER_DEL => {
@@ -1936,8 +1919,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FORCED_EXIT, OP_FREE_SERVER, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN,
         OP_PORT_CLOSE, OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
     };
-    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`.
-    const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
     /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
     const EXIT_CONDITION_FORCED_TERMINATION: c_int = 8;
     /// `SW_SERVER_EVENT_CONNECT`.
@@ -1968,15 +1949,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_FORCE_CLOSE => {
             let conn = o.conn();
             conn.close_force = 1;
-            // SAFETY: the connection's live socket, for this call.
-            let mut event = unsafe { swoole_rs_reactor::Event::new(conn.fd, 0, 0, conn.socket) };
-            // SAFETY: the context's live reactor and an event over its live connection.
-            unsafe {
-                swoole_rs_reactor::reactor_upstream::trigger_close_event(
-                    o.ctx.reactor,
-                    (&raw mut event).cast(),
-                )
-            };
+            let mut event = conn.event(0, 0);
+            o.reactor().trigger_close(&mut event);
             0
         }
         OP_ACCEPT_TIMER => {
@@ -2005,7 +1979,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_BEFORE_SHUTDOWN => {
-            call_hook(HOOK_BEFORE_SERVER_SHUTDOWN, serv);
+            call_hook(o, ServerHook::BeforeShutdown);
             o.state
                 .callbacks
                 .call_server(CB_BEFORE_SHUTDOWN, o.server());

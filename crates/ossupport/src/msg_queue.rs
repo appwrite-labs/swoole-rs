@@ -102,8 +102,7 @@ impl QueueRecord {
             return false;
         };
         stat.msg_qbytes = libc::c_ulong::try_from(bytes).unwrap_or(libc::c_ulong::MAX);
-        // SAFETY: IPC_SET reads the `msqid_ds` IPC_STAT filled.
-        if unsafe { msgctl(self.id, libc::IPC_SET, (&raw mut stat).cast()) } == 0 {
+        if control(self.id, libc::IPC_SET, Some(&mut stat)) == 0 {
             return true;
         }
         sys_warning(
@@ -181,8 +180,7 @@ impl QueueRecord {
 
     /// Remove the kernel queue; a failure warns and keeps the id.
     pub fn destroy(&mut self) -> bool {
-        // SAFETY: IPC_RMID takes no buffer.
-        if unsafe { msgctl(self.id, libc::IPC_RMID, std::ptr::null_mut()) } != 0 {
+        if control(self.id, libc::IPC_RMID, None) != 0 {
             sys_warning(
                 c"MsgQueue::destroy",
                 format_args!("msgctl({}, IPC_RMID) failed", self.id),
@@ -285,13 +283,20 @@ struct MsqidDs {
 #[cfg(target_os = "macos")]
 const _: () = assert!(size_of::<MsqidDs>() == 116, "Darwin's packed msqid_ds");
 
+/// `msgctl(id, cmd, stat)`: `IPC_STAT` fills `stat`, `IPC_SET` reads it and
+/// `IPC_RMID` takes none.
+fn control(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int {
+    let stat = stat.map_or(std::ptr::null_mut(), std::ptr::from_mut);
+    // SAFETY: null or a live, writable `msqid_ds`, the largest record a command reads
+    // or fills; the kernel rejects a command that needs the one it wasn't given.
+    unsafe { msgctl(id, cmd, stat.cast()) }
+}
+
 /// `msgctl(id, IPC_STAT)`.
 fn queue_stat(id: c_int) -> Option<MsqidDs> {
-    let mut stat = std::mem::MaybeUninit::<MsqidDs>::zeroed();
-    // SAFETY: IPC_STAT fills a writable `msqid_ds`.
-    let rc = unsafe { msgctl(id, libc::IPC_STAT, stat.as_mut_ptr().cast()) };
-    // SAFETY: zeroed is a valid `msqid_ds`, and msgctl filled it on success.
-    (rc == 0).then(|| unsafe { stat.assume_init() })
+    // SAFETY: integers and integer arrays: zeroed is a valid `msqid_ds`.
+    let mut stat: MsqidDs = unsafe { std::mem::zeroed() };
+    (control(id, libc::IPC_STAT, Some(&mut stat)) == 0).then_some(stat)
 }
 
 #[cfg(test)]

@@ -173,19 +173,15 @@ unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]
     }
     // SAFETY: per the caller.
     let (fd, kind) = unsafe { view::socket_fd(socket) };
-    let SocketAddress {
-        addr: mut address,
-        len: mut length,
-        ..
-    } = SocketAddress::default();
+    let mut address = SocketAddress::default();
     #[expect(
         clippy::cast_possible_truncation,
         reason = "Socket::sendto's (int) port, as upstream"
     )]
     let port = port as c_int;
     let error = assign(
-        &mut address,
-        &mut length,
+        &mut address.addr,
+        &mut address.len,
         kind,
         host.to_bytes_with_nul(),
         port,
@@ -195,17 +191,7 @@ unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]
         swoole_rs_corebase::log::set_last_error(error);
         return -1;
     }
-    // SAFETY: the socket's fd, the payload and the assigned address.
-    unsafe {
-        libc::sendto(
-            fd,
-            data.as_ptr().cast(),
-            data.len(),
-            0,
-            (&raw const address).cast(),
-            length,
-        )
-    }
+    address.sendto(fd, data, 0)
 }
 
 fn send(call: &Call) {

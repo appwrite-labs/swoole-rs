@@ -441,11 +441,9 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         // SAFETY: a waitall slot holds a counter, then its temporary file's path.
         unsafe { CStr::from_ptr(path) }
     };
-    let notify_pipe = || ctx.state().task_pipe(ctx.source().into());
-    let master_socket = || {
-        // SAFETY: the source worker's live notify pipe.
-        unsafe { (*notify_pipe()).master_socket }
-    };
+    // SAFETY: the source worker's live notify pipe.
+    let notify_pipe = || unsafe { &*ctx.state().task_pipe(ctx.source().into()) };
+    let master_socket = || notify_pipe().master_socket;
     Some(match op {
         OP_OPEN_RESULT_FILE => {
             let flags = libc::O_APPEND | libc::O_WRONLY;
@@ -480,8 +478,7 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_NOTIFY_RESULT => {
             let flag = 1u64.to_ne_bytes();
             let write = swoole_rs_tls::socket_pair::write;
-            // SAFETY: the source worker's live notify pipe.
-            let pipe = unsafe { &*notify_pipe() };
+            let pipe = notify_pipe();
             // SAFETY: a local of that size.
             let written = unsafe { write(pipe, flag.as_ptr().cast(), flag.len()) };
             signed(written as i64)

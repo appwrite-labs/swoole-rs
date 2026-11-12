@@ -414,12 +414,11 @@ fn wait_signal(call: &Call) {
     if swoole_rs_zend::bailout::pending() {
         return;
     }
-    // Held as a raw box while the coroutine waits, so no frame here owns a drop
-    // if a fatal error ends the wait.
-    let signals = Box::into_raw(signals.into_boxed_slice());
-    // SAFETY: boxed above; only this call reads it.
-    let signo = swoole_rs_hooks::wait_signal::system_wait_signal(unsafe { &*signals }, timeout);
-    // SAFETY: boxed above, not used again.
+    // Leaked while the coroutine waits, so no frame here owns a drop if a fatal
+    // error ends the wait.
+    let signals = Box::leak(signals.into_boxed_slice());
+    let signo = swoole_rs_hooks::wait_signal::system_wait_signal(signals, timeout);
+    // SAFETY: the box leaked above, not used again.
     drop(unsafe { Box::from_raw(signals) });
     if signo != -1 {
         call.set_long(signo.into());

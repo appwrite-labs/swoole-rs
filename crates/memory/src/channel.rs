@@ -266,10 +266,9 @@ pub unsafe fn swr_v1_memory_channel_init(
         notify: [-1, -1],
         flags,
     };
-    // SAFETY: the caller lends the record exclusively, aligned and long enough.
-    unsafe { record.write(fresh) };
-    // SAFETY: as above; written just now.
-    let record = unsafe { &mut *record };
+    // SAFETY: the caller lends the record exclusively, aligned and long enough; it
+    // may be uninitialised.
+    let record = unsafe { &mut *record.cast::<std::mem::MaybeUninit<Record>>() }.write(fresh);
     if flags & NOTIFY != 0 {
         let Some(notify) = sys::pipe() else {
             return 1;

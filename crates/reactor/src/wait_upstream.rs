@@ -100,9 +100,7 @@ mod registry {
     }
 
     fn timed_out() -> bool {
-        // SAFETY: the running coroutine, or null.
-        unsafe { swoole_rs_coroutine::current().as_ref() }
-            .is_some_and(|co| co.resume_code == swoole_rs_coroutine::RC_TIMEDOUT)
+        swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::RC_TIMEDOUT)
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {

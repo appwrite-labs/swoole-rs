@@ -137,8 +137,20 @@ extern "C" fn alarm(_signo: c_int) {
     swr_v1_core_set_signal_alarm(true);
 }
 
-/// Copies a view Rust hands back into its node, so the node is current.
-fn apply(view: &TimerView) -> *mut TimerNode {
+/// What a node calls, copied out of it so that no borrow of it spans a call.
+#[derive(Clone, Copy)]
+struct Calls {
+    plain: Option<Plain>,
+    callback: Option<Callback>,
+    data: *mut c_void,
+    destructor: Option<Destructor>,
+    plain_drop: Option<Plain>,
+}
+
+/// Copies a view Rust hands back into its node, so the node is current: the node,
+/// and what it calls as of now.
+#[inline]
+fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     let node = view.token.cast::<TimerNode>();
     // SAFETY: every token is a live TimerNode that `add` made.
     let node_ref = unsafe { &mut *node };
@@ -148,7 +160,19 @@ fn apply(view: &TimerView) -> *mut TimerNode {
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed != 0;
-    node
+    let calls = Calls {
+        plain: node_ref.plain,
+        callback: node_ref.callback,
+        data: node_ref.data,
+        destructor: node_ref.destructor,
+        plain_drop: node_ref.plain_drop,
+    };
+    (node, calls)
+}
+
+/// [`applied`]'s node.
+fn apply(view: &TimerView) -> *mut TimerNode {
+    applied(view).0
 }
 
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
@@ -262,21 +286,16 @@ impl Owner {
         self.set(self.next_msec.get());
     }
 
-    /// Runs a detached node's destructor and deletes it, then raises a pending
-    /// bailout. The destructor may longjmp over these frames, which hold
-    /// nothing to drop.
-    fn release(&self, node: *mut TimerNode) {
-        let (destructor, plain_drop, data) = {
-            // SAFETY: a node whose custody Rust just returned.
-            let node = unsafe { &*node };
-            (node.destructor, node.plain_drop, node.data)
-        };
-        if let Some(destructor) = destructor {
+    /// Runs the destructor of a detached node, whose custody Rust just returned
+    /// ([`applied`]'s result), and deletes it, then raises a pending bailout. The
+    /// destructor may longjmp over these frames, which hold nothing to drop.
+    fn release(&self, (node, calls): (*mut TimerNode, Calls)) {
+        if let Some(destructor) = calls.destructor {
             // SAFETY: the node's own destructor.
             unsafe { destructor(node) };
-        } else if let Some(plain_drop) = plain_drop {
+        } else if let Some(plain_drop) = calls.plain_drop {
             // SAFETY: the node's destructor of its own data.
-            unsafe { plain_drop(data) };
+            unsafe { plain_drop(calls.data) };
         }
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
@@ -331,7 +350,7 @@ impl Owner {
                 true
             }
             RELEASE => {
-                self.release(apply(&view));
+                self.release(applied(&view));
                 true
             }
             _ => false,
@@ -374,7 +393,7 @@ impl Owner {
                 apply(&view);
             }
             RELEASE | RELEASE_OVERFLOW => {
-                self.release(apply(&view));
+                self.release(applied(&view));
                 if status == RELEASE_OVERFLOW {
                     warning(c"select", format_args!("Rust timer repeat limit exceeded"));
                 }
@@ -410,19 +429,13 @@ impl Owner {
                 break;
             }
             check(status);
-            let node = apply(&view);
-            // SAFETY: the node the queue just selected; the copies are read before it runs.
-            let TimerNode {
-                plain,
-                callback,
-                data,
-                ..
-            } = *unsafe { &*node };
+            // The node the queue just selected; the copies are read before it runs.
+            let (node, calls) = applied(&view);
             if view.removed == 0 {
-                if let Some(plain) = plain {
+                if let Some(plain) = calls.plain {
                     // SAFETY: the node's function of its own data.
-                    unsafe { plain(data) };
-                } else if let Some(callback) = callback {
+                    unsafe { plain(calls.data) };
+                } else if let Some(callback) = calls.callback {
                     // SAFETY: the node's own callback, of this timer and the node.
                     unsafe { callback(std::ptr::from_ref(self).cast_mut().cast(), node) };
                 }
@@ -464,7 +477,7 @@ impl Owner {
                 (stats.active_id != 0, view)
             };
             if active {
-                self.release(apply(&view));
+                self.release(applied(&view));
             }
         }
         let status = loop {
@@ -472,7 +485,7 @@ impl Owner {
             if status != RELEASE {
                 break status;
             }
-            self.release(apply(&view));
+            self.release(applied(&view));
         };
         // The record's drop frees the drained queue.
         if status != EMPTY || !self.queue.borrow().idle() {

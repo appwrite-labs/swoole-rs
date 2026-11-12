@@ -30,8 +30,8 @@ pub use live::*;
 mod scheduler;
 pub use scheduler::{
     Counters, coroutine_count, coroutine_get, coroutine_older, counters, current, current_cid,
-    current_native, resume, scheduler, set_callback, set_current_task, set_stack_size, suspend,
-    swr_v1_coroutine_bail, yield_with_cancel,
+    current_native, current_resume_code, resume, scheduler, set_callback, set_current_task,
+    set_stack_size, suspend, swr_v1_coroutine_bail, yield_with_cancel,
 };
 mod stack;
 pub use stack::*;

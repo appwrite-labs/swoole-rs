@@ -66,9 +66,10 @@ pub unsafe fn function_alias(
     let value = unsafe { (*slot).value };
     // SAFETY: the table slot's union holds its zend_function pointer.
     let function = unsafe { value.ptr }.cast::<zend_function>();
+    // SAFETY: the source table owns this live function, which remains live and
+    // unchanged throughout this registration.
+    let entry = unsafe { &*function };
     let kind = {
-        // SAFETY: the source table owns this live function's common header.
-        let entry = unsafe { &*function };
         // SAFETY: all function variants initialize their common header.
         let common = unsafe { entry.common };
         common.type_
@@ -80,9 +81,8 @@ pub unsafe fn function_alias(
     }
     let (handler, args) = {
         // SAFETY: the caller's source function is internal, after its optional
-        // native assertion, and remains live throughout this registration.
-        let entry = unsafe { &*function };
-        // SAFETY: this SDK operation's internal-function contract selects this union member.
+        // native assertion: this SDK operation's internal-function contract
+        // selects this union member.
         let internal = unsafe { &entry.internal_function };
         (internal.handler, internal.num_args)
     };

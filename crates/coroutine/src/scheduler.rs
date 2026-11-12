@@ -176,6 +176,13 @@ pub fn current_cid() -> c_long {
     Co::current(Sched::this()).map_or(-1, |co| co.with(|co| co.cid))
 }
 
+/// The running coroutine's resume code (`RC_OK`, `RC_TIMEDOUT` or `RC_CANCELED`),
+/// which its last yield returned with; `None` outside a coroutine.
+#[must_use]
+pub fn current_resume_code() -> Option<i32> {
+    Co::current(Sched::this()).map(|co| co.with(|co| co.resume_code))
+}
+
 /// This thread's scheduler's counters, for `Co::stats()`.
 #[derive(Clone, Copy, Debug)]
 pub struct Counters {

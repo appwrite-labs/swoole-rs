@@ -38,7 +38,31 @@ pub struct Server<'a> {
     live: PhantomData<&'a Fields>,
 }
 
+/// The global hooks (`swGlobalHookType`) whose callbacks take the server alone.
+#[derive(Clone, Copy)]
+pub enum ServerHook {
+    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_START`.
+    BeforeStart = 0,
+    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`.
+    BeforeShutdown = 6,
+    /// `SW_GLOBAL_HOOK_AFTER_SERVER_SHUTDOWN`.
+    AfterShutdown = 7,
+    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_CREATE`.
+    BeforeCreate = 10,
+    /// `SW_GLOBAL_HOOK_AFTER_SERVER_CREATE`.
+    AfterCreate = 11,
+}
+
 impl<'a> Server<'a> {
+    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`.
+    pub fn call_hook(self, hook: ServerHook) {
+        let kind = hook as c_int;
+        if swoole_rs_corebase::swoole_isset_hook(kind) {
+            // SAFETY: every `ServerHook`'s callbacks take the server, which is live.
+            unsafe { swoole_rs_corebase::swoole_call_hook(kind, self.raw) };
+        }
+    }
+
     /// The server at `serv`.
     ///
     /// # Safety

@@ -69,6 +69,13 @@ impl ConnectionRecord {
         // SAFETY: null, or the connection's live socket, as above.
         unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket.cast()) }
     }
+
+    /// A reactor event over the connection's socket, as the reactor would deliver it.
+    #[must_use]
+    pub fn event(&self, reactor_id: i16, fd_type: c_int) -> swoole_rs_reactor::Event {
+        // SAFETY: null, or the connection's live socket, as `socket` says.
+        unsafe { swoole_rs_reactor::Event::new(self.fd, reactor_id, fd_type, self.socket) }
+    }
 }
 
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.

@@ -319,9 +319,12 @@ pub(crate) fn functions() -> *const zend_function_entry {
 }
 
 /// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.
-/// # Safety
-/// At MINIT, after Zend registered the module's functions.
-pub(crate) unsafe fn register_aliases(flags: u32) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+/// The token is the module's MINIT, which Zend runs after registering the
+/// module's functions.
+pub(crate) fn register_aliases(
+    _minit: &swoole_rs_zend::Minit,
+    flags: u32,
+) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     if flags & SHORTNAME == 0 {
         return Ok(());
     }

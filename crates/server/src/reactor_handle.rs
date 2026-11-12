@@ -78,6 +78,12 @@ impl Reactor {
             unsafe { close(self.0, sock.as_ptr().cast()) }
         })
     }
+    /// `reactor->trigger_close_event(event)`: the default error handler, or `-1` with none.
+    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> c_int {
+        let event = core::ptr::from_mut(event).cast();
+        // SAFETY: a live reactor on its thread, and an `Event`, which its handlers take.
+        unsafe { swoole_rs_reactor::reactor_upstream::trigger_close_event(self.0, event) }
+    }
     pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
         // SAFETY: a live reactor.
         unsafe { reactor_set_handler(self.0, fd_type, event, Some(handler)) };

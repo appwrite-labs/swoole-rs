@@ -17,9 +17,7 @@ use swoole_rs_buffer::string::delete_string;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{
-    Event, Socket, SocketFields, SocketRecord, reactor_upstream, what_event_want,
-};
+use swoole_rs_reactor::{Event, Socket, SocketFields, SocketRecord, what_event_want};
 use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
 use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
@@ -175,6 +173,12 @@ fn stream_event(kind: u8) -> bool {
 }
 
 pub(crate) use swoole_rs_ossupport::pthread_self;
+
+/// This thread's buffer (`sw_tg_buffer()`), which a datagram or a certificate is read into.
+pub(crate) fn thread_buffer<'a>() -> &'a mut CppString {
+    // SAFETY: the calling thread's live buffer, which only this thread touches.
+    unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() }
+}
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
@@ -540,8 +544,8 @@ pub(crate) fn answer(
             )
         }
         OP_CERT_TASK => {
-            // SAFETY: OP_PEER_CERT filled this thread's live buffer.
-            let buffer = unsafe { &*swoole_rs_corebase::thread_buffer().cast::<CppString>() };
+            // OP_PEER_CERT filled this thread's live buffer.
+            let buffer = &*thread_buffer();
             o.ctx.task = SendData {
                 info: DataHead {
                     fd: o.sock()?.fd().into(),
@@ -789,10 +793,8 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             )]
             let errno = errno as u16;
             o.conn()?.close_errno = errno;
-            let reactor = o.handle()?.ptr();
-            let event = core::ptr::from_mut(o.ctx.event.as_deref_mut()?).cast();
-            // SAFETY: the context's live reactor and event.
-            sign(unsafe { reactor_upstream::trigger_close_event(reactor, event) })
+            let reactor = o.handle()?;
+            sign(reactor.trigger_close(o.ctx.event.as_deref_mut()?))
         }
         OP_HEARTBEAT_TIMER_CLEAR => {
             let thread = o.ctx.thread_record()?;

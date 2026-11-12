@@ -23,7 +23,6 @@ use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, socket};
 use crate::reactor_ops::sign;
 use crate::view;
-use swoole_rs_timer::{owner_reactor, owner_reinit};
 
 /// `SW_IPC_UNIXSOCK`, `SW_WORKER`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const IPC_UNIXSOCK: c_int = 1;
@@ -86,15 +85,19 @@ impl Context<'_> {
             unsafe { slot.call(self.serv.raw(), self.bus().buffer().cast()) };
         }
     }
-    pub(super) fn event_socket(&self) -> *mut c_void {
+    /// The context's event, which the ops reading it run with.
+    pub(super) fn event(&self) -> &Event {
         // SAFETY: the context's live event.
-        unsafe { (*self.event).socket_ptr() }.cast()
+        unsafe { &*self.event }
     }
-}
-
-/// This thread's timer, or null.
-fn timer() -> *mut c_void {
-    swoole_rs_corebase::thread_timer()
+    pub(super) fn event_socket(&self) -> *mut c_void {
+        self.event().socket_ptr().cast()
+    }
+    /// The connection `OP_CONN_AT` or `OP_EVENT_CONN_ACTIVE` selected, if any.
+    pub(super) fn conn(&self) -> Option<&mut crate::ConnectionRecord> {
+        // SAFETY: null or the connection selected, a live slot of the server's table.
+        unsafe { self.conn.as_mut() }
+    }
 }
 
 /// The ops on native objects.
@@ -144,17 +147,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             ctx.bus().pop();
             0
         }
-        OP_TIMER_DETACHED => {
-            let timer = timer();
-            // SAFETY: this thread's live timer.
-            u64::from(
-                !timer.is_null()
-                    && owner_reactor(unsafe { &*timer.cast::<swoole_rs_timer::Owner>() }).is_null(),
-            )
-        }
+        OP_TIMER_DETACHED => u64::from(crate::objects::timer_detached()),
         OP_TIMER_REINIT => {
-            // SAFETY: this thread's live timer.
-            owner_reinit(unsafe { &*timer().cast::<swoole_rs_timer::Owner>() }, false);
+            crate::objects::timer_reinit(false);
             0
         }
         OP_PORT_ADD => {
@@ -207,17 +202,8 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_REACTOR_DEL_EVENT => sign(ctx.reactor_handle().del(socket(ctx.event_socket())?)),
         OP_CLOSE_NOTIFY => {
-            // SAFETY: the connection the context selected.
-            let conn = unsafe { &*ctx.conn };
-            // SAFETY: the selected connection's live socket, for this call.
-            let mut event = unsafe {
-                Event::new(
-                    conn.fd,
-                    i16::from(conn.reactor_id),
-                    FD_SESSION,
-                    conn.socket.cast(),
-                )
-            };
+            let conn = ctx.conn()?;
+            let mut event = conn.event(i16::from(conn.reactor_id), FD_SESSION);
             run(
                 ctx.reactor_handle(),
                 &raw mut event,

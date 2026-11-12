@@ -10,8 +10,7 @@ use swoole_rs_httpbindings::request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Key, Object, Value, handlers,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry},
+    Call, Custom, CustomClass, Key, Object, Value, handlers, sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -51,11 +50,6 @@ impl Drop for Data {
 /// The method's `$this` context.
 fn this(call: &Call) -> Option<Ctx> {
     call.custom::<Data>().and_then(|data| data.0.get())
-}
-
-/// The registered class entry.
-pub(crate) fn entry() -> *mut zend_class_entry {
-    REQUEST.entry()
 }
 
 method_table! {

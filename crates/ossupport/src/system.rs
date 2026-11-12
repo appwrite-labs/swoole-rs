@@ -241,9 +241,7 @@ pub extern "C" fn swoole_get_cpu_affinity(set: &mut CpuSet) -> c_int {
     #[cfg(not(target_os = "freebsd"))]
     {
         // Upstream pins the process's main thread (tid == pid), not the calling thread.
-        let pid = swoole_rs_corebase::sys::getpid();
-        // SAFETY: `set` is a writable `cpu_set_t`.
-        unsafe { libc::sched_getaffinity(pid, size_of::<CpuSet>(), set) }
+        crate::cpu_set::get_process(swoole_rs_corebase::sys::getpid(), set)
     }
 }
 

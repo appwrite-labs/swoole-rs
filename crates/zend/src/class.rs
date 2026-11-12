@@ -158,7 +158,8 @@ pub unsafe extern "C" fn unset_property_deny(
     // SAFETY: a live object.
     let class = unsafe { (*object).ce };
     // SAFETY: class entries live for the process.
-    let mut root = unsafe { &*class };
+    let own = unsafe { &*class };
+    let mut root = own;
     loop {
         // SAFETY: an internal class's union holds its parent entry.
         let parent = unsafe { root.__bindgen_anon_1.parent };
@@ -170,8 +171,7 @@ pub unsafe extern "C" fn unset_property_deny(
     }
     // SAFETY: a live hash table and member name.
     if !unsafe { zend_hash_find(&raw const root.properties_info, member) }.is_null() {
-        // SAFETY: the class name of a live object.
-        let name = unsafe { (*class).name };
+        let name = own.name;
         // SAFETY: a printf format whose two `%s` take the NUL-terminated member
         // and class names.
         unsafe {
