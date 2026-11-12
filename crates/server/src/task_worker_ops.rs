@@ -3,7 +3,6 @@
 //! pool callbacks that run its operations: what workers.cc's `TaskWorkerContext` did.
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
-use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use swoole_rs_corebase::{DataHead, log};
@@ -12,7 +11,7 @@ use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods::{
     swoole_set_worker_id, swoole_set_worker_type, worker_set_max_request,
 };
-use swoole_rs_process::process_pool::{PoolRecord, SW_IPC_MAX_SIZE};
+use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
 use swoole_rs_process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::ops::{
@@ -41,41 +40,16 @@ mod native;
 pub use native::finish;
 pub(crate) use native::init_task_workers;
 
-/// The server's task pool, live and owned by the server for `'a`. Native code
-/// passes one as a `ProcessPool *`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct TaskPool<'a> {
-    raw: *mut PoolRecord,
-    live: PhantomData<&'a PoolRecord>,
-}
-
-impl<'a> TaskPool<'a> {
-    /// `server`'s task pool.
-    fn of(server: view::Server<'a>) -> Self {
-        Self {
-            raw: server.task_pool(),
-            live: PhantomData,
-        }
-    }
-    /// Runs `f` over the record, borrowed for the call alone.
-    fn edit<R>(self, f: impl FnOnce(&mut PoolRecord) -> R) -> R {
-        // SAFETY: a live pool, which this task worker's thread alone touches while
-        // its callbacks run; the borrow ends with `f`.
-        f(unsafe { &mut *self.raw })
-    }
-    /// The pool's server: a task pool's `ptr`.
-    fn server(self) -> view::Server<'a> {
-        let serv = self.edit(|pool| pool.ptr);
-        // SAFETY: OP_POOL_INIT sets a task pool's `ptr` to the server that owns it.
-        unsafe { view::Server::from_raw(serv) }
-    }
+/// The server that owns task pool `pool`: its `ptr`, which `OP_POOL_INIT` sets.
+fn server_of(pool: PoolRef<'_>) -> view::Server<'_> {
+    // SAFETY: a task pool's `ptr` is the live server that owns it (OP_POOL_INIT).
+    unsafe { view::Server::from_raw(pool.ptr()) }
 }
 
 /// What an operation runs over.
 struct Context<'a> {
     server: view::Server<'a>,
-    pool: Option<TaskPool<'a>>,
+    pool: Option<PoolRef<'a>>,
     worker: Option<Worker<'a>>,
     /// The task being run, or the one being finished: null, or live for `'a`.
     task: *const DataHead,
@@ -96,11 +70,11 @@ impl<'a> Context<'a> {
         self.socket
     }
     /// The context over `pool`'s server and `worker`.
-    fn of(pool: TaskPool<'a>, worker: Worker<'a>) -> Self {
+    fn of(pool: PoolRef<'a>, worker: Worker<'a>) -> Self {
         Self {
             pool: Some(pool),
             worker: Some(worker),
-            ..Self::over(pool.server())
+            ..Self::over(server_of(pool))
         }
     }
     /// The context over `server` alone.
@@ -129,7 +103,7 @@ impl<'a> Context<'a> {
         self.server.config()
     }
     /// The task pool, which the ops reading it run with.
-    fn pool(&self) -> TaskPool<'a> {
+    fn pool(&self) -> PoolRef<'a> {
         self.pool.unwrap_or_else(|| std::process::abort())
     }
     /// The worker, which the ops reading it run with.
@@ -232,12 +206,10 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(config.worker_num) + u64::from(config.task_worker_num));
         }
         OP_EXCEEDED_MAX_REQUEST => return Some(u64::from(ctx.worker().exceeded_max_request())),
-        OP_SET_SYSVMSG => ctx.pool().edit(|pool| pool.schedule_by_sysvmsg = true),
+        OP_SET_SYSVMSG => ctx.pool().set_schedule_by_sysvmsg(true),
         OP_CREATE_TASK_WORKER => {
-            let id = usize::try_from(arg).ok()?;
-            let worker = ctx.pool().edit(|pool| pool.workers().wrapping_add(id));
-            // SAFETY: the server's task worker `arg`, one of `task_worker_num`.
-            crate::worker_methods::create_worker(ctx.server, unsafe { Worker::new(worker) });
+            let worker = ctx.pool().worker(usize::try_from(arg).ok()?)?;
+            crate::worker_methods::create_worker(ctx.server, worker);
         }
         OP_WORKER_STATUS => {
             let status = if arg != 0 {
@@ -269,10 +241,8 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         OP_WORKER_STOP_CALLBACK => call_worker_stop_callback(ctx.server, ctx.worker()),
         OP_WORKER_INIT => {
             swr_v1_worker_init(ctx.worker());
-            let (max, grace) = ctx
-                .pool()
-                .edit(|pool| (pool.max_request, pool.max_request_grace));
-            worker_set_max_request(max, grace);
+            let pool = ctx.pool();
+            worker_set_max_request(pool.max_request(), pool.max_request_grace());
         }
         _ => return None,
     }

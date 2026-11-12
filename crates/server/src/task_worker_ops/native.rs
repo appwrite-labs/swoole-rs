@@ -2,7 +2,6 @@
 //! reactor and the commands sent to it), and the callbacks that run its operations:
 //! what workers.cc's `TaskWorkerContext::call` and `TaskWorker_*` did.
 use core::ffi::c_int;
-use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
 use swoole_rs_corebase::DataHead;
@@ -16,7 +15,7 @@ use swoole_rs_process::workers::ops::{
     RUN_TASK_LOOP_ASYNC, RUN_TASK_ON_PIPE, RUN_TASK_ON_START, RUN_TASK_ON_STOP, RUN_TASK_ON_TASK,
 };
 
-use super::{Context, TaskPool};
+use super::{Context, server_of};
 use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, socket};
 
 /// `SW_FD_PIPE`.
@@ -28,16 +27,15 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_POOL_INIT => {
             let serv = ctx.serv();
-            ctx.pool().edit(|pool| {
-                pool.ptr = serv;
-                pool.on_task = Some(on_task);
-                pool.on_worker_start = Some(on_start);
-                pool.on_worker_stop = Some(on_stop);
-            });
+            let pool = ctx.pool();
+            pool.set_ptr(serv);
+            pool.set_on_task(Some(on_task));
+            pool.set_on_worker_start(Some(on_start));
+            pool.set_on_worker_stop(Some(on_stop));
             0
         }
         OP_SET_ASYNC_LOOP => {
-            ctx.pool().edit(|pool| pool.main_loop = Some(loop_async));
+            ctx.pool().set_main_loop(Some(loop_async));
             0
         }
         OP_HAS_COMMAND => {
@@ -84,7 +82,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let pipe = socket(pipe)?;
             set_nonblock(pipe);
             let reactor = Reactor::thread();
-            reactor.fields().ptr = ctx.pool().raw.cast();
+            reactor.fields().ptr = ctx.pool().raw().cast();
             reactor.add(pipe, EVENT_READ);
             reactor.set_handler(SW_FD_PIPE, EVENT_READ, on_pipe_receive);
             0
@@ -106,22 +104,11 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
 
 /// `TaskWorker_onTask`: the pool's task callback.
 extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
-    run_task(task_pool(pool), worker, task.as_ptr().cast())
-}
-
-/// The task pool its callbacks are passed: [`TaskFn`]'s contract makes it the
-/// server's.
-///
-/// [`TaskFn`]: swoole_rs_process::process_pool::TaskFn
-fn task_pool(pool: PoolRef<'_>) -> TaskPool<'_> {
-    TaskPool {
-        raw: pool.raw(),
-        live: PhantomData,
-    }
+    run_task(pool, worker, task.as_ptr().cast())
 }
 
 /// Runs `task`, null or live while the call runs, in `pool`'s `worker`.
-pub(super) fn run_task(pool: TaskPool<'_>, worker: Worker<'_>, task: *const DataHead) -> c_int {
+pub(super) fn run_task(pool: PoolRef<'_>, worker: Worker<'_>, task: *const DataHead) -> c_int {
     let mut ctx = Context::of(pool, worker);
     ctx.task = task;
     run(&mut ctx, RUN_TASK_ON_TASK)
@@ -129,20 +116,17 @@ pub(super) fn run_task(pool: TaskPool<'_>, worker: Worker<'_>, task: *const Data
 
 /// `TaskWorker_onStart`.
 extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    run(&mut Context::of(task_pool(pool), worker), RUN_TASK_ON_START);
+    run(&mut Context::of(pool, worker), RUN_TASK_ON_START);
 }
 
 /// `TaskWorker_onStop`.
 extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
-    run(&mut Context::of(task_pool(pool), worker), RUN_TASK_ON_STOP);
+    run(&mut Context::of(pool, worker), RUN_TASK_ON_STOP);
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's main loop.
 extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    run(
-        &mut Context::of(task_pool(pool), worker),
-        RUN_TASK_LOOP_ASYNC,
-    )
+    run(&mut Context::of(pool, worker), RUN_TASK_LOOP_ASYNC)
 }
 
 /// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head. Left
@@ -157,12 +141,11 @@ extern "C" fn on_pipe_receive(
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
     // The reactor running this handler, whose `ptr` is the task pool.
-    let pool = TaskPool {
-        raw: Reactor::running(reactor).fields().ptr.cast(),
-        live: PhantomData,
-    };
+    let raw = Reactor::running(reactor).fields().ptr.cast();
+    // SAFETY: OP_LISTEN_TASK_PIPE set the reactor's `ptr` to the live task pool.
+    let pool = unsafe { PoolRef::new(raw) };
     let id = u16::try_from(swoole_get_worker_id()).unwrap_or(u16::MAX);
-    let Some(worker) = pool.server().worker_record(id) else {
+    let Some(worker) = server_of(pool).worker_record(id) else {
         return -1;
     };
     let mut task = MaybeUninit::<EventData>::uninit();
@@ -186,7 +169,7 @@ fn run_with(ctx: &mut Context, operation: u32, arg: u64) -> i64 {
 #[must_use]
 pub(crate) fn init_task_workers(serv: crate::view::Server<'_>) -> bool {
     let mut ctx = Context::over(serv);
-    ctx.pool = Some(TaskPool::of(serv));
+    ctx.pool = Some(serv.task_pool_ref());
     run_with(&mut ctx, RUN_INIT_TASK_WORKERS, 0) != 0
 }
 
