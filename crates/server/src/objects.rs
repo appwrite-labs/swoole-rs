@@ -93,13 +93,9 @@ impl Bus {
         Self { bus, allocator }
     }
     /// The Rust bus, used by this thread alone while the handle is.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "the handle's maker lends the bus to this thread"
-    )]
-    pub(crate) fn rust(&self) -> &mut MessageBus {
+    pub(crate) fn rust(&self) -> &MessageBus {
         // SAFETY: `of`'s and `from_parts`' contract: a live bus only this thread uses.
-        unsafe { &mut *self.bus.cast::<MessageBus>() }
+        unsafe { &*self.bus.cast::<MessageBus>() }
     }
     /// The allocator of its packets.
     pub(crate) fn allocator(self) -> *const CoreAllocator {

@@ -143,7 +143,7 @@ fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
 /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
 /// default allocator: allocates each packet block the bus asks for.
 pub(crate) fn read_bus(
-    bus: &mut MessageBus,
+    bus: &MessageBus,
     allocator: *const CoreAllocator,
     sock: Socket<'_>,
     dgram: bool,
@@ -218,7 +218,7 @@ fn new_message_bus() -> *mut c_void {
 
 /// `new MessageBus()` numbering its messages from `counter`; [`free_bus`] frees it.
 pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
-    let mut bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
+    let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
     bus.count_ids(counter);
     let bus = PoolBus {
         bus,
