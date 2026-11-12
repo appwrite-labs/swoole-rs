@@ -171,8 +171,7 @@ impl Connection for Read<'_> {
         } else {
             c"ListenPort::readable_callback_raw"
         };
-        // SAFETY: the live event.
-        let fd = unsafe { (*self.event).fd() };
+        let fd = self.socket.fd();
         log::sys_warning(origin, format_args!("recv from connection#{fd} failed"));
     }
 

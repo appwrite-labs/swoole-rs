@@ -14,7 +14,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_char};
 use std::slice;
 
 use swoole_rs_server::port_config::{self, PortMethods};
@@ -198,9 +198,6 @@ pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
         private,
     }
 }
-unsafe extern "C" {
-    fn strncasecmp(a: *const c_char, b: *const c_char, n: usize) -> c_int;
-}
 
 /// The event `name` registers (`on()`): its index and callback property.
 /// `native_casefold` matches as libc's `strncasecmp` does, else exactly.
@@ -212,10 +209,7 @@ pub fn event(name: &[u8], native_casefold: bool) -> Option<(usize, &'static [u8]
         .find_map(|(index, &(key, property))| {
             let found = name.len() == key.len()
                 && if native_casefold {
-                    // SAFETY: both ranges hold `len` readable bytes (`name.len() == key.len()`).
-                    unsafe {
-                        strncasecmp(name.as_ptr().cast(), key.as_ptr().cast(), key.len()) == 0
-                    }
+                    swoole_rs_locale::strncasecmp_equal(name, key, key.len())
                 } else {
                     name == key
                 };
