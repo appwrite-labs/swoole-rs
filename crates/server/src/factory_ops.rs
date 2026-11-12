@@ -2,7 +2,7 @@
 //! `OP_*`) over the server, worker, connection and send records Rust lays out, which
 //! [`run`]'s context answers.
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicI64, Ordering};
+use core::sync::atomic::Ordering;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
 
@@ -71,10 +71,6 @@ const PIPE_MASTER: c_int = 1;
 
 /// Only [`run`] makes a `Context`, from the worker, send and status its caller lends.
 /// An op that reads one its caller didn't lend aborts, as a null dereference would.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written under the server's own synchronization as workers.cc did"
-)]
 impl<'a> Context<'a> {
     fn state(&self) -> &'a crate::ServerState {
         self.serv.state()
@@ -89,9 +85,8 @@ impl<'a> Context<'a> {
         self.server().workers()
     }
     /// Worker `id` of the server, or `None` past the last.
-    fn worker_at(&self, id: u16) -> Option<&mut WorkerRecord> {
-        // SAFETY: null past the last, else one of the server's live workers.
-        unsafe { self.server().worker(id).as_mut() }
+    fn worker_at(&self, id: u16) -> Option<Worker<'a>> {
+        self.server().worker_record(id)
     }
     /// The data sent, for the ops that run with it.
     fn send(&self) -> &SendData {
@@ -129,9 +124,8 @@ impl<'a> Context<'a> {
         unsafe { self.conn.as_mut() }
     }
     /// The server's worker registry.
-    fn registry(&self) -> &mut swoole_rs_corebase::worker_registry::WorkerRegistry {
-        // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { self.server().registry_mut() }
+    fn registry(&self) -> &'a swoole_rs_corebase::worker_registry::WorkerRegistry {
+        self.server().registry()
     }
     fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.state().callbacks.slot(index)
@@ -227,8 +221,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WRITE_TO_WORKER => {
             // The worker the factory scheduled, and its pipe, if the server has them.
             let pipe = ctx.worker_at(worker_id(arg));
-            let Some(pipe) =
-                pipe.and_then(|worker| crate::objects::worker_pipe(worker.into(), true))
+            let Some(pipe) = pipe.and_then(|worker| crate::objects::worker_pipe(worker, true))
             else {
                 return Some(0);
             };
@@ -258,7 +251,7 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let Some(worker) = ctx.worker_at(worker_id(id.cast_unsigned())) else {
                 return Some(0);
             };
-            let pipe = worker.pipe_worker;
+            let pipe = worker.pipe_worker();
             let bus = state.message_bus();
             // SAFETY: the live pipe, and the data sent.
             u64::from(unsafe { bus.rust().send(pipe.cast(), &mut info, data.cast()) })
@@ -393,7 +386,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: a worker of the live server and a head of the size passed.
             let sent = unsafe {
                 swoole_rs_process::methods::send_pipe_message(
-                    target,
+                    target.raw(),
                     data,
                     size_of::<DataHead>(),
                     PIPE_MASTER,
@@ -477,9 +470,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_COUNT_DISPATCH => {
             if let Some(worker) = ctx.worker_at(worker_id(arg)) {
-                // SAFETY: a worker's counter, shared and updated only atomically.
-                let count = unsafe { AtomicI64::from_ptr(&raw mut worker.dispatch_count) };
-                count.fetch_add(1, Ordering::SeqCst);
+                worker.count_dispatch();
             }
         }
         _ => return None,

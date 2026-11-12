@@ -220,7 +220,7 @@ fn user_worker_pids<H: Host>(h: &mut H) -> Vec<c_int> {
     // SAFETY: the manager's server owns this registry throughout the call. No
     // callback runs or registry mutation occurs while its pids are copied.
     unsafe { (address as *const WorkerRegistry).as_ref() }
-        .map_or_else(Vec::new, |registry| registry.pids(CATEGORY_USER).collect())
+        .map_or_else(Vec::new, |registry| registry.pids(CATEGORY_USER))
 }
 
 fn pid(value: u64) -> c_int {

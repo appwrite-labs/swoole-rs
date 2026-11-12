@@ -82,10 +82,6 @@ const _: () = assert!(
 );
 
 /// The context's objects, each live when the op reading it runs.
-#[expect(
-    clippy::mut_from_ref,
-    reason = "native records shared with C++, written by the manager that owns them"
-)]
 impl<'a> Context<'a> {
     /// The context over `serv`.
     fn of(serv: Option<view::Server<'a>>) -> Self {
@@ -140,11 +136,14 @@ impl<'a> Context<'a> {
         unsafe { &*self.task }
     }
     /// The server's worker registry.
-    fn registry(&self) -> &mut registry::WorkerRegistry {
-        // SAFETY: the server's live registry, which only the manager writes.
-        unsafe { self.server().registry_mut() }
+    fn registry(&self) -> &'a registry::WorkerRegistry {
+        self.server().registry()
     }
     /// The event pool's reload task, for the ops that run while the manager reloads.
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "the pool's reload task, which only the manager's reload ops write, one at a time"
+    )]
     fn reload_task(&self) -> &mut swoole_rs_process::reload_task::ReloadTask {
         // SAFETY: the reload task the manager started.
         unsafe { &mut *self.pool().reload_task() }
