@@ -15,9 +15,8 @@ use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
 use swoole_rs_server::{SharedServer, port_config, view};
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, custom_of,
-    message,
-    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_object},
+    Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, message,
+    sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -145,10 +144,10 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
 }
 
 /// A new Port object bound to `port`, one of the ports of its server `serv`.
-pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> (Owned, *mut zend_object) {
+pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     let zport = PORT.create_object();
-    let (Some(object), Some(data)) = (zport.object(), zport.custom::<PortData>()) else {
-        return (zport, ptr::null_mut());
+    let Some(data) = zport.custom::<PortData>() else {
+        return zport;
     };
     data.port.set(port.raw());
     // A new object has no server yet.
@@ -159,16 +158,13 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> (Owned, *m
     // The object's property lives as long as the port's link, which only reads it.
     let property = ptr::from_ref(&data.property).cast_mut().cast();
     crate::server::port_property(config.object_id, &mut config.ptr, property, true);
-    (zport, object)
+    zport
 }
 
-/// The object's `ListenPort`; an `E_ERROR`, which does not return, when unbound.
-/// # Safety
-/// `object` is a `Swoole\Server\Port` this class created, bound for `'a`; the caller
-/// owns nothing to drop.
-pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_server::view::Port<'a> {
-    // SAFETY: a live object, per the contract.
-    let data = unsafe { custom_of::<PortData>(object) };
+/// The `ListenPort` of the Port object `object` holds; an `E_ERROR`, which does
+/// not return, when it is none or unbound. The caller owns nothing to drop.
+pub(crate) fn bound_port(object: &Value) -> view::Port<'_> {
+    let data = object.custom::<PortData>();
     data.and_then(PortData::port).unwrap_or_else(|| {
         // Only this class's `create_object` makes the Server's Port objects.
         crate::server::invalid(c"Swoole\\Server\\Port");
@@ -178,11 +174,8 @@ pub(crate) unsafe fn bound_port<'a>(object: *mut zend_object) -> swoole_rs_serve
 }
 
 /// [`PortData::release`] of a Port object the Server keeps.
-/// # Safety
-/// `object` is a live object.
-pub(crate) unsafe fn deref(object: *mut zend_object) {
-    // SAFETY: per the caller.
-    if let Some(data) = unsafe { custom_of::<PortData>(object) } {
+pub(crate) fn release(object: &Value) {
+    if let Some(data) = object.custom::<PortData>() {
         data.release();
     }
 }

@@ -14,12 +14,8 @@ use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{ConnectionRecord, SharedServer, server_methods, view};
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_WARNING, Minit, Object, Value, report,
-    sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC,
-        zend_class_entry, zend_object_handlers, zval,
-    },
-    unset_property_deny,
+    Call, Class, Custom, CustomClass, E_WARNING, Minit, Value, report,
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -60,7 +56,7 @@ pub(crate) fn this_class(call: &Call) -> &CStr {
     call.class_name().unwrap_or_default()
 }
 
-pub(crate) static SERVER: Class = Class::new();
+pub(crate) static SERVER: CustomClass<crate::lifecycle::ServerData> = CustomClass::new();
 /// `Swoole\Redis\Server`, which crates/phpredis registers at MINIT.
 pub static REDIS_SERVER: Class = Class::new();
 
@@ -106,24 +102,6 @@ pub(crate) static DATA: [Class; 5] = [
     Class::new(),
 ];
 static ITERATOR: CustomClass<Iterator> = CustomClass::new();
-
-/// `ServerObject` before its `zend_object`: `Server *serv; void *property;
-/// zval init_arguments;`, where `serv` is the object's share in its server, none
-/// until `__construct` binds one, and `property` is lifecycle.rs's `Property`: none
-/// in the zeroed object until `create` boxes it, and none again once `free` takes it.
-#[repr(C)]
-pub(crate) struct ServerData {
-    pub(crate) serv: Option<SharedServer>,
-    pub(crate) property: Option<Box<crate::lifecycle::Property>>,
-    pub(crate) init_arguments: zval,
-}
-
-/// A zeroed `serv` is no share: an `Option` the size of the share's one pointer
-/// keeps `None` in that pointer's only invalid value, null.
-const _: () = assert!(
-    size_of::<Option<SharedServer>>() == size_of::<usize>(),
-    "a zeroed ServerData must hold no share"
-);
 
 /// `SW_THREAD`, as MINIT was told.
 pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
@@ -243,7 +221,9 @@ pub(crate) fn task_info(call: &Call) -> DataHead {
 /// Bind a new `Server\Task` to the running server and the head of the task it carries.
 pub(crate) fn task_bind(task: &Value, info: &DataHead) {
     if let Some(task) = task.custom::<TaskData>() {
-        if let Some(serv) = crate::lifecycle::ServerObject::running().share() {
+        let held = crate::lifecycle::ServerObject::running();
+        let object = held.as_deref().and_then(crate::lifecycle::ServerObject::of);
+        if let Some(serv) = object.and_then(crate::lifecycle::ServerObject::share) {
             // A new task has no server yet.
             task.serv.get_or_init(|| serv);
         }
@@ -261,11 +241,6 @@ pub(crate) fn task_server(call: &Call) -> view::Server<'_> {
         },
         SharedServer::view,
     )
-}
-
-fn deny(handlers: &mut zend_object_handlers) {
-    handlers.clone_obj = None;
-    handlers.unset_property = Some(unset_property_deny);
 }
 
 /// A declared property: public unless `Private`.
@@ -479,20 +454,7 @@ pub unsafe extern "C" fn php_swoole_server_minit(module: c_int) {
     } else {
         SERVER_METHODS.without(&[c"getSocket"])
     };
-    minit.register(&SERVER, c"Swoole\\Server", methods, |entry, handlers| {
-        entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-        deny(handlers);
-        // SAFETY: `lifecycle::create` makes an `Object<ServerData>`, and
-        // `lifecycle::free` destroys it with `zend_object_std_dtor`.
-        unsafe {
-            Object::<ServerData>::install(
-                entry,
-                handlers,
-                crate::lifecycle::create,
-                crate::lifecycle::free,
-            );
-        }
-    });
+    minit.register_object::<crate::lifecycle::ServerData>(c"Swoole\\Server", methods, 0);
     minit.register_object::<TaskData>(c"Swoole\\Server\\Task", &TASK_METHODS.0, ZEND_ACC_FINAL);
     declare(&minit, &TASK, TASK_PROPERTIES);
     for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
@@ -1172,11 +1134,16 @@ fn delegate(call: &Call, method: &[u8]) {
     if call.arity(1, 1).is_err() {
         return call.set_bool(false);
     }
-    let mut object = crate::lifecycle::ServerObject::running().zval();
+    // The running server's object, held for the call.
+    let Some(object) = crate::lifecycle::ServerObject::running() else {
+        return call.set_bool(false);
+    };
     let args: Vec<&Value> = call.value(1).into_iter().collect();
-    let retval = match Value::of(&mut object).call_method(Some(&SERVER), method, &args) {
+    let called = object.call_method(Some(&SERVER), method, &args);
+    drop((args, object));
+    let retval = match called {
         Ok(retval) => retval,
-        // Nothing here to release: the bailout jumps over this frame.
+        // Nothing left here to release: the bailout jumps over this frame.
         Err(bailout) => return swoole_rs_zend::bailout::raise(Err(bailout)),
     };
     if method == b"exists" {
@@ -1231,15 +1198,4 @@ swoole_rs_zend::handlers! {
     zim_swoole_connection_iterator_offsetGet => offset_get;
     zim_swoole_connection_iterator_offsetSet => nothing;
     zim_swoole_connection_iterator_offsetUnset => nothing;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layouts_mirror_cxx() {
-        // ServerObject { Server *; Property *; zval init_arguments; zend_object std; }
-        assert_eq!(Object::<ServerData>::OFFSET, 32);
-    }
 }

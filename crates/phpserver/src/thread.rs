@@ -15,8 +15,7 @@ use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
     bailout::{self, Bailout},
-    kind,
-    sys::{IS_NULL, swr_zend_thread_main_request, zend_fcall_info},
+    sys::{swr_zend_thread_main_request, zend_fcall_info},
 };
 
 /// What every worker thread starts its PHP request with: the bootstrap script
@@ -75,14 +74,17 @@ pub(crate) fn admit(existing: &mut Option<SharedServer>) -> c_int {
 /// `start()` on a worker thread: the settings the master serialized, this
 /// thread's coroutine options, then the worker's body. `None`: not a worker
 /// thread.
-pub(crate) fn worker(object: ServerObject, serv: view::Server<'_>) -> Option<Result<(), Bailout>> {
+pub(crate) fn worker(
+    object: ServerObject<'_>,
+    serv: view::Server<'_>,
+) -> Option<Result<(), Bailout>> {
     if !serv.is_worker_thread() {
         return None;
     }
     Some(run_worker(object))
 }
 
-fn run_worker(object: ServerObject) -> Result<(), Bailout> {
+fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     let text = SETTING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -112,12 +114,11 @@ fn run_worker(object: ServerObject) -> Result<(), Bailout> {
 /// `start()` in thread mode, before the server starts: the bootstrap script,
 /// the `init_arguments` result, and the thread starter; the runtime hooks are
 /// enabled before any thread is created.
-pub(crate) fn prepare(object: ServerObject, serv: view::Server<'_>) -> Result<(), Bailout> {
+pub(crate) fn prepare(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Bailout> {
     if !thread_mode(serv) {
         return Ok(());
     }
-    let mut this = object.zval();
-    let this = Value::of(&mut this);
+    let this = object.value();
     // The Server class declares `bootstrap`; read again after the write.
     let bootstrap = || {
         this.property(c"bootstrap")
@@ -151,18 +152,21 @@ fn string_of(slot: &Value) -> &[u8] {
 }
 
 /// `init_arguments()`'s array, copied for the threads.
-fn init_arguments(object: ServerObject) -> Result<Option<Arguments>, Bailout> {
+fn init_arguments(object: ServerObject<'_>) -> Result<Option<Arguments>, Bailout> {
     let callable = object.init_arguments();
-    if kind(&callable) == IS_NULL {
+    if callable.is_null() {
         return Ok(None);
     }
     let result = Owned::default();
     let mut fci = swoole_rs_zend::EMPTY_FCI;
     fci.size = size_of::<zend_fcall_info>();
-    fci.function_name = callable;
+    // The call's own reference, released after it.
+    fci.function_name = callable.into_zval();
     fci.retval = result.as_ptr();
     // SAFETY: `call_user_function(NULL, nullptr, &init_arguments, &result, 0, nullptr)`.
-    unsafe { bailout::call(&raw mut fci, ptr::null_mut()) }?;
+    let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
+    crate::dispatch::dtor(&mut fci.function_name);
+    called?;
     result.array().map(Arguments::copy).transpose()
 }
 
