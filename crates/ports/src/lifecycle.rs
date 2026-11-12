@@ -11,10 +11,7 @@ use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 use std::collections::HashMap;
 
-use openssl_sys::{
-    SSL, SSL_CTX_set_tlsext_servername_callback__fixed_rust, SSL_get_ex_data, SSL_get_servername,
-    SSL_set_SSL_CTX, SSL_set_ex_data, TLSEXT_NAMETYPE_host_name,
-};
+use openssl_sys::{SSL, SSL_CTX_set_tlsext_servername_callback__fixed_rust};
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
@@ -22,7 +19,7 @@ use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
-    DtlsSession, OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslVersion, Text, TlsContext,
+    DtlsSession, OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext,
     has_files, set_text, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
     swr_v1_tls_owner_view, swr_v1_tls_port_index,
 };
@@ -220,19 +217,17 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
         .ssl_context
         .as_ref()
         .map_or(ptr::null(), TlsContext::as_ptr);
-    let sock = sock.cast::<SocketRecord>();
     let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
-    // SAFETY: the live socket and the port's live context.
-    if unsafe { socket_ssl_create(sock, context, flags) } < 0 {
+    // SAFETY: the live socket `PortMethods` takes, which only this thread touches.
+    let sock = unsafe { Socket::from_ptr(sock.cast()) };
+    // SAFETY: the port's live context.
+    let create = |sock| unsafe { socket_ssl_create(sock, context, flags) };
+    let Some(sock) = sock.filter(|&sock| create(sock) >= 0) else {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
-    }
-    // SAFETY: the live socket `PortMethods` takes, which only this thread touches.
-    let ssl = unsafe { Socket::from_ptr(sock) }.map_or(ptr::null_mut(), |s| {
-        s.read(swoole_rs_reactor::SocketFields::ssl)
-    });
-    // SAFETY: the SSL just made; the port outlives its connections.
-    if unsafe { SSL_set_ex_data(ssl.cast(), swr_v1_tls_port_index(), port) } == 0 {
+    };
+    // The port outlives its connections.
+    if !Ssl::of(sock).is_some_and(|ssl| ssl.set_ex_data(swr_v1_tls_port_index(), port)) {
         log::warning(
             c"ListenPort::ssl_create",
             format_args!("SSL_set_ex_data() failed"),
@@ -246,14 +241,15 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
 /// first SNI context whose name matches wins.
 unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_void) -> c_int {
     // SAFETY: OpenSSL's live handshake.
-    let name = unsafe { SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name) };
-    if name.is_null() {
+    let Some(ssl) = (unsafe { Ssl::new(ssl) }) else {
         return TLSEXT_NOACK;
-    }
-    // SAFETY: a NUL-terminated name the handshake keeps for the call.
-    let name = unsafe { CStr::from_ptr(name) }.to_bytes();
-    // SAFETY: as above; `ssl_create` stored its port.
-    let port = unsafe { SSL_get_ex_data(ssl, swr_v1_tls_port_index()) };
+    };
+    let Some(name) = ssl.servername() else {
+        return TLSEXT_NOACK;
+    };
+    let name = name.as_slice();
+    // `ssl_create` stored its port.
+    let port = ssl.ex_data(swr_v1_tls_port_index());
     // SAFETY: the port the handshake's connection belongs to, live while it serves.
     let config = unsafe { port_config::of(port) };
     let Some((_, context)) = sni(config)
@@ -263,8 +259,8 @@ unsafe extern "C" fn sni_callback(ssl: *mut SSL, _al: *mut c_int, _arg: *mut c_v
         return TLSEXT_NOACK;
     };
     let ctx = edit(context, |fields| fields.context);
-    // SAFETY: the handshake's live SSL and that context's SSL_CTX.
-    unsafe { SSL_set_SSL_CTX(ssl, ctx) };
+    // SAFETY: that context's live SSL_CTX.
+    unsafe { ssl.set_context(ctx) };
     TLSEXT_OK
 }
 

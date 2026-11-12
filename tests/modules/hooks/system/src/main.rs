@@ -111,13 +111,6 @@ struct CppString {
     allocator: *const c_void,
 }
 
-/// `std::shared_ptr<T>` (object, control block); passed by address.
-#[repr(C)]
-struct SharedPtr {
-    object: *mut CppString,
-    control: *mut c_void,
-}
-
 unsafe extern "C-unwind" {
     #[link_name = "_Z11swoole_initv"]
     fn swoole_init();
@@ -145,25 +138,10 @@ unsafe extern "C-unwind" {
 
     #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
     fn system_sleep(sec: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System10write_fileEPKcS3_mbi"]
-    fn system_write_file(
-        file: *const c_char,
-        buf: *const c_char,
-        length: usize,
-        lock: bool,
-        flags: c_int,
-    ) -> isize;
     #[link_name = "_ZN6swoole9coroutine6System10wait_eventEiid"]
     fn system_wait_event(fd: c_int, events: c_int, timeout: f64) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System7waitpidEiPiid"]
     fn system_waitpid(pid: c_int, status: *mut c_int, options: c_int, timeout: f64) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System4execEPKcbSt10shared_ptrINS_6StringEEPi"]
-    fn system_exec(
-        command: *const c_char,
-        errors: bool,
-        buffer: *const SharedPtr,
-        status: *mut c_int,
-    ) -> bool;
 }
 
 unsafe extern "C" {
@@ -251,8 +229,7 @@ fn waitpid(pid: c_int, status: &mut c_int, options: c_int, timeout: f64) -> c_in
 }
 
 fn write_file(file: &CStr, buf: &[u8], lock: bool, flags: c_int) -> isize {
-    // SAFETY: `buf` is readable for its length.
-    unsafe { system_write_file(file.as_ptr(), buf.as_ptr().cast(), buf.len(), lock, flags) }
+    swoole_rs_hooks::file_io::write_file(file, buf, lock, flags)
 }
 
 /// `System::getaddrinfo`.
@@ -762,21 +739,8 @@ fn timeout_is_zero() {
 fn exec() {
     run(|| {
         let mut status = 0;
-        // swoole::make_string(1024): a String of 1024 bytes from the default allocator.
-        let string = Box::into_raw(Box::new(std::mem::MaybeUninit::<CppString>::uninit()))
-            .cast::<CppString>();
-        // SAFETY: constructs the String in place.
-        unsafe { string_new(string, 1024, std::ptr::null()) };
-        let buffer = SharedPtr {
-            object: string,
-            control: std::ptr::null_mut(),
-        };
-        // SAFETY: a live String and a writable status, in a coroutine.
-        assert!(unsafe { system_exec(c"ls /".as_ptr(), true, &raw const buffer, &raw mut status) });
-        // SAFETY: the String exec filled.
-        let output = unsafe {
-            std::slice::from_raw_parts((*buffer.object).str.cast::<u8>(), (*buffer.object).length)
-        };
+        let output = swoole_rs_hooks::exec::exec(c"ls /", true, &mut status);
+        let output = output.expect("System::exec");
         assert!(output.windows(3).any(|window| window == b"tmp"));
     });
 }

@@ -831,16 +831,20 @@ impl PoolNative for Native {
     }
 
     fn recv(&self, c: &mut PoolCall) {
-        // SAFETY: the call's connection and buffer.
-        io(c, |c| unsafe {
-            socket_recv_sync(c.socket().cast(), c.data(), c.length(), c.flags())
+        io(c, |c| {
+            let (data, length, flags) = (c.data(), c.length(), c.flags());
+            // SAFETY: the call's connection and buffer.
+            let recv = |socket| unsafe { socket_recv_sync(socket, data, length, flags) };
+            socket(c.socket()).map_or(-1, recv)
         });
     }
 
     fn send(&self, c: &mut PoolCall) {
-        // SAFETY: the call's connection and bytes.
-        io(c, |c| unsafe {
-            socket_send_sync(c.socket().cast(), c.data(), c.length(), 0)
+        io(c, |c| {
+            let (data, length) = (c.data(), c.length());
+            // SAFETY: the call's connection and bytes.
+            let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
+            socket(c.socket()).map_or(-1, send)
         });
     }
 
@@ -859,7 +863,7 @@ impl PoolNative for Native {
             let timeout = next as f64 / 1000.0;
             pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
             // SAFETY: the worker's pipe and the call's buffer.
-            unsafe { socket_read_sync(pipe.as_ptr(), c.data(), c.length()) }
+            unsafe { socket_read_sync(pipe, c.data(), c.length()) }
         });
     }
 
@@ -919,8 +923,10 @@ impl PoolNative for Native {
                 // SAFETY: the worker's pipe, in this thread's loop.
                 unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
             } else {
+                let (data, length) = (c.data(), c.length());
                 // SAFETY: the worker's pipe and the call's bytes.
-                unsafe { socket_send_sync(c.socket().cast(), c.data(), c.length(), 0) }
+                let send = |pipe| unsafe { socket_send_sync(pipe, data, length, 0) };
+                socket(c.socket()).map_or(-1, send)
             }
         });
     }
