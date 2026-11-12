@@ -450,8 +450,8 @@ pub(crate) unsafe fn swr_case_ssl_server(
     set_ssl_path(port.ssl_context(), CERT_FILE, cert);
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
     tls_fields(port.ssl_context()).http = 1;
-    // SAFETY: the live port, with its context.
-    let _ = unsafe { lifecycle::ssl_init(port.0) };
+    // SAFETY: the live port, which nothing else borrows meanwhile.
+    let _ = lifecycle::ssl_init(unsafe { swoole_rs_server::port_config::of(port.0) });
     let created = serv.create();
     serv.on_start(on_start);
     serv.on_worker_start(on_worker_start);
@@ -722,13 +722,14 @@ pub(crate) unsafe fn swr_case_ssl_sni(
     key: *const c_char,
 ) {
     let port = Server(serv).get_primary_port();
-    // SAFETY: the live port; its context's copy, which `sni_add` takes.
-    unsafe {
-        let context = lifecycle::context_dup(port.0);
-        set_ssl_path(context.as_ptr().cast(), CERT_FILE, cert);
-        set_ssl_path(context.as_ptr().cast(), KEY_FILE, key);
-        lifecycle::sni_add(port.0, CStr::from_ptr(name).to_bytes(), context);
-    }
+    // SAFETY: the live port, which nothing else borrows meanwhile.
+    let config = unsafe { swoole_rs_server::port_config::of(port.0) };
+    let context = lifecycle::context_dup(config);
+    set_ssl_path(context.as_ptr().cast(), CERT_FILE, cert);
+    set_ssl_path(context.as_ptr().cast(), KEY_FILE, key);
+    // SAFETY: a NUL-terminated name.
+    let name = unsafe { CStr::from_ptr(name) };
+    lifecycle::sni_add(config, name.to_bytes(), context);
 }
 
 /// `set_ssl_protocols`; the cases' ports are TCP, so the DTLS bit stays.
@@ -752,6 +753,7 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
 }
 
 pub(crate) unsafe fn swr_case_ssl_init(serv: *mut c_void) -> bool {
-    // SAFETY: the live primary port, with its context.
-    unsafe { lifecycle::ssl_init(Server(serv).get_primary_port().0) }
+    let port = Server(serv).get_primary_port();
+    // SAFETY: the live primary port, which nothing else borrows meanwhile.
+    lifecycle::ssl_init(unsafe { swoole_rs_server::port_config::of(port.0) })
 }

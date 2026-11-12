@@ -571,7 +571,7 @@ mod tests {
         );
         assert!(!config.is_dtls(), "not DTLS");
         // No files: ssl_init refuses unless SNI contexts exist.
-        assert!(!unsafe { ssl_init(at) }, "no certificate");
+        assert!(!ssl_init(config), "no certificate");
         close(at);
         assert!(config.ssl_context.is_none(), "released");
         config.r#type = 2;

@@ -83,13 +83,8 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 }
 
 /// `ListenPort::dup_ssl_context()`: a new context with the port's settings.
-///
-/// # Safety
-/// `port` is a live `ListenPort` with a context.
 #[must_use]
-pub unsafe fn context_dup(port: *const c_void) -> TlsContext {
-    // SAFETY: as the caller guarantees; only read.
-    let config = unsafe { port_config::of(port.cast_mut()) };
+pub fn context_dup(config: &PortConfig) -> TlsContext {
     let copy = TlsContext::new();
     let source = config
         .ssl_context
@@ -141,12 +136,7 @@ pub(crate) fn context_create(
 
 /// `ListenPort::ssl_add_sni_cert(name, ctx)`: creates the context (both files
 /// required) and stores it under `name` unless the name is taken.
-///
-/// # Safety
-/// `port` is a live `ListenPort`.
-pub unsafe fn sni_add(port: *mut c_void, name: &[u8], context: TlsContext) -> bool {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port) };
+pub fn sni_add(config: &mut PortConfig, name: &[u8], context: TlsContext) -> bool {
     let added = context_create(config, &context, false);
     let state = state(config);
     if added && !state.sni.iter().any(|(stored, _)| stored == name) {
@@ -157,13 +147,8 @@ pub unsafe fn sni_add(port: *mut c_void, name: &[u8], context: TlsContext) -> bo
 
 /// `ListenPort::ssl_init()`: the port's context (no files allowed when SNI
 /// contexts exist), and the SNI callback when they do.
-///
-/// # Safety
-/// `port` is a live `ListenPort` with an SSL context.
 #[must_use]
-pub unsafe fn ssl_init(port: *const c_void) -> bool {
-    // SAFETY: as the caller guarantees.
-    let config = unsafe { port_config::of(port.cast_mut()) };
+pub fn ssl_init(config: &mut PortConfig) -> bool {
     let Some(context) = config.ssl_context.clone() else {
         return false;
     };
