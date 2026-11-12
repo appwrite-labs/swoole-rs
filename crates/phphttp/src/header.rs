@@ -81,8 +81,13 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// of its own (`GC_TRY_ADDREF`). A value's `__toString` may reach the same
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
-fn property(response: &Slot, name: &CStr) -> Option<HeldArray> {
-    response.get()?.property(name)?.hold()
+fn property(response: &Slot, which: usize) -> Option<HeldArray> {
+    let object = response.object()?;
+    let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
+    // OBJ_PROP: a declared slot of that object.
+    let slot = object.wrapping_byte_add(offset).cast::<zval>();
+    // SAFETY: a declared property slot of the context's live response.
+    unsafe { Value::from_ptr(slot) }?.hold()
 }
 
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
@@ -289,7 +294,7 @@ fn build(
 
     // http headers
     let mut flags = 0;
-    if let Some(header) = property(&state.response.zobject, c"header")
+    if let Some(header) = property(&state.response.zobject, 0)
         && let Some(header) = header.array()
     {
         // Asked once, like upstream's `compression_types` test.
@@ -344,7 +349,7 @@ fn build(
     let state = ctx.state();
 
     // http cookies
-    if let Some(cookie) = property(&state.response.zobject, c"cookie")
+    if let Some(cookie) = property(&state.response.zobject, 1)
         && let Some(cookie) = cookie.array()
     {
         each::<()>(cookie, |_, value_| {
@@ -437,7 +442,7 @@ pub(crate) fn trailer<R>(
     f: impl FnOnce(&[u8]) -> R,
 ) -> Result<R, bailout::Bailout> {
     buffer(|out| {
-        if let Some(trailer) = property(&ctx.state().response.zobject, c"trailer")
+        if let Some(trailer) = property(&ctx.state().response.zobject, 2)
             && let Some(trailer) = trailer.array()
         {
             each(trailer, |key, value_| {
