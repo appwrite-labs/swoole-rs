@@ -69,26 +69,36 @@ impl TlsSocket for Co {
     }
 }
 
+/// The session's own BIOs (read, write) while they are the memory BIOs `tls_session`
+/// stored for it, else none: a stored one is stale once the SSL is freed or its BIOs
+/// replaced, so it is only compared, never handed out.
+fn session_bios(ssl: Option<Ssl>, stored: [Option<Bio>; 2]) -> [Option<Bio>; 2] {
+    let live = |bio: Option<Bio>, stored| bio.filter(|_| bio == stored);
+    let [read, write] = stored;
+    [
+        live(ssl.and_then(Ssl::read_bio), read),
+        live(ssl.and_then(Ssl::write_bio), write),
+    ]
+}
+
 /// The ring's view of `socket` when it is a `UringSocket`, else none.
 pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
-    let (uring, [rbio, wbio]) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
+    let (uring, stored) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
     let uring = uring?;
     if socket.socket().is_null() {
         return None;
     }
     socket.net(|network| {
         let ssl = Ssl::of_fields(network);
-        // The session's own BIOs while they are the memory BIOs `tls_session` gave it
-        // (a stored one is stale once the SSL is freed), else none.
-        let current = |bio: Option<Bio>, stored: Option<Bio>| bio.filter(|_| bio == stored);
+        let [rbio, wbio] = session_bios(ssl, stored);
         UringSocketOps {
             socket,
             tls: Tls {
                 uring,
                 socket,
                 ssl,
-                rbio: current(ssl.and_then(Ssl::read_bio), rbio),
-                wbio: current(ssl.and_then(Ssl::write_bio), wbio),
+                rbio,
+                wbio,
                 fd: network.fd,
                 read_timeout: network.timeouts.read,
                 write_timeout: network.timeouts.write,
@@ -633,6 +643,42 @@ mod tests {
         assert!(vector.iovecs().is_empty());
         // Nothing moved: the failure itself.
         assert_eq!(tls_vector(&source, |_, _| -1), -1);
+    }
+
+    /// `of` hands out a stored BIO only while it is still the live session's: not
+    /// once the BIOs are replaced, nor once the session is gone.
+    #[test]
+    fn session_bios_are_only_the_live_sessions() {
+        use openssl_sys as ssl;
+        unsafe {
+            let context = ssl::SSL_CTX_new(ssl::TLS_method());
+            let made = ssl::SSL_new(context);
+            let session = Ssl::new(made).unwrap();
+            let pair = || {
+                (
+                    OwnedBio::memory().unwrap(),
+                    Some(OwnedBio::memory().unwrap()),
+                )
+            };
+            let (read, write) = pair();
+            let (read, write) = session.set_bio(read, write);
+            let stored = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), stored), stored);
+            assert_eq!(
+                session_bios(Some(session), [Some(read), None]),
+                [Some(read), None]
+            );
+            // Replaced: the stored pair is freed and no longer the session's.
+            let (read, write) = pair();
+            let (read, write) = session.set_bio(read, write);
+            assert_eq!(session_bios(Some(session), stored), [None, None]);
+            let fresh = [Some(read), Some(write)];
+            assert_eq!(session_bios(Some(session), fresh), fresh);
+            // Closed: the record holds no session.
+            assert_eq!(session_bios(None, fresh), [None, None]);
+            ssl::SSL_free(made);
+            ssl::SSL_CTX_free(context);
+        }
     }
 
     #[test]
