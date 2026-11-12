@@ -451,8 +451,7 @@ impl Source for Zend<'_> {
             let Some(vht) = value.array() else {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             };
-            // SAFETY: an SSL port.
-            let context = unsafe { context_dup(self.port) };
+            let context = self.config(|c| context_dup(c));
             let item = Zend {
                 settings: Settings {
                     serv: self.settings.serv,
@@ -461,8 +460,7 @@ impl Source for Zend<'_> {
                 port: self.port,
             };
             files(&item, context.as_ptr())?;
-            // SAFETY: a live port.
-            let added = unsafe { sni_add(self.port, name, context) };
+            let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
             }
@@ -471,8 +469,7 @@ impl Source for Zend<'_> {
     }
 
     fn ssl_init(&self) -> bool {
-        // SAFETY: an SSL port.
-        unsafe { swoole_rs_ports::lifecycle::ssl_init(self.port) }
+        self.config(swoole_rs_ports::lifecycle::ssl_init)
     }
 
     fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R {
