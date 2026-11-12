@@ -1,131 +1,79 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
-//! buffered, then hands it to `onPackage`. [`swr_v1_resp_recv`] is the loop over
-//! borrowed effects; the ports crate runs it over the server's own records.
+//! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
+//! [`RespConnection`]; the ports crate runs it over the server's own records, and
+//! [`swr_v1_resp_recv`] over C's effects.
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::{log, set_errno, sw_malloc};
-use swoole_rs_protocols::{RespRequest, resp_extend_size, resp_receive_range};
+pub use swoole_rs_protocols::RespRequest;
+use swoole_rs_protocols::{resp_extend_size, resp_receive_range};
 
 pub(crate) const SW_OK: c_int = 0;
 pub const SW_ERR: c_int = -1;
 pub const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
 
-/// [`RespIo::recv`]: the connection closes (`SW_ERR`).
+/// [`RespConnection::recv`]: the connection closes (`SW_ERR`).
 pub const RESP_RECV_CLOSE: isize = -1;
-/// [`RespIo::recv`]: the read ends with `SW_OK` (it would block, or a logged error).
+/// [`RespConnection::recv`]: the read ends with `SW_OK` (it would block, or a logged error).
 pub const RESP_RECV_DONE: isize = -2;
 
-/// The head of `swoole::String`.
-#[repr(C)]
-pub struct RespBuffer {
-    pub length: usize,
-    pub size: usize,
-    pub offset: i64,
-    pub str: *mut u8,
-}
-
-/// The socket and buffer effects of one receive, lent by the caller.
-#[repr(C)]
-pub struct RespIo {
-    pub context: *mut c_void,
-    /// `socket->recv` of at most `n` bytes into `at`, with upstream's read-error
-    /// handling and warning: the byte count, [`RESP_RECV_CLOSE`] or [`RESP_RECV_DONE`].
-    pub recv: unsafe extern "C" fn(context: *mut c_void, at: *mut u8, n: usize) -> isize,
+/// The socket, receive buffer and request state one `recv_packet` works over. Each
+/// method borrows them only for its own call, since `dispatch` may free them.
+pub trait RespConnection {
+    /// `socket->recv` into the buffer's free tail, with upstream's read-error
+    /// handling and warning: the byte count, which joins the content, 0 or
+    /// [`RESP_RECV_CLOSE`] when the connection closes, or [`RESP_RECV_DONE`].
+    fn recv(&mut self) -> isize;
+    /// The buffer's content, its allocation size, and the request state.
+    fn view(&mut self) -> (&[u8], usize, &mut RespRequest);
+    /// `buffer->offset = offset`.
+    fn set_offset(&mut self, offset: i64);
     /// `buffer->extend(size)`.
-    pub extend: unsafe extern "C" fn(context: *mut c_void, size: usize),
-    /// `protocol->onPackage` of the buffer's first `length` bytes: negative when it
-    /// fails, 1 when the socket was removed meanwhile, else 0.
-    pub dispatch: unsafe extern "C" fn(context: *mut c_void, length: usize) -> c_int,
+    fn extend(&mut self, size: usize);
+    /// `protocol->onPackage` of the whole content: negative when it fails, 1 when
+    /// the socket was removed meanwhile, else 0.
+    fn dispatch(&mut self) -> c_int;
+    /// `buffer->clear()` and a fresh request state, after a dispatch.
+    fn clear(&mut self);
 }
 
-/// `redis::recv_packet`'s loop: receives into `buffer` until the RESP state in
-/// `*request` (allocated with `sw_malloc` when null) sees a whole command or must
-/// wait, growing the buffer up to `maximum`. `page` is `swoole_pagesize()`.
-///
-/// # Safety
-/// `io`'s callbacks are valid for its context; `buffer` is that context's live
-/// String head, which only `extend` reallocates; `request` points to null or to a
-/// live `swr_resp_request` from `sw_malloc`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_recv(
-    io: &RespIo,
-    buffer: *mut RespBuffer,
-    request: *mut *mut RespRequest,
-    maximum: u32,
-    page: usize,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let slot = unsafe { &mut *request };
-    if slot.is_null() {
-        let fresh = sw_malloc(size_of::<RespRequest>()).cast::<RespRequest>();
-        if fresh.is_null() {
-            log::warning(
-                ORIGIN,
-                format_args!("malloc({}) failed", size_of::<RespRequest>()),
-            );
-            return SW_ERR;
-        }
-        // SAFETY: a fresh allocation of one RespRequest.
-        unsafe { fresh.write_bytes(0, 1) };
-        *slot = fresh;
-    }
-    let request = *slot;
+/// `redis::recv_packet`'s loop: receives until the request state sees a whole
+/// command or must wait, growing the buffer up to `maximum`. `page` is
+/// `swoole_pagesize()`.
+pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_int {
     let maximum = maximum as usize;
     loop {
-        // SAFETY: the caller's live String head; this copy is not held across effects.
-        let RespBuffer {
-            length,
-            size,
-            str: data,
-            ..
-        } = unsafe { buffer.read() };
-        // SAFETY: the free tail of the buffer, `size - length` writable bytes.
-        let received = unsafe { (io.recv)(io.context, data.wrapping_add(length), size - length) };
-        if received == 0 || received == RESP_RECV_CLOSE {
-            return SW_ERR;
+        match c.recv() {
+            0 | RESP_RECV_CLOSE => return SW_ERR,
+            ..0 => return SW_OK,
+            _ => {}
         }
-        let Ok(received) = usize::try_from(received) else {
-            return SW_OK;
-        };
-        let length = length + received;
-        // SAFETY: as above.
-        unsafe { (*buffer).length = length };
         let mut range = false;
-        // SAFETY: `length` initialized bytes of a `size`-byte buffer, read before any effect.
-        let bytes = unsafe { crate::input(data, length) };
-        // SAFETY: the live request, used by nothing else meanwhile.
-        let state = unsafe { &mut *request };
-        let (action, set_offset) = bytes.map_or((0, false), |bytes| {
-            resp_receive_range(bytes, size, maximum, state, &mut range)
-        });
+        let (length, size, (action, set_offset)) = {
+            let (bytes, size, state) = c.view();
+            let decision = resp_receive_range(bytes, size, maximum, state, &mut range);
+            (bytes.len(), size, decision)
+        };
         if range {
             set_errno(libc::ERANGE);
         }
         if set_offset {
-            // SAFETY: as above.
-            unsafe { (*buffer).offset = i64::try_from(length).unwrap_or(i64::MAX) };
+            c.set_offset(i64::try_from(length).unwrap_or(i64::MAX));
         }
         match action {
             1 => {
                 let grown = resp_extend_size(length, size, maximum, page);
                 if grown != 0 {
-                    // SAFETY: as the caller promises.
-                    unsafe { (io.extend)(io.context, grown) };
+                    c.extend(grown);
                 }
             }
             2 => return SW_OK,
             3 => {
-                // SAFETY: as the caller promises.
-                match unsafe { (io.dispatch)(io.context, length) } {
+                match c.dispatch() {
                     ..0 => return SW_ERR,
                     0 => {}
                     _ => return SW_OK,
                 }
-                // SAFETY: as above; `buffer->clear()`, then a fresh request.
-                unsafe { (*buffer).length = 0 };
-                // SAFETY: as above.
-                unsafe { (*buffer).offset = 0 };
-                // SAFETY: the live request.
-                unsafe { request.write_bytes(0, 1) };
+                c.clear();
                 return SW_OK;
             }
             4 => {
@@ -141,6 +89,142 @@ pub unsafe extern "C" fn swr_v1_resp_recv(
             }
         }
     }
+}
+
+/// The request state in `slot`, allocated zeroed with `sw_malloc` when null; null
+/// (after a warning) when that fails.
+pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
+    if slot.is_null() {
+        let fresh = sw_malloc(size_of::<RespRequest>()).cast::<RespRequest>();
+        if fresh.is_null() {
+            log::warning(
+                ORIGIN,
+                format_args!("malloc({}) failed", size_of::<RespRequest>()),
+            );
+            return fresh;
+        }
+        // SAFETY: a fresh allocation of one RespRequest.
+        unsafe { fresh.write(RespRequest::default()) };
+        *slot = fresh;
+    }
+    *slot
+}
+
+/// The head of `swoole::String`.
+#[repr(C)]
+pub struct RespBuffer {
+    pub length: usize,
+    pub size: usize,
+    pub offset: i64,
+    pub str: *mut u8,
+}
+
+/// The socket and buffer effects of one receive, lent by the caller.
+#[repr(C)]
+pub struct RespIo {
+    pub context: *mut c_void,
+    /// [`RespConnection::recv`] of at most `n` bytes into `at`.
+    pub recv: unsafe extern "C" fn(context: *mut c_void, at: *mut u8, n: usize) -> isize,
+    /// `buffer->extend(size)`.
+    pub extend: unsafe extern "C" fn(context: *mut c_void, size: usize),
+    /// `protocol->onPackage` of the buffer's first `length` bytes: negative when it
+    /// fails, 1 when the socket was removed meanwhile, else 0.
+    pub dispatch: unsafe extern "C" fn(context: *mut c_void, length: usize) -> c_int,
+}
+
+/// [`swr_v1_resp_recv`]'s connection: C's effects over its String head and request.
+struct Effects<'a> {
+    io: &'a RespIo,
+    buffer: *mut RespBuffer,
+    request: *mut RespRequest,
+}
+
+impl Effects<'_> {
+    fn head(&mut self) -> &mut RespBuffer {
+        // SAFETY: the caller's live String head, which only `extend` reallocates and
+        // this borrow is not held across.
+        unsafe { &mut *self.buffer }
+    }
+
+    fn state(&mut self) -> &mut RespRequest {
+        // SAFETY: the live request, used by nothing else between effects.
+        unsafe { &mut *self.request }
+    }
+}
+
+impl RespConnection for Effects<'_> {
+    fn recv(&mut self) -> isize {
+        let RespBuffer {
+            length, size, str, ..
+        } = *self.head();
+        // SAFETY: the free tail of the buffer, `size - length` writable bytes.
+        let received =
+            unsafe { (self.io.recv)(self.io.context, str.wrapping_add(length), size - length) };
+        self.head().length = length + received.max(0).cast_unsigned();
+        received
+    }
+
+    fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
+        let RespBuffer {
+            length, size, str, ..
+        } = *self.head();
+        // SAFETY: `length` initialized bytes of a `size`-byte buffer, read before any effect.
+        let bytes = unsafe { crate::input(str, length) }.unwrap_or_default();
+        (bytes, size, self.state())
+    }
+
+    fn set_offset(&mut self, offset: i64) {
+        self.head().offset = offset;
+    }
+
+    fn extend(&mut self, size: usize) {
+        // SAFETY: as the caller promises.
+        unsafe { (self.io.extend)(self.io.context, size) };
+    }
+
+    fn dispatch(&mut self) -> c_int {
+        let length = self.head().length;
+        // SAFETY: as the caller promises.
+        unsafe { (self.io.dispatch)(self.io.context, length) }
+    }
+
+    fn clear(&mut self) {
+        let head = self.head();
+        head.length = 0;
+        head.offset = 0;
+        *self.state() = RespRequest::default();
+    }
+}
+
+/// [`recv_packet`] over `io`'s effects into `buffer`, with the request state in
+/// `*request` (allocated with `sw_malloc` when null).
+///
+/// # Safety
+/// `io`'s callbacks are valid for its context; `buffer` is that context's live
+/// String head, which only `extend` reallocates; `request` points to null or to a
+/// live `swr_resp_request` from `sw_malloc`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_resp_recv(
+    io: &RespIo,
+    buffer: *mut RespBuffer,
+    request: *mut *mut RespRequest,
+    maximum: u32,
+    page: usize,
+) -> c_int {
+    // SAFETY: as the caller promises.
+    let request = self::request(unsafe { &mut *request });
+    if request.is_null() {
+        return SW_ERR;
+    }
+    recv_packet(
+        &mut Effects {
+            io,
+            buffer,
+            request,
+        },
+        maximum,
+        page,
+    )
 }
 
 #[cfg(test)]
