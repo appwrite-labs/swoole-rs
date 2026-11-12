@@ -378,7 +378,10 @@ impl TaskServer for Server {
     }
 
     fn get_manager_pid(self) -> c_int {
-        self.view().counters().manager_pid
+        self.view()
+            .counters()
+            .manager_pid
+            .load(core::sync::atomic::Ordering::Relaxed)
     }
 
     fn kill_worker(self, worker_id: c_int) -> bool {

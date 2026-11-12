@@ -685,7 +685,7 @@ fn stats(call: &Call) {
     let gs = serv.counters();
     let load = |count: &AtomicU64| count.load(Ordering::Relaxed).cast_signed();
     let values = [
-        gs.start_time,
+        gs.start_time.load(Ordering::Relaxed),
         i64::try_from(serv.connection_num()).unwrap_or(i64::MAX),
         load(&gs.abort_count),
         load(&gs.accept_count),
@@ -702,7 +702,7 @@ fn stats(call: &Call) {
         load(&gs.total_send_bytes),
         load(&gs.pipe_packet_msg_id),
         i64::from(gs.concurrency.load(Ordering::Relaxed)),
-        gs.session_round,
+        gs.session_round.load(Ordering::Relaxed),
         i64::from(gs.min_fd()),
         i64::from(gs.max_fd()),
     ];
@@ -1047,12 +1047,20 @@ fn get_worker_pid(call: &Call) {
 
 fn get_manager_pid(call: &Call) {
     let serv = server(call);
-    call.set_long(i64::from(serv.counters().manager_pid));
+    call.set_long(i64::from(
+        serv.counters()
+            .manager_pid
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ));
 }
 
 fn get_master_pid(call: &Call) {
     let serv = server(call);
-    call.set_long(i64::from(serv.counters().master_pid));
+    call.set_long(i64::from(
+        serv.counters()
+            .master_pid
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ));
 }
 
 fn shutdown(call: &Call) {

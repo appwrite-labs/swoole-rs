@@ -523,7 +523,7 @@ fn http2_connection(
             .then(|| usize::try_from(conn.fd).ok())
             .flatten(),
         static_handler: server.config().enable_static_handler,
-        unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency,
+        unavailable: counters.concurrency.load(SeqCst) >= counters.max_concurrency.load(SeqCst),
         coroutine: enable_coroutine(server),
     };
     Some((conn, facts))

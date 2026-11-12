@@ -202,16 +202,17 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SET_MASTER_PID => {
-            ctx.counters().master_pid = std::process::id().cast_signed();
+            let pid = std::process::id().cast_signed();
+            ctx.counters().master_pid.store(pid, Ordering::Relaxed);
             0
         }
         OP_HAS_ON_START => u64::from(
             ctx.callback_slot(CB_START)
                 .is_some_and(crate::callbacks::CallbackSlot::is_set),
         ),
-        OP_ONSTART_CALLED => u64::from(ctx.counters().onstart_called),
+        OP_ONSTART_CALLED => u64::from(ctx.counters().onstart_called.load(Ordering::Relaxed)),
         OP_ON_START => {
-            ctx.counters().onstart_called = true;
+            ctx.counters().onstart_called.store(true, Ordering::Relaxed);
             ctx.server()
                 .state()
                 .callbacks

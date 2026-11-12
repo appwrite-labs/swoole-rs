@@ -142,11 +142,17 @@ fn worker_id(worker: *mut WorkerRecord) -> u32 {
 }
 
 fn manager_pid(serv: Server) -> c_int {
-    serv.view().counters().manager_pid
+    serv.view()
+        .counters()
+        .manager_pid
+        .load(core::sync::atomic::Ordering::Relaxed)
 }
 
 fn master_pid(serv: Server) -> c_int {
-    serv.view().counters().master_pid
+    serv.view()
+        .counters()
+        .master_pid
+        .load(core::sync::atomic::Ordering::Relaxed)
 }
 
 fn signal(pid: c_int, signo: c_int) {

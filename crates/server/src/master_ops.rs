@@ -173,10 +173,10 @@ impl<'a> Objects<'a> {
     fn tables(&self) -> &crate::ServerTables {
         self.state.tables_ref()
     }
-    fn gs(&self) -> &mut ServerCounters {
+    fn gs(&self) -> &ServerCounters {
         let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: the server's shared counters, mapped for its life.
-        unsafe { &mut *gs }
+        unsafe { &*gs }
     }
     fn conn(&self) -> &mut ConnectionRecord {
         // SAFETY: the ops reading it run with a live connection in the context.
@@ -413,7 +413,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1
         }
         OP_SESSION_BIND => {
-            o.gs().session_round = arg.cast_signed();
+            o.gs().session_round.store(arg.cast_signed(), Relaxed);
             o.conn().session_id = arg.cast_signed();
             let buffer_size = o.port().socket_buffer_size.cast_unsigned();
             let conn = o.ctx.conn;
@@ -538,7 +538,8 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// The ops that write the configuration and tables, each of which runs only while
 /// the master is the server's only thread: `Server::create` (`OP_ALLOC_SESSIONS`,
 /// `OP_ALLOC_PORT_GS`, `OP_HTTP_DEFAULTS`, `OP_ALLOC_WORKERS`, `OP_CREATE_FACTORY`,
-/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
+/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_CONNECTION_NUMS`,
+/// `OP_ALLOC_PORT_CONNECTION_NUMS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
 /// `OP_STREAM_PORT`, `OP_ST_PIPE_COMMAND_NEW`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
 /// `OP_CLEAR_SEND_YIELD`, `OP_CLEAR_MAX_QUEUED`, `OP_SEND_TIMEOUT_MIN`), and `destroy`
 /// once the factory has joined its threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
@@ -553,6 +554,13 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let config = || unsafe { &mut *o.state.config() };
     // SAFETY: as `config`, for the tables.
     let tables = || unsafe { &mut *o.state.tables() };
+    let gs = || o.config().gs.as_ptr().cast::<ServerCounters>();
+    // SAFETY: as `config`, for the counters `swr_v1_server_new` mapped; and before
+    // the server forks or after its workers are reaped, no process shares them.
+    let counters = || unsafe { &mut *gs() };
+    let port_gs = |index| Some(o.port_at(index)?.gs.cast::<PortCounters>());
+    // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
+    let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
     let mode = || u64::from(o.config().mode_);
     Some(match op {
         OP_SET_DISABLE_NOTIFY => {
@@ -639,6 +647,12 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             tables().connection_list = list;
             u64::from(ready)
         }
+        OP_ALLOC_CONNECTION_NUMS => {
+            let cells = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            let ready = !cells.is_null();
+            counters().connection_nums = cells;
+            u64::from(ready)
+        }
         OP_ALLOC_WORKERS => {
             let workers = Shm::calloc(o.config().worker_num as usize, size_of::<WorkerRecord>());
             let ready = !workers.is_null();
@@ -693,13 +707,22 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // `Server::destroy_base_factory()`: the connection list and the connection counts.
         OP_DESTROY_FACTORY if arg == MODE_BASE => {
             tables().connection_list.free();
-            o.gs().connection_nums.free();
+            counters().connection_nums.free();
             for index in 0..o.tables().ports().len() {
-                if let Some(gs) = o.port_at(index as u64).and_then(|port| port.counters()) {
+                if let Some(gs) = port_counters(index as u64) {
                     gs.connection_nums.free();
                 }
             }
             0
+        }
+        OP_ALLOC_PORT_CONNECTION_NUMS => {
+            let Some(gs) = port_counters(arg) else {
+                return Some(0);
+            };
+            let cells = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
+            let ready = !cells.is_null();
+            gs.connection_nums = cells;
+            u64::from(ready)
         }
         OP_FREE_USER_WORKERS => {
             config().user_workers.free();
@@ -1220,7 +1243,9 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             _ => !o.tables().enable_accept_timer.load(Relaxed).is_null(),
         }),
         OP_SET_MASTER_PID => {
-            o.gs().master_pid = std::process::id().cast_signed();
+            o.gs()
+                .master_pid
+                .store(std::process::id().cast_signed(), Relaxed);
             0
         }
         OP_TASKING => sign(o.gs().tasking_num.load(SeqCst).cast_signed()),
@@ -1556,17 +1581,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {
             thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
             0
-        }
-        OP_ALLOC_CONNECTION_NUMS => {
-            o.gs().connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
-            u64::from(!o.gs().connection_nums.is_null())
-        }
-        OP_ALLOC_PORT_CONNECTION_NUMS => {
-            let Some(gs) = o.port_at(arg).and_then(|port| port.counters()) else {
-                return Some(0);
-            };
-            gs.connection_nums = Shm::calloc(o.config().worker_num as usize, ATOMIC_SIZE);
-            u64::from(!gs.connection_nums.is_null())
         }
         op => return effects(o, op, arg),
     })

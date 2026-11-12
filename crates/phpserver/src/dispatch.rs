@@ -176,8 +176,8 @@ fn facts(server: view::Server<'_>) -> Facts {
     let gs = server.counters();
     let task_worker = crate::server::worker_type() == crate::server::TASK_WORKER;
     Facts {
-        master_pid: i64::from(gs.master_pid),
-        manager_pid: i64::from(gs.manager_pid),
+        master_pid: i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
+        manager_pid: i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
         event_object: config.event_object,
         enable_coroutine: config.enable_coroutine,
         coroutine: coroutine_enabled(server),
@@ -969,8 +969,14 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     }
     let gs = server.counters();
     let props = Props::server(server_object);
-    props.long(c"master_pid", i64::from(gs.master_pid));
-    props.long(c"manager_pid", i64::from(gs.manager_pid));
+    props.long(
+        c"master_pid",
+        i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
+    );
+    props.long(
+        c"manager_pid",
+        i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
+    );
     if let Some(process) = process {
         // This frame owns nothing that needs a drop, as the process exits through a
         // bailout.

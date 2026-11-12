@@ -112,9 +112,8 @@ impl<'a> Context<'a> {
     fn config(&self) -> &crate::ServerConfig {
         self.server().config()
     }
-    fn counters(&self) -> &mut crate::ServerCounters {
-        // SAFETY: the server's shared counters, which only the manager writes meanwhile.
-        unsafe { self.server().counters_mut() }
+    fn counters(&self) -> &crate::ServerCounters {
+        self.server().counters()
     }
     fn workers(&self) -> ServerWorkers {
         self.server().workers()
@@ -249,9 +248,18 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_RELOAD_WARN => methods::reload_warn as *const () as u64,
         OP_IS_MANAGER => {
             let pid = std::process::id().cast_signed();
-            u64::from(pid == ctx.counters().manager_pid)
+            u64::from(
+                pid == ctx
+                    .counters()
+                    .manager_pid
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
         }
-        OP_MANAGER_PID => signed(ctx.counters().manager_pid),
+        OP_MANAGER_PID => signed(
+            ctx.counters()
+                .manager_pid
+                .load(core::sync::atomic::Ordering::Relaxed),
+        ),
         OP_ALL_WORKER_NUM => {
             u64::from(config.worker_num)
                 + u64::from(config.task_worker_num)
@@ -289,12 +297,19 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { serv.config_mut() }.user_workers = workers;
             return Some(u64::from(created));
         }
-        OP_SET_MANAGER_PID => ctx.counters().manager_pid = std::process::id().cast_signed(),
+        OP_SET_MANAGER_PID => {
+            let pid = std::process::id().cast_signed();
+            ctx.counters()
+                .manager_pid
+                .store(pid, core::sync::atomic::Ordering::Relaxed);
+        }
         OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
         OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
         OP_MANAGER_INIT => {
             let pid = std::process::id().cast_signed();
-            ctx.counters().manager_pid = pid;
+            ctx.counters()
+                .manager_pid
+                .store(pid, core::sync::atomic::Ordering::Relaxed);
             let event_pool = ctx.pool();
             event_pool.set_on_worker_message(Some(read_worker_message));
             event_pool.set_max_wait_time(config.max_wait_time);

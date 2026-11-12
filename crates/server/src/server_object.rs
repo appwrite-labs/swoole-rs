@@ -76,7 +76,10 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     // SAFETY: per the caller, `serv` is a live `Server` for the call.
     let serv = unsafe { view::Server::from_raw(serv) };
     let counters = serv.counters();
-    let master = std::process::id().cast_signed() == counters.master_pid;
+    let master = std::process::id().cast_signed()
+        == counters
+            .master_pid
+            .load(core::sync::atomic::Ordering::Relaxed);
     if master
         && counters
             .shutdown
