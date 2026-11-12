@@ -5,9 +5,7 @@ use swoole_rs_clients::address::{
     Resolve, swr_v1_clients_address_assign, swr_v1_clients_address_loopback,
     swr_v1_clients_address_string, swr_v1_clients_address_verify,
 };
-use swoole_rs_clients::dns::{
-    DnsExchange, INVALID_DOMAIN, swr_v1_clients_hosts_lookup, swr_v1_clients_set_hosts_path,
-};
+use swoole_rs_clients::dns::{DnsExchange, INVALID_DOMAIN, hosts_lookup, set_hosts_path};
 use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
     URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode,
@@ -515,13 +513,6 @@ fn url_and_port_match_upstream() {
     assert_eq!(cases, 135_148, "2032 URLs and 65542 ports, each both ways");
 }
 
-unsafe extern "C" fn assign_text(out: *mut c_void, text: *const u8, length: usize) {
-    // SAFETY: `text` holds `length` bytes.
-    let text = unsafe { std::slice::from_raw_parts(text, length) };
-    // SAFETY: `out` is the lookup's Vec.
-    unsafe { *out.cast::<Vec<u8>>() = text.to_vec() };
-}
-
 /// The hosts files the retired `gate.py` gate checked, each with the names it looked up.
 fn hosts_files() -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
     let lines: [&[u8]; 13] = [
@@ -585,8 +576,7 @@ fn hosts_lookup_matches_upstream() {
     let path = std::env::temp_dir().join(format!("swoole-rs-hosts-{}", std::process::id()));
     let path_bytes = path.as_os_str().as_encoded_bytes();
     let path_c = c_str(path_bytes);
-    // SAFETY: `path_bytes` holds its bytes.
-    unsafe { swr_v1_clients_set_hosts_path(path_bytes.as_ptr(), path_bytes.len()) };
+    set_hosts_path(path_bytes);
     let mut cases = 0;
     for extra_space in [false, true] {
         let mut spaces = [0u8; 256];
@@ -607,17 +597,7 @@ fn hosts_lookup_matches_upstream() {
                         address.len(),
                     )
                 };
-                let mut actual: Vec<u8> = Vec::new();
-                // SAFETY: `name` and `spaces` hold their bytes; `assign_text` fills `actual`.
-                unsafe {
-                    swr_v1_clients_hosts_lookup(
-                        name.as_ptr(),
-                        name.len(),
-                        spaces.as_ptr(),
-                        (&raw mut actual).cast(),
-                        assign_text,
-                    );
-                }
+                let actual = hosts_lookup(name, &spaces).unwrap_or_default();
                 assert_eq!(
                     actual,
                     bytes(&address[..length]),

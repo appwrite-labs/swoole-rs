@@ -30,6 +30,7 @@ use std::{
     cell::UnsafeCell,
     ffi::{CStr, c_void},
     ptr,
+    sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
@@ -785,6 +786,26 @@ impl ZString {
     #[inline]
     pub fn into_raw(self) -> *mut zend_string {
         std::mem::ManuallyDrop::new(self).0
+    }
+}
+
+/// A string MINIT interns permanently ([`crate::Minit::intern`]), kept in a
+/// static and read for the life of the process.
+#[derive(Default)]
+pub struct Interned(pub(crate) AtomicPtr<zend_string>);
+
+impl Interned {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(AtomicPtr::new(ptr::null_mut()))
+    }
+
+    /// The string; None before MINIT interned it.
+    #[must_use]
+    #[inline]
+    pub fn get(&self) -> Option<&'static ZStr> {
+        // SAFETY: null, or a permanently interned string, which Zend never frees.
+        unsafe { ZStr::from_ptr(self.0.load(Relaxed)) }
     }
 }
 

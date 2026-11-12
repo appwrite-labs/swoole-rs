@@ -86,8 +86,8 @@ into a `Vec<u8>`, added and removed with `swr_v1_core_name_resolver_add`/`_remov
   (`gethostbyname2_r` with a growing buffer on Linux, `gethostbyname2` under a
   lock elsewhere); `network::getaddrinfo` is `clients_getaddrinfo` into a native
   array of `SW_DNS_HOST_BUFFER_SIZE`.
-- `swoole_load_resolv_conf` is `clients_load_resolv_conf` (`fgets`' 99-byte
-  lines over the file's bytes, and the `fopen` warning); `get_ip_by_hosts` is `clients_hosts_lookup`,
+- `swoole_load_resolv_conf` is `dns::load_resolv_conf` (`fgets`' 99-byte
+  lines over the file's bytes, and the `fopen` warning); `get_ip_by_hosts` is `dns::hosts_lookup`,
   given a 256-entry space table (the classic locale's for upstream's
   `std::istringstream`).
 - With c-ares (`cares_lookup`), `cares.rs` registers the `SW_FD_CARES` handlers and
