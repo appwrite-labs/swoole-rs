@@ -170,7 +170,11 @@ impl<'a> Server<'a> {
     /// `worker` on `get_worker_message_bus()`: the bus allocates its packets with
     /// `allocator` from now on.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub fn set_bus_allocator(self, worker: bool, allocator: *const c_void) {
+    pub fn set_bus_allocator(
+        self,
+        worker: bool,
+        allocator: &'static swoole_rs_corebase::CoreAllocator,
+    ) {
         let thread_mode = u64::from(self.config().mode_) == crate::MODE_THREAD;
         let bus = if worker && thread_mode {
             swoole_rs_corebase::thread_message_bus()
@@ -179,7 +183,7 @@ impl<'a> Server<'a> {
         };
         // SAFETY: the thread's or the server's live `MessageBus`, which starts with
         // its Rust bus and then its allocator, read only by this thread meanwhile.
-        unsafe { (*bus.cast::<[*const c_void; 2]>())[1] = allocator };
+        unsafe { (*bus.cast::<[*const swoole_rs_corebase::CoreAllocator; 2]>())[1] = allocator };
     }
 
     /// `upload_tmp_dir = dir`.

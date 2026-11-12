@@ -197,7 +197,7 @@ fn coroutine_enabled(server: view::Server<'_>) -> bool {
 /// buffers in base and thread mode, allocate Zend strings.
 pub(crate) fn use_zend_strings(server: view::Server<'_>) {
     let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-    server.set_bus_allocator(false, allocator);
+    server.set_bus_allocator(false, swoole_rs_phpswoole::zend_string_allocator());
     let config = server.config();
     if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
         config
@@ -216,7 +216,7 @@ fn prepare_worker(server: view::Server<'_>) {
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
-    server.set_bus_allocator(true, swoole_rs_phpswoole::sw_zend_string_allocator());
+    server.set_bus_allocator(true, swoole_rs_phpswoole::zend_string_allocator());
 }
 
 /// The running server's object zval, as a callback's first argument: a copy
