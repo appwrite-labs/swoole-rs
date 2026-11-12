@@ -80,8 +80,7 @@ pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_d
         .cast::<zval>();
     // SAFETY: a live literal; zvals are plain copies, as upstream's are.
     let func = unsafe { name.read() };
-    // SAFETY: the operand's live zval.
-    let this = unsafe { object.as_ptr().read() };
+    let this = object.copy_value();
     // SAFETY: a fresh allocation of a `CallInfo`.
     unsafe {
         info.write(CallInfo {
