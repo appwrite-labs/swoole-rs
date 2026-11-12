@@ -5,7 +5,6 @@ use crate::{
 };
 use std::{
     ffi::{CStr, CString},
-    marker::PhantomData,
     ptr,
     rc::Rc,
 };
@@ -61,8 +60,9 @@ impl Callable {
     /// The function the cache resolved, which this callable's value keeps live;
     /// None for none.
     fn function(&self) -> Option<Function<'_>> {
-        let function = self.cache.function_handler;
-        (!function.is_null()).then_some(Function(function, PhantomData))
+        // SAFETY: null, or the function the cache resolved, which this
+        // callable's value keeps live while it is borrowed.
+        unsafe { Function::from_ptr(self.cache.function_handler) }
     }
 
     /// The resolved cache, for a call: Zend reads it (an unresolved call

@@ -5,7 +5,6 @@ use crate::{
 };
 use std::{
     ffi::{c_char, c_int, c_long, c_void},
-    marker::PhantomData,
     ptr,
 };
 
@@ -57,8 +56,9 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
         // SAFETY: reread the function after releasing the object, as the
         // original does; a resolved cache holds a live function handler.
         let handler = unsafe { (*cache).function_handler };
-        // Per the caller, a resolved cache's live function.
-        if Function(handler, PhantomData).flags() & sys::ZEND_ACC_CLOSURE != 0 {
+        // SAFETY: per the caller, a resolved cache's live function.
+        let function = unsafe { Function::from_ptr(handler) };
+        if function.is_some_and(|function| function.flags() & sys::ZEND_ACC_CLOSURE != 0) {
             // SAFETY: the closure flag makes Zend's version-dependent closure
             // object projection valid.
             let closure = unsafe { sys::swr_zend_facade_closure(handler) };
