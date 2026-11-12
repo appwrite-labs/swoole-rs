@@ -391,11 +391,7 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // Coroutine ids are positive.
-    let data = ptr::without_provenance_mut(usize::try_from(cid).unwrap_or_default());
-    // SAFETY: time_limit takes the id as its data.
-    let timer =
-        unsafe { swoole_rs_timer::swr_v1_timer_add_plain_sec(timeout, false, time_limit, data) };
+    let timer = swoole_rs_timer::add_fn_sec(timeout, false, move || time_limit(cid));
     if timer.is_null() {
         call.set_bool(false);
         return;
@@ -409,8 +405,7 @@ fn set_time_limit(call: &Call) {
     call.set_bool(true);
 }
 
-extern "C-unwind" fn time_limit(cid: *mut c_void) {
-    let cid = c_long::try_from(cid.addr()).unwrap_or_default();
+fn time_limit(cid: c_long) {
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
         ctx.set_timer_limit(ptr::null_mut());
