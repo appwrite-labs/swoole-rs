@@ -6,7 +6,8 @@
 //!
 //! A `swoole::Coroutine` is crates/coroutine's record (`swr_v1_coroutine`, then its
 //! `swr_v1_context`; swoole_rs_coroutine.h): its getters are field reads here, its
-//! operations the `swr_v1_coroutine_*` exports and upstream symbols.
+//! operations crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*`
+//! exports and upstream symbols.
 //! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
 //! its data here (`swr_v1_coroutine_create`, `swoole_coroutine_create`,
 //! `swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage and is in
@@ -79,8 +80,6 @@ unsafe extern "C-unwind" {
     fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler;
     fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swr_v1_coroutine_bail(fn_: Callback, data: *mut c_void);
-    fn swr_v1_coroutine_resume(s: *mut Scheduler, co: *mut Co);
-    fn swr_v1_coroutine_yield(s: *mut Scheduler, co: *mut Co);
     #[link_name = "_ZN6swoole9Coroutine8yield_exEd"]
     fn yield_ex(co: *mut Co, timeout: f64) -> bool;
     #[link_name = "_ZN6swoole9Coroutine10print_listEv"]
@@ -219,7 +218,7 @@ impl View {
     }
     fn yield_(&self) {
         // SAFETY: the running coroutine.
-        unsafe { swr_v1_coroutine_yield(scheduler(), self.0) };
+        unsafe { swoole_rs_coroutine::suspend(self.0.cast()) };
     }
     fn yield_ex(&self, timeout: f64) -> bool {
         // SAFETY: as above.
@@ -227,7 +226,7 @@ impl View {
     }
     fn resume(&self) {
         // SAFETY: a suspended coroutine.
-        unsafe { swr_v1_coroutine_resume(scheduler(), self.0) };
+        unsafe { swoole_rs_coroutine::resume(self.0.cast()) };
     }
     fn cancel(&self) -> bool {
         // SAFETY: a live coroutine.
