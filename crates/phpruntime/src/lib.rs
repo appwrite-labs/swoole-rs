@@ -52,8 +52,8 @@ use swoole_rs_zend::{
     message,
     sys::{
         swr_zend_callable_warning, swr_zend_runtime_find_class, swr_zend_stream_factory,
-        swr_zend_stream_factory_set, zend_class_entry, zend_execute_data,
-        zend_register_class_alias_ex, zif_handler, zval,
+        swr_zend_stream_factory_set, zend_class_entry, zend_register_class_alias_ex, zif_handler,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -653,14 +653,14 @@ pub fn original(name: &[u8]) -> zif_handler {
     functions::original_handler(name)
 }
 
+swoole_rs_zend::handlers! {
+    zif_swoole_user_func_handler => user_func_handler;
+}
+
 /// `swoole_user_func_handler`: run the function's PHP replacement (inside a
 /// coroutine) or its original handler.
-/// # Safety
-/// Called by Zend with a live frame and return slot.
-unsafe extern "C" fn user_func_handler(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: per the caller.
-    let result = functions::user_func(&unsafe { Call::new(frame, value) }, frame, value);
-    swoole_rs_zend::bailout::raise(result);
+fn user_func_handler(call: &Call) {
+    bailout::defer(functions::user_func(call));
 }
 
 #[cfg(test)]

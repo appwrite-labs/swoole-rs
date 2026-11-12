@@ -1123,16 +1123,13 @@ fn stream_from_socket(
     Ok(stream)
 }
 
+swoole_rs_zend::handlers! {
+    zif_swoole_stream_socket_pair => stream_socket_pair;
+}
+
 /// `stream_socket_pair(int $domain, int $type, int $protocol): array|false`.
-/// # Safety
-/// Called by Zend with a live frame and return slot.
-pub(crate) unsafe extern "C" fn stream_socket_pair(
-    frame: *mut swoole_rs_zend::sys::zend_execute_data,
-    value: *mut zval,
-) {
-    // SAFETY: per the caller.
-    let result = socket_pair(&unsafe { Call::new(frame, value) });
-    swoole_rs_zend::bailout::raise(result);
+fn stream_socket_pair(call: &Call) {
+    swoole_rs_zend::bailout::defer(socket_pair(call));
 }
 
 fn socket_pair(call: &Call) -> Result<(), Bailout> {
