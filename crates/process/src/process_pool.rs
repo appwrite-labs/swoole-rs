@@ -1575,8 +1575,14 @@ impl<H: PoolHost> Pool<'_, H> {
             drop(unsafe { Box::from_raw(queue) });
         }
         self.set_queue(ptr::null_mut());
-        // SAFETY: the pool's IPC state, freed once; the native close frees its listener.
-        unsafe { pool_ipc_free(self.ipc(), |socket| self.h.close(socket)) };
+        let ipc = self.ipc();
+        if !ipc.is_null() {
+            // SAFETY: the pool's IPC state, the box `pool_ipc_new` leaked (the field is
+            // crate-private), taken back once: the field is cleared next.
+            let ipc = unsafe { Box::from_raw(ipc) };
+            // The native close frees its listener.
+            pool_ipc_free(*ipc, |socket| self.h.close(socket));
+        }
         self.set_ipc(ptr::null_mut());
         if !self.registry().is_null() {
             // SAFETY: the pool's boxed registry, freed once.
@@ -2259,7 +2265,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: the handle made above; it has no listener to close.
-        unsafe { pool_ipc_free(ipc, close) };
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
         // A pool whose listener is gone fails.
         let ipc = pool_ipc_new(true);
         // SAFETY: as above.
@@ -2270,7 +2276,7 @@ mod tests {
         }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.
-        unsafe { pool_ipc_free(ipc, close) };
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, close);
     }
 
     #[test]

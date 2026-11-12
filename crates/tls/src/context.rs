@@ -659,24 +659,18 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
     1
 }
 
-/// Copies the passphrase and the NUL after it (`terminated` is both) when it fits
-/// with a spare byte, else reports none.
-/// # Safety
-/// `buffer` holds `capacity` writable bytes when positive.
-pub(crate) unsafe fn copy_password(
-    buffer: *mut c_char,
-    capacity: c_int,
-    terminated: &[u8],
-) -> c_int {
+/// Copies the passphrase and the NUL after it (`terminated` is both) into `buffer`
+/// when it fits with a spare byte, else reports none.
+pub(crate) fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -> c_int {
     let Ok(length) = c_int::try_from(terminated.len().saturating_sub(1)) else {
         return 0;
     };
-    if length == 0 || i64::from(length) >= i64::from(capacity) - 1 {
+    if length == 0 || terminated.len() >= buffer.len() {
         return 0;
     }
-    // SAFETY: the passphrase's `length + 1` bytes into OpenSSL's buffer of
-    // `capacity` > `length + 1` bytes, which a borrowed slice can't overlap.
-    unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), buffer.cast(), terminated.len()) };
+    for (slot, &byte) in buffer.iter_mut().zip(terminated) {
+        slot.write(byte);
+    }
     length
 }
 
@@ -1148,12 +1142,11 @@ mod tests {
     fn password_copies_when_it_fits() {
         let passphrase = CString::new("swoole").unwrap();
         let mut buffer = [0x55u8; 8];
-        let copy = |buffer: &mut [u8; 8], capacity, text: &CString| unsafe {
-            copy_password(
-                buffer.as_mut_ptr().cast(),
-                capacity,
-                text.as_bytes_with_nul(),
-            )
+        let copy = |buffer: &mut [u8; 8], capacity: c_int, text: &CString| {
+            let capacity = usize::try_from(capacity).unwrap_or(0);
+            let lent =
+                unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast(), capacity) };
+            copy_password(lent, text.as_bytes_with_nul())
         };
         assert_eq!(copy(&mut buffer, 8, &passphrase), 6);
         assert_eq!(&buffer[..7], b"swoole\0");

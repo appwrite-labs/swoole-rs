@@ -61,7 +61,7 @@ impl Bailout {
     /// Native provenance of this contained escape; no PHP operation is run.
     #[must_use]
     pub fn kind(&self) -> BailoutKind {
-        if native_thread_exit() {
+        if thread_exit_pending() {
             BailoutKind::ThreadExit
         } else {
             BailoutKind::Zend
@@ -85,7 +85,7 @@ pub fn defer(result: Result<(), Bailout>) {
 /// Whole-thread provenance remains native and survives ordinary PHP catches.
 /// Only `Swoole\Thread` marks one, and it needs ZTS: never on NTS.
 #[inline]
-fn native_thread_exit() -> bool {
+pub(crate) fn thread_exit_pending() -> bool {
     // SAFETY: a pure read of this OS thread's native pending outcome.
     cfg!(zts) && unsafe { swr_zend_guard_pending() != 0 }
 }
@@ -94,7 +94,7 @@ fn native_thread_exit() -> bool {
 /// upstream never ran past the first bailout.
 #[must_use]
 pub fn pending() -> bool {
-    PENDING.get() || native_thread_exit()
+    PENDING.get() || thread_exit_pending()
 }
 
 /// `value`, or a [`Bailout`] while one is pending, which stays pending.
@@ -110,7 +110,7 @@ pub fn outcome<T>(value: T) -> Result<T, Bailout> {
 #[must_use = "the C caller must re-raise a returned bailout"]
 pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
     defer(result);
-    PENDING.replace(false) || native_thread_exit()
+    PENDING.replace(false) || thread_exit_pending()
 }
 
 /// Raise a deferred bailout (`zend_bailout()`). Called last by every handler
@@ -118,7 +118,7 @@ pub fn relay_to_c(result: Result<(), Bailout>) -> bool {
 /// a drop by then: the `longjmp` crosses only that frame.
 #[inline]
 pub fn finish() {
-    if PENDING.replace(false) || native_thread_exit() {
+    if PENDING.replace(false) || thread_exit_pending() {
         // SAFETY: Zend's own bailout, from the outermost Rust frame (above).
         unsafe { swr_zend_guard_resume() };
     }
@@ -146,7 +146,7 @@ pub fn raise(result: Result<(), Bailout>) {
 /// # Errors
 /// Returns `Bailout` when the native leaf reports a nonzero contained-bailout flag.
 pub fn trapped(bailed: c_int) -> Result<(), Bailout> {
-    if bailed != 0 || native_thread_exit() {
+    if bailed != 0 || thread_exit_pending() {
         Err(Bailout)
     } else {
         Ok(())

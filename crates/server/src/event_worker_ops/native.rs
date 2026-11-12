@@ -59,8 +59,7 @@ impl Context<'_> {
     }
     /// The connection `OP_CONN_AT` selected, if any.
     pub(super) fn conn(&self) -> Option<crate::Connection<'_>> {
-        // SAFETY: null or the connection selected, a live slot of the server's table.
-        unsafe { crate::Connection::from_ptr(self.conn) }
+        self.conn
     }
     pub(super) fn info(&self) -> &DataHead {
         // SAFETY: the ops reading it run with the event's live head.
@@ -429,7 +428,7 @@ fn context(serv: view::Server<'_>, reactor: Reactor) -> Context<'_> {
         worker: swoole_rs_process::worker_globals::current_worker(),
         info: core::ptr::null_mut(),
         reactor,
-        conn: core::ptr::null_mut(),
+        conn: None,
         status: core::ptr::null(),
         socket: None,
     }

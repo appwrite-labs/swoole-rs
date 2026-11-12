@@ -4,6 +4,7 @@ use crate::handle::CText;
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
+use core::mem::MaybeUninit;
 use core::ptr;
 use openssl_sys::{BIO_METHOD, BIO_meth_free, SSL_set_bio};
 use std::collections::VecDeque;
@@ -17,14 +18,23 @@ struct Buffer {
     data: [u8; 0],
 }
 
-/// One queued datagram: an allocation that begins with an initialized `Buffer` header,
-/// as `swr_v1_tls_dtls_append` makes and `swr_v1_tls_dtls_append_buffer`'s caller promises.
+/// One queued datagram: an allocation that begins with an initialized `Buffer` header
+/// and holds the header's `length` payload bytes after it, as `swr_v1_tls_dtls_append`
+/// makes and `swr_v1_tls_dtls_append_buffer`'s caller promises.
 struct Datagram(*mut Buffer);
 impl Datagram {
     /// The payload's length, from the header.
     fn length(&self) -> u16 {
         // SAFETY: the datagram owns its allocation, whose header is initialized.
         unsafe { (*self.0).length }
+    }
+
+    /// The payload, which nothing writes while the datagram is queued.
+    fn payload(&self) -> &[MaybeUninit<u8>] {
+        let length = usize::from(self.length());
+        // SAFETY: the datagram owns its allocation, which holds `length` bytes after
+        // the header; as `MaybeUninit`, they need not be initialized.
+        unsafe { core::slice::from_raw_parts(payload(self.0).cast(), length) }
     }
 }
 
@@ -95,7 +105,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
 
 /// # Safety
 /// buffer is an exclusively transferred sw_malloc-compatible datagram, its header
-/// initialized.
+/// initialized and the header's `length` payload bytes allocated after it.
 /// On allocation failure ownership remains with the caller.
 pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_void) -> c_int {
     let mut queue = owner.queue.borrow_mut();
@@ -150,11 +160,12 @@ pub fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
     }
 }
 
-/// # Safety
-/// data covers requested writable bytes for a nonnegative request.
-pub unsafe fn swr_v1_tls_dtls_read(
+/// The front datagram, as much of it as `requested` bytes hold, copied into `buffer`
+/// and popped unless peeking; a retry when the queue is empty. `requested` is the
+/// length the BIO was asked for, which `buffer` holds when it is not negative.
+pub fn swr_v1_tls_dtls_read(
     owner: &DtlsSession,
-    data: *mut u8,
+    buffer: &mut [MaybeUninit<u8>],
     requested: c_int,
 ) -> crate::ReadPlan {
     let peek = owner.peek.get();
@@ -166,14 +177,11 @@ pub unsafe fn swr_v1_tls_dtls_read(
             retry: 1,
         };
     };
-    let length = front.length();
-    let plan = crate::read_plan(0, length, requested, u8::from(peek));
+    let plan = crate::read_plan(0, front.length(), requested, u8::from(peek));
     if let Ok(length) = usize::try_from(plan.length) {
-        let source = payload(front.0);
-        if length > 0 {
-            // SAFETY: the requested output is writable and the owned front's payload, after
-            // its header, covers length bytes; memmove permits overlap.
-            unsafe { ptr::copy(source, data, length) };
+        if let (Some(out), Some(source)) = (buffer.get_mut(..length), front.payload().get(..length))
+        {
+            out.copy_from_slice(source);
         }
         if plan.consume != 0 {
             queue.pop_front();
@@ -190,19 +198,17 @@ pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
 }
 
 /// Native decodes its actual OpenSSL macro values into the existing stable tags.
-/// Shutdown and diagnostic effects are returned to native, outside this Rust frame.
-/// # Safety
-/// ptrval is null or writable for one address union for the peer command.
+/// Shutdown and diagnostic effects are returned to native, outside this Rust frame,
+/// and the peer command's address is [`peer`], which the BIO's control copies out.
 #[expect(
     clippy::cast_possible_wrap,
     reason = "native BIO_CTRL_PENDING casts wrapping size_t total to long"
 )]
-pub unsafe fn swr_v1_tls_dtls_control(
+pub fn swr_v1_tls_dtls_control(
     owner: &DtlsSession,
     tag: u32,
     observed: c_long,
     value: c_long,
-    ptrval: *mut c_void,
 ) -> crate::ControlPlan {
     let observed = match tag {
         0 => c_long::from(owner.queue.borrow().is_empty()),
@@ -211,29 +217,21 @@ pub unsafe fn swr_v1_tls_dtls_control(
     };
     if tag == 8 {
         owner.peek.set(value != 0);
-        return crate::ControlPlan {
-            result: 1,
-            effect: 0,
-        };
     }
-    if tag == 5 {
-        if !ptrval.is_null()
-            && let Some(socket) = owner.live.get()
-        {
-            let address = socket.read(|record| record.info.addr);
-            // SAFETY: native's peer destination is writable for the exact native address union.
-            unsafe {
-                ptrval
-                    .cast::<swoole_rs_reactor::AddressStorage>()
-                    .write_unaligned(address);
-            };
-        }
+    if tag == 8 || tag == 5 {
         return crate::ControlPlan {
             result: 1,
             effect: 0,
         };
     }
     crate::control_plan(tag, observed)
+}
+
+/// The peer the session's socket names, which `BIO_CTRL_DGRAM_GET_PEER` answers with;
+/// none before `swr_v1_tls_dtls_init`.
+fn peer(owner: &DtlsSession) -> Option<swoole_rs_reactor::AddressStorage> {
+    let socket = owner.live.get()?;
+    Some(socket.read(|record| record.info.addr))
 }
 
 /// `listen`'s action for `DTLSv1_listen`'s result, marking the session listened.
@@ -317,20 +315,17 @@ fn control_tag(command: c_int) -> u32 {
     }
 }
 
-/// The session `swr_v1_tls_dtls_init` made the BIO for.
-///
-/// # Safety
-/// `bio`'s session is live for `'a`.
-unsafe fn session_of<'a>(bio: &DtlsBio) -> &'a DtlsSession {
-    let session = BIO_get_data(bio).cast::<DtlsSession>();
-    // SAFETY: as the caller promises: `swr_v1_tls_dtls_init` set it to the live session.
-    unsafe { &*session }
+/// The session `swr_v1_tls_dtls_init` made the BIO for: its data, live for as long as
+/// the SSL that owns the BIO. Reading the pointer dereferences nothing.
+fn session_of(bio: &DtlsBio) -> *const DtlsSession {
+    BIO_get_data(bio).cast()
 }
 
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
 unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
-    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
-    let session = unsafe { session_of(bio) };
+    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
+    // set to the live session, which outlives its SSL.
+    let session = unsafe { &*session_of(bio) };
     let Some(socket) = session.live.get() else {
         return -1;
     };
@@ -343,10 +338,13 @@ unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int
 /// `dtls::BIO_read`: the next queued datagram, or a read retry when there is none.
 unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -> c_int {
     BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY);
-    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
-    let session = unsafe { session_of(bio) };
+    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
+    // set to the live session, which outlives its SSL.
+    let session = unsafe { &*session_of(bio) };
     // SAFETY: OpenSSL lends `length` writable bytes.
-    let plan = unsafe { swr_v1_tls_dtls_read(session, data.cast(), length) };
+    let buffer =
+        unsafe { crate::upstream::slots(data.cast(), usize::try_from(length).unwrap_or(0)) };
+    let plan = swr_v1_tls_dtls_read(session, buffer, length);
     if plan.retry != 0 {
         BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
     }
@@ -366,10 +364,19 @@ unsafe extern "C" fn bio_ctrl(
     } else {
         0
     };
-    // SAFETY: OpenSSL calls this for the session's BIO, whose session outlives its SSL.
-    let session = unsafe { session_of(bio) };
-    // SAFETY: OpenSSL lends `pointer` as the command defines.
-    let plan = unsafe { swr_v1_tls_dtls_control(session, tag, observed, value, pointer) };
+    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
+    // set to the live session, which outlives its SSL.
+    let session = unsafe { &*session_of(bio) };
+    let plan = swr_v1_tls_dtls_control(session, tag, observed, value);
+    if tag == 5
+        && !pointer.is_null()
+        && let Some(address) = peer(session)
+    {
+        let out = pointer.cast::<swoole_rs_reactor::AddressStorage>();
+        // SAFETY: OpenSSL lends the peer command a destination writable for the native
+        // address union.
+        unsafe { out.write_unaligned(address) };
+    }
     match plan.effect {
         #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) lval")]
         1 => BIO_set_shutdown(bio, value as c_int),
@@ -473,8 +480,16 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
 /// a pending listen counts as success and a failure logs why.
 ///
 /// # Safety
-/// The session's socket is a live record.
+/// None: as [`dtls_session_listen`], which new callers use.
 pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
+    dtls_session_listen(owner)
+}
+
+/// `bool dtls::Session::listen()`, as [`swr_v1_tls_dtls_session_listen`]: the socket is
+/// the handle `swr_v1_tls_dtls_init` took, whose caller promised it live for as long as
+/// the session, so a session lent here needs no further promise.
+#[must_use]
+pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
     if owner.listened() {
         return false;
     }
@@ -527,13 +542,8 @@ mod tests {
         }
         fn read(&self, count: usize) -> (crate::ReadPlan, Vec<u8>) {
             let mut bytes = vec![0x55; count];
-            let result = unsafe {
-                swr_v1_tls_dtls_read(
-                    self.session(),
-                    bytes.as_mut_ptr(),
-                    count.try_into().unwrap(),
-                )
-            };
+            let lent = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), count) };
+            let result = swr_v1_tls_dtls_read(self.session(), lent, count.try_into().unwrap());
             (result, bytes)
         }
         fn length(&self) -> usize {
@@ -618,17 +628,17 @@ mod tests {
         assert!(!owner.session().listened());
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 1) }, 2);
         assert!(owner.session().listened());
-        unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 8, 0, -7, ptr::null_mut()) };
+        unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 8, 0, -7) };
         assert!(owner.session().peek.get());
         owner.append(b"abc");
         assert_eq!(
-            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 2, 0, 0, ptr::null_mut()) }.result,
+            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 2, 0, 0) }.result,
             3
         );
         owner.session().peek.set(false);
         assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(
-            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 0, 0, 0, ptr::null_mut()) }.result,
+            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 0, 0, 0) }.result,
             1
         );
     }

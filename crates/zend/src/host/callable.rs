@@ -1,20 +1,21 @@
 //! Long-lived callbacks own their zval, callable cache and diagnostic name together.
 use crate::{
-    Value, ZStr, ZString, bailout, kind,
+    Function, Owned, Value, ZStr, ZString, bailout,
     sys::{self, zend_fcall_info_cache, zval},
 };
 use std::{
-    ffi::{CStr, CString, c_char},
+    ffi::{CStr, CString},
+    marker::PhantomData,
     ptr,
     rc::Rc,
 };
 
-/// A C/C++ warning leaf, invoked below Zend's C bailout trap.
-pub type Report = unsafe extern "C" fn(*const c_char);
-
 /// A stable owner of the callback value, resolved cache and diagnostic string.
+/// Dropping it releases the value first (a destructor's bailout is deferred),
+/// then the diagnostic string, an independent owned reference.
 pub struct Callable {
-    value: zval,
+    /// Undefined until a candidate resolves.
+    value: Owned,
     cache: zend_fcall_info_cache,
     name: Option<ZString>,
 }
@@ -25,16 +26,6 @@ fn deferred(bailed: i32) -> bool {
         true
     } else {
         false
-    }
-}
-
-impl Drop for Callable {
-    fn drop(&mut self) {
-        // SAFETY: this owner holds one live zval reference, initially undefined.
-        bailout::defer(unsafe {
-            bailout::trap(sys::swr_zend_zval_release, (&raw mut self.value).cast())
-        });
-        // The diagnostic string, an independent owned reference, goes next.
     }
 }
 
@@ -60,26 +51,18 @@ impl Callable {
         allow_null: bool,
         exception: Option<&crate::Class>,
     ) -> Result<Option<Rc<Self>>, bailout::Bailout> {
-        let value = value.map_or(ptr::null_mut(), crate::Value::as_ptr);
-        if value.is_null() && name.is_none() {
+        if value.is_none() && name.is_none() {
             return Ok(None);
         }
-        // SAFETY: null (with a name) or a live candidate, a NUL-terminated name,
-        // a registered class or null, and Swoole's C warning leaf.
-        let handle = unsafe {
-            factory(
-                value,
-                name.map_or(ptr::null(), CStr::as_ptr),
-                allow_null,
-                exception.map_or(ptr::null_mut(), crate::Class::entry),
-                sys::swr_zend_callable_warning,
-            )
-        }?;
-        if handle.is_null() {
-            return Ok(None);
-        }
-        // SAFETY: `factory` gave up this Box.
-        Ok(Some(Rc::from(unsafe { Box::from_raw(handle) })))
+        let handle = factory(value, name.map(CStr::to_bytes), allow_null, exception)?;
+        Ok(handle.map(Rc::from))
+    }
+
+    /// The function the cache resolved, which this callable's value keeps live;
+    /// None for none.
+    fn function(&self) -> Option<Function<'_>> {
+        let function = self.cache.function_handler;
+        (!function.is_null()).then_some(Function(function, PhantomData))
     }
 
     /// The resolved cache, for a call: Zend reads it (an unresolved call
@@ -138,17 +121,13 @@ impl Callable {
     /// variadic one, and 0 for none.
     #[must_use]
     pub fn max_num_args(&self) -> u32 {
-        let function = self.cache.function_handler;
-        if function.is_null() {
+        let Some(function) = self.function() else {
             return 0;
-        }
-        // SAFETY: the function the cache resolved, which this callable's zval keeps
-        // live; every kind of `zend_function` starts with `common`.
-        let common = unsafe { &*function.cast::<sys::_zend_function__bindgen_ty_1>() };
-        if common.fn_flags & sys::ZEND_ACC_VARIADIC != 0 {
+        };
+        if function.flags() & sys::ZEND_ACC_VARIADIC != 0 {
             u32::MAX
         } else {
-            common.num_args
+            function.num_args()
         }
     }
 
@@ -160,10 +139,11 @@ impl Callable {
         retval: *mut zval,
     ) -> Result<bool, bailout::Bailout> {
         let mut fci = crate::EMPTY_FCI;
-        let mut temporary = crate::UNDEF;
+        // The call's result when the caller wants none; undefined otherwise.
+        let temporary = Owned::default();
         fci.size = size_of::<sys::zend_fcall_info>();
         fci.retval = if retval.is_null() {
-            &raw mut temporary
+            temporary.as_ptr()
         } else {
             retval
         };
@@ -171,7 +151,7 @@ impl Callable {
         fci.params = argv;
         if self.cache.function_handler.is_null() {
             // ZVAL_COPY_VALUE of the borrowed function name.
-            fci.function_name = self.value;
+            fci.function_name = self.value.zval();
         }
         // SAFETY: `call`'s live arguments and return storage, and this callable's
         // cache, which its zval keeps live; no Rust borrow spans PHP reentry.
@@ -183,24 +163,29 @@ impl Callable {
                 false
             }
         };
-        if retval.is_null() && !bailout::pending() {
-            // SAFETY: upstream destroys its temporary return value after the call.
-            bailout::defer(unsafe {
-                bailout::trap(sys::swr_zend_zval_release, (&raw mut temporary).cast())
-            });
+        if bailout::pending() {
+            // Upstream never ran past a bailout to destroy its temporary.
+            std::mem::forget(temporary);
+        } else {
+            // Upstream destroys its temporary return value after the call.
+            drop(temporary);
         }
         bailout::outcome(success)
     }
 }
 
+/// `sw_callable_create`'s owner of `value`, whose own value stays undefined
+/// when `value` is not callable (after a warning).
 /// # Errors
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
-/// # Safety
-/// `report` is C/C++ and may report a PHP warning.
-unsafe fn create(value: &Value, report: Report) -> Result<Box<Callable>, bailout::Bailout> {
+fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
+    let warn = |message: &CStr| {
+        // SAFETY: Swoole's C warning leaf, called inside `zend_try`.
+        bailout::defer(unsafe { bailout::report(sys::swr_zend_callable_warning, message) });
+    };
     let mut state = Box::new(Callable {
-        value: crate::UNDEF,
+        value: Owned::default(),
         cache: crate::EMPTY_FCC,
         name: None,
     });
@@ -227,19 +212,16 @@ unsafe fn create(value: &Value, report: Report) -> Result<Box<Callable>, bailout
             if valid {
                 // This new owner's initially undefined slot takes the successfully
                 // resolved candidate, with a reference of its own.
-                state.value = value.copy().into_zval();
+                state.value = value.copy();
             } else {
                 let name = state.name.as_deref().map_or(&[][..], ZStr::bytes);
                 let message = [b"function '".as_slice(), name, b"' is not callable"].concat();
                 let text = message.split(|byte| *byte == 0).next().unwrap_or_default();
-                let message = CString::new(text).unwrap_or_default();
-                // SAFETY: the native warning reporter runs inside zend_try.
-                bailout::defer(unsafe { bailout::report(report, &message) });
+                warn(&CString::new(text).unwrap_or_default());
             }
         }
     } else {
-        // SAFETY: the native reporter is called inside zend_try.
-        bailout::defer(unsafe { bailout::report(report, c"illegal callback function") });
+        warn(c"illegal callback function");
     }
     if bailout::pending() {
         drop(state);
@@ -248,43 +230,40 @@ unsafe fn create(value: &Value, report: Report) -> Result<Box<Callable>, bailout
     Ok(state)
 }
 
+/// `sw_callable_create` of `candidate`, the argument `name` (unnamed when
+/// `None`): see [`Callable::argument`].
 /// # Errors
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
-/// # Safety
-/// Candidate, optional diagnostic argument name and registered exception class are live.
-/// `report` is the native PHP warning leaf, never a Rust callback.
-pub unsafe fn factory(
-    value: *mut zval,
-    name: *const c_char,
+fn factory(
+    candidate: Option<&Value>,
+    name: Option<&[u8]>,
     allow_null: bool,
-    exception: *mut sys::zend_class_entry,
-    report: Report,
-) -> Result<*mut Callable, bailout::Bailout> {
-    // SAFETY: the caller supplies null or the NUL-terminated argument name.
-    let name = (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes());
-    // SAFETY: null, or the caller's live candidate, borrowed for this call.
-    let candidate = unsafe { Value::from_ptr(value) };
+    exception: Option<&crate::Class>,
+) -> Result<Option<Box<Callable>>, bailout::Bailout> {
+    let exception = exception.map_or(ptr::null_mut(), crate::Class::entry);
+    let throw = |message: Vec<u8>| {
+        let message = CString::new(message).unwrap_or_default();
+        // SAFETY: a registered exception class or null (Zend's default); Zend
+        // copies the message, and the shim traps a bailout.
+        deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
+    };
     if let Some(name) = name
         && candidate.is_none_or(Value::is_null)
     {
         if !allow_null {
-            let message = [name, b" must be of type callable, null given"].concat();
-            let message = CString::new(message).unwrap_or_default();
-            // SAFETY: a registered exception class; Zend copies the message.
-            deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
+            throw([name, b" must be of type callable, null given"].concat());
         }
-        return bailout::outcome(ptr::null_mut());
+        return bailout::outcome(None);
     }
     // The caller's candidate; without a name it is never null.
     let Some(candidate) = candidate else {
-        return bailout::outcome(ptr::null_mut());
+        return bailout::outcome(None);
     };
-    // SAFETY: the native reporter satisfies callable_new's contract.
-    let handle = unsafe { create(candidate, report) }?;
+    let handle = create(candidate)?;
     // The owned value is initialized, even for a failed resolution.
-    if kind(&handle.value) != sys::IS_UNDEF {
-        return Ok(Box::into_raw(handle));
+    if handle.value.kind() != sys::IS_UNDEF {
+        return Ok(Some(handle));
     }
     // Release the failed candidate as the original factory does.
     drop(handle);
@@ -294,10 +273,7 @@ pub unsafe fn factory(
         let kind = unsafe { sys::zend_zval_type_name(candidate.as_ptr()) };
         // SAFETY: Zend returned a static NUL-terminated type name.
         let kind = unsafe { CStr::from_ptr(kind) }.to_bytes();
-        let message = [name, b" must be of type callable, ", kind, b" given"].concat();
-        let message = CString::new(message).unwrap_or_default();
-        // SAFETY: a registered exception class; Zend copies the message.
-        deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
+        throw([name, b" must be of type callable, ", kind, b" given"].concat());
     }
-    bailout::outcome(ptr::null_mut())
+    bailout::outcome(None)
 }

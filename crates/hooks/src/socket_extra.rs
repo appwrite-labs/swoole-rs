@@ -3,8 +3,7 @@
 //! callback.
 use crate::co_socket::Co;
 use std::ffi::c_void;
-use std::ptr;
-use swoole_rs_corebase::{ProxyState, StringSlot, swr_v1_core_proxy_free};
+use swoole_rs_corebase::{ProxyState, StringSlot};
 use swoole_rs_tls::TlsContext;
 
 /// A destructor callback, which gets the native socket.
@@ -21,8 +20,8 @@ pub struct SocketExtra {
     pub(crate) strings: [StringSlot; 3],
     /// `set_dtor`'s callback.
     close_hook: Option<CloseHook>,
-    /// `socks5_proxy` and `http_proxy`: each an owner, or null.
-    pub(crate) proxies: [*mut ProxyState; 2],
+    /// `socks5_proxy` and `http_proxy`: each the socket's own, or none.
+    pub(crate) proxies: [Option<Box<ProxyState>>; 2],
     /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
     pub(crate) uring: Option<&'static crate::uring::Host>,
@@ -37,14 +36,6 @@ const _: () = assert!(
     "the hooks system tests set the TLS owner at the record's extra pointer"
 );
 
-impl Drop for SocketExtra {
-    fn drop(&mut self) {
-        for proxy in self.proxies {
-            // SAFETY: the socket's own proxy, released once.
-            unsafe { swr_v1_core_proxy_free(proxy) };
-        }
-    }
-}
 impl SocketExtra {
     /// A record's fresh metadata.
     pub(crate) fn boxed() -> Box<Self> {
@@ -52,11 +43,11 @@ impl SocketExtra {
             strings: std::array::from_fn(|_| StringSlot::default()),
             tls: None,
             close_hook: None,
-            proxies: [ptr::null_mut(); 2],
+            proxies: [None, None],
             #[cfg(feature = "iouring")]
             uring: None,
             #[cfg(feature = "iouring")]
-            bio: [ptr::null_mut(); 2],
+            bio: [std::ptr::null_mut(); 2],
         })
     }
 }

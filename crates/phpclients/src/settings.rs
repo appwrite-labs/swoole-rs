@@ -8,10 +8,7 @@ use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
-use swoole_rs_zend::{
-    Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval,
-    sys::{self, zval_ptr_dtor},
-};
+use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval, sys};
 
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAX: usize = 8;
@@ -40,10 +37,11 @@ pub(crate) unsafe extern "C" fn php_swoole_length_func(
 }
 
 fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
-    let mut data = Owned::string(ZString::new(bytes)).into_zval();
+    // The call borrows the string, released when `data` drops.
+    let data = Owned::string(ZString::new(bytes));
     let mut retval = long_zval(0);
-    let called = native::invoke(callable, std::slice::from_mut(&mut data), &mut retval);
-    let length = match called {
+    let called = native::invoke(callable, &mut [data.zval()], &mut retval);
+    match called {
         Err(bailout) => {
             bailout.defer();
             -1
@@ -60,10 +58,7 @@ fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
             });
             isize::try_from(length).unwrap_or(-1)
         }
-    };
-    // SAFETY: our reference to the string.
-    unsafe { zval_ptr_dtor(&raw mut data) };
-    length
+    }
 }
 
 /// The options array of one `set()`/`connect()`.

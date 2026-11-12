@@ -508,15 +508,14 @@ impl Co {
         let event = if write { WRITE } else { READ };
         let io = if write { socket_writev } else { socket_readv };
         let at = vector.as_ptr();
+        // Over the live vector, which carries its own buffers.
+        let each = call!(|s, _, _| io(s, at));
         if all {
-            let call = || {
-                // SAFETY: the socket's current network::Socket, over the live vector.
-                let io = |socket: Socket<'_>| unsafe { io(socket, at) };
-                self.with_network(io).unwrap_or(-1)
-            };
+            let none = core::ptr::null_mut();
+            let call = || self.with_network(|s| each(s, none, 0)).unwrap_or(-1);
             return vector_all(self, event, call, || vector.remaining());
         }
-        self.transfer(0, Buffer::none(event), call!(|s, _, _| io(s, at)))
+        self.transfer(0, Buffer::none(event), each)
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves

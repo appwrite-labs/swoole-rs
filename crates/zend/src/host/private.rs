@@ -1,10 +1,11 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use crate::{
-    bailout,
+    Function, Owned, bailout,
     sys::{self, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
 };
 use std::{
     ffi::{c_char, c_int, c_long, c_void},
+    marker::PhantomData,
     ptr,
 };
 
@@ -17,9 +18,15 @@ fn bailed(code: c_int) -> bool {
     }
 }
 
-unsafe fn destroy(value: *mut zval) {
-    // SAFETY: the live value's destructor executes entirely within the C trap.
-    bailout::defer(unsafe { bailout::trap(sys::swr_zend_zval_release, value.cast()) });
+/// Destroy `value`, a call's private result or name, unless a bailout is
+/// pending: upstream never ran past one to destroy it, so it is leaked. Its
+/// destructor runs inside the C trap ([`Owned`]'s drop).
+fn discard(value: Owned) {
+    if bailout::pending() {
+        std::mem::forget(value);
+    } else {
+        drop(value);
+    }
 }
 
 /// # Safety
@@ -50,9 +57,8 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
         // SAFETY: reread the function after releasing the object, as the
         // original does; a resolved cache holds a live function handler.
         let handler = unsafe { (*cache).function_handler };
-        // SAFETY: every Zend function begins with its initialized common prefix.
-        let flags = unsafe { (*handler.cast::<sys::_zend_function__bindgen_ty_1>()).fn_flags };
-        if flags & sys::ZEND_ACC_CLOSURE != 0 {
+        // Per the caller, a resolved cache's live function.
+        if Function(handler, PhantomData).flags() & sys::ZEND_ACC_CLOSURE != 0 {
             // SAFETY: the closure flag makes Zend's version-dependent closure
             // object projection valid.
             let closure = unsafe { sys::swr_zend_facade_closure(handler) };
@@ -93,7 +99,8 @@ unsafe fn direct_call(
     report: unsafe extern "C" fn(*const c_char),
 ) -> c_int {
     let mut call = crate::EMPTY_FCI;
-    let mut temporary = crate::UNDEF;
+    // The call's result when the caller wants none; undefined otherwise.
+    let temporary = Owned::default();
     // SAFETY: a non-null cache is initialized by the caller.
     let uncached = cache.is_null() || unsafe { (*cache).function_handler }.is_null();
     if uncached {
@@ -107,7 +114,7 @@ unsafe fn direct_call(
     }
     call.size = size_of::<zend_fcall_info>();
     call.retval = if retval.is_null() {
-        &raw mut temporary
+        temporary.as_ptr()
     } else {
         retval
     };
@@ -123,10 +130,8 @@ unsafe fn direct_call(
             -1
         }
     };
-    if retval.is_null() && !bailout::pending() {
-        // SAFETY: discard the private return slot after invocation, as upstream does.
-        unsafe { destroy(&raw mut temporary) };
-    }
+    // Discard the private return slot after invocation, as upstream does.
+    discard(temporary);
     result
 }
 
@@ -155,11 +160,11 @@ pub unsafe extern "C" fn swr_v1_phphelpers_call(
 /// # Safety
 /// Live callable frame/cache; caller accepts the frame's upstream temporary-return convention.
 pub unsafe fn call_anyway(frame: *mut zend_fcall_info, cache: *mut zend_fcall_info_cache) -> c_int {
-    let mut temporary = crate::UNDEF;
+    let temporary = Owned::default();
     // SAFETY: the frame is initialized and exclusively configured before invocation.
     if unsafe { (*frame).retval }.is_null() {
         // SAFETY: the temporary remains live through the call and destruction below.
-        unsafe { (*frame).retval = &raw mut temporary };
+        unsafe { (*frame).retval = temporary.as_ptr() };
     }
     // SAFETY: Zend executes the configured frame entirely inside the C trap.
     let result = unsafe { bailout::call(frame, cache) };
@@ -171,11 +176,9 @@ pub unsafe fn call_anyway(frame: *mut zend_fcall_info, cache: *mut zend_fcall_in
             -1
         }
     };
-    // SAFETY: reread the frame after invocation, matching the original helper.
-    if !bailout::pending() && unsafe { (*frame).retval } == &raw mut temporary {
-        // SAFETY: the private temporary owns any returned payload.
-        unsafe { destroy(&raw mut temporary) };
-    }
+    // The private temporary owns any returned payload; it is still undefined
+    // when the frame came with a return slot of its own.
+    discard(temporary);
     bailout::finish();
     result
 }
@@ -276,15 +279,18 @@ pub unsafe fn named_call_into(
     if bailout::pending() {
         return;
     }
-    let mut function = crate::UNDEF;
+    let function = Owned::default();
     // SAFETY: Zend copies the complete binary function name into its request string.
-    unsafe { sys::swr_zval_stringl(&raw mut function, name, length) };
+    unsafe { sys::swr_zval_stringl(function.as_ptr(), name, length) };
     let mut result = -1;
     // SAFETY: Zend's macro invocation is one leaf effect inside the C trap.
     bailed(unsafe {
-        sys::swr_zend_try_facade_user_call(&raw mut function, argc, argv, retval, &raw mut result)
+        sys::swr_zend_try_facade_user_call(function.as_ptr(), argc, argv, retval, &raw mut result)
     });
-    if !bailout::pending() {
+    if bailout::pending() {
+        // Upstream never ran past a bailout to release the name.
+        std::mem::forget(function);
+    } else {
         if result != 0 {
             // SAFETY: failed named invocation publishes null before name cleanup.
             unsafe {
@@ -293,8 +299,8 @@ pub unsafe fn named_call_into(
                 }
             };
         }
-        // SAFETY: the local function-name string owns one reference.
-        unsafe { destroy(&raw mut function) };
+        // The local function-name string owns one reference.
+        drop(function);
         if !bailout::pending() {
             // SAFETY: preserve the fatal exception check after function-name cleanup.
             unsafe { fatal_exception() };
@@ -311,7 +317,7 @@ pub fn named_call(name: &[u8], args: &[&crate::Value]) -> Result<(), bailout::Ba
     let mut args: Vec<crate::Owned> = args.iter().map(|arg| arg.copy()).collect();
     #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
     let argc = args.len() as u32;
-    let mut retval = crate::UNDEF;
+    let retval = Owned::default();
     // SAFETY: the name's bytes, `argc` live arguments (`Owned` is a
     // transparent zval) and a writable result.
     unsafe {
@@ -320,13 +326,11 @@ pub fn named_call(name: &[u8], args: &[&crate::Value]) -> Result<(), bailout::Ba
             name.len(),
             argc,
             args.as_mut_ptr().cast::<zval>(),
-            &raw mut retval,
+            retval.as_ptr(),
         );
     };
-    if !bailout::pending() {
-        // SAFETY: the result this call owns.
-        unsafe { destroy(&raw mut retval) };
-    }
+    // The result this call owns.
+    discard(retval);
     if bailout::relay_to_c(Ok(())) {
         Err(bailout::Bailout)
     } else {

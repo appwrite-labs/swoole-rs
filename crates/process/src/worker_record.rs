@@ -308,6 +308,18 @@ impl Worker<'_> {
         /// `worker->start_time`.
         start_time, set_start_time, start_time: i64
     );
+    field!(
+        /// `worker->redirect_stdin`.
+        redirect_stdin, set_redirect_stdin, redirect_stdin: bool
+    );
+    field!(
+        /// `worker->redirect_stdout`.
+        redirect_stdout, set_redirect_stdout, redirect_stdout: bool
+    );
+    field!(
+        /// `worker->redirect_stderr`.
+        redirect_stderr, set_redirect_stderr, redirect_stderr: bool
+    );
 
     /// `Server::stats()`'s worker counters: request, response and dispatch
     /// counts, then the concurrency.

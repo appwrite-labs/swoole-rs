@@ -168,12 +168,13 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
         #[expect(clippy::cast_possible_truncation, reason = "get_worker(uint16_t)")]
-        let worker = serv.worker(id as u16);
-        // SAFETY: the server's live record of this worker.
-        let worker = unsafe { &mut *worker };
-        worker.redirect_stdin = false;
-        worker.redirect_stdout = false;
-        worker.redirect_stderr = false;
+        let worker = serv.worker_record(id as u16);
+        // The server's live record of this worker.
+        if let Some(worker) = worker {
+            worker.set_redirect_stdin(false);
+            worker.set_redirect_stdout(false);
+            worker.set_redirect_stderr(false);
+        }
         return i64::from(id)
             - number(serv, fact::WORKER_NUM)
             - number(serv, fact::TASK_WORKER_NUM);

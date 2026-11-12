@@ -11,17 +11,17 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
-        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_foreach_kv, swr_zend_hash_next,
-        swr_zend_http_build_query, swr_zend_object_properties, swr_zend_separate_array,
-        swr_zend_serialize, swr_zend_string_release, swr_zend_try_array_merge,
-        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_json_encode,
-        swr_zend_try_ptr_dtor, swr_zend_try_read_property, swr_zend_try_symtable_update,
-        swr_zend_url_decode, swr_zend_zval_value_name, swr_zval_is_true, swr_zval_try_addref,
-        zend_array_count, zend_class_entry, zend_double_to_str, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_index_find, zend_hash_next_index_insert, zend_hash_str_find,
-        zend_ini_parse_quantity, zend_long, zend_object, zend_reference, zend_string,
-        zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_next, swr_zend_http_build_query,
+        swr_zend_object_properties, swr_zend_separate_array, swr_zend_serialize,
+        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
+        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
+        swr_zend_try_hash_update, swr_zend_try_json_encode, swr_zend_try_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
+        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
+        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
+        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
+        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
+        zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -191,11 +191,11 @@ impl Value {
     pub(crate) fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
         let mut held = Owned::null();
         // SAFETY: two live zvals: nothing borrows this one's content, and
-        // `held` is this frame's.
-        unsafe { self.0.get().swap(held.0.0.get()) };
+        // `held` is this frame's, borrowed by nothing else at either swap.
+        let swap = |held: &Owned| unsafe { self.0.get().swap(held.0.0.get()) };
+        swap(&held);
         let result = edit(&mut held);
-        // SAFETY: as above, now that `edit`'s borrow of `held` has ended.
-        unsafe { self.0.get().swap(held.0.0.get()) };
+        swap(&held);
         result
     }
 
@@ -229,29 +229,7 @@ impl Value {
         scope: Option<&crate::Class>,
         name: &CStr,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        let Some(object) = self.object() else {
-            return Ok(None);
-        };
-        let scope = scope.map_or_else(|| self.class(), |scope| Some(scope.entry()));
-        let rv = Owned::default();
-        let mut found = ptr::null_mut();
-        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
-        // reads `name`, and writes `rv` (undefined, this frame's) or nothing.
-        bailout::trapped(unsafe {
-            swr_zend_try_read_property(
-                scope.unwrap_or(ptr::null_mut()),
-                object,
-                name.as_ptr(),
-                name.count_bytes(),
-                rv.as_ptr(),
-                &raw mut found,
-            )
-        })?;
-        if found == rv.as_ptr() {
-            return Ok(Some(rv));
-        }
-        // SAFETY: null, or a property slot of the object, which the borrow keeps alive.
-        Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
+        self.read(scope, name, true)
     }
 
     /// [`Value::read_property`], not silent (`zend_read_property`'s `silent`
@@ -264,22 +242,31 @@ impl Value {
         scope: Option<&crate::Class>,
         name: &CStr,
     ) -> Result<Option<Owned>, bailout::Bailout> {
+        self.read(scope, name, false)
+    }
+
+    /// [`Value::read_property`] (`silent`) or [`Value::read_property_loud`].
+    fn read(
+        &self,
+        scope: Option<&crate::Class>,
+        name: &CStr,
+        silent: bool,
+    ) -> Result<Option<Owned>, bailout::Bailout> {
         let Some(object) = self.object() else {
             return Ok(None);
         };
         let scope = scope.map_or_else(|| self.class(), |scope| Some(scope.entry()));
         let rv = Owned::default();
         let mut found = ptr::null_mut();
-        // SAFETY: as `read_property`: the zval holds the object while borrowed;
-        // a class or null; Zend reads `name`, and writes `rv` (undefined, this
-        // frame's) or nothing.
+        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
+        // reads `name`, and writes `rv` (undefined, this frame's) or nothing.
         bailout::trapped(unsafe {
             crate::sys::swr_zend_try_facade_read(
                 scope.unwrap_or(ptr::null_mut()),
                 object,
                 name.as_ptr(),
                 name.count_bytes(),
-                false,
+                silent,
                 rv.as_ptr(),
                 &raw mut found,
             )
@@ -377,8 +364,14 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn class_name(&self) -> Option<&CStr> {
-        // SAFETY: the zval holds the object while borrowed, and its class outlives it.
-        Some(unsafe { crate::class_name(self.object()?) })
+        Some(self.class_entry()?.name().c_str())
+    }
+
+    /// `Z_OBJCE_P` of an object as a handle, for its name, flags and parent.
+    #[must_use]
+    #[inline]
+    pub fn class_entry(&self) -> Option<crate::ClassEntry<'_>> {
+        Some(self.props(None)?.class_entry())
     }
 
     /// `Z_OBJCE_P` of an object. Zend may change the class (its flags, its
@@ -386,18 +379,14 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn class(&self) -> Option<*mut zend_class_entry> {
-        let object = self.object()?;
-        // SAFETY: the zval holds the object while borrowed.
-        Some(unsafe { (*object).ce })
+        Some(self.props(None)?.class())
     }
 
     /// `Z_OBJCE_P(value)->ce_flags` of an object.
     #[must_use]
     #[inline]
     pub fn class_flags(&self) -> Option<u32> {
-        let class = self.class()?;
-        // SAFETY: a class outlives its objects; one field is read.
-        Some(unsafe { (*class).ce_flags })
+        Some(self.class_entry()?.flags())
     }
 
     /// `zval_get_long`: any value converted as PHP does. An object warns, and
@@ -561,20 +550,20 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn copy(&self) -> Owned {
-        // SAFETY: a live zval; the copy carries the reference it adds.
-        let copy = unsafe { self.as_ptr().read() };
-        let owned = Owned(Self(UnsafeCell::new(copy)));
-        // SAFETY: as above.
+        let owned = Owned(Self(UnsafeCell::new(self.zval())));
+        // SAFETY: a live zval; the copy carries the reference this adds.
         unsafe { swr_zval_try_addref(owned.as_ptr()) };
         owned
     }
 
-    /// `ZVAL_COPY(slot, value)`: `slot` takes the value, with a reference of its
-    /// own, in place of what it held, which is not released (as the macro
-    /// leaves it): a slot that owned something gives it up first.
+    /// `ZVAL_COPY_VALUE`: the zval's two words, with no reference of their own,
+    /// as a call's argument array lends a value its owner keeps (and releases)
+    /// itself. What it points to is only good while this value is.
+    #[must_use]
     #[inline]
-    pub fn copy_to(&self, slot: &mut zval) {
-        *slot = self.copy().into_zval();
+    pub fn zval(&self) -> zval {
+        // SAFETY: a live zval, which is plain data.
+        unsafe { self.as_ptr().read() }
     }
 }
 
@@ -677,31 +666,18 @@ impl Array {
         }
     }
 
-    /// `ZEND_HASH_FOREACH_KEY_VAL` with `ZVAL_DEREF`, stopping once a bailout
-    /// is pending.
+    /// `ZEND_HASH_FOREACH_KEY_VAL` with `ZVAL_DEREF`, stopping once a
+    /// whole-thread exit is pending.
     pub fn for_each<'a, F: FnMut(Key<'a>, &'a Value)>(&'a self, mut each: F) {
-        unsafe extern "C" fn trampoline<'a, F: FnMut(Key<'a>, &'a Value)>(
-            key: *mut zend_string,
-            index: zend_ulong,
-            value: *mut zval,
-            context: *mut c_void,
-        ) {
-            let key = if key.is_null() {
-                Key::Index(index)
-            } else {
-                // SAFETY: the table holds its keys while borrowed.
-                Key::Name(unsafe { bytes(key) })
-            };
-            // SAFETY: an element of the borrowed table.
-            let value = unsafe { &*value.cast::<Value>() };
-            // SAFETY: `context` is the closure `for_each` passed, live for the loop.
-            let each = unsafe { &mut *context.cast::<F>() };
-            each(key, value);
+        let mut entries = self.entries();
+        while let Some((key, value)) = entries.next_keyed() {
+            // SAFETY: the element, or what the reference it holds refers to,
+            // which the element keeps alive while the table is borrowed.
+            each(key, unsafe { &*value.referent().cast::<Value>() });
+            if bailout::thread_exit_pending() {
+                break;
+            }
         }
-        let context = (&raw mut each).cast::<c_void>();
-        // SAFETY: a live table; the closure outlives the loop, and a panic
-        // aborts at the `extern "C"` boundary.
-        unsafe { swr_zend_hash_foreach_kv(self.as_ptr(), Some(trampoline::<F>), context) };
     }
 }
 
@@ -1250,11 +1226,9 @@ impl ArrayMut {
     /// releases its value (as [`release`] does), which can run `__destruct`.
     #[inline]
     pub fn insert(&mut self, key: &[u8], value: Owned) {
-        let Some(array) = self.separate().map(|array| array.zval()) else {
-            return;
-        };
-        // SAFETY: a live array.
-        unsafe { symtable_update(array, key, value) };
+        if let Some(array) = self.separate() {
+            array.update(key, value);
+        }
     }
 
     /// `zend_hash_index_add`: the array takes over `value` under `index`, or
@@ -1367,6 +1341,23 @@ impl Separated<'_> {
         self.0.0.array().map_or(ptr::null_mut(), Array::as_ptr)
     }
 
+    /// `add_assoc_zval_ex(array, key, value)`, with a released value's
+    /// `__destruct` run inside `zend_try` and a bailout deferred.
+    #[inline]
+    fn update(&self, key: &[u8], value: Owned) {
+        let mut value = value.into_zval();
+        // SAFETY: a live array this zval alone holds; it takes the value, and
+        // Zend copies the key.
+        bailout::defer(bailout::trapped(unsafe {
+            swr_zend_try_symtable_update(
+                self.zval(),
+                crate::key_ptr(key),
+                key.len(),
+                &raw mut value,
+            )
+        }));
+    }
+
     /// `zend_hash_clean`; a destructor's bailout is deferred. It takes the
     /// borrow, because a destructor may run PHP code that replaces the array.
     #[inline]
@@ -1376,18 +1367,6 @@ impl Separated<'_> {
             swr_zend_try_hash_clean(self.table())
         }));
     }
-}
-
-/// `add_assoc_zval_ex(array, key, value)`, with a released value's
-/// `__destruct` run inside `zend_try` and a bailout deferred.
-/// # Safety
-/// `array` is a live array zval.
-pub(crate) unsafe fn symtable_update(array: *mut zval, key: &[u8], value: Owned) {
-    let mut value = value.into_zval();
-    // SAFETY: per the caller; the array takes the value, and Zend copies the key.
-    bailout::defer(bailout::trapped(unsafe {
-        swr_zend_try_symtable_update(array, crate::key_ptr(key), key.len(), &raw mut value)
-    }));
 }
 
 impl OwnedArray {
