@@ -331,7 +331,7 @@ impl Client {
         // for the call as upstream's `ZVAL_OBJ`.
         unsafe { set_object(&raw mut args[0], self.object) };
         args[1] = Owned::string(ZString::new(data)).into_zval();
-        let result = match crate::native::call(callable, &mut args, ptr::null_mut(), false) {
+        let result = match callable.call(&mut args, None, false) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(bailout::Bailout) => 2,

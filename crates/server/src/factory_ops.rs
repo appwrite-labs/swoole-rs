@@ -227,7 +227,8 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_WRITE_TO_WORKER => {
             // The worker the factory scheduled, and its pipe, if the server has them.
             let pipe = ctx.worker_at(worker_id(arg));
-            let Some(pipe) = pipe.and_then(|worker| crate::objects::socket(worker.pipe_master))
+            let Some(pipe) =
+                pipe.and_then(|worker| crate::objects::worker_pipe(worker.into(), true))
             else {
                 return Some(0);
             };
@@ -238,10 +239,12 @@ fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
             let bus = unsafe { &*thread }.message_bus();
-            let socket = bus.pipe_socket(pipe);
+            let Some(socket) = bus.pipe_socket(pipe) else {
+                return Some(0);
+            };
             let (mut info, data) = send();
             // SAFETY: the live pipe, and the data sent.
-            u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, data.cast()) })
+            u64::from(unsafe { bus.rust().send(socket.as_ptr(), &mut info, data.cast()) })
         }
         OP_WRITE_TO_REACTOR => {
             let (mut info, data) = send();

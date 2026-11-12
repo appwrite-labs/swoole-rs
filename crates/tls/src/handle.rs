@@ -43,6 +43,7 @@ unsafe extern "C" {
     safe fn SSL_set_shutdown(ssl: Ssl<'_>, mode: c_int);
     safe fn SSL_get_verify_result(ssl: Ssl<'_>) -> c_long;
     safe fn SSL_version(ssl: Ssl<'_>) -> c_int;
+    safe fn SSL_pending(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_set_accept_state(ssl: Ssl<'_>);
     safe fn SSL_set_connect_state(ssl: Ssl<'_>);
     safe fn SSL_get_peer_cert_chain(ssl: Ssl<'_>) -> *mut stack_st_X509;
@@ -272,6 +273,12 @@ impl<'a> Ssl<'a> {
     #[must_use]
     pub fn version(self) -> c_int {
         SSL_version(self)
+    }
+
+    /// `SSL_pending`: the decrypted bytes buffered to read.
+    #[must_use]
+    pub fn pending(self) -> c_int {
+        SSL_pending(self)
     }
 
     /// The current cipher's bits, name and version.

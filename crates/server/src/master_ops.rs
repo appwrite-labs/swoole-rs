@@ -1790,12 +1790,11 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the context's live `UnixSocket`.
             let pair = unsafe { &*o.ctx.object.cast::<SocketPair>() };
             let end = if arg == 0 {
-                pair.master_socket
+                pair.master_end()
             } else {
-                pair.worker_socket
+                pair.worker_end()
             };
-            // SAFETY: a ready pair's live end.
-            sign(unsafe { Socket::from_ptr(end) }?.fd())
+            sign(end?.fd())
         }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
@@ -1805,8 +1804,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 } else {
                     (crate::reactor_handle::Reactor::thread(), 2, 0)
                 };
-                // SAFETY: the pipe's live end.
-                if let Some(master) = unsafe { Socket::from_ptr(pipe.master_socket) } {
+                if let Some(master) = pipe.master_end() {
                     reactor.change(master, kind, events);
                 }
             }
@@ -2304,11 +2302,17 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
     let socket = if u64::from(o.config().mode_) == MODE_THREAD {
         bus.pipe_socket(pipe)
     } else {
-        pipe.as_ptr().cast()
+        Some(pipe)
+    };
+    let Some(socket) = socket else {
+        return 0;
     };
     let mut info = send.info;
     // SAFETY: a live pipe socket and the send it writes.
-    u64::from(unsafe { bus.rust().send(socket.cast(), &mut info, send.data.cast()) })
+    u64::from(unsafe {
+        bus.rust()
+            .send(socket.as_ptr(), &mut info, send.data.cast())
+    })
 }
 
 /// `serv->factory_->finish(send)`.

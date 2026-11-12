@@ -110,6 +110,20 @@ fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
     [pair.master_socket, pair.worker_socket].map(|end| unsafe { Socket::from_ptr(end) })
 }
 
+impl SocketPair {
+    /// The master's end, or `None` once closed.
+    #[must_use]
+    pub fn master_end(&self) -> Option<Socket<'_>> {
+        ends(self)[0]
+    }
+
+    /// The worker's end, or `None` once closed.
+    #[must_use]
+    pub fn worker_end(&self) -> Option<Socket<'_>> {
+        ends(self)[1]
+    }
+}
+
 /// `bool UnixSocket::set_buffer_size(size_t) const`: the master's kernel buffers, then
 /// the worker's; false at the first that fails.
 #[cfg_attr(

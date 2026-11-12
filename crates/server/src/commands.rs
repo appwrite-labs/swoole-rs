@@ -156,7 +156,7 @@ pub(crate) fn answer(
 /// `serv->get_command_reply_socket()`: worker 0's master pipe in base mode, else the
 /// command pipe's worker end.
 pub(crate) fn reply_socket<'a>(
-    state: &ServerState,
+    state: &'a ServerState,
     serv: crate::view::Server<'a>,
 ) -> Option<Socket<'a>> {
     let config = state.config_ref();
@@ -164,7 +164,7 @@ pub(crate) fn reply_socket<'a>(
         return serv.worker_pipe(0, true);
     }
     // The server's live command pipe, a `UnixSocket`.
-    crate::objects::socket(config.command_pipe()?.worker_socket.cast())
+    config.command_pipe()?.worker_end()
 }
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
