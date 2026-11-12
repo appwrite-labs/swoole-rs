@@ -251,26 +251,6 @@ pub unsafe fn cache(handle: *mut Callable) -> *mut zend_fcall_info_cache {
     unsafe { &raw mut (*handle).cache }
 }
 
-/// # Safety
-/// A live initialized handle; cloning retains the original zval as upstream does.
-#[must_use]
-pub unsafe fn copy(handle: *const Callable) -> *mut Callable {
-    // SAFETY: the handle remains borrowed throughout the copy.
-    let original = unsafe { &*handle };
-    let mut copy = Box::new(Callable {
-        value: original.value,
-        cache: original.cache,
-        name: original.name,
-    });
-    // SAFETY: this new owner holds another zval reference.
-    unsafe { sys::swr_zval_try_addref(&raw mut copy.value) };
-    if !copy.name.is_null() {
-        // SAFETY: retain the immutable diagnostic name rather than duplicate its bytes.
-        copy.name = unsafe { sys::swr_zend_string_copy(copy.name) };
-    }
-    Box::into_raw(copy)
-}
-
 /// # Errors
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.

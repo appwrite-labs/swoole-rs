@@ -370,7 +370,10 @@ fn can_exit() -> Result<bool, Bailout> {
         // SAFETY: zend_exception_error(EG(exception), E_ERROR), inside a trap.
         unsafe { bailout::trap(z::swr_zend_facade_exception_error, exception.cast()) }?;
     }
-    Ok(kind(&retval) != IS_FALSE)
+    // The last reference once the condition replaced itself: a bailout its
+    // destructor deferred is raised by the reactor's callback.
+    drop(handle);
+    bailout::outcome(kind(&retval) != IS_FALSE)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.

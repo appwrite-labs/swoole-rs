@@ -6,6 +6,7 @@ use crate::settings::php_swoole_length_func;
 use libc::{c_int, c_void, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
+    mem::ManuallyDrop,
     ptr,
     rc::Rc,
 };
@@ -270,8 +271,7 @@ impl Co {
         let conn = NewSocket(Self(self.0.accept(timeout)?));
         let callable = self.0.protocol().private_data_1;
         if !callable.is_null() {
-            // SAFETY: the listener's live callable, copied for the new connection.
-            let copy = unsafe { swoole_rs_phpruntime::callable_dup(callable) };
+            let copy = callable_dup(callable);
             conn.co()
                 .0
                 .edit_protocol(|protocol| protocol.private_data_1 = copy);
@@ -541,7 +541,7 @@ impl Co {
 /// `package_length_func`: the callable `value` makes replaces any earlier
 /// one, which is freed once the socket no longer holds it. Nothing more is set
 /// once a bailout is pending.
-pub(crate) fn length_callable(socket: Co, value: *mut zval) {
+pub(crate) fn length_callable(socket: Co, value: &Value) {
     let Ok(callable) = self::callable(value) else {
         return;
     };
@@ -638,20 +638,36 @@ pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
     unsafe { bailout::trap_with(free) }
 }
 
-/// `sw_callable_create(value)`: the callable, or null after a warning.
+/// `sw_callable_create(value)`, for a protocol's `private_data_1`: the slot's
+/// reference (`Rc::into_raw`), or null after a warning.
 /// # Errors
 /// The warning's handler bailed out; the bailout stays pending.
-pub(crate) fn callable(value: *mut zval) -> Result<*mut c_void, Bailout> {
-    // SAFETY: a live zval.
-    bailout::outcome(unsafe { swoole_rs_phpruntime::callable_create(value) })
+pub(crate) fn callable(value: &Value) -> Result<*mut c_void, Bailout> {
+    let callable = Callable::new(value)?;
+    Ok(callable.map_or(ptr::null_mut(), |callable| {
+        Rc::into_raw(callable).cast_mut().cast()
+    }))
 }
 
-/// `sw_callable_free(callable)`: it is gone either way.
+/// The slot's callable `callable` made, still the slot's: the caller's own
+/// reference.
+fn held(callable: *mut c_void) -> Rc<Callable> {
+    // SAFETY: a slot's live reference (`callable`), borrowed: the slot keeps it.
+    let slot = ManuallyDrop::new(unsafe { Rc::from_raw(callable.cast::<Callable>()) });
+    Rc::clone(&slot)
+}
+
+/// `callable->dup()`: another slot's reference to `callable`.
+fn callable_dup(callable: *mut c_void) -> *mut c_void {
+    Rc::into_raw(held(callable)).cast_mut().cast()
+}
+
+/// `sw_callable_free(callable)`, out of its slot: it is gone either way.
 /// # Errors
 /// A destructor bailed out; the bailout stays pending.
 pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: a callable `callable` made, freed once and held by no slot.
-    unsafe { swoole_rs_phpruntime::callable_free(callable) };
+    // SAFETY: the reference `callable` gave a slot, which holds it no more.
+    drop(unsafe { Rc::from_raw(callable.cast::<Callable>()) });
     bailout::outcome(())
 }
 
@@ -672,9 +688,12 @@ pub(crate) fn invoke(
     argv: &mut [zval],
     retval: &mut zval,
 ) -> Result<bool, Bailout> {
-    // SAFETY: a live callable `callable` made, which the caller keeps through the call.
-    let callable = unsafe { &*callable.cast::<Callable>() };
-    callable.call(argv, Some(Value::of(retval)), true)
+    // Its own reference: the callable may close the socket, freeing the slot's.
+    let callable = held(callable);
+    let called = callable.call(argv, Some(Value::of(retval)), true);
+    // The last reference, then: its destructor's bailout is the caller's to raise.
+    drop(callable);
+    called.and_then(bailout::outcome)
 }
 
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which

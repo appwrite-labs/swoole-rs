@@ -261,7 +261,7 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
         edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
-        let callable = bailed(native::callable(function.as_ptr()))?;
+        let callable = bailed(native::callable(function))?;
         if callable.is_null() {
             return Some(false);
         }

@@ -278,7 +278,7 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
         edit(socket, |p| p.package_body_offset = offset);
     }
     if let Some(v) = s.get(b"package_length_func") {
-        native::length_callable(socket, v.as_ptr());
+        native::length_callable(socket, v);
         checked()?;
     }
     if let Some(v) = s.get(b"package_max_length") {

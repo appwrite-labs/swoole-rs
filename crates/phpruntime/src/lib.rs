@@ -145,14 +145,6 @@ pub unsafe fn callable_free(callable: *mut c_void) {
     }
 }
 
-/// `callable->dup()`.
-/// # Safety
-/// `callable` is live.
-pub unsafe fn callable_dup(callable: *mut c_void) -> *mut c_void {
-    // SAFETY: per the caller.
-    unsafe { handle::copy(callable.cast()) }.cast()
-}
-
 const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
 const SW_ERROR_UNDEFINED_BEHAVIOR: i64 = 600;
 
