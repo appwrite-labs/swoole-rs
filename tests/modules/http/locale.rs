@@ -124,7 +124,7 @@ fn filename() {
             let end = scratch.iter().position(|&byte| byte == 0).unwrap();
             assert_eq!(
                 multipart_filename(&mut scratch[..=end]),
-                i32::from(expected),
+                Ok(expected),
                 "filename:{mask}"
             );
         }

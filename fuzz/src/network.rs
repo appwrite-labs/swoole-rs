@@ -154,7 +154,7 @@ impl swoole_rs_http::multipart_parser::Parts for Parts {
         // The scan reads the value through its first NUL.
         let end = value.iter().position(|&byte| byte == 0).unwrap_or_default();
         let status = swoole_rs_http::multipart_filename(&mut value[..=end]);
-        assert!(matches!(status, 0 | 1), "filename status {status}");
+        assert!(status.is_ok(), "filename status {status:?}");
         0
     }
 }
@@ -182,7 +182,7 @@ pub fn multipart(bytes: &[u8]) {
             "processed {processed} of {}",
             chunk.len()
         );
-        if swoole_rs_http::multipart_result(processed as i64, chunk.len(), 0) != 2 {
+        if swoole_rs_http::multipart_result(processed as i64, chunk.len(), 0).is_err() {
             break;
         }
     }
