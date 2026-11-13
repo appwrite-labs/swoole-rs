@@ -1,28 +1,29 @@
 //! Reactor threads: the receive path and dispatch to workers, the worker pipe
 //! protocol, TLS readiness, heartbeats and the threads' lifecycle.
 use crate::ops::{
-    FIELD_HEARTBEAT_INTERVAL, LOG_RECVFROM, OP_CERT_TASK, OP_CLIENT_CERT, OP_DELAY_RECEIVE,
-    OP_DGRAM_BUFFER, OP_DTLS_ACCEPT, OP_ERRNO, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT,
-    OP_FACTORY_DISPATCH, OP_FIELD, OP_HAS_ON_CONNECT, OP_HAVE_DGRAM, OP_HEARTBEAT_ENTRY,
-    OP_HEARTBEAT_TIMER, OP_MASTER_REACTOR_ID, OP_MODE, OP_NOTIFY_CONNECT, OP_PACKET_INIT,
-    OP_PACKET_TASK, OP_PEER_CERT, OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_DTLS, OP_PORT_LISTEN,
-    OP_PORT_READ, OP_REACTOR_BARRIER, OP_REACTOR_DEL, OP_REACTOR_NUM, OP_REACTOR_THREAD_ENTRY,
-    OP_REACTOR_THREAD_TYPE, OP_RECVFROM, OP_SERVER, OP_SESSION_HANDLERS, OP_SINGLE_THREAD,
-    OP_SSL_ACCEPT, OP_SSL_READY, OP_SSL_VERIFY, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
-    OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY, OP_THREAD0_INIT,
-    OP_VERIFY_PEER, OP_WORKER_START, OP_WORKER_STOP,
+    LOG_RECVFROM, OP_CERT_TASK, OP_CLIENT_CERT, OP_DELAY_RECEIVE, OP_DTLS_ACCEPT, OP_ERRNO,
+    OP_FACTORY_DISPATCH, OP_HAS_ON_CONNECT, OP_MODE, OP_NOTIFY_CONNECT, OP_PACKET_INIT,
+    OP_PACKET_TASK, OP_PEER_CERT, OP_PORT_DTLS, OP_REACTOR_DEL, OP_RECVFROM, OP_SSL_ACCEPT,
+    OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER,
 };
 use core::ffi::{c_int, c_long};
 
-use swoole_rs_corebase::{log, microtime};
+use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode;
+use swoole_rs_reactor::Socket;
 
 use crate::reactor_handle::Reactor;
+use crate::reactor_ops::ThreadRecord;
 use crate::records::{Connection, Lookup};
-use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK, ServerState, view};
+use crate::{Host, MODE_BASE, SW_ERR, SW_OK, ServerState, view};
 
-/// `SW_LOG_TRACE`.
+/// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
+/// `SW_EVENT_WRITE`.
 const SW_LOG_TRACE: c_int = 1;
+const FD_SESSION: c_int = 0;
+const FD_DGRAM_SERVER: c_int = 2;
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
 
 /// `swReturnCode` values.
 pub(crate) const SW_CONTINUE: i64 = 1;
@@ -30,7 +31,7 @@ pub(crate) const SW_WAIT: i64 = 2;
 pub(crate) const SW_ERROR: i64 = 4;
 pub(crate) const SW_READY: i64 = 5;
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
-const HEARTBEAT: u64 = u64::MAX;
+pub(crate) const HEARTBEAT: u64 = u64::MAX;
 
 /// `ReactorThread_verify_ssl_state` once the socket's TLS handshake is pending:
 /// finish it, then announce the connection (with the client certificate when the
@@ -158,122 +159,69 @@ pub(crate) fn close_reactor_connections(serv: view::Server<'_>, reactor: Reactor
     });
 }
 
-/// `Server::init_reactor`.
-pub(crate) fn init_reactor<H: Host>(h: &mut H) -> crate::Effect<()> {
+/// `Server::init_reactor`: a reactor's session and datagram handlers.
+pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
+    use crate::reactor_entry::{on_packet_received, on_read, on_write};
     // 64K datagrams need the larger thread buffer.
-    if h.is(OP_HAVE_DGRAM)? {
-        h.get(OP_DGRAM_BUFFER)?;
+    if serv.state().config_ref().have_dgram_sock {
+        swoole_rs_buffer::string::with_thread_buffer(|b| b.extend(b.size().wrapping_mul(2)));
     }
-    h.get(OP_SESSION_HANDLERS)?;
-    Ok(())
+    reactor.set_handler(FD_DGRAM_SERVER, SW_EVENT_READ, on_packet_received);
+    reactor.set_handler(FD_SESSION, SW_EVENT_WRITE, on_write);
+    reactor.set_handler(FD_SESSION, SW_EVENT_READ, on_read);
 }
 
-/// `Server::start_reactor_threads`: listen, start the reactor threads (or set up the
-/// single one) and the heartbeat, then run the master thread.
-pub(crate) fn start_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    if h.signed(OP_EVENT_INIT)? < 0 {
-        return Ok(SW_ERR);
+/// `Server::join_reactor_thread`: tell each running reactor thread to shut down,
+/// and join it.
+pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
+    let state = serv.state();
+    let config = state.config_ref();
+    if config.single_thread.get() {
+        return;
     }
-    for port in 0..h.get(OP_PORT_COUNT)? {
-        if h.op(OP_PORT_DGRAM, port)? != 0 {
-            continue;
-        }
-        if h.op(OP_PORT_LISTEN, port)?.cast_signed() < 0 {
-            h.get(OP_EVENT_FREE)?;
-            return Ok(SW_ERR);
-        }
-        h.op(OP_PORT_READ, port)?;
-    }
-    h.get(OP_STORE_LISTEN_SOCKET)?;
-    let single = h.is(OP_SINGLE_THREAD)?;
-    if single {
-        h.get(OP_THREAD0_INIT)?;
-    } else {
-        h.get(OP_MASTER_REACTOR_ID)?;
-        let (entry, serv) = (h.get(OP_REACTOR_THREAD_ENTRY)?, h.get(OP_SERVER)?);
-        for thread in 0..h.get(OP_REACTOR_NUM)? {
-            h.state()?.start_thread(entry, serv, thread);
-        }
-    }
-    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? >= 1 {
-        if single {
-            h.get(OP_HEARTBEAT_TIMER)?;
-        } else {
-            let (entry, serv) = (h.get(OP_HEARTBEAT_ENTRY)?, h.get(OP_SERVER)?);
-            h.state()?.start_thread(entry, serv, HEARTBEAT);
-        }
-    }
-    h.signed(OP_START_MASTER_THREAD)
-}
-
-/// `Server::reactor_thread_main_loop`.
-pub(crate) fn main_loop<H: Host>(h: &mut H, thread: u64) -> crate::Effect<()> {
-    h.op(OP_THREAD_ENTER, thread)?;
-    if h.signed(OP_EVENT_INIT)? < 0 {
-        return Ok(());
-    }
-    let mode = h.get(OP_MODE)?;
-    if mode == MODE_THREAD {
-        h.get(OP_WORKER_START)?;
-    } else {
-        h.op(OP_REACTOR_THREAD_TYPE, thread)?;
-    }
-    if h.signed(OP_THREAD_INIT)? < 0 {
-        return Ok(());
-    }
-    // Every reactor thread is ready before the master runs.
-    if mode == MODE_PROCESS {
-        h.get(OP_REACTOR_BARRIER)?;
-    }
-    h.get(OP_EVENT_WAIT)?;
-    if mode == MODE_THREAD {
-        h.get(OP_WORKER_STOP)?;
-    }
-    h.get(OP_THREAD_CLEAN)?;
-    Ok(())
-}
-
-/// `Server::join_reactor_thread`: tell each running reactor thread to shut down and join it.
-pub(crate) fn join_reactor_threads<H: Host>(h: &mut H) -> crate::Effect<()> {
-    if h.is(OP_SINGLE_THREAD)? {
-        return Ok(());
-    }
-    if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0
-        && let Some(heartbeat) = h.state()?.take_thread(HEARTBEAT)
+    if config.heartbeat_check_interval.get() > 0
+        && let Some(heartbeat) = state.take_thread(HEARTBEAT)
     {
         heartbeat.join().unwrap_or_default();
     }
-    for thread in 0..h.get(OP_REACTOR_NUM)? {
-        let Some(joining) = h.state()?.take_thread(thread) else {
+    for id in 0..config.reactor_num.get() {
+        let Some(joining) = state.take_thread(u64::from(id)) else {
             continue;
         };
-        h.op(OP_THREAD_NOTIFY, thread)?;
+        let thread = crate::reactor_entry::thread(state, usize::from(id)).cast::<ThreadRecord>();
+        if !thread.is_null() {
+            // SAFETY: one of the server's live threads; only its field is read, as the
+            // thread itself may hold its record meanwhile.
+            let notify = unsafe { (*thread).notify_pipe.get() };
+            // SAFETY: null or the thread's notify pipe, which it keeps until the server
+            // joins it, after this notice.
+            let pipe = unsafe { Socket::from_ptr(notify) };
+            send_event(pipe, 0, crate::ops::EVENT_SHUTDOWN);
+        }
         joining.join().unwrap_or_default();
     }
-    Ok(())
+}
+
+/// `socket->send_sync(&head, sizeof(head))` of a bare event.
+pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
+    let head = DataHead {
+        fd,
+        kind: u8::try_from(kind).unwrap_or(u8::MAX),
+        ..DataHead::default()
+    };
+    let data = (&raw const head).cast();
+    if let Some(sock) = sock {
+        // SAFETY: a live pipe socket, and the head's bytes.
+        let _ = unsafe {
+            swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
+        };
+    }
 }
 
 /// The reactor-thread operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use crate::ops::{
-        RUN_INIT_REACTOR, RUN_JOIN_REACTOR_THREADS, RUN_PACKET_RECEIVED, RUN_REACTOR_THREAD_MAIN,
-        RUN_START_REACTOR_THREADS,
-    };
     Ok(match operation {
-        RUN_PACKET_RECEIVED => packet_received(h)?,
-        RUN_INIT_REACTOR => {
-            init_reactor(h)?;
-            SW_OK
-        }
-        RUN_START_REACTOR_THREADS => start_reactor_threads(h)?,
-        RUN_REACTOR_THREAD_MAIN => {
-            main_loop(h, arg)?;
-            SW_OK
-        }
-        RUN_JOIN_REACTOR_THREADS => {
-            join_reactor_threads(h)?;
-            SW_OK
-        }
+        crate::ops::RUN_PACKET_RECEIVED => packet_received(h)?,
         _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
     })
 }
@@ -358,58 +306,6 @@ mod tests {
         assert_eq!(s.called(crate::ops::OP_BASE_PASS), 1, "the worker's bus");
     }
 
-    static RAN: std::sync::Mutex<Vec<(usize, u64)>> = std::sync::Mutex::new(Vec::new());
-
-    unsafe extern "C" fn record(serv: *mut core::ffi::c_void, arg: u64) {
-        RAN.lock().unwrap().push((serv.addr(), arg));
-    }
-
-    #[test]
-    fn start_and_join_threads() {
-        let entry = (record as *const ()).expose_provenance() as u64;
-        let mut s = Script::with(&[
-            (OP_PORT_COUNT, 2),
-            (OP_REACTOR_NUM, 3),
-            (OP_FIELD, 5),
-            (OP_REACTOR_THREAD_ENTRY, entry),
-            (OP_HEARTBEAT_ENTRY, entry),
-            (OP_SERVER, 64),
-        ])
-        .queue(OP_PORT_DGRAM, &[1, 0]);
-        assert_eq!(start_reactor_threads(&mut s).unwrap(), SW_OK, "master ran");
-        assert_eq!(s.args(OP_PORT_LISTEN), vec![1], "stream port listens");
-        join_reactor_threads(&mut s).unwrap();
-        let mut ran = RAN.lock().unwrap().clone();
-        ran.sort_unstable();
-        assert_eq!(
-            ran,
-            vec![(64, 0), (64, 1), (64, 2), (64, HEARTBEAT)],
-            "threads"
-        );
-        assert_eq!(s.args(OP_THREAD_NOTIFY), vec![0, 1, 2], "each told to stop");
-
-        let mut s = Script::with(&[(OP_PORT_COUNT, 1), (OP_PORT_LISTEN, u64::MAX)]);
-        assert_eq!(
-            start_reactor_threads(&mut s).unwrap(),
-            SW_ERR,
-            "listen failed"
-        );
-        assert_eq!(s.called(OP_EVENT_FREE), 1, "loop freed");
-
-        let mut s = Script::with(&[(OP_REACTOR_NUM, 2), (OP_FIELD, 1)]);
-        join_reactor_threads(&mut s).unwrap();
-        assert_eq!(s.called(OP_THREAD_NOTIFY), 0, "none started");
-    }
-
-    #[test]
-    fn main_loop_runs_a_reactor_thread() {
-        let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-        main_loop(&mut s, 2).unwrap();
-        assert_eq!(s.args(OP_REACTOR_THREAD_TYPE), vec![2], "reactor thread");
-        assert_eq!(s.called(OP_REACTOR_BARRIER), 1, "barrier");
-        assert_eq!(s.called(OP_THREAD_CLEAN), 1, "cleaned");
-    }
-
     /// The live server with session 1 accepted. The reactor records the fds its
     /// error handler (the worker told) is given.
     fn accepted() -> (crate::fixture::LiveServer, std::net::TcpStream) {
@@ -481,5 +377,48 @@ mod tests {
         conn.set_reactor_id(conn.reactor_id().wrapping_sub(1));
         heartbeat_check(serv, reactor);
         assert_eq!(handled(), [("told", fd)], "the stale session");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn init_reactor_sets_the_session_handlers() {
+        use swoole_rs_reactor::reactor_upstream::reactor_isset_handler as isset;
+        let live = crate::fixture::LiveServer::new();
+        let running = live.reactor().handle();
+        assert!(!isset(running, FD_SESSION, SW_EVENT_READ));
+        init_reactor(live.server(), live.reactor());
+        for (fd_type, event) in [
+            (FD_SESSION, SW_EVENT_READ),
+            (FD_SESSION, SW_EVENT_WRITE),
+            (FD_DGRAM_SERVER, SW_EVENT_READ),
+        ] {
+            assert!(isset(running, fd_type, event), "{fd_type} {event}");
+        }
+    }
+
+    static JOINED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "C" fn joined(_: *mut core::ffi::c_void, arg: u64) {
+        JOINED.lock().unwrap().push(arg);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn join_waits_for_each_reactor_thread_and_the_heartbeat() {
+        let live = crate::fixture::LiveServer::new();
+        let (serv, state) = (live.server(), live.state());
+        let config = state.config_ref();
+        let entry = (joined as *const ()).expose_provenance() as u64;
+        let raw = serv.raw().expose_provenance() as u64;
+        for id in 0..u64::from(config.reactor_num.get()) {
+            state.start_thread(entry, raw, id);
+        }
+        state.start_thread(entry, raw, HEARTBEAT);
+        config.heartbeat_check_interval.set(1);
+        join_reactor_threads(serv);
+        let mut ran = JOINED.lock().unwrap().clone();
+        ran.sort_unstable();
+        assert_eq!(ran, vec![0, HEARTBEAT], "each thread ran and was joined");
+        assert!(state.take_thread(0).is_none() && state.take_thread(HEARTBEAT).is_none());
     }
 }

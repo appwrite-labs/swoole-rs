@@ -72,10 +72,6 @@ struct DgramPacket {
 }
 
 /// `serv->get_thread(id)`.
-#[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
-    expect(dead_code, reason = "only the reactor threads' ops call it")
-)]
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     let threads = state.tables_ref().reactor_threads;
     threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
@@ -219,34 +215,6 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
     crate::thread_ops::shutdown(&ctx);
 }
 
-/// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
-#[cfg_attr(
-    test,
-    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
-)]
-pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
-    run(
-        crate::ops::RUN_INIT_REACTOR,
-        0,
-        &mut ReactorContext::new(serv, Some(reactor)),
-    );
-}
-
-/// `int Server::start_reactor_threads()`, in the server's master.
-#[must_use]
-pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
-    let mut ctx = ReactorContext::new(serv, None);
-    int(run(crate::ops::RUN_START_REACTOR_THREADS, 0, &mut ctx))
-}
-
-/// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
-/// thread `reactor_id`.
-pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
-    let mut ctx = ReactorContext::new(serv, None);
-    let id = i64::from(reactor_id).cast_unsigned();
-    run(crate::ops::RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
-}
-
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
 /// a data frame to the workers.
 ///
@@ -344,10 +312,4 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
     0
-}
-
-/// `void Server::join_reactor_thread()`, in the server's master.
-pub fn join_reactor_thread(serv: view::Server<'_>) {
-    let mut ctx = ReactorContext::new(serv, None);
-    run(crate::ops::RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

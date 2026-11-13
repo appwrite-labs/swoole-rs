@@ -3,7 +3,7 @@
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
 //! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
-use crate::reactor_thread::each_connection;
+use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
@@ -23,18 +23,13 @@ use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
 use crate::ops::{
-    EVENT_SHUTDOWN, OP_CLOSE, OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER,
-    OP_PORT_LISTEN, OP_PORT_READ, OP_RD_ABORT, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE,
-    OP_RESUME_TIMER, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY,
-    OP_THREAD0_INIT, OP_WORKER_START, OP_WORKER_STOP,
+    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY, OP_RECVFROM,
+    OP_WR_SEND, OP_WR_SENDFILE,
 };
-use crate::ops::{
-    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY,
-    OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND, OP_WR_SENDFILE,
-};
+use crate::ops::{OP_CLOSE, OP_RD_ABORT, OP_RESUME_TIMER};
 use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, thread};
-use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
+use crate::reactor_ops::{ReactorContext, ThreadRecord, sign};
 use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
 use swoole_rs_buffer::string::with_thread_buffer;
@@ -92,22 +87,6 @@ fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
     serv.worker_record(id.try_into().unwrap_or(u16::MAX))
 }
 
-/// `socket->send_sync(&head, sizeof(head))` of a bare event.
-fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
-    let head = DataHead {
-        fd,
-        kind: u8::try_from(kind).unwrap_or(u8::MAX),
-        ..DataHead::default()
-    };
-    let data = (&raw const head).cast();
-    if let Some(sock) = sock {
-        // SAFETY: a live pipe socket, and the head's bytes.
-        let _ = unsafe {
-            swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
-        };
-    }
-}
-
 /// `Server::heartbeat_check`'s timer, which `reactor` arms for itself and runs on
 /// its thread.
 fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> *mut c_void {
@@ -158,7 +137,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             }
         }
     }
-    entry::init_reactor(server, handle);
+    crate::reactor_thread::init_reactor(server, handle);
     let thread = ctx.thread_record()?;
     let bus = thread.message_bus();
     methods::init_pipe_sockets(server, bus);
@@ -212,7 +191,6 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
 /// Answers `op` when it is one of this module's, else `None`, as `reactor_ops::answer`.
 #[expect(
     clippy::too_many_lines,
-    clippy::cognitive_complexity,
     reason = "one arm per op, as master.cc's switch was"
 )]
 #[inline(always)]
@@ -226,16 +204,7 @@ pub(crate) fn answer(
     let reactor = handle.map_or(ptr::null_mut(), Reactor::ptr);
     let config = || state.config_ref();
     let reactor_id = || handle.map(|handle| handle.handle().id());
-    // `reactor->add(socket, SW_EVENT_READ)`.
-    let add_read = |socket: Option<Socket<'_>>| match (socket, handle) {
-        (Some(socket), Some(handle)) => handle.change(socket, 0, SW_EVENT_READ),
-        _ => -1,
-    };
     Some(match op {
-        OP_REACTOR_BARRIER => {
-            methods::reactor_barrier(server);
-            0
-        }
         OP_PACKET_INIT => {
             let fd = event_fd(ctx)?;
             // The event's fd is a listening socket's, whose slot is live.
@@ -332,61 +301,6 @@ pub(crate) fn answer(
             (crate::port_config::methods().destroy_http_request)(ctx.conn);
             0
         }
-        OP_THREAD_ENTER => {
-            ctx.thread = thread(state, usize::try_from(arg).ok()?);
-            ctx.thread_record()?.id.set(int(arg));
-            swoole_rs_corebase::set_thread_message_bus(bus_of(ctx)?);
-            0
-        }
-        OP_REACTOR_THREAD_TYPE => {
-            swoole_rs_corebase::set_thread(THREAD_REACTOR, u16::try_from(arg & 0xffff).ok()?);
-            0
-        }
-        OP_WORKER_START | OP_WORKER_STOP => {
-            let worker = worker(server, ctx.thread_record()?.id.get())?;
-            if op == OP_WORKER_START {
-                call_worker_start_callback(server, worker);
-            } else {
-                call_worker_stop_callback(server, worker);
-            }
-            0
-        }
-        OP_THREAD_INIT | OP_THREAD0_INIT => {
-            if op == OP_THREAD0_INIT {
-                ctx.thread = thread(state, 0);
-            }
-            let id = u16::try_from(ctx.thread_record()?.id.get()).unwrap_or_default();
-            // `ReactorThread::init(serv, reactor, id)`, over the context's thread and
-            // its new reactor.
-            let mut init = ReactorContext::new(server, handle);
-            init.thread = ctx.thread;
-            let ret = init_thread(&mut init, state, id).unwrap_or(-1);
-            sign(if op == OP_THREAD0_INIT { 0 } else { ret })
-        }
-        OP_THREAD_CLEAN => {
-            // `message_bus.free_buffer()`.
-            ctx.thread_record()?.message_bus().free_buffer();
-            0
-        }
-        OP_THREAD_NOTIFY => {
-            let joining = thread(state, usize::try_from(arg).ok()?).cast::<ThreadRecord>();
-            // SAFETY: one of the server's live threads; only its field is read, as the
-            // thread itself may hold its record meanwhile.
-            let notify = unsafe { (*joining).notify_pipe.get() };
-            // SAFETY: null or the thread's notify pipe, which it keeps until the server
-            // joins it, after this notice.
-            send_event(unsafe { Socket::from_ptr(notify) }, 0, EVENT_SHUTDOWN);
-            0
-        }
-        OP_REACTOR_THREAD_ENTRY => reactor_thread_entry as *const () as u64,
-        OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
-        OP_HEARTBEAT_TIMER => {
-            let timer = heartbeat_timer(state, handle?);
-            config()
-                .heartbeat_timer
-                .store(timer, core::sync::atomic::Ordering::Relaxed);
-            0
-        }
         OP_RESUME_TIMER => u64::from(resume_timer(server, ctx.connection()?, ctx.sock?)),
 
         OP_CLOSE => {
@@ -396,19 +310,6 @@ pub(crate) fn answer(
         }
         OP_RD_ABORT => {
             crate::connection::abort(server, handle?, ctx.port, ctx.sock?);
-            0
-        }
-        OP_PORT_LISTEN | OP_PORT_READ => {
-            let port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
-            if op == OP_PORT_LISTEN {
-                return Some(sign((crate::port_config::methods().listen)(port.config())));
-            }
-            add_read(server.port_socket_at(usize::try_from(arg).unwrap_or(usize::MAX)));
-            0
-        }
-        OP_DGRAM_BUFFER => {
-            // support 64K packet
-            with_thread_buffer(|buffer| buffer.extend(buffer.size().wrapping_mul(2)));
             0
         }
         OP_RD_PORT_READ => {
@@ -495,7 +396,7 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
 extern "C" fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
     let id = c_int::try_from(id).unwrap_or_default();
-    entry::reactor_thread_main_loop(server, id);
+    main_loop(server, u16::try_from(id).unwrap_or_default());
     swoole_rs_corebase::swoole_thread_clean(false);
 }
 
@@ -510,6 +411,109 @@ extern "C" fn heartbeat_main(server: view::Server<'_>, _: u64) {
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
     swoole_rs_corebase::set_thread(kind, swoole_rs_corebase::thread_id());
     heartbeat_thread(server);
+}
+
+/// `Server::start_reactor_threads`, in the master: listen, start the reactor
+/// threads (or set up the single one) and the heartbeat, then run the master thread.
+pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
+    let state = serv.state();
+    let config = state.config_ref();
+    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+        return -1;
+    }
+    let reactor = Reactor::thread();
+    for (index, port) in state.tables_ref().ports().iter().enumerate() {
+        if matches!(port.config().r#type, 2 | 4 | 6) {
+            continue;
+        }
+        if (crate::port_config::methods().listen)(port.config()) < 0 {
+            swoole_rs_reactor::swoole_event_free();
+            return -1;
+        }
+        if let Some(socket) = serv.port_socket_at(index) {
+            reactor.change(socket, 0, SW_EVENT_READ);
+        }
+    }
+    methods::store_listen_socket(serv);
+    let single = config.single_thread.get();
+    if single {
+        // Thread 0's setup over the master's reactor; it runs the one loop.
+        let mut init = ReactorContext::new(serv, Some(reactor));
+        init.thread = thread(state, 0);
+        if let Some(record) = init.thread_record() {
+            let id = u16::try_from(record.id.get()).unwrap_or_default();
+            let _ = init_thread(&mut init, state, id);
+        }
+    } else {
+        // a special id for the master thread
+        let id = config.reactor_num.get();
+        reactor.handle().set_id(id);
+        swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
+        let entry = reactor_thread_entry as *const () as u64;
+        let raw = serv.raw().expose_provenance() as u64;
+        for id in 0..config.reactor_num.get() {
+            state.start_thread(entry, raw, u64::from(id));
+        }
+    }
+    if config.heartbeat_check_interval.get() >= 1 {
+        if single {
+            let timer = heartbeat_timer(state, reactor);
+            config
+                .heartbeat_timer
+                .store(timer, core::sync::atomic::Ordering::Relaxed);
+        } else {
+            let raw = serv.raw().expose_provenance() as u64;
+            state.start_thread(heartbeat_main as *const () as u64, raw, HEARTBEAT);
+        }
+    }
+    methods::start_master_thread(serv, reactor)
+}
+
+/// `Server::reactor_thread_main_loop`: reactor thread `id`'s setup, its event loop
+/// and its cleanup.
+pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
+    let state = serv.state();
+    let mut ctx = ReactorContext::new(serv, None);
+    ctx.thread = thread(state, usize::from(id));
+    let Some(record) = ctx.thread_record() else {
+        return;
+    };
+    record.id.set(c_int::from(id));
+    if let Some(bus) = bus_of(&ctx) {
+        swoole_rs_corebase::set_thread_message_bus(bus);
+    }
+    if swoole_rs_reactor::swoole_event_init(0) < 0 {
+        return;
+    }
+    ctx.reactor = Some(Reactor::thread());
+    let mode = u64::from(state.config_ref().mode_);
+    let worker = || worker(serv, id);
+    if mode == crate::MODE_THREAD {
+        let Some(worker) = worker() else {
+            return;
+        };
+        call_worker_start_callback(serv, worker);
+    } else {
+        swoole_rs_corebase::set_thread(THREAD_REACTOR, id);
+    }
+    if init_thread(&mut ctx, state, id).unwrap_or(-1) < 0 {
+        return;
+    }
+    // Every reactor thread is ready before the master runs.
+    if mode == crate::MODE_PROCESS {
+        methods::reactor_barrier(serv);
+    }
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "upstream's reactor thread ignores its loop's result: it cleans up either way"
+    )]
+    let _ = swoole_rs_reactor::event_api::swoole_event_wait();
+    if mode == crate::MODE_THREAD
+        && let Some(worker) = worker()
+    {
+        call_worker_stop_callback(serv, worker);
+    }
+    record.message_bus().free_buffer();
 }
 
 /// `ReactorThread_resume_data_receiving`, the timer of a paused session socket,

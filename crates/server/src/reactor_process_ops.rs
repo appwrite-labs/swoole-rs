@@ -196,7 +196,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .worker_num(),
         ),
         OP_INIT_REACTOR => {
-            crate::reactor_entry::init_reactor(serv, ctx.reactor_handle());
+            crate::reactor_thread::init_reactor(serv, ctx.reactor_handle());
             0
         }
         OP_SET_MASTER_PID => {
