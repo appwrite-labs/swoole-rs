@@ -1085,11 +1085,11 @@ impl Client {
             return false;
         };
         let upgrade = text(response, b"upgrade");
-        if upgrade.is_none_or(|value| request::token_list_contains(value, b"websocket") == 0) {
+        if upgrade.is_none_or(|value| !request::token_list_contains(value, b"websocket")) {
             return false;
         }
         let connection = text(response, b"connection");
-        if connection.is_none_or(|value| request::token_list_contains(value, b"Upgrade") == 0) {
+        if connection.is_none_or(|value| !request::token_list_contains(value, b"Upgrade")) {
             return false;
         }
         let Some(accept) =
@@ -1422,7 +1422,7 @@ fn on_header_value(hooks: &Hooks, data: &[u8]) -> c_int {
     client.add_header(name, data);
     let status = hooks.parser.status_code;
     if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
-        if request::token_list_contains(data, b"websocket") != 0 {
+        if request::token_list_contains(data, b"websocket") {
             client.websocket.set(true);
         }
     } else if features() & 1 != 0
