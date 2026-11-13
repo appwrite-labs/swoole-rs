@@ -6,7 +6,7 @@ use core::mem::MaybeUninit;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::swoole_get_worker_id;
-use swoole_rs_process::process_pool::PoolRef;
+use swoole_rs_process::process_pool::{Hooks, PoolRef};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
@@ -28,14 +28,25 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_POOL_INIT => {
             let serv = ctx.serv();
             let pool = ctx.pool();
-            pool.set_ptr(serv);
-            pool.set_on_task(Some(on_task));
-            pool.set_on_worker_start(Some(on_start));
-            pool.set_on_worker_stop(Some(on_stop));
+            let hooks = Hooks {
+                ptr: Some(serv),
+                on_task: Some(on_task),
+                on_worker_start: Some(on_start),
+                on_worker_stop: Some(on_stop),
+                ..Hooks::default()
+            };
+            // SAFETY: the hooks read the pool's `ptr` as the server that owns the
+            // pool (`server_of`), which is what this sets it to; it outlives its pool.
+            unsafe { pool.install(&hooks) };
             0
         }
         OP_SET_ASYNC_LOOP => {
-            ctx.pool().set_main_loop(Some(loop_async));
+            let hooks = Hooks {
+                main_loop: Some(loop_async),
+                ..Hooks::default()
+            };
+            // SAFETY: as `OP_POOL_INIT`, which set the task pool's `ptr` to its server.
+            unsafe { ctx.pool().install(&hooks) };
             0
         }
         OP_HAS_COMMAND => {

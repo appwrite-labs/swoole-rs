@@ -116,13 +116,8 @@ impl Setup for Accepting {
     }
 
     fn call(&mut self, _: c_int) -> c_int {
-        let conn = self
-            .socket
-            .net(SocketFields::accept)
-            .unwrap_or(core::ptr::null_mut());
-        // SAFETY: null, or `SocketFields::accept`'s new heap record, which nothing
-        // else holds.
-        self.conn = (!conn.is_null()).then(|| unsafe { Box::from_raw(conn) });
+        // The new heap record, which nothing else holds.
+        self.conn = self.socket.net(SocketFields::accepted).flatten();
         if self.conn.is_none() { -1 } else { 0 }
     }
 }

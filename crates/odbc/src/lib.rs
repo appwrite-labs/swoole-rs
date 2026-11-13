@@ -20,11 +20,32 @@ pub mod minit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
-    RETCODE, SQLCHAR, SQLCloseCursor, SQLConnect, SQLDescribeCol, SQLDisconnect, SQLDriverConnect,
-    SQLEndTran, SQLExecDirect, SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo,
-    SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLMoreResults, SQLPOINTER,
-    SQLPrepare, SQLPutData, SQLRETURN, SQLRowCount, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
+    SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo, SQLHANDLE, SQLHDBC, SQLHSTMT,
+    SQLHWND, SQLINTEGER, SQLLEN, SQLMoreResults, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN,
+    SQLRowCount, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
+
+/// A statement or connection handle the driver handed over: live, as ODBC's
+/// own calls require, for as long as the value is used. The exports that pass
+/// nothing else by pointer take them in place of the `SQLHSTMT` and `SQLHDBC`
+/// they have the layout of. Nothing here makes one, and neither is `Send` nor `Sync`:
+/// they reach the pool only through [`offload`].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Statement(SQLHSTMT);
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Connection(SQLHDBC);
+
+// ODBC's own declarations of two calls that take only a handle, typed as the
+// handle it is. Neither reads a bound buffer nor runs a callback.
+unsafe extern "C" {
+    #[link_name = "SQLCloseCursor"]
+    safe fn close_cursor(statement: Statement) -> SQLRETURN;
+    #[link_name = "SQLDisconnect"]
+    safe fn disconnect(connection: Connection) -> SQLRETURN;
+}
 
 /// `SQL_ERROR`.
 const SQL_ERROR: SQLRETURN = -1;
@@ -184,13 +205,11 @@ pub unsafe extern "C" fn swoole_odbc_SQLExecute(statement: SQLHSTMT) -> SQLRETUR
     offload(|| unsafe { SQLExecute(statement) })
 }
 
-/// `swoole_odbc_SQLCloseCursor`: called through.
-/// # Safety
-/// As `SQLCloseCursor`.
+/// `swoole_odbc_SQLCloseCursor`: called through. `SQLCloseCursor`'s whole
+/// contract is the live statement the type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLCloseCursor(statement: SQLHSTMT) -> SQLRETURN {
-    // SAFETY: per the caller.
-    unsafe { SQLCloseCursor(statement) }
+pub extern "C" fn swoole_odbc_SQLCloseCursor(statement: Statement) -> SQLRETURN {
+    close_cursor(statement)
 }
 
 /// `swoole_odbc_SQLPutData`.
@@ -312,13 +331,11 @@ pub unsafe extern "C" fn swoole_odbc_SQLEndTran(
     offload(|| unsafe { SQLEndTran(handle_type, handle, completion) })
 }
 
-/// `swoole_odbc_SQLDisconnect`.
-/// # Safety
-/// As `SQLDisconnect`.
+/// `swoole_odbc_SQLDisconnect`: `SQLDisconnect`'s whole contract is the live
+/// connection the type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLDisconnect(connection: SQLHDBC) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLDisconnect(connection) })
+pub extern "C" fn swoole_odbc_SQLDisconnect(connection: Connection) -> SQLRETURN {
+    offload(|| disconnect(connection))
 }
 
 #[cfg(test)]

@@ -17,3 +17,12 @@ swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-protocols = { path = "../protocols" }
 swoole-rs-reactor = { path = "../reactor" }
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+# The receive loop against the pinned redis.cc, and the handler-key model
+# (tests/modules/protocols/README.md).
+[[test]]
+name = "native"
+path = "../../tests/modules/protocols/native.rs"

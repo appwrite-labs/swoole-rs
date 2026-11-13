@@ -8,16 +8,42 @@
 )]
 use libc::{c_int, off_t, pid_t};
 use std::ffi::CStr;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::ptr::NonNull;
+
+/// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
+/// `const char *` it is, so a C function's string parameter can be declared as one on
+/// either side of the boundary.
+///
+/// Invariant: it points at a NUL-terminated string live for `'a`. Rust makes one only
+/// from a `&'a CStr`. The other source is a parameter (or declared static) of this type
+/// on the C boundary, where the C caller's `const char *` contract stands for the
+/// constructor, as it does for a `&T` parameter there.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Text<'a>(NonNull<libc::c_char>, PhantomData<&'a CStr>);
+
+impl<'a> From<&'a CStr> for Text<'a> {
+    fn from(text: &'a CStr) -> Self {
+        Self(NonNull::from(text).cast(), PhantomData)
+    }
+}
+
+impl<'a> Text<'a> {
+    /// The string.
+    #[must_use]
+    pub fn get(self) -> &'a CStr {
+        // SAFETY: the type's invariant: NUL-terminated and live for `'a`.
+        unsafe { CStr::from_ptr(self.0.as_ptr()) }
+    }
+}
 
 /// libc's calls that take only plain values, a live reference of the exact type they
 /// read or write, or a NUL-terminated string, and keep none of them: they have no
 /// memory preconditions, so they are declared `safe`.
 mod c {
     use libc::{c_char, c_int, c_long, c_uint, c_ulong, c_void, mode_t, pid_t, useconds_t};
-    use std::ffi::CStr;
-    use std::marker::PhantomData;
-    use std::ptr::NonNull;
 
     /// `getrlimit`'s resource: glibc declares an unsigned enum, the others an `int`.
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -31,17 +57,7 @@ mod c {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     type Which = c_int;
 
-    /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
-    /// `const char *` it is.
-    #[repr(transparent)]
-    #[derive(Clone, Copy)]
-    pub(crate) struct Text<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
-
-    impl<'a> From<&'a CStr> for Text<'a> {
-        fn from(text: &'a CStr) -> Self {
-            Self(NonNull::from(text).cast(), PhantomData)
-        }
-    }
+    pub(crate) use super::Text;
 
     // POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or writes the one object its
@@ -186,6 +202,13 @@ macro_rules! plain {
 // Linux's sigaction holds `sa_restorer`, a nullable function pointer: zero is a
 // value of it, arbitrary bytes are not one to call.
 impl sealed::Zero for libc::sigaction {}
+// Their strings are raw pointers, null until a lookup fills them.
+impl sealed::Zero for libc::group {}
+impl sealed::Zero for libc::passwd {}
+// A System V message queue's status and the permissions in it: integers.
+impl sealed::Zero for libc::ipc_perm {}
+#[cfg(target_os = "linux")]
+impl sealed::Zero for libc::msqid_ds {}
 plain!(
     u8,
     i32,
@@ -609,6 +632,61 @@ pub fn chdir(path: &CStr) -> c_int {
 #[must_use]
 pub fn chroot(path: &CStr) -> c_int {
     c::chroot(path.into())
+}
+
+/// The id of the group named `name` (`getgrnam_r(3)`), or none if there is no such
+/// group or the lookup fails. The entry is this call's own, so no other lookup, on
+/// this thread or another, can change it before its id is read.
+#[must_use]
+pub fn group_id(name: &CStr) -> Option<libc::gid_t> {
+    let mut entry: libc::group = zeroed();
+    lookup_id(|strings, found| {
+        // SAFETY: a terminated name, an entry and `strings.len()` writable bytes for
+        // its strings, and the slot for the result, all live for the call.
+        unsafe {
+            libc::getgrnam_r(
+                name.as_ptr(),
+                &raw mut entry,
+                strings.as_mut_ptr(),
+                strings.len(),
+                found,
+            )
+        }
+    })
+    .then_some(entry.gr_gid)
+}
+
+/// The id of the user named `name` (`getpwnam_r(3)`), as [`group_id`].
+#[must_use]
+pub fn user_id(name: &CStr) -> Option<libc::uid_t> {
+    let mut entry: libc::passwd = zeroed();
+    lookup_id(|strings, found| {
+        // SAFETY: as `group_id`'s.
+        unsafe {
+            libc::getpwnam_r(
+                name.as_ptr(),
+                &raw mut entry,
+                strings.as_mut_ptr(),
+                strings.len(),
+                found,
+            )
+        }
+    })
+    .then_some(entry.pw_uid)
+}
+
+/// Runs a `get*nam_r` lookup, doubling the room for the entry's strings while it
+/// reports `ERANGE`: whether it found an entry.
+fn lookup_id<T>(mut lookup: impl FnMut(&mut [libc::c_char], &mut *mut T) -> c_int) -> bool {
+    let mut strings = vec![0; 1024];
+    loop {
+        let mut found = std::ptr::null_mut();
+        let status = lookup(&mut strings, &mut found);
+        if status != libc::ERANGE || strings.len() >= 1 << 20 {
+            return status == 0 && !found.is_null();
+        }
+        strings.resize(strings.len() * 2, 0);
+    }
 }
 
 /// `mkdir(2)`.

@@ -6,19 +6,15 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use swoole_rs_odbc_sys::{SQLHENV, SQLINTEGER, SQLPOINTER, SQLSetEnvAttr};
-use swoole_rs_zend::sys::{E_CORE_ERROR, swr_zend_pdo_declare_long, swr_zend_pdo_declared};
-
-/// `pdo_driver_t`, opaque.
-#[repr(C)]
-pub struct PdoDriver {
-    _opaque: [u8; 0],
-}
+use swoole_rs_zend::{
+    Minit,
+    pdo::{Driver, php_pdo_register_driver},
+    sys::E_CORE_ERROR,
+};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_odbc/odbc_driver.c`).
-    static swoole_pdo_odbc_driver: PdoDriver;
-    fn php_pdo_register_driver(driver: *const PdoDriver) -> c_int;
-    fn php_pdo_unregister_driver(driver: *const PdoDriver);
+    safe static swoole_pdo_odbc_driver: Driver;
     fn cfg_get_string(name: *const c_char, result: *mut *mut c_char) -> c_int;
 }
 
@@ -51,14 +47,14 @@ fn pooling(value: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
-/// `php_swoole_odbc_minit`: `SUCCESS` (0), or `FAILURE` (-1) for an invalid
-/// `pdo_odbc.connection_pooling`.
-/// # Safety
-/// Called once at MINIT, with PDO loaded.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_odbc_minit(_module: c_int) -> c_int {
-    // SAFETY: MINIT, PDO loaded.
-    if !unsafe { swr_zend_pdo_declared(c"ODBC_ATTR_USE_CURSOR_LIBRARY".as_ptr()) } {
+/// `php_swoole_odbc_minit`: an invalid `pdo_odbc.connection_pooling` raises
+/// `E_CORE_ERROR` and registers nothing (upstream's `FAILURE`, which its caller ignores).
+/// Nothing unless PDO is loaded.
+pub fn minit(minit: &Minit) {
+    let Some(pdo) = minit.pdo() else {
+        return;
+    };
+    if !pdo.declared(c"ODBC_ATTR_USE_CURSOR_LIBRARY") {
         // The ini is process wide, so it is read this once, as upstream does.
         let mut value: *mut c_char = std::ptr::null_mut();
         // SAFETY: a NUL-terminated name and an out pointer.
@@ -77,7 +73,7 @@ pub unsafe extern "C" fn php_swoole_odbc_minit(_module: c_int) -> c_int {
                 E_CORE_ERROR.cast_signed(),
                 message,
             ));
-            return -1;
+            return;
         };
         pdo_odbc_pool_on.store(on, Ordering::Relaxed);
         pdo_odbc_pool_mode.store(mode, Ordering::Relaxed);
@@ -101,16 +97,14 @@ pub unsafe extern "C" fn php_swoole_odbc_minit(_module: c_int) -> c_int {
             (c"ODBC_SQL_USE_ODBC", 1),
         ];
         for (name, value) in constants {
-            // SAFETY: MINIT, PDO loaded.
-            unsafe { swr_zend_pdo_declare_long(name.as_ptr(), value) };
+            pdo.declare_long(name, value);
         }
     }
-    let driver = &raw const swoole_pdo_odbc_driver;
-    // SAFETY: the driver is static; registering replaces pdo_odbc's own.
-    unsafe { php_pdo_unregister_driver(driver) };
-    // SAFETY: as above.
-    unsafe { php_pdo_register_driver(driver) };
-    0
+    // Registering replaces pdo_odbc's own.
+    pdo.unregister(&swoole_pdo_odbc_driver);
+    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
+    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
+    unsafe { php_pdo_register_driver(&swoole_pdo_odbc_driver) };
 }
 
 #[cfg(test)]

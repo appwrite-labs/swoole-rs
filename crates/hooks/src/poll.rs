@@ -52,7 +52,7 @@ pub struct Registered(NonNull<Task<'static>>);
 
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
-pub struct Timer(NonNull<c_void>);
+pub struct Timer(core::ffi::c_long);
 
 /// A wait's registered sockets: [`Sockets::clean`] unregisters each.
 trait Sockets {
@@ -309,7 +309,7 @@ pub(crate) mod native {
     use swoole_rs_coroutine::resume;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
-    use swoole_rs_timer::{add_fn_sec, swoole_timer_del};
+    use swoole_rs_timer::{add_fn_sec_id, del_id};
 
     pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
         let task = task.0.as_ptr().cast();
@@ -319,18 +319,17 @@ pub(crate) mod native {
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {
         let task = task.0;
-        let timer = add_fn_sec(timeout, false, move || {
+        add_fn_sec_id(timeout, false, move || {
             // SAFETY: the task outlives its timer, which fires or is deleted first.
             let co = super::timeout(unsafe { task.as_ref() });
             // SAFETY: the poll's parked coroutine; nothing borrows its task now.
             unsafe { resume(co) };
-        });
-        core::ptr::NonNull::new(timer).map(Timer)
+        })
+        .map(Timer)
     }
 
     pub(super) fn timer_del(Timer(timer): Timer) {
-        // SAFETY: a pending timer.
-        unsafe { swoole_timer_del(timer.as_ptr().cast()) };
+        del_id(timer);
     }
 
     /// The deferred wake of a parked poll.
@@ -389,16 +388,18 @@ mod tests {
         TASK.set(Some(task));
         Some(Socket(fd))
     }
+    /// The fake timer's id.
+    const FAKE_TIMER: core::ffi::c_long = 7;
     #[expect(
         clippy::unnecessary_wraps,
         reason = "the fake has PollOps::timer_add's type"
     )]
     fn timer_add(timeout: f64, _: Registered) -> Option<Timer> {
         log(format!("timer {timeout}"));
-        Some(Timer(NonNull::dangling()))
+        Some(Timer(FAKE_TIMER))
     }
     fn timer_del(Timer(timer): Timer) {
-        assert_eq!(timer, NonNull::dangling());
+        assert_eq!(timer, FAKE_TIMER);
         log("timer_del".into());
     }
     fn defer(task: Registered) {
@@ -661,7 +662,7 @@ mod tests {
                 fds: std::slice::from_ref(&row),
                 sockets: &sockets,
                 co: std::ptr::null_mut(),
-                timer: Cell::new(timer.then(|| Timer(NonNull::dangling()))),
+                timer: Cell::new(timer.then_some(Timer(FAKE_TIMER))),
                 success: Cell::new(false),
                 wait: Cell::new(wait),
                 wake: &OPS.wake,

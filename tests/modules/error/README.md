@@ -37,7 +37,6 @@ enter Rust.
 cargo test -p swoole-rs-error -p swoole-rs-error-ffi
 cargo clippy -p swoole-rs-error -p swoole-rs-error-ffi --all-targets -- -D warnings
 python3 tests/modules/error/differential.py --source PINNED_REFERENCE --archive HYBRID_ARCHIVE --sanitize --output REPORT
-python3 tests/modules/error/differential.py --source PINNED_REFERENCE --archive HYBRID_ARCHIVE --allocator-faults --sanitize --output REPORT
 python3 tests/modules/error/php.py --source PINNED_REFERENCE --engine upstream=CONTROL --engine hybrid=CANDIDATE --output REPORT
 ```
 
@@ -50,10 +49,13 @@ throw's abort (in a child), the per-thread last-error buffer, concurrent lookups
 signed values, fork isolation and child destruction, plus full callback and
 32-byte unknown-buffer assertions.
 
-`--allocator-faults` links the unchanged Rust module with a test global
-allocator: bucket, handle and growth allocation failures must return NOMEM and
-preserve membership, `swoole_ignore_error` must abort on one (in a child); duplicates must not allocate and retries must succeed. It links that
-fixture in place of the archive and rejects benchmark preparation.
+`cargo test -p swoole-rs-error-ffi` runs the module under a test global allocator.
+Its `global_set_allocation_faults` is the former C++ fixture `allocator.cc`, check for
+check, on the process-global set: bucket, handle and growth allocation failures must
+report NOMEM and preserve membership, `swoole_ignore_error` must abort on one (in a
+child), duplicates must not allocate and retries must succeed. The fixture's
+`swr_v1_error_ignore_global(code) == -2` is the set's own insert failing, which is
+what that export returned.
 
 `php.py` compares engines on 31221 `swoole_strerror` results, runs the original
 `swoole_strerror.phpt` and `swoole_error_log.phpt` through PHP's official runner,

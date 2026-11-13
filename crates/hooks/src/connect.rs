@@ -6,7 +6,7 @@
 use crate::co_io::{
     Message, NATIVE, available, borrowed_err, default_err, errno, owned_err, set_err,
 };
-use crate::co_socket::{Co, CoSocket, reinit};
+use crate::co_socket::{Co, reinit};
 use crate::packet::recv_packet;
 use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
@@ -571,16 +571,14 @@ impl Co {
 /// `Socket::connect(host, port)` of the native `socket`, for C++.
 ///
 /// # Safety
-/// `socket` is a live native socket in a coroutine and `host` holds `length` bytes.
+/// `socket` is in a coroutine and `host` holds `length` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
-    socket: *mut CoSocket,
+    socket: Co,
     host: *const c_char,
     length: usize,
     port: c_int,
 ) -> bool {
-    // SAFETY: as the caller promises.
-    let socket = unsafe { Co::new(socket) };
     // SAFETY: as the caller promises; copied before any effect.
     let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
     socket.connect_host(&host, port)

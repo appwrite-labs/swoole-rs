@@ -61,14 +61,11 @@ pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
         owner: &raw mut *state,
     }
 }
-/// # Safety
-/// owner is released once after all native field/string/packet views end.
+/// Frees the proxy `swr_v1_core_proxy_new` leaked, or nothing for null: native code
+/// hands its `owner` back once, after its field, string and packet views end.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_proxy_free(owner: *mut ProxyState) {
-    if !owner.is_null() {
-        // SAFETY: the caller returns its unique allocation after its views end.
-        unsafe { drop(Box::from_raw(owner)) };
-    }
+pub extern "C" fn swr_v1_core_proxy_free(owner: Option<Box<ProxyState>>) {
+    drop(owner);
 }
 #[repr(C)]
 pub struct ProxyCopyResult {
@@ -227,14 +224,12 @@ pub extern "C" fn swr_v1_core_proxy_assign(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_core_proxy_configure(
     owner: &ProxyState,
-    texts: *const CoreStringView,
+    texts: &[CoreStringView; 3],
     port: i32,
     authenticated: bool,
     socket_type: i32,
 ) -> ProxyCopyResult {
-    // SAFETY: three initialized input descriptors remain stable through assignment.
-    let views = unsafe { &*texts.cast::<[CoreStringView; 3]>() };
-    let texts = views.map(|view| {
+    let texts = texts.map(|view| {
         // SAFETY: each view lends `length` readable bytes for the call.
         unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }
     });
@@ -281,14 +276,13 @@ mod tests {
             data: text.as_ptr(),
             length: text.count_bytes(),
         });
-        let configured =
-            unsafe { swr_v1_core_proxy_configure(owner, texts.as_ptr(), 80, false, 1) };
+        let configured = unsafe { swr_v1_core_proxy_configure(owner, &texts, 80, false, 1) };
         assert_eq!(configured.status, 0);
         assert_eq!(unsafe { (*prepared.fields).port }, 80);
         let host = unsafe { crate::swr_v1_core_string_view(&*prepared.strings[0]) };
         assert_eq!(unsafe { std::ffi::CStr::from_ptr(host.data) }, c"host");
         owner.packet().unwrap()[7] = 9;
         assert_eq!(unsafe { *prepared.buffer.add(7) }, 9);
-        unsafe { swr_v1_core_proxy_free(prepared.owner) };
+        swr_v1_core_proxy_free(Some(unsafe { Box::from_raw(prepared.owner) }));
     }
 }

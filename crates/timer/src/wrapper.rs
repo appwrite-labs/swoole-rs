@@ -181,6 +181,25 @@ pub fn add_fn_id(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) ->
     add(ms, persistent, TimerNode::closure(Closure::new(f))).map(|(_, id)| id)
 }
 
+/// [`add_fn_sec`]'s timer id, or none.
+#[must_use]
+pub fn add_fn_sec_id(
+    timeout: f64,
+    persistent: bool,
+    f: impl Fn() + Copy + 'static,
+) -> Option<c_long> {
+    add_fn_id(sec2msec(timeout), persistent, f)
+}
+
+/// [`swoole_timer_del`] of the timer `id` names, for a holder that keeps the id
+/// instead of the node. A timer never reuses an id, so one that already fired is left
+/// alone.
+pub fn del_id(id: c_long) {
+    if let Some(timer) = available(c"swoole_timer_del") {
+        timer.remove(id);
+    }
+}
+
 /// Deletes timer `id` if this thread's timer still holds it, quietly otherwise:
 /// a timer never reuses an id, so one that already fired is left alone.
 pub extern "C-unwind" fn timer_cancel(id: c_long) {

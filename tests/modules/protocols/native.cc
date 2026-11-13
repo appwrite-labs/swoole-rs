@@ -62,29 +62,6 @@ ssize_t get_package_length(const Protocol *, network::Socket *, PacketLength *pl
 }
 namespace redis {
 #include "redis_reply.inc"
-// Rust's receive loop (crates/protocols-ffi/src/resp_recv.rs) over this model's socket,
-// with the effects production's export performs on the real one.
-int recv_packet(Protocol *protocol, Connection *conn, String *buffer) {
-    struct Io { Protocol *protocol; Connection *conn; String *buffer; } io{protocol, conn, buffer};
-    const swr_resp_io effects{&io,
-        [](void *context, uint8_t *at, size_t n) -> ssize_t {
-            auto *c = static_cast<Io *>(context)->conn;
-            const ssize_t received = c->socket->recv(reinterpret_cast<char *>(at), n, 0);
-            if (received >= 0) return received;
-            return c->socket->catch_read_error(errno) == SW_CLOSE ? -1 : -2;
-        },
-        [](void *context, size_t size) { static_cast<Io *>(context)->buffer->extend(size); },
-        [](void *context, size_t length) -> int {
-            auto *x = static_cast<Io *>(context);
-            RecvData data{};
-            data.info.len = length;
-            data.data = x->buffer->str;
-            if (x->protocol->onPackage(x->protocol, x->conn->socket, &data) < 0) return -1;
-            return x->conn->socket->removed ? 1 : 0;
-        }};
-    return swr_v1_resp_recv(&effects, buffer, reinterpret_cast<swr_resp_request **>(&conn->object),
-                            protocol->package_max_length, swoole_pagesize());
-}
 }
 }
 // Execute the exact original PHP parser loop with only Zend allocation modeled.
@@ -130,26 +107,6 @@ static php_reference::Request rust_php_request(const std::string &wire) {
     if(range)errno=ERANGE;
     assert(result==0);
     return output;
-}
-// C printf truncation plus ASCII case model. Actual Zend case folding/property
-// behavior is compared separately by handlers.py on real PHP engines.
-static size_t handler_key_trace() {
-    size_t cases=0;
-    const auto check=[&](const std::string &wire) {
-        std::array<char,64> expected{};
-        const auto needed=std::snprintf(expected.data(),expected.size(),"_handler_%s",wire.c_str());
-        assert(needed>=0);
-        const auto length=std::min(size_t(needed),expected.size()-1);
-        for(size_t i=0;i<length;++i)if(expected[i]>='A'&&expected[i]<='Z')expected[i]+='a'-'A';
-        std::array<uint8_t,66> actual;actual.fill(99);
-        assert(swr_v1_resp_handler_key(reinterpret_cast<const uint8_t *>(wire.data()),wire.size(),actual.data()+1)==length);
-        assert(std::memcmp(expected.data(),actual.data()+1,length+1)==0);
-        assert(actual.front()==99&&actual.back()==99);
-        ++cases;
-    };
-    for(unsigned byte=0;byte<256;++byte)for(size_t length:{0u,1u,53u,54u,55u,63u,64u,65u,1024u})check(std::string(length,char(byte)));
-    for(size_t offset=0;offset<128;++offset) {std::string wire(128,'A');wire[offset]=0;check(wire);}
-    return cases;
 }
 // Generated grammar keeps every native bulk copy in bounds; malformed numeric
 // delimiters/negative non-null bulk sizes are deliberately excluded because the
@@ -209,7 +166,7 @@ static size_t seeded_resp_trace(uint64_t *corpus) {
 int main() {
     static_assert(sizeof(swr_resp_span)==24 && sizeof(swr_resp_request)==24);
     static_assert(sizeof(swr_socks_transition)==4);
-    size_t mqtt = 0, socks = 0, resp = 0, receives = 0;
+    size_t mqtt = 0, socks = 0, resp = 0;
     for (uint32_t value : {0u,1u,127u,128u,16383u,16384u,2097151u,2097152u,268435455u}) {
         std::vector<char> packet{char(0x30)};
         auto remaining = value;
@@ -359,28 +316,6 @@ int main() {
         std::string command="*3\r\n$3\r\nSET\r\n$-1\r\n$"+std::to_string(size)+"\r\n"+payload+"\r\n";
         assert(reference::redis::parse(command.data(),command.size())==candidate::redis::parse(command.data(),command.size()));++resp;
     }
-    for(std::string command : {"*1\r\n$3\r\nGET\r\n","*2\r\n$3\r\nSET\r\n$3\r\nabc\r\n","*1\r\n$10\r\nabc\r\n",":1\r\n","*1\r\n$-1\r\n", "*1\r\n:9223372036854775808\r\n", "*1\r\n$9223372036854775808x\r\n", "*-9223372036854775809\r\n"}) {
-        for(size_t split=2;split<=command.size();++split) for(size_t maximum : {size_t(12),size_t(64),size_t(1048576)}) {
-            reference::network::Socket a;candidate::network::Socket b;
-            a.reads=b.reads={command.substr(0,split),command.substr(split)};
-            if(split==command.size()){a.reads.pop_back();b.reads.pop_back();}
-            reference::Connection x{nullptr,&a};candidate::Connection y{nullptr,&b};
-            reference::String original;candidate::String actual;
-            reference::Protocol p;candidate::Protocol q;p.package_max_length=q.package_max_length=maximum;
-            std::vector<std::string> before,after;
-            std::vector<int> before_errno,after_errno;
-            p.onPackage=[&](auto *,auto *,auto *data){before_errno.push_back(errno);before.emplace_back(data->data,data->info.len);return 0;};
-            q.onPackage=[&](auto *,auto *,auto *data){after_errno.push_back(errno);after.emplace_back(data->data,data->info.len);return 0;};
-            errno = EDOM;
-            const int first=reference::redis::recv_packet(&p,&x,&original);
-            const int expected_errno = errno;
-            errno = EDOM;
-            const int second=candidate::redis::recv_packet(&q,&y,&actual);
-            assert(expected_errno == errno && before_errno == after_errno);
-            assert(first==second&&before==after&&original.length==actual.length&&original.offset==actual.offset);
-            assert(std::memcmp(x.object,y.object,sizeof(swr_resp_request))==0);std::free(x.object);std::free(y.object);++receives;
-        }
-    }
     // New bounded ABI failures do not overwrite native output/state.
     std::array<uint8_t,16> output;output.fill(0xa5);const auto untouched=output;
     assert(swr_v1_mqtt_frame_length(nullptr,0)==0 && swr_v1_mqtt_frame_length(nullptr,1)==-1);
@@ -391,11 +326,10 @@ int main() {
     assert(swr_v1_resp_format(8,nullptr,0,LONG_MIN,output.data(),1)==0 && output==untouched);
     swr_resp_span span{99,77,42,3};
     const auto *number=reinterpret_cast<const uint8_t *>(":1\r\n");
-    assert(swr_v1_resp_parse(number,4,&span,0)==-2 && span.offset==99 && span.kind==3);
+    assert(swr_v1_resp_parse_range(number,4,&span,0,nullptr)==-2 && span.offset==99 && span.kind==3);
     swr_resp_request request{};uint8_t offset=99;
-    assert(swr_v1_resp_receive(number,4,3,100,&request,&offset)==-1 && offset==99 && request.state==0);
+    assert(swr_v1_resp_receive_range(number,4,3,100,&request,&offset,nullptr)==-1 && offset==99 && request.state==0);
     uint64_t corpus=0;
     resp += seeded_resp_trace(&corpus);
-    const auto handlers=handler_key_trace();
-    std::printf("{\"mqtt\":%zu,\"socks\":%zu,\"resp\":%zu,\"receive_states\":%zu,\"handler_keys\":%zu,\"errors\":0,\"resp_corpus_fnv1a64\":\"%016" PRIx64 "\"}\n",mqtt,socks,resp,receives,handlers,corpus);
+    std::printf("{\"mqtt\":%zu,\"socks\":%zu,\"resp\":%zu,\"errors\":0,\"resp_corpus_fnv1a64\":\"%016" PRIx64 "\"}\n",mqtt,socks,resp,corpus);
 }

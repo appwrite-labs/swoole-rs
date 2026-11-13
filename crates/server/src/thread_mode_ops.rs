@@ -241,8 +241,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             if !handle.alloc_buffer(ctx.config().ipc_max_size() as usize) {
                 std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
             }
-            // SAFETY: a started server and its new bus.
-            unsafe { server_methods::init_pipe_sockets(ctx.server(), bus) };
+            server_methods::init_pipe_sockets(ctx.server(), handle);
             swoole_rs_corebase::set_thread_message_bus(bus);
             0
         }
@@ -377,24 +376,16 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 /// The facts and effects on the context's worker and the thread manager.
 fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv;
-    // The task pool's hook for `op`, over the pool and the context's worker. The hooks
-    // are copied out first: the pool's own code, every task worker thread and PHP code
-    // a hook runs (`$server->stats()`) reach the record while one runs.
+    // The task pool's hook for `op`, over the pool and the context's worker. The pool
+    // copies a hook out before it runs it: the pool's own code, every task worker
+    // thread and PHP code a hook runs (`$server->stats()`) reach the record meanwhile.
     let pool_hook = |op| {
         let pool = ctx.server().task_pool_ref();
-        let (start, main_loop, stop) = (
-            pool.on_worker_start(),
-            pool.main_loop(),
-            pool.on_worker_stop(),
-        );
         let worker = ctx.worker();
-        match (op, start, main_loop, stop) {
-            (OP_ON_WORKER_START, Some(hook), ..) | (OP_ON_WORKER_STOP, .., Some(hook)) => {
-                // SAFETY: the pool that holds the hook, and the worker it lends.
-                unsafe { hook(pool, worker) };
-            }
-            // SAFETY: as above.
-            (OP_POOL_MAIN_LOOP, _, Some(main_loop), _) => _ = unsafe { main_loop(pool, worker) },
+        match op {
+            OP_ON_WORKER_START => pool.call_on_worker_start(worker),
+            OP_ON_WORKER_STOP => pool.call_on_worker_stop(worker),
+            OP_POOL_MAIN_LOOP => _ = pool.call_main_loop(worker),
             _ => {}
         }
         0

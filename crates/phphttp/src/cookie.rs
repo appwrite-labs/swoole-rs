@@ -219,7 +219,7 @@ method_table! {
 /// `php_swoole_http_cookie_minit`: register the class (not serializable,
 /// clone and unset denied, custom object).
 pub fn php_swoole_http_cookie_minit(args: &MinitArgs) {
-    let minit = &args.minit;
+    let minit = args.minit;
     minit.register_object::<Held>(c"Swoole\\Http\\Cookie", &METHODS.0, 0);
 }
 

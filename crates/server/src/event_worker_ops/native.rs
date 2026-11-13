@@ -410,7 +410,7 @@ fn worker_context<'a>(reactor: Reactor) -> Context<'a> {
     let mut serv = reactor.handle().object();
     if swoole_get_worker_type() == SW_TASK_WORKER {
         // SAFETY: a task worker's reactor holds its live pool.
-        serv = unsafe { (*serv.cast::<swoole_rs_process::process_pool::PoolRecord>()).ptr };
+        serv = unsafe { swoole_rs_process::process_pool::PoolRef::new(serv.cast()) }.ptr();
     }
     // SAFETY: the worker's live server, per the above.
     context(unsafe { view::Server::from_raw(serv) }, reactor)

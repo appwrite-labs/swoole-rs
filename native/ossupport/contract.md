@@ -67,8 +67,8 @@ removed when freed. Warnings and the last error follow upstream's order. Upstrea
 upstream symbols: the root check, `swoole_daemon` (Darwin detaches, forks and
 calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through corebase's
 `swoole_fork` and `swoole_call_hook`), the parent-death
-signal, `swoole_get_cpu_affinity` (`getpid()`, as upstream), the native thread id
-and thread names. `swoole_set_isolation` is an inline header call with each
+signal, the native thread id and thread names (`swoole_get_cpu_affinity` had no
+caller: Rust reads a process's CPUs with `CpuSet::get_process`). `swoole_set_isolation` is an inline header call with each
 `std::string`'s `c_str()`; Rust logs each failed step as it happens, errno intact.
 
 `file_open`/`file_close` and `tmpfile` back `File::open`,

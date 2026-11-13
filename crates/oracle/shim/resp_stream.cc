@@ -120,9 +120,14 @@ namespace redis {
 }  // namespace redis
 
 static std::string *events;
+static bool trace;
 static int on_package(const Protocol *, network::Socket *, const RecvData *data) {
+    const int error = errno;
     *events += "P" + std::to_string(data->info.len) + ":";
     events->append(data->data, data->info.len);
+    if (trace) {
+        *events += "E" + std::to_string(error);
+    }
     return 0;
 }
 }  // namespace resp_stream
@@ -132,12 +137,15 @@ static int on_package(const Protocol *, network::Socket *, const RecvData *data)
 // result (R<n>), each package (P<len>:bytes) and, while the connection stays open,
 // the request state (,<state>,<lines>/<total>,<bytes>/<total>) and the final buffer
 // length and offset. On SW_ERR the server closes the connection, freeing both.
+// A trace starts each call with errno at EDOM and also logs errno at each package
+// and after each call (E<n>), the buffer's length and offset after each call, and
+// the request state with its offset after a failed call too.
 // Returns the log's full length; at most capacity bytes are written to out.
-extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out,
-                                                                  size_t capacity) {
+static size_t SWR_CAT(run, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out, size_t capacity, bool traced) {
     using namespace SWR_RESP_ENGINE::resp_stream;
     std::string log;
     events = &log;
+    trace = traced;
     Protocol protocol{stream->max_length, on_package};
     network::Socket socket;
     socket.close_at_end = stream->close_at_end;
@@ -152,9 +160,16 @@ extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOrac
     buffer.extend(stream->buffer_size);
     for (int call = 0; call < 4096; call++) {
         bool drained = socket.chunks.empty();
+        if (traced) {
+            errno = EDOM;
+        }
         int result = redis::recv_packet(&protocol, &conn, &buffer);
+        const int error = errno;
         log += "R" + std::to_string(result);
-        if (result == SW_ERR) {
+        if (traced) {
+            log += "E" + std::to_string(error) + "L" + std::to_string(buffer.length) + "O" +
+                   std::to_string(buffer.offset);
+        } else if (result == SW_ERR) {
             break;
         }
         if (conn.object) {
@@ -165,8 +180,14 @@ extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOrac
             log += "," + std::to_string(r.state) + "," + std::to_string(r.lines_received) + "/" +
                    std::to_string(r.lines_total) + "," + std::to_string(r.bytes_received) + "/" +
                    std::to_string(r.bytes_total);
+            if (traced) {
+                log += "," + std::to_string(r.offset);
+            }
         }
         log += ";";
+        if (result == SW_ERR) {
+            break;
+        }
         if (drained) {
             log += "L" + std::to_string(buffer.length) + "O" + std::to_string(buffer.offset);
             break;
@@ -177,4 +198,14 @@ extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOrac
     size_t n = log.size() < capacity ? log.size() : capacity;
     memcpy(out, log.data(), n);
     return log.size();
+}
+
+extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out,
+                                                                  size_t capacity) {
+    return SWR_CAT(run, SWR_RESP_ENGINE)(stream, out, capacity, false);
+}
+
+extern "C" size_t SWR_CAT(swr_oracle_resp_trace, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out,
+                                                                 size_t capacity) {
+    return SWR_CAT(run, SWR_RESP_ENGINE)(stream, out, capacity, true);
 }

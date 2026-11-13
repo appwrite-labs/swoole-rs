@@ -46,8 +46,8 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, sw_realloc,
-    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
+    DataHead, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc, swoole_dump_ascii,
+    swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
     swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any, swoole_random_int,
     swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
     swr_v1_core_format_result,
@@ -57,9 +57,10 @@ pub use lifecycle::{
 };
 pub use lifecycle::{
     ThreadGlobal, fork_exec, set_thread, set_thread_async_threads, set_thread_message_bus,
-    set_thread_reactor, swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean,
-    swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
-    thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor, thread_timer,
+    set_thread_reactor, set_thread_timer, swoole_clean, swoole_fork, swoole_is_main_thread,
+    swoole_thread_clean, swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global,
+    swr_v1_core_timer_slot, thread_async_threads, thread_id, thread_kind, thread_message_bus,
+    thread_reactor, thread_timer,
 };
 pub use log::fatal;
 pub use random::{random_bytes, swoole_random_string};
@@ -163,23 +164,17 @@ pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
     c_int::try_from(value).ok()
 }
 
-/// [`parse_stoi`] for native code: 1 with `*output` set, else 0.
-/// # Safety
-/// `input` is null or a valid NUL-terminated string.
+/// [`parse_stoi`] for native code: 1 with `*output` set, else 0. `input` is null or a
+/// NUL-terminated string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
-    input: *const c_char,
+pub extern "C" fn swr_v1_corebase_parse_stoi(
+    input: Option<sys::Text<'_>>,
     output: Option<&mut c_int>,
 ) -> u8 {
-    let Some(output) = output else {
+    let (Some(input), Some(output)) = (input, output) else {
         return 0;
     };
-    if input.is_null() {
-        return 0;
-    }
-    // SAFETY: a non-null, NUL-terminated string.
-    let input = unsafe { CStr::from_ptr(input) };
-    let Some(value) = parse_stoi(input.to_bytes()) else {
+    let Some(value) = parse_stoi(input.get().to_bytes()) else {
         return 0;
     };
     *output = value;
@@ -408,19 +403,17 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
 /// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode:
 /// native prefix, locale, signed-char and `size_t` wrap semantics.
 /// # Safety
-/// Input is a valid NUL-terminated C string.
 /// Bytes passed to toupper must satisfy the original host's ctype precondition.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z14swoole_hex2decPKcPm")
 )]
-pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize) -> c_ulong {
+pub unsafe extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
     // The compiler's plain `char` signedness, as the C++ facade saw it.
     let native_char_signed = c_char::MIN != 0;
     let mut value = 0_usize;
     *parsed = 0;
-    // SAFETY: the caller's NUL-terminated string.
-    let text = unsafe { CStr::from_ptr(input) };
+    let text = input.get();
     // strncasecmp stops at the text's NUL, so a match means two bytes precede it.
     let prefix = if sys::strncasecmp(text, c"0x", 2) == 0 {
         2
@@ -460,26 +453,18 @@ pub unsafe extern "C" fn swoole_hex2dec(input: *const c_char, parsed: &mut usize
 }
 
 /// Compare components using the same host libc parser and observable errno order.
-/// # Safety
-/// Both inputs are valid NUL-terminated C strings for the duration of this call.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z22swoole_version_comparePKcS0_")
 )]
-pub unsafe extern "C" fn swoole_version_compare(
-    left: *const c_char,
-    right: *const c_char,
-) -> c_int {
+pub extern "C" fn swoole_version_compare(left: sys::Text<'_>, right: sys::Text<'_>) -> c_int {
     // What follows the byte a component ended on, which isn't the NUL.
     fn after(rest: &CStr) -> &CStr {
         let next = rest.to_bytes_with_nul().get(1..).unwrap_or(&[0]);
         CStr::from_bytes_until_nul(next).unwrap_or_default()
     }
-    // SAFETY: the caller's NUL-terminated string.
-    let mut left = unsafe { CStr::from_ptr(left) };
-    // SAFETY: as above.
-    let mut right = unsafe { CStr::from_ptr(right) };
+    let (mut left, mut right) = (left.get(), right.get());
     loop {
         let (first, left_rest) = sys::strtoul(left, 10);
         let (second, right_rest) = sys::strtoul(right, 10);
@@ -667,7 +652,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
+                swr_v1_corebase_parse_stoi(Some(input.as_c_str().into()), Some(&mut output)),
                 1
             );
             assert_eq!(output, expected);
@@ -676,7 +661,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
+                swr_v1_corebase_parse_stoi(Some(input.as_c_str().into()), Some(&mut output)),
                 0
             );
             assert_eq!(output, 0x1357_9bdf);
@@ -705,9 +690,9 @@ mod tests {
     fn native_hex_accepts_non_hex_letters_and_counts_prefix() {
         let mut parsed = 0;
         unsafe {
-            assert_eq!(swoole_hex2dec(c"FFtail".as_ptr(), &mut parsed), 16_833_333);
+            assert_eq!(swoole_hex2dec(c"FFtail".into(), &mut parsed), 16_833_333);
             assert_eq!(parsed, 6);
-            assert_eq!(swoole_hex2dec(c"0x".as_ptr(), &mut parsed), 0);
+            assert_eq!(swoole_hex2dec(c"0x".into(), &mut parsed), 0);
             assert_eq!(parsed, 2);
         }
     }
@@ -725,7 +710,7 @@ mod tests {
             (c"6.2.5-dev", c"6.2.5", 1),
             (c"1.0-beta", c"1.0-rc", 1),
         ] {
-            let result = unsafe { swoole_version_compare(left.as_ptr(), right.as_ptr()) };
+            let result = swoole_version_compare(left.into(), right.into());
             assert_eq!(result, expected, "{left:?} against {right:?}");
         }
     }

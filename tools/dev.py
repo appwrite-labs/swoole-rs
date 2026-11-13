@@ -392,7 +392,6 @@ def plan(args, reports):
     if 'http2' in modules:
         pytest('http2-frames', 'tests/modules/http2', *php, '--engine', f'cargo={cargo}')
     if 'websocket' in modules:
-        pytest('websocket-codec', 'tests/modules/websocket/test_codec.py', '--archive', archive, '--sanitize')
         pytest('websocket-differential', 'tests/modules/websocket/test_differential.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
         pytest('websocket-invalid', 'tests/modules/websocket/test_invalid.py', *php, *engines)

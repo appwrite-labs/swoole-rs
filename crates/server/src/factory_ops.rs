@@ -448,10 +448,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_POOL_MAIN_LOOP => {
             let pool = ctx.server().event_pool_ref();
-            if let Some(main_loop) = pool.main_loop() {
-                // SAFETY: the pool that holds the loop, and the context's worker of it.
-                let _code = unsafe { main_loop(pool, ctx.worker()) };
-            }
+            let _code = pool.call_main_loop(ctx.worker());
         }
         OP_START_EVENT_WORKER => {
             let _code = crate::event_worker_ops::start_event_worker(ctx.serv, ctx.worker());

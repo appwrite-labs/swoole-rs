@@ -74,6 +74,16 @@ pub unsafe extern "C" fn swoole_call_hook(kind: c_int, arg: *mut c_void) {
     }
 }
 
+/// `swoole_call_hook(SW_GLOBAL_HOOK_AFTER_FORK, nullptr)`, for whoever forked: the
+/// one hook type whose callbacks are passed nothing.
+pub fn call_after_fork() {
+    /// `SW_GLOBAL_HOOK_AFTER_FORK`.
+    const AFTER_FORK: c_int = 12;
+    // SAFETY: an after-fork hook is registered to be called with no argument, which
+    // is what it gets.
+    unsafe { swoole_call_hook(AFTER_FORK, std::ptr::null_mut()) };
+}
+
 /// `bool swoole_isset_hook(swGlobalHookType)`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
 #[must_use]

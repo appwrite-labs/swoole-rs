@@ -4,6 +4,9 @@ use std::cell::RefCell;
 use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new};
 use swoole_rs_reactor::{Socket, SocketFields};
 
+/// `SSLContext::TLS_HOST_NAME`'s string slot.
+const TLS_HOST_NAME: usize = 8;
+
 #[derive(Default)]
 struct Mock {
     log: Vec<String>,
@@ -42,18 +45,18 @@ pub(super) mod ops {
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> *mut SocketRecord {
+    ) -> Option<Socket<'static>> {
         log(format!("make {kind} {fd_type} {flags}"));
         if mock(|m| m.fail_socket) {
             set_errno(libc::EMFILE);
-            return core::ptr::null_mut();
+            return None;
         }
         let mut record = SocketRecord::new();
         record.socket_type = kind;
         record.fd = -1;
-        let socket = record.into_raw();
-        mock(|m| m.socket = core::ptr::NonNull::new(socket));
-        socket
+        let socket = Box::new(record).into_socket();
+        mock(|m| m.socket = core::ptr::NonNull::new(socket.as_ptr()));
+        Some(socket)
     }
 
     pub(in super::super) fn kernel_timeout(_: Handle, timeout: f64) {
@@ -189,15 +192,19 @@ fn listener(event: c_int, _: *const c_char, length: usize) {
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `add_fn_sec`: logs, adds nothing.
-pub(super) fn add_fn_sec(timeout: f64, _: bool, _: impl Fn() + Copy + 'static) -> *mut c_void {
+/// crates/timer's `add_fn_sec_id`: logs, adds nothing.
+#[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
+pub(super) fn add_fn_sec_id(
+    timeout: f64,
+    _: bool,
+    _: impl Fn() + Copy + 'static,
+) -> Option<core::ffi::c_long> {
     log(format!("timer {timeout}"));
-    core::ptr::without_provenance_mut(1)
+    Some(1)
 }
-/// crates/timer's `swoole_timer_del`: logs, deletes nothing.
-pub(super) unsafe fn swoole_timer_del(_: *mut c_void) -> bool {
+/// crates/timer's `del_id`: logs, deletes nothing.
+pub(super) fn del_id(_: core::ffi::c_long) {
     log("timer del");
-    true
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
 pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {

@@ -58,13 +58,33 @@ python3 tests/modules/protocols/native.py --source /pinned/reference \
 ```
 
 `native.py` compiles unchanged pinned function bodies (`adapter.inc`, `native.cc`)
-with modeled String allocation/socket I/O and compares their MQTT, SOCKS, RESP and
-receive traces with the build's Rust: the upstream-symbol exports, the hybrid
-`Socks5Proxy` header over them, and `swr_v1_resp_recv` over the modeled socket.
+with modeled String allocation/socket I/O and compares their MQTT, SOCKS and RESP
+traces with the build's Rust: the upstream-symbol exports and the hybrid
+`Socks5Proxy` header over them.
 The build has no `redis::format`/`parse`; `redis_reply.inc` gives them over Rust's
 codec to this gate. A seeded 10,000-wire RESP corpus also runs the exact original PHP
 request-parser loop with modeled Zend parameters against Rust typed events. C++
 ASan/UBSan does not instrument Rust. Failing cases print trial/seed.
+
+Two of the gate's parts had Rust subjects that nothing but the gate called. They are
+`native.rs` (the `native` test of `swoole-rs-protocols-ffi`), one Rust test per part,
+each C export replaced by the safe function that was its body:
+
+| `native.cc` part | Rust test | Export → function |
+| --- | --- | --- |
+| `receive_states`: every split of eight commands at three package limits against the pinned `redis::recv_packet` | `receive_states` | `swr_v1_resp_recv` over C effects → `recv_packet` over a `RespConnection` |
+| `handler_key_trace`: 2432 keys against `snprintf` and an ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
+
+The pinned side of `receive_states` is `crates/oracle`'s `resp_stream::UPSTREAM_TRACE`:
+the unchanged `recv_packet` over the oracle's socket model, which logs each call's
+result, errno (at every package and on return), packages, buffer length and offset,
+and request state; the Rust loop runs over the same model and must log the same
+bytes. It makes the further calls the oracle's driver makes until the stream is
+drained, where the C++ gate made one. `handler_key_trace` also checked a guard byte
+either side of the export's 64-byte output, which went with the export:
+`resp_handler_key` returns its array. The gate's two calls of the
+`swr_v1_resp_parse` and `swr_v1_resp_receive` forwarders now call what they forwarded
+to (`swr_v1_resp_parse_range` and `swr_v1_resp_receive_range` with a null range).
 
 ## Actual PHP checks
 

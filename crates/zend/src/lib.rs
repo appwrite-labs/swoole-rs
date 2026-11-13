@@ -30,6 +30,7 @@ mod minit;
 mod object;
 pub mod observer;
 pub mod opcode;
+pub mod pdo;
 pub mod registration;
 pub mod string;
 pub mod value;
@@ -52,7 +53,7 @@ pub use helpers::{
     time, zeroed,
 };
 pub use local::{EnvLock, Php};
-pub use minit::{Minit, Parent};
+pub use minit::{Minit, Mshutdown, Parent};
 pub use object::{
     Custom, CustomClass, Object, Props, Weak, custom as custom_of, init_object, new_object,
     set_object,

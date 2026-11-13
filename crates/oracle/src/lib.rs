@@ -51,6 +51,38 @@ pub mod websocket {
         /// Upstream `websocket::mask`.
         #[link_name = "swr_oracle_ws_mask"]
         pub fn mask(data: *mut u8, length: usize, key: *const u8);
+        /// Upstream `websocket::encode` into a fresh `String`: its result, with the
+        /// String's length in `written` and its bytes in `out` when `capacity` holds them.
+        #[link_name = "swr_oracle_ws_encode"]
+        pub fn encode(
+            data: *const u8,
+            length: usize,
+            opcode: u8,
+            flags: u8,
+            out: *mut u8,
+            capacity: usize,
+            written: *mut usize,
+        ) -> bool;
+        /// Upstream `websocket::pack_close_frame`, as [`encode`].
+        #[link_name = "swr_oracle_ws_pack_close"]
+        pub fn pack_close(
+            code: i32,
+            reason: *const u8,
+            length: usize,
+            flags: u8,
+            out: *mut u8,
+            capacity: usize,
+            written: *mut usize,
+        ) -> bool;
+        /// `WebSocketFrame` pack's flag normalization in `swoole_websocket_server.cc`:
+        /// the flags it encodes with in the low byte, whether it compresses in bit 8.
+        #[link_name = "swr_oracle_ws_pack_policy"]
+        pub safe fn pack_policy(opcode: u8, flags: u8, length: usize) -> u16;
+        /// The server's condition for keeping a close, ping or pong frame from
+        /// `onMessage` (settings bits close=1, ping=2, pong=4): 0 deliver, 1 drop,
+        /// 2 answer a ping with a pong.
+        #[link_name = "swr_oracle_ws_message_policy"]
+        pub safe fn message_policy(opcode: u8, settings: u8) -> u8;
     }
 }
 
@@ -356,10 +388,20 @@ pub mod resp_stream {
             out: *mut u8,
             capacity: usize,
         ) -> usize;
+        fn swr_oracle_resp_trace_upstream(
+            stream: *const Stream,
+            out: *mut u8,
+            capacity: usize,
+        ) -> usize;
     }
 
     pub const UPSTREAM: Run = swr_oracle_resp_stream_upstream;
     pub const CANDIDATE: Run = swr_oracle_resp_stream_candidate;
+    /// [`UPSTREAM`] with errno in the log: each call starts with it at `EDOM`, and the
+    /// log gains `E<errno>` after each package and each call's result, `L<length>O<offset>`
+    /// of the buffer after each call, and the request state (with its offset last)
+    /// after a failed call too.
+    pub const UPSTREAM_TRACE: Run = swr_oracle_resp_trace_upstream;
 }
 
 pub mod socks5 {

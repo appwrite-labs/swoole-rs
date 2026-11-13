@@ -14,7 +14,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_phpstubs::process_pool;
-use swoole_rs_process::process_pool::{PoolRef, RecvData};
+use swoole_rs_process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::{
     methods,
@@ -77,7 +77,13 @@ fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: boo
         return None;
     }
     // Copied without a reference, as upstream's `sw_zval_dup`.
-    handle(pool).set_ptr(Box::into_raw(Box::new(object.copy_value())).cast());
+    let hooks = Hooks {
+        ptr: Some(Box::into_raw(Box::new(object.copy_value())).cast()),
+        ..Hooks::default()
+    };
+    // SAFETY: the pool has no hooks yet, and those `start` installs read this copy
+    // (`owner`), which `pool_free` drops only as it destroys the pool.
+    unsafe { handle(pool).install(&hooks) };
     handle(pool).set_is_async(async_);
     Some(pool)
 }
@@ -266,7 +272,7 @@ pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
     let pool = CURRENT.load(Ordering::Acquire);
     (!pool.is_null()).then(|| {
         let pool = handle(pool);
-        !master && (pool.is_async() || pool.main_loop().is_none())
+        !master && (pool.is_async() || !pool.has_main_loop())
     })
 }
 
@@ -834,18 +840,25 @@ fn start(call: &Call) {
     }
     CURRENT.store(pool, Ordering::Release);
     let record = handle(pool);
-    if this.on_message.is_set() {
-        record.set_on_message(Some(on_message));
-    } else {
-        record.set_main_loop(None);
+    let with_message = this.on_message.is_set();
+    if !with_message {
+        record.clear_main_loop();
     }
-    record.set_on_start(Some(on_start));
-    record.set_on_shutdown(Some(on_shutdown));
-    record.set_on_worker_start(Some(on_worker_start));
-    record.set_on_worker_stop(Some(on_worker_stop));
-    if this.enable_coroutine.get() && this.on_worker_exit.is_set() {
-        record.set_on_worker_exit(Some(on_worker_exit));
-    }
+    let with_exit = this.enable_coroutine.get() && this.on_worker_exit.is_set();
+    let message: MessageFn = on_message;
+    let exit: WorkerFn = on_worker_exit;
+    let hooks = Hooks {
+        on_message: with_message.then_some(message),
+        on_start: Some(on_start),
+        on_shutdown: Some(on_shutdown),
+        on_worker_start: Some(on_worker_start),
+        on_worker_stop: Some(on_worker_stop),
+        on_worker_exit: with_exit.then_some(exit),
+        ..Hooks::default()
+    };
+    // SAFETY: each hook reads the pool's `ptr` as the copy of its object `pool_new`
+    // stored (`owner`), which lives until `pool_free` destroys the pool.
+    unsafe { record.install(&hooks) };
     if methods::start(handle(pool)) < 0 {
         call.set_bool(false);
         return;

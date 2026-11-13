@@ -133,13 +133,13 @@ pub type Minit = unsafe extern "C" fn(c_int);
 /// Any other phase hook, likewise.
 pub type Hook = unsafe extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
-pub type HttpMinit = fn(&MinitArgs);
+pub type HttpMinit = fn(&MinitArgs<'_>);
 
 /// What the HTTP MINIT steps read of Swoole's own: the module's MINIT,
 /// `swoole.use_shortname`, the codecs (1 zlib, 2 brotli, 4 zstd) and
 /// the build's compression, zlib and thread switches.
-pub struct MinitArgs {
-    pub minit: swoole_rs_zend::Minit,
+pub struct MinitArgs<'a> {
+    pub minit: &'a swoole_rs_zend::Minit,
     pub shortname: bool,
     pub codecs: u32,
     pub compression: bool,
@@ -268,28 +268,66 @@ unsafe extern "C" {
     fn php_swoole_process_rshutdown();
 }
 
-/// One step of a phase: a family's MINIT hook, or any other hook.
+/// A `zend_try` shim's result.
+fn flag(bailed: c_int) -> Result<(), Bailout> {
+    if bailed == 0 { Ok(()) } else { Err(Bailout) }
+}
+
+/// One step of a phase: a family's MINIT hook, a MINIT or MSHUTDOWN step that
+/// takes the phase's token, or any other hook.
 #[derive(Clone, Copy)]
 pub(crate) enum Step {
     Minit(Minit),
+    Typed(fn(&swoole_rs_zend::Minit)),
+    #[cfg_attr(
+        not(any(
+            feature = "pgsql",
+            feature = "oci",
+            feature = "sqlite",
+            feature = "firebird"
+        )),
+        expect(
+            dead_code,
+            reason = "only the bundled PDO drivers have MSHUTDOWN steps that take the token"
+        )
+    )]
+    Shutdown(fn(&swoole_rs_zend::Mshutdown)),
     Hook(Hook),
 }
 
+/// The phase [`run`] runs steps in, with its token.
+#[derive(Clone, Copy)]
+enum Phase<'a> {
+    Minit(&'a swoole_rs_zend::Minit),
+    Mshutdown(&'a swoole_rs_zend::Mshutdown),
+    Request,
+}
+
 /// Run `steps` in order, each inside `zend_try`, stopping at a bailout. It
-/// takes the list, which drops before the caller raises the result.
-fn run(steps: Vec<Step>, module_number: c_int) -> Result<(), Bailout> {
+/// takes the list, which drops before the caller raises the result. A step
+/// that takes a token runs only in the phase that has it.
+fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
     for step in steps {
-        // C and C++ hooks that Zend may run at this phase; the shim's setjmp
-        // sits between this frame and the hook.
-        let bailed = match step {
-            // SAFETY: as above.
-            Step::Minit(hook) => unsafe { swr_zend_try_minit(Some(hook), module_number) },
-            // SAFETY: as above.
-            Step::Hook(hook) => unsafe { swr_zend_try_hook(Some(hook)) },
-        };
-        if bailed != 0 {
-            return Err(Bailout);
-        }
+        match (step, phase) {
+            (Step::Minit(hook), Phase::Minit(minit)) => {
+                // SAFETY: a C or C++ hook that Zend may run at MINIT; the shim's
+                // setjmp sits between this frame and the hook.
+                flag(unsafe { swr_zend_try_minit(Some(hook), minit.module()) })
+            }
+            // SAFETY: a MINIT step, which registers with Zend and keeps nothing
+            // that needs a drop where Zend could bail out; neither does the closure.
+            (Step::Typed(step), Phase::Minit(minit)) => unsafe {
+                bailout::trap_with(|| step(minit))
+            },
+            // SAFETY: an MSHUTDOWN step, likewise.
+            (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => unsafe {
+                bailout::trap_with(|| step(mshutdown))
+            },
+            // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
+            // setjmp sits between this frame and the hook.
+            (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),
+            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_), _) => Ok(()),
+        }?;
     }
     Ok(())
 }
@@ -297,8 +335,8 @@ fn run(steps: Vec<Step>, module_number: c_int) -> Result<(), Bailout> {
 /// MINIT after the constants and classes: Swoole's core, then each family
 /// "sorted by dependency", then the hooks Swoole's core calls back. A bailout
 /// is deferred for `swr_v1_phpswoole_minit` to raise.
-pub(crate) fn startup(module_number: c_int) {
-    use Step::{Hook as H, Minit as M};
+pub(crate) fn startup(minit: &swoole_rs_zend::Minit) {
+    use Step::{Hook as H, Minit as M, Typed as T};
     let Some(families) = families() else {
         return;
     };
@@ -322,37 +360,34 @@ pub(crate) fn startup(module_number: c_int) {
     ]);
     // client
     steps.extend(families.client_minit.map(M));
-    steps.extend([M(http_minit::<6>)]);
+    steps.extend([T(http_minit::<6>)]);
     // The bundled C clients, ssh2 and ftp.
     steps.extend(optional::client_minit());
     steps.extend([
         // server
-        M(server_minit),
-        M(http_minit::<0>),
-        M(http_minit::<1>),
-        M(http_minit::<2>),
-        M(http_minit::<3>),
-        M(http_minit::<4>),
-        M(http_minit::<5>),
+        T(server_minit),
+        T(http_minit::<0>),
+        T(http_minit::<1>),
+        T(http_minit::<2>),
+        T(http_minit::<3>),
+        T(http_minit::<4>),
+        T(http_minit::<5>),
         M(families.redis_minit),
         M(families.name_resolver_minit),
     ]);
     steps.extend(optional::minit());
-    steps.extend([M(tracer_minit), H(php_hooks), H(ready)]);
-    bailout::defer(run(steps, module_number));
+    steps.extend([T(tracer_minit), H(php_hooks), H(ready)]);
+    bailout::defer(run(steps, Phase::Minit(minit)));
 }
 
 /// `php_swoole_tracer_minit`: blocking detection and the profiler need the
 /// fiber mock.
-extern "C" fn tracer_minit(module_number: c_int) {
+fn tracer_minit(minit: &swoole_rs_zend::Minit) {
     let g = globals();
     let (blocking, profile) = (g.blocking_detection.get(), g.profile.get());
     let (threshold, leaks) = (g.blocking_threshold.get(), g.leak_detection.get());
     if let Some(families) = families() {
-        // SAFETY: Zend runs this module's MINIT on this thread; the token goes
-        // before it returns.
-        let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
-        (families.tracer_minit)(&minit, threshold, blocking, profile, leaks);
+        (families.tracer_minit)(minit, threshold, blocking, profile, leaks);
     }
     if blocking || profile {
         g.enable_fiber_mock.set(true);
@@ -360,25 +395,20 @@ extern "C" fn tracer_minit(module_number: c_int) {
 }
 
 /// `php_swoole_server_minit`.
-extern "C" fn server_minit(module: c_int) {
+fn server_minit(minit: &swoole_rs_zend::Minit) {
     if let Some(families) = families() {
-        // SAFETY: Zend runs this module's MINIT on this thread; the token goes
-        // before it returns.
-        let minit = unsafe { swoole_rs_zend::Minit::new(module) };
-        (families.server_minit)(&minit);
+        (families.server_minit)(minit);
     }
 }
 
 /// [`Http::minit`]'s step `N`.
-extern "C" fn http_minit<const N: usize>(module: c_int) {
+fn http_minit<const N: usize>(minit: &swoole_rs_zend::Minit) {
     let Some(&step) = families().and_then(|families| families.http.minit.get(N)) else {
         return;
     };
     let flags = crate::FLAGS.load(std::sync::atomic::Ordering::Relaxed);
     let args = MinitArgs {
-        // SAFETY: Zend runs this module's MINIT on this thread; `args` goes
-        // before it returns.
-        minit: unsafe { swoole_rs_zend::Minit::new(module) },
+        minit,
         shortname: globals().use_shortname.get(),
         codecs: codecs(),
         compression: flags & crate::constants::COMPRESSION != 0,
@@ -512,7 +542,7 @@ extern "C" fn event_free() {
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's MSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number: c_int) -> c_int {
     let mut steps = vec![
         Step::Hook(swoole_rs_zend::host::known_free),
         Step::Hook(php_swoole_runtime_mshutdown),
@@ -526,14 +556,17 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, module_number:
         Step::Hook(clean),
         Step::Hook(swr_zend_leak_check),
     ]);
-    bailout::raise(run(steps, module_number));
+    // SAFETY: Zend's MSHUTDOWN of this module, per the caller; the token goes
+    // before it returns.
+    let mshutdown = unsafe { swoole_rs_zend::Mshutdown::new() };
+    bailout::raise(run(steps, Phase::Mshutdown(&mshutdown)));
     SUCCESS
 }
 
 /// `PHP_RINIT_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RINIT.
-pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -571,7 +604,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
     ];
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
-    if let Err(bailed) = run(steps, module_number) {
+    if let Err(bailed) = run(steps, Phase::Request) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -582,7 +615,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, module_number: c_i
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
 /// # Safety
 /// Zend's RSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number: c_int) -> c_int {
+pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number: c_int) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -608,7 +641,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, module_number:
         Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
-    if let Err(bailed) = run(steps, module_number) {
+    if let Err(bailed) = run(steps, Phase::Request) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }

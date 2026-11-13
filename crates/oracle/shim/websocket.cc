@@ -1,12 +1,15 @@
 // The pinned WebSocket codec behind C entry points. build.rs copies the function
 // bodies and definitions from upstream/src/protocol/websocket.cc and
-// upstream/include/swoole_websocket.h unchanged into websocket.inc; only logging
+// upstream/include/swoole_websocket.h unchanged into websocket.inc, and the PHP
+// server's pack and message policy from upstream/ext-src/swoole_websocket_server.cc
+// into websocket_pack.inc and websocket_drop.inc; only logging, the output String
 // and the socket types the length query ignores are stubbed here.
 #include <arpa/inet.h>
 #include <cinttypes>
 #include <cstdint>
 #include <cstring>
 #include <sys/types.h>
+#include <vector>
 
 #define swoole_trace_log(...) ((void) 0)
 #define swoole_error_log(...) ((void) 0)
@@ -29,9 +32,53 @@ static uint64_t swoole_ntoh64(uint64_t value) {
     for (auto byte : bytes) result = (result << 8) | byte;
     return result;
 }
+static uint64_t swoole_hton64(uint64_t value) {
+    return swoole_ntoh64(value);
+}
+// What encode needs of swoole::String.
+struct String {
+    std::vector<char> bytes;
+    char *str = nullptr;
+    size_t length = 0;
+    void append(const char *data, size_t size) {
+        if (!size) return;
+        bytes.insert(bytes.end(), data, data + size);
+        str = bytes.data();
+        length = bytes.size();
+    }
+};
 // Upstream get_package_length ignores its protocol and socket parameters.
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #include "websocket.inc"
+
+namespace WebSocket = oracle_ws;
+#include "websocket_bits.inc"
+// WebSocketFrame pack's flag normalization: the flags it encodes with in the low
+// byte, whether it compresses in bit 8.
+static uint16_t pack_policy(uint8_t opcode, uint8_t flags, size_t len) {
+#include "websocket_pack.inc"
+    return uint16_t(flags) | (uint16_t(need_compress) << 8);
+}
+// The server's condition for keeping a close, ping or pong frame from onMessage
+// (settings bits close=1, ping=2, pong=4): 0 deliver, 1 drop, 2 answer with a pong.
+static uint8_t message_policy(uint8_t opcode, uint8_t settings) {
+    struct Settings {
+        bool open_close_frame, open_ping_frame, open_pong_frame;
+    };
+    struct Port {
+        Settings websocket_settings;
+    } value{{bool(settings & 1), bool(settings & 2), bool(settings & 4)}};
+    auto *port = &value;
+    const bool drop =
+#include "websocket_drop.inc"
+        ;
+    return drop ? (opcode == OPCODE_PING ? 2 : 1) : 0;
+}
+// `buffer`'s bytes into `out` when they fit; its length.
+static size_t copy_out(const String &buffer, char *out, size_t capacity) {
+    if (buffer.length <= capacity) std::memcpy(out, buffer.str, buffer.length);
+    return buffer.length;
+}
 }  // namespace oracle_ws
 
 struct swr_oracle_ws_frame {
@@ -63,5 +110,29 @@ bool swr_oracle_ws_decode(char *data, size_t length, swr_oracle_ws_frame *out) {
 
 void swr_oracle_ws_mask(char *data, size_t length, const char *key) {
     oracle_ws::mask(data, length, key);
+}
+
+bool swr_oracle_ws_encode(
+    const char *data, size_t length, uint8_t opcode, uint8_t flags, char *out, size_t capacity, size_t *written) {
+    oracle_ws::String buffer;
+    bool ok = oracle_ws::encode(&buffer, data, length, opcode, flags);
+    *written = oracle_ws::copy_out(buffer, out, capacity);
+    return ok;
+}
+
+bool swr_oracle_ws_pack_close(
+    int code, const char *reason, size_t length, uint8_t flags, char *out, size_t capacity, size_t *written) {
+    oracle_ws::String buffer;
+    bool ok = oracle_ws::pack_close_frame(&buffer, code, reason, length, flags);
+    *written = oracle_ws::copy_out(buffer, out, capacity);
+    return ok;
+}
+
+uint16_t swr_oracle_ws_pack_policy(uint8_t opcode, uint8_t flags, size_t length) {
+    return oracle_ws::pack_policy(opcode, flags, length);
+}
+
+uint8_t swr_oracle_ws_message_policy(uint8_t opcode, uint8_t settings) {
+    return oracle_ws::message_policy(opcode, settings);
 }
 }

@@ -70,11 +70,12 @@ pub(crate) mod host {
     pub(crate) fn timer_available() -> bool {
         true
     }
-    pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> *mut c_void {
+    #[expect(clippy::unnecessary_wraps, reason = "the host's signature")]
+    pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> Option<c_long> {
         log(format!("timer {ms}"));
-        ptr::dangling_mut::<u8>().cast()
+        Some(1)
     }
-    pub(crate) unsafe fn timer_del(_timer: *mut c_void) {
+    pub(crate) fn timer_del(_timer: c_long) {
         log("timer del".into());
     }
     pub(crate) fn current() -> *mut c_void {
@@ -84,7 +85,10 @@ pub(crate) mod host {
         false
     }
     pub(crate) unsafe fn resume(_co: *mut c_void) {}
-    pub(crate) unsafe fn defer(_multi: *const Multi) {
+    pub(crate) fn defer(multi: &Multi) {
+        if multi.defer_callback.replace(true) {
+            return;
+        }
         log("defer".into());
     }
 }
@@ -244,13 +248,13 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
     let transfer = transfer();
     let multi = transfer.multi;
     let socket = Rc::as_ptr(multi.sockets.borrow().values().next().unwrap()).cast_mut();
-    unsafe { socket_event(socket.cast(), CURL_CSELECT_IN) };
+    socket_event(unsafe { &*socket }, CURL_CSELECT_IN);
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();
     assert_eq!(take().len(), 1, "back in before waiting");
     multi.co.set(ptr::dangling_mut::<u8>().cast());
-    unsafe { socket_event(socket.cast(), CURL_CSELECT_IN) };
-    unsafe { socket_event(socket.cast(), CURL_CSELECT_OUT) };
+    socket_event(unsafe { &*socket }, CURL_CSELECT_IN);
+    socket_event(unsafe { &*socket }, CURL_CSELECT_OUT);
     assert_eq!(take(), ["defer"], "one deferred wake-up");
     assert_eq!(multi.ready(), 1, "one active socket");
     assert_eq!(
