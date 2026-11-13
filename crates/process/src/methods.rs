@@ -266,7 +266,7 @@ pub unsafe fn send_pipe_message(
         worker.pipe_worker()
     };
     // SAFETY: the worker's pool is live.
-    let queue = unsafe { (*pool.cast::<PoolRecord>()).use_msgqueue } != 0;
+    let queue = unsafe { (*pool.cast::<PoolRecord>()).use_msgqueue };
     // SAFETY: as the caller guarantees.
     unsafe { swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, length, flags) }
 }

@@ -25,7 +25,7 @@ pub struct WorkerRecord {
     status: AtomicU8,
     kind: u8,
     msgqueue_mode: u8,
-    pub child_process: u8,
+    pub child_process: bool,
     /// Its worker's requests in flight, which the master's retirement resets.
     pub concurrency: AtomicU32,
     start_time: i64,
@@ -63,7 +63,7 @@ impl WorkerRecord {
             status: AtomicU8::new(0),
             kind: 0,
             msgqueue_mode: 0,
-            child_process: 0,
+            child_process: false,
             concurrency: AtomicU32::new(0),
             start_time: 0,
             dispatch_count: 0,

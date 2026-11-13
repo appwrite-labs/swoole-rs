@@ -595,7 +595,7 @@ mod tests {
                 fields.stapling,
                 fields.stapling_verify
             ),
-            (1, 0, 1, 1),
+            (true, false, true, true),
             "flags"
         );
         assert!(!config.is_dtls(), "not DTLS");

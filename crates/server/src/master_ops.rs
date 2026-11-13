@@ -1228,7 +1228,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_WARNING_TIME => sign(o.server().task_pool_ref().warning_time()),
         OP_WARNING_RESET => {
             let pool = o.server().task_pool_ref();
-            pool.set_scheduler_warning(0);
+            pool.set_scheduler_warning(false);
             pool.set_warning_time((arg >> 1).cast_signed());
             0
         }

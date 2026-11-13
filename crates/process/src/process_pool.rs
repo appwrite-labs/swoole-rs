@@ -47,14 +47,14 @@ pub struct PoolRecord {
     pub reload_last_time: i64,
     pub kind: u8,
     pub start_id: u16,
-    pub use_msgqueue: u8,
-    pub use_socket: u8,
+    pub use_msgqueue: bool,
+    pub use_socket: bool,
     pub max_packet_size: u32,
     pub msgqueue_key: c_int,
     pub(crate) worker_num: u32,
     pub max_request: u32,
     pub max_request_grace: u32,
-    pub scheduler_warning: u8,
+    pub scheduler_warning: bool,
     pub warning_time: i64,
     pub on_start: Option<PoolFn>,
     pub on_shutdown: Option<PoolFn>,
@@ -111,14 +111,14 @@ impl PoolRecord {
             reload_last_time: 0,
             kind: 0,
             start_id: 0,
-            use_msgqueue: 0,
-            use_socket: 0,
+            use_msgqueue: false,
+            use_socket: false,
             max_packet_size: 0,
             msgqueue_key: 0,
             worker_num: 0,
             max_request: 0,
             max_request_grace: 0,
-            scheduler_warning: 0,
+            scheduler_warning: false,
             warning_time: 0,
             on_start: None,
             on_shutdown: None,
@@ -936,8 +936,8 @@ getters!(
     reload_count: u64,
     kind: u8,
     start_id: u16,
-    use_msgqueue: u8,
-    use_socket: u8,
+    use_msgqueue: bool,
+    use_socket: bool,
     max_packet_size: u32,
     worker_num: u32,
     on_start: Option<PoolFn>,
@@ -967,7 +967,7 @@ getters!(
     max_request_grace: u32,
     on_task: Option<TaskFn>,
     on_worker_error: Option<ErrorFn>,
-    scheduler_warning: u8,
+    scheduler_warning: bool,
     warning_time: i64,
 );
 
@@ -984,14 +984,14 @@ setters!(
     pub reload_last_time / set_reload_last_time: i64,
     pub kind / set_kind: u8,
     pub start_id / set_start_id: u16,
-    pub use_msgqueue / set_use_msgqueue: u8,
-    pub use_socket / set_use_socket: u8,
+    pub use_msgqueue / set_use_msgqueue: bool,
+    pub use_socket / set_use_socket: bool,
     pub max_packet_size / set_max_packet_size: u32,
     pub msgqueue_key / set_msgqueue_key: c_int,
     pub(crate) worker_num / set_worker_num: u32,
     pub max_request / set_max_request: u32,
     pub max_request_grace / set_max_request_grace: u32,
-    pub scheduler_warning / set_scheduler_warning: u8,
+    pub scheduler_warning / set_scheduler_warning: bool,
     pub(crate) workers / set_workers: *mut WorkerRecord,
     pub(crate) pipes / set_pipes: *mut c_void,
     pub(crate) registry / set_registry: *mut WorkerRegistry,
@@ -1086,7 +1086,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         match mode {
             IPC_MSGQUEUE => {
-                self.set_use_msgqueue(1);
+                self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
                 let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
                     return SW_ERR;
@@ -1104,14 +1104,14 @@ impl<H: PoolHost> Pool<'_, H> {
                     }
                 }
             }
-            IPC_SOCKET => self.set_use_socket(1),
+            IPC_SOCKET => self.set_use_socket(true),
             _ => mode = IPC_NONE,
         }
         self.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
         self.set_ipc(pool_ipc_new(mode == IPC_SOCKET));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
-        self.set_max_packet_size(packet_limit(self.use_msgqueue() != 0, SW_INPUT_BUFFER_SIZE));
+        self.set_max_packet_size(packet_limit(self.use_msgqueue(), SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
             self.worker_at(index).set_pool(self.p.raw().cast());
@@ -1409,9 +1409,9 @@ impl<H: PoolHost> Pool<'_, H> {
             // None of the pool's workers.
             return SW_ERR;
         };
-        let ipc_mode = if self.use_msgqueue() != 0 {
+        let ipc_mode = if self.use_msgqueue() {
             IPC_MSGQUEUE
-        } else if self.use_socket() != 0 {
+        } else if self.use_socket() {
             IPC_SOCKET
         } else {
             IPC_UNIXSOCK
@@ -1591,7 +1591,7 @@ impl<H: PoolHost> Pool<'_, H> {
         let Some(event) = event.get(..size as usize) else {
             return SW_ERR;
         };
-        if self.use_socket() != 0 {
+        if self.use_socket() {
             let send = |ipc: Option<&PoolIpc>| {
                 crate::pool::swr_v1_process_pool_ipc_send(ipc, event, blocking)
             };
@@ -1623,7 +1623,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.p.raw().cast(),
                 workers,
                 self.start_id(),
-                self.use_msgqueue() != 0,
+                self.use_msgqueue(),
                 worker_id,
                 event,
                 blocking,
@@ -1640,7 +1640,7 @@ impl<H: PoolHost> Pool<'_, H> {
             crate::pool::idle(self.worker_at(target))
         });
         if warning {
-            self.set_scheduler_warning(1);
+            self.set_scheduler_warning(true);
         }
         target
     }
@@ -2325,7 +2325,7 @@ mod tests {
         let file = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        record(&mut pool).use_socket = 1;
+        record(&mut pool).use_socket = true;
         let ipc = pool_ipc_new(true);
         // SAFETY: a live handle.
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);

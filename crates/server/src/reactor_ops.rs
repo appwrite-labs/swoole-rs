@@ -525,14 +525,14 @@ pub(crate) fn answer(
             // SAFETY: a stable slot of the port's live owner.
             u64::from(!unsafe { &*slot }.bytes().is_empty())
         }
-        OP_VERIFY_PEER => u64::from(o.ssl_fields()?.verify_peer != 0),
+        OP_VERIFY_PEER => u64::from(o.ssl_fields()?.verify_peer),
         OP_PEER_CERT => {
             let buffer = swoole_rs_corebase::thread_buffer();
             // SAFETY: a TLS socket's live record and this thread's live buffer.
             u64::from(unsafe { tls::socket_ssl_get_peer_certificate_string(o.sock()?, buffer) })
         }
         OP_SSL_VERIFY => {
-            let allow_self_signed = o.ssl_fields()?.allow_self_signed != 0;
+            let allow_self_signed = o.ssl_fields()?.allow_self_signed;
             u64::from(
                 o.sock()
                     .is_some_and(|sock| tls::socket_ssl_verify(sock, allow_self_signed)),
