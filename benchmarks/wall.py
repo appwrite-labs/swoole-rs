@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource
 import signal
 import socket
 import statistics
@@ -64,16 +65,25 @@ def h2load(port, path, connections, seconds):
 
 
 def websocket(port, payload, seconds):
-    # One connection: 06-websocket broadcasts every message to every client.
+    # One connection: 06-websocket broadcasts every message to every client. The loop sends one
+    # pre-masked frame and reads the known echo in one recv: the client's share of each round
+    # trip, which requests/s can't tell from the server's, is mostly its two syscalls (#3409).
     client, times = WebSocket(port), []
+    mask = os.urandom(4)
+    frame = bytes([0x81, 0x80 | len(payload)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    echo = bytes([0x81, len(payload)]) + payload
+    sendall, recv, clock = client.socket.sendall, client.socket.recv, time.perf_counter
     deadline = time.monotonic() + seconds
     try:
         while time.monotonic() < deadline:
-            start = time.perf_counter()
-            client.send(payload)
-            if client.receive() != payload:
-                raise RuntimeError('unexpected WebSocket frame')
-            times.append((time.perf_counter() - start) * 1e3)
+            start = clock()
+            sendall(frame)
+            got = recv(len(echo))
+            while len(got) < len(echo):
+                got += recv(len(echo) - len(got))
+            if got != echo:
+                raise RuntimeError(f'unexpected WebSocket frame {got!r}')
+            times.append((clock() - start) * 1e3)
     finally:
         client.close()
     times.sort()
@@ -99,7 +109,7 @@ def run(engine, workload, connections, seconds, warmup):
             perf = subprocess.Popen(['perf', 'stat', '-x,', '-e', ','.join(EVENTS), '-o', counts.name,
                                      '-p', ','.join(session_pids(proc.pid))])
             time.sleep(0.2)  # perf attaches before the load starts
-            start = time.monotonic()
+            start, client = time.monotonic(), client_seconds()
             if method == 'WS':
                 requests, p50, p99 = websocket(port, payload, seconds)
             elif method == 'H2':
@@ -108,7 +118,7 @@ def run(engine, workload, connections, seconds, warmup):
                 requests, p50, p99 = wrk(port, path, connections, seconds)
             else:
                 raise ValueError(f'{workload}: no load generator for {method}')
-            elapsed = time.monotonic() - start
+            elapsed, client = time.monotonic() - start, client_seconds() - client
             perf.send_signal(signal.SIGINT)
             perf.wait(timeout=30)
         finally:
@@ -120,13 +130,22 @@ def run(engine, workload, connections, seconds, warmup):
             if len(fields) > 2 and fields[2] in EVENTS:
                 # '<not supported>' or '<not counted>' where the runner exposes no PMU.
                 counters[fields[2]] = float(fields[0]) / requests if fields[0][:1].isdigit() else None
-    return {'requests_per_second': requests / elapsed, 'p50_ms': p50, 'p99_ms': p99, 'per_request': counters}
+    return {'requests_per_second': requests / elapsed, 'p50_ms': p50, 'p99_ms': p99,
+            'client_cpu': client / elapsed, 'per_request': counters}
+
+
+def client_seconds():
+    """CPU seconds of this process and its reaped children: the load generator's, since the
+    server and perf are reaped after the load. Near 1 (or wrk's two threads' 2), requests/s
+    measures the client rather than the server."""
+    own, children = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
 
 
 def summary(rows):
     """Median and relative spread ((max - min) / median) of each measure across the repetitions
     that counted it; one lost perf sample doesn't drop a counter, a PMU that counts nothing does."""
-    measures = {key: [row[key] for row in rows] for key in ('requests_per_second', 'p50_ms', 'p99_ms')}
+    measures = {key: [row.get(key) for row in rows] for key in ('requests_per_second', 'p50_ms', 'p99_ms', 'client_cpu')}
     measures |= {event: [row['per_request'].get(event) for row in rows] for event in EVENTS}
     result = {}
     for key, values in measures.items():
