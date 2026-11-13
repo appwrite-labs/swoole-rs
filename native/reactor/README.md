@@ -6,11 +6,11 @@ The Swoole reactor (backends, wait loop, handlers, callbacks, deferred queues),
 `Socket` and write-path members that also touch TLS.
 
 This directory's `swoole_socket.h` and `swoole_reactor.h` replace upstream's headers
-under the same names. `swoole_rs_socket_methods.h` keeps the `Socket` members that
-need C++ (exceptions, `std::string`, `std::vector`). `Reactor` is a methods-only
+under the same names; `swoole_socket.h` keeps only the `Socket` and `Address` members the
+build's C uses. `Reactor` is a methods-only
 class over `swr_v1_reactor_head`, which Rust's reactor state begins with, so a
 `Reactor *` is that state; `reactor_state.rs` constructs and frees it
-(`swoole_event_init`, `swoole_event_free`). An `IOVector` is a view of a Rust owner
+(`swoole_event_init`, `swoole_event_free`). An `IOVector` is a Rust owner
 (`iov_owned.rs`) holding both `iovec` spans; payload bytes are not copied.
 
 ## Contents

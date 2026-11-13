@@ -1451,8 +1451,8 @@ fn cpp_string(size: usize) -> CppString {
 }
 
 /// `IOVector(iov, count)` around `body`, destroyed after. Its constructor is inline
-/// C++ (native/reactor/swoole_rs_socket_methods.h), so this does what it does; the
-/// `ssl_readv`/`ssl_writev` it reaches read only its first member, `owner_`.
+/// C++ upstream, so this does what it does; the `ssl_readv`/`ssl_writev` it reaches
+/// read only its first member, `owner_`.
 fn with_io_vector<T>(iov: &[IoVec], body: impl FnOnce(*mut c_void) -> T) -> T {
     // SAFETY: `iov` is a live array of `iov.len()` entries.
     let prepared =
@@ -1465,9 +1465,8 @@ fn with_io_vector<T>(iov: &[IoVec], body: impl FnOnce(*mut c_void) -> T) -> T {
     result
 }
 
-/// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ in
-/// native/reactor/swoole_rs_socket_methods.h: the PEM of each of the first `limit`
-/// certificates that reads.
+/// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ upstream: the PEM of each of
+/// the first `limit` certificates that reads.
 fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
     // SAFETY: a live socket.
     let chain = unsafe { socket_ssl_get_peer_cert_chain(sock) };
