@@ -97,7 +97,7 @@ pub(crate) unsafe fn on_read(
     };
     if kind == ON_READ_HTTP {
         read.frames =
-            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol;
+            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
     *event = read.event.get();
@@ -156,7 +156,7 @@ impl Read<'_> {
     /// One receive of `mode` through the port's protocol, its packages handled by `K`.
     #[inline(always)]
     fn framed<K: Packages>(&self, mode: u32) -> i64 {
-        let protocol = &raw const self.port.protocol;
+        let protocol = self.port.protocol.as_ptr().cast_const();
         // SAFETY: the port's protocol, the live socket and the current buffer.
         i64::from(unsafe {
             framing_recv::receive::<K>(protocol, self.socket.as_ptr(), self.buffer, mode)
@@ -243,7 +243,7 @@ impl Connection for Read<'_> {
                 let conn = self.conn();
                 // SAFETY: the current buffer; the connection's object is its request.
                 i64::from(unsafe {
-                    crate::resp_recv::recv_packet(&port.protocol, conn, socket, buffer)
+                    crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
                 })
             }
         }
@@ -266,7 +266,7 @@ impl Connection for Read<'_> {
             },
             data: self.string().as_mut_ptr(),
         };
-        let proto = &raw const self.port.protocol;
+        let proto = self.port.protocol.as_ptr().cast_const();
         let rdata: *const c_void = (&raw const data).cast();
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
@@ -321,7 +321,7 @@ impl Connection for Read<'_> {
     }
 
     fn http2_enabled(&mut self) -> bool {
-        self.port.open_http2_protocol
+        self.port.open_http2_protocol.get()
     }
 
     fn start_http2(&mut self) {
@@ -339,7 +339,7 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn max_length(&mut self) -> u64 {
-        u64::from(self.port.protocol.package_max_length)
+        u64::from(self.port.protocol.get().package_max_length)
     }
 
     fn uploads(&mut self) -> bool {

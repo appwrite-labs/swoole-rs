@@ -193,7 +193,7 @@ fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
     let conn = server.by_session(fd)?;
     server
         .port_of_fd(conn.fd())
-        .map(|port| port.websocket_frames)
+        .map(|port| port.websocket_frames.get())
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.

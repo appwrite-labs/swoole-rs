@@ -115,10 +115,10 @@ pub(crate) fn context_create(
         return false;
     }
     edit(context, |fields| {
-        if config.open_http_protocol {
+        if config.open_http_protocol.get() {
             fields.http = 1;
         }
-        if config.open_http2_protocol {
+        if config.open_http2_protocol.get() {
             fields.http_v2 = 1;
         }
     });
