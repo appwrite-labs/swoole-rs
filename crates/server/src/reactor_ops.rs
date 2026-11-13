@@ -1,54 +1,32 @@
-//! The reactor-thread ops (master.cc's `reactor_thread_call`) that are a log line
-//! or a read or write of a record Rust already lays out: the server's config,
-//! tables and callbacks, the reactor's fields and the context's connection,
-//! socket, event and pipe message. Rust answers them before any native call, so
-//! master.cc no longer has a case for them. Logs name the upstream function that
-//! wrote them. Its effects over the reactor, the context's sockets and the
-//! server's counters are Rust calls too.
-use crate::records::Lookup;
+//! A reactor thread's context and record, and the connection and socket checks
+//! its handlers share.
 use core::cell::Cell;
-use core::ffi::{c_int, c_long, c_void};
-use core::sync::atomic::Ordering::SeqCst;
+use core::ffi::{c_int, c_void};
 
 use swoole_rs_buffer::cpp::CppBuffer;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
+use swoole_rs_reactor::{SocketFields, SocketRecord};
 
-use crate::ops::{
-    OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR, OP_CONN_UNREAD, OP_HAVE_DGRAM, OP_NOTIFY_CONNECT,
-    OP_PORT_DEL, OP_QUEUE_SUB, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER, OP_SESSION_CONN,
-    OP_WORKER_NUM,
-};
 use crate::reactor_handle::Reactor;
-use crate::records::{Connection, ConnectionRecord};
+use crate::records::Connection;
 use crate::view;
-use crate::{ServerConfig, ServerState};
 
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
-/// `SW_SERVER_EVENT_CONNECT`.
-const EVENT_CONNECT: c_int = 5;
-
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
 /// under, and what the ops before it found. The entry points (`reactor_entry`) build
 /// it. Each raw field is null or what the op setting it found, live while the context
 /// is: one of the server's reactor threads, one of its connection slots, a worker's
 /// message in this thread's bus, this thread's buffer. Its readers only test for null.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the reactor threads' shutdown reads it")
+)]
 pub(crate) struct ReactorContext<'a> {
     pub(crate) serv: view::Server<'a>,
     pub(crate) reactor: Option<Reactor>,
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops read it")
-    )]
     pub(crate) thread: *mut c_void,
-    pub(crate) sock: Option<Socket<'a>>,
-    pub(crate) conn: *mut ConnectionRecord,
     /// The `PipeBuffer` read from a worker, which starts with its head.
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops read it")
-    )]
     pub(crate) resp: *const DataHead,
 }
 
@@ -67,8 +45,6 @@ impl<'a> ReactorContext<'a> {
             serv,
             reactor,
             thread: null,
-            sock: None,
-            conn: null.cast(),
             resp: core::ptr::null(),
         }
     }
@@ -84,12 +60,6 @@ impl<'a> ReactorContext<'a> {
         unsafe { self.thread.cast::<ThreadRecord>().as_ref() }
     }
 
-    /// The context's connection, once an op has set it.
-    pub(crate) fn connection(&self) -> Option<Connection<'a>> {
-        // SAFETY: null or one of the server's live connection slots, as the struct says.
-        unsafe { Connection::from_ptr(self.conn) }
-    }
-
     /// The worker's message the pipe read stored.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
@@ -101,13 +71,11 @@ impl<'a> ReactorContext<'a> {
     }
 }
 
-/// The low 32 bits of `arg`, as native code passes a C `int`.
-pub(crate) fn int(arg: u64) -> c_int {
-    u32::try_from(arg & u64::from(u32::MAX))
-        .unwrap_or_default()
-        .cast_signed()
-}
-
+/// An op's answer: `value` widened to `i64`, as its bits.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the remaining op scripts answer with it")
+)]
 pub(crate) fn sign(value: impl Into<i64>) -> u64 {
     value.into().cast_unsigned()
 }
@@ -127,50 +95,6 @@ pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
     unsafe { socket.output.out_buffer.cast::<CppBuffer>().as_ref() }
 }
 
-/// The context's objects, each `None` until an op sets it.
-struct Objects<'a, 'c> {
-    ctx: &'a mut ReactorContext<'c>,
-    state: &'a ServerState,
-}
-
-impl<'c> Objects<'_, 'c> {
-    /// The context's live server.
-    fn server(&self) -> view::Server<'c> {
-        self.ctx.serv
-    }
-    fn config(&self) -> &ServerConfig {
-        self.state.config_ref()
-    }
-    fn conn(&self) -> Option<Connection<'c>> {
-        self.ctx.connection()
-    }
-    fn conn_socket(&self) -> Option<Socket<'c>> {
-        self.conn()?.socket()
-    }
-    fn sock(&self) -> Option<Socket<'c>> {
-        self.ctx.sock
-    }
-    /// The connection of the context's socket, which the ops reading it run over a
-    /// session socket for.
-    fn sock_conn(&self) -> Option<Connection<'c>> {
-        let conn = self.sock()?.read(|s| s.object.cast::<ConnectionRecord>());
-        // SAFETY: a session socket's object is null or its live connection.
-        unsafe { Connection::from_ptr(conn) }
-    }
-    /// The context's live reactor.
-    fn handle(&self) -> Option<Reactor> {
-        self.ctx.reactor
-    }
-    /// The context's live reactor, which only this thread touches.
-    fn reactor(&self) -> Option<swoole_rs_reactor::Running<'static>> {
-        self.ctx.reactor.map(Reactor::handle)
-    }
-    /// `get_connection(fd)` or a verified session's.
-    fn connection(&self, key: c_long, kind: Lookup) -> *mut ConnectionRecord {
-        self.state.connection_ptr(key, kind)
-    }
-}
-
 /// `Socket::is_dgram(type)`.
 pub(crate) fn is_dgram(kind: c_int) -> bool {
     matches!(kind, 2 | 4 | 6)
@@ -183,46 +107,6 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
     };
     conn.socket()
         .is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
-}
-
-/// Answers `op` when it is one of this module's, else `None`, as an op does when the
-/// context lacks an object it reads. Always inlined: each caller's constant op folds
-/// the match, so the hot runners' other ops cost nothing.
-#[inline(always)]
-pub(crate) fn answer(
-    ctx: &mut ReactorContext<'_>,
-    state: &ServerState,
-    op: u32,
-    arg: u64,
-) -> Option<u64> {
-    let mut o = Objects { ctx, state };
-    Some(match op {
-        OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),
-        OP_REACTOR_ID => u64::from(o.reactor()?.id()),
-        OP_REACTOR_NUM => u64::from(o.config().reactor_num.get()),
-        OP_WORKER_NUM => u64::from(o.config().worker_num.get()),
-        OP_CONN_AT => {
-            let conn = o.state.connection(c_long::from(int(arg)), Lookup::ByFd);
-            if !valid(conn) {
-                return Some(0);
-            }
-            o.ctx.conn = conn.map_or(core::ptr::null_mut(), Connection::as_ptr);
-            1
-        }
-        OP_CONN_FD => sign(o.conn()?.fd()),
-        OP_CONN_REACTOR => u64::from(o.conn()?.reactor_id()),
-        OP_SESSION_CONN => {
-            o.ctx.conn = o.connection(arg.cast_signed(), Lookup::Verified);
-            u64::from(!o.ctx.conn.is_null())
-        }
-        OP_QUEUE_SUB => {
-            let bytes = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
-            o.conn()?.recv_queued_bytes().fetch_sub(bytes, SeqCst);
-            0
-        }
-        OP_SERVER => u64::try_from(o.ctx.serv.raw().expose_provenance()).unwrap_or(0),
-        op => return effects(&mut o, op, arg),
-    })
 }
 
 /// `ReactorThread`; server.cc asserts this layout. Its own thread writes it, so the
@@ -290,48 +174,4 @@ impl ThreadRecord {
             drop(unsafe { Box::from_raw(thread.bus.cast::<swoole_rs_bus::MessageBus>()) });
         }
     }
-}
-
-/// The ops over the context's reactor, sockets, connection, port and thread
-/// and the server's counters; else `None`. Inlined, as [`answer`] is.
-#[inline(always)]
-fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
-    let reactor = o.handle();
-    // `reactor->add/set/del(socket)`.
-    let change = |socket, kind, events| reactor.map(|r| sign(r.change(socket, kind, events)));
-    // `reactor->remove_read_event(socket)` (4) and `remove_write_event` (5).
-    let interest = |socket, kind| reactor.map(|r| sign(r.interest(socket, kind, 0)));
-    Some(match op {
-        OP_PORT_DEL => {
-            change(o.server().port_socket_at(usize::try_from(arg).ok()?)?, 2, 0);
-            0
-        }
-        OP_CONN_UNREAD => interest(o.conn_socket()?, 4)?,
-        OP_NOTIFY_CONNECT => {
-            crate::server_methods::notify(o.server(), o.sock_conn()?, EVENT_CONNECT);
-            0
-        }
-        op => return native(op),
-    })
-}
-
-/// The ops that call the event loop under its upstream symbols; else
-/// `None`. A reactor thread's own loop runs, and is freed,
-/// here: master.cc no longer answers `OP_EVENT_WAIT` or `OP_EVENT_FREE`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-#[inline(always)]
-fn native(op: u32) -> Option<u64> {
-    use crate::ops::OP_EVENT_WAIT;
-    use swoole_rs_reactor::event_api::swoole_event_wait;
-    Some(match op {
-        OP_EVENT_WAIT => sign(swoole_event_wait()),
-        _ => return None,
-    })
-}
-
-/// Outside the hybrid, whose unit tests link no C++, native code keeps these.
-#[cfg(not(all(feature = "upstream-symbols", not(test))))]
-#[inline(always)]
-fn native(_: u32) -> Option<u64> {
-    None
 }

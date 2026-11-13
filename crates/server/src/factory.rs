@@ -16,6 +16,121 @@ use swoole_rs_process::workers::ops::{
 use swoole_rs_process::workers::thread::ThreadManager;
 
 use crate::state::ServerState;
+
+/// [`crate::hybrid::Step`] over `serv`, in the master.
+fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {
+    use crate::hybrid::Step;
+    use swoole_rs_reactor::signal_upstream::{self, Handler};
+    /// `SW_FD_PIPE` and `SW_EVENT_READ`.
+    const SW_FD_PIPE: c_int = 3;
+    const SW_EVENT_READ: c_int = 1 << 9;
+    let ok = |done: bool| if done { 0 } else { -1 };
+    let state = serv.state();
+    match step {
+        Step::Daemon => {
+            use swoole_rs_utilities::{
+                process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect,
+            };
+            match process_logger() {
+                Some(logger) if swr_v1_logger_is_opened(logger) => {
+                    swr_v1_logger_redirect(logger, true);
+                }
+                _ => swoole_rs_corebase::swoole_redirect_stdout_file(c"/dev/null"),
+            }
+            // The master, before it starts any thread.
+            return swoole_rs_ossupport::swoole_daemon(0, 1);
+        }
+        Step::FactoryStart => return ok(start(serv)),
+        // In the master, after the process factory forks and before any reactor
+        // thread, base-mode worker or worker thread starts.
+        Step::InitProtocols => {
+            for port in state.tables_ref().ports() {
+                (crate::port_config::methods().init_protocol)(port.config());
+            }
+        }
+        Step::StartBase => return crate::reactor_process_ops::start_reactor_processes(serv),
+        Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
+        Step::TimerReinit => {
+            if crate::objects::timer_detached() {
+                crate::objects::timer_reinit(false);
+            }
+        }
+        Step::Ignore(signo) => _ = signal_upstream::set(signo, Handler::NONE, false),
+        Step::Handle(signo) => {
+            let handler = crate::server_methods::master_signal_handler as *const () as usize;
+            // SAFETY: the master's handler, which runs while `SwooleG.server` is live.
+            let handler = unsafe { Handler::from_raw(handler) };
+            _ = signal_upstream::set(signo, handler, false);
+        }
+        Step::CommandHandler => {
+            let handler: swoole_rs_reactor::Handler = accept_command_result;
+            crate::reactor_handle::Reactor::thread().set_handler(
+                SW_FD_PIPE,
+                SW_EVENT_READ,
+                handler,
+            );
+        }
+        Step::MasterTimer => {
+            let node = crate::server_methods::master_timer(serv);
+            state
+                .config_ref()
+                .master_timer
+                .store(node, core::sync::atomic::Ordering::Relaxed);
+            return ok(!node.is_null());
+        }
+        Step::EventFree => _ = swoole_rs_reactor::swoole_event_free(),
+        Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait(),
+        Step::ReactorBarrier | Step::ManagerBarrier => {
+            let manager = step == Step::ManagerBarrier;
+            swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, manager));
+        }
+        Step::JoinReactorThreads => crate::reactor_thread::join_reactor_threads(serv),
+        Step::FactoryShutdown => _ = shutdown(state),
+        Step::ReleasePipeBuffers => state.message_bus().free_buffer(),
+        Step::ClosePorts => {
+            for &port in state.tables_ref().ports() {
+                (crate::port_config::methods().close)(port);
+            }
+        }
+        Step::ClearSignals => signal_upstream::clear(),
+        Step::DestroyProcessFactory => {
+            use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
+            crate::factory_ops::run_server(serv, RUN_DESTROY_PROCESS_FACTORY);
+        }
+        Step::DestroyTaskPool => swoole_rs_process::methods::destroy(serv.task_pool_ref()),
+        Step::DeleteFactory => {
+            // SAFETY: `delete factory_`, which the caller then forgets.
+            unsafe { delete(state.config_ref().factory_) };
+        }
+    }
+    0
+}
+
+/// `Server::accept_command_result`: the master's command pipe is readable; a
+/// whole reply goes to its waiting callback. The callback may resume a coroutine:
+/// this frame owns nothing that needs a drop then.
+///
+/// Registered only on the master's reactor, whose `ptr` is the live server, for its
+/// command pipe.
+extern "C" fn accept_command_result(
+    reactor: swoole_rs_reactor::Running<'_>,
+    event: &mut swoole_rs_reactor::Event,
+) -> c_int {
+    let serv = reactor.object();
+    // SAFETY: the master reactor's live server.
+    let state = unsafe { crate::view::Server::from_raw(serv) }.state();
+    let bus = state.message_bus();
+    let Some(sock) = event.socket() else {
+        return 0;
+    };
+    if bus.read(sock) <= 0 {
+        return 0;
+    }
+    let request_id = bus.head().fd;
+    bus.with_packet(|message| crate::commands::command_result(state, request_id, message));
+    bus.pop();
+    0
+}
 use crate::{MODE_PROCESS, MODE_THREAD};
 
 /// `swoole::Factory` (upstream's `swoole_server.h`): its server, then thread mode's manager state
@@ -252,6 +367,10 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
         crate::task_worker_ops::init_task_workers(serv)
+    }
+
+    fn step(&self, serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {
+        lifecycle_step(serv, step)
     }
 
     fn dtls_accept(

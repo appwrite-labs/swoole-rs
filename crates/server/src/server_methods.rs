@@ -4,91 +4,18 @@
 //! it in Rust.
 
 use crate::records::Lookup;
-use core::ffi::{c_int, c_long, c_void};
-use core::ptr;
+use core::ffi::{c_int, c_long};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 
 use crate::hybrid::hybrid;
-use crate::ops::{RUN_DESTROY, RUN_START, RUN_START_MASTER_THREAD};
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
 
-/// What an operation acts on besides the server. The borrowed fields live for `'a`,
-/// the call.
-pub struct NativeContext<'a> {
-    pub(crate) serv: *mut c_void,
-    pub(crate) reactor: *mut c_void,
-    pub(crate) port: *mut c_void,
-    /// The connection the operation acts on or selects.
-    pub(crate) conn: Option<crate::Connection<'a>>,
-}
-
-impl NativeContext<'_> {
-    pub(crate) fn new(serv: *mut c_void) -> Self {
-        Self {
-            serv,
-            reactor: ptr::null_mut(),
-            port: ptr::null_mut(),
-            conn: None,
-        }
-    }
-}
-
-// Runs `op` over `ctx`, whose `serv` is a live `Server` and whose other fields are what
-// `op` reads: straight into Rust, or the tests' fake runner.
-#[cfg(not(test))]
-use crate::run_method as run;
-#[cfg(test)]
-use tests::fake as run;
-
-/// Runs `op` with `arg` over a context that lends `serv` and nothing else.
-fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {
-    let mut ctx = NativeContext::new(serv.raw());
-    // SAFETY: a live server, and no other object for the operation to read.
-    unsafe { run(op, arg, &mut ctx) }
-}
-
-/// Each method that is one operation over the server alone: its Rust name, return type
-/// and operation. `bool` and `int` returns narrow like C++.
-macro_rules! plain_methods {
-    ($(fn $name:ident() -> $r:ty = $op:ident;)*) => {$(
-        #[doc = concat!("`Server::", stringify!($name), "`.")]
-        pub fn $name(serv: view::Server<'_>) -> $r {
-            Narrow::narrow(run_on(serv, $op, 0))
-        }
-    )*};
-}
-
-/// A method's C++ return type, from the runner's `i64`.
-trait Narrow {
-    fn narrow(value: i64) -> Self;
-}
-
-impl Narrow for () {
-    fn narrow(_: i64) {}
-}
-
-impl Narrow for bool {
-    fn narrow(value: i64) -> bool {
-        value != 0
-    }
-}
-
-impl Narrow for c_int {
-    fn narrow(value: i64) -> c_int {
-        value.c_cast::<c_int>()
-    }
-}
-
-impl Narrow for u32 {
-    fn narrow(value: i64) -> u32 {
-        value.c_cast::<u32>()
-    }
-}
-
-plain_methods! {
-    fn start() -> c_int = RUN_START;
+/// `Server::start()`.
+#[must_use]
+pub fn start(serv: view::Server<'_>) -> c_int {
+    crate::startup::start(serv)
 }
 
 /// `Server::start_check()`.
@@ -128,7 +55,7 @@ pub fn create(serv: view::Server<'_>) -> c_int {
 /// `Server::destroy()`: nothing before the server is created.
 pub fn destroy(serv: view::Server<'_>) {
     if !serv.config().factory_.is_null() {
-        run_on(serv, RUN_DESTROY, 0);
+        crate::startup::destroy(serv);
     }
 }
 
@@ -151,19 +78,13 @@ pub fn destroy_running(serv: view::Server<'_>) {
 }
 
 /// `Server::start_master_thread(reactor)`, on the master's reactor.
-#[cfg_attr(
-    test,
-    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
-)]
+#[cfg(all(feature = "upstream-symbols", not(test)))]
 #[must_use]
 pub(crate) fn start_master_thread(
     serv: view::Server<'_>,
     reactor: crate::reactor_handle::Reactor,
 ) -> c_int {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.reactor = reactor.ptr();
-    // SAFETY: the live server and its master's live reactor, lent for the call.
-    c_int::narrow(unsafe { run(RUN_START_MASTER_THREAD, 0, &mut ctx) })
+    crate::startup::start_master_thread(serv, reactor)
 }
 
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
@@ -297,7 +218,7 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 /// Arms the master timer on this thread, the master's: each second it runs
 /// `Server::timer_callback` over `serv`. The timer's node, or null.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut c_void {
+pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut core::ffi::c_void {
     let serv = serv.raw();
     swoole_rs_timer::add_fn(1000, true, move || {
         // SAFETY: the server that armed its master timer, on its own thread; it
@@ -340,11 +261,7 @@ pub use crate::dispatch::sendfile;
 /// `serv->reactor_thread_barrier.wait()`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
-    run_on(
-        serv,
-        crate::ops::RUN_NATIVE_OP,
-        crate::ops::OP_REACTOR_BARRIER.into(),
-    );
+    swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, false));
 }
 
 /// `Server::get_package_max_length(conn)`, over the fd of one of `serv`'s connections.
@@ -445,12 +362,9 @@ pub fn swr_v1_server_command_result(serv: view::Server<'_>, request_id: i64, mes
 mod tests {
     use super::*;
     use crate::records::ConnectionRecord;
+    use core::ffi::c_void;
 
-    pub(super) unsafe fn fake(_op: u32, _arg: u64, _ctx: &mut NativeContext<'_>) -> i64 {
-        0
-    }
-
-    /// A server whose state and config are null: the fake runner reads neither.
+    /// A server whose state and config are null: the methods under test read neither.
     static FAKE: [usize; 2] = [0; 2];
 
     fn fake_serv() -> *mut c_void {

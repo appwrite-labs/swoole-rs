@@ -12,6 +12,56 @@ use crate::commands::CommandSend;
 use crate::port_config::PortConfig;
 use crate::view::Server;
 
+/// A step of the server's start, master thread or destroy that runs what only the
+/// hybrid links.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// The logger's output, or stdout, redirected, then `swoole_daemon(0, 1)`.
+    Daemon,
+    /// `factory_->start()`.
+    FactoryStart,
+    /// `port->init_protocol()` of each port.
+    InitProtocols,
+    /// `start_reactor_processes()`.
+    StartBase,
+    /// `start_reactor_threads()`.
+    StartProcess,
+    /// `swoole_timer_reinit()` when the timer is detached.
+    TimerReinit,
+    /// `swoole_signal_set(signo, nullptr)`.
+    Ignore(c_int),
+    /// `swoole_signal_set(signo, master_signal_handler)`.
+    Handle(c_int),
+    /// The master reactor's `SW_FD_PIPE` reads are command results.
+    CommandHandler,
+    /// The master's timer: fails when it can't be added.
+    MasterTimer,
+    /// `swoole_event_free()`.
+    EventFree,
+    /// `swoole_event_wait()`.
+    EventWait,
+    /// `reactor_thread_barrier.wait()`.
+    ReactorBarrier,
+    /// `gs->manager_barrier.wait()`.
+    ManagerBarrier,
+    /// `join_reactor_thread()`.
+    JoinReactorThreads,
+    /// `factory_->shutdown()`.
+    FactoryShutdown,
+    /// The message bus frees its buffer.
+    ReleasePipeBuffers,
+    /// `port->close()` of each port.
+    ClosePorts,
+    /// `swoole_signal_clear()`.
+    ClearSignals,
+    /// `destroy_process_factory()`.
+    DestroyProcessFactory,
+    /// `gs->task_workers.destroy()`.
+    DestroyTaskPool,
+    /// `delete factory_`.
+    DeleteFactory,
+}
+
 /// What the hybrid links. Each default is a build without it: the reactor threads
 /// take a new connection, and the rest is fatal, as no such server can start.
 pub(crate) trait Hybrid: Sync {
@@ -144,6 +194,11 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// Runs `step`: negative when it failed, else 0 or what it returns.
+    fn step(&self, _serv: Server<'_>, _step: Step) -> c_int {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -216,10 +271,17 @@ pub(crate) mod tests {
         /// The IPC mode's code and whether the pool listens.
         TaskPool(u8, bool),
         TaskWorkers,
+        Step(Step),
     }
 
     thread_local! {
         static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
+        static FAILING: core::cell::Cell<Option<Step>> = const { core::cell::Cell::new(None) };
+    }
+
+    /// The step this thread's tests make fail, until the next call.
+    pub(crate) fn fail(step: Option<Step>) {
+        FAILING.set(step);
     }
 
     /// The calls this thread's tests made, oldest first, which it forgets.
@@ -341,6 +403,11 @@ pub(crate) mod tests {
 
         fn task_workers(&self, _: Server<'_>) -> bool {
             hear(Call::TaskWorkers)
+        }
+
+        fn step(&self, _: Server<'_>, step: Step) -> c_int {
+            hear(Call::Step(step));
+            if FAILING.get() == Some(step) { -1 } else { 0 }
         }
 
         /// A failed handshake.

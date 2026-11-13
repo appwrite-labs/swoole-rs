@@ -169,76 +169,6 @@ pub unsafe fn swr_v1_server_shared_init(
     counters.write(value)
 }
 
-/// Reads and updates the shared record ([`server_counters`]), ending every borrow before
-/// host callbacks.
-#[inline(always)]
-pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{
-        OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MAXFD, OP_MINFD,
-        OP_SESSION_ROUND, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
-        OP_ST_GS_CONCURRENCY_ZERO,
-    };
-    use core::sync::atomic::Ordering;
-    if !matches!(
-        op,
-        OP_IS_STARTED
-            | OP_LC_CLAIM_START
-            | OP_LC_START_TIME
-            | OP_MANAGER_PID
-            | OP_MAXFD
-            | OP_MINFD
-            | OP_SET_MINFD
-            | OP_SESSION_ROUND
-            | OP_ST_GS_CONCURRENCY_SUB
-            | OP_ST_GS_CONCURRENCY
-            | OP_ST_GS_CONCURRENCY_ZERO
-    ) {
-        return None;
-    }
-    // The fields each op reads follow the native owner's lifetime and synchronization.
-    let gs = server_counters(state)?;
-    Some(match op {
-        OP_IS_STARTED => u64::from(gs.start.load(Ordering::Relaxed)),
-        // One server starts.
-        OP_LC_CLAIM_START => u64::from(
-            gs.start
-                .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok(),
-        ),
-        OP_LC_START_TIME => {
-            let now = swoole_rs_corebase::time_now();
-            gs.start_time.store(now, Relaxed);
-            0
-        }
-        OP_MANAGER_PID => i64::from(gs.manager_pid.load(Relaxed)).cast_unsigned(),
-        // Native server code serializes fd-bound updates with its existing lock.
-        OP_MAXFD => i64::from(gs.max_fd()).cast_unsigned(),
-        OP_MINFD => i64::from(gs.min_fd()).cast_unsigned(),
-        OP_SET_MINFD => {
-            let value = core::ffi::c_int::from_ne_bytes(
-                u32::try_from(arg & u64::from(u32::MAX))
-                    .unwrap_or_default()
-                    .to_ne_bytes(),
-            );
-            gs.min_fd.store(value, Relaxed);
-            0
-        }
-        // Callers read the session round under the shared spin lock.
-        OP_SESSION_ROUND => gs.session_round.load(Relaxed).cast_unsigned(),
-        OP_ST_GS_CONCURRENCY_SUB => {
-            let sub = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
-            gs.concurrency.fetch_sub(sub, Ordering::SeqCst);
-            0
-        }
-        OP_ST_GS_CONCURRENCY => u64::from(gs.concurrency.load(Ordering::Relaxed)),
-        OP_ST_GS_CONCURRENCY_ZERO => {
-            gs.concurrency.store(0, Ordering::Relaxed);
-            0
-        }
-        _ => return None,
-    })
-}
-
 /// Initializes the native public default-construction view of a port counter record.
 ///
 /// # Safety
@@ -256,7 +186,6 @@ pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{OP_MINFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
     use crate::state::{free_state, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
     use swoole_rs_memory::members::Shm;
@@ -333,24 +262,22 @@ mod tests {
             assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);
             assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             counters.concurrency.store(7, Ordering::Relaxed);
-            let state = swr_v1_server_state_new();
-            (*(*state).config()).gs = gs;
             let pid = libc::fork();
             assert!(pid >= 0);
             if pid == 0 {
                 // Only lock-free atomics/plain loaned cells and _exit run after
                 // fork; no Rust allocation, callback, destructor or test assertion.
-                native_fact(&*state, OP_ST_GS_CONCURRENCY_SUB, 2);
-                native_fact(&*state, OP_SET_MINFD, 123);
+                counters.concurrency.fetch_sub(2, Ordering::SeqCst);
+                counters.min_fd.store(123, Relaxed);
                 libc::_exit(0);
             }
             let mut status = 0;
             assert_eq!(libc::waitpid(pid, &raw mut status, 0), pid);
             assert_eq!(status, 0);
-            assert_eq!(native_fact(&*state, OP_ST_GS_CONCURRENCY, 0), Some(5));
-            assert_eq!(native_fact(&*state, OP_MINFD, 0), Some(123));
-            (*(*state).config()).gs.free();
-            free_state(state);
+            assert_eq!(counters.concurrency.load(Relaxed), 5);
+            assert_eq!(counters.min_fd(), 123);
+            let mut gs = gs;
+            gs.free();
         }
     }
 }
