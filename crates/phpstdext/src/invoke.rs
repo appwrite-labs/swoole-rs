@@ -19,10 +19,9 @@ use swoole_rs_zend::{
     opcode::Handler,
     string,
     sys::{
-        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_compiled_function_find, swr_zend_efree,
-        swr_zend_function_find, swr_zend_push_nested_call, swr_zend_try_call_known,
-        swr_zend_zval_release, zend_execute_data, zend_function, zend_throw_error,
-        zend_zval_type_name, zval,
+        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_function_find,
+        swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
+        zend_execute_data, zend_function, zend_throw_error, zval,
     },
     value,
 };
@@ -41,20 +40,14 @@ struct CallInfo {
 static METHODS: [AtomicPtr<zend_function>; 3] = [const { AtomicPtr::new(ptr::null_mut()) }; 3];
 
 /// Look up the method dispatchers (MINIT).
-pub(crate) fn install() {
+pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
     for (slot, name) in METHODS.iter().zip([
         c"swoole_call_array_method",
         c"swoole_call_string_method",
         c"swoole_call_stream_method",
     ]) {
-        slot.store(compiled_function(name), Ordering::Relaxed);
+        slot.store(minit.compiled_function(name), Ordering::Relaxed);
     }
-}
-
-/// `zend::get_function(CG(function_table), name)`.
-pub(crate) fn compiled_function(name: &CStr) -> *mut zend_function {
-    // SAFETY: Zend copies nothing and reads `count_bytes()` bytes.
-    unsafe { swr_zend_compiled_function_find(name.as_ptr(), name.count_bytes()) }
 }
 
 /// The `INIT_METHOD_CALL` user opcode handler.
@@ -157,8 +150,7 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
     let outcome = match alias {
         None => {
-            // SAFETY: the receiver's live zval.
-            let kind = unsafe { zend_zval_type_name(&raw const info.this) };
+            let kind = Value::of(&mut info.this).type_name().as_ptr();
             let name = name.map_or(ptr::null_mut(), |name| string::val(name.as_ptr()));
             // SAFETY: printf arguments: two NUL-terminated strings.
             unsafe {
@@ -243,7 +235,7 @@ impl Wrapper {
     fn forward(&self, frame: &Call) {
         let mut target = self.function.load(Ordering::Relaxed);
         if target.is_null() {
-            target = compiled_function(self.name);
+            target = frame.php().compiled_function(self.name);
             self.function.store(target, Ordering::Relaxed);
         }
         let mut argv = arguments(&[], frame);

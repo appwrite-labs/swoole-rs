@@ -4,13 +4,14 @@
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::c_int;
+use std::mem::ManuallyDrop;
 use swoole_rs_clients::client::ClientRecord;
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::host::callable::Callable;
-use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval, sys};
+use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout};
 
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAX: usize = 8;
@@ -33,8 +34,9 @@ impl swoole_rs_phpswoole::length::PackageLength for Length {
 fn package_length(callable: &Callable, bytes: &[u8]) -> isize {
     // The call borrows the string, released when `data` drops.
     let data = Owned::string(ZString::new(bytes));
-    let mut retval = long_zval(0);
-    let called = callable.call(&mut [data.copy_value()], Some(Zval::of(&mut retval)), true);
+    // Released only once the call returned a result, as upstream releases it.
+    let retval = ManuallyDrop::new(Owned::long(0));
+    let called = callable.call(&mut [data.copy_value()], Some(&**retval), true);
     match called {
         Err(bailout) => {
             bailout.defer();
@@ -45,11 +47,9 @@ fn package_length(callable: &Callable, bytes: &[u8]) -> isize {
             -1
         }
         Ok(true) => {
-            let length = Zval::of(&mut retval).long();
-            // SAFETY: our reference to the result, released inside a trap.
-            bailout::defer(unsafe {
-                bailout::trap(sys::swr_zend_zval_release, (&raw mut retval).cast())
-            });
+            let length = retval.long();
+            // Our reference to the result: a destructor's bailout is deferred.
+            drop(ManuallyDrop::into_inner(retval));
             isize::try_from(length).unwrap_or(-1)
         }
     }

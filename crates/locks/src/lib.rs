@@ -330,8 +330,47 @@ impl Live<'_> {
         }
     }
 }
-/// An initialized lock of one kind (`Lock::Type`: rwlock 1, mutex 3, spinlock 5),
-/// in heap storage it owns or in process-shared storage it keeps for the
+/// `swoole::Lock::Type`, as far as this build has it: upstream's `HAVE_RWLOCK` (both
+/// platforms) and `HAVE_SPINLOCK` (Linux; macOS has no `pthread_spin_lock`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Kind {
+    RwLock = 1,
+    Mutex = 3,
+    #[cfg(target_os = "linux")]
+    Spin = 5,
+}
+
+impl Kind {
+    /// Every kind this build has.
+    pub const ALL: &[Self] = &[
+        Self::Mutex,
+        Self::RwLock,
+        #[cfg(target_os = "linux")]
+        Self::Spin,
+    ];
+
+    /// The kind of a `Lock::Type` code; None for a code no kind has, or one this
+    /// platform lacks.
+    #[must_use]
+    pub const fn from_code(code: i64) -> Option<Self> {
+        Some(match code {
+            1 => Self::RwLock,
+            3 => Self::Mutex,
+            #[cfg(target_os = "linux")]
+            5 => Self::Spin,
+            _ => return None,
+        })
+    }
+
+    /// The kind's `Lock::Type` code.
+    #[must_use]
+    pub const fn code(self) -> i64 {
+        self as i64
+    }
+}
+
+/// An initialized lock of one [`Kind`], in heap storage it owns or in process-shared storage it keeps for the
 /// program's life. pthread reports misuse (unlocking a lock this thread doesn't
 /// hold, destroying a held one) as an error code, as upstream's locks see it.
 #[derive(Debug)]
@@ -353,30 +392,29 @@ enum Held {
 
 impl Lock {
     /// The words [`shared`](Self::shared) needs for a lock of `kind`: a mutex's or
-    /// rwlock's with its attribute, or a spinlock's; 0 for a kind this platform lacks.
+    /// rwlock's with its attribute, or a spinlock's.
     #[must_use]
-    pub const fn words(kind: i32) -> usize {
+    pub const fn words(kind: Kind) -> usize {
         match kind {
-            3 => MUTEX_LOCK + MUTEX_ATTR,
-            1 => RW_LOCK + RW_ATTR,
+            Kind::Mutex => MUTEX_LOCK + MUTEX_ATTR,
+            Kind::RwLock => RW_LOCK + RW_ATTR,
             #[cfg(target_os = "linux")]
-            5 => 1,
-            _ => 0,
+            Kind::Spin => 1,
         }
     }
 
     /// A thread-private lock (`new Mutex(false)` and its rwlock and spinlock
-    /// twins); None for a kind this platform lacks, or when it can't be made.
+    /// twins); None when it can't be made.
     #[must_use]
-    pub fn private(kind: i32) -> Option<Self> {
+    pub fn private(kind: Kind) -> Option<Self> {
         match kind {
-            3 => {
+            Kind::Mutex => {
                 let mut mutex = Box::new(SharedMutex::new());
                 // Not `then_some`: dropping a `Lock` destroys it, and a failed init made none.
                 (init_mutex(&mut mutex.lock, &mut mutex.attr, 0) == 0)
                     .then(|| Self(Held::Mutex(mutex)))
             }
-            1 => {
+            Kind::RwLock => {
                 let mut rwlock = Box::new(RwLock {
                     lock: [const { AtomicU64::new(0) }; RW_LOCK],
                     attr: [const { AtomicU64::new(0) }; RW_ATTR],
@@ -385,11 +423,10 @@ impl Lock {
                     .then(|| Self(Held::RwLock(rwlock)))
             }
             #[cfg(target_os = "linux")]
-            5 => {
+            Kind::Spin => {
                 let mut spin = Box::new(Spin::new(0));
                 (pthread_spin_init(&mut spin, 0) == 0).then(|| Self(Held::Spin(spin)))
             }
-            _ => None,
         }
     }
 
@@ -397,29 +434,28 @@ impl Lock {
     /// None when `storage` is too small for `kind`, or the lock can't be made.
     /// The storage is exclusive, so no other lock re-initializes it while held.
     #[must_use]
-    pub fn shared(kind: i32, storage: &'static mut [AtomicU64]) -> Option<Self> {
+    pub fn shared(kind: Kind, storage: &'static mut [AtomicU64]) -> Option<Self> {
         match kind {
-            3 => {
+            Kind::Mutex => {
                 let (lock, attr) = storage.split_first_chunk_mut()?;
                 let lock: &'static mut Words<_> = lock;
                 (init_mutex(lock, attr.first_chunk_mut()?, 1) == 0)
                     .then_some(Self(Held::SharedMutex(lock)))
             }
-            1 => {
+            Kind::RwLock => {
                 let (lock, attr) = storage.split_first_chunk_mut()?;
                 let lock: &'static mut Words<_> = lock;
                 (init_rwlock(lock, attr.first_chunk_mut()?, 1) == 0)
                     .then_some(Self(Held::SharedRwLock(lock)))
             }
             #[cfg(target_os = "linux")]
-            5 => {
+            Kind::Spin => {
                 let word: *mut AtomicU64 = storage.first_mut()?;
                 // SAFETY: the first bytes of an exclusive word that lives for the program,
                 // which has a spinlock's size and alignment to spare.
                 let spin = unsafe { &mut *word.cast::<Spin>() };
                 (pthread_spin_init(spin, 1) == 0).then_some(Self(Held::SharedSpin(spin)))
             }
-            _ => None,
         }
     }
 
@@ -561,8 +597,8 @@ macro_rules! atomic_api {
 atomic_api!(swr_v1_locks_atomic32, AtomicU32, u32);
 atomic_api!(swr_v1_locks_atomic64, AtomicI64, i64);
 
-/// `swoole::Barrier` (`native/locks/swoole_lock.h`), whose methods are these exports under
-/// their C++ symbols. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
+/// Upstream's `swoole::Barrier`, made, awaited and destroyed by [`barrier_init`],
+/// [`barrier_wait`] and [`barrier_destroy`]. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
 /// (glibc and musl have `pthread_barrier_init`); macOS keeps the arrival/count words.
 /// The pthread barrier and its attribute are kept as atomic words only to be aligned,
 /// `Sync` storage that pthread alone reads and writes. Nothing here makes a `Barrier`:
@@ -617,8 +653,7 @@ unsafe extern "C" {
 
 /// `Barrier::init(bool shared, int count)`. Shared attrs are initialized before
 /// `setpshared`, fixing upstream's use of an uninitialized attribute.
-#[unsafe(export_name = "_ZN6swoole7Barrier4initEbi")]
-pub extern "C" fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
+pub fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
     #[cfg(target_os = "linux")]
     {
         barrier.shared.store(shared, Ordering::Relaxed);
@@ -644,8 +679,7 @@ pub extern "C" fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
 }
 
 /// `Barrier::wait()`.
-#[unsafe(export_name = "_ZN6swoole7Barrier4waitEv")]
-pub extern "C" fn barrier_wait(barrier: &Barrier) {
+pub fn barrier_wait(barrier: &Barrier) {
     #[cfg(target_os = "linux")]
     pthread_barrier_wait(barrier);
     #[cfg(not(target_os = "linux"))]
@@ -659,8 +693,7 @@ pub extern "C" fn barrier_wait(barrier: &Barrier) {
 }
 
 /// `Barrier::destroy()`.
-#[unsafe(export_name = "_ZN6swoole7Barrier7destroyEv")]
-pub extern "C" fn barrier_destroy(barrier: &Barrier) {
+pub fn barrier_destroy(barrier: &Barrier) {
     #[cfg(target_os = "linux")]
     {
         // The barrier is initialized, has no waiters and is destroyed once.
@@ -815,7 +848,7 @@ mod tests {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
         assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), 0);
         assert_eq!(lock.unlock(), 0);
-        assert!(super::Lock::private(42).is_none(), "no such kind");
+        assert_eq!(super::Kind::from_code(42), None, "no such kind");
         // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
         let short = Box::into_raw(Box::new([AtomicU64::new(0)]));
         assert!(
@@ -827,16 +860,16 @@ mod tests {
 
     // What configure finds: Linux has pthread_mutex_timedlock and pthread_rwlock_timed*.
     const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
-    const RW_LOCK: i32 = 1;
-    const MUTEX: i32 = 3;
+    const RW_LOCK: super::Kind = super::Kind::RwLock;
+    const MUTEX: super::Kind = super::Kind::Mutex;
     #[cfg(target_os = "linux")]
-    const SPIN_LOCK: i32 = 5;
+    const SPIN_LOCK: super::Kind = super::Kind::Spin;
 
     // A private lock, or a shared one in a page of its own, which survives fork as
     // sw_mem_pool's does and is never unmapped.
     struct Lock(super::Lock);
     impl Lock {
-        fn new(kind: i32, shared: bool) -> Self {
+        fn new(kind: super::Kind, shared: bool) -> Self {
             let lock = if shared {
                 let words = super::Lock::words(kind);
                 assert!(words * size_of::<AtomicU64>() <= 4096);

@@ -15,6 +15,7 @@ use swoole_rs_process::worker_record::Worker as Record;
 use swoole_rs_process::worker_record::WorkerType;
 
 use crate::objects::{Reactor, worker_pipe};
+pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
 use swoole_rs_corebase::CoreAllocator;
@@ -45,31 +46,13 @@ use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
-/// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`,
-/// and the `Channel` flags.
+/// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
 const FD_PIPE: c_int = 3;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const TIMEOUT_READ: c_int = 4;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
-const PRIORITY_TRY_EXIT: c_int = 4;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
-
-/// A pool's message bus: the Rust bus, then the allocator its packets and buffer
-/// come from. crates/process and crates/phpprocess read both through `message_bus`.
-#[repr(C)]
-struct PoolBus {
-    bus: Box<MessageBus>,
-    allocator: *const CoreAllocator,
-}
-
-/// `SwooleG.std_allocator`.
-pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
-    malloc: Some(libc::malloc),
-    calloc: Some(libc::calloc),
-    realloc: Some(libc::realloc),
-    free: Some(libc::free),
-};
 
 /// The pool every hook here runs over. Each entry point makes it once: from the
 /// [`PoolCall`] crates/process hands it, or, in a callback C holds, from the pool
@@ -117,7 +100,7 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 // ---------------------------------------------------------------- message bus
 
-fn bus_of(pool: Pool<'_>) -> crate::objects::Bus {
+fn bus_of(pool: Pool<'_>) -> crate::objects::Bus<'_> {
     // SAFETY: the pool's bus, which `Op::NewMessageBus` made.
     unsafe { crate::objects::Bus::of(pool.message_bus()) }
 }
@@ -207,11 +190,7 @@ fn new_message_bus() -> *mut c_void {
 pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
     let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
     bus.count_ids(counter);
-    let bus = PoolBus {
-        bus,
-        allocator: &raw const STD_ALLOCATOR,
-    };
-    Box::into_raw(Box::new(bus)).cast()
+    Box::into_raw(Box::new(PoolBus::std(bus))).cast()
 }
 
 fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
@@ -262,9 +241,9 @@ fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
     let pair = Box::into_raw(built);
     // SAFETY: `Op::NewPipes` made the list.
     unsafe { &mut *pool.pipes().cast::<Pipes>() }.push(pair);
-    worker.set_pipe_master(master.cast());
-    worker.set_pipe_worker(end.cast());
-    worker.set_pipe_object(pair.cast());
+    // SAFETY: the two ends of the pair the pool's list now owns until `free_pipes`,
+    // in the pool's `destroy`, after which this process sends to its workers no more.
+    unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
     1
 }
 
@@ -509,7 +488,10 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             // SAFETY: the worker of the loop this thread runs, which outlives the
             // loop's end callback, the one reader.
             EXITING.set(Some(unsafe { Record::new(worker.raw()) }));
-            swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, worker_exit);
+            swoole_rs_reactor::swr_v1_event_set_end_callback(
+                swoole_rs_reactor::Priority::TryExit,
+                worker_exit,
+            );
             0
         }
         Op::DontRestart => {

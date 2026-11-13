@@ -81,7 +81,7 @@ pub(crate) mod host {
     pub(crate) fn current() -> *mut c_void {
         ptr::null_mut()
     }
-    pub(crate) unsafe fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
+    pub(crate) fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
         false
     }
     pub(crate) unsafe fn resume(_co: *mut c_void) {}

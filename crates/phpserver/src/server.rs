@@ -11,7 +11,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_server::{Connection, SharedServer, server_methods, view};
+use swoole_rs_server::{Connection, DispatchMode, SharedServer, TaskIpcMode, server_methods, view};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Minit, Value, report,
     sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_class_entry},
@@ -633,8 +633,6 @@ const STATS: [&CStr; 19] = [
     c"min_fd",
     c"max_fd",
 ];
-/// `Server::TASK_IPC_UNIXSOCK`.
-const TASK_IPC_UNIXSOCK: u8 = 1;
 
 fn stats(call: &Call) {
     let Some(serv) = running(call) else { return };
@@ -674,9 +672,11 @@ fn stats(call: &Call) {
         call.add_assoc_long(c"worker_dispatch_count", dispatch);
         call.add_assoc_long(c"worker_concurrency", concurrency);
     }
-    let stat = (config.task_ipc_mode.get() > TASK_IPC_UNIXSOCK)
-        .then(|| serv.task_pool_ref().queue_stat())
-        .flatten();
+    let stat = (config
+        .task_ipc()
+        .is_some_and(|mode| mode != TaskIpcMode::UnixSock))
+    .then(|| serv.task_pool_ref().queue_stat())
+    .flatten();
     if let Some((num, bytes)) = stat {
         // (zend_long) of each count, as upstream.
         call.add_assoc_long(c"task_queue_num", num.cast_signed() as i64);
@@ -784,10 +784,6 @@ fn get_socket(call: &Call) {
     }
 }
 
-/// `Server::DISPATCH_UIDMOD` and `DISPATCH_CO_CONN_LB`.
-const DISPATCH_UIDMOD: u8 = 5;
-const DISPATCH_CO_CONN_LB: u8 = 8;
-
 fn get_client_info(call: &Call) {
     let Some(serv) = running(call) else { return };
     let parsed = call.arity(1, 3).and_then(|()| {
@@ -800,19 +796,22 @@ fn get_client_info(call: &Call) {
     let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
-    let dispatch_mode = serv.config().dispatch_mode.get();
+    let dispatch_mode = serv.config().dispatch();
     call.set_array();
-    if conn.uid() > 0 || dispatch_mode == DISPATCH_UIDMOD {
+    if conn.uid() > 0 || dispatch_mode == Some(DispatchMode::UidMod) {
         call.add_assoc_long(c"uid", i64::from(conn.uid()));
     }
-    if conn.worker_id() > 0 || dispatch_mode == DISPATCH_CO_CONN_LB {
+    if conn.worker_id() > 0 || dispatch_mode == Some(DispatchMode::CoConnLb) {
         call.add_assoc_long(c"worker_id", i64::from(conn.worker_id()));
     }
     if serv
         .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_websocket_protocol.get())
     {
-        call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status()));
+        call.add_assoc_long(
+            c"websocket_status",
+            i64::from(conn.websocket_status().code()),
+        );
     }
     conn.with_client_cert(|cert| call.add_assoc_stringl(c"ssl_client_cert", cert));
     if let Some(server_socket) = serv.at(conn.server_fd()) {

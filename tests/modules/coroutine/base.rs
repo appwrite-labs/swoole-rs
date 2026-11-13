@@ -217,8 +217,7 @@ impl View {
         self.co().resume_code == RC_TIMEDOUT
     }
     fn yield_(&self) {
-        // SAFETY: the running coroutine.
-        unsafe { swoole_rs_coroutine::suspend(self.0.cast()) };
+        swoole_rs_coroutine::suspend(self.0.cast());
     }
     fn yield_ex(&self, timeout: f64) -> bool {
         // SAFETY: as above.

@@ -24,8 +24,8 @@ const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c
 #[must_use]
 pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
     let workers = serv.workers();
-    let registry = serv.config().registry();
-    // SAFETY: the server's live arrays and registry.
+    let registry = serv.config().worker_registry.as_deref();
+    // SAFETY: the server's live arrays.
     unsafe { swr_v1_process_server_worker_by_pid(&workers, registry, pid) }
 }
 

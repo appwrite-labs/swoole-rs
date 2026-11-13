@@ -10,8 +10,8 @@
 
 #include <unistd.h>
 
-uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name, size_t length) {
-    zend_property_info *info = zend_hash_str_find_ptr(&ce->properties_info, name, length);
+uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name) {
+    zend_property_info *info = zend_hash_str_find_ptr(&ce->properties_info, name, strlen(name));
     return info ? info->offset : 0;
 }
 

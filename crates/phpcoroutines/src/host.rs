@@ -22,7 +22,7 @@ pub(crate) struct Stats {
     pub(crate) coroutine_num: i64,
     pub(crate) coroutine_peak_num: i64,
     pub(crate) coroutine_last_cid: i64,
-    pub(crate) iouring: u8,
+    pub(crate) iouring: bool,
     pub(crate) iouring_task_num: i64,
     pub(crate) iouring_sq_usage_percent: i64,
     pub(crate) iouring_waiting_task_num: i64,
@@ -193,7 +193,7 @@ pub(crate) fn by_cid(cid: c_long) -> Co {
 fn task(co: Co) -> Option<Ctx> {
     let task = live_or_none(state(co))?.task;
     // SAFETY: a coroutine's task is null or its context, set by `context::open`
-    // and live until `context::on_close`, which runs as the coroutine ends.
+    // and live until the close callback (`context::on_swap`), which runs as the coroutine ends.
     unsafe { Ctx::of(task) }
 }
 
@@ -259,7 +259,7 @@ fn iouring_stats(stats: &mut Stats) {
     let Some((tasks, waiting, percent)) = swoole_rs_hooks::iouring::stats() else {
         return;
     };
-    stats.iouring = 1;
+    stats.iouring = true;
     stats.iouring_task_num = i64::from(tasks);
     let percent = percent.c_cast::<i64>();
     stats.iouring_sq_usage_percent = percent;
@@ -301,7 +301,7 @@ pub(crate) fn origin_cid(co: Co) -> c_long {
     live_or_none(live(co).origin).map_or(-1, |origin| origin.cid)
 }
 
-pub(crate) fn state_of(co: Co) -> c_int {
+pub(crate) fn state_of(co: Co) -> swoole_rs_coroutine::State {
     live(co).state
 }
 
@@ -316,12 +316,10 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
     (stack.cast(), size)
 }
 
-/// Switch out of `co`, the running coroutine. The caller's frames must own
-/// nothing that needs a drop, as for [`resume`].
+/// Switch out of `co`, the running coroutine. What the caller's frames own is
+/// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
 pub(crate) fn yield_(co: Co) {
-    // SAFETY: this thread's running coroutine; its frames own nothing that
-    // needs a drop, as this function's contract says.
-    unsafe { swoole_rs_coroutine::suspend(co) };
+    swoole_rs_coroutine::suspend(co);
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -332,9 +330,7 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 /// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
 /// `RC_CANCELED` or another when resumed).
 pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
-    // SAFETY: callers pass the running coroutine, and their frames own nothing
-    // that needs a drop (as for `yield_`).
-    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
+    swoole_rs_coroutine::yield_timed(co, timeout)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
@@ -381,7 +377,7 @@ impl Coroutine {
     #[must_use]
     pub fn is_suspending(self) -> Option<bool> {
         self.live()
-            .map(|co| state_of(co) == swoole_rs_coroutine::STATE_WAITING)
+            .map(|co| state_of(co) == swoole_rs_coroutine::State::Waiting)
     }
 
     /// Wake it from a wait: `Coroutine::resume()`, or `cancel()` so its yield
@@ -401,7 +397,7 @@ impl Coroutine {
 }
 
 /// `co->yield()` of the running coroutine, until it is woken; nothing outside
-/// one. As [`yield_`], the caller's frames must own nothing that needs a drop.
+/// one. As [`yield_`], what the caller's frames own is leaked if nothing wakes it.
 pub fn suspend() {
     let co = current();
     if !co.is_null() {
@@ -460,7 +456,7 @@ pub(crate) fn is_canceled(co: Co) -> bool {
 /// `co->is_end()`: a context that ended is closed and freed before anything
 /// else runs, so a live coroutine has ended only while it closes.
 pub(crate) fn is_end(co: Co) -> bool {
-    state_of(co) == swoole_rs_coroutine::STATE_END
+    state_of(co) == swoole_rs_coroutine::State::End
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
@@ -674,9 +670,6 @@ pub(crate) fn set_dns_cache_capacity(capacity: c_long) {
     swoole_rs_hooks::dns_cache::swr_v1_hook_dns_cache_capacity(capacity);
 }
 
-/// `Reactor::EXIT_CONDITION_USER_AFTER_DEFAULT`.
-const EXIT_CONDITION_USER_AFTER_DEFAULT: c_int = 1000;
-
 /// Install (`set`) or clear this thread's reactor's user exit condition,
 /// which calls `Co::set`'s `exit_condition`; nothing without a reactor.
 pub(crate) fn set_exit_condition(set: bool) {
@@ -685,10 +678,12 @@ pub(crate) fn set_exit_condition(set: bool) {
     }
     if set {
         swoole_rs_reactor::swr_v1_event_set_exit_condition(
-            EXIT_CONDITION_USER_AFTER_DEFAULT,
+            swoole_rs_reactor::ExitCondition::UserAfterDefault,
             crate::scheduler::reactor_can_exit,
         );
     } else {
-        swoole_rs_reactor::swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT);
+        swoole_rs_reactor::swr_v1_event_remove_exit_condition(
+            swoole_rs_reactor::ExitCondition::UserAfterDefault,
+        );
     }
 }

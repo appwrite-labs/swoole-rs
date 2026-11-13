@@ -28,10 +28,9 @@ use swoole_rs_zend::{
 pub(crate) type Holder = std::cell::Cell<Option<Ctx>>;
 
 /// A live `swoole::http::Context`: the only way to reach its state. Only
-/// [`Ctx::of`], whose callers promise the context lives as long as the handle
-/// or a copy is used, and [`alloc`] make one; an object holds one until it
-/// lets go of it. What is read and done over it is then safe, until [`free`]
-/// ends it.
+/// [`alloc`] makes one, of a fresh context; an object holds one until it lets
+/// go of it. What is read and done over it is then safe, until [`free`],
+/// whose callers promise no copy is used after, ends it.
 ///
 /// The handle is `Copy`, and a send can yield to a coroutine that reaches the
 /// same context through its objects, so a [`Ctx::state`] borrow ends before
@@ -41,14 +40,6 @@ pub(crate) type Holder = std::cell::Cell<Option<Ctx>>;
 pub struct Ctx(NonNull<Context>);
 
 impl Ctx {
-    /// The handle of a context.
-    /// # Safety
-    /// `ctx` is a live context, which starts with its `ContextState`, for as
-    /// long as the handle or a copy is used.
-    pub(crate) const unsafe fn of(ctx: NonNull<Context>) -> Self {
-        Self(ctx)
-    }
-
     /// The context the handle names.
     pub(crate) fn raw(self) -> *mut Context {
         self.0.as_ptr()
@@ -57,8 +48,9 @@ impl Ctx {
     /// The context's `ContextState`, its first base, for as long as the
     /// handle is borrowed.
     pub(crate) fn state(&mut self) -> &mut State {
-        // SAFETY: `of`'s contract: a live context, which starts with its
-        // `ContextState`; no other reference to it outlives a host call.
+        // SAFETY: `alloc`'s context, which starts with its `ContextState` and is
+        // live until `free` (whose callers use no copy after); no other
+        // reference to it outlives a host call.
         unsafe { self.0.cast::<State>().as_mut() }
     }
 
@@ -118,9 +110,9 @@ fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, offset: u32, fd: i64) {
     let Some(std) = new_object(slot, kind, ctx) else {
         return;
     };
-    // SAFETY: the declared property's slot, `OBJ_PROP(std, offset)`.
-    let property = unsafe { std.byte_add(offset as usize) }.cast::<zval>();
-    // SAFETY: a fresh object's property, holding nothing to release.
+    // The declared property's slot, `OBJ_PROP(std, offset)`.
+    let property = std.wrapping_byte_add(offset as usize).cast::<zval>();
+    // SAFETY: a fresh object's declared slot, holding nothing to release.
     unsafe { value::set(property, zend_value { lval: fd }, IS_LONG) };
 }
 
@@ -165,8 +157,8 @@ pub(crate) fn alloc() -> Ctx {
     // left it, and a null socket handle, which `socket` reads only once `bind`
     // set it), which `free` drops as a `Box<State>`.
     unsafe { state.write_bytes(0, 1) };
-    // SAFETY: the context just made, live until `free`.
-    unsafe { Ctx::of(state.cast()) }
+    // The context just made, live until `free`.
+    Ctx(state.cast())
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
@@ -440,7 +432,8 @@ pub(crate) fn release_objects(ctx: Ctx) -> Result<(), Bailout> {
 /// `Context::free`: release the context once neither object nor an HTTP/2
 /// stream holds it.
 /// # Safety
-/// `ctx` is a live context.
+/// No copy of the handle is used once this released the context: the caller's
+/// was the last hold on it, or another object or stream still has one.
 pub(crate) unsafe fn free(mut ctx: Ctx) {
     let state = ctx.state();
     if !state.request.zobject.ptr.is_null()

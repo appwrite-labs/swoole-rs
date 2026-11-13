@@ -385,14 +385,13 @@ impl TaskServer for Server {
 
     fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {
         // SAFETY: one of the server's workers, and the event's bytes.
-        unsafe {
-            pool::send_pipe_message(
-                self.get_worker(id),
-                ptr::from_ref(ev).cast(),
-                ev.size(),
-                flags,
+        let (worker, bytes) = unsafe {
+            (
+                Worker::new(self.get_worker(id)),
+                std::slice::from_raw_parts(ptr::from_ref(ev).cast::<u8>(), ev.size()),
             )
-        }
+        };
+        pool::send_pipe_message(worker, bytes, flags)
     }
 
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool {

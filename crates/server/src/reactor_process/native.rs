@@ -57,7 +57,8 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
     // `create` set the pool's `worker_num` to `count`, so these are the server's records.
     for (id, index) in (0u32..).zip(0..count) {
         if let Some(worker) = record.worker(index) {
-            worker.set_pool(pool.cast());
+            // SAFETY: the server's event pool, which lives as long as these records.
+            unsafe { worker.set_pool(pool_ref) };
             worker.set_id(id);
             worker.set_kind(WorkerType::Event.code());
         }
@@ -100,7 +101,7 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 
 /// The message the bus just read, by its kind; false, leaving it on the bus, when
 /// data comes from no known worker.
-fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
+fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
     let state = serv.state();
     let info = bus.head();
     match info.event() {
@@ -118,7 +119,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
         Some(ServerEvent::SendFile) => {
             // The bus's `PipeBuffer`: the message's head, then its data.
             let data = bus.buffer().wrapping_add(1).cast();
-            finish(state, SendData { info, data });
+            crate::factory::finish(serv, &SendData { info, data });
         }
         Some(ServerEvent::SendData) => {
             let workers = serv.workers();
@@ -131,13 +132,11 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
                 let mut info = info;
                 info.kind = ServerEvent::RecvData.code();
                 info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-                finish(
-                    state,
-                    SendData {
-                        info,
-                        data: packet.data,
-                    },
-                );
+                let send = SendData {
+                    info,
+                    data: packet.data,
+                };
+                crate::factory::finish(serv, &send);
             } else {
                 let m = format_args!("invalid worker_id={worker}");
                 swoole_rs_corebase::log::warning(c"ReactorProcess_onPipeRead", m);
@@ -145,7 +144,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
             }
         }
         Some(ServerEvent::Close | ServerEvent::CloseForward) => {
-            _ = crate::factory::end(state, info.fd, CLOSE_ACTIVELY);
+            _ = crate::factory::end(serv, info.fd, CLOSE_ACTIVELY);
         }
         Some(ServerEvent::CommandRequest) => {
             // The worker this process runs.
@@ -162,11 +161,6 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
         _ => {}
     }
     true
-}
-
-/// The factory finishes `send`.
-fn finish(state: &crate::ServerState, mut send: SendData) {
-    crate::factory::finish(state, (&raw mut send).cast());
 }
 
 /// The event `serv`'s bus just read, as its sender packed it: an `EventData`, its

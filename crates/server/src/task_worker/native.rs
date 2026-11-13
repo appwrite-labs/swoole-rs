@@ -72,10 +72,7 @@ fn server_of(pool: PoolRef<'_>) -> view::Server<'_> {
 /// its callbacks, its scheduling and its workers.
 pub(crate) fn init(serv: view::Server<'_>) -> bool {
     let config = serv.config();
-    let (mode, coroutine) = (
-        config.task_ipc_mode.get(),
-        config.task_enable_coroutine.get(),
-    );
+    let (mode, coroutine) = (config.task_ipc(), config.task_enable_coroutine.get());
     if !super::coroutines_allowed(mode, coroutine) {
         return false;
     }
@@ -304,15 +301,7 @@ pub fn finish(
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
-            // SAFETY: the source worker, live, and the packed result's bytes.
-            None => unsafe {
-                send_pipe_message(
-                    worker.raw(),
-                    buf.bytes().as_ptr(),
-                    buf.bytes().len(),
-                    PIPE_MASTER,
-                )
-            },
+            None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
         }
     } else {
         let slot = serv.config().task_results.as_ptr().cast::<u8>();

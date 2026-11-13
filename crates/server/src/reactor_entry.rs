@@ -10,7 +10,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::ThreadRecord;
 use crate::view;
 
 /// `swoole::RecvData`.
@@ -89,12 +88,6 @@ impl DgramPacket {
     }
 }
 
-/// `serv->get_thread(id)`.
-pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
-    let threads = state.tables_ref().reactor_threads;
-    threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
-}
-
 /// `reactor->ptr`, a server reactor's server.
 ///
 /// # Safety
@@ -166,7 +159,7 @@ pub unsafe extern "C-unwind" fn close_connection(
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
     let mut ctx = crate::reactor_ops::ReactorContext::new(serv, Some(reactor));
-    ctx.thread = thread(serv.state(), id);
+    ctx.thread = serv.state().tables_ref().reactor_thread(id);
     crate::thread_ops::shutdown(&ctx);
 }
 
@@ -238,7 +231,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     };
     let mode = state.config_ref().mode_;
     let dispatched = if mode == crate::Mode::Process {
-        crate::factory::dispatch(state, (&raw mut task).cast())
+        crate::factory::dispatch(server, &mut task)
     } else {
         if mode == crate::Mode::Base {
             // The reader's word that the payload is its whole receive buffer, which
@@ -254,7 +247,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         return -1;
     }
     if mode == crate::Mode::Process {
-        let thread = thread(state, usize::from(reactor_id)).cast::<ThreadRecord>();
+        // `serv->get_thread(id)`, unchecked.
+        let threads = state.tables_ref().reactor_threads_ptr();
+        let thread = threads
+            .cast::<crate::reactor_ops::ThreadRecord>()
+            .wrapping_add(usize::from(reactor_id));
         // SAFETY: the connection's live reactor thread.
         let count = unsafe { &(*thread).dispatch_count };
         count.set(count.get() + 1);

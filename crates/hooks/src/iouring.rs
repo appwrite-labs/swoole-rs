@@ -17,10 +17,8 @@ use swoole_rs_reactor::event_api::{
 };
 use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
 
-/// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
+/// `SW_EVENT_READ`.
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const EXIT_CONDITION_IOURING: c_int = 9;
-const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on the thread's reactor, whose destroy callback takes the instance.
@@ -65,9 +63,7 @@ fn instance() -> Option<Rc<Uring>> {
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
 fn suspend(co: *mut c_void, event: *mut c_void) {
-    // SAFETY: the running coroutine, suspended in `event`'s operation, whose
-    // frames own nothing with a destructor.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event)) };
+    swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event));
 }
 
 fn submit_failed() {
@@ -138,9 +134,15 @@ fn create() -> Iouring {
     let record = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int);
     let socket = Socket::new(Box::leak(Box::new(record)));
     iouring.socket = Some(socket);
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_reactor::ExitCondition::Iouring,
+        idle,
+    );
     swoole_rs_reactor::event_api::on_destroy(destroyed);
-    swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
+    swoole_rs_reactor::swr_v1_event_set_end_callback(
+        swoole_rs_reactor::Priority::IouringSubmit,
+        submit,
+    );
     if event_add(socket, EVENT_READ) < 0 {
         log::sys_error(
             origin,

@@ -10,20 +10,6 @@ bool swr_zend_array_is_list(const zend_array *array) {
     return zend_array_is_list((zend_array *) array);
 }
 
-void swr_zend_hash_foreach_kv(const HashTable *table,
-                              void (*each)(zend_string *key, zend_ulong index, zval *value, void *context),
-                              void *context) {
-    zend_string *key;
-    zend_ulong index;
-    zval *value;
-    ZEND_HASH_FOREACH_KEY_VAL((HashTable *) table, index, key, value) {
-        ZVAL_DEREF(value);
-        each(key, index, value, context);
-        if (swr_zend_guard_pending()) break;
-    }
-    ZEND_HASH_FOREACH_END();
-}
-
 /* ZEND_HASH_FOREACH's walk, one element per call: the next defined slot at or
  * after *position, which then points past it. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index) {
@@ -48,8 +34,8 @@ zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_st
     return NULL;
 }
 
-bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index) {
-    return _zend_handle_numeric_str(key, length, index);
+bool swr_zend_handle_numeric_str(const zend_string *key, zend_ulong *index) {
+    return _zend_handle_numeric_str(ZSTR_VAL(key), ZSTR_LEN(key), index);
 }
 
 zend_long swr_zend_dval_to_lval_safe(double value) {
@@ -57,7 +43,7 @@ zend_long swr_zend_dval_to_lval_safe(double value) {
 }
 
 zend_long swr_zend_resource_handle(const zval *value) {
-    return Z_RES_HANDLE_P(value);
+    return Z_TYPE_P(value) == IS_RESOURCE ? Z_RES_HANDLE_P(value) : 0;
 }
 
 uint8_t swr_zend_is_numeric_string(const char *text, size_t length, zend_long *lval, double *dval) {

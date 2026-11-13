@@ -1,12 +1,37 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! typed property updates.
-use crate::sys::{
-    module_registry, time_t, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find,
-    zend_object, zval,
+use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zend_object, zval};
+use std::{
+    ffi::{CStr, c_char},
+    marker::PhantomData,
+    ptr::NonNull,
 };
-use std::ffi::CStr;
+
+/// A NUL-terminated C string borrowed for `'a`: a `&CStr` one pointer wide, as
+/// C takes and returns one, for the `safe fn` declarations over such strings.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+
+impl<'a> From<&'a CStr> for CText<'a> {
+    fn from(text: &'a CStr) -> Self {
+        Self(NonNull::from(text).cast(), PhantomData)
+    }
+}
+
+impl<'a> CText<'a> {
+    /// The string.
+    pub(crate) fn get(self) -> &'a CStr {
+        // SAFETY: made from a `&'a CStr`, or returned by a function declared to
+        // return a NUL-terminated string that lives for `'a`.
+        unsafe { CStr::from_ptr(self.0.as_ptr()) }
+    }
+}
 
 unsafe extern "C" {
+    /// Zend's table of loaded extensions, keyed by lowercase name: filled at
+    /// startup (and by `dl()`, on the thread running PHP) and only read here.
+    safe static module_registry: crate::Array;
     /// `tsrm_is_main_thread()`: TSRM reads its own per-thread flag, on any
     /// thread; `true` on a PHP without thread safety.
     safe fn swr_zend_tsrm_is_main_thread() -> bool;
@@ -51,10 +76,7 @@ pub const EMPTY_FCC: zend_fcall_info_cache = zeroed();
 /// loaded.
 #[must_use]
 pub fn module_loaded(name: &CStr) -> bool {
-    let registry = &raw mut module_registry;
-    // SAFETY: the registry lives for the process and is filled before any
-    // extension code runs; Zend reads `name` only.
-    !unsafe { zend_hash_str_find(registry, name.as_ptr(), name.count_bytes()) }.is_null()
+    module_registry.find(name.to_bytes()).is_some()
 }
 
 /// `tsrm_is_main_thread()`: whether this is the thread that started PHP, always

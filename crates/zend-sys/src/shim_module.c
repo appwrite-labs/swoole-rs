@@ -24,18 +24,6 @@ int swr_zend_try_hook(void (*hook)(void)) {
     return bailed;
 }
 
-int swr_zend_try_minit(void (*hook)(int module_number), int module_number) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY {
-        hook(module_number);
-    }
-    SWR_ZEND_CATCH {
-        bailed = 1;
-    }
-    SWR_ZEND_END_TRY();
-    return bailed;
-}
-
 const char *swr_zend_sapi_name(void) {
     return sapi_module.name;
 }

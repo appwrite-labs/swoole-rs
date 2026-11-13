@@ -153,9 +153,7 @@ mod native {
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
     pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
         let event = if event == READ { READ } else { WRITE };
-        // SAFETY: the current coroutine, waiting on the live record, whose frames own
-        // nothing with a destructor.
-        unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event)) };
+        swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -510,16 +508,24 @@ impl Timer {
 /// direction resumes; an empty slot aborts, as upstream's unknown node does.
 pub(crate) fn timer_fired(socket: Co, event: u32) {
     set_err(socket, libc::ETIMEDOUT);
-    let co = socket.with_state(|state| {
+    socket.with_state(|state| {
         let [read, write] = &mut state.timers;
         let slot = if event == READ { read } else { write };
         if slot.is_null() {
             swoole_rs_corebase::fatal("a timeout fired with no timer armed");
         }
         *slot = ptr::null_mut();
-        state.co(event)
     });
-    // SAFETY: the coroutine bound for `event`, parked in its wait on this socket.
+    resume_bound(socket, event);
+}
+
+/// Resumes the coroutine bound to `socket` for `event`, if one is: a direction's
+/// coroutine is bound only while it is parked in its wait on the socket, which
+/// unbinds it as soon as it runs again.
+pub(crate) fn resume_bound(socket: Co, event: u32) {
+    let co = socket.with_state(|state| state.co(event));
+    // SAFETY: null, which resumes nothing, or the coroutine bound for `event`, parked
+    // in its wait on this socket.
     unsafe { (NATIVE.resume)(co) };
 }
 
@@ -877,7 +883,7 @@ mod tests {
             let mut socket = TestSocket::new();
             let mut ids = [5, 7];
             bind(&socket, bound, &mut ids);
-            socket.0.sock_fd = if state == 1 { -1 } else { 100 };
+            socket.0.sock_fd.set(if state == 1 { -1 } else { 100 });
             unsafe { socket.0.record() }.output.close_wait = state == 2;
             let target = socket.co();
             if closes {
@@ -888,7 +894,7 @@ mod tests {
             let mut expected = Vec::new();
             let mut closed = state == 1;
             if event != 0 {
-                let (_, _, effects) = upstream_bound(socket.0.sock_fd, bound, [5, 7], event);
+                let (_, _, effects) = upstream_bound(socket.0.sock_fd.get(), bound, [5, 7], event);
                 closed |= closes && effects.len() == 2;
                 expected = effects;
             }
@@ -904,14 +910,14 @@ mod tests {
             }
             let available = available(target, event);
             assert_eq!(
-                (available, socket.0.err_code, errno()),
+                (available, socket.0.err_code.get(), errno()),
                 (error == 0, error, error),
                 "scenario {}",
                 k + 72
             );
             assert_eq!(take(), expected, "scenario {}", k + 72);
             ON_BOUND.set(None);
-            socket.0.sock_fd = 100;
+            socket.0.sock_fd.set(100);
         }
     }
 
@@ -925,8 +931,8 @@ mod tests {
             let preset = [0, 9, -9][(k / 4) % 3];
             let system = [0, libc::EINVAL, libc::EAGAIN][k / 12];
             let mut socket = TestSocket::new();
-            socket.0.err_code = preset;
-            socket.0.err_msg = c"preset".as_ptr();
+            socket.0.err_code.set(preset);
+            socket.0.err_msg.set(c"preset".as_ptr());
             set_errno(system);
             take();
             // Upstream: set_err(0) after a success, set_err(errno) if no error is set.
@@ -938,7 +944,7 @@ mod tests {
                 None
             };
             check(socket.co(), result);
-            let message = unsafe { CStr::from_ptr(socket.0.err_msg) }
+            let message = unsafe { CStr::from_ptr(socket.0.err_msg.get()) }
                 .to_str()
                 .unwrap();
             let expected = set.map_or((preset, system, "preset", vec![]), |e| {
@@ -950,7 +956,7 @@ mod tests {
                 )
             });
             assert_eq!(
-                (socket.0.err_code, errno(), message, take()),
+                (socket.0.err_code.get(), errno(), message, take()),
                 expected,
                 "scenario {}",
                 k + 288
@@ -1033,17 +1039,17 @@ mod tests {
         let mut socket = TestSocket::new();
         set_errno(libc::EINVAL);
         check(socket.co(), -1);
-        assert_eq!(socket.0.err_code, libc::EINVAL);
+        assert_eq!(socket.0.err_code.get(), libc::EINVAL);
         assert_eq!(
-            unsafe { core::ffi::CStr::from_ptr(socket.0.err_msg) },
+            unsafe { core::ffi::CStr::from_ptr(socket.0.err_msg.get()) },
             c"native-error"
         );
         set_errno(libc::EAGAIN);
         check(socket.co(), -1);
-        assert_eq!(socket.0.err_code, libc::EINVAL);
+        assert_eq!(socket.0.err_code.get(), libc::EINVAL);
         check(socket.co(), 0);
-        assert_eq!((socket.0.err_code, errno()), (0, 0));
-        assert_eq!(unsafe { *socket.0.err_msg }, 0);
+        assert_eq!((socket.0.err_code.get(), errno()), (0, 0));
+        assert_eq!(unsafe { *socket.0.err_msg.get() }, 0);
         assert_eq!(take(), ["last-error:22", "last-error:0"]);
     }
 

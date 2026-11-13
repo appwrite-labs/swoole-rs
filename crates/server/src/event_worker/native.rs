@@ -1,7 +1,7 @@
 //! The event worker's native side: the events it receives from the message bus, its
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
-use crate::Mode;
+use crate::{DispatchMode, Mode};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
@@ -30,18 +30,13 @@ use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
-/// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`, `SW_PIPE_MASTER`.
-const PRIORITY_TRY_EXIT: c_int = 4;
-const PRIORITY_WORKER_CALLBACK: c_int = 6;
+/// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 /// `swGlobalHookType`'s worker and shutdown hooks.
 const HOOK_BEFORE_WORKER_START: c_int = 2;
 const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
 const HOOK_BEFORE_WORKER_STOP: c_int = 8;
-/// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
-const DISPATCH_CO_CONN_LB: u8 = 8;
-const DISPATCH_CO_REQ_LB: u8 = 9;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const INVALID_PARAMS: c_int = 505;
@@ -51,7 +46,7 @@ const SERVER_WORKER_EXIT_TIMEOUT: c_int = 9101;
 const SERVER_WORKER_UNPROCESSED_DATA: c_int = 9103;
 
 /// `serv->get_worker_message_bus()`.
-fn bus(serv: view::Server<'_>) -> Bus {
+fn bus(serv: view::Server<'_>) -> Bus<'_> {
     crate::master_ops::worker_message_bus(serv.state())
 }
 
@@ -126,7 +121,7 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
         Some(ServerEvent::RecvDgram) => run_task(serv, worker, info, ReceiveSlot::Packet),
         Some(ServerEvent::Close) => {
             free_client_cert(serv, info);
-            _ = crate::factory::end(state, info.fd, 0);
+            _ = crate::factory::end(serv, info.fd, 0);
         }
         Some(ServerEvent::Connect) => {
             if info.len > 0 {
@@ -335,16 +330,8 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         kind: ServerEvent::Shutdown.code(),
         ..DataHead::default()
     };
-    let data = (&raw const head).cast();
-    // SAFETY: one of the live server's workers, and the event.
-    let sent = unsafe {
-        swoole_rs_process::methods::send_pipe_message(
-            worker.raw(),
-            data,
-            size_of::<DataHead>(),
-            PIPE_MASTER,
-        )
-    };
+    let data = swoole_rs_process::process_pool::head_view(&head);
+    let sent = swoole_rs_process::methods::send_pipe_message(worker, data, PIPE_MASTER);
     sent != -1
 }
 
@@ -425,7 +412,10 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Thread => {}
     }
     reactor.handle().set_wait_exit(true);
-    swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
+    swoole_rs_reactor::swr_v1_event_set_end_callback(
+        swoole_rs_reactor::Priority::TryExit,
+        try_to_exit,
+    );
     let now = swoole_rs_corebase::time_now();
     with_globals(|globals| globals.exit_time.store(now, Relaxed));
     try_exit(serv, reactor);
@@ -645,12 +635,15 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
     }
     if matches!(
-        config.dispatch_mode.get(),
-        DISPATCH_CO_CONN_LB | DISPATCH_CO_REQ_LB
+        config.dispatch(),
+        Some(DispatchMode::CoConnLb | DispatchMode::CoReqLb)
     ) {
         COUNTED.set(worker.raw());
         let count = count_coroutines;
-        swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_WORKER_CALLBACK, count);
+        swoole_rs_reactor::swr_v1_event_set_end_callback(
+            swoole_rs_reactor::Priority::WorkerCallback,
+            count,
+        );
     }
     worker_start_callback(serv, worker);
     let rv = reactor.wait();
@@ -674,14 +667,13 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let Some(pipe) = pipe else {
         return -1;
     };
-    let (info, size) = (core::ptr::from_ref(head).cast(), size_of::<DataHead>());
+    let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         let write = swoole_rs_reactor::event_api::swoole_event_write;
-        // SAFETY: the live pipe, and the event of `size` bytes it carries.
-        unsafe { write(pipe.as_ptr().cast(), info, size) }
+        // SAFETY: the live pipe, and the event's bytes.
+        unsafe { write(pipe.as_ptr().cast(), info.as_ptr().cast(), info.len()) }
     } else {
-        // SAFETY: as above.
-        let event = unsafe { swoole_rs_reactor::Drain::from_raw(info, size) };
+        let event = swoole_rs_reactor::Drain::new(info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
     }
 }

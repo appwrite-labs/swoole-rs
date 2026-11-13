@@ -2,8 +2,11 @@
 use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
+use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
+
+use crate::reactor_ops::ThreadRecord;
 
 /// A shared session-table slot; reactor bits preserve the native reserved bits.
 #[repr(C)]
@@ -53,7 +56,7 @@ pub struct ConnectionRecord {
     pub last_send_time: f64,
     pub last_dispatch_time: f64,
     pub uid: u32,
-    pub websocket_status: u8,
+    pub websocket_status: WebSocketStatus,
     pub websocket_buffer: *mut c_void,
     pub ssl_client_cert: *mut c_void,
     pub ssl_client_cert_pid: c_int,
@@ -193,7 +196,7 @@ impl<'a> Connection<'a> {
     field!(last_send_time, set_last_send_time: f64);
     field!(last_dispatch_time, set_last_dispatch_time: f64);
     field!(uid, set_uid: u32);
-    field!(websocket_status, set_websocket_status: u8);
+    field!(websocket_status, set_websocket_status: WebSocketStatus);
     field!(websocket_buffer, set_websocket_buffer: *mut c_void);
     field!(ssl_client_cert, set_ssl_client_cert: *mut c_void);
     field!(ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
@@ -251,7 +254,12 @@ pub struct ServerTables {
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: core::sync::atomic::AtomicPtr<c_void>,
     pub reactor_pipe_num: u16,
-    pub reactor_threads: *mut c_void,
+    /// How many records `reactor_threads` holds, in the padding native code's view
+    /// leaves before it. Private with it: only [`Self::install_reactor_threads`] and
+    /// [`Self::take_reactor_threads`] write the pair.
+    reactor_thread_num: u16,
+    /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
+    reactor_threads: *mut c_void,
     /// `Server::ports`.
     pub ports: PortList,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus.
@@ -314,6 +322,57 @@ impl ServerTables {
     }
 }
 
+/// `offsetof(Server, reactor_threads)` in native code's view, for `layout`.
+pub(crate) const REACTOR_THREADS_OFFSET: usize =
+    core::mem::offset_of!(ServerTables, reactor_threads);
+
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the hybrid's factories make reactor threads")
+)]
+impl ServerTables {
+    /// `reactor_threads = threads`: the tables keep the array until
+    /// [`Self::take_reactor_threads`]. One already kept is leaked, so a record read
+    /// from it stays valid.
+    pub(crate) fn install_reactor_threads(&mut self, threads: Box<[ThreadRecord]>) {
+        let Ok(count) = u16::try_from(threads.len()) else {
+            swoole_rs_corebase::fatal("more reactor threads than a reactor id counts");
+        };
+        self.reactor_threads = Box::into_raw(threads).cast();
+        self.reactor_thread_num = count;
+    }
+
+    /// `delete[] reactor_threads`'s array, to drop: the tables forget it. Exclusive
+    /// access means no record lent by [`Self::reactor_thread`] is still borrowed.
+    pub(crate) fn take_reactor_threads(&mut self) -> Option<Box<[ThreadRecord]>> {
+        let threads = core::mem::replace(&mut self.reactor_threads, core::ptr::null_mut());
+        let count = usize::from(core::mem::take(&mut self.reactor_thread_num));
+        if threads.is_null() {
+            return None;
+        }
+        let threads = core::ptr::slice_from_raw_parts_mut(threads.cast::<ThreadRecord>(), count);
+        // SAFETY: the box of `count` records `install_reactor_threads` leaked, which
+        // the tables no longer name; only those two methods write the pair.
+        Some(unsafe { Box::from_raw(threads) })
+    }
+
+    /// `serv->get_thread(id)`: reactor thread `id`'s record, or `None` past the last
+    /// or before a factory made them.
+    pub(crate) fn reactor_thread(&self, id: usize) -> Option<&ThreadRecord> {
+        if id >= usize::from(self.reactor_thread_num) {
+            return None;
+        }
+        // SAFETY: within the live array of `reactor_thread_num` records
+        // `install_reactor_threads` leaked, which is freed only through `&mut self`.
+        Some(unsafe { &*self.reactor_threads.cast::<ThreadRecord>().wrapping_add(id) })
+    }
+
+    /// `serv->reactor_threads`, for the dispatch path's unchecked index.
+    pub(crate) fn reactor_threads_ptr(&self) -> *mut c_void {
+        self.reactor_threads
+    }
+}
+
 impl Default for ServerTables {
     fn default() -> Self {
         Self {
@@ -323,6 +382,7 @@ impl Default for ServerTables {
             max_connection: 0,
             enable_accept_timer: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
             reactor_pipe_num: 0,
+            reactor_thread_num: 0,
             reactor_threads: core::ptr::null_mut(),
             ports: PortList {
                 items: core::ptr::null(),

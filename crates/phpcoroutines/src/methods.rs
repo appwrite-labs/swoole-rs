@@ -155,8 +155,7 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
-    // SAFETY: the running coroutine; this frame owns nothing that needs a drop.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, cancel_yield) };
+    swoole_rs_coroutine::yield_with_cancel(co, cancel_yield);
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -435,7 +434,7 @@ fn stats(call: &Call) {
     for (key, value) in values {
         call.add_assoc_long(key, value);
     }
-    if stats.iouring != 0 {
+    if stats.iouring {
         call.add_assoc_long(c"iouring_task_num", stats.iouring_task_num);
         call.add_assoc_long(c"iouring_sq_usage_percent", stats.iouring_sq_usage_percent);
         call.add_assoc_long(c"iouring_waiting_task_num", stats.iouring_waiting_task_num);

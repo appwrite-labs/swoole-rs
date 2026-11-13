@@ -165,20 +165,6 @@ pub unsafe fn swr_v1_server_shared_init(
     counters.write(value)
 }
 
-/// Initializes the native public default-construction view of a port counter record.
-///
-/// # Safety
-/// `storage` is fresh writable storage of the record's size and alignment, without readers.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi::c_void) {
-    // SAFETY: the native public view lends fresh storage exclusively for initialization.
-    unsafe {
-        storage
-            .cast::<PortCounters>()
-            .write(PortCounters::default());
-    };
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,7 +176,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
-        use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
+        use crate::records::{ConnectionRecord, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
         let counters = gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: a fresh mapping of a whole `ServerCounters`.
@@ -219,12 +205,10 @@ mod tests {
         // SAFETY: a fresh state, its configuration and tables, all owned by this test.
         unsafe {
             (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::NULL);
-            *(*state).tables() = ServerTables {
-                connection_list: crate::records::tests::naming(&mut connections),
-                session_list: crate::records::tests::naming(&mut sessions),
-                max_connection: 3,
-                ..ServerTables::default()
-            };
+            let tables = &mut *(*state).tables();
+            tables.connection_list = crate::records::tests::naming(&mut connections);
+            tables.session_list = crate::records::tests::naming(&mut sessions);
+            tables.max_connection = 3;
             count_send(&*state, 1, 4);
             count_send(&*state, 0, 3);
         }

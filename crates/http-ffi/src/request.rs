@@ -33,20 +33,6 @@ pub struct HttpString {
     pub str: *mut u8,
 }
 
-impl HttpString {
-    /// The bytes before `length`.
-    ///
-    /// # Safety
-    /// `str` holds `length` initialized bytes while the slice lives.
-    unsafe fn bytes<'a>(&self) -> &'a [u8] {
-        if self.length == 0 || self.str.is_null() {
-            return &[];
-        }
-        // SAFETY: per the contract.
-        unsafe { core::slice::from_raw_parts(self.str, self.length) }
-    }
-}
-
 /// One effect of a test's host ([`HttpNative`]). Each reads only its arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -164,8 +150,7 @@ const BUFFER_SIZE_BIG: usize = 65536;
 /// A multipart body being streamed: upstream's `FormData`.
 pub struct HttpForm {
     /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
-    boundary: *const u8,
-    boundary_length: u32,
+    boundary: HttpSpan,
     parser: Option<MultipartParser>,
     /// The current upload's file, none between uploads.
     fp: Option<Upload>,
@@ -182,10 +167,10 @@ pub struct HttpForm {
 }
 
 impl HttpForm {
-    /// The `Content-Type` value after `multipart/form-data`, in the header buffer.
+    /// The `Content-Type` value after `multipart/form-data`: its span of the header buffer.
     #[must_use]
-    pub fn boundary(&self) -> (*const u8, u32) {
-        (self.boundary, self.boundary_length)
+    pub fn boundary(&self) -> &HttpSpan {
+        &self.boundary
     }
 
     /// The saved buffer's length, 0 before `init_multipart_parser` saves one.
@@ -266,8 +251,11 @@ impl HttpRequest {
         // SAFETY: a request is parsed only once native code gave it a live buffer,
         // which nothing else touches during the call.
         let buffer = unsafe { &mut *self.buffer };
-        // SAFETY: the buffer holds `length` initialized bytes.
-        let bytes = unsafe { buffer.bytes() };
+        if buffer.length == 0 || buffer.str.is_null() {
+            return (buffer, &[]);
+        }
+        // SAFETY: the buffer holds `length` initialized bytes at `str`.
+        let bytes = unsafe { core::slice::from_raw_parts(buffer.str, buffer.length) };
         (buffer, bytes)
     }
 
@@ -352,8 +340,11 @@ impl HttpRequest {
                 return;
             }
             self.form = Some(Box::new(HttpForm {
-                boundary: input.as_ptr().wrapping_add(boundary.offset),
-                boundary_length: u32::try_from(boundary.length).unwrap_or(u32::MAX),
+                boundary: HttpSpan {
+                    offset: boundary.offset,
+                    // Upstream keeps the length in a `uint32_t`.
+                    length: boundary.length.min(u32::MAX as usize),
+                },
                 parser: None,
                 fp: None,
                 saved: ptr::null_mut(),
@@ -477,13 +468,19 @@ impl HttpRequest {
         let Some(form) = r.form.as_deref() else {
             return false;
         };
-        // SAFETY: the boundary still points into the header buffer it was found in.
-        let text = unsafe { crate::bytes(form.boundary, form.boundary_length as usize) };
-        let Ok(Some(boundary)) = text.and_then(|text| swoole_rs_http::boundary(text, 0)) else {
+        // The header buffer the boundary was found in is still the request's.
+        let (buffer, input) = r.input();
+        let text = input
+            .get(form.boundary.offset..)
+            .and_then(|text| text.get(..form.boundary.length));
+        let Some(text) = text else {
+            return false;
+        };
+        let Ok(Some(boundary)) = swoole_rs_http::boundary(text, 0) else {
             return false;
         };
         let at = boundary.offset..boundary.offset + boundary.length;
-        let parser = MultipartParser::new(text.unwrap_or_default().get(at).unwrap_or_default());
+        let parser = MultipartParser::new(text.get(at).unwrap_or_default());
         let Some(form) = r.form.as_deref_mut() else {
             return false;
         };
@@ -500,7 +497,6 @@ impl HttpRequest {
             ) as *mut HttpString,
         };
         let header = r.header_length as usize;
-        let (buffer, input) = r.input();
         let rest = input.get(header..).unwrap_or_default();
         let saved = r.buffer;
         r.buffer = body;
@@ -1377,13 +1373,17 @@ mod tests {
 
     impl Fixture {
         fn new() -> Self {
-            let mut input = input(b"");
+            // The header buffer holds the boundary parameter, as the reactor's does.
+            let boundary = b"boundary=b";
+            let mut input = input(boundary);
             let mut request = Box::new(request(&mut input));
             request.max_length = u32::try_from(BUFFER_SIZE_BIG).unwrap();
-            let boundary = b"boundary=b";
+            request.header_length = u32::try_from(boundary.len()).unwrap();
             request.form = Some(Box::new(HttpForm {
-                boundary: boundary.as_ptr(),
-                boundary_length: u32::try_from(boundary.len()).unwrap(),
+                boundary: HttpSpan {
+                    offset: 0,
+                    length: boundary.len(),
+                },
                 parser: None,
                 fp: None,
                 saved: ptr::null_mut(),

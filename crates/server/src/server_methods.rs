@@ -91,9 +91,7 @@ pub(crate) fn start_master_thread(
 
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus) {
-    /// `Server::TASK_IPC_UNIXSOCK`.
-    const TASK_IPC_UNIXSOCK: u8 = 1;
+pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<'_>) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
@@ -101,7 +99,7 @@ pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus)
     let config = serv.config();
     let workers = config.worker_num.get();
     // Task workers have pipes only when they talk over unix sockets.
-    let task_pipes = config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK;
+    let task_pipes = config.task_ipc() == Some(crate::TaskIpcMode::UnixSock);
     let total = if task_pipes {
         workers + config.task_worker_num.get()
     } else {
@@ -206,7 +204,7 @@ pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
 
 pub use crate::dispatch::{add_port, add_systemd_socket};
 
-pub use crate::send::{send, send_parts, send_to_connection};
+pub use crate::send::{send, send_event_to_connection, send_parts, send_to_connection};
 
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
@@ -433,7 +431,14 @@ mod tests {
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.
-        workers[3].pipe_worker = (&raw mut pipe).cast();
+        // SAFETY: a live record, and a pipe socket that outlives every send below.
+        unsafe {
+            swoole_rs_process::worker_record::Worker::new(&raw mut workers[3]).set_pipes(
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                (&raw mut pipe).cast(),
+            );
+        }
         let state = crate::swr_v1_server_state_new();
         // SAFETY: a fresh state; the records above outlive every read below.
         let fields = unsafe {
@@ -502,9 +507,8 @@ mod tests {
 
         let mut pipe = 0_u8;
         let pipe: *mut c_void = (&raw mut pipe).cast();
-        worker.set_pipe_master((&raw mut master).cast());
-        worker.set_pipe_worker((&raw mut end).cast());
-        worker.set_pipe_object(pipe);
+        // SAFETY: two sockets that outlive the record's use below.
+        unsafe { worker.set_pipes(pipe, (&raw mut master).cast(), (&raw mut end).cast()) };
         store_pipe_fd(live.server(), worker);
         let tables = live.state().tables_ref();
         for fd in [5, 9] {

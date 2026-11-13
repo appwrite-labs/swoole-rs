@@ -1,7 +1,9 @@
 //! The C ABI's contracts: errors leave outputs alone, nulls and overflows are refused.
-use super::*;
 use crate::http_server::{get_method_string, get_status_message};
 use std::mem::MaybeUninit;
+
+const INVALID: i32 = -1;
+
 /// `swoole_rs_http::url_encode` into `output`, which holds only bytes.
 fn encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
     let slots: Vec<_> = output.iter().map(|&byte| MaybeUninit::new(byte)).collect();
@@ -105,13 +107,6 @@ fn multipart_exports_refuse_nulls_and_unterminated_scratch() {
         1
     );
     assert_eq!(swoole_rs_http::multipart_filename(&mut []), INVALID);
-    // A null span, as the removed exports' callers could pass, is refused where the
-    // remaining ones borrow it.
-    assert_eq!(
-        // SAFETY: a null span is refused before it is read.
-        unsafe { bytes(core::ptr::null(), 1) },
-        Err(INVALID)
-    );
     let mut missing_nul = *b"filename";
     assert_eq!(
         swoole_rs_http::multipart_filename(&mut missing_nul),

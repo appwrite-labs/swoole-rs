@@ -13,13 +13,13 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Event, Fill, Running, Socket};
-use swoole_rs_server::port_config::{self, PortConfig};
-use swoole_rs_server::static_select::swr_v1_server_static_select;
+use swoole_rs_server::port_config::PortConfig;
+use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
 
@@ -29,9 +29,6 @@ use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, r
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
-/// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
-const STATUS_HANDSHAKE: u8 = 2;
-const STATUS_ACTIVE: u8 = 3;
 /// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
 const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
@@ -54,24 +51,22 @@ struct Read<'a> {
     frames: bool,
 }
 
-/// `ListenPort::readable_callback_*` of `kind` on the reactor's `event`.
-///
+/// `ListenPort::readable_callback_*` of `kind` on the reactor's `event`: the server's
+/// connection read ([`crate::methods`]' callbacks are a port's `onRead` and nothing
+/// else), so the event is a readable one on a live connection of `port`, which only this
+/// reactor thread touches.
 /// # Safety
-/// The reactor's readable event on a live connection of the live `port`.
+/// `reactor` is the reactor of the server `port` belongs to, and `event` is a readable
+/// event on a live connection of that port.
 // Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
 // frame reads, measures and dispatches where five did (#3335).
 #[inline(always)]
 pub(crate) unsafe fn on_read(
-    reactor: *mut c_void,
-    port: *mut c_void,
-    event: *mut c_void,
+    reactor: Running<'_>,
+    port: view::Port<'_>,
+    event: &mut Event,
     kind: u32,
 ) -> c_int {
-    // SAFETY: as the caller guarantees, the reactor's event, lent for this call; its
-    // socket is the live connection socket, which only this reactor thread touches.
-    let event = unsafe { &mut *event.cast::<Event>() };
-    // SAFETY: as the caller guarantees, the live reactor on this thread.
-    let reactor = unsafe { Running::new(reactor) };
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
         return -1;
@@ -80,10 +75,10 @@ pub(crate) unsafe fn on_read(
     let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
     // The live reactor's `ptr` is its server.
     let serv = reactor.object();
-    // SAFETY: the reactor's live server, whose settings this thread only reads.
+    // SAFETY: a port is read only under its server's reactor, whose `ptr` is the live
+    // server; this thread only reads its settings.
     let server = unsafe { view::Server::from_raw(serv) };
-    // SAFETY: as the caller guarantees.
-    let port: &PortConfig = unsafe { port_config::of(port) };
+    let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),
         request: ptr::null_mut(),
@@ -97,8 +92,8 @@ pub(crate) unsafe fn on_read(
         frames: false,
     };
     if kind == ON_READ_HTTP {
-        read.frames =
-            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol.get();
+        read.frames = read.conn().websocket_status >= WebSocketStatus::Handshake
+            && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
     *event = read.event.get();
@@ -170,10 +165,8 @@ impl Read<'_> {
     #[inline(always)]
     fn framed<K: Packages>(&self, mode: Mode) -> i64 {
         let protocol = self.port.protocol.as_ptr().cast_const();
-        // SAFETY: the port's protocol, the live socket and the current buffer.
-        i64::from(unsafe {
-            framing_recv::receive::<K>(protocol, self.socket.as_ptr(), self.buffer, mode)
-        })
+        // SAFETY: the port's protocol and the current buffer.
+        i64::from(unsafe { framing_recv::receive::<K>(protocol, self.socket, self.buffer, mode) })
     }
 }
 
@@ -326,7 +319,7 @@ impl Connection for Read<'_> {
     fn upgrade(&mut self) -> Upgrade {
         let c = self.conn();
         Upgrade {
-            websocket: c.websocket_status >= STATUS_HANDSHAKE,
+            websocket: c.websocket_status >= WebSocketStatus::Handshake,
             upgraded: c.http_upgrade,
             http2_stream: c.http2_stream,
         }
@@ -334,7 +327,7 @@ impl Connection for Read<'_> {
 
     fn activate_websocket(&mut self) {
         let conn = self.conn();
-        conn.websocket_status = STATUS_ACTIVE;
+        conn.websocket_status = WebSocketStatus::Active;
         conn.http_upgrade = true;
     }
 
@@ -370,9 +363,11 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let request = self.conn().object.cast();
-        // SAFETY: the live server, the connection's request and the connection.
-        unsafe { swr_v1_server_static_select(self.server.raw(), request, self.conn) }
+        let conn = self.conn();
+        let (request, session) = (conn.object.cast::<HttpRequest>(), conn.session_id);
+        // SAFETY: the connection's live request; the handler's last send may close
+        // the connection and free it, and nothing here reads it afterwards.
+        unsafe { static_select(self.server, request, session, self.socket) }
     }
 
     #[inline]

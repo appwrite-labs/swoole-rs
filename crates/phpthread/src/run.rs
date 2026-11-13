@@ -13,9 +13,8 @@ use std::{
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
     sys::{
-        swr_zend_bailout_to, swr_zend_guard_register, swr_zend_thread_enter, swr_zend_thread_leave,
+        swr_zend_bailout_to, swr_zend_thread_enter, swr_zend_thread_leave,
         swr_zend_thread_main_request, swr_zend_thread_request, swr_zend_thread_set_argv,
-        zend_declare_class_constant_string,
     },
 };
 
@@ -34,7 +33,7 @@ unsafe extern "C" {
     /// `tsrm_is_shutdown()`; false on NTS.
     safe fn swr_zend_tsrm_is_shutdown() -> bool;
     /// `tsrm_api_name()`: a NUL-terminated literal (empty on NTS).
-    safe fn swr_zend_tsrm_api_name() -> *const std::ffi::c_char;
+    safe fn swr_zend_tsrm_api_name() -> swoole_rs_corebase::sys::Text<'static>;
 }
 
 /// PHP threads running, the main thread included.
@@ -190,16 +189,13 @@ extern "C" fn guard_context() -> *mut c_void {
 /// MINIT (`php_swoole_thread_minit`): the exit scopes' hooks, `Swoole\Thread`
 /// with its constants, then `Swoole\Thread\Error`.
 pub fn thread_minit(minit: &Minit) {
-    // SAFETY: MINIT, before any thread reads them.
-    unsafe { swr_zend_guard_register(Some(guard_context), Some(thread_bailout)) };
+    minit.guard_register(guard_context, thread_bailout);
     let class = thread::register(minit);
     // `std::thread::hardware_concurrency()`.
     let cpus = swoole_rs_corebase::sys::sysconf(libc::_SC_NPROCESSORS_ONLN).max(0);
     minit.class_constant_long(class, c"HARDWARE_CONCURRENCY", cpus);
     // TSRM's static name.
-    let api = swr_zend_tsrm_api_name();
-    // SAFETY: MINIT; Zend copies both strings.
-    unsafe { zend_declare_class_constant_string(class.entry(), c"API_NAME".as_ptr(), 8, api) };
+    minit.class_constant_string(class, c"API_NAME", swr_zend_tsrm_api_name().get());
     let policies = [
         (c"SCHED_OTHER", libc::SCHED_OTHER),
         (c"SCHED_FIFO", libc::SCHED_FIFO),

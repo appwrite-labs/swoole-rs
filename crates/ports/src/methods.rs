@@ -14,7 +14,7 @@ use swoole_rs_corebase::net_types::{
     GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
 };
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
+use swoole_rs_reactor::{Event, Running, Socket, SocketFields, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -339,10 +339,12 @@ const CALLBACKS: Callbacks = {
     }
 };
 
+/// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`, as the server's connection
+/// read calls it: under its reactor, with the port and the connection's event.
+type Reader = unsafe extern "C" fn(Running<'_>, view::Port<'_>, &mut Event) -> c_int;
+
 /// A readable callback's address.
-fn reader(
-    function: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> c_int,
-) -> *mut c_void {
+fn reader(function: Reader) -> *mut c_void {
     function as *mut c_void
 }
 
@@ -481,11 +483,10 @@ use tests::on_read;
 macro_rules! readable_callbacks {
     ($(fn $name:ident = $kind:ident;)*) => {$(
         /// One readable callback kind.
-        ///
         /// # Safety
-        /// The reactor's readable event on a connection of `port`.
-        unsafe extern "C" fn $name(reactor: *mut c_void, port: *mut c_void, event: *mut c_void) -> c_int {
-            // SAFETY: as the caller guarantees.
+        /// As [`on_read`].
+        unsafe extern "C" fn $name(reactor: Running<'_>, port: view::Port<'_>, event: &mut Event) -> c_int {
+            // SAFETY: the caller's contract.
             unsafe { on_read(reactor, port, event, $kind) }
         }
     )*};
@@ -539,9 +540,9 @@ mod tests {
 
     /// Tests link no C++: the readable kind stands in for the read.
     pub(super) unsafe fn on_read(
-        _: *mut c_void,
-        _: *mut c_void,
-        _: *mut c_void,
+        _: Running<'_>,
+        _: view::Port<'_>,
+        _: &mut Event,
         kind: u32,
     ) -> c_int {
         c_int::try_from(kind).unwrap_or_default()

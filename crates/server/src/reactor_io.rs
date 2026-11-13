@@ -103,7 +103,7 @@ mod tests {
     use crate::fixture::LiveServer;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
-    use swoole_rs_buffer::cpp::{swr_cpp_buffer_append, swr_cpp_buffer_count};
+    use swoole_rs_buffer::cpp::swr_cpp_buffer_count;
     use swoole_rs_reactor::SocketRecord;
 
     use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
@@ -156,11 +156,10 @@ mod tests {
             theirs.set_nonblocking(true).unwrap();
             let sock = Box::new(SocketRecord::with_fd(ours.as_raw_fd(), FD_PIPE)).into_socket();
             let buffer = swoole_rs_buffer::cpp::new_buffer(0);
-            sock.edit(|s| s.output.out_buffer = buffer.cast());
             for m in messages {
-                // SAFETY: the socket's live buffer and `m`'s bytes.
-                unsafe { swr_cpp_buffer_append(&*buffer, m.as_ptr(), m.len().try_into().unwrap()) };
+                buffer.append(m);
             }
+            sock.edit(|s| s.output.out_buffer = Some(buffer));
             Self {
                 live,
                 _client: client,

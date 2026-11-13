@@ -2,7 +2,7 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, Op, invoke::compiled_function};
+use crate::{CONTINUE, DISPATCH, Frame, Op};
 use std::{
     ffi::{CStr, CString, c_int},
     marker::PhantomData,
@@ -18,8 +18,8 @@ use swoole_rs_zend::{
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, swr_zend_separate_array, swr_zend_try_lookup_class, zend_class_entry,
-        zend_internal_function, zend_long, zend_value, zif_handler, zval_ptr_dtor,
+        swr_zend_efree, swr_zend_separate_array, zend_class_entry, zend_internal_function,
+        zend_long, zend_value, zif_handler, zval_ptr_dtor,
     },
     throw_error, type_error,
     value::{self, table},
@@ -330,11 +330,7 @@ fn parse(source: &[u8]) -> Result<Parsed, Failure> {
 
 /// `zend_lookup_class(name)`, throwing "Class '%s' not found".
 fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
-    let mut ce = ptr::null_mut();
-    // SAFETY: a live name; autoloaders run under `zend_try`.
-    if unsafe { swr_zend_try_lookup_class(name.as_ptr(), &raw mut ce) } != 0 {
-        return Err(Failure::Bailout(Bailout));
-    }
+    let ce = swoole_rs_zend::lookup_class(name).map_err(Failure::Bailout)?;
     if ce.is_null() {
         throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
         return Err(Failure::Thrown);
@@ -730,7 +726,7 @@ static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 
 /// Replace `array_push`, `array_unshift` and `array_splice`'s handlers, at
 /// MINIT (the token): PHP's function table is complete and no request has started.
-pub(crate) fn install(_minit: &swoole_rs_zend::Minit) {
+pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
     let handlers: [(_, swoole_rs_zend::arginfo::Handler); 3] = [
         (c"array_push", zif_swoole_array_push),
         (c"array_unshift", zif_swoole_array_unshift),
@@ -738,7 +734,8 @@ pub(crate) fn install(_minit: &swoole_rs_zend::Minit) {
     ];
     let [push, unshift, splice] = handlers.map(|(name, handler)| {
         // `internal_function` starts the `zend_function` union.
-        let slot = compiled_function(name)
+        let slot = minit
+            .compiled_function(name)
             .wrapping_byte_add(offset_of!(zend_internal_function, handler))
             .cast::<zif_handler>();
         // SAFETY: a core internal function's handler slot, at MINIT.

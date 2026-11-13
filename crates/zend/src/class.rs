@@ -2,9 +2,9 @@
 use crate::{
     Minit, Parent, ZStr,
     sys::{
-        HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_http_property_offset,
-        swr_zend_register_class, zend_class_entry, zend_function_entry, zend_hash_find, zend_long,
-        zend_object, zend_object_handlers, zend_string, zend_throw_error, zend_throw_exception,
+        HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry,
+        zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers,
+        zend_string, zend_throw_error, zend_throw_exception,
     },
 };
 use std::{
@@ -22,6 +22,13 @@ unsafe extern "C" {
     /// `instanceof_function`: it reads the two live classes' inheritance
     /// tables, and runs no PHP code.
     safe fn swr_zend_instanceof(class: ClassEntry<'_>, parent: ClassEntry<'_>) -> bool;
+    /// `zend_property_info::offset` of the property the live class declares as
+    /// `name`, or 0 for none: it reads the class's property table, which no
+    /// PHP code changes, and `name`.
+    safe fn swr_zend_http_property_offset(
+        class: ClassEntry<'_>,
+        name: crate::helpers::CText<'_>,
+    ) -> u32;
 }
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
@@ -266,13 +273,8 @@ impl Class {
     /// MINIT registers the class.
     #[must_use]
     pub fn property_offset(&self, name: &CStr) -> u32 {
-        let entry = self.entry();
-        if entry.is_null() {
-            return 0;
-        }
-        // SAFETY: a registered class, which lives for the process; Zend reads
-        // its property table and `name` only.
-        unsafe { swr_zend_http_property_offset(entry, name.as_ptr(), name.count_bytes()) }
+        self.handle()
+            .map_or(0, |class| swr_zend_http_property_offset(class, name.into()))
     }
 
     /// The registered class as a handle: it lives for the process. None
@@ -289,6 +291,38 @@ impl Class {
     #[inline]
     pub fn handlers(&self) -> *const zend_object_handlers {
         self.handlers.load(Ordering::Acquire)
+    }
+}
+
+/// `zend_lookup_class(name)` inside `zend_try` (an autoloader runs PHP code):
+/// the class, or null for none. A pointer: a class PHP code declared lives only
+/// until its request ends.
+/// # Errors
+/// An autoloader bailed out.
+pub fn lookup_class(name: &ZStr) -> Result<*mut zend_class_entry, crate::bailout::Bailout> {
+    let mut class = ptr::null_mut();
+    // SAFETY: a live name and a writable local; the shim traps a bailout.
+    crate::bailout::trapped(unsafe {
+        crate::sys::swr_zend_try_lookup_class(name.as_ptr(), &raw mut class)
+    })?;
+    Ok(class)
+}
+
+impl crate::Value {
+    /// Whether this holds an instance of the class named `name`, which is
+    /// looked up first ([`lookup_class`]): None for no such class.
+    /// # Errors
+    /// An autoloader bailed out.
+    pub fn instance_of_named(&self, name: &ZStr) -> Result<Option<bool>, crate::bailout::Bailout> {
+        let class = lookup_class(name)?;
+        if class.is_null() {
+            return Ok(None);
+        }
+        // The class just looked up, read before any PHP code runs.
+        let class = ClassEntry(class, PhantomData);
+        Ok(Some(
+            self.class_entry().is_some_and(|own| own.instance_of(class)),
+        ))
     }
 }
 

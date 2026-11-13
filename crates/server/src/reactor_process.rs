@@ -17,11 +17,9 @@ pub(crate) mod native;
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`,
-/// `Server::TASK_IPC_UNIXSOCK` and `SW_SSL_STATE_READY`.
+/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
-const TASK_IPC_UNIXSOCK: u8 = 1;
 const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
 
 /// `Socket::is_stream(type)`.
@@ -129,7 +127,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
     if !worker.pipe_worker().is_null() && add_pipes(reactor, worker) < 0 {
         return ERR;
     }
-    if config.task_worker_num.get() > 0 && config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK {
+    if config.task_worker_num.get() > 0 && config.task_ipc() == Some(crate::TaskIpcMode::UnixSock) {
         let pool = crate::shared::ServerShared::of(serv).task_pool();
         for index in 0..usize::try_from(pool.worker_num()).unwrap_or(0) {
             if let Some(pipe) = pool.worker(index).and_then(|w| view::worker_pipe(w, true)) {

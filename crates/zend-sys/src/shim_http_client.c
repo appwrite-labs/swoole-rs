@@ -1,10 +1,9 @@
 /* Stays C (docs/zend.md, What stays C): globals (EG(uninitialized_zval)), allocator
- * (array_init, smart_str, zval_get_string), version (php_url_encode_hash_ex's
+ * (array_init, smart_str), version (php_url_encode_hash_ex's
  * signature before 8.3, zend_is_true's return type) and budget (OBJ_PROP, Z_*_P). */
 #include "shim_http_client.h"
 #include "ext/standard/php_http.h"
 #include "zend_smart_str.h"
-#include "zend_attributes.h"
 
 zval *swr_zend_property_slot(zend_object *object, const char *name, size_t length) {
     zend_property_info *info = zend_hash_str_find_ptr(&object->ce->properties_info, name, length);
@@ -55,10 +54,6 @@ bool swr_zval_is_true(const zval *value) {
     return zend_is_true(value);
 }
 
-zend_string *swr_zval_get_string(zval *value) {
-    return zval_get_string(value);
-}
-
 size_t swr_zend_url_decode(char *data, size_t length) {
     return php_url_decode(data, length);
 }
@@ -78,11 +73,6 @@ zend_string *swr_zend_http_build_query(zval *data) {
     }
     smart_str_0(&query);
     return query.s;
-}
-
-void swr_zend_sensitive_parameter(zend_class_entry *ce, const char *lcname, size_t length, uint32_t offset) {
-    zend_function *method = zend_hash_str_find_ptr(&ce->function_table, lcname, length);
-    zend_add_parameter_attribute(method, offset, ZSTR_KNOWN(ZEND_STR_SENSITIVEPARAMETER), 0);
 }
 
 void swr_zend_separate_array(zval *array) {

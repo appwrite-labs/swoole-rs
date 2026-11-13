@@ -13,10 +13,12 @@ use crate::OK;
 use crate::typed::Front;
 use std::mem::MaybeUninit;
 
-/// `swoole::Buffer`: its only member is the queue handle.
+/// `swoole::Buffer`: its only member is the queue handle, a boxed [`crate::Buffer`]
+/// held as C++ sees it (an opaque pointer, so a record that embeds a `Buffer *` stays
+/// a C type).
 #[repr(C)]
 pub struct CppBuffer {
-    queue: *mut crate::Buffer,
+    queue: *mut std::ffi::c_void,
 }
 
 fn check(status: i32) {
@@ -26,13 +28,29 @@ fn check(status: i32) {
 }
 
 impl CppBuffer {
+    /// `Buffer(chunk_size)`.
+    fn new(chunk_size: u32) -> Self {
+        let Ok(queue) = crate::Buffer::create(chunk_size) else {
+            swoole_rs_corebase::fatal("a buffer queue can't be created");
+        };
+        Self {
+            queue: Box::into_raw(queue).cast(),
+        }
+    }
+
+    /// The queue's address, for a caller that reaches it between the borrows of the
+    /// record that owns this `Buffer` (crates/tls's send path).
+    #[must_use]
+    pub const fn queue(&self) -> *mut crate::Buffer {
+        self.queue.cast()
+    }
+
     /// Runs `body` over the queue. A `CppBuffer` reachable by reference was built by
-    /// `swr_cpp_buffer_new` (its field is private) and not yet destroyed
-    /// (`swr_cpp_buffer_drop` is unsafe and takes it out of use), so its queue is live.
+    /// [`Self::new`] (its field is private) and not yet dropped, so its queue is live.
     fn with<R>(&self, body: impl FnOnce(&mut crate::Buffer) -> R) -> R {
         // SAFETY: as above; nothing in `body` reaches this queue another way, and the
         // borrow ends with it.
-        body(unsafe { &mut *self.queue })
+        body(unsafe { &mut *self.queue() })
     }
 
     /// Pops the first entry and runs its disposer; false when the queue is empty.
@@ -53,6 +71,17 @@ impl CppBuffer {
     }
 }
 
+/// `~Buffer()`: pops every entry, then releases the queue.
+impl Drop for CppBuffer {
+    fn drop(&mut self) {
+        while self.pop() {}
+        // SAFETY: the handle `new` boxed, released once: a dropped value is not used again.
+        if unsafe { Box::from_raw(self.queue()) }.release().is_err() {
+            swoole_rs_corebase::fatal("a buffer queue still in use when dropped");
+        }
+    }
+}
+
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and elsewhere
 // the caller ignores it. Only the complete-object (C1/D1) symbols: nothing derives from
 // Buffer, so no caller names a base-object (C2/D2) one.
@@ -60,21 +89,15 @@ upstream! {
     "_ZN6swoole6BufferC1Ej", "_ZN6swoole6BufferC1Ej" =>
     /// `Buffer(uint32_t chunk_size)`, in uninitialized storage.
     pub extern "C" fn swr_cpp_buffer_new(this: &mut MaybeUninit<CppBuffer>, chunk_size: u32) -> *mut CppBuffer {
-        let Ok(queue) = crate::Buffer::create(chunk_size) else {
-            swoole_rs_corebase::fatal("a buffer queue can't be created");
-        };
-        this.write(CppBuffer { queue: Box::into_raw(queue) })
+        this.write(CppBuffer::new(chunk_size))
     }
     "_ZN6swoole6BufferD1Ev", "_ZN6swoole6BufferD1Ev" =>
-    /// `~Buffer()`: pops every entry, then releases the queue.
+    /// `~Buffer()`, in place.
     /// # Safety
-    /// `this` is not used again.
+    /// `this` is not used, or dropped, again.
     pub unsafe extern "C" fn swr_cpp_buffer_drop(this: &mut CppBuffer) -> *mut CppBuffer {
-        while this.pop() {}
-        // SAFETY: the handle `swr_cpp_buffer_new` boxed, released once: `this` is not used again.
-        if unsafe { Box::from_raw(this.queue) }.release().is_err() {
-            swoole_rs_corebase::fatal("a buffer queue still in use when dropped");
-        }
+        // SAFETY: a constructed `Buffer`, destroyed once, as the caller promises.
+        unsafe { std::ptr::drop_in_place(this) };
         this
     }
     "_ZNK6swoole6Buffer11typed_frontEv", "_ZNK6swoole6Buffer11typed_frontEv" =>
@@ -146,28 +169,16 @@ upstream! {
     }
 }
 
-/// `new Buffer(chunk_size)`, boxed: [`delete_buffer`] frees it.
+/// `new Buffer(chunk_size)`; dropping the box is `delete buffer`.
 #[must_use]
-pub fn new_buffer(chunk_size: u32) -> *mut CppBuffer {
-    swr_cpp_buffer_new(Box::leak(Box::new_uninit()), chunk_size)
-}
-
-/// `delete buffer`.
-///
-/// # Safety
-/// `buffer` came from [`new_buffer`] and is not used again.
-pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
-    // SAFETY: as the caller promises.
-    let mut this = unsafe { Box::from_raw(buffer) };
-    // SAFETY: as above; the box frees it next.
-    unsafe { swr_cpp_buffer_drop(&mut this) };
+pub fn new_buffer(chunk_size: u32) -> Box<CppBuffer> {
+    Box::new(CppBuffer::new(chunk_size))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TYPE_CLOSE: u32 = 2;
+    use crate::EntryKind;
 
     /// Runs `body` over a constructed Buffer, then destroys it.
     fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {
@@ -323,12 +334,15 @@ mod tests {
                 (3, 3)
             );
             let view = swr_cpp_buffer_typed_front(this);
-            assert_eq!((view.kind, view.length, view.offset), (0, 2, 0));
+            assert_eq!(
+                (view.kind, view.length, view.offset),
+                (EntryKind::Data, 2, 0)
+            );
             swr_cpp_buffer_typed_consume(this, &view, 1);
             assert_eq!(swr_cpp_buffer_typed_front(this).offset, 1);
             swr_cpp_buffer_pop(this);
             swr_cpp_buffer_pop(this);
-            assert_eq!(swr_cpp_buffer_typed_front(this).kind, TYPE_CLOSE);
+            assert_eq!(swr_cpp_buffer_typed_front(this).kind, EntryKind::Close);
             // Teardown pops the queued CLOSE marker.
         });
     }
@@ -336,9 +350,9 @@ mod tests {
     #[test]
     fn new_and_delete_buffer() {
         let buffer = new_buffer(4);
-        unsafe { swr_cpp_buffer_append(&*buffer, b"abcdef".as_ptr(), 6) };
-        assert_eq!(swr_cpp_buffer_count(unsafe { &*buffer }), 2);
+        unsafe { swr_cpp_buffer_append(&buffer, b"abcdef".as_ptr(), 6) };
+        assert_eq!(swr_cpp_buffer_count(&buffer), 2);
         // Deleting a non-empty Buffer pops its entries first.
-        unsafe { delete_buffer(buffer) };
+        drop(buffer);
     }
 }

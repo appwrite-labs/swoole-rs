@@ -12,7 +12,6 @@ use crate::base_factory::SendData;
 use crate::hybrid::hybrid;
 use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::ThreadRecord;
 use crate::records::{Connection, Lookup};
 use crate::{Mode, ServerState, view};
 
@@ -90,7 +89,15 @@ fn receive_packets(
             return SW_ERR;
         };
         if dtls {
-            return hybrid().dtls_accept(serv, reactor, port, pkt, length);
+            // SAFETY: as above, the connection's live port.
+            let Some(port) = (unsafe { view::Port::from_raw(port) }) else {
+                return SW_ERR;
+            };
+            let datagram = data.cast::<u8>();
+            // SAFETY: the `length` bytes just received into the buffer's room after the
+            // packet head, which nothing writes during the call.
+            let datagram = unsafe { core::slice::from_raw_parts(datagram, length as usize) };
+            return hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, datagram);
         }
         pkt.length = length;
         task.info.fd = pkt.sender();
@@ -201,11 +208,9 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
         let Some(joining) = state.take_thread(u64::from(id)) else {
             continue;
         };
-        let thread = crate::reactor_entry::thread(state, usize::from(id)).cast::<ThreadRecord>();
-        if !thread.is_null() {
-            // SAFETY: one of the server's live threads; only its field is read, as the
-            // thread itself may hold its record meanwhile.
-            let notify = unsafe { (*thread).notify_pipe.get() };
+        // Only the field is read: the thread itself holds its record meanwhile.
+        if let Some(thread) = state.tables_ref().reactor_thread(usize::from(id)) {
+            let notify = thread.notify_pipe.get();
             // SAFETY: null or the thread's notify pipe, which it keeps until the server
             // joins it, after this notice.
             let pipe = unsafe { Socket::from_ptr(notify) };
@@ -222,10 +227,9 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent
         kind: kind.code(),
         ..DataHead::default()
     };
-    let data = (&raw const head).cast();
     if let Some(sock) = sock {
-        // SAFETY: the head's bytes.
-        let data = unsafe { swoole_rs_reactor::Drain::from_raw(data, size_of::<DataHead>()) };
+        let data = swoole_rs_process::process_pool::head_view(&head);
+        let data = swoole_rs_reactor::Drain::new(data);
         _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
     }
 }
@@ -411,7 +415,7 @@ mod tests {
 
     static JOINED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
-    unsafe extern "C" fn joined(_: *mut core::ffi::c_void, arg: u64) {
+    fn joined(_: view::Server<'_>, arg: u64) {
         JOINED.lock().unwrap().push(arg);
     }
 
@@ -421,12 +425,10 @@ mod tests {
         let live = crate::fixture::LiveServer::new();
         let (serv, state) = (live.server(), live.state());
         let config = state.config_ref();
-        let entry = (joined as *const ()).expose_provenance() as u64;
-        let raw = serv.raw().expose_provenance() as u64;
         for id in 0..u64::from(config.reactor_num.get()) {
-            state.start_thread(entry, raw, id);
+            ServerState::start_thread(serv, joined, id);
         }
-        state.start_thread(entry, raw, HEARTBEAT);
+        ServerState::start_thread(serv, joined, HEARTBEAT);
         config.heartbeat_check_interval.set(1);
         join_reactor_threads(serv);
         let mut ran = JOINED.lock().unwrap().clone();

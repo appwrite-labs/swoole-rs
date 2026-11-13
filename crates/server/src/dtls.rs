@@ -1,7 +1,7 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
 //! and the datagram, read and close steps over them. crates/tls owns each
 //! session's queue and handshake; crates/ports stores them by fd.
-use core::ffi::{CStr, c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int};
 use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
@@ -138,36 +138,24 @@ fn appended(status: c_int) {
     }
 }
 
-/// `ReactorThread_onPacketReceived` on a DTLS port: the datagram (`length` bytes
-/// after `pkt`'s head) opens a session and starts its handshake; once listened, the
-/// new connection is incoming on its reactor thread. `SW_ERR` when no session could
-/// be made.
-///
-/// # Safety
-/// `port` is the DTLS port of `serv` the packet arrived on and `pkt` the head of the
-/// received packet, its datagram after it; `reactor` is the reactor of `serv` it
-/// arrived on.
-pub(crate) unsafe fn on_packet(
+/// `ReactorThread_onPacketReceived` on a DTLS port: the datagram `data` from `peer`,
+/// which arrived on `port` (a DTLS port of `serv`, on `reactor`), opens a session and
+/// starts its handshake; once listened, the new connection is incoming on its reactor
+/// thread. `SW_ERR` when no session could be made, as on a port without DTLS.
+pub(crate) fn on_packet(
     serv: crate::view::Server<'_>,
     single_thread: bool,
     reactor: crate::reactor_handle::Reactor,
-    port: *mut c_void,
-    pkt: &mut DgramPacket,
-    length: u32,
+    port: crate::view::Port<'_>,
+    peer: &SocketAddress,
+    data: &[u8],
 ) -> c_int {
-    // SAFETY: as the caller guarantees.
-    let Some(port) = (unsafe { crate::view::Port::from_raw(port) }) else {
-        return -1;
-    };
     // The session `dtls_create` made over the socket: `session->socket` is `record`.
-    let Some((session, record)) = accept(serv, port, &pkt.socket_addr) else {
+    let Some((session, record)) = accept(serv, port, peer) else {
         return -1;
     };
     // SAFETY: the live session.
     let session = unsafe { &*session };
-    let data = (&raw const *pkt).wrapping_add(1).cast::<u8>();
-    // SAFETY: the packet's `length` received bytes, after its head.
-    let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
     appended(swr_v1_tls_dtls_append(session, data));
     if !dtls_session_listen(session) {
         return crate::conn_io::close_connection(serv, reactor, Some(record));

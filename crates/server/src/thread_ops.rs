@@ -16,13 +16,12 @@ use crate::reactor_io::owns;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running, Socket};
 
-use crate::base_factory::SendData;
 use crate::callbacks::TaskSlot;
 use crate::event_worker::native::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
-use crate::reactor_entry::{self as entry, thread};
-use crate::reactor_ops::{ReactorContext, ThreadRecord};
+use crate::reactor_entry as entry;
+use crate::reactor_ops::ReactorContext;
 use crate::{ServerState, factory, server_methods as methods, view};
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
@@ -35,12 +34,15 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// The `MessageBus` of the context's thread, once an op has set it.
 fn bus_of(ctx: &ReactorContext<'_>) -> Option<*mut c_void> {
-    let thread = ctx.thread;
-    (!thread.is_null()).then(|| thread.wrapping_byte_add(core::mem::offset_of!(ThreadRecord, bus)))
+    let thread = ctx.thread?;
+    Some(ptr::from_ref(&thread.bus).cast_mut().cast())
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
-fn pipe_socket<'b>(bus: &'b crate::objects::Bus, pipe: Option<Socket<'_>>) -> Option<Socket<'b>> {
+fn pipe_socket<'b>(
+    bus: &'b crate::objects::Bus<'_>,
+    pipe: Option<Socket<'_>>,
+) -> Option<Socket<'b>> {
     bus.pipe_socket(pipe?)
 }
 
@@ -159,10 +161,9 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
     crate::reactor_thread::close_reactor_connections(serv, reactor);
 }
 
-/// What a reactor thread Rust starts runs. As `state::ThreadEntry`, whose `void *`
-/// a [`view::Server`] is laid out as: `ServerState::start_thread` calls it with the
-/// live server, on its new reactor thread.
-extern "C" fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
+/// What a reactor thread Rust starts runs: `ServerState::start_thread` calls it with
+/// the live server, on its new reactor thread.
+fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
     let id = c_int::try_from(id).unwrap_or_default();
     main_loop(server, u16::try_from(id).unwrap_or_default());
@@ -171,7 +172,7 @@ extern "C" fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
 
 /// What the heartbeat thread Rust starts runs, its signals blocked. Called with the
 /// live server, as [`reactor_thread_entry`] is.
-extern "C" fn heartbeat_main(server: view::Server<'_>, _: u64) {
+fn heartbeat_main(server: view::Server<'_>, _: u64) {
     // Else a process-directed signal (the shutdown's SIGTERM) can land here rather
     // than on the master's signalfd, and its default action kills the master.
     swoole_rs_corebase::signal_block_all();
@@ -208,7 +209,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
     if single {
         // Thread 0's setup over the master's reactor; it runs the one loop.
         let mut init = ReactorContext::new(serv, Some(reactor));
-        init.thread = thread(state, 0);
+        init.thread = state.tables_ref().reactor_thread(0);
         if let Some(record) = init.thread_record() {
             let id = u16::try_from(record.id.get()).unwrap_or_default();
             let _ = init_thread(&mut init, state, id);
@@ -218,10 +219,8 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
         let id = config.reactor_num.get();
         reactor.handle().set_id(id);
         swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
-        let entry = reactor_thread_entry as *const () as u64;
-        let raw = serv.raw().expose_provenance() as u64;
         for id in 0..config.reactor_num.get() {
-            state.start_thread(entry, raw, u64::from(id));
+            ServerState::start_thread(serv, reactor_thread_entry, u64::from(id));
         }
     }
     if config.heartbeat_check_interval.get() >= 1 {
@@ -231,8 +230,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
                 .heartbeat_timer
                 .store(timer, core::sync::atomic::Ordering::Relaxed);
         } else {
-            let raw = serv.raw().expose_provenance() as u64;
-            state.start_thread(heartbeat_main as *const () as u64, raw, HEARTBEAT);
+            ServerState::start_thread(serv, heartbeat_main, HEARTBEAT);
         }
     }
     methods::start_master_thread(serv, reactor)
@@ -243,7 +241,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
 pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
     let state = serv.state();
     let mut ctx = ReactorContext::new(serv, None);
-    ctx.thread = thread(state, usize::from(id));
+    ctx.thread = state.tables_ref().reactor_thread(usize::from(id));
     let Some(record) = ctx.thread_record() else {
         return;
     };
@@ -321,7 +319,15 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     // SAFETY: the handler is registered only on server reactors.
     let serv = unsafe { entry::server(reactor) };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
-    ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
+    // `serv->get_thread(reactor->id)`, unchecked as upstream's: every worker message
+    // passes here.
+    let threads = serv.state().tables_ref().reactor_threads_ptr();
+    let thread = threads
+        .cast::<crate::reactor_ops::ThreadRecord>()
+        .wrapping_add(usize::from(reactor.handle().id()));
+    // SAFETY: this reactor thread's own record in the server's live array, which
+    // holds one for each reactor id.
+    ctx.thread = unsafe { thread.as_ref() };
     pipe_read(&mut ctx, event).unwrap_or(-1)
 }
 
@@ -335,7 +341,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let sock = event.socket()?;
     ctx.resp = bus.buffer();
     loop {
-        if crate::pool_native::read_bus(bus.rust(), thread.allocator, sock, true) <= 0 {
+        if crate::pool_native::read_bus(bus.rust(), bus.allocator(), sock, true) <= 0 {
             return Some(0);
         }
         let head = *ctx.message()?;
@@ -381,18 +387,14 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 crate::reactor_thread::close(serv, reactor, session);
             }
             Some(ServerEvent::CloseForward) => {
-                factory::end(state, session, CLOSE_ACTIVELY);
+                factory::end(serv, session, CLOSE_ACTIVELY);
             }
             _ => {
-                let packet = bus.packet();
-                let mut info = head;
-                info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-                let send = SendData {
-                    info,
-                    data: packet.data,
-                };
-                // SAFETY: a send over the bus's packet.
-                unsafe { methods::send_to_connection(serv, &send) };
+                bus.with_packet(|data| {
+                    let mut info = head;
+                    info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+                    methods::send_event_to_connection(serv, &info, data);
+                });
             }
         }
         bus.pop();

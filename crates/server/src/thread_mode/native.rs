@@ -106,21 +106,18 @@ fn create_factory(serv: view::Server<'_>) -> *mut c_void {
     // master is the server's only thread; nothing reads them while this lives.
     let tables = unsafe { &mut *state.tables() };
     tables.connection_list = list;
-    tables.reactor_threads = threads;
+    tables.install_reactor_threads(threads);
     tables.reactor_pipe_num = 1;
-    factory::new_thread(serv.raw(), all_worker_num(serv) as usize + 1)
+    factory::new_thread(all_worker_num(serv) as usize + 1)
 }
 
 /// `Server::destroy_thread_factory`: the connections and the reactor threads.
 fn destroy_factory(serv: view::Server<'_>) {
-    // SAFETY: as `create_factory`'s, for its one statement.
-    unsafe { &mut *serv.state().tables() }
-        .connection_list
-        .free();
-    let threads = serv.state().tables_ref().reactor_threads;
-    let count = serv.config().reactor_num.get().into();
-    // SAFETY: the array `create_factory` made, not used again.
-    unsafe { crate::reactor_ops::ThreadRecord::delete_array(threads, count) };
+    // SAFETY: as `create_factory`'s: the worker threads are joined, and nothing reads
+    // the tables while this lives.
+    let tables = unsafe { &mut *serv.state().tables() };
+    tables.connection_list.free();
+    drop(tables.take_reactor_threads());
 }
 
 /// `ThreadFactory::start`: the pipes and the event, task and user workers' records.

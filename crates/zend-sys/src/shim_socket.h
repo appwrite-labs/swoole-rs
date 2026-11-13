@@ -15,4 +15,5 @@ HashTable *swr_zend_object_properties(zval *object);
 HashTable *swr_zend_convert_to_array(zval *value);
 /* zend_zval_value_name (PHP 8.3+), else zend_zval_type_name. */
 const char *swr_zend_zval_value_name(const zval *value);
+const char *swr_zend_zval_type_name(const zval *value);
 #endif

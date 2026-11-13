@@ -57,7 +57,7 @@ pub struct ServerState {
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
-type ThreadEntry = unsafe extern "C" fn(*mut core::ffi::c_void, u64);
+pub(crate) type ThreadEntry = fn(crate::view::Server<'_>, u64);
 
 /// The server's text members, `ServerState::texts`' slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,9 +127,9 @@ impl ServerState {
         let pipe = pipes
             .last_mut()
             .map_or(core::ptr::null_mut(), |pair| &raw mut **pair);
-        worker.set_pipe_master(master.cast());
-        worker.set_pipe_worker(end.cast());
-        worker.set_pipe_object(pipe.cast());
+        // SAFETY: the two ends of the boxed pair the server's list now owns, which
+        // the state keeps for as long as the server has its workers.
+        unsafe { worker.set_pipes(pipe.cast(), master.cast(), end.cast()) };
         true
     }
 
@@ -259,28 +259,24 @@ impl ServerState {
         }
     }
 
-    /// Starts a thread running `entry(serv, arg)`, which `take_thread(arg)` hands back.
-    /// A null `entry` starts nothing; a thread that can't start aborts, as
+    /// Starts a thread of `serv`, whose state this is, running `entry(serv, arg)`;
+    /// `take_thread(arg)` hands it back. A thread that can't start aborts, as
     /// `std::thread`'s uncaught `system_error` does.
-    pub(crate) fn start_thread(&self, entry: u64, serv: u64, arg: u64) {
-        let entry = core::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
-            usize::try_from(entry).unwrap_or(0),
-        );
-        // SAFETY: native code answered with null or a `void (*)(void *, uint64_t)`.
-        let entry =
-            unsafe { core::mem::transmute::<*mut core::ffi::c_void, Option<ThreadEntry>>(entry) };
-        let Some(entry) = entry else {
-            return;
-        };
-        let serv = usize::try_from(serv).unwrap_or(0);
+    pub(crate) fn start_thread(serv: crate::view::Server<'_>, entry: ThreadEntry, arg: u64) {
+        let raw = serv.raw().expose_provenance();
         let thread = std::thread::Builder::new().spawn(move || {
-            // SAFETY: the server outlives its threads, which it joins before it goes.
-            unsafe { entry(core::ptr::with_exposed_provenance_mut(serv), arg) };
+            // SAFETY: the live server that started this thread, which outlives it: a
+            // server joins the threads its state holds before it goes.
+            let serv = unsafe {
+                crate::view::Server::from_raw(core::ptr::with_exposed_provenance_mut(raw))
+            };
+            entry(serv, arg);
         });
         let Ok(thread) = thread else {
             swoole_rs_corebase::fatal("a server thread can't start");
         };
-        self.threads
+        serv.state()
+            .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((arg, thread));
@@ -296,21 +292,24 @@ impl ServerState {
         Some(threads.swap_remove(index).1)
     }
 
-    /// `Server::ports.push_back(port)`; the port's `object_id` is the new count.
+    /// `Server::ports.push_back(port)`: the server owns the port from now on, and the
+    /// port's `object_id` is the new count.
     ///
     /// # Safety
-    /// `port` is a live `ListenPort`, owned by this server from now on, and no
-    /// other thread reads the list during the push.
-    pub(crate) unsafe fn push_port(&self, port: *mut core::ffi::c_void) {
+    /// No other thread reads the list during the push, and no slice of it
+    /// ([`crate::records::ServerTables::ports`]) is used after it.
+    pub(crate) unsafe fn push_port(
+        &self,
+        mut port: Box<crate::port_config::PortConfig>,
+    ) -> crate::view::Port<'_> {
         let mut ports = self
             .ports
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = u32::try_from(ports.len() + 1).unwrap_or(u32::MAX);
+        port.object_id = u16::try_from(count).unwrap_or(u16::MAX);
+        let port = Box::into_raw(port).cast::<core::ffi::c_void>();
         ports.push(AtomicPtr::new(port));
-        let count = u32::try_from(ports.len()).unwrap_or(u32::MAX);
-        // SAFETY: a live port's settings, per the caller.
-        unsafe { crate::port_config::of(port) }.object_id =
-            u16::try_from(count).unwrap_or(u16::MAX);
         // SAFETY: the state's table view; no reader runs during the push, per the caller.
         let tables = unsafe { &mut *self.tables() };
         // `AtomicPtr` has the layout of the pointer it holds.
@@ -318,6 +317,10 @@ impl ServerState {
             items: ports.as_ptr().cast(),
             count,
         };
+        drop(ports);
+        // The port just published, the list's last.
+        let kept = self.tables_ref().ports().last().copied();
+        kept.unwrap_or_else(|| swoole_rs_corebase::fatal("a pushed port is not listed"))
     }
 
     /// `serv->running`.
@@ -405,14 +408,6 @@ fn c_path(text: &[u8]) -> CString {
     CString::new(text.get(..end).unwrap_or_default()).unwrap_or_default()
 }
 
-/// # Safety
-/// The result is freed once, as a `Box`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
-    let (config, tables) = fresh_records();
-    Box::into_raw(boxed(config, tables))
-}
-
 /// A new server's records, before a state owns them: the defaults and an empty
 /// worker registry.
 pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
@@ -431,18 +426,8 @@ pub(crate) fn boxed(
     Box::new(ServerState::with(config, tables))
 }
 
-/// # Safety
-/// `state` is null or came from `swr_v1_server_state_new` and is not used again.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_state_free(state: *mut ServerState) {
-    if !state.is_null() {
-        // SAFETY: the caller transfers the box back.
-        drop(unsafe { Box::from_raw(state) });
-    }
-}
-
 #[cfg(test)]
-pub(crate) use swr_v1_server_state_free as free_state;
+pub(crate) use tests::{free_state, swr_v1_server_state_new};
 
 /// A lock of one of the state's lists, which a panic can't leave inconsistent.
 fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -470,8 +455,23 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// A state with a new server's records, which [`free_state`] frees.
+    pub(crate) fn swr_v1_server_state_new() -> *mut ServerState {
+        let (config, tables) = fresh_records();
+        Box::into_raw(boxed(config, tables))
+    }
+
+    /// # Safety
+    /// `state` is null or came from [`swr_v1_server_state_new`] and is not used again.
+    pub(crate) unsafe fn free_state(state: *mut ServerState) {
+        if !state.is_null() {
+            // SAFETY: the caller transfers the box back.
+            drop(unsafe { Box::from_raw(state) });
+        }
+    }
 
     #[test]
     fn document_root_is_the_real_path() {

@@ -30,9 +30,8 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
     let Some([read, write]) = crate::sys::pipe() else {
         return -1;
     };
-    // SAFETY: fork(2) has no memory preconditions; the child only makes
-    // async-signal-safe calls before exec, as upstream's did.
-    let child = unsafe { libc::fork() };
+    // The child only makes async-signal-safe calls before exec, as upstream's did.
+    let child = crate::sys::fork();
     if child == -1 {
         let error = errno();
         close(read);
@@ -194,6 +193,38 @@ pub struct DataHead {
     pub ext_flags: u16,
     pub reserved: u32,
     pub time: f64,
+}
+
+/// `swoole::websocket::Status`: how far a connection is through the WebSocket
+/// upgrade. The order is upstream's, which its `>=` checks rely on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum WebSocketStatus {
+    #[default]
+    None = 0,
+    Connection = 1,
+    Handshake = 2,
+    Active = 3,
+    Closing = 4,
+    HandshakeFailed = 5,
+}
+
+impl WebSocketStatus {
+    /// Every status, in order.
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::Connection,
+        Self::Handshake,
+        Self::Active,
+        Self::Closing,
+        Self::HandshakeFailed,
+    ];
+
+    /// The status's upstream number.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
 }
 
 /// `swoole::ServerEventType`: what a [`DataHead`] carries.

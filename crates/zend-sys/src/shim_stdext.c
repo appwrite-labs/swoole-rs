@@ -1,6 +1,6 @@
 /* Stays C (docs/zend.md, What stays C): globals (EG and CG function tables,
  * EG(uninitialized_zval), the VM stack zend_vm_stack_push_call_frame grows),
- * bailout (calls, autoloading, array writes) and budget (ZEND_HASH_FOREACH). */
+ * bailout (calls, autoloading, array writes). */
 #include "shim.h"
 #include "shim_stdext.h"
 #include "SAPI.h"
@@ -14,8 +14,8 @@ zend_function *swr_zend_function_find(const char *name, size_t length) {
     return zend_hash_str_find_ptr(EG(function_table), name, length);
 }
 
-zend_function *swr_zend_compiled_function_find(const char *name, size_t length) {
-    return zend_hash_str_find_ptr(CG(function_table), name, length);
+zend_function *swr_zend_compiled_function_find(const char *name) {
+    return zend_hash_str_find_ptr(CG(function_table), name, strlen(name));
 }
 
 int swr_zend_try_call_known(zend_function *fn, zval *retval, uint32_t argc, zval *argv) {
@@ -48,20 +48,6 @@ zend_execute_data *swr_zend_push_nested_call(zend_function *fn, uint32_t num_arg
 
 void swr_zend_treat_string(char *text, zval *array) {
     sapi_module.treat_data(PARSE_STRING, text, array);
-}
-
-void swr_zend_hash_foreach_key(const HashTable *table,
-                               bool (*each)(zend_ulong index, zend_string *key, zval *value, void *context),
-                               void *context) {
-    zend_ulong index;
-    zend_string *key;
-    zval *value;
-    ZEND_HASH_FOREACH_KEY_VAL((HashTable *) table, index, key, value) {
-        if (!each(index, key, value, context)) {
-            break;
-        }
-    }
-    ZEND_HASH_FOREACH_END();
 }
 
 int swr_zend_try_stdext_nogc_dtor(zval *value) {

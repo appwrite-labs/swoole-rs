@@ -56,7 +56,9 @@ impl OwnedTlsFields {
 pub struct OwnedTlsContext {
     fields: UnsafeCell<OwnedTlsFields>,
     strings: [Arc<StringSlot>; STRING_COUNT],
-    context_password: UnsafeCell<Option<Arc<StringSlot>>>,
+    /// The passphrase slot the context's password callback reads, kept while it may.
+    /// Only a [`Lent`] reaches it.
+    context_password: Cell<Option<Arc<StringSlot>>>,
     warn: Warn,
 }
 #[expect(
@@ -98,7 +100,7 @@ pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
     let owner = Arc::new(OwnedTlsContext {
         fields: UnsafeCell::new(OwnedTlsFields::default()),
         strings: std::array::from_fn(|_| StringSlot::empty()),
-        context_password: UnsafeCell::new(None),
+        context_password: Cell::new(None),
         warn,
     });
     let view = prepared(&owner);
@@ -232,15 +234,21 @@ impl Lent<'_> {
         // SAFETY: the guard's contract: nothing writes the fields while it lends them.
         unsafe { &*self.0.fields.get() }
     }
-    fn password(&mut self) -> &mut Option<Arc<StringSlot>> {
-        // SAFETY: the guard's contract: only its holder reaches the retained password,
-        // and this borrow of the guard is its only one.
-        unsafe { &mut *self.0.context_password.get() }
+    /// Another reference to the retained password.
+    fn password(&mut self) -> Option<Arc<StringSlot>> {
+        let held = self.0.context_password.take();
+        let shared = held.clone();
+        self.0.context_password.set(held);
+        shared
+    }
+    /// Retains `password` in place of the one held, which goes.
+    fn retain(&mut self, password: Option<Arc<StringSlot>>) {
+        drop(self.0.context_password.replace(password));
     }
 }
 /// The owner's strings, as views, and the scalar `fields` copied from it.
-fn configuration(owner: &OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig {
-    let strings = owner.strings.each_ref().map(|slot| slot.view());
+fn configuration<'a>(owner: &'a OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig<'a> {
+    let strings = owner.strings.each_ref().map(|slot| &**slot);
     TlsConfig {
         ciphers: strings[0].into(),
         ecdh_curve: strings[1].into(),
@@ -285,7 +293,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
     // OpenSSL/log callbacks.
     let mut config = configuration(state, owner.fields());
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
-    let retained_password = if config.passphrase.length == 0 {
+    let retained_password = if config.passphrase.is_empty() {
         None
     } else {
         Some(Arc::clone(&state.strings[PASSPHRASE]))
@@ -294,7 +302,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
         userdata: slot,
         callback: slot_password,
     };
-    // SAFETY: local configuration, stable string slots and a live password binding.
+    // SAFETY: a live password binding: the owner keeps the slot (`retained_password`).
     let ctx = unsafe { create_context(&mut config, Some(password)) };
     if let Some(ctx) = &ctx {
         crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
@@ -307,7 +315,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
         fields.protocols = config.protocols;
     });
     // The new context's live password data is retained independently of native views.
-    *owner.password() = retained_password;
+    owner.retain(retained_password);
     created
 }
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
@@ -372,12 +380,12 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
         };
     };
     // Independent retention of the context's actual live password value.
-    let password = source.password().clone();
+    let password = source.password();
     // Publish the copied scalar values and reference, releasing the destination's
     // previous one.
     destination.edit(|to| *to = fields);
     // Release old password ownership only after releasing its OpenSSL reference.
-    *destination.password() = password;
+    destination.retain(password);
     OwnedTlsCopy {
         status: 0,
         index: 0,
@@ -772,7 +780,7 @@ mod tests {
                 b"source"
             );
             swr_v1_tls_owner_free(source.owner);
-            let password = (*destination.owner).context_password.get();
+            let password = (*destination.owner).context_password.as_ptr();
             let slot = Arc::as_ptr((&*password).as_ref().unwrap());
             let mut output = [0u8; 16];
             assert_eq!(slot_password(output.as_mut_ptr().cast(), 16, 0, &*slot), 6);

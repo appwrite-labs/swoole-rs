@@ -318,14 +318,17 @@ pub(crate) mod native {
     }
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {
-        let task = task.0;
-        add_fn_sec_id(timeout, false, move || {
-            // SAFETY: the task outlives its timer, which fires or is deleted first.
-            let co = super::timeout(unsafe { task.as_ref() });
-            // SAFETY: the poll's parked coroutine; nothing borrows its task now.
-            unsafe { resume(co) };
-        })
-        .map(Timer)
+        add_fn_sec_id(timeout, false, move || wake(task, super::timeout)).map(Timer)
+    }
+
+    /// A parked poll's wake-up, by its timer or its deferred completion: `pick` ends
+    /// the wait over the task and names its coroutine, which resumes.
+    fn wake(task: Registered, pick: impl FnOnce(&super::Task<'_>) -> *mut core::ffi::c_void) {
+        // SAFETY: `Registered`'s invariant: the task is live and in place until its
+        // timer has fired or been deleted and its deferred wake has run.
+        let co = pick(unsafe { task.0.as_ref() });
+        // SAFETY: the poll's parked coroutine; nothing borrows its task now.
+        unsafe { resume(co) };
     }
 
     pub(super) fn timer_del(Timer(timer): Timer) {
@@ -337,10 +340,7 @@ pub(crate) mod native {
 
     impl Deferred for Completed {
         fn run(self) {
-            // SAFETY: the task stays parked until this deferred completion runs.
-            let co = super::completed(unsafe { self.0.0.as_ref() });
-            // SAFETY: the poll's parked coroutine; nothing borrows its task now.
-            unsafe { resume(co) };
+            wake(self.0, super::completed);
         }
 
         fn dispose(self) {}

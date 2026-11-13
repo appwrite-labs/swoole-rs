@@ -122,7 +122,7 @@ pub fn resp_stream(
         let r = stream.request;
         let state = format!(
             ",{},{}/{},{}/{};",
-            r.state, r.lines_received, r.lines_total, r.bytes_received, r.bytes_total
+            r.state as u8, r.lines_received, r.lines_total, r.bytes_received, r.bytes_total
         );
         stream.log.extend_from_slice(state.as_bytes());
         if drained {
