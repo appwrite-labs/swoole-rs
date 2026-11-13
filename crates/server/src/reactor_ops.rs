@@ -5,6 +5,7 @@
 //! master.cc no longer has a case for them. Logs name the upstream function that
 //! wrote them. Its effects over the reactor, the context's sockets and the
 //! server's counters are Rust calls too.
+use crate::records::Lookup;
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
@@ -250,8 +251,8 @@ impl<'c> Objects<'_, 'c> {
     fn ssl_fields(&self) -> Option<&'c OwnedTlsFields> {
         self.port()?.ssl_fields()
     }
-    /// `get_connection(fd)` (kind 0) or a verified session's (kind 2, 3).
-    fn connection(&self, key: c_long, kind: u32) -> *mut ConnectionRecord {
+    /// `get_connection(fd)` or a verified session's.
+    fn connection(&self, key: c_long, kind: Lookup) -> *mut ConnectionRecord {
         self.state.connection_ptr(key, kind)
     }
     /// `get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
@@ -318,7 +319,7 @@ fn write_facts(o: &mut Objects<'_, '_>) -> u64 {
             "a reactor thread writes only its own fds"
         );
     }
-    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), Lookup::ByFd) else {
         o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
@@ -342,7 +343,7 @@ fn peer_close_facts(o: &mut Objects<'_, '_>) -> u64 {
     let Some(fd) = o.event().map(Event::fd) else {
         return 0;
     };
-    let Some(conn) = o.state.connection(c_long::from(fd), 0) else {
+    let Some(conn) = o.state.connection(c_long::from(fd), Lookup::ByFd) else {
         o.ctx.conn = core::ptr::null_mut();
         return 0;
     };
@@ -559,7 +560,7 @@ pub(crate) fn answer(
         OP_REACTOR_NUM => u64::from(o.config().reactor_num.get()),
         OP_WORKER_NUM => u64::from(o.config().worker_num.get()),
         OP_CONN_AT | OP_CC_VALID => {
-            let conn = o.state.connection(c_long::from(int(arg)), 0);
+            let conn = o.state.connection(c_long::from(int(arg)), Lookup::ByFd);
             if !valid(conn) {
                 return Some(0);
             }
@@ -582,9 +583,9 @@ pub(crate) fn answer(
         OP_SESSION_CONN | OP_RT_FRONT_CONN => {
             // The front's fd is the session id.
             let (key, kind) = if op == OP_SESSION_CONN {
-                (arg.cast_signed(), 2)
+                (arg.cast_signed(), Lookup::Verified)
             } else {
-                (o.front()?.fd, 3)
+                (o.front()?.fd, Lookup::VerifiedTls)
             };
             o.ctx.conn = o.connection(key, kind);
             u64::from(!o.ctx.conn.is_null())
@@ -759,7 +760,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
             let fd = socket.fd();
             // The connection table's slot for the listening fd.
-            let serv_sock = o.state.connection(c_long::from(fd), 0)?;
+            let serv_sock = o.state.connection(c_long::from(fd), Lookup::ByFd)?;
             serv_sock.set_fd(fd);
             serv_sock.set_socket_type(port.config().r#type);
             serv_sock.set_object(port.raw());

@@ -3,6 +3,7 @@
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
 //! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
+use crate::records::Lookup;
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
@@ -152,7 +153,7 @@ pub(crate) fn answer(
         OP_PACKET_INIT => {
             let fd = event_fd(ctx)?;
             // The event's fd is a listening socket's, whose slot is live.
-            let conn = state.connection(fd.into(), 0)?;
+            let conn = state.connection(fd.into(), Lookup::ByFd)?;
             let kind = conn.socket_type();
             // `ctx.sock` is already the event's socket, the port's listening socket
             // that `OP_STORE_LISTEN` stored in this slot.

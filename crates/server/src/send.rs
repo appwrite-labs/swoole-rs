@@ -17,7 +17,7 @@ use crate::ops::{
     OP_SC_SEND, OP_SC_SENDFILE, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE,
     OP_SC_YIELD_ERROR,
 };
-use crate::records::VERIFIED_TLS;
+use crate::records::Lookup;
 use crate::{Host, MODE_PROCESS, SW_ERR, SW_OK, ServerState};
 use std::ffi::c_void;
 use swoole_rs_corebase::microtime;
@@ -67,7 +67,7 @@ pub(crate) const DIRECT_SEND: u64 = 1 << 17;
 /// `send` lends `info.len` readable bytes at `data`.
 pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> Option<i64> {
     let state = state?;
-    let conn = state.connection(send.info.fd, VERIFIED_TLS)?;
+    let conn = state.connection(send.info.fd, Lookup::VerifiedTls)?;
     let socket = conn.socket()?;
     if conn.overflow()
         || socket.read(|record| {

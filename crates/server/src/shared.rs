@@ -1,4 +1,5 @@
 //! Rust-owned shared server and port counters in the existing shared-memory arena.
+use crate::records::Lookup;
 use core::ffi::c_int;
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
@@ -125,7 +126,7 @@ pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCount
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
 fn session_port_counters(state: &crate::ServerState, session_id: i64) -> Option<&PortCounters> {
     // Kind 1 is `get_connection_by_session_id`, kind 0 `get_connection(server_fd)`.
-    let server_fd = state.connection(session_id, 1)?.server_fd();
+    let server_fd = state.connection(session_id, Lookup::BySession)?.server_fd();
     state.port_by_server_fd(server_fd)?.config().counters()
 }
 

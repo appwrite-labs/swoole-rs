@@ -9,7 +9,7 @@ use crate::ops::{
     OP_ON_CLOSE, OP_ON_PACKET, OP_ON_RECEIVE, OP_OUT_EMPTY, OP_PORT_COUNT, OP_QUEUE_CLOSE,
     OP_SEND_HERE,
 };
-use crate::records::{ConnectionRecord, VERIFIED_TLS};
+use crate::records::{ConnectionRecord, Lookup};
 use crate::{Host, SW_OK};
 use core::ffi::{c_char, c_int, c_long};
 use core::sync::atomic::Ordering;
@@ -61,7 +61,11 @@ pub(crate) fn low16(value: c_int) -> u16 {
 }
 
 /// The connection lookup of `kind` (see `ServerState::connection`).
-fn connection<H: Host>(h: &mut H, key: c_long, kind: u32) -> crate::Effect<*mut ConnectionRecord> {
+fn connection<H: Host>(
+    h: &mut H,
+    key: c_long,
+    kind: Lookup,
+) -> crate::Effect<*mut ConnectionRecord> {
     Ok(h.state()?.connection_ptr(key, kind))
 }
 
@@ -149,7 +153,11 @@ pub(crate) fn dispatch<H: Host>(
     // SAFETY: native code lends a live `SendData` for the call.
     let info = unsafe { &mut (*task).info };
     if is_stream_event(info.kind) {
-        let Some(c) = h.state()?.connection(info.fd, 0).filter(|c| c.is_active()) else {
+        let Some(c) = h
+            .state()?
+            .connection(info.fd, Lookup::ByFd)
+            .filter(|c| c.is_active())
+        else {
             log::warning(
                 c"BaseFactory::dispatch",
                 format_args!(
@@ -208,7 +216,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     let conn = if dgram {
         None
     } else {
-        let conn = h.state()?.connection(task.info.fd, VERIFIED_TLS);
+        let conn = h.state()?.connection(task.info.fd, Lookup::VerifiedTls);
         let Some(c) = conn.filter(|c| c.closed().load(Ordering::Relaxed) == 0) else {
             return Ok(false);
         };
@@ -246,7 +254,11 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
 pub(crate) fn notify<H: Host>(h: &mut H, info: *mut DataHead) -> crate::Effect<bool> {
     // SAFETY: native code lends a live `DataHead` for the call.
     let head = unsafe { &mut *info };
-    let Some(c) = h.state()?.connection(head.fd, 0).filter(|c| c.is_active()) else {
+    let Some(c) = h
+        .state()?
+        .connection(head.fd, Lookup::ByFd)
+        .filter(|c| c.is_active())
+    else {
         log::warning(
             c"BaseFactory::notify",
             format_args!(
@@ -324,7 +336,8 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
     // SAFETY: null, or a live connection record of the server's table. The handle reads
     // and writes one field at a time through the table's own pointer, so onClose, which
     // reaches the record by session, leaves it valid.
-    let Some(c) = (unsafe { crate::Connection::from_ptr(connection(h, id, 2)?) }) else {
+    let Some(c) = (unsafe { crate::Connection::from_ptr(connection(h, id, Lookup::Verified)?) })
+    else {
         log::set_last_error(SESSION_NOT_EXIST);
         return Ok(false);
     };
@@ -692,10 +705,10 @@ mod tests {
         t.conn().close_actively = true;
         let s = t.script(&[]);
         // As process mode's factory holds the slot `OP_SESSION_CONN` looked up.
-        let conn = s.state.connection_ptr(1, crate::records::VERIFIED);
+        let conn = s.state.connection_ptr(1, Lookup::Verified);
         let mut seen = None;
         let call = |info: &mut DataHead| {
-            let c = s.state.connection(1, crate::records::BY_SESSION).unwrap();
+            let c = s.state.connection(1, Lookup::BySession).unwrap();
             seen = Some((info.fd, info.reactor_id, info.server_fd, c.closing()));
             c.set_close_errno(104);
         };

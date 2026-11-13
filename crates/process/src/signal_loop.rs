@@ -87,20 +87,19 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
 #[must_use]
 pub fn get(signo: i32, ops: &Ops) -> usize {
     let lookup = signal::signal_lookup(signo);
-    if lookup.status == 1 {
+    if lookup == signal::Lookup::OutOfRange {
         report(ops, 1, signo, 0);
     }
-    lookup.handler
+    lookup.handler()
 }
 /// `swoole_signal_callback`: runs the handler registered for `signo`.
 pub fn callback(signo: i32, ops: &Ops) {
-    let lookup = signal::signal_lookup(signo);
-    match lookup.status {
-        1 => report(ops, 0, signo, 0),
-        2 => report(ops, 2, signo, 0),
+    match signal::signal_lookup(signo) {
+        signal::Lookup::OutOfRange => report(ops, 0, signo, 0),
+        signal::Lookup::Default => report(ops, 2, signo, 0),
         // SAFETY: a handler `set` registered.
-        0 => unsafe { (ops.invoke)(lookup.handler, signo) },
-        _ => {}
+        signal::Lookup::Handler(handler) => unsafe { (ops.invoke)(handler, signo) },
+        signal::Lookup::Ignored => {}
     }
 }
 /// The original unsigned listener sum, including async waiters.
