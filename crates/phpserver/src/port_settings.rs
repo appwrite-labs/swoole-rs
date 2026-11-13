@@ -1041,11 +1041,11 @@ mod tests {
         assert_eq!(table.trace.borrow().join(";"), expected);
         // SAFETY: the owner's fields, live until it is freed below.
         let fields = unsafe { &*prepared.fields };
-        assert_eq!(fields.disable_compress, 0, "ssl_compress is inverted");
+        assert!(!fields.disable_compress, "ssl_compress is inverted");
         assert_eq!(fields.protocols, 4, "a datagram port drops DTLS");
-        assert_eq!((fields.verify_peer, fields.allow_self_signed), (1, 1));
+        assert!(fields.verify_peer && fields.allow_self_signed);
         assert_eq!(fields.verify_depth, 255);
-        assert_eq!(fields.prefer_server_ciphers, 1);
+        assert!(fields.prefer_server_ciphers);
         let view = |index: usize| {
             // SAFETY: a slot of the live owner.
             let view =

@@ -154,7 +154,7 @@ impl Drop for StreamCtx {
     fn drop(&mut self) {
         let mut ctx = self.ctx;
         // Ended first, so the response's release answers nothing.
-        ctx.state().end = 1;
+        ctx.state().end = true;
         if !self.dispatched.get() {
             bailout::defer(context::release_objects(ctx));
         }
@@ -319,20 +319,16 @@ impl Ctx {
 
     /// Set the context's `field` (`End`, `SendHeader`, `SendChunked`, `Status`,
     /// `Form` or, with compression, `AcceptCompression`).
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's narrower fields"
-    )]
     pub fn set(mut self, field: Field, value: u32) {
         let state = self.state();
         match field {
-            Field::End => state.end = value as u8,
-            Field::SendHeader => state.send_header = value as u8,
-            Field::SendChunked => state.send_chunked = value as u8,
+            Field::End => state.end = value != 0,
+            Field::SendHeader => state.send_header = value != 0,
+            Field::SendChunked => state.send_chunked = value != 0,
             #[expect(clippy::cast_possible_wrap, reason = "upstream's int status")]
             Field::Status => state.response.status = value as i32,
-            Field::Form => state.request.post_form_urlencoded = value as u8,
-            Field::AcceptCompression if compression() => state.accept_compression = value as u8,
+            Field::Form => state.request.post_form_urlencoded = value != 0,
+            Field::AcceptCompression if compression() => state.accept_compression = value != 0,
             _ => {}
         }
     }
@@ -381,8 +377,8 @@ impl Ctx {
     /// The static handler answers the request: no server hook counts it.
     pub fn unhook(mut self) {
         let state = self.state();
-        state.before_request = 0;
-        state.after_response = 0;
+        state.before_request = false;
+        state.after_response = false;
     }
 
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
@@ -399,9 +395,9 @@ impl Ctx {
         context::init(ctx.state(), server);
         let state = ctx.state();
         state.fd = fd;
-        state.http2 = 1;
-        state.keepalive = 1;
-        state.before_request = 1;
+        state.http2 = true;
+        state.keepalive = true;
+        state.before_request = true;
         ServerCtx(ctx)
     }
 
@@ -412,9 +408,9 @@ impl Ctx {
         let mut ctx = context::context_new(fd);
         context::copy_settings(ctx.state(), self.state());
         let state = ctx.state();
-        state.http2 = 1;
+        state.http2 = true;
         state.stream_id = stream_id;
-        state.keepalive = 1;
+        state.keepalive = true;
         if let Some(request) = state.request.zobject.props() {
             request.long(c"streamId", i64::from(stream_id));
         }

@@ -38,7 +38,7 @@ pub unsafe fn swr_v1_process_server_workers_start(
     pool.workers = view.event_workers;
     pool.worker_num = view.event_count;
     // This original event pool uses its pipes rather than a message queue.
-    pool.use_msgqueue = 0;
+    pool.use_msgqueue = false;
     for index in 0..view.event_count {
         // The array just published holds `event_count` records.
         let Some(worker) = pool.worker(index as usize) else {
@@ -246,7 +246,7 @@ mod tests {
                 event_pool.use_msgqueue,
                 event_pool.reload_count
             ),
-            (2, 0, 91)
+            (2, false, 91)
         );
         assert_eq!(
             unsafe { Worker::new(&raw const pending[0]).id() },

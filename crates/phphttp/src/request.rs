@@ -137,12 +137,12 @@ fn create_request(call: &Call) {
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it, as upstream's does.
     unsafe { call.set_value(slot.value) };
-    state.parse_cookie = 1;
-    state.parse_body = 1;
-    state.parse_files = 1;
+    state.parse_cookie = true;
+    state.parse_body = true;
+    state.parse_files = true;
     let compression = CAPABILITIES.load(Relaxed) & 8 != 0;
     if compression {
-        state.enable_compression = 1;
+        state.enable_compression = true;
         state.compression_level = BEST_SPEED;
     }
     if let Some(options) = options {
@@ -161,7 +161,7 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
     let capabilities = CAPABILITIES.load(Relaxed);
     let wanted = u32::from(capabilities & 8 != 0) | (u32::from(capabilities & 1 != 0) << 1);
     let option = request_option(name, wanted);
-    let truth = || u8::from(value.truthy());
+    let truth = || value.truthy();
     match option {
         1 => state.parse_cookie = truth(),
         2 => state.parse_body = truth(),
