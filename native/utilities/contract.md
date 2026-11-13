@@ -1,8 +1,9 @@
 # Utilities ABI
 
 Feature bit 512 (`utilities`). Patches `include/swoole.h`; this directory's
-`swoole_util.h`, `swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
-upstream's and keep what C++, the compiled core-tests and the utilities gates use. Declarations are in
+`swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
+upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
+`swoole_util.h`. Declarations are in
 [swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:
 `tests/modules/utilities/README.md`. Depends on the locks module for wait/wake.
 

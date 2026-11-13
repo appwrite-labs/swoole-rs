@@ -4,7 +4,7 @@
 //! The `Server` is made and deleted by
 //! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
-//! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
+//! whose pointers head the object (crates/server/src/state.rs), as the
 //! `swr_v1_port_config` is a `ListenPort`. Each new server
 //! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
 //! cases call are crates/server's `server_methods`. The fixtures read the request line
@@ -89,7 +89,7 @@ const BY_SESSION: u32 = 1;
 // The SWR_SERVER_NATIVE pointer members, opaque here.
 type Native = *mut c_void;
 
-/// `swr_v1_server_config`.
+/// Server's configuration, as crates/server lays it out.
 #[repr(C)]
 struct ServerConfig {
     reactor_num: u16,
@@ -238,14 +238,14 @@ const CONFIG_OFFSETS: &[usize] = &[
     offset_of!(ServerConfig, mode_),
 ];
 
-/// `swr_v1_server_ports`.
+/// Server::ports, as crates/server lays it out.
 #[repr(C)]
 struct Ports {
     items: *const *mut c_void,
     count: u32,
 }
 
-/// `swr_v1_server_tables`.
+/// Server's tables, as crates/server lays them out.
 #[repr(C)]
 struct ServerTables {
     connection_list: Native,

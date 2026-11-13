@@ -1,7 +1,6 @@
 # Locks and atomics ABI
 
-Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h` (atomics, futex wait and the
-coroutine backoff). No lock has a C++ class or a C entry point: the server, Table and
+Feature bit 1024 (`locks`). No lock has a C++ class or a C entry point: the server, Table and
 crates/phplocks use crates/locks' `Lock` and `SharedMutex`, and `swoole::Barrier`'s methods
 (declared in this directory's `swoole_lock.h`) are Rust under their C++ symbols. The module has no C or C++
 source. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
@@ -50,9 +49,8 @@ upstream `Barrier::init`'s use of an uninitialized attribute. Non-pthread
 barriers keep the original one-shot arrival/count words, 10 ms polling and fence;
 fallback words must be aligned native `u32` storage.
 
-Supported platforms: macOS and Linux. The crate and header reject other OSes
-(including Android and Apple mobile) at compile time
-(`tests/modules/locks/platforms.py`).
+Supported platforms: macOS and Linux. The crate rejects other OSes
+(including Android and Apple mobile) at compile time.
 
 ## Atomics
 

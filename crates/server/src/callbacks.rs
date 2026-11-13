@@ -13,7 +13,7 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 
-// Slots, in `SWR_SERVER_CB_*` order. The first seven are also `OP_CALLBACK`'s
+// Slots. The first seven are also `OP_CALLBACK`'s
 // argument and the callback its logs name.
 pub const CB_CONNECT: u32 = 0;
 pub const CB_CLOSE: u32 = 1;
@@ -37,7 +37,7 @@ pub const CB_WORKER_EXIT: u32 = 18;
 pub const CB_USER_WORKER_START: u32 = 19;
 pub const CB_FINISH: u32 = 20;
 pub const CB_DISPATCH_FUNC: u32 = 21;
-/// `SWR_SERVER_CB_COUNT`.
+/// The number of slots.
 pub(crate) const CB_COUNT: usize = 22;
 
 /// The context every slot fn takes first, which a Rust fn ignores: null, or
@@ -515,37 +515,5 @@ pub(crate) mod tests {
             before + 3,
             "the state frees the rest"
         );
-    }
-
-    #[test]
-    fn header_enum_matches() {
-        let text = include_str!("../../../native/include/swoole_rs_server_state.h");
-        let body = text
-            .split("SWR_SERVER_CB_CONNECT")
-            .nth(1)
-            .and_then(|t| t.split("};").next())
-            .unwrap_or_default();
-        let names: Vec<&str> = core::iter::once("SWR_SERVER_CB_CONNECT")
-            .chain(body.split(',').map(str::trim).filter(|n| !n.is_empty()))
-            .collect();
-        let rust = [
-            ("CONNECT", CB_CONNECT as usize),
-            ("CLOSE", CB_CLOSE as usize),
-            ("BUFFER_FULL", CB_BUFFER_FULL as usize),
-            ("BUFFER_EMPTY", CB_BUFFER_EMPTY as usize),
-            ("TASK", CB_TASK as usize),
-            ("RECEIVE", CB_RECEIVE as usize),
-            ("PACKET", CB_PACKET as usize),
-            ("DISPATCH_FUNC", CB_DISPATCH_FUNC as usize),
-            ("COUNT", CB_COUNT),
-        ];
-        for (name, index) in rust {
-            let native = format!("SWR_SERVER_CB_{name}");
-            assert_eq!(
-                names.iter().position(|n| *n == native),
-                Some(index),
-                "{native}"
-            );
-        }
     }
 }

@@ -43,7 +43,6 @@
  "http-unit": 10,
  "http2-unit": 2,
  "httpbindings-unit": 2,
- "locks-platforms": 1,
  "locks-state": 1,
  "locks-unit": 10,
  "memory-rust-asan": 20,

@@ -33,7 +33,8 @@ def test_originals(tmp_path, archive, pytestconfig):
     ids = original_ids(tests)
     assert len(ids) == 23
     hybrid_tests = tmp_path / 'string-hybrid.cpp'
-    hybrid_tests.write_text(without(tests.read_text(), HELPERS + PORTED))
+    # The hybrid has no swoole_util.h: nothing it builds uses ScopeGuard, and neither do these TESTs.
+    hybrid_tests.write_text(without(tests.read_text(), HELPERS + PORTED).replace('#include "swoole_util.h"\n', '', 1))
     for engine in ['upstream', 'rust']:
         binary = tmp_path / engine
         engine_tests = hybrid_tests if engine == 'rust' else tests
