@@ -181,14 +181,15 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
 
 /// The static handler's default locations and HTTP compression, from the settings.
 fn http_defaults(state: &crate::ServerState) {
-    // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
-    let strings = |kind, op| crate::static_config::config(state, kind, op, &[]);
+    use crate::StaticCollection::{CompressionTypes, Locations};
+    use crate::static_config::Op;
+    let strings = |collection, op| crate::static_config::config(state, collection, op);
     let config = state.config_ref();
-    if config.enable_static_handler.get() && strings(0, 1) == 0 {
-        strings(0, 3);
-        strings(0, 2);
+    if config.enable_static_handler.get() && strings(Locations, Op::Enabled) == 0 {
+        strings(Locations, Op::Reset);
+        strings(Locations, Op::Enable);
     }
-    if strings(2, 1) != 0 && strings(2, 0) != 0 {
+    if strings(CompressionTypes, Op::Enabled) != 0 && strings(CompressionTypes, Op::Count) != 0 {
         config.http_compression.set(true);
     }
 }

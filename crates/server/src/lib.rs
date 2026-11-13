@@ -74,10 +74,7 @@ pub mod thread_mode;
 mod thread_ops;
 pub mod view;
 pub mod worker_methods;
-pub use static_config::{
-    swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,
-    swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free, swr_v1_server_static_text,
-};
+pub use static_config::Collection as StaticCollection;
 
 pub use records::{
     Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
