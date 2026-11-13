@@ -22,10 +22,12 @@ mod lifecycle;
 pub mod log;
 
 // crates/framing's return codes; it can't name these, since corebase depends on it.
+use swoole_rs_framing::recv::Status;
 const _: () = assert!(
-    swoole_rs_framing::recv::SW_OK == constants::ResultCode::SW_OK as i32
-        && swoole_rs_framing::recv::SW_ERR == constants::ResultCode::SW_ERR as i32
-        && swoole_rs_framing::recv::SW_CLOSE == constants::ReturnCode::SW_CLOSE as i32,
+    Status::Ok as i32 == constants::ResultCode::SW_OK as i32
+        && Status::Err as i32 == constants::ResultCode::SW_ERR as i32
+        && Status::Continue as i32 == constants::ReturnCode::SW_CONTINUE as i32
+        && Status::Close as i32 == constants::ReturnCode::SW_CLOSE as i32,
     "crates/framing's return codes"
 );
 pub mod native;

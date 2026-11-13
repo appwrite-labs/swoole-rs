@@ -406,7 +406,7 @@ pub(crate) unsafe fn receive<K: Packages>(
     }
     let status = recv(mode, head, &mut flags, &mut r);
     r.apply_wait(flags);
-    status
+    status as c_int
 }
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
