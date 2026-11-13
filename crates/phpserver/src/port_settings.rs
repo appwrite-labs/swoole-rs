@@ -431,7 +431,7 @@ impl Source for Zend<'_> {
     }
 
     fn length_func(&self) -> GetPackageLength {
-        crate::dispatch::length_func
+        swoole_rs_phpswoole::length::length::<crate::dispatch::Length>
     }
 
     fn sni(&self) -> Step {

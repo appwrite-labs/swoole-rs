@@ -27,6 +27,7 @@ mod implicit;
 mod info;
 mod ini;
 mod interfaces;
+pub mod length;
 mod memory;
 mod module;
 mod optional;

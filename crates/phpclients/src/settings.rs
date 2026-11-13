@@ -5,9 +5,9 @@ use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::{c_int, c_void};
 use swoole_rs_clients::client::ClientRecord;
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
+use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{Array, E_ERROR, Owned, Value as Zval, ZString, bailout, long_zval, sys};
 
 /// `SW_DATA_EOF_MAXLEN`.
@@ -18,29 +18,21 @@ const INPUT_BUFFER_SIZE: i64 = 2 * 1024 * 1024;
 /// `SW_IPC_BUFFER_SIZE`: the length offset a length function's protocol keeps.
 const IPC_BUFFER_SIZE: u16 = 8192;
 
-/// `php_swoole_length_func`: the packet length the PHP callable in the
-/// protocol's `private_data_1` returns for the bytes so far, or -1. A bailout
-/// is re-raised as the last step.
-/// # Safety
-/// C++ calls it with a live protocol whose `private_data_1` is a
-/// callable, and a live packet of `buf_size` bytes.
-pub(crate) unsafe extern "C" fn php_swoole_length_func(
-    protocol: *const Protocol,
-    _socket: *mut c_void,
-    packet: &mut PacketLength,
-) -> isize {
-    // SAFETY: per the caller.
-    let callable = unsafe { (*protocol).private_data_1 };
-    let length = package_length(callable, packet.bytes());
-    bailout::finish();
-    length
+/// `php_swoole_length_func`: the packet length a client's `package_length_func`
+/// returns for the bytes so far.
+pub(crate) struct Length;
+
+impl swoole_rs_phpswoole::length::PackageLength for Length {
+    fn length(callable: &Callable, bytes: &[u8]) -> isize {
+        package_length(callable, bytes)
+    }
 }
 
-fn package_length(callable: *mut c_void, bytes: &[u8]) -> isize {
+fn package_length(callable: &Callable, bytes: &[u8]) -> isize {
     // The call borrows the string, released when `data` drops.
     let data = Owned::string(ZString::new(bytes));
     let mut retval = long_zval(0);
-    let called = native::invoke(callable, &mut [data.copy_value()], &mut retval);
+    let called = callable.call(&mut [data.copy_value()], Some(Zval::of(&mut retval)), true);
     match called {
         Err(bailout) => {
             bailout.defer();
@@ -335,7 +327,7 @@ fn proxies(cli: Cli, options: &Options) -> bool {
 fn option_pointer(cli: Cli, callable: *mut c_void) -> *mut c_void {
     edit(cli, |record| {
         let protocol = &mut record.protocol;
-        protocol.get_package_length = Some(php_swoole_length_func);
+        protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
         protocol.package_length_size = 0;
         protocol.package_length_type = 0;
         protocol.package_length_offset = IPC_BUFFER_SIZE;

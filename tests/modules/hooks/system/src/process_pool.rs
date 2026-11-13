@@ -310,7 +310,7 @@ unsafe fn pool_listen_host(
     // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
     unsafe {
         pm::listen_socket(
-            &*pool.cast(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             1,
             std::ffi::CStr::from_ptr(host),
             port,
@@ -431,7 +431,7 @@ unsafe fn pool_send_message(
     // SAFETY: as the caller guarantees.
     unsafe {
         pm::send_message(
-            &*pool.cast(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             worker_id,
             std::slice::from_raw_parts(message.cast(), len),
         )
@@ -446,7 +446,10 @@ unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> 
         unsafe { std::slice::from_raw_parts(data.cast(), length as usize) }
     };
     // SAFETY: as the caller guarantees.
-    pm::response(unsafe { &*pool.cast() }, data)
+    pm::response(
+        unsafe { swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()) },
+        data,
+    )
 }
 
 unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {

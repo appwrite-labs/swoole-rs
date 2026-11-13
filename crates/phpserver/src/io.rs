@@ -312,7 +312,7 @@ fn send_message(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let mut buf = crate::task::EventData::new();
+    let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
     if call
         .value(1)
         .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
@@ -325,10 +325,7 @@ fn send_message(call: &Call) {
         reason = "checked against the core worker count above"
     )]
     let worker_id = worker_id as u32;
-    // SAFETY: a live server and the packed message, an `EventData`.
-    call.set_bool(unsafe {
-        server_methods::send_pipe_message(serv.raw(), worker_id, buf.ptr().cast())
-    });
+    call.set_bool(server_methods::send_pipe_message(serv, worker_id, &mut buf));
 }
 
 fn finish(call: &Call) {
