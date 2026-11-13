@@ -375,11 +375,11 @@ pub unsafe extern "C" fn swoole_pgsql_close_prepared(
     type Send = unsafe extern "C" fn(Conn, *const c_char) -> c_int;
     // SAFETY: a NUL-terminated name.
     let send = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"PQsendClosePrepared".as_ptr()) };
-    if send.is_null() {
+    // SAFETY: null or libpq's `PQsendClosePrepared`, of this type.
+    let send = unsafe { std::mem::transmute::<*mut c_void, Option<Send>>(send) };
+    let Some(send) = send else {
         return ptr::null_mut();
-    }
-    // SAFETY: libpq's `PQsendClosePrepared`, of this type.
-    let send = unsafe { std::mem::transmute::<*mut c_void, Send>(send) };
+    };
     // SAFETY: per the caller.
     if unsafe { send(conn, stmt_name) } == 0 {
         return ptr::null_mut();

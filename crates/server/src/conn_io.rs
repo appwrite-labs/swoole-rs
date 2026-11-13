@@ -60,6 +60,9 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
     read_as(BUILT_PREQUEUE, serv, reactor, event)
 }
 
+/// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`.
+type OnRead = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut Event) -> c_int;
+
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
     let state = serv.state();
@@ -116,9 +119,12 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     conn.set_last_recv_time(microtime());
     let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
     let on_read = port.config().on_read.load(Relaxed);
-    // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-    let on_read: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut Event) -> c_int =
-        unsafe { core::mem::transmute(on_read) };
+    // SAFETY: the port holds null or the `int (*onRead)(Reactor *, ListenPort *, Event *)`
+    // `init_protocol` set.
+    let on_read = unsafe { core::mem::transmute::<*mut c_void, Option<OnRead>>(on_read) };
+    let Some(on_read) = on_read else {
+        return ERR;
+    };
     // SAFETY: this thread's reactor, the port and its event.
     let retval = unsafe { on_read(reactor.ptr(), port.raw(), raw) };
     // Upstream reads the socket after the read too.

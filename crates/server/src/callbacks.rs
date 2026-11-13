@@ -174,9 +174,9 @@ impl CallbackSlot {
         self.invoke.store(core::ptr::null_mut(), Relaxed);
         let ctx = self.ctx.swap(core::ptr::null_mut(), Relaxed);
         let drop = self.drop.swap(core::ptr::null_mut(), Relaxed);
-        if !drop.is_null() {
-            // SAFETY: native code stored a `void (*)(void *) noexcept` paired with `ctx`.
-            let drop = unsafe { core::mem::transmute::<*mut c_void, DropFn>(drop) };
+        // SAFETY: native code stored null or a `void (*)(void *) noexcept` paired with `ctx`.
+        let drop = unsafe { core::mem::transmute::<*mut c_void, Option<DropFn>>(drop) };
+        if let Some(drop) = drop {
             // SAFETY: the box is this slot's alone, and the slot no longer names it.
             unsafe { drop(ctx) };
         }

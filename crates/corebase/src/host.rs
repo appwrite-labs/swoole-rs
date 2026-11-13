@@ -433,9 +433,9 @@ pub extern "C" fn swoole_print_backtrace_on_error() {
     }
     swoole_print_backtrace();
     let host = crate::swr_v1_core_print_backtrace();
-    if !host.is_null() {
-        // SAFETY: the host stored a `void (*)()` in `SwooleG.print_backtrace`.
-        let host: extern "C" fn() = unsafe { std::mem::transmute(host) };
+    // SAFETY: the host stores null or a `void (*)()` in `SwooleG.print_backtrace`.
+    let host = unsafe { std::mem::transmute::<*mut c_void, Option<extern "C" fn()>>(host) };
+    if let Some(host) = host {
         host();
     }
 }
