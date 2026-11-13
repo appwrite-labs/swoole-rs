@@ -253,8 +253,7 @@ impl<'a> Settings<'a> {
 
     /// `serv-><text> = value` (`view::set_text`'s `index`).
     fn text(&self, index: usize, value: &[u8]) {
-        // SAFETY: a live server, not started (set() checked).
-        unsafe { self.server().set_text(index, value) };
+        self.server().set_text(index, value);
     }
 
     /// `insert(value)` into static collection `kind` (`view::insert_static_string`).

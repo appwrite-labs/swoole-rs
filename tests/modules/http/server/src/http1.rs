@@ -568,7 +568,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_server_text_slot(state: *const c_void, index: usize) -> *const c_void;
     fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
@@ -712,15 +711,7 @@ impl Server {
 
     /// `serv.user_ = value` and the other text members.
     fn set_text(self, index: usize, value: &str) {
-        // SAFETY: the state's text slot; `value` is readable for its length.
-        let status = unsafe {
-            swr_v1_core_string_set(
-                swr_v1_server_text_slot(self.state(), index),
-                value.as_ptr().cast(),
-                value.len(),
-            )
-        };
-        assert!(status >= 0);
+        self.view().set_text(index, value.as_bytes());
     }
 
     /// `set_document_root(path)`.
