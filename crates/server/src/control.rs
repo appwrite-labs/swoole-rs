@@ -510,6 +510,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signal_set() {
         use crate::hybrid::Step::{Handle, Ignore};
         let live = LiveServer::new();

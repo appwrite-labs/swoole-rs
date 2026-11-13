@@ -558,12 +558,13 @@ fn free_server(serv: view::Server<'_>) {
     let tables = unsafe { &mut *state.tables() };
     tables.session_list.free();
     tables.port_gs_list.free();
-    // SAFETY: as `tables`, for the configuration.
-    let config = unsafe { &mut *state.config() };
-    config.workers.free();
-    if !config.factory_.is_null() {
+    // SAFETY: as `tables`, for the configuration; no reference outlives its statement,
+    // so the factory's deletion, which reads the configuration, aliases none.
+    let config = || unsafe { &mut *state.config() };
+    config().workers.free();
+    if !state.config_ref().factory_.is_null() {
         hybrid().step(serv, Step::DeleteFactory);
-        config.factory_ = core::ptr::null_mut();
+        config().factory_ = core::ptr::null_mut();
     }
     swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
 }
