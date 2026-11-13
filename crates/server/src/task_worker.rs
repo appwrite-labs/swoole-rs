@@ -7,6 +7,7 @@
 )]
 use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::log;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -16,8 +17,6 @@ pub mod native;
 const TASK_CALLBACK: u16 = 1 << 3;
 const TASK_COROUTINE: u16 = 1 << 5;
 const TASK_NOREPLY: u16 = 1 << 7;
-/// `SW_SERVER_EVENT_PIPE_MESSAGE`.
-const EVENT_PIPE_MESSAGE: u8 = 10;
 /// `SW_LOG_WARNING`, `SW_ERROR_WRONG_OPERATION`.
 const SW_LOG_WARNING: i32 = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as i32;
 const WRONG_OPERATION: i32 = 509;
@@ -50,7 +49,7 @@ fn answerable(task_workers: u32, task: Option<&DataHead>) -> Option<&DataHead> {
         "cannot use Server::task()/Server::finish() method, because no set [task_worker_num]"
     } else {
         let task = task?;
-        if task.kind == EVENT_PIPE_MESSAGE {
+        if task.event() == Some(ServerEvent::PipeMessage) {
             "Server::task()/Server::finish() is not supported in onPipeMessage callback"
         } else if task.ext_flags & TASK_NOREPLY != 0 {
             "Server::finish() can only be used in the worker process"
@@ -115,7 +114,7 @@ mod tests {
         assert!(answerable(0, Some(&task)).is_none());
         assert!(answerable(1, None).is_none());
         let pipe = DataHead {
-            kind: EVENT_PIPE_MESSAGE,
+            kind: ServerEvent::PipeMessage.code(),
             ..DataHead::default()
         };
         assert!(answerable(1, Some(&pipe)).is_none());

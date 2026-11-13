@@ -8,6 +8,7 @@ use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
+use swoole_rs_corebase::ServerEvent;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
@@ -310,11 +311,7 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
     let reactors = i64::from(state.config_ref().reactor_num.get());
     let id = i64::from(conn.reactor_id()) + index * reactors;
     if let Some(worker) = worker(serv, id) {
-        send_event(
-            worker_pipe(worker, false),
-            session,
-            crate::ops::EVENT_CLOSE_FORCE,
-        );
+        send_event(worker_pipe(worker, false), session, ServerEvent::CloseForce);
     }
 }
 
@@ -331,10 +328,6 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ReactorThread_onPipeRead`: the messages workers send their reactor thread,
 /// until the pipe is drained.
 fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
-    use crate::ops::{
-        EVENT_CLOSE_FORCE, EVENT_CLOSE_FORWARD, EVENT_COMMAND_REQUEST, EVENT_COMMAND_RESPONSE,
-        EVENT_FINISH, EVENT_INCOMING, EVENT_PIPE_MESSAGE, EVENT_SHUTDOWN_SIGNAL,
-    };
     let (serv, reactor) = (ctx.serv, ctx.reactor?);
     let state = serv.state();
     let thread = ctx.thread_record()?;
@@ -347,8 +340,8 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
         }
         let head = *ctx.message()?;
         let session = head.fd;
-        match u32::from(head.kind) {
-            EVENT_INCOMING => {
+        match head.event() {
+            Some(ServerEvent::Incoming) => {
                 if let Some(conn) = state.connection(session, Lookup::Verified)
                     && methods::connection_incoming(serv, reactor, conn) < 0
                     && let Some(sock) = conn.socket()
@@ -356,7 +349,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                     reactor.close(sock);
                 }
             }
-            EVENT_COMMAND_REQUEST => {
+            Some(ServerEvent::CommandRequest) => {
                 let id = u16::try_from(thread.id.get()).unwrap_or_default();
                 // The bus's record of the command pipe (`thread.pipe_command`).
                 let end = state
@@ -366,28 +359,28 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 let pipe = end.and_then(|end| bus.pipe_socket(end));
                 crate::commands::call_command_handler(serv, bus, id, pipe);
             }
-            EVENT_COMMAND_RESPONSE => {
+            Some(ServerEvent::CommandResponse) => {
                 bus.with_packet(|reply| crate::commands::command_result(state, session, reply));
             }
-            crate::ops::EVENT_SHUTDOWN => shutdown(ctx)?,
-            EVENT_SHUTDOWN_SIGNAL => {
+            Some(ServerEvent::Shutdown) => shutdown(ctx)?,
+            Some(ServerEvent::ShutdownSignal) => {
                 swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
             }
-            EVENT_FINISH | EVENT_PIPE_MESSAGE => {
+            Some(ServerEvent::Finish | ServerEvent::PipeMessage) => {
                 // SAFETY: the bus's buffer: its `EventData`, its head and the payload it
                 // counts.
                 let event =
                     unsafe { swoole_rs_process::task_file::Packed::from_raw(ctx.resp.cast()) };
-                if u32::from(head.kind) == EVENT_FINISH {
+                if head.event() == Some(ServerEvent::Finish) {
                     let _ = state.callbacks.task(TaskSlot::Finish, serv, event);
                 } else {
                     state.callbacks.pipe_message(serv, event);
                 }
             }
-            EVENT_CLOSE_FORCE => {
+            Some(ServerEvent::CloseForce) => {
                 crate::reactor_thread::close(serv, reactor, session);
             }
-            EVENT_CLOSE_FORWARD => {
+            Some(ServerEvent::CloseForward) => {
                 factory::end(state, session, CLOSE_ACTIVELY);
             }
             _ => {

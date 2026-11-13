@@ -20,7 +20,7 @@ const PACKET: &[u8] = b"hello world\n";
 const SW_SOCK_UDP: c_int = 2;
 const SW_LOG_DEBUG: c_int = 0;
 const SW_LOG_TRACE: c_int = 1;
-const SW_SERVER_EVENT_RESUME_RECV: c_int = SW_SERVER_EVENT_PAUSE_RECV + 1;
+const SW_SERVER_EVENT_RESUME_RECV: ServerEvent = ServerEvent::ResumeRecv;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
 /// `SW_IPC_MAX_SIZE` (Linux): an `EventData`.

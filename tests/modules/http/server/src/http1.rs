@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_server::callbacks::CallbackKind as Slot;
 use swoole_rs_server::{ConnectionRecord, ServerText, StaticCollection, server_methods, view};
 
@@ -48,7 +49,7 @@ const DISPATCH_FDMOD: u8 = 2;
 const DISPATCH_IDLE_WORKER: u8 = 3;
 const DISPATCH_RESULT_DISCARD_PACKET: c_int = -1;
 const DISPATCH_RESULT_CLOSE_CONNECTION: c_int = -2;
-const SW_SERVER_EVENT_PAUSE_RECV: c_int = 11;
+const SW_SERVER_EVENT_PAUSE_RECV: ServerEvent = ServerEvent::PauseRecv;
 const SW_SOCK_TCP: c_int = 1;
 pub(super) const SW_LOG_WARNING: c_int = 4;
 const SW_OK: c_int = 0;
@@ -750,7 +751,7 @@ impl Server {
         )
     }
 
-    fn feedback(self, conn: &mut Connection, event: c_int) -> bool {
+    fn feedback(self, conn: &mut Connection, event: ServerEvent) -> bool {
         // SAFETY: as above.
         let record = unsafe { &mut *ptr::from_mut(conn).cast::<ConnectionRecord>() };
         server_methods::feedback(self.view(), record.into(), event)
