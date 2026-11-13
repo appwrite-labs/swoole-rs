@@ -1023,7 +1023,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
     }
     let state = context.state();
     state.response.status = 101;
-    state.upgrade = 1;
+    state.upgrade = true;
     send::end(context, None)
 }
 
@@ -1058,7 +1058,7 @@ pub(crate) fn request(mut context: Ctx) {
         Server: swoole-http-server\r\n\r\n\
         <html><body><h2>HTTP 400 Bad Request</h2><hr><i>Powered by Swoole</i></body></html>";
     context::send(context, BAD_REQUEST);
-    context.state().end = 1;
+    context.state().end = true;
     context::close(context);
 }
 
@@ -1072,7 +1072,7 @@ pub(crate) fn response_push(
     let flags = flags.map_or(i64::from(FLAG_FIN), Value::long);
     let mut frame = FrameObject::new(Some(data), opcode, flags, 0);
     frame.flags &= !FLAG_MASK;
-    if context.state().websocket_compression != 0 {
+    if context.state().websocket_compression {
         frame.flags |= FLAG_COMPRESS;
     }
     send_frame(context, &frame).unwrap_or(false)
@@ -1142,7 +1142,7 @@ pub(crate) fn accept(mut context: Ctx) {
         }
     }
     let state = context.state();
-    state.websocket_compression = u8::from(accepted);
+    state.websocket_compression = accepted;
     if !crate::context::co_socket(state)
         && let Some(conn) = crate::context::server(state).verified(state.fd)
     {
@@ -1165,7 +1165,7 @@ pub(crate) fn handshaked(mut context: Ctx) {
     let status = if state.response.status == 101 {
         STATUS_ACTIVE
     } else {
-        state.keepalive = 0;
+        state.keepalive = false;
         STATUS_HANDSHAKE_FAILED
     };
     set_status(server, fd, status);
