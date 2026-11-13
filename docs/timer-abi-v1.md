@@ -2,8 +2,7 @@
 
 The queue is `crates/timer`'s `Timer`, whose methods `swoole::Timer`
 (`crates/timer/src/owner.rs`, see [ownership.md](../native/timer/ownership.md))
-calls. Feature value 4. Three reads are C exports that no C calls: `swr_v1_timer_token`,
-`swr_v1_timer_stats_get` and `swr_v1_timer_ids`. The operations below are the methods, named as before:
+calls. Feature value 4. It exports no C symbols. The operations below are the methods, named as before:
 `next` is `select_next` and `stats` is `stats`. `crates/timer/src/kernel.rs` holds
 what the retired C++ harness (`kernel.cc`) checked, one test per topic.
 
@@ -17,8 +16,6 @@ Time is injected as signed 64-bit relative monotonic milliseconds; Rust creates 
 clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
-- The three exports take a valid, aligned queue and outputs that alias neither
-  the queue nor each other; a null queue or output returns `INVALID`.
 - The opaque non-null token is never dereferenced or freed by Rust. A successful
   add takes custody of one native node; only `RELEASE` or `RELEASE_OVERFLOW`
   hands it back. Get/next views are copied metadata.
@@ -85,8 +82,8 @@ defaults to -1. ID 0 means no active node; real IDs start at 1.
   increments the round, returns -1 if empty or closing, otherwise
   `max(1, head_deadline - captured_now)`.
 - **stats**: count (including active removed), round, active, selecting, closing.
-- **ids**: sets count to the retained count. Insufficient capacity returns
-  `CAPACITY` without writing IDs; `NULL`/0 is a sizing query. IDs come in
+- **ids** (test-only): returns the retained count. A slice shorter than it returns
+  `CAPACITY` without writing IDs; an empty slice is a sizing query. IDs come in
   unspecified order. Callers snapshot IDs before running callbacks and
   resolve each again.
 - **close**: idempotent; marks the active node removed; rejects add/update/begin

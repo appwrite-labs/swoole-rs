@@ -47,6 +47,7 @@ impl Heap {
     pub(super) fn first(&self) -> Option<&TimerView> {
         self.get(0)
     }
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(super) fn iter(&self) -> impl Iterator<Item = &TimerView> {
         (0..self.len()).filter_map(|index| self.get(index))
     }
