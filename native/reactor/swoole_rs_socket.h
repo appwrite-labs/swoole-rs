@@ -4,7 +4,7 @@
  * in its order and types. native/reactor/swoole_socket.h includes this after network::Address and
  * derives Socket from it, adding only methods. Rust allocates, initialises, makes,
  * accepts, duplicates and frees records; both sides assert the offsets below. The
- * upstream 1-bit flags are bytes, which keeps every value the code assigns. */
+ * upstream 1-bit flags are bools, a byte each. */
 #include "swoole_rs_reactor.h"
 #include <stddef.h>
 
@@ -15,41 +15,41 @@ struct swr_v1_socket {
     int events;
     bool enable_tcp_nodelay;
     bool kernel_nobufs;
-    uint8_t removed;
-    uint8_t silent_remove;
-    uint8_t cloexec;
-    uint8_t direct_send;
-    uint8_t bound;
-    uint8_t listened;
-    uint8_t ssl_renegotiation;
-    uint8_t ssl_handshake_buffer_set;
-    uint8_t ssl_quiet_shutdown;
-    uint8_t ssl_closed_;
-    uint8_t dtls;
-    uint8_t tcp_nopush;
-    uint8_t tcp_nodelay;
-    uint8_t skip_recv;
-    uint8_t recv_wait;
-    uint8_t event_hup;
+    bool removed;
+    bool silent_remove;
+    bool cloexec;
+    bool direct_send;
+    bool bound;
+    bool listened;
+    bool ssl_renegotiation;
+    bool ssl_handshake_buffer_set;
+    bool ssl_quiet_shutdown;
+    bool ssl_closed_;
+    bool dtls;
+    bool tcp_nopush;
+    bool tcp_nodelay;
+    bool skip_recv;
+    bool recv_wait;
+    bool event_hup;
     /* Upstream: when set, a system call interrupted by a signal is not retried but
      * returns -1 with errno EINTR, and the caller handles it. */
-    uint8_t dont_restart;
-    uint8_t close_notified;
+    bool dont_restart;
+    bool close_notified;
     uint32_t chunk_size;
     /* The write-path group: swr_v1_socket_output, which the reactor's write path works on. */
     swoole::Buffer *out_buffer;
     swoole::TimerNode *send_timer;
     uint32_t buffer_size; /* the user-space memory buffer size */
-    uint8_t close_wait;
-    uint8_t nonblock;
-    uint8_t ssl_send_;
-    uint8_t send_wait;
+    bool close_wait;
+    bool nonblock;
+    bool ssl_send_;
+    bool send_wait;
     void *object;
     SSL *ssl;
     /* The TLS state group: swr_v1_socket_tls, which Rust's TLS calls set. */
     uint32_t ssl_state;
-    uint8_t ssl_want_read;
-    uint8_t ssl_want_write;
+    bool ssl_want_read;
+    bool ssl_want_write;
     /* The timeout group: swr_v1_socket_timeouts. */
     double dns_timeout;
     double connect_timeout;

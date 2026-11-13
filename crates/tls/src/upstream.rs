@@ -282,7 +282,7 @@ fn tls_send(socket: Socket<'_>, data: Drain<'_>) -> isize {
         socket,
         |record| {
             let chunk = record.chunk_size as usize;
-            if record.dtls != 0 && chunk != 0 {
+            if record.dtls && chunk != 0 {
                 chunk
             } else {
                 usize::MAX
@@ -392,7 +392,7 @@ fn error_reason_text() -> (c_int, String) {
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
 pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
-    let Some(result) = with_tls(socket, |record| record.dtls != 0, swr_v1_socket_ssl_accept) else {
+    let Some(result) = with_tls(socket, |record| record.dtls, swr_v1_socket_ssl_accept) else {
         return ERROR;
     };
     handshake(result);
@@ -639,7 +639,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     /// and a write to a nonblocking plain socket only reads it.
     fn prepare(&self) {
         self.socket.edit(|record| {
-            if record.output.nonblock == 0 {
+            if !record.output.nonblock {
                 socket_set_fd_option(record, 1, -1);
             }
             if !record.ssl().is_null() {
@@ -705,7 +705,7 @@ fn sync<S: ReadSlot>(
     let (timeout, dont_restart) = socket.read(|record| {
         let timeouts = record.timeouts;
         let timeout = if write { timeouts.write } else { timeouts.read };
-        (timeout, record.dont_restart != 0)
+        (timeout, record.dont_restart)
     });
     let mut call = Call {
         socket,
@@ -1311,7 +1311,7 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
     let repaired = HALFCLOSE_REPAIRS;
     let Some((result, closed)) = with_tls(
         socket,
-        |record| (record.ssl_quiet_shutdown != 0, record.ssl_closed),
+        |record| (record.ssl_quiet_shutdown, record.ssl_closed),
         |tls, ssl, (quiet, mut closed)| {
             let result = swr_v1_socket_ssl_shutdown(tls, ssl, &mut closed, quiet, repaired);
             (result, closed)
@@ -1342,7 +1342,7 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
 /// No [`Ssl`] or [`crate::Bio`] handle to the record's SSL or its BIOs is used
 /// afterwards: they are freed.
 pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
-    if socket.read(|record| record.ssl_closed) == 0 {
+    if !socket.read(|record| record.ssl_closed) {
         socket_ssl_shutdown(socket);
     }
     let ssl = socket.edit(swoole_rs_reactor::SocketFields::take_ssl);
@@ -1439,7 +1439,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
             }
         }
         if let Some((_, reactor)) = swoole_rs_reactor::socket_upstream::event_reactor() {
-            if record.read(|record| record.fd != -1 && record.removed == 0) {
+            if record.read(|record| record.fd != -1 && !record.removed) {
                 // SAFETY: `swoole_event_del(this)` on the thread's live reactor; del
                 // never allocates, and a failure is logged.
                 unsafe {
@@ -1640,14 +1640,14 @@ mod tests {
             );
             let mut socket = SocketRecord::with_fd(fds[0], 0);
             socket.tls.state = 2;
-            socket.tls.want_read = 1;
+            socket.tls.want_read = true;
             let created =
                 socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), owner.owner, 2);
             assert_eq!(created, 0);
             assert!(!socket.ssl().is_null());
             assert_eq!(
                 (socket.tls.state, socket.tls.want_read),
-                (0, 0),
+                (0, false),
                 "state and want flags cleared"
             );
             let index = crate::swr_v1_tls_connection_index();
@@ -1798,7 +1798,7 @@ mod tests {
         let socket = unsafe { make_server_socket(1, c"127.0.0.1".as_ptr(), 0, 8) };
         assert!(!socket.is_null());
         let record = unsafe { &*socket };
-        assert_eq!((record.bound, record.listened), (1, 1));
+        assert!(record.bound && record.listened);
         assert_ne!(
             u16::from_be(unsafe { record.info.addr.inet_v4.sin_port }),
             0,
@@ -1842,7 +1842,7 @@ mod tests {
         };
         assert_eq!((received, &buffer), (4, b"ping"));
         assert_eq!(right.total_recv_bytes, 4);
-        assert_ne!(right.output.nonblock, 0);
+        assert!(right.output.nonblock);
         unsafe { libc::close(fds[0]) };
         assert!(!check_liveness(
             unsafe { Socket::from_ptr(&raw mut right) }.unwrap()

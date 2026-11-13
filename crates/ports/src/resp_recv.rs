@@ -98,7 +98,7 @@ impl RespConnection for Connection<'_> {
         {
             return -1;
         }
-        c_int::from(self.socket.read(|s| s.removed) != 0)
+        c_int::from(self.socket.read(|s| s.removed))
     }
 
     fn clear(&mut self) {

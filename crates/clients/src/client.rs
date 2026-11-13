@@ -461,7 +461,7 @@ impl Handle {
 
     /// `socket->removed = 1`: close skips the reactor.
     fn mark_removed(self) {
-        self.socket().edit(|socket| socket.removed = 1);
+        self.socket().edit(|socket| socket.removed = true);
     }
 
     fn has(self, event: c_int) -> bool {
@@ -725,7 +725,7 @@ unsafe extern "C-unwind" fn on_package(
         package.data,
         package.info.len as usize,
     );
-    if socket.read(|socket| socket.output.close_wait) != 0 {
+    if socket.read(|socket| socket.output.close_wait) {
         ERR
     } else {
         OK
@@ -1074,7 +1074,7 @@ fn close(this: Handle) -> c_int {
         }
     }
     if this.flag(ASYNC) {
-        if saved.read(|socket| socket.removed) == 0 {
+        if !saved.read(|socket| socket.removed) {
             this.event(EVENT_DEL, 0);
         }
         this.timer_clear();
@@ -1212,7 +1212,7 @@ pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTls
 fn enable_dtls(this: Handle) {
     this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
-        socket.dtls = 1;
+        socket.dtls = true;
         socket.chunk_size = SSL_BUFFER_SIZE;
     });
     this.set(DTLS, true);
@@ -1240,7 +1240,7 @@ fn ssl_handshake(this: Handle) -> c_int {
         return ERR;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
-        this.socket().edit(|socket| socket.output.ssl_send = 1);
+        this.socket().edit(|socket| socket.output.ssl_send = true);
         // SAFETY: the live socket and context.
         if unsafe { socket_ssl_create(this.socket(), tls, SSL_CLIENT) } < 0 {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
@@ -1944,7 +1944,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
                 this.on_connect();
                 return OK;
             }
-            if this.socket().read(|socket| socket.tls.want_read) != 0 {
+            if this.socket().read(|socket| socket.tls.want_read) {
                 this.event(EVENT_SET, EVENT_READ);
             }
             return OK;

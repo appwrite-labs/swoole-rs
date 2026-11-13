@@ -513,7 +513,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         OP_REMOVE_PIPE => {
             // arg: only when the pipe is still in the reactor.
             if let Some(pipe) = worker_pipe(worker, false)
-                && (arg == 0 || pipe.read(|pipe| pipe.removed == 0))
+                && (arg == 0 || pipe.read(|pipe| !pipe.removed))
             {
                 Reactor::thread().del(pipe);
             }
@@ -528,7 +528,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         }
         OP_DONT_RESTART => {
             if let Some(pipe) = worker_pipe(worker, false) {
-                pipe.edit(|pipe| pipe.dont_restart = 1);
+                pipe.edit(|pipe| pipe.dont_restart = true);
             }
             0
         }

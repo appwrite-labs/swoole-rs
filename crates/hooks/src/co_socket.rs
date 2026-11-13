@@ -504,8 +504,8 @@ impl CoSocket {
     fn adopt(&mut self, fd: c_int, owner: *mut c_void) -> Option<Socket<'static>> {
         let mut record = SocketRecord::with_fd(fd, FD_CO_SOCKET);
         record.socket_type = self.kind;
-        record.output.nonblock = 1;
-        record.cloexec = 1;
+        record.output.nonblock = true;
+        record.cloexec = true;
         self.attach(Some(Box::new(record)), owner)
     }
 
@@ -540,8 +540,8 @@ fn set_nonblock(network: Socket<'_>) -> u32 {
     let result = swoole_rs_reactor::swr_v1_socket_fd_option(network.fd(), 1, -1);
     if result.ok {
         network.edit(|record| {
-            record.output.nonblock = 1;
-            record.cloexec = u8::MAX;
+            record.output.nonblock = true;
+            record.cloexec = true;
         });
     }
     result.warnings << FD_WARNINGS_SHIFT
@@ -999,7 +999,7 @@ mod tests {
             (fd, 6, 1, 1)
         );
         assert_eq!(record.object, (&raw const *socket).cast_mut().cast());
-        assert_eq!(record.output.nonblock, 1);
+        assert!(record.output.nonblock);
         assert_ne!(
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0

@@ -88,7 +88,7 @@ impl ReactorSocket {
 
     /// Whether it is out of the reactor.
     pub(crate) fn removed(self) -> bool {
-        self.0.read(|socket| socket.removed != 0)
+        self.0.read(|socket| socket.removed)
     }
 
     pub(crate) fn add(self, events: c_int) -> c_int {
@@ -109,7 +109,7 @@ impl ReactorSocket {
     /// Nothing uses this socket, or a copy of it, afterwards.
     pub(crate) unsafe fn free(self) {
         if self.events() != 0 && event_available() {
-            self.0.edit(|socket| socket.silent_remove = 1);
+            self.0.edit(|socket| socket.silent_remove = true);
             self.del();
         }
         self.0.edit(|socket| socket.fd = -1);
