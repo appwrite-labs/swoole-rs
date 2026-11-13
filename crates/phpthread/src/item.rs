@@ -14,18 +14,33 @@ use swoole_rs_zend::{
     },
 };
 
-// Upstream's item types beyond Zend's (php_swoole_thread.h).
-pub(crate) const IS_ARRAYLIST: u32 = 80;
-pub(crate) const IS_QUEUE: u32 = 81;
-pub(crate) const IS_LOCK: u32 = 82;
-pub(crate) const IS_MAP: u32 = 83;
-pub(crate) const IS_BARRIER: u32 = 84;
-pub(crate) const IS_ATOMIC: u32 = 85;
-pub(crate) const IS_ATOMIC_LONG: u32 = 86;
-pub(crate) const IS_PHP_SOCKET: u32 = 96;
-pub(crate) const IS_CO_SOCKET: u32 = 97;
-pub(crate) const IS_STREAM_SOCKET: u32 = 98;
-pub(crate) const IS_SERIALIZED_OBJECT: u32 = 99;
+/// An item's type: Zend's `IS_*` for plain values and upstream's own beyond them
+/// (`php_swoole_thread.h`). The values are upstream's, which [`Item::compare`]'s
+/// `TYPE_PAIR` collisions depend on.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Undef = IS_UNDEF,
+    Null = IS_NULL,
+    False = IS_FALSE,
+    True = IS_TRUE,
+    Long = IS_LONG,
+    Double = IS_DOUBLE,
+    String = IS_STRING,
+    /// The object a failed socket conversion leaves.
+    Object = IS_OBJECT,
+    ArrayList = 80,
+    Queue = 81,
+    Lock = 82,
+    Map = 83,
+    Barrier = 84,
+    Atomic = 85,
+    AtomicLong = 86,
+    PhpSocket = 96,
+    CoSocket = 97,
+    StreamSocket = 98,
+    SerializedObject = 99,
+}
 
 /// What an item holds besides its type.
 #[derive(Debug)]
@@ -36,7 +51,7 @@ pub(crate) enum Value {
     Long(i64),
     Double(f64),
     Str(Box<[u8]>),
-    /// An `ArrayList` (`IS_ARRAYLIST`) or Map (`IS_MAP`).
+    /// An `ArrayList` ([`Kind::ArrayList`]) or Map ([`Kind::Map`]).
     Array(Arc<Array>),
     Queue(Arc<Queue>),
     /// A Barrier; `None` when stored unconstructed.
@@ -54,7 +69,7 @@ pub(crate) enum Value {
 
 #[derive(Debug)]
 pub(crate) struct Item {
-    pub(crate) kind: u32,
+    pub(crate) kind: Kind,
     pub(crate) value: Value,
 }
 
@@ -68,7 +83,7 @@ impl Drop for Item {
     }
 }
 
-fn bare(kind: u32) -> Item {
+fn bare(kind: Kind) -> Item {
     Item {
         kind,
         value: Value::Bare(0),
@@ -78,49 +93,50 @@ fn bare(kind: u32) -> Item {
 impl Item {
     pub(crate) fn long(value: i64) -> Self {
         Self {
-            kind: IS_LONG,
+            kind: Kind::Long,
             value: Value::Long(value),
         }
     }
 
     pub(crate) fn double(value: f64) -> Self {
         Self {
-            kind: IS_DOUBLE,
+            kind: Kind::Double,
             value: Value::Double(value),
         }
     }
 
     /// `new ArrayItem(zvalue)` (`ArrayItem::store`), in the value's request.
     pub(crate) fn store(value: &ZValue) -> Self {
-        let kind = value.kind();
-        match kind {
+        match value.kind() {
             IS_LONG => Self::long(value.long()),
             IS_DOUBLE => Self::double(value.double()),
             IS_STRING => Self {
-                kind,
+                kind: Kind::String,
                 value: Value::Str(value.bytes().unwrap_or_default().into()),
             },
-            IS_TRUE | IS_FALSE | IS_NULL => bare(kind),
+            IS_TRUE => bare(Kind::True),
+            IS_FALSE => bare(Kind::False),
+            IS_NULL => bare(Kind::Null),
             IS_RESOURCE => {
                 let fd = request::stream_cast(value);
                 if fd == -1 {
                     socket_error(c"failed to convert to socket fd");
                 }
                 Self {
-                    kind: IS_STREAM_SOCKET,
+                    kind: Kind::StreamSocket,
                     value: Value::Socket { fd, kind: 0 },
                 }
             }
             IS_ARRAY => match value.array() {
                 Some(table) => Self {
                     kind: if table.is_list() {
-                        IS_ARRAYLIST
+                        Kind::ArrayList
                     } else {
-                        IS_MAP
+                        Kind::Map
                     },
                     value: Value::Array(Array::from(table)),
                 },
-                None => bare(IS_UNDEF),
+                None => bare(Kind::Undef),
             },
             IS_OBJECT => Self::store_object(value),
             _ => Self::serialize(value),
@@ -135,26 +151,26 @@ impl Item {
                 socket_error(c"failed to convert to socket fd");
             }
             return Self {
-                kind: IS_CO_SOCKET,
+                kind: Kind::CoSocket,
                 value: Value::Socket { fd, kind },
             };
         }
         match host::php_socket_cast(object) {
             -3 => {}
             // upstream breaks out before setting the type.
-            -2 => return bare(IS_OBJECT),
+            -2 => return bare(Kind::Object),
             fd => {
                 return Self {
-                    kind: IS_PHP_SOCKET,
+                    kind: Kind::PhpSocket,
                     value: Value::Socket { fd, kind: 0 },
                 };
             }
         }
         if let Some((class, resource)) = phplocks::shared(object) {
             let kind = match class {
-                Shareable::Lock => IS_LOCK,
-                Shareable::Atomic => IS_ATOMIC,
-                Shareable::Long => IS_ATOMIC_LONG,
+                Shareable::Lock => Kind::Lock,
+                Shareable::Atomic => Kind::Atomic,
+                Shareable::Long => Kind::AtomicLong,
             };
             return Self {
                 kind,
@@ -171,10 +187,10 @@ impl Item {
     fn serialize(value: &ZValue) -> Self {
         // A bailout of `__serialize` is deferred.
         let Some(data) = host::serialize(value) else {
-            return bare(IS_UNDEF);
+            return bare(Kind::Undef);
         };
         Self {
-            kind: IS_SERIALIZED_OBJECT,
+            kind: Kind::SerializedObject,
             value: Value::Serialized(data),
         }
     }
@@ -189,8 +205,8 @@ impl Item {
         Some(match &self.value {
             Value::Long(value) => Owned::long(*value),
             Value::Double(value) => Owned::double(*value),
-            Value::Bare(_) if self.kind == IS_TRUE || self.kind == IS_FALSE => {
-                Owned::bool(self.kind == IS_TRUE)
+            Value::Bare(_) if matches!(self.kind, Kind::True | Kind::False) => {
+                Owned::bool(self.kind == Kind::True)
             }
             Value::Bare(_) => return None,
             Value::Str(text) => Owned::string(ZString::new(text)),
@@ -199,15 +215,15 @@ impl Item {
             Value::Barrier(shared) => barrier::object(shared.as_ref()),
             Value::Resource(resource) => {
                 let class = match self.kind {
-                    IS_LOCK => Shareable::Lock,
-                    IS_ATOMIC => Shareable::Atomic,
+                    Kind::Lock => Shareable::Lock,
+                    Kind::Atomic => Shareable::Atomic,
                     _ => Shareable::Long,
                 };
                 phplocks::shared_object(class, resource.as_ref())
             }
             Value::Socket { fd, kind } => match self.kind {
-                IS_STREAM_SOCKET => request::stream_create(*fd),
-                IS_CO_SOCKET => {
+                Kind::StreamSocket => request::stream_create(*fd),
+                Kind::CoSocket => {
                     request::socket_create(*fd, |fd| host::co_socket_create(fd, *kind))?
                 }
                 _ => request::socket_create(*fd, host::php_socket_create)?,
@@ -223,13 +239,13 @@ impl Item {
 
     /// `ArrayItem::equals`.
     pub(crate) fn equals(&self, search: &ZValue) -> bool {
-        if search.kind() != self.kind {
+        if search.kind() != self.kind as u32 {
             return false;
         }
         match &self.value {
             Value::Long(value) => search.as_long() == Some(*value),
             Value::Double(value) => search.as_double() == Some(*value),
-            Value::Bare(_) => matches!(self.kind, IS_TRUE | IS_FALSE | IS_NULL),
+            Value::Bare(_) => matches!(self.kind, Kind::True | Kind::False | Kind::Null),
             Value::Str(text) => search.bytes() == Some(&**text),
             _ => false,
         }
@@ -315,12 +331,18 @@ impl Item {
     /// upstream's `Error` and sort after.
     pub(crate) fn compare(&self, other: &Self) -> i32 {
         let (a, b) = (self, other);
-        let pair = |x: u32, y: u32| (x << 4) | y;
-        match (a.kind << 4) | b.kind {
-            p if p == pair(IS_LONG, IS_LONG) => sign(a.lval().cmp(&b.lval())),
-            p if p == pair(IS_DOUBLE, IS_LONG) => normalize(a.dval() - b.lval().c_cast::<f64>()),
-            p if p == pair(IS_LONG, IS_DOUBLE) => normalize(a.lval().c_cast::<f64>() - b.dval()),
-            p if p == pair(IS_DOUBLE, IS_DOUBLE) =>
+        // Upstream's `TYPE_PAIR`, whose collisions between its own types and
+        // Zend's this keeps.
+        let pair = |x: Kind, y: Kind| ((x as u32) << 4) | y as u32;
+        match pair(a.kind, b.kind) {
+            p if p == pair(Kind::Long, Kind::Long) => sign(a.lval().cmp(&b.lval())),
+            p if p == pair(Kind::Double, Kind::Long) => {
+                normalize(a.dval() - b.lval().c_cast::<f64>())
+            }
+            p if p == pair(Kind::Long, Kind::Double) => {
+                normalize(a.lval().c_cast::<f64>() - b.dval())
+            }
+            p if p == pair(Kind::Double, Kind::Double) =>
             {
                 #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
                 if a.dval() == b.dval() {
@@ -330,45 +352,45 @@ impl Item {
                 }
             }
             p if [
-                pair(IS_NULL, IS_NULL),
-                pair(IS_NULL, IS_FALSE),
-                pair(IS_FALSE, IS_NULL),
-                pair(IS_FALSE, IS_FALSE),
-                pair(IS_TRUE, IS_TRUE),
+                pair(Kind::Null, Kind::Null),
+                pair(Kind::Null, Kind::False),
+                pair(Kind::False, Kind::Null),
+                pair(Kind::False, Kind::False),
+                pair(Kind::True, Kind::True),
             ]
             .contains(&p) =>
             {
                 0
             }
-            p if p == pair(IS_NULL, IS_TRUE) => -1,
-            p if p == pair(IS_TRUE, IS_NULL) => 1,
-            p if p == pair(IS_STRING, IS_STRING) => smart_strcmp(a.text(), b.text()),
-            p if p == pair(IS_NULL, IS_STRING) => {
+            p if p == pair(Kind::Null, Kind::True) => -1,
+            p if p == pair(Kind::True, Kind::Null) => 1,
+            p if p == pair(Kind::String, Kind::String) => smart_strcmp(a.text(), b.text()),
+            p if p == pair(Kind::Null, Kind::String) => {
                 if b.text().is_empty() {
                     0
                 } else {
                     -1
                 }
             }
-            p if p == pair(IS_STRING, IS_NULL) => i32::from(!a.text().is_empty()),
-            p if p == pair(IS_LONG, IS_STRING) => long_to_string(a.lval(), b.text()),
-            p if p == pair(IS_STRING, IS_LONG) => -long_to_string(b.lval(), a.text()),
-            p if p == pair(IS_DOUBLE, IS_STRING) => {
+            p if p == pair(Kind::String, Kind::Null) => i32::from(!a.text().is_empty()),
+            p if p == pair(Kind::Long, Kind::String) => long_to_string(a.lval(), b.text()),
+            p if p == pair(Kind::String, Kind::Long) => -long_to_string(b.lval(), a.text()),
+            p if p == pair(Kind::Double, Kind::String) => {
                 if a.dval().is_nan() {
                     1
                 } else {
                     double_to_string(a.dval(), b.text())
                 }
             }
-            p if p == pair(IS_STRING, IS_DOUBLE) => {
+            p if p == pair(Kind::String, Kind::Double) => {
                 if b.dval().is_nan() {
                     1
                 } else {
                     -double_to_string(b.dval(), a.text())
                 }
             }
-            p if p == pair(IS_OBJECT, IS_NULL) => 1,
-            p if p == pair(IS_NULL, IS_OBJECT) => -1,
+            p if p == pair(Kind::Object, Kind::Null) => 1,
+            p if p == pair(Kind::Null, Kind::Object) => -1,
             _ => {
                 // A sort Zend runs inside a handler.
                 swoole_rs_zend::throw_error(c"Unsupported operand types");
