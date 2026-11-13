@@ -87,12 +87,12 @@ pub(crate) fn write(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> 
     if ctx.flags() & HTTP2 != 0 {
         return http2(ctx, HTTP2_WRITE, data, 0, 0);
     }
-    if ctx.state().send_header == 0 {
-        ctx.state().send_chunked = 1;
+    if !ctx.state().send_header {
+        ctx.state().send_chunked = true;
         if !send_header(ctx, 0)? {
             let state = ctx.state();
-            state.send_chunked = 0;
-            state.send_header = 0;
+            state.send_chunked = false;
+            state.send_header = false;
             return Ok(false);
         }
     }
@@ -119,7 +119,7 @@ fn send_trailer(mut ctx: Ctx) -> Result<bool, Bailout> {
     if header::trailer(ctx, |trailer| send(ctx, trailer))? {
         return Ok(true);
     }
-    ctx.state().end = 1;
+    ctx.state().end = true;
     close(ctx);
     Ok(false)
 }
@@ -130,39 +130,39 @@ pub(crate) fn end(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     if flags & HTTP2 != 0 {
         return http2(ctx, HTTP2_END, data, 0, 0);
     }
-    if ctx.state().send_chunked != 0 {
+    if ctx.state().send_chunked {
         if !of(data).is_empty() && !write(ctx, data)? {
             return Ok(false);
         }
-        if ctx.state().send_trailer != 0 {
+        if ctx.state().send_trailer {
             if !send(ctx, b"0\r\n") {
                 return Ok(false);
             }
             send_trailer(ctx)?;
-            ctx.state().send_trailer = 0;
-            if ctx.state().end != 0 {
+            ctx.state().send_trailer = false;
+            if ctx.state().end {
                 return Ok(false);
             }
         } else if !send(ctx, b"0\r\n\r\n") {
             return Ok(false);
         }
-        ctx.state().send_chunked = 0;
+        ctx.state().send_chunked = false;
     } else if !body(ctx, data)? {
         return Ok(false);
     }
-    if ctx.state().upgrade != 0 && flags & CO_SOCKET == 0 {
+    if ctx.state().upgrade && flags & CO_SOCKET == 0 {
         crate::websocket::handshaked(ctx);
     }
-    if ctx.state().keepalive == 0 {
+    if !ctx.state().keepalive {
         close(ctx);
     }
-    ctx.state().end = 1;
+    ctx.state().end = true;
     Ok(true)
 }
 
 /// The header and a whole body: one send, or two for a large body.
 fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
-    if ctx.state().upgrade != 0 {
+    if ctx.state().upgrade {
         crate::websocket::accept(ctx);
     }
     let raw = of(data);
@@ -178,31 +178,31 @@ fn body(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
         if sent {
             return Ok(true);
         }
-        ctx.state().end = 1;
+        ctx.state().end = true;
         close(ctx);
         return Ok(false);
     }
     if !sent {
-        ctx.state().send_header = 0;
+        ctx.state().send_header = false;
         return Ok(false);
     }
     // The compressed body leaves the state: the send may yield to a coroutine
     // that reaches the same context.
     let state = ctx.state();
-    let compressed = (!raw.is_empty() && state.content_compressed != 0)
+    let compressed = (!raw.is_empty() && state.content_compressed)
         .then(|| state.compressed.take().unwrap_or_default());
     let body = compressed.as_deref().map_or(raw, Vec::as_slice);
     if send(ctx, body) {
         return Ok(true);
     }
-    ctx.state().end = 1;
+    ctx.state().end = true;
     close(ctx);
     Ok(false)
 }
 
 /// The body as sent: the compressed bytes when the header compressed it.
 fn sent_body<'a>(state: &'a State, raw: &'a [u8]) -> &'a [u8] {
-    if raw.is_empty() || state.content_compressed == 0 {
+    if raw.is_empty() || !state.content_compressed {
         return raw;
     }
     header::compressed(state)
@@ -220,10 +220,10 @@ pub(crate) fn send_file(
         return http2(ctx, HTTP2_SEND_FILE, Some(file), offset, length);
     }
     file_type(ctx, file);
-    if ctx.state().send_header == 0 {
-        ctx.state().accept_compression = 0;
+    if !ctx.state().send_header {
+        ctx.state().accept_compression = false;
         if !send_header(ctx, length)? {
-            ctx.state().send_header = 0;
+            ctx.state().send_header = false;
             return Ok(false);
         }
     }
@@ -231,8 +231,8 @@ pub(crate) fn send_file(
         close(ctx);
         return Ok(false);
     }
-    ctx.state().end = 1;
-    if ctx.state().keepalive == 0 {
+    ctx.state().end = true;
+    if !ctx.state().keepalive {
         close(ctx);
     }
     Ok(true)

@@ -68,7 +68,7 @@ pub(crate) struct Request {
     pub(crate) path_len: u32,
     pub(crate) ext: *const c_char,
     pub(crate) ext_len: u32,
-    pub(crate) post_form_urlencoded: u8,
+    pub(crate) post_form_urlencoded: bool,
     /// The request's bytes, a string once any arrive.
     pub(crate) zdata: Owned,
     pub(crate) body_at: *const c_char,
@@ -127,32 +127,32 @@ pub(crate) struct State {
     pub(crate) request: Request,
     pub(crate) parser: swoole_rs_http::llhttp::Parser,
     pub(crate) mt_parser: Option<Box<crate::parse::Multipart>>,
-    pub(crate) completed: u8,
-    pub(crate) keepalive: u8,
-    pub(crate) recv_chunked: u8,
-    pub(crate) websocket: u8,
-    pub(crate) parse_cookie: u8,
-    pub(crate) parse_body: u8,
-    pub(crate) parse_files: u8,
-    pub(crate) enable_compression: u8,
-    pub(crate) accept_compression: u8,
+    pub(crate) completed: bool,
+    pub(crate) keepalive: bool,
+    pub(crate) recv_chunked: bool,
+    pub(crate) websocket: bool,
+    pub(crate) parse_cookie: bool,
+    pub(crate) parse_body: bool,
+    pub(crate) parse_files: bool,
+    pub(crate) enable_compression: bool,
+    pub(crate) accept_compression: bool,
     pub(crate) compression_method: i8,
     pub(crate) parse: Parse,
     pub(crate) response: Response,
     pub(crate) compression_min_length: u32,
     pub(crate) compression_level: i8,
-    pub(crate) send_chunked: u8,
-    pub(crate) upgrade: u8,
-    pub(crate) send_header: u8,
-    pub(crate) content_compressed: u8,
+    pub(crate) send_chunked: bool,
+    pub(crate) upgrade: bool,
+    pub(crate) send_header: bool,
+    pub(crate) content_compressed: bool,
     /// `end_`: the response is complete.
-    pub(crate) end: u8,
+    pub(crate) end: bool,
     /// `send_trailer_`: `trailer()` set one.
-    pub(crate) send_trailer: u8,
+    pub(crate) send_trailer: bool,
     /// Upstream's `websocket_compression`, `detached` and `http2` bits.
-    pub(crate) websocket_compression: u8,
-    pub(crate) detached: u8,
-    pub(crate) http2: u8,
+    pub(crate) websocket_compression: bool,
+    pub(crate) detached: bool,
+    pub(crate) http2: bool,
     /// The coroutine socket; `IS_NULL` once bound to a server.
     pub(crate) zsocket: Owned,
     /// The HTTP/2 stream, 0 once it is released.
@@ -178,14 +178,14 @@ pub(crate) struct State {
     /// (all zeroes) until it picks one.
     pub(crate) callback: Option<std::rc::Rc<crate::server::Callable>>,
     /// `onBeforeRequest` is the server's: count or queue the request first.
-    pub(crate) before_request: u8,
+    pub(crate) before_request: bool,
     /// `onAfterResponse` is the server's: uncount the request.
-    pub(crate) after_response: u8,
+    pub(crate) after_response: bool,
     /// A coroutine server's `WebSocketSettings` (`websocket::SETTING_*` bits).
     pub(crate) websocket_settings: u8,
     /// Only the reactor's dispatch sets this: it rewrote the body, so its
     /// `Swoole-Upload-File` headers name files it saved. Other input is a client's.
-    pub(crate) upload_preprocessed: u8,
+    pub(crate) upload_preprocessed: bool,
     /// A coroutine server's or `Request::create`'s `upload_tmp_dir`; a
     /// server's context reads its server's.
     pub(crate) upload_tmp_dir: Option<Rc<CString>>,

@@ -303,22 +303,22 @@ fn build(
             let (key, flag) = header_key(key);
             if flag > 0 {
                 if compression {
-                    if flag == CONTENT_TYPE && ctx.state().accept_compression != 0 && typed {
+                    if flag == CONTENT_TYPE && ctx.state().accept_compression && typed {
                         content_type = Some(to_string(value_)?.into_owned());
                     }
                     if flag == CONTENT_ENCODING && value_.str().is_some() {
-                        ctx.state().accept_compression = 0;
+                        ctx.state().accept_compression = false;
                     }
                     // https://github.com/swoole/swoole-src/issues/4857
                     // https://github.com/swoole/swoole-src/issues/5026
-                    if flag == CONTENT_LENGTH && ctx.state().accept_compression != 0 {
+                    if flag == CONTENT_LENGTH && ctx.state().accept_compression {
                         log_conflict(
                             "The client has set 'Accept-Encoding', 'Content-Length' will be ignored",
                         );
                         return Ok(());
                     }
                 }
-                if flag == CONTENT_LENGTH && ctx.state().send_chunked != 0 {
+                if flag == CONTENT_LENGTH && ctx.state().send_chunked {
                     log_conflict(
                         "You have set 'Transfer-Encoding', 'Content-Length' will be ignored",
                     );
@@ -336,12 +336,11 @@ fn build(
             }
         });
         let state = ctx.state();
-        if walked.is_ok() && compression && state.accept_compression != 0 && typed {
+        if walked.is_ok() && compression && state.accept_compression && typed {
             let kind = content_type
                 .as_ref()
                 .map_or(&b"text/html"[..], |text| text.bytes());
-            state.accept_compression =
-                u8::from(crate::context::compression_type(state, Some(kind)));
+            state.accept_compression = crate::context::compression_type(state, Some(kind));
         }
         walked?;
     }
@@ -375,13 +374,13 @@ fn build(
         });
     }
     // websocket protocol (subsequent header info is unnecessary)
-    if state.upgrade == 1 {
+    if state.upgrade {
         out.extend_from_slice(b"\r\n");
-        state.send_header = 1;
+        state.send_header = true;
         return Ok(());
     }
     if flags & CONNECTION == 0 {
-        out.extend_from_slice(if state.keepalive != 0 {
+        out.extend_from_slice(if state.keepalive {
             b"Connection: keep-alive\r\n"
         } else {
             b"Connection: close\r\n"
@@ -390,7 +389,7 @@ fn build(
     if flags & CONTENT_TYPE == 0 {
         out.extend_from_slice(b"Content-Type: text/html\r\n");
     }
-    if state.send_chunked != 0 {
+    if state.send_chunked {
         if flags & TRANSFER_ENCODING == 0 {
             out.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
         }
@@ -411,7 +410,7 @@ fn build(
         }
     }
     out.extend_from_slice(b"\r\n");
-    state.send_header = 1;
+    state.send_header = true;
     Ok(())
 }
 
@@ -510,7 +509,7 @@ fn compress(state: &mut State, input: &[u8]) -> bool {
     match compressed {
         Ok(out) => {
             state.compressed = Some(Box::new(out));
-            state.content_compressed = 1;
+            state.content_compressed = true;
             true
         }
         Err(message) => {

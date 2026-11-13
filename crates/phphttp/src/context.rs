@@ -172,11 +172,11 @@ pub(crate) fn alloc() -> Ctx {
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
 pub(crate) fn init(state: &mut State, server: view::Server<'_>) {
     let config = server.config();
-    state.parse_cookie = u8::from(config.http_parse_cookie.get());
-    state.parse_body = u8::from(config.http_parse_post.get());
-    state.parse_files = u8::from(config.http_parse_files.get());
+    state.parse_cookie = config.http_parse_cookie.get();
+    state.parse_body = config.http_parse_post.get();
+    state.parse_files = config.http_parse_files.get();
     if parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
-        state.enable_compression = u8::from(config.http_compression.get());
+        state.enable_compression = config.http_compression.get();
         state.compression_level = i8::from_ne_bytes([config.http_compression_level.get()]);
         state.compression_min_length = config.compression_min_length.get();
     }
@@ -322,19 +322,19 @@ pub(crate) fn compression_type(state: &State, kind: Option<&[u8]>) -> bool {
 /// whose context its objects keep live until the queued request runs).
 pub(crate) fn before_request(mut ctx: Ctx) -> bool {
     let state = ctx.state();
-    if state.before_request == 0 {
+    if !state.before_request {
         return true;
     }
-    state.before_request = 0;
-    state.after_response = 1;
+    state.before_request = false;
+    state.after_response = true;
     crate::server::admit(ctx)
 }
 
 /// `onAfterResponse`: the server uncounts the request and starts a queued one.
 pub(crate) fn after_response(mut ctx: Ctx) {
     let state = ctx.state();
-    if state.after_response != 0 {
-        state.after_response = 0;
+    if state.after_response {
+        state.after_response = false;
         crate::server::release_request();
     }
 }

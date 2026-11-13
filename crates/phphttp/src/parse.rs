@@ -582,13 +582,12 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
     // SAFETY: the current header's name, inside llhttp's input.
     let name =
         unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
-    let compression =
-        CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression != 0;
+    let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
     let action = request_header(
         name,
         value_,
         state.parser.method,
-        state.parse_cookie != 0,
+        state.parse_cookie,
         compression,
     );
     match action {
@@ -611,7 +610,7 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
                     return USER;
                 }
                 1 => {
-                    state.websocket = 1;
+                    state.websocket = true;
                     if !websocket_connection(state) {
                         let message = format!("session[{}] is closed", state.fd);
                         host::log(
@@ -626,7 +625,7 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
                 _ => {}
             }
         }
-        RequestHeader::Form => state.request.post_form_urlencoded = 1,
+        RequestHeader::Form => state.request.post_form_urlencoded = true,
         RequestHeader::Multipart => {
             if !multipart_start(state, value_) {
                 return -1;
@@ -682,8 +681,8 @@ fn on_headers_complete(state: &mut State) -> c_int {
     };
     add_protocol(state, protocol);
 
-    state.keepalive = u8::from(state.parser.should_keep_alive());
-    state.recv_chunked = u8::from(state.parser.flags & CHUNKED != 0);
+    state.keepalive = state.parser.should_keep_alive();
+    state.recv_chunked = state.parser.flags & CHUNKED != 0;
     state.parse.header_name = ptr::null();
     0
 }
@@ -719,7 +718,7 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
         .as_ref()
         .map_or(state.request.body_length, |body| body.len());
     let beginning = received == 0;
-    if state.recv_chunked != 0 {
+    if state.recv_chunked {
         state
             .parse
             .chunked_body
@@ -729,13 +728,13 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
         state.request.body_at = at.wrapping_sub(state.request.body_length).cast();
         state.request.body_length += length;
     }
-    if state.mt_parser.is_some() && state.recv_chunked == 0 {
+    if state.mt_parser.is_some() && !state.recv_chunked {
         let prefix = body_prefix(span, beginning);
         if !multipart_parse(state, span.get(prefix..).unwrap_or_default()) {
             return -1;
         }
     }
-    if state.completed != 0 { PAUSED } else { 0 }
+    if state.completed { PAUSED } else { 0 }
 }
 
 fn on_message_complete(state: &mut State) -> c_int {
@@ -755,9 +754,9 @@ fn on_message_complete(state: &mut State) -> c_int {
     }
     let form_source = swr_v1_httpbindings_form_source(
         u32::from(chunked)
-            | (u32::from(state.parse_body != 0) << 1)
-            | (u32::from(state.request.post_form_urlencoded != 0) << 2)
-            | (u32::from(state.recv_chunked != 0) << 3)
+            | (u32::from(state.parse_body) << 1)
+            | (u32::from(state.request.post_form_urlencoded) << 2)
+            | (u32::from(state.recv_chunked) << 3)
             | (u32::from(!state.request.body_at.is_null()) << 4),
     );
     match (form_source, chunked) {
@@ -781,7 +780,7 @@ fn on_message_complete(state: &mut State) -> c_int {
     }
     multipart_free(state);
     state.parse.form_data = None;
-    state.completed = 1;
+    state.completed = true;
     // The analysis of the http protocol has been completed, no further processing is needed.
     PAUSED
 }
@@ -857,7 +856,7 @@ pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     let length = value.len() as u32 as usize;
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
     let method = compression(value.get(..length).unwrap_or(value), codecs);
-    state.accept_compression = u8::from(method > 0);
+    state.accept_compression = method > 0;
     if method > 0 {
         #[expect(clippy::cast_possible_truncation, reason = "methods are 1 to 4")]
         let method = method as i8;
@@ -996,13 +995,13 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
             state.parse.tmp_content_type = value_.as_ptr();
             state.parse.tmp_content_type_len = length;
         }
-    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed != 0 {
+    } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
         // saved in a temporary file. The binary content in the message body will be replaced with the temporary
         // filename. However, the Content-Length still reflects the original message size, causing llhttp to believe
         // there is still data to be received. As a result, llhttp fails to trigger the message callback. Therefore, we
         // need to set `ctx->completed = 1` to indicate that the message processing is complete.
-        state.completed = 1;
+        state.completed = true;
         upload_bytes(state, b"tmp_name", value_);
         upload_long(state, b"error", UPLOAD_FILE_READY);
         upload_long(state, b"size", path_size(value_));
@@ -1136,7 +1135,7 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) -> c_int {
         .unwrap_or_default();
     let bracket = text.iter().position(|&byte| byte == b'[');
     match bracket.and_then(|at| text.split_at_checked(at)) {
-        Some((name, input_path)) if state.parse_files != 0 && !name.is_empty() => {
+        Some((name, input_path)) if state.parse_files && !name.is_empty() => {
             const META: usize = FORM_KEYLEN + b"[tmp_name]".len() - 1;
             for field in ["name", "type", "tmp_name", "error", "size"] {
                 let mut meta = name.get(..META - 1).unwrap_or(name).to_vec();
