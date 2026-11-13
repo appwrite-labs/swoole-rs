@@ -13,6 +13,7 @@
 //! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
+use crate::process_pool::IpcMode;
 use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
@@ -840,15 +841,11 @@ pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> *mut c_char {
     ipc.packet.as_mut_ptr().cast()
 }
 
-/// `SW_IPC_UNIXSOCK`/`_MSGQUEUE`/`_SOCKET`, as `ProcessPool::ipc_mode`.
-const IPC_MSGQUEUE: u8 = 2;
-const IPC_SOCKET: u8 = 3;
-
-fn mode(ipc_mode: u8) -> Mode {
+fn mode(ipc_mode: IpcMode) -> Mode {
     match ipc_mode {
-        IPC_MSGQUEUE => Mode::Queue,
-        IPC_SOCKET => Mode::Socket,
-        _ => Mode::Pipe,
+        IpcMode::MsgQueue => Mode::Queue,
+        IpcMode::Socket => Mode::Socket,
+        IpcMode::UnixSock | IpcMode::None => Mode::Pipe,
     }
 }
 
@@ -858,8 +855,8 @@ pub struct PoolLoop {
     pub pool: *mut c_void,
     pub worker: *mut c_void,
     pub worker_id: u32,
-    /// `use_msgqueue`/`use_socket` as an IPC mode (`SW_IPC_*`).
-    pub ipc_mode: u8,
+    /// `use_msgqueue`/`use_socket` as an IPC mode.
+    pub ipc_mode: IpcMode,
     pub schedule_by_sysvmsg: bool,
     pub max_packet_size: u32,
     /// `sizeof(EventData)`.
@@ -1237,7 +1234,7 @@ mod tests {
         }
     }
 
-    fn run_loop(script: Script, listener: bool, ipc_mode: u8, protocol: c_int) -> Script {
+    fn run_loop(script: Script, listener: bool, ipc_mode: IpcMode, protocol: c_int) -> Script {
         let ipc = pool_ipc_new(listener);
         with(|s| {
             *s = script;
@@ -1271,7 +1268,7 @@ mod tests {
                 ..Script::default()
             },
             true,
-            IPC_SOCKET,
+            IpcMode::Socket,
             2,
         );
         assert_eq!(script.messages, vec![b"abc".to_vec()]);
@@ -1295,7 +1292,7 @@ mod tests {
                 ..Script::default()
             },
             true,
-            IPC_SOCKET,
+            IpcMode::Socket,
             2,
         );
         assert_eq!(script.messages, Vec::<Vec<u8>>::new());
@@ -1328,7 +1325,7 @@ mod tests {
                 ..Script::default()
             },
             false,
-            1,
+            IpcMode::UnixSock,
             1,
         );
         // Neither bad packet reaches the task.
@@ -1363,7 +1360,7 @@ mod tests {
                 ..Script::default()
             },
             false,
-            1,
+            IpcMode::UnixSock,
             3,
         );
         assert_eq!(script.delivered, 1);

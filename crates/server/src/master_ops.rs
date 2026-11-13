@@ -1947,8 +1947,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     use swoole_rs_process::methods as pool;
     use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
-    /// `SW_IPC_MSGQUEUE` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
-    const IPC_MSGQUEUE: u64 = 2;
+    /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
     const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
     // crates/process' `ProcessPool::listen(socket_file, backlog)`.
     use swoole_rs_process::methods::listen_unix as pool_listen;
@@ -1964,7 +1963,8 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let task_pool = o.server().task_pool();
             // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
             unsafe { task_pool.write_bytes(0, 1) };
-            let key = if arg == IPC_MSGQUEUE {
+            let key = if arg == u64::from(swoole_rs_process::process_pool::IpcMode::MsgQueue.code())
+            {
                 config.message_queue_key.get().c_cast::<c_int>()
             } else {
                 0

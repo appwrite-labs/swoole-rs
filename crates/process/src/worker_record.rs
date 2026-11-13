@@ -5,6 +5,7 @@
 //! `native/process/swoole_rs_process_views.h`, and `tools/headers.sh --check`
 //! fails when that header is stale. See #629.
 
+use crate::process_pool::IpcMode;
 use core::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
@@ -503,8 +504,6 @@ pub fn copy_for_process(
     id: usize,
     copy: &mut WorkerRecord,
 ) -> c_int {
-    const IPC_UNIXSOCK: u8 = 1;
-    const IPC_MSGQUEUE: u8 = 2;
     const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
@@ -512,7 +511,7 @@ pub fn copy_for_process(
         return -1;
     };
     let mut pipe = -1;
-    if pool.ipc_mode == IPC_UNIXSOCK {
+    if pool.ipc_mode == IpcMode::UnixSock {
         worker.pipe_current = if worker.id == crate::methods::swoole_get_worker_id() {
             worker.pipe_worker
         } else {
@@ -527,7 +526,7 @@ pub fn copy_for_process(
         worker.pipe_current = core::ptr::null_mut();
         worker.pipe_object = core::ptr::null_mut();
     }
-    if pool.ipc_mode == IPC_MSGQUEUE && pool.on_message.is_none() {
+    if pool.ipc_mode == IpcMode::MsgQueue && pool.on_message.is_none() {
         worker.queue = pool.queue;
         worker.msgqueue_mode = MSGQUEUE_BALANCE;
     }
@@ -570,7 +569,7 @@ mod tests {
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
         pool.worker_num = 2;
-        pool.ipc_mode = 1;
+        pool.ipc_mode = IpcMode::UnixSock;
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // A worker the pool doesn't have: no copy.
         assert_eq!(
@@ -595,7 +594,7 @@ mod tests {
         );
         assert!(copy.pipe_current.is_null());
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
-        pool.ipc_mode = 2;
+        pool.ipc_mode = IpcMode::MsgQueue;
         pool.queue = 3 as *mut c_void;
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),

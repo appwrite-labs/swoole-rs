@@ -3,6 +3,7 @@
 //! operations: what workers.cc's `ReactorProcessContext::call` did.
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering;
+use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_process::methods::ExitStatus;
@@ -26,8 +27,7 @@ use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::reactor_ops::sign;
 use crate::view;
 
-/// `SW_IPC_UNIXSOCK`; `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
-const IPC_UNIXSOCK: c_int = 1;
+/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_FD_PIPE`.
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
 const FD_PIPE: c_int = 3;
@@ -225,7 +225,13 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
     // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
     unsafe { pool.write_bytes(0, 1) };
     let pool_ref = ctx.server().event_pool_ref();
-    if swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, IPC_UNIXSOCK) < 0 {
+    if swoole_rs_process::methods::create(
+        pool_ref,
+        config.worker_num.get(),
+        0,
+        IpcMode::UnixSock.code().into(),
+    ) < 0
+    {
         return SW_ERR;
     }
     swoole_rs_process::methods::set_max_request(
