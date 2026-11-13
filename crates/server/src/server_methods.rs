@@ -14,7 +14,7 @@ use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
     RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
     RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN,
-    RUN_ST_CLEAR_TIMER, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ST_CLEAR_TIMER, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_SIGNAL, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
@@ -36,7 +36,7 @@ pub struct NativeContext<'a> {
     pub(crate) send: *mut c_void,
     pub(crate) data: *const c_void,
     /// The bytes the operations that read a slice take: `sendwait`'s data, `sendfile`'s
-    /// name and the document root, each up to its first NUL.
+    /// name, each up to its first NUL.
     pub(crate) bytes: &'a [u8],
     pub(crate) length: u32,
     pub(crate) session_id: c_long,
@@ -206,15 +206,29 @@ pub(crate) fn start_master_thread(
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus) {
+    /// `Server::TASK_IPC_UNIXSOCK`.
+    const TASK_IPC_UNIXSOCK: u8 = 1;
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
     }
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.object = ptr::from_ref(&mb).cast_mut().cast();
-    // SAFETY: the live server, and the handle of a live bus, lent for the call: all
-    // the operation reads.
-    unsafe { run(crate::ops::RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
+    let config = serv.config();
+    let workers = config.worker_num.get();
+    // Task workers have pipes only when they talk over unix sockets.
+    let task_pipes = config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK;
+    let total = if task_pipes {
+        workers + config.task_worker_num.get()
+    } else {
+        workers
+    };
+    for id in 0..total {
+        let id = u16::try_from(id).unwrap_or(u16::MAX);
+        for master in [true, false] {
+            if let Some(end) = serv.worker_pipe(id, master) {
+                mb.init_pipe_socket(end.fd());
+            }
+        }
+    }
 }
 
 /// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on:
@@ -269,7 +283,8 @@ pub fn feedback(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_in
     unsafe { run(RUN_FEEDBACK, i64::from(event).cast_unsigned(), &mut ctx) != 0 }
 }
 
-/// `Server::store_pipe_fd(worker->pipe_object)`, when `worker` has a pipe.
+/// `Server::store_pipe_fd(worker->pipe_object)`, when `worker` has a pipe: both ends
+/// map to the pipe, and the highest fd grows to cover them.
 pub(crate) fn store_pipe_fd(
     serv: view::Server<'_>,
     worker: swoole_rs_process::worker_record::Worker<'_>,
@@ -278,11 +293,16 @@ pub(crate) fn store_pipe_fd(
     if pipe.is_null() {
         return;
     }
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.object = pipe;
-    // SAFETY: the live server, and the pipe object of one of its live workers: the
-    // live `UnixSocket` the server or its pool made for the worker.
-    unsafe { run(RUN_ST_STORE_PIPE_FD, 0, &mut ctx) };
+    let gs = serv.counters();
+    for master in [true, false] {
+        let fd = view::worker_pipe(worker, master).map_or(-1, |end| end.fd());
+        if let Some(conn) = serv.state().tables_ref().connection_at(fd) {
+            conn.set_object(pipe);
+        }
+        if fd > gs.max_fd() {
+            gs.max_fd.store(fd, core::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 /// `Server::schedule_worker(fd, data)`.
@@ -1008,5 +1028,42 @@ mod tests {
             (*(*state).config()).gs.free();
             crate::swr_v1_server_state_free(state);
         }
+    }
+
+    #[test]
+    fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
+        use core::sync::atomic::Ordering::Relaxed;
+        use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+        use swoole_rs_reactor::SocketRecord;
+        let live = crate::fixture::LiveServer::new();
+        live.counters().max_fd.store(7, Relaxed);
+        // SAFETY: plain records, for which zero is valid.
+        let (mut master, mut end, mut record): (SocketRecord, SocketRecord, WorkerRecord) =
+            unsafe { core::mem::zeroed() };
+        master.fd = 5;
+        end.fd = 9;
+        // SAFETY: a zeroed worker record, live for the test.
+        let worker = unsafe { Worker::new(&raw mut record) };
+        store_pipe_fd(live.server(), worker);
+        assert_eq!(
+            live.counters().max_fd.load(Relaxed),
+            7,
+            "no pipe, no change"
+        );
+
+        let mut pipe = 0_u8;
+        let pipe: *mut c_void = (&raw mut pipe).cast();
+        worker.set_pipe_master((&raw mut master).cast());
+        worker.set_pipe_worker((&raw mut end).cast());
+        worker.set_pipe_object(pipe);
+        store_pipe_fd(live.server(), worker);
+        let tables = live.state().tables_ref();
+        for fd in [5, 9] {
+            assert_eq!(
+                tables.connection_at(fd).map(crate::Connection::object),
+                Some(pipe)
+            );
+        }
+        assert_eq!(live.counters().max_fd.load(Relaxed), 9, "the highest end");
     }
 }

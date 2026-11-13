@@ -1,12 +1,11 @@
 //! The server's Rust-owned state (`Server::state_`: the round-robin counter and the
 //! command id counter) and the operations over the rest of `Server` that
-//! `master.cc` kept: worker scheduling, commands, the document root, pipe sockets, worker counters, aborts, connection iteration, sends, timers
+//! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
-    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD, OP_MAXFD, OP_MODE,
-    OP_SET_MAXFD, OP_SET_WARNING, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
+    FIELD_WORKER_NUM, OP_FIELD, OP_MODE, OP_SET_WARNING, OP_ST_FINISH, OP_ST_TIMER,
+    OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
@@ -520,39 +519,6 @@ pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(i64::from(key))
 }
 
-/// `Server::store_pipe_fd`: both ends of a worker pipe map to the pipe, and the
-/// highest fd grows to cover them.
-fn store_pipe_fd<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let master = h.signed(OP_ST_PIPE_FD)?;
-    let worker = h.op(OP_ST_PIPE_FD, 1)?.cast_signed();
-    h.op(OP_ST_PIPE_BIND, master.cast_unsigned())?;
-    h.op(OP_ST_PIPE_BIND, worker.cast_unsigned())?;
-    for fd in [master, worker] {
-        if fd > h.signed(OP_MAXFD)? {
-            h.op(OP_SET_MAXFD, fd.cast_unsigned())?;
-        }
-    }
-    Ok(())
-}
-
-/// `Server::TASK_IPC_UNIXSOCK`.
-const TASK_IPC_UNIXSOCK: u64 = 1;
-
-/// `Server::init_pipe_sockets`: the pipes of every event worker, and of the task
-/// workers when they talk over unix sockets.
-fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let workers = worker_count(h)?;
-    let total = workers + field(h, FIELD_TASK_WORKER_NUM)?;
-    let task_pipes = field(h, FIELD_TASK_IPC_MODE)? == TASK_IPC_UNIXSOCK;
-    for id in 0..total {
-        if id >= workers && !task_pipes {
-            continue;
-        }
-        h.op(OP_ST_INIT_PIPE, id)?;
-    }
-    Ok(())
-}
-
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
@@ -588,16 +554,8 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 
 /// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32) -> crate::Effect<Option<i64>> {
-    use crate::ops::{RUN_ST_CLEAR_TIMER, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD};
+    use crate::ops::RUN_ST_CLEAR_TIMER;
     Ok(Some(match operation {
-        RUN_ST_STORE_PIPE_FD => {
-            store_pipe_fd(h)?;
-            0
-        }
-        RUN_ST_INIT_PIPE_SOCKETS => {
-            init_pipe_sockets(h)?;
-            0
-        }
         RUN_ST_CLEAR_TIMER => {
             clear_timer(h)?;
             0
@@ -676,25 +634,6 @@ mod tests {
     }
 
     #[test]
-    fn pipe_fds_raise_the_highest_fd() {
-        let mut s = Script::with(&[(OP_MAXFD, 7)]).queue(OP_ST_PIPE_FD, &[5, 9]);
-        store_pipe_fd(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_PIPE_FD), vec![0, 1]);
-        assert_eq!(s.args(OP_ST_PIPE_BIND), vec![5, 9]);
-        assert_eq!(s.args(OP_SET_MAXFD), vec![9]);
-    }
-
-    #[test]
-    fn task_pipes_only_over_unix_sockets() {
-        let mut s = Script::default().queue(OP_FIELD, &[2, 2, TASK_IPC_UNIXSOCK]);
-        init_pipe_sockets(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1, 2, 3]);
-        let mut s = Script::default().queue(OP_FIELD, &[2, 2, 2]);
-        init_pipe_sockets(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1]);
-    }
-
-    #[test]
     fn connections_iterate_and_send() {
         let data = four_bytes();
         let process = |facts: &[(u32, u64)]| {
@@ -768,7 +707,7 @@ mod tests {
         assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
         assert_eq!(&*state.text(TEXT_PID_FILE), b"");
         assert!(state.text(TEXT_COUNT).is_empty());
-        assert_eq!(native_fact(&state, OP_SET_MAXFD), None);
+        assert_eq!(native_fact(&state, crate::ops::OP_SET_MAXFD), None);
 
         let state = std::sync::Arc::new(state);
         assert_eq!(native_fact(&state, OP_LOCK), Some(0));

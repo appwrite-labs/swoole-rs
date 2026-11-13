@@ -676,10 +676,6 @@ pub const LOG_CC_LINGER: u32 = 990;
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `Server::add_command`: arg a `commands::AddCommand`.
 pub const RUN_ST_ADD_COMMAND: u32 = 300;
-/// `Server::store_pipe_fd`: context pipe (`object`).
-pub const RUN_ST_STORE_PIPE_FD: u32 = 303;
-/// `Server::init_pipe_sockets`: context message bus (`object`).
-pub const RUN_ST_INIT_PIPE_SOCKETS: u32 = 304;
 /// `Server::send`: context session, data and length.
 pub const RUN_ST_SEND: u32 = 308;
 pub const RUN_ST_CLEAR_TIMER: u32 = 309;
@@ -690,11 +686,6 @@ pub const RUN_ST_COMMAND: u32 = 312;
 /// whether it went. A new command pipe, whether it is ready.
 pub const OP_ST_CMD_SEND: u32 = 1000;
 pub const OP_ST_PIPE_COMMAND_NEW: u32 = 1001;
-/// The pipe's worker (arg 1) or master (arg 0) socket fd; fd arg maps to the pipe.
-pub const OP_ST_PIPE_FD: u32 = 1015;
-pub const OP_ST_PIPE_BIND: u32 = 1016;
-/// The message bus initialises worker arg's pipe sockets.
-pub const OP_ST_INIT_PIPE: u32 = 1017;
 /// `gs->concurrency`: subtract arg; read; set 0.
 pub const OP_ST_GS_CONCURRENCY_SUB: u32 = 1020;
 pub const OP_ST_GS_CONCURRENCY: u32 = 1021;
