@@ -419,6 +419,19 @@ impl Worker<'_> {
         unsafe { &(*self.raw).status }
     }
 
+    /// `worker->coroutine_num`.
+    #[must_use]
+    pub fn coroutine_num(self) -> usize {
+        // SAFETY: `new`'s contract: a live record, for longer than this read.
+        unsafe { (*self.raw).coroutine_num }
+    }
+
+    /// `worker->concurrency`, now.
+    #[must_use]
+    pub fn concurrency_count(self) -> u32 {
+        self.concurrency().load(Ordering::SeqCst)
+    }
+
     /// `worker->concurrency`.
     fn concurrency(&self) -> &AtomicU32 {
         // SAFETY: `new`'s contract: a live record, for longer than this borrow; the

@@ -308,15 +308,13 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
 /// `OP_SESSION_CONN`, then read and updated by the ops after them.
 #[inline(always)]
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
-    let serv = ctx.serv.raw();
     match op {
         OP_SCHEDULE_WORKER => {
             // The task's info.fd is the real fd, not the session id; dispatch converts it.
             let fd = ctx.send().info.fd;
             ctx.fd = c_int::from_ne_bytes(low32(fd.cast_unsigned()).to_ne_bytes());
-            let send = ctx.send_ptr().cast();
-            // SAFETY: the live server and the data sent.
-            let worker = unsafe { crate::server_methods::schedule_worker(serv, ctx.fd, send) };
+            let (serv, fd) = (ctx.serv, ctx.fd);
+            let worker = crate::server_methods::schedule_worker(serv, fd, ctx.send.as_deref());
             return Some(signed(worker));
         }
         OP_SEND_CONN_ACTIVE => {
@@ -363,12 +361,11 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             info.server_fd = low16(conn.server_fd());
             0
         }
-        OP_SCHEDULE_CONN => {
-            // SAFETY: the live server.
-            signed(unsafe {
-                crate::server_methods::schedule_worker(serv, conn.fd(), core::ptr::null_mut())
-            })
-        }
+        OP_SCHEDULE_CONN => signed(crate::server_methods::schedule_worker(
+            ctx.serv,
+            conn.fd(),
+            None,
+        )),
         OP_SET_CLOSE_RESET => {
             conn.set_close_reset(true);
             0

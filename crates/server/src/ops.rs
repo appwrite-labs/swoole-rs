@@ -36,15 +36,10 @@ pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
 pub const RUN_HEARTBEAT_THREAD: u32 = 32;
 
 // Dispatch, sends and ports (`src/server/master.cc`).
-/// `Server::schedule_worker(arg)`: context send data.
-pub const RUN_SCHEDULE_WORKER: u32 = 33;
 /// `Server::feedback`: context connection, arg the event.
 pub const RUN_FEEDBACK: u32 = 34;
 /// `Server::sendwait(arg)`: context data and length.
 pub const RUN_SENDWAIT: u32 = 35;
-pub const RUN_IDLE_WORKERS: u32 = 37;
-pub const RUN_IDLE_TASK_WORKERS: u32 = 38;
-pub const RUN_TASKING: u32 = 39;
 /// `Server::sendfile(arg)`: context file name, offset and length.
 pub const RUN_SENDFILE: u32 = 40;
 /// `Server::add_port`: context type, host and port; 1 with the port in the context.
@@ -397,24 +392,8 @@ pub const EVENT_COMMAND_RESPONSE: u32 = 18;
 pub const EVENT_SHUTDOWN_SIGNAL: u32 = 19;
 
 // Dispatch, sends and ports.
-/// A `dispatch_func` is set; its result for the context's fd.
-pub const OP_HAS_DISPATCH_FUNC: u32 = 400;
-pub const OP_DISPATCH_FUNC: u32 = 401;
 /// `Server::state_`, a `state::ServerState`.
 pub const OP_STATE: u32 = 402;
-/// The IP hash key of the connection or datagram peer.
-pub const OP_IP_KEY: u32 = 403;
-/// Selects `get_connection(fd)`; whether there is one.
-pub const OP_FD_CONN: u32 = 404;
-pub const OP_CONN_UID: u32 = 405;
-pub const OP_CONN_WORKER: u32 = 406;
-/// Pins the connection to worker arg.
-pub const OP_PIN_WORKER: u32 = 407;
-/// Worker arg's `coroutine_num` and `concurrency`.
-pub const OP_WORKER_COROUTINES: u32 = 408;
-pub const OP_WORKER_CONCURRENCY: u32 = 409;
-/// `scheduler_warning = true`.
-pub const OP_SET_WARNING: u32 = 410;
 /// The event arg to the connection's reactor thread; whether it was sent.
 pub const OP_FEEDBACK_THREAD: u32 = 411;
 /// `send_to_connection` of the event arg; whether it succeeded.
@@ -423,10 +402,6 @@ pub const OP_FEEDBACK_SEND: u32 = 412;
 pub const OP_VERIFY_CONN: u32 = 413;
 /// `send_sync` of the context data; whether all of it was sent.
 pub const OP_SEND_SYNC: u32 = 414;
-pub const OP_WORKER_IDLE: u32 = 418;
-/// `gs->tasking_num`, an `int`; reset it to 0.
-pub const OP_TASKING: u32 = 419;
-pub const OP_TASKING_RESET: u32 = 420;
 pub const OP_IS_MASTER: u32 = 421;
 /// The longest sendfile name; copies the name into the task, returning its address.
 pub const OP_SENDFILE_NAME_MAX: u32 = 422;

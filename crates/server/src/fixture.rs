@@ -10,7 +10,7 @@ use swoole_rs_reactor::SocketRecord;
 use crate::port_config::PortConfig;
 use crate::records::tests::naming_at;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
-use crate::shared::{PortCounters, ServerCounters};
+use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::view::Fields;
 use crate::{MODE_PROCESS, ServerState, view};
 
@@ -22,12 +22,12 @@ pub(crate) const CONNECTIONS: usize = 4096;
 const SOCK_TCP: c_int = 1;
 const FD_STREAM_SERVER: c_int = 1;
 
-/// A process-mode server with one reactor thread, its tables and shared counters,
-/// one TCP port listening on 127.0.0.1, and this thread's reactor.
+/// A process-mode server with one reactor thread, its tables, shared counters and
+/// pools, one TCP port listening on 127.0.0.1, and this thread's reactor.
 pub(crate) struct LiveServer {
     head: Box<Fields>,
     state: Box<ServerState>,
-    counters: Box<ServerCounters>,
+    shared: Box<ServerShared>,
     port_counters: Box<PortCounters>,
     port: *mut PortConfig,
     listener: *mut SocketRecord,
@@ -58,13 +58,16 @@ impl LiveServer {
             max_connection: u32::try_from(CONNECTIONS).unwrap_or(u32::MAX),
             ..ServerTables::default()
         }));
-        let mut counters = Box::new(ServerCounters::default());
+        // SAFETY: the shared record is plain data, for which zero is the state
+        // `swr_v1_server_new`'s calloc leaves it in.
+        let mut shared: Box<ServerShared> = Box::new(unsafe { core::mem::zeroed() });
         let mut port_counters = Box::new(PortCounters::default());
         // SAFETY: the state's own configuration, which nothing else reads yet.
         let config = unsafe { &mut *state.config() };
         config.mode_ = u8::try_from(MODE_PROCESS).unwrap_or_default();
         config.reactor_num.set(1);
-        config.gs = naming_at(&raw mut *counters);
+        config.gs = naming_at(&raw mut *shared);
+        config.worker_registry = Some(Box::default());
 
         let listening = TcpListener::bind("127.0.0.1:0").unwrap();
         listening.set_nonblocking(true).unwrap();
@@ -100,7 +103,7 @@ impl LiveServer {
         Self {
             head,
             state,
-            counters,
+            shared,
             port_counters,
             port,
             listener,
@@ -122,7 +125,7 @@ impl LiveServer {
     }
 
     pub(crate) fn counters(&self) -> &ServerCounters {
-        &self.counters
+        &self.shared.counters
     }
 
     pub(crate) fn port_counters(&self) -> &PortCounters {

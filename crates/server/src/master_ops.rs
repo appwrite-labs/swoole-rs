@@ -4,8 +4,8 @@
 //! answers them before any native call, so master.cc no longer has a case for
 //! them. Logs name the upstream function that wrote them.
 use crate::records::Lookup;
-use core::ffi::{CStr, c_char, c_int};
-use core::sync::atomic::Ordering::{Relaxed, SeqCst};
+use core::ffi::{CStr, c_int};
+use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::WorkerType;
 
@@ -33,16 +33,15 @@ use crate::ops::{
     LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT,
     LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_STAT,
     LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER,
-    OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
-    OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH,
-    OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
-    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
-    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
-    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_DGRAM_PORT, OP_HAS_PIPE_COMMAND,
+    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE,
+    OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ,
+    OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER,
+    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
+    OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID,
-    OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET,
-    OP_VERIFY_CONN, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT, OP_VERIFY_CONN,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -52,11 +51,11 @@ use crate::ops::{
     OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER,
 };
 use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
-use crate::ops::{OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_SC_CLOSE, OP_WORKER_IDLE};
 use crate::ops::{
     OP_MASTER_THREAD, OP_OUT_EMPTY, OP_SC_APPEND, OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL,
     OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
 };
+use crate::ops::{OP_PIPE_COMMAND_ADD, OP_SC_CLOSE};
 use crate::port_config::PortConfig;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use crate::port_config::methods;
@@ -73,7 +72,6 @@ use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
 };
-use swoole_rs_utilities::misc::swoole_hash_php;
 
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NOTICE: c_int = 3;
@@ -856,11 +854,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 .store(std::process::id().cast_signed(), Relaxed);
             0
         }
-        OP_TASKING => sign(o.gs().tasking_num.load(SeqCst).cast_signed()),
-        OP_TASKING_RESET => {
-            o.gs().tasking_num.store(0, SeqCst);
-            0
-        }
 
         // The context's port.
         OP_NEW_PORT_TYPE => sign(o.port().r#type),
@@ -876,13 +869,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_CLOSING => {
             u64::from(o.conn().closed().load(Relaxed) != 0 || o.conn().close_force())
         }
-        OP_CONN_UID => u64::from(o.conn().uid()),
-        OP_CONN_WORKER => sign(o.conn().worker_id()),
-        OP_PIN_WORKER => {
-            let worker = arg.c_cast::<c_int>();
-            o.conn().set_worker_id(worker);
-            0
-        }
         OP_SC_OVERFLOW => {
             o.conn().set_overflow(true);
             0
@@ -891,13 +877,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn().set_high_watermark(true);
             0
         }
-        OP_FD_CONN | OP_VERIFY_CONN => {
-            let (key, kind) = if op == OP_FD_CONN {
-                (libc::c_long::from(o.ctx.server_fd), Lookup::ByFd)
-            } else {
-                (arg.cast_signed(), Lookup::VerifiedTls)
-            };
-            o.ctx.conn = state.connection(key, kind);
+        OP_VERIFY_CONN => {
+            o.ctx.conn = state.connection(arg.cast_signed(), Lookup::VerifiedTls);
             u64::from(o.ctx.conn.is_some())
         }
 
@@ -970,22 +951,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SC_YIELD_ERROR => {
             log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
             0
-        }
-        OP_WORKER_COROUTINES | OP_WORKER_CONCURRENCY => {
-            let at = usize::try_from(arg).unwrap_or(usize::MAX);
-            let worker = o
-                .config()
-                .workers
-                .as_ptr()
-                .cast::<WorkerRecord>()
-                .wrapping_add(at);
-            // SAFETY: an event worker of the server's array, which the caller indexes.
-            let worker = unsafe { &*worker };
-            if op == OP_WORKER_COROUTINES {
-                worker.coroutine_num as u64
-            } else {
-                u64::from(worker.concurrency.load(SeqCst))
-            }
         }
         OP_SENDFILE_NAME => {
             // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
@@ -1218,44 +1183,15 @@ fn send_flags(o: &Objects<'_>) -> u64 {
 
 /// `DgramPacket` up to its address.
 #[repr(C)]
-struct DgramPacket {
+pub(crate) struct DgramPacket {
     socket_type: c_int,
-    socket_addr: SocketAddress,
+    pub(crate) socket_addr: SocketAddress,
 }
 
 /// The ops over the context's reactor, sockets and pipes, the server's
 /// workers and the dispatch address, which Rust lays out; else `None`.
 fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
-        OP_WORKER_IDLE => {
-            let id = arg.c_cast::<u16>();
-            let worker = o.server().worker_record(id);
-            u64::from(worker.is_some_and(swoole_rs_process::worker_record::Worker::is_idle))
-        }
-        OP_IP_KEY => {
-            let fd = libc::c_long::from(o.ctx.server_fd);
-            let addr = if let Some(conn) = o.state.connection(fd, Lookup::ByFd) {
-                conn.info()
-            } else {
-                // No connection: the context sends a datagram.
-                let packet = o.send().data;
-                #[expect(
-                    clippy::cast_ptr_alignment,
-                    reason = "the payload is a message bus buffer, aligned for its `DgramPacket`"
-                )]
-                let packet = packet.cast::<DgramPacket>();
-                // SAFETY: the datagram's payload starts with its `DgramPacket`.
-                unsafe { (*packet).socket_addr }
-            };
-            if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
-                u64::from(u32::from_be(addr.addr.v4().sin_addr.s_addr))
-            } else {
-                let v6 = (&raw const addr.addr).cast::<c_char>();
-                // SAFETY: the address's storage holds a whole `sockaddr_in6`.
-                let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
-                u64::from(hash.c_cast::<u32>())
-            }
-        }
         OP_SC_CLOSE => {
             o.reactor().close(o.sock()?);
             0
@@ -1319,8 +1255,10 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_MARK_SHUTDOWN => {
             signal_upstream::clear();
-            o.gs().start.store(0, SeqCst);
-            o.gs().shutdown.store(1, SeqCst);
+            o.gs().start.store(0, core::sync::atomic::Ordering::SeqCst);
+            o.gs()
+                .shutdown
+                .store(1, core::sync::atomic::Ordering::SeqCst);
             0
         }
         OP_COMMAND_HANDLER => {
@@ -1428,8 +1366,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_SHUTDOWN;
     use crate::ops::{
-        OP_DISPATCH_FUNC, OP_FORCE_CLOSE, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT,
-        OP_ON_SHUTDOWN, OP_PORT_CLOSE,
+        OP_FORCE_CLOSE, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE,
     };
     /// `SW_SERVER_EVENT_CONNECT`.
     const EVENT_CONNECT: c_int = 5;
@@ -1458,15 +1395,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
             (methods().close)(*port);
             0
-        }
-        OP_DISPATCH_FUNC => {
-            let fd = libc::c_long::from(o.ctx.server_fd);
-            // SAFETY: null, or the table's live slot of the fd, read for the call.
-            let conn = unsafe { o.state.connection_ptr(fd, Lookup::ByFd).as_ref() };
-            // SAFETY: null, or the live `SendData` the dispatch lends, which is laid
-            // out as the `RecvData` the callback reads: its head and `len` bytes.
-            let send = unsafe { o.ctx.send.cast::<crate::reactor_entry::RecvData>().as_ref() };
-            sign(o.state.callbacks.dispatch(o.server(), conn, send))
         }
         op => return sends(o, op, arg),
     })
@@ -1571,7 +1499,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the send's `SendfileTask`, whose name follows its head.
             let SendfileTask { offset, length } = unsafe { task.read() };
             // SAFETY: the task's NUL-terminated name, which follows its head.
-            let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<c_char>()) };
+            let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<core::ffi::c_char>()) };
             let socket = o.conn_socket();
             sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
         }
@@ -1864,7 +1792,9 @@ pub(crate) fn release_abandoned_base(serv: crate::view::Server<'_>) {
         server: Some(serv),
         state: serv.state(),
     };
-    o.gs().shutdown.store(1, SeqCst);
+    o.gs()
+        .shutdown
+        .store(1, core::sync::atomic::Ordering::SeqCst);
     ops(&mut o, OP_DESTROY_FACTORY, MODE_BASE);
     ops(&mut o, crate::ops::OP_FREE_SERVER, 0);
 }
@@ -1900,31 +1830,6 @@ mod tests {
             assert_eq!(
                 answer(core::ptr::null_mut(), None, &*state, OP_SEND_TIMEOUT, 0),
                 None
-            );
-            crate::state::free_state(state);
-        }
-    }
-
-    #[test]
-    fn datagram_ip_key_reads_its_record() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: a plain record, for which zero is valid.
-        let mut packet: DgramPacket = unsafe { core::mem::zeroed() };
-        packet.socket_addr.kind = 2;
-        packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
-        let mut send = crate::base_factory::SendData {
-            // SAFETY: as above.
-            info: unsafe { core::mem::zeroed() },
-            data: (&raw const packet).cast(),
-        };
-        ctx.send = (&raw mut send).cast();
-        ctx.server_fd = -1;
-        // SAFETY: the context's records are live above; no connection has fd -1.
-        unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_IP_KEY, 0),
-                Some(0x0a00_0001)
             );
             crate::state::free_state(state);
         }
