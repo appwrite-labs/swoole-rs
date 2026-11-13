@@ -605,8 +605,8 @@ impl PoolRef<'_> {
 pub trait PoolNative: Sync {
     /// One effect on the call's pool and worker.
     fn call(&self, call: &PoolCall, op: Op, arg: u64) -> i64;
-    /// The callback `CB_*` in the call's flags; it runs inside the trap.
-    fn callback(&self, call: &mut PoolCall);
+    /// The pool's `callback`; it runs inside the trap.
+    fn callback(&self, call: &mut PoolCall, callback: Callback);
     /// `sizeof(EventData)`.
     fn event_size(&self) -> usize;
     /// `ProcessPool::is_worker_running(worker)`.
@@ -827,13 +827,16 @@ pub enum Log {
     WaitpidFailed,
 }
 
-// The callbacks and the worker loop.
-pub const CB_START: c_int = 1;
-pub const CB_BEFORE_RELOAD: c_int = 2;
-pub const CB_SHUTDOWN: c_int = 3;
-pub const CB_WORKER_START: c_int = 4;
-pub const CB_MAIN_LOOP: c_int = 5;
-pub const CB_WORKER_STOP: c_int = 6;
+/// One of the pool's callbacks, or its worker loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Callback {
+    Start,
+    BeforeReload,
+    Shutdown,
+    WorkerStart,
+    MainLoop,
+    WorkerStop,
+}
 
 /// One `ProcessPool` method, with its arguments, which [`run_op`] runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -868,8 +871,8 @@ pub(crate) enum Run {
 /// What a pool operation asks of native code.
 pub(crate) trait PoolHost {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) -> i64;
-    /// Run `CB_*` inside the trap: its result, or [`Bailed`].
-    fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed>;
+    /// Run `callback` inside the trap: its result, or [`Bailed`].
+    fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
     fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int;
     /// The native side, which tests leave out.
@@ -907,10 +910,9 @@ impl PoolHost for Native<'_> {
             .call(&PoolCall::new(self.pool.raw().cast(), worker), op, arg)
     }
 
-    fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed> {
+    fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
         let mut call = PoolCall::new(self.pool.raw().cast(), worker);
-        call.flags = cb;
-        crate::pool::run(self.native, |native, call| native.callback(call), &mut call)?;
+        crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
 
@@ -1450,7 +1452,7 @@ impl<H: PoolHost> Pool<'_, H> {
             return Ok(SW_ERR);
         }
         if self.on_start().is_some() {
-            self.h.callback(CB_START, ptr::null_mut())?;
+            self.h.callback(Callback::Start, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
             if self.spawn(self.worker(index))? < 0 {
@@ -1490,14 +1492,15 @@ impl<H: PoolHost> Pool<'_, H> {
             std::process::exit(254);
         }
         if self.on_worker_start().is_some() {
-            self.h.callback(CB_WORKER_START, worker.cast())?;
+            self.h.callback(Callback::WorkerStart, worker.cast())?;
         }
         let mut code = 0;
         if self.main_loop().is_some() {
-            code = c_int::try_from(self.h.callback(CB_MAIN_LOOP, worker.cast())?).unwrap_or(-1);
+            code =
+                c_int::try_from(self.h.callback(Callback::MainLoop, worker.cast())?).unwrap_or(-1);
         }
         if self.on_worker_stop().is_some() {
-            self.h.callback(CB_WORKER_STOP, worker.cast())?;
+            self.h.callback(Callback::WorkerStop, worker.cast())?;
         }
         // exit(3), as upstream.
         std::process::exit(code)
@@ -1584,7 +1587,7 @@ impl<H: PoolHost> Pool<'_, H> {
             return Ok(false);
         }
         if self.on_before_reload().is_some() {
-            self.h.callback(CB_BEFORE_RELOAD, ptr::null_mut())?;
+            self.h.callback(Callback::BeforeReload, ptr::null_mut())?;
         }
         self.set_reload_task(Box::into_raw(Box::<ReloadTask>::default()));
         if self.max_wait_time() != 0 {
@@ -1755,7 +1758,7 @@ impl<H: PoolHost> Pool<'_, H> {
         self.set_running(false);
         self.drop_reload_task();
         if self.on_shutdown().is_some() {
-            self.h.callback(CB_SHUTDOWN, ptr::null_mut())?;
+            self.h.callback(Callback::Shutdown, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
             let pid = self.worker_at(index).pid();
@@ -2192,8 +2195,8 @@ mod tests {
     struct Script {
         answers: std::collections::HashMap<Op, i64>,
         log: Vec<(Op, u64)>,
-        callbacks: Vec<c_int>,
-        bail: Option<c_int>,
+        callbacks: Vec<Callback>,
+        bail: Option<Callback>,
         /// The fixture's record, where `Op::KillTimer` arms the kill timer.
         record: Option<std::ptr::NonNull<PoolRecord>>,
     }
@@ -2210,7 +2213,7 @@ mod tests {
             }
             self.answers.get(&op).copied().unwrap_or(1)
         }
-        fn callback(&mut self, cb: c_int, _: *mut c_void) -> Result<isize, Bailed> {
+        fn callback(&mut self, cb: Callback, _: *mut c_void) -> Result<isize, Bailed> {
             self.callbacks.push(cb);
             if self.bail == Some(cb) {
                 Err(Bailed)
@@ -2438,7 +2441,7 @@ mod tests {
         extern "C-unwind" fn on_start(_: PoolRef<'_>) {}
         let mut fixture = Fixture::new(2);
         let script = Script {
-            bail: Some(CB_START),
+            bail: Some(Callback::Start),
             ..Script::default()
         };
         let mut pool = fixture.pool(script);
