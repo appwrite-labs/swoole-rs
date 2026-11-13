@@ -1,10 +1,9 @@
 /* SPDX-License-Identifier: Apache-2.0 */
-/* Swoole's include/swoole_proxy.h, owned here: HttpProxy and Socks5Proxy as views of
- * the Rust records (crates/protocols-ffi/src/owned_proxy.rs). Upstream's file is deleted,
- * so `#include "swoole_proxy.h"` finds this copy. */
+/* Swoole's include/swoole_proxy.h, owned here: Socks5Proxy as a view of the Rust
+ * record (crates/protocols-ffi/src/owned_proxy.rs). Upstream's file is deleted, so
+ * `#include "swoole_proxy.h"` finds this copy. */
 
 #pragma once
-#define SWOOLE_RS_PROXY_OWNER 1
 
 #include <string>
 #include <cstdint>
@@ -14,17 +13,14 @@
 #include "swoole_rs_corebase_string_view.h"
 
 // Explicit, because crates/clients's tests read these values here.
-enum swHttpProxyState {
+enum {
     SW_HTTP_PROXY_STATE_WAIT = 0,
-    SW_HTTP_PROXY_STATE_HANDSHAKE = 1,
     SW_HTTP_PROXY_STATE_READY = 2,
 };
 
-enum swSocks5State {
+enum {
     SW_SOCKS5_STATE_WAIT = 0,
     SW_SOCKS5_STATE_HANDSHAKE = 1,
-    SW_SOCKS5_STATE_AUTH = 2,
-    SW_SOCKS5_STATE_CONNECT = 3,
     SW_SOCKS5_STATE_READY = 4,
 };
 
@@ -39,36 +35,8 @@ class ProxyOwner {
     ~ProxyOwner() { swr_v1_core_proxy_free(prepared_.owner); }
 };
 
-struct HttpProxy : private ProxyOwner {
-    HttpProxy() : ProxyOwner(false) {}
-    HttpProxy(const HttpProxy &source) : HttpProxy() { *this = source; }
-    HttpProxy &operator=(const HttpProxy &source) {
-        auto result = swr_v1_core_proxy_assign(handle(), source.handle());
-        RustStringView *views[] = {&host, &username, &password, &target_host};
-        if (result.status) views[result.index]->check(result.status);
-        return *this;
-    }
-    swr_v1_core_proxy *handle() const { return prepared_.owner; }
-    uint8_t &state = prepared_.fields->state;
-    uint8_t &dont_handshake = prepared_.fields->dont_handshake;
-    int &port = prepared_.fields->port;
-    RustStringView host{prepared_.strings[0]};
-    RustStringView username{prepared_.strings[1]};
-    RustStringView password{prepared_.strings[2]};
-    RustStringView target_host{prepared_.strings[3]};
-    int &target_port = prepared_.fields->target_port;
-};
-
 struct Socks5Proxy : private ProxyOwner {
     Socks5Proxy() : ProxyOwner(true) {}
-    Socks5Proxy(const Socks5Proxy &source) : Socks5Proxy() { *this = source; }
-    Socks5Proxy &operator=(const Socks5Proxy &source) {
-        auto result = swr_v1_core_proxy_assign(handle(), source.handle());
-        RustStringView *views[] = {&host, &username, &password, &target_host};
-        if (result.status) views[result.index]->check(result.status);
-        return *this;
-    }
-    swr_v1_core_proxy *handle() const { return prepared_.owner; }
     RustStringView host{prepared_.strings[0]};
     int &port = prepared_.fields->port;
     uint8_t &state = prepared_.fields->state;

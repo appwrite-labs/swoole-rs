@@ -7,7 +7,6 @@
 #include <string>
 namespace swoole {
 struct Socks5Proxy;
-struct HttpProxy;
 class Server;
 struct ListenPort;
 namespace coroutine {
@@ -17,7 +16,6 @@ class Socket;
 // view; std::string conversions copy the bytes out.
 class RustStringView {
   friend struct Socks5Proxy;
-  friend struct HttpProxy;
   friend class coroutine::Socket;
   friend class Server;
   friend struct ListenPort;
