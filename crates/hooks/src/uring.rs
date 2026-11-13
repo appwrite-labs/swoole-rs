@@ -9,16 +9,17 @@
 //! operation's frame while the coroutine is suspended, and the completion handler
 //! ([`wakeup`]) writes the result into it before resuming it.
 
+use crate::vector::IoVector;
 use io_uring::types::{Fd, FsyncFlags, Timespec};
 use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
-use std::mem;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
 
@@ -566,6 +567,19 @@ safe_operations! {
     /// `IORING_OP_WAITID` into `info`.
     fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut libc::siginfo_t, timeout: f64) -> c_int,
         timeout timeout, opcode::WaitId::new(idtype, id, options).infop(info), int;
+    /// `IORING_OP_ACCEPT` on `fd`: the peer's address into `address`'s storage, at most
+    /// `address.len` bytes of it (and no more than it holds), and its length into `address.len`.
+    pub fn accept(fd: c_int, address: &mut SocketAddress, flags: c_int, timeout: f64) -> c_int,
+        timeout timeout, {
+            address.len = address.len.min(SocketAddress::CAPACITY);
+            opcode::Accept::new(Fd(fd), (&raw mut address.addr).cast(), &raw mut address.len).flags(flags)
+        }, int;
+    /// `IORING_OP_SEND` of `buf` to `address`, of which the kernel reads at most its storage.
+    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
+    pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> isize,
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
+            .dest_addr((&raw const address.addr).cast())
+            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), std::convert::identity;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
@@ -576,20 +590,10 @@ operations! {
         timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
     fn connect(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> c_int,
         timeout timeout, opcode::Connect::new(Fd(fd), addr, len), int;
-    fn accept(fd: c_int, addr: *mut libc::sockaddr, len: *mut libc::socklen_t, flags: c_int, timeout: f64) -> c_int,
-        timeout timeout, opcode::Accept::new(Fd(fd), addr, len).flags(flags), int;
     fn recvmsg(fd: c_int, message: *mut libc::msghdr, flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::RecvMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::SendMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
-    #[expect(clippy::too_many_arguments, reason = "sendto(2)'s six, the timeout and the ring's host")]
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
-    fn sendto(fd: c_int, buf: *const c_void, n: usize, flags: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.cast(), n as u32).flags(flags).dest_addr(addr).dest_addr_len(len), std::convert::identity;
-    fn readv(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Readv::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
-    fn writev(fd: c_int, iov: *const libc::iovec, count: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Writev::new(Fd(fd), iov, count.cast_unsigned()).offset(u64::MAX), std::convert::identity;
     fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int,
         timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath, Fd(libc::AT_FDCWD), newpath), int;
     fn mkdir(pathname: *const c_char, mode: libc::mode_t) -> c_int,
@@ -606,6 +610,28 @@ operations! {
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), int;
 }
 
+/// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
+/// them, as the vector was made for.
+#[must_use]
+pub fn vector(host: &Host, fd: c_int, vector: &IoVector, timeout: f64) -> isize {
+    let iovecs = vector.iovecs();
+    let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
+    let iov = iovecs.as_ptr();
+    let entry = if vector.write() {
+        opcode::Writev::new(Fd(fd), iov, count)
+            .offset(u64::MAX)
+            .build()
+    } else {
+        opcode::Readv::new(Fd(fd), iov, count)
+            .offset(u64::MAX)
+            .build()
+    };
+    // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
+    // `&mut` methods move, and their buffers, valid in its direction while it lives
+    // (`IoVector::new`'s contract); the request completes before `request` returns.
+    unsafe { request(host, timeout, entry) }
+}
+
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
 #[must_use]
 pub fn sleep(host: &Host, seconds: f64) -> c_int {
@@ -616,30 +642,6 @@ pub fn sleep(host: &Host, seconds: f64) -> c_int {
 fn sleep_timespec(host: &Host, ts: libc::timespec) -> c_int {
     let _expired = timer(host, &kernel_timespec(ts));
     if errno() == libc::ETIME { 0 } else { -1 }
-}
-
-/// A peek through the ring, then the datagram itself without blocking.
-///
-/// # Safety
-/// Pointers are valid as for recvfrom(2), and `buf` is not null.
-pub unsafe fn recvfrom(
-    host: &Host,
-    fd: c_int,
-    buf: *mut c_void,
-    n: usize,
-    addr: *mut libc::sockaddr,
-    len: *mut libc::socklen_t,
-    timeout: f64,
-) -> isize {
-    // SAFETY: the caller's contract: `n` writable bytes at `buf`, which is not null.
-    let slots = unsafe { core::slice::from_raw_parts_mut(buf.cast::<mem::MaybeUninit<u8>>(), n) };
-    let peeked = recv(host, fd, slots, libc::MSG_PEEK, timeout);
-    if peeked > 0 {
-        // SAFETY: the caller's contract.
-        unsafe { libc::recvfrom(fd, buf, n, libc::MSG_DONTWAIT, addr, len) }
-    } else {
-        peeked
-    }
 }
 
 /// `size` bytes of `in_fd` from `offset` (the file position without one) to

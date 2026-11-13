@@ -219,42 +219,54 @@ fn move_first(args: &mut [zval], position: usize) {
     }
 }
 
-/// `SW_CREATE_PHP_FUNCTION_WRAPPER`: call `name` with the first argument moved
-/// to `position`.
-/// # Safety
-/// A live internal function frame.
-unsafe fn forward(
-    function: &AtomicPtr<zend_function>,
-    name: &CStr,
+/// A `SW_CREATE_PHP_FUNCTION_WRAPPER` function: it calls `name` with its first
+/// argument moved to `position`.
+struct Wrapper {
+    name: &'static CStr,
     position: usize,
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) {
-    let mut target = function.load(Ordering::Relaxed);
-    if target.is_null() {
-        target = compiled_function(name);
-        function.store(target, Ordering::Relaxed);
+    /// Null, or `name`'s function once [`Wrapper::forward`] looked it up.
+    function: AtomicPtr<zend_function>,
+}
+
+impl Wrapper {
+    const fn new(name: &'static CStr, position: usize) -> Self {
+        Self {
+            name,
+            position,
+            function: AtomicPtr::new(ptr::null_mut()),
+        }
     }
-    // SAFETY: per the caller, the wrapper's own frame and return slot.
-    let frame = unsafe { Call::new(frame, value) };
-    let mut argv = arguments(&[], &frame);
-    move_first(&mut argv, position);
-    // SAFETY: a registered core function and the caller's return slot.
-    swoole_rs_zend::bailout::raise(unsafe { call(target, value, &mut argv) });
+
+    /// Call the function with the arguments of `frame`, the wrapper's own.
+    fn forward(&self, frame: &Call) {
+        let mut target = self.function.load(Ordering::Relaxed);
+        if target.is_null() {
+            target = compiled_function(self.name);
+            self.function.store(target, Ordering::Relaxed);
+        }
+        let mut argv = arguments(&[], frame);
+        move_first(&mut argv, self.position);
+        // SAFETY: a registered core function and the frame's return slot.
+        swoole_rs_zend::bailout::raise(unsafe { call(target, frame.return_value(), &mut argv) });
+    }
 }
 
 macro_rules! wrappers {
-    ($($handler:ident => $function:literal, $position:literal;)*) => {$(
-        /// A `SW_CREATE_PHP_FUNCTION_WRAPPER` function.
-        /// # Safety
-        /// Zend's handler contract.
-        #[unsafe(no_mangle)]
-        pub(crate) unsafe extern "C" fn $handler(frame: *mut zend_execute_data, value: *mut zval) {
-            static FUNCTION: AtomicPtr<zend_function> = AtomicPtr::new(ptr::null_mut());
-            // SAFETY: per Zend's handler contract.
-            unsafe { forward(&FUNCTION, $function, $position, frame, value) };
+    ($($handler:ident => $function:literal, $position:literal;)*) => {
+        /// The `SW_CREATE_PHP_FUNCTION_WRAPPER` functions' bodies.
+        mod wrapped {
+            use super::{Call, Wrapper};
+            $(
+                pub(super) fn $handler(frame: &Call) {
+                    static WRAPPER: Wrapper = Wrapper::new($function, $position);
+                    WRAPPER.forward(frame);
+                }
+            )*
         }
-    )*};
+        swoole_rs_zend::handlers! {
+            leaf: $($handler => wrapped::$handler;)*
+        }
+    };
 }
 
 wrappers! {

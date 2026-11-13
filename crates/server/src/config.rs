@@ -384,10 +384,10 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             let port = *port?;
             match op {
                 OP_PORT_DEFAULT_IDLE => {
-                    // SAFETY: a listed port is live, and no native callback runs while
-                    // it is borrowed.
-                    unsafe { port.config_mut() }.heartbeat_idle_time =
-                        config.heartbeat_check_interval.get().wrapping_mul(2);
+                    // Only the field is written: no reference to a listed port's
+                    // settings is formed.
+                    let idle = config.heartbeat_check_interval.get().wrapping_mul(2);
+                    port.set_heartbeat_idle_time(idle);
                     return Some(0);
                 }
                 OP_PORT_REMOVED => {
@@ -439,9 +439,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             _ => 0,
         },
         OP_SET_FIELD => {
-            // SAFETY: `Server::create`'s and `start`'s checks, before any thread or
-            // process starts; `config` isn't read across the write.
-            let config = unsafe { &mut *state.config() };
+            // `Server::create`'s and `start`'s checks, before any thread or process
+            // starts; each field is a cell, set through the shared configuration.
             let value = arg >> 8;
             match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
                 FIELD_REACTOR_NUM => {

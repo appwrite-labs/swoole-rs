@@ -230,14 +230,7 @@ impl Socket {
         buf: &mut [u8],
         peer: &mut sockaddr_storage,
     ) -> (isize, socklen_t) {
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-        let mut size = size_of::<sockaddr_storage>() as socklen_t;
-        // SAFETY: the address holds `size` bytes.
-        let received = unsafe {
-            self.co()
-                .recvfrom(buf, (&raw mut *peer).cast(), &raw mut size)
-        };
-        (received, size)
+        self.co().recvfrom_into(buf, peer)
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {

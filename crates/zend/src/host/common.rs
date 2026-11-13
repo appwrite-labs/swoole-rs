@@ -24,19 +24,16 @@ fn failed(code: i32) -> bool {
     }
 }
 
-/// MINIT: allocate and publish the table, then intern each string into it.
+/// The table itself: one slot for each known string, null until interned.
+static TABLE: [AtomicPtr<zend_string>; super::known_strings::STRINGS.len()] =
+    [const { AtomicPtr::new(ptr::null_mut()) }; super::known_strings::STRINGS.len()];
+
+/// MINIT: publish the table, then intern each string into it.
 pub fn known_init() {
-    // A persistent allocation never bails out: one that fails exits the process.
-    // SAFETY: persistent allocation holds one pointer for each frozen known string.
-    let table = unsafe {
-        sys::swr_zend_facade_palloc(
-            super::known_strings::STRINGS.len() * size_of::<*mut zend_string>(),
-        )
-    }
-    .cast::<*mut zend_string>();
-    // Published before it is filled, matching upstream MINIT ordering.
-    sw_zend_known_strings.store(table, Relaxed);
-    for (index, bytes) in super::known_strings::STRINGS.iter().enumerate() {
+    // Published before it is filled, matching upstream MINIT ordering. An
+    // `AtomicPtr` has a pointer's layout, so C++ reads the slots as pointers.
+    sw_zend_known_strings.store(TABLE.as_ptr().cast_mut().cast(), Relaxed);
+    for (slot, bytes) in TABLE.iter().zip(super::known_strings::STRINGS) {
         // SAFETY: frozen bytes include their NUL, which is not counted in the string length.
         let string =
             unsafe { sys::swr_zend_string_persistent(bytes.as_ptr().cast(), bytes.len() - 1) };
@@ -45,17 +42,15 @@ pub fn known_init() {
         if failed(unsafe { sys::swr_zend_try_facade_intern(string, &raw mut interned) }) {
             break;
         }
-        // SAFETY: each initialized interned pointer is published exactly once in bounds.
-        unsafe { table.wrapping_add(index).write(interned) };
+        slot.store(interned, Relaxed);
     }
     bailout::finish();
 }
 
-/// MSHUTDOWN: free the table `known_init` allocated (the interned strings stay Zend's).
+/// MSHUTDOWN: withdraw the table `known_init` published (the interned strings stay Zend's).
 pub extern "C" fn known_free() {
-    let table = sw_zend_known_strings.load(Relaxed);
-    // SAFETY: release only the persistent pointer array, not Zend's interned strings.
-    unsafe { sys::swr_zend_facade_pfree(table.cast()) };
-    // Null only after freeing, matching upstream shutdown ordering.
     sw_zend_known_strings.store(ptr::null_mut(), Relaxed);
+    for slot in &TABLE {
+        slot.store(ptr::null_mut(), Relaxed);
+    }
 }

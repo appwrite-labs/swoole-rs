@@ -157,18 +157,18 @@ impl Facts for Live<'_> {
     }
 
     fn pipe_socket(&mut self, task: bool, index: u64, master: bool) -> Socket {
-        let workers = self.pool(task).workers();
         let index = usize::try_from(index).unwrap_or(usize::MAX);
-        // SAFETY: one of the pool's live workers, `index` below its count.
-        let worker: &WorkerRecord = unsafe { &*workers.wrapping_add(index) };
+        // One of the pool's live workers: `run` asks only below its count.
+        let worker = self.pool(task).worker(index);
+        let worker = worker.unwrap_or_else(|| std::process::abort());
         // SAFETY: the worker's live `UnixSocket`.
-        let pipe = unsafe { &*worker.pipe_object.cast::<SocketPair>() };
+        let pipe = unsafe { &*worker.pipe_object().cast::<SocketPair>() };
         let end = if master {
-            pipe.master_socket
+            pipe.master_end()
         } else {
-            pipe.worker_socket
+            pipe.worker_end()
         };
-        live(end.cast()).read(socket)
+        end.unwrap_or_else(|| std::process::abort()).read(socket)
     }
 
     fn has_reactor(&mut self) -> bool {
@@ -204,7 +204,8 @@ impl Facts for Live<'_> {
         let gs = self.serv.counters();
         let mode = u64::from(self.config.mode_);
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
-        let worker = swoole_rs_process::worker_globals::current_worker();
+        // This process's worker's id, if it runs one.
+        let worker = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
         // Server::foreach_connection: each valid connection, max_fd read afresh.
         let mut fd = gs.min_fd();
         while fd <= gs.max_fd() {
@@ -215,10 +216,7 @@ impl Facts for Live<'_> {
                 continue;
             };
             let owner = i64::from(conn.reactor_id());
-            let other_worker = || {
-                // SAFETY: this worker's live record.
-                !worker.is_null() && owner != i64::from(unsafe { &*worker }.id())
-            };
+            let other_worker = || worker.is_some_and(|id| owner != i64::from(id));
             if live(conn.socket_ptr()).read(|s| s.fd_type) != FD_SESSION
                 || (mode == MODE_PROCESS && owner != reactor_id)
                 || (mode == MODE_BASE && other_worker())
