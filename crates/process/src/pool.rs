@@ -1156,7 +1156,7 @@ mod tests {
         fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) -> i64 {
             0
         }
-        fn callback(&self, _: &mut PoolCall) {}
+        fn callback(&self, _: &mut PoolCall, _: crate::process_pool::Callback) {}
         fn event_size(&self) -> usize {
             128
         }
