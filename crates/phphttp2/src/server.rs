@@ -825,8 +825,8 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     };
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
-    let zheader = property(ctx, ResponseArray::Header);
-    let typed = zheader
+    // The held array's reference ends here: a write to a shared array asserts.
+    let typed = property(ctx, ResponseArray::Header)
         .as_ref()
         .and_then(|zheader| zheader.array())
         .is_some_and(|zheader| zheader.find(b"content-type").is_some());
