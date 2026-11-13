@@ -512,6 +512,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signals_need_a_running_server() {
         let live = LiveServer::new();
+        // The thread's event pool outlives a test: clear what one before it left.
+        live.server().event_pool_ref().set_read_message(false);
         signal(live.server(), libc::SIGIO);
         assert!(!live.server().event_pool_ref().read_message(), "ignored");
     }
