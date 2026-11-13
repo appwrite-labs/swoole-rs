@@ -141,13 +141,30 @@ impl<T> Shared<T> {
     }
 }
 
-impl<U> Shared<Option<std::sync::Arc<U>>> {
-    /// Another reference to the value, which a later write leaves alone.
+/// A value set while the server or a port is configured and read by every thread
+/// once it runs. A reader takes its own reference under the lock and a write swaps
+/// it, so neither sees a value the other frees. A thin box: native code's mirror
+/// holds a `void *` here.
+#[repr(transparent)]
+#[derive(Default)]
+pub struct Published<T>(Box<std::sync::Mutex<Option<std::sync::Arc<T>>>>);
+
+impl<T> Published<T> {
     #[must_use]
-    pub fn cloned(&self) -> Option<std::sync::Arc<U>> {
-        // SAFETY: no reference into the cell escapes a call, so none is live, and
-        // `Arc::clone` runs no code that could reach the cell.
-        unsafe { (*self.0.get()).clone() }
+    pub fn get(&self) -> Option<std::sync::Arc<T>> {
+        self.slot().clone()
+    }
+
+    /// Publishes `value`; the one it replaces drops once the lock is released.
+    pub fn set(&self, value: T) {
+        let previous = self.slot().replace(std::sync::Arc::new(value));
+        drop(previous);
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<T>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

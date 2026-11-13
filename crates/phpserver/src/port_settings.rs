@@ -4,7 +4,6 @@
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
-use std::sync::Arc;
 use swoole_rs_corebase::net_types::{GetPackageLength, Protocol};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
@@ -296,7 +295,7 @@ fn websocket(s: &impl Source) -> Step {
         }
     }
     if let Some(protocol) = s.bytes(c"websocket_subprotocol")? {
-        s.config(|c| c.websocket_protocol.set(Some(Arc::new(protocol))));
+        s.config(|c| c.websocket_protocol.set(protocol));
     }
     Ok(())
 }
@@ -965,7 +964,7 @@ mod tests {
         assert!(apply(&table, &mut c).is_ok());
         assert_eq!(c.websocket_frames.get(), 5);
         assert_eq!(
-            c.websocket_protocol.cloned().as_deref().map(Vec::as_slice),
+            c.websocket_protocol.get().as_deref().map(Vec::as_slice),
             Some(&b"chat"[..])
         );
     }
