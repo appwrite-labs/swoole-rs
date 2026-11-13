@@ -17,8 +17,27 @@ pub const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 pub const HPE_USER: i32 = 24;
 
 /// `llhttp_type_t`.
-pub const REQUEST: u8 = 1;
-pub const RESPONSE: u8 = 2;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// `HTTP_BOTH`, a zeroed parser's type. This port doesn't detect the type, so
+    /// nothing parses with it.
+    #[default]
+    Both,
+    Request,
+    Response,
+}
+
+/// `llhttp_finish_t`: what the end of input means.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Finish {
+    /// Nothing is pending.
+    #[default]
+    Safe,
+    /// The message completes at EOF.
+    SafeWithCb,
+    /// EOF is an error.
+    Unsafe,
+}
 
 /// `llhttp_flags_t`.
 pub const F_CONNECTION_KEEP_ALIVE: u16 = 0x1;
@@ -288,14 +307,12 @@ enum Span {
 /// `llhttp_t`. All zeroes is a valid parser of no type, as `llhttp_t parser = {}`.
 #[derive(Debug, Default)]
 pub struct Parser {
-    /// `REQUEST` or `RESPONSE`.
-    pub kind: u8,
+    pub kind: Kind,
     pub method: u8,
     pub http_major: u8,
     pub http_minor: u8,
     pub upgrade: u8,
-    /// `HTTP_FINISH_SAFE` (0), `_SAFE_WITH_CB` (1) or `_UNSAFE` (2).
-    pub finish: u8,
+    pub finish: Finish,
     pub flags: u16,
     pub status_code: u16,
     pub content_length: u64,
@@ -319,7 +336,7 @@ pub struct Parser {
 impl Parser {
     /// `llhttp_init`: a fresh parser of `kind`.
     #[must_use]
-    pub fn new(kind: u8) -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
             kind,
             ..Self::default()
@@ -365,7 +382,7 @@ impl Parser {
     /// `llhttp_message_needs_eof`.
     #[must_use]
     pub fn needs_eof(&self) -> bool {
-        if self.kind == REQUEST {
+        if self.kind == Kind::Request {
             return false;
         }
         if self.status_code / 100 == 1
@@ -397,7 +414,7 @@ impl Parser {
     /// `llhttp__before_headers_complete`.
     fn before_headers_complete(&mut self) {
         self.upgrade = if self.flags & F_UPGRADE != 0 && self.flags & F_CONNECTION_UPGRADE != 0 {
-            u8::from(self.kind == REQUEST || self.status_code == 101)
+            u8::from(self.kind == Kind::Request || self.status_code == 101)
         } else {
             u8::from(self.method == CONNECT)
         };
@@ -406,7 +423,7 @@ impl Parser {
     /// `llhttp__after_headers_complete`: what follows the head.
     fn after_headers_complete(&self) -> u8 {
         let has_body = self.flags & F_CHUNKED != 0 || self.content_length > 0;
-        let response = self.kind == RESPONSE;
+        let response = self.kind == Kind::Response;
         if (self.upgrade != 0
             && (self.method == CONNECT || self.flags & F_SKIPBODY != 0 || !has_body))
             || (response && self.status_code == 101)
@@ -423,7 +440,7 @@ impl Parser {
         } else if self.flags & F_CHUNKED != 0 {
             2
         } else if self.flags & F_TRANSFER_ENCODING != 0 {
-            if self.kind == REQUEST { 5 } else { 4 }
+            if self.kind == Kind::Request { 5 } else { 4 }
         } else if self.flags & F_CONTENT_LENGTH == 0 {
             if self.needs_eof() { 4 } else { 0 }
         } else if self.content_length == 0 {
@@ -484,9 +501,9 @@ pub fn finish(cb: &mut (impl Callbacks + ?Sized)) -> i32 {
         return 0;
     }
     match parser.finish {
-        0 => 0,
-        1 => cb.on_message_complete(),
-        _ => {
+        Finish::Safe => 0,
+        Finish::SafeWithCb => cb.on_message_complete(),
+        Finish::Unsafe => {
             parser.reason = Some(&"Invalid EOF state");
             HPE_INVALID_EOF_STATE
         }
@@ -1015,7 +1032,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             }
             3 => Ok(State::Body),
             4 => {
-                self.parser().finish = 1;
+                self.parser().finish = Finish::SafeWithCb;
                 Ok(State::Eof)
             }
             5 => self.fail(15, &"Request has invalid `Transfer-Encoding`"),
@@ -1046,7 +1063,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
     fn after_message_complete(&mut self) -> State {
         let parser = self.parser();
         let keep_alive = parser.should_keep_alive();
-        parser.finish = 0;
+        parser.finish = Finish::Safe;
         parser.flags = 0;
         if keep_alive {
             parser.content_length = 0;
@@ -1065,7 +1082,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             2 if parser.flags & F_CONTENT_LENGTH != 0 => self.fail(4, &"Duplicate Content-Length"),
             2 => Ok(State::ContentLength),
             3 => {
-                if parser.flags & F_CHUNKED != 0 && parser.kind == REQUEST {
+                if parser.flags & F_CHUNKED != 0 && parser.kind == Kind::Request {
                     return self.close_fail(true, 15, &"Invalid `Transfer-Encoding` header value");
                 }
                 parser.flags = (parser.flags | F_TRANSFER_ENCODING) & !F_CHUNKED;
@@ -1145,7 +1162,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         };
         let parser = self.parser();
         let (kind, method) = (parser.kind, parser.method);
-        let valid = kind != REQUEST
+        let valid = kind != Kind::Request
             || match protocol {
                 0 => method <= PRI || method == 46,
                 1 => method == 33,
@@ -1269,7 +1286,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
         if !valid {
             return self.fail(9, &"Invalid HTTP version");
         }
-        if parser.kind != REQUEST {
+        if parser.kind != Kind::Request {
             Ok(State::ResAfterVersion)
         } else if parser.method == PRI {
             Ok(State::PriUpgrade)
@@ -1306,10 +1323,10 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     return self.eat(S::Start);
                 }
                 let parser = self.parser();
-                parser.finish = 2;
+                parser.finish = Finish::Unsafe;
                 parser.index = 0;
                 parser.word = 0;
-                if parser.kind == RESPONSE {
+                if parser.kind == Kind::Response {
                     self.protocol(c)
                 } else {
                     self.method(c)
@@ -1591,7 +1608,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
                     Ok(S::ValueOtherwise)
                 }
                 b' ' => self.eat(S::TeChunkedLast),
-                b',' if self.parser().kind == REQUEST => {
+                b',' if self.parser().kind == Kind::Request => {
                     self.close_fail(true, 15, &"Invalid `Transfer-Encoding` header value")
                 }
                 b',' => Ok(S::TeChunked),

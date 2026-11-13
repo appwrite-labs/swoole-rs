@@ -405,7 +405,7 @@ fn add_upload(state: &mut State, path: &[u8]) {
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
 pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
-    ctx.state().parser = Parser::new(llhttp::REQUEST);
+    ctx.state().parser = Parser::new(llhttp::Kind::Request);
 }
 
 /// `swoole_http_parse_cookie`.
