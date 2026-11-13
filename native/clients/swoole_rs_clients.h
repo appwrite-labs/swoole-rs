@@ -9,7 +9,6 @@
 extern "C" {
 #endif
 bool swr_v1_clients_address_verify(int family, const char *host);
-int swr_v1_clients_gethostbyname(int flags, const char *name, char *addr);
 struct swr_v1_clients_format_span { const uint8_t *data; size_t length; };
 struct swr_v1_clients_format_result { size_t written; uint32_t error; };
 /* Output is disjoint native-owned writable bytes, possibly uninitialized.

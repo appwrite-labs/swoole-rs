@@ -67,27 +67,6 @@ typedef struct {
     bool want_read;
     bool want_write;
 } swr_v1_socket_tls;
-/* An IOVector's cursor. */
-typedef struct {
-    struct iovec *iterator;
-    int remain_count;
-    int index;
-    size_t offset_bytes;
-} swr_v1_socket_iov_state;
-/* The descriptor allocation owns its cursor; payloads remain borrowed. */
-typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
-typedef struct {
-    struct iovec *original;
-    int32_t count;
-    swr_v1_socket_iov_state state;
-} swr_v1_reactor_iov_fields;
-typedef struct {
-    swr_v1_reactor_iov *owner;
-    swr_v1_reactor_iov_fields *fields;
-    int32_t status;
-} swr_v1_reactor_iov_prepared;
-swr_v1_reactor_iov_prepared swr_v1_reactor_iov_prepare(const struct iovec *source, int32_t count);
-void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
 
 /* Rust's reactor state (crates/reactor's ReactorState), which begins with swr_v1_reactor_head:
  * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor

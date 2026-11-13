@@ -62,7 +62,7 @@ struct TlsView {
     strings: [*const c_void; 11],
 }
 
-/// The head of `TimerNode`, through `destructor` (native/timer/swoole_timer.h).
+/// The head of `TimerNode`, through `destructor` (crates/timer/src/owner.rs).
 #[repr(C)]
 pub(super) struct TimerNode {
     id: c_long,
