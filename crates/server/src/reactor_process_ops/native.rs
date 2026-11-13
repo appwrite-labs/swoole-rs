@@ -245,7 +245,7 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
     // SAFETY: as above.
     let record = unsafe { &mut *pool };
     record.max_wait_time = config.max_wait_time.get();
-    record.use_msgqueue = 0;
+    record.use_msgqueue = false;
     let count = config.worker_num.get() as usize;
     // SAFETY: the pool's and the server's worker arrays, `count` records each.
     unsafe { core::ptr::copy_nonoverlapping(record.workers(), workers.event_workers, count) };

@@ -91,7 +91,7 @@ impl Context<'_> {
     }
     /// `reactor->remove_read_event(pipe)` when `pipe` is still in the loop.
     fn unread(&self, pipe: Option<Socket<'_>>) {
-        if let Some(sock) = pipe.filter(|s| s.read(|s| s.removed == 0)) {
+        if let Some(sock) = pipe.filter(|s| s.read(|s| !s.removed)) {
             self.reactor().unread(sock);
         }
     }

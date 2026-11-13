@@ -58,7 +58,7 @@ impl SocketFields {
         if address.bind(self.fd) != 0 {
             return ERR;
         }
-        self.bound = 1;
+        self.bound = true;
         OK
     }
 
@@ -69,7 +69,7 @@ impl SocketFields {
         if swoole_rs_corebase::sys::listen(self.fd, backlog) != 0 {
             return ERR;
         }
-        self.listened = 1;
+        self.listened = true;
         OK
     }
 
@@ -78,13 +78,8 @@ impl SocketFields {
         if crate::swr_v1_socket_tcp_nopush(self.fd, nopush) < 0 {
             return ERR;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream assigns the int to its flag"
-        )]
-        let flag = nopush as u8;
-        self.tcp_nopush = flag;
+        // Upstream's 1-bit field keeps the int's low bit.
+        self.tcp_nopush = nopush & 1 != 0;
         OK
     }
 
@@ -93,14 +88,9 @@ impl SocketFields {
     pub fn set_fd_option(&mut self, nonblock: c_int, cloexec: c_int) -> crate::SocketOptionResult {
         let result = crate::swr_v1_socket_fd_option(self.fd, nonblock, cloexec);
         if result.ok {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "upstream assigns the ints to its flags"
-            )]
-            let (nonblock, cloexec) = (nonblock as u8, cloexec as u8);
-            self.output.nonblock = nonblock;
-            self.cloexec = cloexec;
+            // Upstream's 1-bit fields keep each int's low bit.
+            self.output.nonblock = nonblock & 1 != 0;
+            self.cloexec = cloexec & 1 != 0;
         }
         result
     }
@@ -131,8 +121,8 @@ fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
     socket.read(|record| {
         (
             record.fd,
-            record.output.nonblock != 0,
-            record.dont_restart != 0,
+            record.output.nonblock,
+            record.dont_restart,
             !record.ssl().is_null(),
         )
     })
@@ -190,7 +180,7 @@ pub fn record_recv<S: ReadSlot>(
     } else if total < 0 {
         // Nothing since the call has touched errno.
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if socket.catch_error(error) == WAIT && socket.read(|record| record.event_hup != 0) {
+        if socket.catch_error(error) == WAIT && socket.read(|record| record.event_hup) {
             return 0;
         }
     }
@@ -278,9 +268,9 @@ pub fn record_peek<S: ReadSlot>(
 #[must_use]
 pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
     let tls = socket.tls;
-    if !socket.ssl().is_null() && (tls.want_read != 0 || tls.want_write != 0) {
+    if !socket.ssl().is_null() && (tls.want_read || tls.want_write) {
         use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
-        if tls.want_write != 0 {
+        if tls.want_write {
             SW_EVENT_WRITE as c_int
         } else {
             SW_EVENT_READ as c_int
@@ -306,14 +296,14 @@ mod tests {
                 std::ptr::null_mut()
             };
             unsafe { socket.set_ssl(live) };
-            for read in [0, 1] {
-                for write in [0, 1] {
+            for read in [false, true] {
+                for write in [false, true] {
                     for default in [-1, 0, 512, 1024] {
                         socket.tls.want_read = read;
                         socket.tls.want_write = write;
-                        let expected = if ssl && write != 0 {
+                        let expected = if ssl && write {
                             1024
-                        } else if ssl && read != 0 {
+                        } else if ssl && read {
                             512
                         } else {
                             default
@@ -395,7 +385,7 @@ mod tests {
     #[test]
     fn a_blocked_read_after_hangup_is_end_of_stream() {
         let [mut a, b] = pair();
-        a.output.nonblock = 1;
+        a.output.nonblock = true;
         let mut buffer = [0_u8; 4];
         // SAFETY: a nonblocking fd; the read would block.
         let set = unsafe { libc::fcntl(a.fd, libc::F_SETFL, libc::O_NONBLOCK) };
@@ -412,7 +402,7 @@ mod tests {
             )
         };
         assert_eq!(read, -1);
-        a.event_hup = 1;
+        a.event_hup = true;
         // SAFETY: as above.
         let read = unsafe {
             socket_record_recv(
@@ -468,7 +458,7 @@ mod tests {
         }
         assert_eq!(
             (socket.bound, socket.listened, socket.tcp_nodelay),
-            (1, 1, 1)
+            (true, true, true)
         );
         assert_eq!(socket.info.kind, 1);
         assert_eq!(socket.info.len, length);
@@ -478,7 +468,7 @@ mod tests {
         assert!(socket.set_fd_option(1, -1).ok);
         assert!(socket.set_kernel_timeout(true, 1.5));
         assert!(socket.set_kernel_timeout(false, 0.25));
-        assert_eq!((socket.output.nonblock, socket.cloexec), (1, 255));
+        assert_eq!((socket.output.nonblock, socket.cloexec), (true, true));
         assert_eq!((socket.timeouts.write, socket.timeouts.read), (1.5, 0.25));
         close(&[socket]);
         let mut closed = SocketRecord::with_fd(-1, 0);
@@ -488,7 +478,7 @@ mod tests {
         assert!(!closed.set_kernel_timeout(true, 3.0));
         assert_eq!(
             (closed.listened, closed.output.nonblock, closed.cloexec),
-            (0, 0, 0)
+            (false, false, false)
         );
         assert_eq!(closed.timeouts.write, 60.0);
     }

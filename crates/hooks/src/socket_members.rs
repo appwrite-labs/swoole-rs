@@ -62,7 +62,7 @@ fn on_ready(event: &Event, kind: u32) -> c_int {
         return 0;
     };
     set_err(socket, 0);
-    let hup = source.read(|record| record.event_hup) != 0;
+    let hup = source.read(|record| record.event_hup);
     let co = ready(socket, kind, hup);
     if !co.is_null() {
         // SAFETY: the coroutine `ready` chose, parked in its wait on this socket.
@@ -779,7 +779,7 @@ mod tests {
         let (mut reader, mut writer): (c_long, c_long) = (1, 2);
         object.bind(READ, &raw mut reader);
         object.bind(WRITE, &raw mut writer);
-        object.record().socket_mut().removed = 0;
+        object.record().socket_mut().removed = false;
         let mut event = object.event();
         error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);
         assert_eq!(

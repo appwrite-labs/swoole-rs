@@ -441,12 +441,12 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
         return None;
     }
     conn.fd = fd;
-    conn.removed = 1;
+    conn.removed = true;
     conn.info.kind = socket
         .net(|listener| listener.socket_type)
         .unwrap_or_default();
-    conn.output.nonblock = 1;
-    conn.cloexec = 1;
+    conn.output.nonblock = true;
+    conn.cloexec = true;
     let client = socket.adopt(Box::new(conn));
     crate::socket_extra::swr_v1_hook_co_socket_uring(client);
     Some(client)
@@ -484,7 +484,7 @@ pub(crate) fn sendfile(ops: &UringSocketOps, file: c_int, offset: libc::off_t, e
 fn want(socket: Co) -> c_int {
     let tls = socket.net(|network| network.tls);
     tls.map_or(0, |tls| {
-        c_int::from(tls.want_read == 1) | (c_int::from(tls.want_write == 1) << 1)
+        c_int::from(tls.want_read) | (c_int::from(tls.want_write) << 1)
     })
 }
 

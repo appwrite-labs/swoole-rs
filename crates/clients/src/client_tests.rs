@@ -691,7 +691,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         OK
     );
     assert_eq!(taken(), ["call 2 4"]);
-    sock().output.close_wait = 1;
+    sock().output.close_wait = true;
     assert_eq!(
         unsafe {
             on_package(
@@ -720,8 +720,8 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
             swoole_rs_corebase::swr_v1_core_string_set(slot, name.as_ptr(), name.count_bytes()),
             0
         );
-        (*tls.fields).verify_peer = 1;
-        (*tls.fields).allow_self_signed = 1;
+        (*tls.fields).verify_peer = true;
+        (*tls.fields).allow_self_signed = true;
     }
     mock(|m| m.ssl_connect_ready = true);
     assert_eq!(ssl_handshake(Handle(client)), OK);

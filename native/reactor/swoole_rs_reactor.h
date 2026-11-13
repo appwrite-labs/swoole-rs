@@ -40,10 +40,10 @@ typedef struct {
     void *out_buffer;
     void *send_timer;
     uint32_t buffer_size;
-    uint8_t close_wait;
-    uint8_t nonblock;
-    uint8_t ssl_send;
-    uint8_t send_wait;
+    bool close_wait;
+    bool nonblock;
+    bool ssl_send;
+    bool send_wait;
 } swr_v1_socket_output;
 /* Reactor handler tables (read/write/error per fd type, write and error defaults).
  * Handlers are ReactorHandler: int (*)(Reactor *, Event *). get kind: 0 read, 1 write,
@@ -69,8 +69,8 @@ typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
  * that take it set it. */
 typedef struct {
     uint32_t state;
-    uint8_t want_read;
-    uint8_t want_write;
+    bool want_read;
+    bool want_write;
 } swr_v1_socket_tls;
 /* An IOVector's cursor. */
 typedef struct {

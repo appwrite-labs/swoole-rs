@@ -208,11 +208,11 @@ impl HttpServer {
             .clone_from(&self.compression_types.borrow());
         state.upload_tmp_dir = Some(self.upload_tmp_dir.borrow().clone());
         state.websocket_settings = self.websocket_settings.get();
-        state.parse_body = u8::from(self.parse_post.get());
-        state.parse_cookie = u8::from(self.parse_cookie.get());
-        state.parse_files = u8::from(self.parse_files.get());
+        state.parse_body = self.parse_post.get();
+        state.parse_cookie = self.parse_cookie.get();
+        state.parse_files = self.parse_files.get();
         if COMPRESSION.load(Relaxed) {
-            state.enable_compression = u8::from(self.compression.get());
+            state.enable_compression = self.compression.get();
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
         }
@@ -328,7 +328,7 @@ fn http2_begin(socket: Co) {
 
 /// `recv_wait`: the socket waits for a request.
 fn set_recv_wait(socket: Co, waiting: bool) {
-    socket.with_network(|network| network.edit(|record| record.recv_wait = u8::from(waiting)));
+    socket.with_network(|network| network.edit(|record| record.recv_wait = waiting));
 }
 
 method_table! {
@@ -816,7 +816,7 @@ fn shutdown(call: &Call) {
                 return;
             };
             let waiting_now =
-                socket.with_network(|network| network.read(|record| record.recv_wait != 0));
+                socket.with_network(|network| network.read(|record| record.recv_wait));
             if waiting_now == Some(true) {
                 waiting.push((index, socket));
             }
@@ -1005,13 +1005,13 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             }
             // Once per request, so the interim response is not repeated.
             let state = context.state();
-            if state.completed == 0 && state.request.version == 101 && expects_continue(context) {
+            if !state.completed && state.request.version == 101 && expects_continue(context) {
                 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
                 let _sent = conn.socket.send_all(CONTINUE);
             }
         }
-        if context.state().completed == 0 {
-            let chunked = context.state().recv_chunked != 0;
+        if !context.state().completed {
+            let chunked = context.state().recv_chunked;
             if !chunked && conn.buffer().len() < total {
                 continue;
             }
@@ -1031,7 +1031,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 break;
             }
             if chunked {
-                if context.state().completed == 0 {
+                if !context.state().completed {
                     if conn.buffer().len() >= max {
                         context.state().response.status = ENTITY_TOO_LARGE;
                         break;
@@ -1059,7 +1059,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let callable = conn.server.handler(context);
         let mut args = objects(context);
         let state = context.state();
-        let keep_alive = state.parser.should_keep_alive() && state.websocket == 0;
+        let keep_alive = state.parser.should_keep_alive() && !state.websocket;
         set_recv_wait(conn.socket, false);
         if let Some(callable) = callable {
             if !call_handler(&callable, &mut args, false, NO_THEN)? {
@@ -1123,7 +1123,7 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         }
         (server.session_free)(fd);
     }
-    context.state().detached = 1;
+    context.state().detached = true;
     context::release_objects(context)
 }
 

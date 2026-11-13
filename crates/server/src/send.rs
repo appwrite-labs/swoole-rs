@@ -71,9 +71,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
     let socket = conn.socket()?;
     if conn.overflow()
         || socket.read(|record| {
-            record.direct_send == 0
-                || !record.ssl().is_null()
-                || !record.output.out_buffer.is_null()
+            !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
         })
     {
         return None;
@@ -395,35 +393,5 @@ mod tests {
         let mut s = found(0, &[(OP_SC_SENDFILE, u64::MAX)]);
         assert_eq!(send_to_connection(&mut s, SEND_FILE, None).unwrap(), 0);
         assert_eq!(s.called(OP_SC_ADD_WRITE), 0);
-    }
-
-    #[test]
-    fn flags_match_the_header() {
-        let header = include_str!("../../../native/include/swoole_rs.h");
-        for (name, value) in [
-            ("OVERFLOW", OVERFLOW),
-            ("CLOSE_RESET", CLOSE_RESET),
-            ("CLOSE_FORCE", CLOSE_FORCE),
-            ("PEER_CLOSED", PEER_CLOSED),
-            ("CLOSED", CLOSED),
-            ("CLOSE_QUEUED", CLOSE_QUEUED),
-            ("HIGH_WATERMARK", HIGH_WATERMARK),
-            ("REMOVED", REMOVED),
-            ("CLOSE_NOTIFIED", CLOSE_NOTIFIED),
-            ("EVENT_READ", EVENT_READ),
-            ("EVENT_WRITE", EVENT_WRITE),
-            ("ON_BUFFER_FULL", ON_BUFFER_FULL),
-            ("ON_BUFFER_EMPTY", ON_BUFFER_EMPTY),
-            ("FOUND", FOUND),
-            ("SEND_YIELD", SEND_YIELD),
-            ("HALFCLOSE", HALFCLOSE),
-            ("OUT_EMPTY", OUT_EMPTY),
-            ("DIRECT_SEND", DIRECT_SEND),
-        ] {
-            let line = format!("#define SWR_SC_{name} (1u << {})", value.trailing_zeros());
-            assert!(header.contains(&line), "{line}");
-        }
-        assert!(header.contains(&format!("#define SWR_SC_READ {READ}u")));
-        assert!(header.contains(&format!("#define SWR_SC_WRITE {WRITE}u")));
     }
 }

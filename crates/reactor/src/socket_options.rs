@@ -117,15 +117,15 @@ pub fn swr_v1_socket_tcp_nodelay(fd: c_int, nodelay: c_int) -> bool {
 /// A socket's corking fields, copied in and out of its bitfields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CorkState {
-    pub tcp_nopush: u8,
-    pub tcp_nodelay: u8,
+    pub tcp_nopush: bool,
+    pub tcp_nodelay: bool,
 }
 
 const HAS_CORK: bool = cfg!(target_os = "linux");
 
 /// `Socket::cork`: set `TCP_CORK` and turn `TCP_NODELAY` off while corked.
 pub fn swr_v1_socket_cork(fd: c_int, state: &mut CorkState) -> SocketOptionResult {
-    if state.tcp_nopush != 0 {
+    if state.tcp_nopush {
         return SocketOptionResult::default();
     }
     if HAS_CORK {
@@ -135,12 +135,12 @@ pub fn swr_v1_socket_cork(fd: c_int, state: &mut CorkState) -> SocketOptionResul
                 warnings: 1,
             };
         }
-        state.tcp_nopush = 1;
+        state.tcp_nopush = true;
     }
     let mut warnings = 0;
-    if state.tcp_nodelay != 0 {
+    if state.tcp_nodelay {
         if swr_v1_socket_tcp_nodelay(fd, 0) {
-            state.tcp_nodelay = 0;
+            state.tcp_nodelay = false;
         } else {
             warnings = 2;
         }
@@ -155,7 +155,7 @@ pub fn swr_v1_socket_uncork(
     enable_tcp_nodelay: bool,
     state: &mut CorkState,
 ) -> SocketOptionResult {
-    if state.tcp_nopush == 0 {
+    if !state.tcp_nopush {
         return SocketOptionResult::default();
     }
     if HAS_CORK {
@@ -165,16 +165,16 @@ pub fn swr_v1_socket_uncork(
                 warnings: 1,
             };
         }
-        state.tcp_nopush = 0;
+        state.tcp_nopush = false;
     }
-    if enable_tcp_nodelay && state.tcp_nodelay == 0 {
+    if enable_tcp_nodelay && !state.tcp_nodelay {
         if !swr_v1_socket_tcp_nodelay(fd, 1) {
             return SocketOptionResult {
                 ok: false,
                 warnings: 2,
             };
         }
-        state.tcp_nodelay = 1;
+        state.tcp_nodelay = true;
     }
     SocketOptionResult {
         ok: true,
@@ -283,8 +283,8 @@ mod tests {
     fn cork_round_trip() {
         let fd = tcp();
         let mut state = CorkState {
-            tcp_nopush: 0,
-            tcp_nodelay: 1,
+            tcp_nopush: false,
+            tcp_nodelay: true,
         };
         let corked = swr_v1_socket_cork(fd, &mut state);
         assert_eq!(
@@ -297,8 +297,8 @@ mod tests {
         assert_eq!(
             state,
             CorkState {
-                tcp_nopush: u8::from(HAS_CORK),
-                tcp_nodelay: 0
+                tcp_nopush: HAS_CORK,
+                tcp_nodelay: false
             }
         );
         let uncorked = swr_v1_socket_uncork(fd, true, &mut state);

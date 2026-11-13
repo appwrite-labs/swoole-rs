@@ -173,8 +173,7 @@ impl PortConfig {
     /// `verify_peer` with no client certificate file, cafile or capath.
     #[must_use]
     pub fn ssl_verify_without_ca(&self) -> bool {
-        self.ssl_fields()
-            .is_some_and(|fields| fields.verify_peer != 0)
+        self.ssl_fields().is_some_and(|fields| fields.verify_peer)
             && self
                 .ssl_context
                 .as_deref()

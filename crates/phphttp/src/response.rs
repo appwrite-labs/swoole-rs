@@ -70,9 +70,9 @@ fn release(mut ctx: Ctx) -> bool {
     context::after_response(ctx);
     let mut bailed = false;
     let state = ctx.state();
-    if state.end == 0
-        && (state.send_chunked != 0 || state.send_header == 0)
-        && state.detached == 0
+    if !state.end
+        && (state.send_chunked || !state.send_header)
+        && !state.detached
         // SAFETY: reads a thread global.
         && !swoole_rs_reactor::event_api::swr_v1_event_reactor().is_null()
     {
@@ -204,7 +204,7 @@ fn write(call: &Call) {
         let data = call.arity(1, 1).and_then(|()| call.zstr(1)).ok()??;
         let mut ctx = checked(call)?;
         // Compressing a chunked body would compress the chunks, not the stream.
-        ctx.state().accept_compression = 0;
+        ctx.state().accept_compression = false;
         Some(send::write(ctx, Some(data)))
     };
     match run() {
@@ -453,7 +453,7 @@ fn trailer(call: &Call) {
         let key = key.to_ascii_lowercase();
         // SAFETY: the trailer property is a live array.
         unsafe { set_key(property(ctx, TRAILER), &key, value) };
-        ctx.state().send_trailer = 1;
+        ctx.state().send_trailer = true;
         call.set_bool(true);
         Some(())
     };
@@ -579,7 +579,7 @@ fn recv(call: &Call) {
 fn detach(call: &Call) {
     let run = || -> Option<()> {
         let mut ctx = checked(call)?;
-        ctx.state().detached = 1;
+        ctx.state().detached = true;
         call.set_bool(true);
         Some(())
     };
@@ -711,18 +711,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     }
     let mut ctx = ctx.unwrap_or_else(|| {
         let mut ctx = context::alloc();
-        ctx.state().keepalive = 1;
+        ctx.state().keepalive = true;
         if let Some(server) = server {
             context::init(ctx.state(), server);
         } else {
             crate::parse::init_request_parser(ctx);
             // `Context::init(zval *)`.
             let state = ctx.state();
-            state.parse_cookie = 1;
-            state.parse_body = 1;
-            state.parse_files = 1;
+            state.parse_cookie = true;
+            state.parse_body = true;
+            state.parse_files = true;
             if crate::parse::CAPABILITIES.load(Relaxed) & 8 != 0 {
-                state.enable_compression = 1;
+                state.enable_compression = true;
                 state.compression_level = 1;
             }
         }

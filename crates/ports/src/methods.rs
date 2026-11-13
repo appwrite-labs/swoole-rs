@@ -595,7 +595,7 @@ mod tests {
                 fields.stapling,
                 fields.stapling_verify
             ),
-            (1, 0, 1, 1),
+            (true, false, true, true),
             "flags"
         );
         assert!(!config.is_dtls(), "not DTLS");
@@ -705,13 +705,12 @@ mod tests {
         assert_eq!(listen(at), 0, "listened");
         let fd = unsafe { view::Port::from_raw(at) }.map_or(-1, view::Port::fd);
         assert!(config.listening.get(), "published");
-        assert_eq!(
+        assert!(
             unsafe {
                 (*config.socket_ptr().cast::<SocketRecord>())
                     .fields
                     .listened
             },
-            1,
             "listen(2) succeeded"
         );
         assert_ne!(
@@ -819,7 +818,7 @@ mod tests {
         let config = unsafe { port_config::of(at) };
         let socket = record(config);
         assert_eq!(socket.fd_type, FD_STREAM_SERVER, "stream server fd");
-        assert_eq!(socket.bound, 1, "bound");
+        assert!(socket.bound, "bound");
         assert_ne!(config.port.get(), 0, "the kernel's port");
         assert_eq!(
             swr_v1_clients_address_port(&socket.info),
@@ -874,10 +873,10 @@ mod tests {
             "SO_REUSEPORT"
         );
         // Unmark the old record: only a new bind marks the port's record again.
-        unsafe { (*config.socket_ptr().cast::<SocketRecord>()).fields.bound = 0 };
+        unsafe { (*config.socket_ptr().cast::<SocketRecord>()).fields.bound = false };
         let bound_port = config.port.get();
         assert_eq!(create_socket(at), 0, "recreated");
-        assert_eq!(record(config).bound, 1, "a new socket, bound");
+        assert!(record(config).bound, "a new socket, bound");
         assert_eq!(config.port.get(), bound_port, "on the same port");
         assert_ne!(
             option(record(config).fd, libc::SOL_SOCKET, libc::SO_REUSEPORT),

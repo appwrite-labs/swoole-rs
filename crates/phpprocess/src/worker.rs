@@ -130,7 +130,7 @@ pub(crate) fn fork(worker: *mut c_void) -> c_int {
         with(worker, |record| record.set_pid(pid));
     }
     if pid >= 0 {
-        with(worker, |record| record.child_process = u8::from(pid == 0));
+        with(worker, |record| record.child_process = pid == 0);
     }
     pid
 }

@@ -457,7 +457,7 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
     swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
     let ssl = socket.edit(|record| {
-        record.dtls = 1;
+        record.dtls = true;
         record.ssl()
     });
     let table = methods();

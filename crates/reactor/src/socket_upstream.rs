@@ -44,7 +44,7 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
-    wait_event(socket.fd, socket.dont_restart != 0, timeout_ms, events)
+    wait_event(socket.fd, socket.dont_restart, timeout_ms, events)
 }
 
 /// [`socket_wait_event`] over a socket's `fd` and `dont_restart`.

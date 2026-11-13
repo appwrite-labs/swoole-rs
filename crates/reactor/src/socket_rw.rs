@@ -215,7 +215,7 @@ mod tests {
         unsafe { record.set_ssl(std::ptr::dangling_mut()) };
         let socket = Socket::new(&mut record);
         let mut recv = |nonblock: bool| {
-            socket.edit(|record| record.output.nonblock = u8::from(nonblock));
+            socket.edit(|record| record.output.nonblock = nonblock);
             let at = buffer.as_mut_ptr().cast();
             // SAFETY: local buffer; the stub writes within it.
             unsafe { socket_record_recv(socket, at, 8, 0, record_tls_in_pieces, steady_ms) }

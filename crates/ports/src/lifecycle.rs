@@ -105,10 +105,10 @@ pub(crate) fn context_create(
     }
     edit(context, |fields| {
         if config.open_http_protocol.get() {
-            fields.http = 1;
+            fields.http = true;
         }
         if config.open_http2_protocol.get() {
-            fields.http_v2 = 1;
+            fields.http_v2 = true;
         }
     });
     // SAFETY: the live owner.
@@ -168,10 +168,10 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
     ]);
     let context = config.ssl_context.insert(context).clone();
     edit(&context, |fields| {
-        fields.prefer_server_ciphers = 1;
-        fields.session_tickets = 0;
-        fields.stapling = 1;
-        fields.stapling_verify = 1;
+        fields.prefer_server_ciphers = true;
+        fields.session_tickets = false;
+        fields.stapling = true;
+        fields.stapling_verify = true;
     });
     // crates/tls requires OpenSSL 3, which has DTLS.
     if matches!(config.r#type, 2 | 4 | 6) {
@@ -327,7 +327,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     } else {
         FD_STREAM_SERVER
     };
-    socket.removed = 1;
+    socket.removed = true;
     let info = socket.info;
     *config.socket.get_mut() = socket.into_raw().cast();
     config.r#type = kind;

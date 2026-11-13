@@ -503,7 +503,7 @@ pub(crate) unsafe fn slots_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [May
 fn blocking(fd: c_int, write: bool) -> SocketRecord {
     let mut socket = SocketRecord::new();
     socket.fd = fd;
-    socket.output.nonblock = 1;
+    socket.output.nonblock = true;
     if write {
         socket.timeouts.write = -1.0;
     } else {

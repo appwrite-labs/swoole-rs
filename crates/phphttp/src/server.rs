@@ -263,8 +263,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let mut ctx = context::context_new(session);
     context::init(ctx.state(), server);
     let state = ctx.state();
-    state.before_request = 1;
-    state.upload_preprocessed = u8::from(info.ext_flags & UPLOAD_PREPROCESSED != 0);
+    state.before_request = true;
+    state.upload_preprocessed = info.ext_flags & UPLOAD_PREPROCESSED != 0;
     // The data moves into the request's own zval.
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
@@ -424,7 +424,7 @@ fn handle(
     let data = zdata.bytes().unwrap_or_default();
     // The parser `receive` initialised.
     let parsed = parse_request(ctx.state(), data);
-    if ctx.state().parser.error != HPE_OK || ctx.state().completed == 0 {
+    if ctx.state().parser.error != HPE_OK || !ctx.state().completed {
         context::send(ctx, BAD_REQUEST);
         context::close(ctx);
         let parser = &ctx.state().parser;
@@ -440,7 +440,7 @@ fn handle(
         return Ok(DONE);
     }
     let state = ctx.state();
-    let cache = facts.cache.filter(|_| state.keepalive != 0);
+    let cache = facts.cache.filter(|_| state.keepalive);
     if let Some(conn) = server.by_session(session) {
         addresses(
             server,
@@ -481,7 +481,7 @@ fn handle(
     state.callback = Some(callback);
     if handshake {
         websocket::upgrading(server, session);
-        state.upgrade = 1;
+        state.upgrade = true;
     }
     Ok(REQUEST)
 }
@@ -553,7 +553,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         return context::release_objects(ctx);
     }
     let state = ctx.state();
-    let cache = facts.cache.filter(|_| state.keepalive != 0);
+    let cache = facts.cache.filter(|_| state.keepalive);
     addresses(
         server,
         conn,
@@ -573,7 +573,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);
-    if state.before_request != 0 {
+    if state.before_request {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;
             (http2.respond)(ctx, &[]);
@@ -652,8 +652,8 @@ fn worker() -> Option<Worker> {
 /// Mark a queued request answered and release its objects, deferring a
 /// bailout.
 fn abandon(mut ctx: Ctx) {
-    ctx.state().end = 1;
-    ctx.state().after_response = 0;
+    ctx.state().end = true;
+    ctx.state().after_response = false;
     bailout::defer(context::release_objects(ctx));
 }
 
