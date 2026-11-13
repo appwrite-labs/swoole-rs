@@ -204,7 +204,6 @@ pub unsafe extern "C-unwind" fn close_connection(
 
 /// [`close_connection`] for the callers that hold the handles: `serv`'s reactor
 /// `reactor` closes `sock`, a session socket of it.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn close_socket(
     serv: view::Server<'_>,
     reactor: Reactor,

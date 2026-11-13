@@ -251,6 +251,10 @@ pub(crate) fn run_reactor_with<'s, 'c>(
 ///
 /// # Safety
 /// `ctx.serv` is null or a live `Server`, and the other fields are what the operation reads.
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "server_methods' tests run a fake in its place")
+)]
 pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,
@@ -268,8 +272,7 @@ pub(crate) unsafe fn run_method(
     };
     match (operation, state) {
         // Outside `run`'s match, with the state known and no reactor context, so
-        // each op an accept or a send makes folds to its answer (#2964, #3335).
-        (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
+        // each op a send makes folds to its answer (#2964, #3335).
         (ops::RUN_ST_SEND, _) => {
             let send = core::ptr::with_exposed_provenance::<base_factory::SendData>(
                 usize::try_from(arg).unwrap_or(0),
@@ -284,33 +287,14 @@ pub(crate) unsafe fn run_method(
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
-        RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_DISABLE_ACCEPT,
-        RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
-        RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL, RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK,
-        RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+        RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_MASTER_TIMER, RUN_SHUTDOWN, RUN_SIGNAL,
+        RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD,
+        RUN_STORE_LISTEN_SOCKET,
     };
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
-        RUN_INCOMING => connection::incoming(h)?,
-        RUN_IDLE_TIMEOUT => {
-            connection::idle_timeout(h)?;
-            SW_OK
-        }
-        RUN_DISABLE_ACCEPT => {
-            connection::disable_accept(h)?;
-            SW_OK
-        }
-        RUN_ENABLE_ACCEPT => {
-            connection::enable_accept(h)?;
-            SW_OK
-        }
-        RUN_SET_MAX_CONNECTION => {
-            connection::set_max_connection(h, u32::try_from(arg).unwrap_or(u32::MAX))?;
-            SW_OK
-        }
         RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
         RUN_SIGNAL => {
             control::signal(h, i32::try_from(arg).unwrap_or(0))?;

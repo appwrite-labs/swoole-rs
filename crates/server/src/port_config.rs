@@ -64,7 +64,6 @@ pub unsafe fn set_methods(methods: PortMethods) {
 
 /// The registered methods. A port exists only after `swoole_init`, which
 /// registers them, so their absence aborts.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn methods() -> &'static PortMethods {
     METHODS
         .get()

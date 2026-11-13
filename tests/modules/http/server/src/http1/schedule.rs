@@ -86,11 +86,17 @@ fn port_fd(port: Port) -> c_int {
 
 /// `serv.add_connection(port, sock, port->get_fd())`.
 fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> &'static mut Connection {
-    // SAFETY: the created server, its port and a live socket.
-    let conn = unsafe { server_methods::add_connection(serv.0, port.0, sock, port_fd(port)) };
-    assert!(!conn.is_null());
+    let serv_view = serv.view();
+    let listen = serv_view
+        .ports()
+        .iter()
+        .find(|p| p.raw() == port.0)
+        .unwrap();
+    // SAFETY: a live socket.
+    let sock = unsafe { swoole_rs_ffi::Socket::from_ptr(sock.cast()) }.unwrap();
+    let conn = server_methods::add_connection(serv_view, *listen, sock, port_fd(port)).unwrap();
     // SAFETY: the new connection, live as long as the server.
-    unsafe { &mut *conn.cast::<Connection>() }
+    unsafe { &mut *conn.as_ptr().cast::<Connection>() }
 }
 
 fn schedule_worker(serv: Server, fd: c_int, data: *mut c_void) -> usize {

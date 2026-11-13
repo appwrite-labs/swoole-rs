@@ -276,7 +276,7 @@ const SSL_READY: u32 = 1;
 fn is_stream(kind: c_int) -> bool {
     matches!(kind, 1 | 3 | 5)
 }
-fn is_dgram(kind: c_int) -> bool {
+pub(crate) fn is_dgram(kind: c_int) -> bool {
     matches!(kind, 2 | 4 | 6)
 }
 

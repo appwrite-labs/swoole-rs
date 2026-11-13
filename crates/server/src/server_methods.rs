@@ -11,14 +11,14 @@ use std::ffi::CString;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
-    RUN_ACCEPT, RUN_CREATE, RUN_DESTROY, RUN_INCOMING, RUN_SIGNAL, RUN_START, RUN_START_CHECK,
-    RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
+    RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN,
+    RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
+    RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::ops::{
-    RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
-    RUN_IDLE_WORKERS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
-    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT,
-    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_CREATE, RUN_DESTROY, RUN_SIGNAL, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
+    RUN_STORE_LISTEN_SOCKET,
 };
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
@@ -28,13 +28,11 @@ use swoole_rs_corebase::{DataHead, log};
 pub struct NativeContext<'a> {
     pub(crate) serv: *mut c_void,
     pub(crate) reactor: *mut c_void,
-    pub(crate) event: Option<&'a swoole_rs_reactor::Event>,
     pub(crate) port: *mut c_void,
     pub(crate) sock: *mut c_void,
     /// The connection the operation acts on or selects.
     pub(crate) conn: Option<crate::Connection<'a>>,
     pub(crate) server_fd: c_int,
-    pub(crate) reactor_id: u8,
     pub(crate) send: *mut c_void,
     pub(crate) data: *const c_void,
     /// The bytes the operations that read a slice take: `sendwait`'s data, `sendfile`'s
@@ -55,12 +53,10 @@ impl NativeContext<'_> {
         Self {
             serv,
             reactor: ptr::null_mut(),
-            event: None,
             port: ptr::null_mut(),
             sock: ptr::null_mut(),
             conn: None,
             server_fd: 0,
-            reactor_id: 0,
             send: ptr::null_mut(),
             data: ptr::null(),
             bytes: &[],
@@ -241,28 +237,8 @@ pub(crate) fn connection_incoming(
     reactor: crate::reactor_handle::Reactor,
     conn: crate::Connection<'_>,
 ) -> c_int {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.reactor = reactor.ptr();
-    ctx.port = serv
-        .port_by_server_fd(conn.server_fd())
-        .map_or(ptr::null_mut(), view::Port::raw);
-    ctx.sock = conn.socket_ptr();
-    ctx.conn = Some(conn);
-    // SAFETY: the live server, the live reactor its thread runs, and the live
-    // connection with its own socket and (null or live) port: all the operation reads.
-    c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
-}
-
-/// Arms the accept-retry timer on this thread: once, after `msec`, it re-enables
-/// accepting on `serv`. The timer's node, or null.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn accept_retry_timer(serv: view::Server<'_>, msec: c_long) -> *mut c_void {
-    let serv = serv.raw();
-    swoole_rs_timer::add_fn(msec, false, move || {
-        // SAFETY: the server that armed this one-shot timer, on its own thread; it
-        // outlives its timers, which `clear_timer` deletes before it goes.
-        let serv = unsafe { view::Server::from_raw(serv) };
-        run_on(serv, crate::ops::RUN_ENABLE_ACCEPT, 0);
+    serv.port_by_server_fd(conn.server_fd()).map_or(-1, |port| {
+        crate::connection::incoming(serv, reactor, port, conn)
     })
 }
 
@@ -275,13 +251,13 @@ pub(crate) extern "C" fn accept_connection(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    let serv = reactor.object();
-    let mut ctx = NativeContext::new(serv);
-    ctx.reactor = reactor.as_ptr();
-    ctx.server_fd = event.fd();
-    ctx.event = Some(event);
-    // SAFETY: the server reactor's live server, and its event.
-    c_int::narrow(unsafe { run(RUN_ACCEPT, 0, &mut ctx) })
+    // SAFETY: the server the reactor carries, live while it runs.
+    let serv = unsafe { view::Server::from_raw(reactor.object()) };
+    crate::connection::accept(
+        serv,
+        crate::reactor_handle::Reactor::running(reactor),
+        event,
+    )
 }
 
 /// `Server::get_startup_error_message()`.
@@ -291,10 +267,7 @@ pub fn get_startup_error_message() -> CString {
     crate::state::startup_error(message, log::swr_v1_core_last_error())
 }
 
-/// `Server::set_max_connection(max)`.
-pub fn set_max_connection(serv: view::Server<'_>, max: u32) {
-    run_on(serv, RUN_SET_MAX_CONNECTION, max.into());
-}
+pub use crate::connection::{add as add_connection, set_max_connection};
 
 /// `Server::feedback(conn, event)`, over one of `serv`'s connections.
 #[must_use]
@@ -351,47 +324,6 @@ pub fn add_port<'a>(
     }
     // SAFETY: the port the server just added, which it keeps for its life.
     unsafe { view::Port::from_raw(ctx.port) }
-}
-
-/// `Server::abort_connection(reactor, port, socket)`.
-///
-/// # Safety
-/// `serv` is a live `Server`; the others are the reactor, port and socket to abort.
-pub unsafe fn abort_connection(
-    serv: *mut c_void,
-    reactor: *mut c_void,
-    port: *const c_void,
-    sock: *mut c_void,
-) {
-    let mut ctx = NativeContext::new(serv);
-    ctx.reactor = reactor;
-    ctx.port = port.cast_mut();
-    ctx.sock = sock;
-    // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_ST_ABORT, 0, &mut ctx) };
-}
-
-/// `Server::add_connection(port, socket, server_fd)`: the new connection, or null.
-///
-/// # Safety
-/// `serv` is a live `Server`; `port` and `sock` the accepting port and accepted socket.
-pub unsafe fn add_connection(
-    serv: *mut c_void,
-    port: *const c_void,
-    sock: *mut c_void,
-    server_fd: c_int,
-) -> *mut c_void {
-    let mut ctx = NativeContext::new(serv);
-    ctx.port = port.cast_mut();
-    ctx.sock = sock;
-    ctx.server_fd = server_fd;
-    // SAFETY: as the caller guarantees.
-    if unsafe { run(RUN_ADD_CONNECTION, 0, &mut ctx) } != 0 {
-        ctx.conn
-            .map_or(ptr::null_mut(), |conn| conn.as_ptr().cast())
-    } else {
-        ptr::null_mut()
-    }
 }
 
 /// `Server::send(session_id, data, length)`: the operation reads the `SendData` it lends.
@@ -476,33 +408,6 @@ pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut c_void {
         let serv = unsafe { view::Server::from_raw(serv) };
         run_on(serv, crate::ops::RUN_MASTER_TIMER, 0);
     })
-}
-
-/// `Server::get_timeout_callback`'s timer, a plain timer callback over the
-/// connection: the idle check runs over its port and this thread's reactor, the
-/// one that added the timer.
-///
-/// # Safety
-/// `conn` is a live connection of `SwooleG.server`, on this thread's reactor.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
-    // SAFETY: the connection's server, live for the tick per the caller.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
-    let mut ctx = NativeContext::new(serv.raw());
-    // SAFETY: as the caller guarantees.
-    let Some(conn) = (unsafe { crate::Connection::from_ptr(conn.cast()) }) else {
-        return;
-    };
-    ctx.port = serv
-        .port_by_server_fd(conn.server_fd())
-        .map_or(ptr::null_mut(), view::Port::raw);
-    ctx.reactor = swoole_rs_corebase::thread_reactor();
-    ctx.sock = conn.socket_ptr();
-    ctx.conn = Some(conn);
-    // SAFETY: as the caller guarantees.
-    unsafe { run(crate::ops::RUN_IDLE_TIMEOUT, 0, &mut ctx) };
 }
 
 /// `Server::sendwait(session_id, data, length)`.
@@ -889,12 +794,9 @@ mod tests {
     fn methods_fill_the_context_their_forward_did() {
         let serv = fake_serv();
         let sv = serv.addr();
-        let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         assert!(shutdown(server()), "shutdown's 1 is true");
         assert_eq!(last().0, RUN_SHUTDOWN, "shutdown op");
         assert_eq!(get_idle_worker_num(server()), u32::MAX, "(uint32_t) -1");
-        set_max_connection(server(), 7);
-        assert_eq!(last().1, 7, "max connection arg");
         unsafe {
             assert_eq!(
                 schedule_worker(serv, -2, ptr::null_mut()),
@@ -915,15 +817,6 @@ mod tests {
             assert!(
                 op == RUN_ADD_PORT && s == sv && number == 9 && host != 0,
                 "add_port context"
-            );
-            assert!(
-                add_connection(serv, at(0x20), at(0x30), 3).is_null(),
-                "zero yields null"
-            );
-            assert_eq!(
-                last(),
-                (RUN_ADD_CONNECTION, 0, sv, 0x20, 0x30, 0, 0, 0),
-                "add_connection context"
             );
             // SAFETY: a zeroed record is a valid connection.
             let mut conn: ConnectionRecord = core::mem::zeroed();

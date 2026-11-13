@@ -5,10 +5,9 @@
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
-    OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
+    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING, OP_ST_FINISH,
+    OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_TIMER,
+    OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
@@ -564,18 +563,6 @@ fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// `Server::abort_connection`: counted, then closed through the reactor when it is
-/// a connection, else freed.
-fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_ST_ABORT_COUNT)?;
-    if h.is(OP_ST_SOCK_OBJECT)? {
-        h.get(OP_ST_REACTOR_CLOSE)?;
-    } else {
-        h.get(OP_ST_SOCK_FREE)?;
-    }
-    Ok(())
-}
-
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
@@ -612,8 +599,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
-        RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS,
-        RUN_ST_STORE_PIPE_FD,
+        RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_DOCUMENT_ROOT => {
@@ -631,10 +617,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_ST_INIT_PIPE_SOCKETS => {
             init_pipe_sockets(h)?;
-            0
-        }
-        RUN_ST_ABORT => {
-            abort_connection(h)?;
             0
         }
         RUN_ST_CLEAR_TIMER => {
@@ -722,21 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn connections_abort_iterate_and_send() {
-        let mut s = Script::with(&[(OP_ST_SOCK_OBJECT, 1)]);
-        abort_connection(&mut s).unwrap();
-        assert_eq!(
-            (
-                s.called(OP_ST_ABORT_COUNT),
-                s.called(OP_ST_REACTOR_CLOSE),
-                s.called(OP_ST_SOCK_FREE)
-            ),
-            (1, 1, 0)
-        );
-        let mut s = Script::default();
-        abort_connection(&mut s).unwrap();
-        assert_eq!(s.called(OP_ST_SOCK_FREE), 1);
-
+    fn connections_iterate_and_send() {
         let data = four_bytes();
         let process = |facts: &[(u32, u64)]| {
             let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
