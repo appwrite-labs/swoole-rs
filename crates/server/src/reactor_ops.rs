@@ -42,9 +42,9 @@ use crate::ops::{
 use crate::ops::{
     OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
     OP_CC_REDIS_OBJECT, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_WATCH_WRITE,
-    OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL,
-    OP_RD_UNREAD, OP_REACTOR_DEL, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT, OP_WR_BUFFER_EMPTY,
-    OP_WR_CLOSE, OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_READ_ONLY,
+    OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD,
+    OP_REACTOR_DEL, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT, OP_WR_BUFFER_EMPTY, OP_WR_CLOSE,
+    OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_READ_ONLY,
 };
 use crate::port_config::{self, PortConfig};
 use crate::reactor_handle::Reactor;
@@ -59,10 +59,8 @@ const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
     0
 };
 
-/// `SW_FD_SESSION` and `SW_FD_DGRAM_SERVER`.
+/// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-const FD_DGRAM_SERVER: c_int = 2;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `SW_SERVER_EVENT_CLOSE`, `_CONNECT` and `_BUFFER_EMPTY`, which master.cc asserts.
@@ -663,13 +661,6 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             let reactor = o.handle()?;
             sign(reactor.trigger_close(o.ctx.event.as_deref_mut()?))
         }
-        OP_MASTER_REACTOR_ID => {
-            // a special id for the master thread
-            let id = o.config().reactor_num.get();
-            o.reactor()?.set_id(id);
-            swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
-            0
-        }
         OP_WR_FRONT => o.sock()?.read(|s| {
             let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b));
             buffer.map_or(0, |b| 1 + u64::from(swr_cpp_buffer_typed_front(b).kind))
@@ -765,15 +756,11 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{
-        OP_BASE_PASS, OP_SESSION_HANDLERS, OP_START_MASTER_THREAD, OP_STORE_LISTEN_SOCKET,
-    };
+    use crate::ops::OP_BASE_PASS;
     use crate::ops::{OP_CC_DTLS_FREE, OP_DTLS_ACCEPT, OP_RD_DTLS};
-    use crate::ops::{
-        OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_WR_TIMER_DELAY,
-    };
+    use crate::ops::{OP_CC_FINISH, OP_EVENT_WAIT, OP_WR_TIMER_DELAY};
     use swoole_rs_reactor::event_api::swoole_event_wait;
-    use swoole_rs_reactor::{swoole_event_free, swoole_event_init};
+
     use swoole_rs_timer::swoole_timer_delay;
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -803,44 +790,13 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_timer_delay(timer.cast(), delay) };
             0
         }
-        OP_SESSION_HANDLERS => {
-            let reactor = o.handle()?;
-            let received: swoole_rs_reactor::Handler = crate::reactor_entry::on_packet_received;
-            for (fd_type, event, handler) in [
-                (FD_DGRAM_SERVER, SW_EVENT_READ, received),
-                (FD_SESSION, SW_EVENT_WRITE, crate::reactor_entry::on_write),
-                (FD_SESSION, SW_EVENT_READ, crate::reactor_entry::on_read),
-            ] {
-                reactor.set_handler(fd_type, event, handler);
-            }
-            0
-        }
         OP_BASE_PASS => {
             // SAFETY: the `SendData` (the context's task) the dispatch lends at arg.
             let send = unsafe { &*(arg as *const SendData) };
             crate::master_ops::base_pass(o.server(), send);
             0
         }
-        OP_STORE_LISTEN_SOCKET => {
-            crate::server_methods::store_listen_socket(o.server());
-            0
-        }
-        OP_START_MASTER_THREAD => {
-            let reactor = o.handle()?;
-            sign(crate::server_methods::start_master_thread(
-                o.ctx.serv, reactor,
-            ))
-        }
-        OP_EVENT_INIT => {
-            let ret = swoole_event_init(0);
-            o.ctx.reactor = Some(crate::reactor_handle::Reactor::thread());
-            sign(ret)
-        }
         OP_EVENT_WAIT => sign(swoole_event_wait()),
-        OP_EVENT_FREE => {
-            swoole_event_free();
-            0
-        }
         OP_CC_FINISH => {
             use core::sync::atomic::Ordering::{Relaxed, Release};
             let conn = o.conn()?;

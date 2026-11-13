@@ -786,7 +786,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         // The master starts its reactor threads.
-        OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),
+        OP_LC_START_PROCESS => sign(crate::thread_ops::start_reactor_threads(o.server())),
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let node = crate::server_methods::master_timer(o.server());
@@ -849,7 +849,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_JOIN_REACTOR_THREADS => {
-            crate::reactor_entry::join_reactor_thread(o.server());
+            crate::reactor_thread::join_reactor_threads(o.server());
             0
         }
         OP_PORT_CLOSE => {

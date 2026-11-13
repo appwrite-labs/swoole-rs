@@ -18,13 +18,8 @@ pub const RUN_DESTROY: u32 = 19;
 pub const RUN_RT_READ: u32 = 20;
 /// `ReactorThread_onPacketReceived`: context event.
 pub const RUN_PACKET_RECEIVED: u32 = 21;
-pub const RUN_INIT_REACTOR: u32 = 25;
-pub const RUN_START_REACTOR_THREADS: u32 = 27;
-/// `Server::reactor_thread_main_loop` for thread arg.
-pub const RUN_REACTOR_THREAD_MAIN: u32 = 28;
 /// `Server::dispatch_task`: context socket, connection and received data.
 pub const RUN_DISPATCH_TASK: u32 = 30;
-pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
 
 // `BaseFactory` (`src/server/base.cc`, `crates/server/src/base_factory.rs`).
 /// `Server::create_base_factory`: 1 with the factory in the context.
@@ -273,36 +268,10 @@ pub const OP_COMMAND_REQUEST: u32 = 291;
 pub const OP_COMMAND_RESPONSE: u32 = 292;
 pub const OP_ON_FINISH: u32 = 294;
 pub const OP_ON_PIPE_MESSAGE: u32 = 295;
-/// The thread buffer grows for 64K datagrams, then the session handlers.
-pub const OP_DGRAM_BUFFER: u32 = 298;
-pub const OP_SESSION_HANDLERS: u32 = 299;
 /// `is_healthy_connection(arg as double)` of the connection.
 pub const OP_CONN_HEALTHY: u32 = 301;
-/// `swoole_event_init(0)`; the context reactor becomes `sw_reactor()`.
-pub const OP_EVENT_INIT: u32 = 302;
 /// Port arg listens; then reads.
 pub const OP_PORT_LISTEN: u32 = 303;
-pub const OP_PORT_READ: u32 = 304;
-pub const OP_STORE_LISTEN_SOCKET: u32 = 305;
-/// `get_thread(0)->init(serv, reactor, 0)`.
-pub const OP_THREAD0_INIT: u32 = 306;
-/// The master reactor's and thread's id become `reactor_num`.
-pub const OP_MASTER_REACTOR_ID: u32 = 307;
-/// The entry a reactor thread runs: `void (*)(void *serv, uint64_t id)`.
-pub const OP_REACTOR_THREAD_ENTRY: u32 = 308;
-pub const OP_HEARTBEAT_TIMER: u32 = 309;
-/// The entry the heartbeat thread runs, as `OP_REACTOR_THREAD_ENTRY`'s.
-pub const OP_HEARTBEAT_ENTRY: u32 = 310;
-pub const OP_START_MASTER_THREAD: u32 = 311;
-/// The context thread is reactor thread arg: its id and the thread's message bus.
-pub const OP_THREAD_ENTER: u32 = 312;
-pub const OP_WORKER_START: u32 = 313;
-pub const OP_WORKER_STOP: u32 = 314;
-/// `swoole_set_thread_id(arg)`, `THREAD_REACTOR`.
-pub const OP_REACTOR_THREAD_TYPE: u32 = 315;
-/// `thread->init(serv, reactor, id)`.
-pub const OP_THREAD_INIT: u32 = 316;
-pub const OP_THREAD_CLEAN: u32 = 317;
 pub const OP_SET_WAITING_TIME: u32 = 320;
 /// Arms the resume timer after the waiting time; whether it was armed.
 pub const OP_RESUME_TIMER: u32 = 321;
@@ -313,8 +282,6 @@ pub const OP_QUEUE_SUB: u32 = 325;
 pub const OP_FACTORY_DISPATCH: u32 = 326;
 /// The `Server *` the thread entries take.
 pub const OP_SERVER: u32 = 328;
-/// Tells reactor thread arg to shut down.
-pub const OP_THREAD_NOTIFY: u32 = 329;
 
 pub const LOG_RECVFROM: u32 = 350;
 

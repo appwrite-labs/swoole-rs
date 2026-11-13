@@ -256,8 +256,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_REACTOR_THREAD_MAIN => {
-            let id = c_int::try_from(arg).ok()?;
-            crate::reactor_entry::reactor_thread_main_loop(serv, id);
+            crate::thread_ops::main_loop(serv, u16::try_from(arg).ok()?);
             0
         }
         OP_SET_MASTER_THREAD_ID => {
