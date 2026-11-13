@@ -21,6 +21,14 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
+# Release, with arithmetic overflow and std's debug preconditions (from_raw_parts,
+# copy_nonoverlapping) checked: the debug-PHP nightly's cargo engine (debug.yml), so a
+# wrapped wire length aborts there instead of passing silently (#3558).
+[profile.release-checked]
+inherits = "release"
+overflow-checks = true
+debug-assertions = true
+
 # Lint levels live here only; see AGENTS.md "Rust lints".
 [workspace.lints.rust]
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).

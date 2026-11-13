@@ -351,4 +351,67 @@ mod tests {
             swr_v1_server_static_owner_free(copy);
         }
     }
+    // Ported from tests/modules/http/server_config_owners.cc, which drove these calls
+    // through the C++ ServerStrings/ServerMimeTypes views.
+    #[test]
+    fn bound_owners_keep_their_table_across_replacement_and_server_free() {
+        let state = Box::new(ServerState::new());
+        unsafe {
+            let config = |kind, op, bytes: &[u8]| {
+                swr_v1_server_static_config(&state, kind, op, bytes.as_ptr(), bytes.len())
+            };
+            let text = |kind, index| {
+                let mut length = 0;
+                let data = swr_v1_server_static_text(&state, kind, index, &mut length);
+                core::slice::from_raw_parts(data, length).to_vec()
+            };
+            let has = |handle, bytes: &[u8]| {
+                swr_v1_server_static_mime(handle, bytes.as_ptr(), bytes.len())
+            };
+            // Locations: absent until the first insert, which is unique.
+            assert_eq!(config(0, 1, b""), 0);
+            config(0, 4, b"/");
+            config(0, 4, b"/");
+            assert_eq!(config(0, 1, b""), 1);
+            assert_eq!(config(0, 0, b""), 1);
+            // Index files: assignment replaces, enables and appends with duplicates.
+            config(1, 3, b"");
+            config(1, 2, b"");
+            for name in [&b"a"[..], b"a", b"b"] {
+                config(1, 6, name);
+            }
+            assert_eq!(config(1, 0, b""), 3);
+            assert_eq!(
+                (text(1, 0), text(1, 1), text(1, 2)),
+                (b"a".to_vec(), b"a".to_vec(), b"b".to_vec())
+            );
+            config(1, 6, b"b");
+            assert_eq!(config(1, 0, b""), 4);
+            assert!(config(1, 5, b"b") < config(1, 0, b""));
+            // MIME types: a bound owner sees later inserts but not a replacement.
+            assert_eq!(config(2, 1, b""), 0, "an absent set binds no owner");
+            config(2, 4, b"text/html");
+            let first = swr_v1_server_static_owner(&state, 2);
+            config(2, 4, b"image/png");
+            assert!(swr_v1_server_static_mime(first, core::ptr::null(), 0));
+            assert!(has(first, b"image/png"));
+            config(2, 3, b"");
+            config(2, 2, b"");
+            config(2, 6, b"text/plain");
+            assert!(has(first, b"image/png"));
+            assert!(!has(first, b"text/plain"));
+            let second = swr_v1_server_static_owner(&state, 2);
+            assert!(has(second, b"text/plain"));
+            let copy = swr_v1_server_static_owner_clone(first);
+            swr_v1_server_static_owner_free(copy);
+            let copy = swr_v1_server_static_owner_clone(second);
+            drop(state);
+            assert!(has(first, b"text/html"));
+            assert!(has(second, b"text/plain"));
+            assert!(has(copy, b"text/plain"));
+            for handle in [first, second, copy] {
+                swr_v1_server_static_owner_free(handle);
+            }
+        }
+    }
 }

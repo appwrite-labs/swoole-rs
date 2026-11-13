@@ -11,7 +11,7 @@ use swoole_rs_http::{
 
 /// The path kinds' directory bit (`crates/http/src/static_path.rs`).
 const PATH_IS_DIRECTORY: u32 = 16;
-/// The static collections (`ServerStrings` kinds).
+/// The static collections (`static_config` kinds).
 const LOCATIONS: u32 = 0;
 const INDEX_FILES: u32 = 1;
 /// `PATH_MAX`, the context's filename capacity.
