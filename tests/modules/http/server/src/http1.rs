@@ -5,7 +5,7 @@
 //! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
 //! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
-//! `swr_v1_port_config` is a `ListenPort` (swoole_rs_port_state.h). Each new server
+//! `swr_v1_port_config` is a `ListenPort`. Each new server
 //! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
 //! cases call are crates/server's `server_methods`. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib

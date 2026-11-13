@@ -1,8 +1,6 @@
 //! `Server`'s callbacks: upstream's on* `std::function` members and `dispatch_func`.
-//! Rust owns the slots, and `Server` binds each member to its slot through
-//! `detail::Callback` (`native/include/swoole_rs_server_view.h`). That view boxes
-//! whatever native code assigns, so the slot holds `invoke(ctx, ...)` and the
-//! `drop(ctx)` that frees the box. Rust answers the presence facts and clears slots;
+//! Rust owns the slots. A slot holds `invoke(ctx, ...)` and the `drop(ctx)` that
+//! frees `ctx`. Rust answers the presence facts and clears slots;
 //! native code still makes the calls.
 use crate::ops::{
     OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_DISPATCH_FUNC, OP_HAS_ON_CLOSE, OP_HAS_ON_CONNECT,

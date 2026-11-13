@@ -1,7 +1,6 @@
 # OS support policy v1
 
-Feature bit 131072 (`ossupport`). ABI:
-`swoole_rs_ossupport.h`.
+Feature bit 131072 (`ossupport`).
 
 Rust owns the async thread pool, file records (`file_record.rs`), the SysV queue,
 sendfile and entropy.

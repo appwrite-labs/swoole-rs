@@ -1,5 +1,5 @@
-//! The WebSocket codec's C ABI (`native/websocket/swoole_rs_websocket_codec.h`,
-//! `swoole_rs_websocket.h`) and `src/protocol/websocket.cc`'s entry points
+//! The WebSocket codec's C ABI (`native/websocket/swoole_rs_websocket_codec.h`)
+//! and `src/protocol/websocket.cc`'s entry points
 //! ([`frame_api`]) over crates/websocket's safe codec, which forbids `unsafe`.
 #![cfg_attr(
     not(test),
