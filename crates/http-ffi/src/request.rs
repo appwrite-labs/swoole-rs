@@ -3,14 +3,12 @@
 //! upstream's own `ListenPort` reads them whenever the ports module is off, but each
 //! method is a call into this module, and its `FormData` is a Rust [`HttpForm`]. Its
 //! effects go through the request's [`HttpNative`] call, `effects` outside tests:
-//! `swoole::String` allocation, stdio,
-//! `swoole_tmpfile` and logs. Trace logs are compiled out, as in upstream's builds
-//! without `--enable-trace-log`.
-use core::ffi::{c_int, c_void};
+//! `swoole::String` allocation, stdio and `swoole_tmpfile`. Its logs go to corebase's
+//! log host. Trace logs are compiled out, as in upstream's builds without
+//! `--enable-trace-log`.
+use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
-use swoole_rs_buffer::string::{
-    CppString, delete_string, new_sized_string, new_string, swr_string_append,
-};
+use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string, swr_string_append};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
@@ -48,7 +46,7 @@ impl HttpString {
 pub type HttpNative = unsafe extern "C" fn(u32, *mut c_void, *const u8, u64, u64) -> u64;
 
 // HttpNative effects. Each reads only its arguments.
-/// `new String(n)` when `b` is null, else `new String(b, n)`.
+/// `new String(n)`.
 const STRING_NEW: u32 = 0;
 const STRING_FREE: u32 = 1;
 /// `a->append(b, n)`.
@@ -64,15 +62,6 @@ const FCLOSE: u32 = 10;
 const UNLINK: u32 = 11;
 /// The errno `strtoull` leaves: bit 1 `ERANGE`, bit 2 its no-digits value.
 const NUMBER_ERRORS: u32 = 12;
-/// Upstream's logs: `fopen(a) failed`, `failed to write upload file`, the parser's
-/// error reason (`b`, `n` bytes) and `n/m bytes processed`.
-const LOG_FOPEN: u32 = 14;
-const LOG_WRITE: u32 = 15;
-const LOG_PARSE_REASON: u32 = 16;
-const LOG_PARSE_PARTIAL: u32 = 17;
-/// A client sent the reserved `Swoole-Upload-File` header.
-const LOG_RESERVED: u32 = 18;
-
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const NOTICE: c_int = 3;
 const WARNING: c_int = 4;
@@ -106,15 +95,11 @@ fn no_digits_errno() -> c_int {
     clippy::cast_possible_truncation,
     reason = "lengths and descriptors native code carried as u64"
 )]
-unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u64) -> u64 {
+unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, _: u64) -> u64 {
     let length = n as usize;
     let file = a.cast::<libc::FILE>();
     match op {
-        STRING_NEW if b.is_null() => {
-            return new_sized_string(length, None) as u64;
-        }
-        // SAFETY: `b`, not null, holds `n` bytes.
-        STRING_NEW => return new_string(unsafe { std::slice::from_raw_parts(b, length) }) as u64,
+        STRING_NEW => return new_sized_string(length, None) as u64,
         // SAFETY: a string from `STRING_NEW`, not used again.
         STRING_FREE => unsafe { delete_string(a.cast()) },
         STRING_APPEND => {
@@ -149,47 +134,6 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
                 set_errno(no_digits_errno());
             }
         }
-        LOG_FOPEN => {
-            // SAFETY: the upload's NUL-terminated name.
-            let name = unsafe { core::ffi::CStr::from_ptr(a.cast()) }.to_string_lossy();
-            log::sys_warning(
-                c"http_server::multipart_on_header_value",
-                format_args!("fopen({name}) failed"),
-            );
-        }
-        LOG_WRITE => log::sys_warning(
-            c"http_server::multipart_on_data",
-            format_args!("failed to write upload file"),
-        ),
-        LOG_PARSE_REASON => {
-            // SAFETY: the reason's `n` bytes at `b`.
-            let text = unsafe { crate::bytes(b, length) }.unwrap_or_default();
-            // Upstream formats it into 256 bytes, its NUL included.
-            let text = text.get(..255).unwrap_or(text);
-            log::error_log(
-                NOTICE,
-                INVALID_REQUEST,
-                c"Request::parse_multipart_data",
-                format_args!(
-                    "parse multipart body failed, reason: {}",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-        LOG_RESERVED => log::error_log(
-            WARNING,
-            INVALID_REQUEST,
-            c"http_server::multipart_on_header_value",
-            format_args!(
-                "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
-            ),
-        ),
-        LOG_PARSE_PARTIAL => log::error_log(
-            NOTICE,
-            INVALID_REQUEST,
-            c"Request::parse_multipart_data",
-            format_args!("parse multipart body failed, {n}/{m} bytes processed"),
-        ),
         _ => std::process::abort(),
     }
     0
@@ -552,12 +496,16 @@ impl HttpRequest {
         }
         match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
             outcome if outcome < 0 => {
-                r.op(
-                    LOG_PARSE_REASON,
-                    ptr::null_mut(),
-                    reason.as_ptr(),
-                    reason.len() as u64,
-                    0,
+                // Upstream formats it into 256 bytes, its NUL included.
+                let reason = reason.get(..255).unwrap_or(&reason);
+                log::error_log(
+                    NOTICE,
+                    INVALID_REQUEST,
+                    c"Request::parse_multipart_data",
+                    format_args!(
+                        "parse multipart body failed, reason: {}",
+                        String::from_utf8_lossy(reason)
+                    ),
                 );
                 false
             }
@@ -567,12 +515,14 @@ impl HttpRequest {
                 true
             }
             outcome => {
-                r.op(
-                    LOG_PARSE_PARTIAL,
-                    ptr::null_mut(),
-                    ptr::null(),
-                    processed.cast_unsigned(),
-                    length as u64,
+                log::error_log(
+                    NOTICE,
+                    INVALID_REQUEST,
+                    c"Request::parse_multipart_data",
+                    format_args!(
+                        "parse multipart body failed, {}/{length} bytes processed",
+                        processed.cast_unsigned()
+                    ),
                 );
                 outcome != 0
             }
@@ -607,7 +557,14 @@ impl Parts for HttpRequest {
         let (saved, name) = (form.saved, core::mem::take(&mut form.header_name));
         // Only the reactor may write this header; a client never names a part header so.
         if case_equal(&name, UPLOAD_FILE) {
-            self.op(LOG_RESERVED, ptr::null_mut(), ptr::null(), 0, 0);
+            log::error_log(
+                WARNING,
+                INVALID_REQUEST,
+                c"http_server::multipart_on_header_value",
+                format_args!(
+                    "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
+                ),
+            );
             return MPPE_ERROR;
         }
         self.append(saved, name.as_ptr(), name.len());
@@ -637,7 +594,11 @@ impl Parts for HttpRequest {
         }
         let fp = self.op(FDOPEN, ptr::null_mut(), ptr::null(), fd, 0) as *mut c_void;
         if fp.is_null() {
-            self.op(LOG_FOPEN, name.cast(), ptr::null(), 0, 0);
+            let name = CStr::from_bytes_until_nul(&form_of(self).upload).unwrap_or_default();
+            log::sys_warning(
+                c"http_server::multipart_on_header_value",
+                format_args!("fopen({}) failed", name.to_string_lossy()),
+            );
             return 0;
         }
         form_of(self).fp = fp;
@@ -667,7 +628,10 @@ impl Parts for HttpRequest {
             self.op(FCLOSE, fp, ptr::null(), 0, 0);
             form_of(self).fp = ptr::null_mut();
             (self.excepted, self.unavailable) = (true, true);
-            self.op(LOG_WRITE, ptr::null_mut(), ptr::null(), 0, 0);
+            log::sys_warning(
+                c"http_server::multipart_on_data",
+                format_args!("failed to write upload file"),
+            );
             return MPPE_PAUSED;
         }
         0

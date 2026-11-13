@@ -312,14 +312,17 @@ impl Client {
 
     /// The property `name`, which the client class declares.
     fn property(&self, name: &CStr) -> &Value {
-        // SAFETY: the object outlives its client, and its class declares `name`.
-        unsafe { swoole_rs_zend::property(self.object, name) }
+        let slot = self.props().slot(name);
+        slot.unwrap_or_else(|| std::process::abort())
     }
 
     /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.
     fn not_null(&self, name: &CStr) -> Option<&Value> {
+        let (name, length) = (name.as_ptr(), name.count_bytes());
         // SAFETY: the object outlives its client, and its class declares `name`.
-        unsafe { swoole_rs_zend::property_not_null(self.object, name) }
+        let found = unsafe { z::swr_zend_property_not_null(self.object, name, length) };
+        // SAFETY: null, or the property's slot, which lives as long as the object.
+        unsafe { Value::from_ptr(found) }
     }
 
     /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,

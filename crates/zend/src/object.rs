@@ -373,7 +373,7 @@ impl<'a> Props<'a> {
     /// as null), or None for no such property.
     #[must_use]
     #[inline]
-    pub(crate) fn slot(self, name: &CStr) -> Option<&'a Value> {
+    pub fn slot(self, name: &CStr) -> Option<&'a Value> {
         // SAFETY: a live object, per `new`; Zend reads `name` only.
         let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
         // SAFETY: null, or a slot of the object, live for `'a`.

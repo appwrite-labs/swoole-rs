@@ -36,7 +36,7 @@ mod zval;
 pub use access::{key_ptr, set_key};
 pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
-pub use class::{Class, ClassEntry, class_name, unset_property_deny};
+pub use class::{Class, ClassEntry, unset_property_deny};
 pub use descriptor::{
     FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
     restore_shutdown, with_unlimited_stack,
@@ -47,7 +47,7 @@ pub use error::{
 pub use function::{Function, create_object_deny};
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, object_zval,
-    property, property_not_null, time, zeroed,
+    time, zeroed,
 };
 pub use local::{EnvLock, Php};
 pub use minit::{Minit, Parent};
