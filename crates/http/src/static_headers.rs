@@ -1,5 +1,5 @@
 //! Static response header encoding. Native retains allocation, dates and IO.
-use crate::{INVALID, OVERFLOW, c_text};
+use crate::{OVERFLOW, c_text};
 use std::io::Write;
 
 /// A static response's head; each text is read as `%s`, up to its first NUL.
@@ -11,23 +11,38 @@ pub struct HttpStaticHeaders<'a> {
     pub software: &'a [u8],
     pub page: &'a [u8],
     pub content_length: i64,
-    pub range_offset: i64,
-    pub range_length: usize,
-    pub filesize: usize,
-    pub variant: u32,
+    pub head: StaticHead,
     pub keep_alive: bool,
-    pub range_kind: u32,
 }
-/// Encode 0=404, 1=304, 2=autoindex, 3=file. Range kind: 0=none, 1=Content-Range,
-/// 2=Accept-Ranges. The whole head, which callers cut as their `snprintf` buffer does.
+
+/// Which response a static head is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticHead {
+    NotFound,
+    NotModified,
+    Autoindex,
+    File(StaticRange),
+}
+
+/// The range header a file's head carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticRange {
+    None,
+    /// `Content-Range` for one range of the file.
+    Content {
+        offset: i64,
+        length: usize,
+        filesize: usize,
+    },
+    /// `Accept-Ranges`.
+    Accept,
+}
+
+/// The whole head, which callers cut as their `snprintf` buffer does.
 ///
 /// # Errors
-/// `INVALID` for an unknown variant or range kind, `OVERFLOW` for a head beyond
-/// libc's `int`.
+/// `OVERFLOW` for a head beyond libc's `int`.
 pub fn static_headers(header: &HttpStaticHeaders<'_>) -> Result<Vec<u8>, i32> {
-    if header.variant > 3 || header.range_kind > 2 {
-        return Err(INVALID);
-    }
     let texts = [
         header.status,
         header.date,
@@ -50,13 +65,13 @@ pub fn static_headers(header: &HttpStaticHeaders<'_>) -> Result<Vec<u8>, i32> {
     let mut sink = Vec::with_capacity(bound);
     let result = (|| {
         sink.write_all(b"HTTP/1.1 ")?;
-        sink.write_all(match header.variant {
-            1 => b"304 Not Modified",
-            2 => b"200 OK",
+        sink.write_all(match header.head {
+            StaticHead::NotModified => b"304 Not Modified",
+            StaticHead::Autoindex => b"200 OK",
             _ => status,
         })?;
         sink.write_all(b"\r\n")?;
-        if header.variant == 0 {
+        if header.head == StaticHead::NotFound {
             sink.write_all(b"Server: ")?;
             sink.write_all(software)?;
             write!(
@@ -71,37 +86,36 @@ pub fn static_headers(header: &HttpStaticHeaders<'_>) -> Result<Vec<u8>, i32> {
         } else {
             b"Connection: close\r\n"
         })?;
-        if header.variant != 1 {
+        if header.head != StaticHead::NotModified {
             write!(
                 sink,
                 "Content-Length: {}\r\nContent-Type: ",
                 header.content_length
             )?;
-            sink.write_all(if header.variant == 2 {
+            sink.write_all(if header.head == StaticHead::Autoindex {
                 b"text/html"
             } else {
                 content_type
             })?;
             sink.write_all(b"\r\n")?;
-            if header.variant == 3 {
-                if header.range_kind == 1 {
+            match header.head {
+                StaticHead::File(StaticRange::Content {
+                    offset,
+                    length,
+                    filesize,
+                }) => {
                     #[expect(
                         clippy::cast_possible_truncation,
                         clippy::cast_sign_loss,
                         reason = "native size_t arithmetic on the off_t range offset"
                     )]
-                    let end = header
-                        .range_length
-                        .wrapping_add(header.range_offset as usize)
-                        .wrapping_sub(1);
-                    write!(
-                        sink,
-                        "Content-Range: bytes {}-{}/{}\r\n",
-                        header.range_offset, end, header.filesize
-                    )?;
-                } else if header.range_kind == 2 {
+                    let end = length.wrapping_add(offset as usize).wrapping_sub(1);
+                    write!(sink, "Content-Range: bytes {offset}-{end}/{filesize}\r\n")?;
+                }
+                StaticHead::File(StaticRange::Accept) => {
                     sink.write_all(b"Accept-Ranges: bytes\r\n")?;
                 }
+                _ => {}
             }
         }
         sink.write_all(b"Date: ")?;
@@ -128,12 +142,12 @@ mod tests {
             software: b"Swoole",
             page: b"",
             content_length: 0,
-            range_offset: 0,
-            range_length: 0,
-            filesize: 0,
-            variant: 3,
+            head: StaticHead::File(StaticRange::Content {
+                offset: 0,
+                length: 0,
+                filesize: 0,
+            }),
             keep_alive: true,
-            range_kind: 1,
         }
     }
     #[test]
@@ -150,27 +164,12 @@ mod tests {
             status: b"404 Not Found\0ignored",
             page: b"page",
             content_length: 4,
-            variant: 0,
+            head: StaticHead::NotFound,
             ..header()
         };
         assert_eq!(
             static_headers(&cut).unwrap(),
             b"HTTP/1.1 404 Not Found\r\nServer: Swoole\r\nContent-Length: 4\r\n\r\npage"
         );
-    }
-    #[test]
-    fn invalid_metadata_is_refused() {
-        for variant in [4, u32::MAX] {
-            let h = HttpStaticHeaders {
-                variant,
-                ..header()
-            };
-            assert_eq!(static_headers(&h), Err(INVALID));
-        }
-        let h = HttpStaticHeaders {
-            range_kind: 3,
-            ..header()
-        };
-        assert_eq!(static_headers(&h), Err(INVALID));
     }
 }

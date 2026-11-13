@@ -14,7 +14,7 @@ const OVERFLOW: i32 = -2;
 mod chunked;
 pub use chunked::{ChunkState, HttpChunked, HttpChunks};
 mod conditional;
-pub use conditional::{Calendar, Tm, conditional, http_date};
+pub use conditional::{Calendar, Conditional, Tm, conditional, http_date};
 mod directory;
 use directory::HttpDirectory;
 mod dispatch;
@@ -50,7 +50,7 @@ mod static_headers;
 mod static_path;
 pub use maps::{method, method_string};
 use range::HttpRangeState;
-pub use static_headers::{HttpStaticHeaders, static_headers};
+pub use static_headers::{HttpStaticHeaders, StaticHead, StaticRange, static_headers};
 pub use static_path::{HttpStaticPath, location_match};
 
 /// `input` up to its first NUL, or all of it.

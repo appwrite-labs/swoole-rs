@@ -179,7 +179,7 @@ impl StaticEffects for Scripted {
         out[count] = 0;
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
     }
     fn overflow(&self) {
         set_errno(libc::EOVERFLOW);
