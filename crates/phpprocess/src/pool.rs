@@ -67,12 +67,6 @@ fn exception() -> &'static Class {
     swoole_rs_phpswoole::exception()
 }
 
-/// The fields of a pool this module created.
-fn record<'a>(pool: Pool) -> &'a mut PoolRecord {
-    // SAFETY: callers pass a live pool.
-    unsafe { &mut *pool }
-}
-
 /// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
 /// on failure, none, with `errno` set.
 fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: bool) -> Option<Pool> {
@@ -85,14 +79,14 @@ fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: boo
         return None;
     }
     // Copied without a reference, as upstream's `sw_zval_dup`.
-    record(pool).ptr = Box::into_raw(Box::new(object.copy_value())).cast();
-    record(pool).is_async = async_;
+    handle(pool).set_ptr(Box::into_raw(Box::new(object.copy_value())).cast());
+    handle(pool).set_is_async(async_);
     Some(pool)
 }
 
 fn pool_free(pool: Pool) {
     // SAFETY: the zval copy `pool_new` made.
-    drop(unsafe { Box::from_raw(record(pool).ptr.cast::<zval>()) });
+    drop(unsafe { Box::from_raw(handle(pool).ptr().cast::<zval>()) });
     methods::destroy(handle(pool));
     // SAFETY: the allocation `pool_new` made.
     drop(unsafe { Box::from_raw(pool) });
@@ -124,7 +118,7 @@ fn message_data(pool: Pool, message: &RecvData) -> Owned {
         let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
         // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
         // string is now the caller's.
-        unsafe { swoole_rs_server::bus_move_packet(record(pool).message_bus()) };
+        unsafe { swoole_rs_server::bus_move_packet(handle(pool).message_bus()) };
         packet.into_zstring()
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -211,13 +205,10 @@ fn checked(object: Option<&PoolObject>) -> Pool {
     pool
 }
 
-fn view<'a>(pool: Pool) -> &'a PoolRecord {
-    record(pool)
-}
-
 /// A pool this module created, to run pool operations on.
 fn handle<'a>(pool: Pool) -> PoolRef<'a> {
-    record(pool).into()
+    // SAFETY: callers pass a live pool.
+    unsafe { PoolRef::new(pool) }
 }
 
 method_table! {
@@ -276,8 +267,8 @@ pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
 pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
     let pool = CURRENT.load(Ordering::Acquire);
     (!pool.is_null()).then(|| {
-        let pool = record(pool);
-        !master && (pool.is_async || pool.main_loop.is_none())
+        let pool = handle(pool);
+        !master && (pool.is_async() || pool.main_loop().is_none())
     })
 }
 
@@ -350,7 +341,7 @@ fn signal(pool: Pool, signo: c_int) {
 /// The object a pool callback belongs to, and its data.
 fn owner<'a>(pool: Pool) -> Option<(&'a Value, &'a PoolObject)> {
     // SAFETY: the pool's copy of its object zval, alive while the pool runs.
-    let object = unsafe { Value::from_ptr(record(pool).ptr.cast()) }?;
+    let object = unsafe { Value::from_ptr(handle(pool).ptr().cast()) }?;
     Some((object, object.custom()?))
 }
 
@@ -590,15 +581,19 @@ fn set(call: &Call) {
     }
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
-        let pool = record(pool);
-        pool.max_packet_size = packet_limit(pool.use_msgqueue != 0, max_package_size(size));
+        let pool = handle(pool);
+        pool.set_max_packet_size(packet_limit(
+            pool.use_msgqueue() != 0,
+            max_package_size(size),
+        ));
     }
     if let Some(value) = options.get(b"max_wait_time") {
         let Some(seconds) = value.applied_long() else {
             return;
         };
-        record(pool).max_wait_time =
-            u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX);
+        handle(pool).set_max_wait_time(
+            u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX),
+        );
     }
     let Some(this) = this else {
         return;
@@ -606,7 +601,7 @@ fn set(call: &Call) {
     if let Some(value) = options.get(b"enable_coroutine") {
         let enable = value.truthy();
         this.enable_coroutine.set(enable);
-        record(pool).is_async = enable;
+        handle(pool).set_is_async(enable);
     }
     if let Some(value) = options.get(b"enable_message_bus") {
         this.enable_message_bus.set(value.truthy());
@@ -619,8 +614,8 @@ fn on(call: &Call) {
     let Some(this) = this else {
         return;
     };
-    let view = view(pool);
-    if view.started {
+    let view = handle(pool);
+    if view.started() {
         fatal(
             E_WARNING,
             &message!("process pool is started. unable to register event callback function"),
@@ -639,7 +634,7 @@ fn on(call: &Call) {
     let slot = match name.to_ascii_lowercase().as_slice() {
         b"workerstart" => &this.on_worker_start,
         b"message" => {
-            if i64::from(view.ipc_mode) == IPC_NONE {
+            if i64::from(view.ipc_mode()) == IPC_NONE {
                 call.throw(
                     exception(),
                     c"cannot set `onMessage` event with ipc_type=0",
@@ -677,18 +672,18 @@ fn on(call: &Call) {
     call.set_bool(true);
 }
 
-fn unsupported(call: &Call, view: &PoolRecord) {
+fn unsupported(call: &Call, view: PoolRef<'_>) {
     fatal(
         E_WARNING,
-        &message!("unsupported ipc type[{}]", view.ipc_mode),
+        &message!("unsupported ipc type[{}]", view.ipc_mode()),
     );
     call.set_bool(false);
 }
 
 fn listen(call: &Call) {
     let pool = checked(this(call));
-    let view = view(pool);
-    if view.started {
+    let view = handle(pool);
+    if view.started() {
         fatal(
             E_WARNING,
             &message!("process pool is started. unable to listen"),
@@ -703,7 +698,7 @@ fn listen(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if i64::from(view.ipc_mode) != IPC_SOCKET {
+    if i64::from(view.ipc_mode()) != IPC_SOCKET {
         return unsupported(call, view);
     }
     let unix = address
@@ -719,8 +714,8 @@ fn listen(call: &Call) {
         reason = "upstream's int port and backlog"
     )]
     let listened =
-        methods::listen_socket(record(pool), kind, &host, port as c_int, backlog as c_int);
-    let socket = record(pool).ipc_listener();
+        methods::listen_socket(handle(pool), kind, &host, port as c_int, backlog as c_int);
+    let socket = handle(pool).ipc_listener();
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
         socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
@@ -734,8 +729,8 @@ fn write(call: &Call) {
         return;
     };
     let pool = checked(this(call));
-    let view = view(pool);
-    if i64::from(view.ipc_mode) != IPC_SOCKET {
+    let view = handle(pool);
+    if i64::from(view.ipc_mode()) != IPC_SOCKET {
         return unsupported(call, view);
     }
     if data.is_empty() {
@@ -753,13 +748,13 @@ fn write(call: &Call) {
 
 fn send_message(call: &Call) {
     let pool = checked(this(call));
-    let view = view(pool);
-    if !view.started {
+    let view = handle(pool);
+    if !view.started() {
         fatal(E_WARNING, &message!("process pool is not started."));
         call.set_bool(false);
         return;
     }
-    if i64::from(view.ipc_mode) != IPC_UNIXSOCK {
+    if i64::from(view.ipc_mode()) != IPC_UNIXSOCK {
         return unsupported(call, view);
     }
     let parsed = call
@@ -800,7 +795,7 @@ fn start(call: &Call) {
     let Some(this) = this else {
         return;
     };
-    if view(pool).started {
+    if handle(pool).started() {
         fatal(E_WARNING, &message!("process pool is started"));
         call.set_bool(false);
         return;
@@ -818,13 +813,13 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let view = view(pool);
+    let view = handle(pool);
     if !this.on_worker_start.is_set() && !this.on_message.is_set() {
-        if view.is_async {
+        if view.is_async() {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
             call.set_bool(false);
             return;
-        } else if i64::from(view.ipc_mode) != IPC_NONE {
+        } else if i64::from(view.ipc_mode()) != IPC_NONE {
             fatal(E_ERROR, &message!("require 'onMessage' callback"));
             call.set_bool(false);
             return;
@@ -840,18 +835,18 @@ fn start(call: &Call) {
         return;
     }
     CURRENT.store(pool, Ordering::Release);
-    let record = record(pool);
+    let record = handle(pool);
     if this.on_message.is_set() {
-        record.on_message = Some(on_message);
+        record.set_on_message(Some(on_message));
     } else {
-        record.main_loop = None;
+        record.set_main_loop(None);
     }
-    record.on_start = Some(on_start);
-    record.on_shutdown = Some(on_shutdown);
-    record.on_worker_start = Some(on_worker_start);
-    record.on_worker_stop = Some(on_worker_stop);
+    record.set_on_start(Some(on_start));
+    record.set_on_shutdown(Some(on_shutdown));
+    record.set_on_worker_start(Some(on_worker_start));
+    record.set_on_worker_stop(Some(on_worker_stop));
     if this.enable_coroutine.get() && this.on_worker_exit.is_set() {
-        record.on_worker_exit = Some(on_worker_exit);
+        record.set_on_worker_exit(Some(on_worker_exit));
     }
     if methods::start(handle(pool)) < 0 {
         call.set_bool(false);
@@ -874,10 +869,10 @@ fn protocol(pool: Pool, message_bus: bool) -> bool {
         methods::set_protocol(handle(pool), PROTOCOL_STREAM);
         return true;
     }
-    if record(pool).message_bus().is_null() && methods::create_message_bus(handle(pool)) != 0 {
+    if handle(pool).message_bus().is_null() && methods::create_message_bus(handle(pool)) != 0 {
         return false;
     }
-    let bus = record(pool).message_bus().cast::<BusHead>();
+    let bus = handle(pool).message_bus().cast::<BusHead>();
     // SAFETY: the pool's message bus, whose allocator its next buffer uses.
     unsafe { (*bus).allocator = swoole_rs_phpswoole::sw_zend_string_allocator() };
     methods::set_protocol(handle(pool), PROTOCOL_MESSAGE);
@@ -903,7 +898,7 @@ fn get_process(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let view = view(pool);
+    let view = handle(pool);
     if id >= i64::from(view.worker_num()) {
         notice(E_WARNING, &message!("invalid worker_id[{id}]"));
         call.set_bool(false);
@@ -936,18 +931,18 @@ fn get_process(call: &Call) {
                     clippy::cast_possible_truncation,
                     reason = "a checked worker id"
                 )]
-                let pipe = worker_record::copy_for_process(record(pool), id as usize, &mut copy);
+                let pipe = worker_record::copy_for_process(view, id as usize, &mut copy);
                 // The Process object takes the copy.
                 let worker = Box::into_raw(copy).cast::<c_void>();
                 if let Some(props) = object.props(Some(class)) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(worker_pid(worker)));
-                    if i64::from(view.ipc_mode) == IPC_UNIXSOCK {
+                    if i64::from(view.ipc_mode()) == IPC_UNIXSOCK {
                         props.long(c"pipe", i64::from(pipe));
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-                set_worker_of(&object, worker, true, c_int::from(view.is_async));
+                set_worker_of(&object, worker, true, c_int::from(view.is_async()));
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }
@@ -961,7 +956,7 @@ fn get_process(call: &Call) {
                     )]
                     let pid = view.worker(id as usize).map_or(0, Worker::pid);
                     if worker_pid(worker) != pid {
-                        crate::worker::record(worker).set_pid(pid);
+                        crate::worker::with(worker, |record| record.set_pid(pid));
                         if let Some(props) = found.props(Some(class)) {
                             props.long(c"pid", i64::from(pid));
                         }

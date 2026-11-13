@@ -432,13 +432,14 @@ impl Worker<'_> {
 /// sockets, or for an `id` the pool has no worker for.
 ///
 pub fn copy_for_process(
-    pool: &crate::process_pool::PoolRecord,
+    pool: crate::process_pool::PoolRef<'_>,
     id: usize,
     copy: &mut WorkerRecord,
 ) -> c_int {
     const IPC_UNIXSOCK: u8 = 1;
     const IPC_MSGQUEUE: u8 = 2;
     const MSGQUEUE_BALANCE: u8 = 2;
+    let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
     let Some(mut worker) = pool.worker(id).map(Worker::get) else {
         return -1;
@@ -505,25 +506,40 @@ mod tests {
         pool.ipc_mode = 1;
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // A worker the pool doesn't have: no copy.
-        assert_eq!(copy_for_process(&pool, 2, &mut copy), -1);
+        assert_eq!(
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy),
+            -1
+        );
         assert_eq!(copy.pid, 0);
         // Another process's worker: the master's end of its pipe.
-        assert_eq!(copy_for_process(&pool, 1, &mut copy), 7);
+        assert_eq!(
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            7
+        );
         assert_eq!(
             (copy.pid, copy.pipe_current, copy.pipe_object),
             (41, workers[1].pipe_master, core::ptr::null_mut())
         );
         // The message bus owns the pipe.
         pool.message_bus = core::ptr::dangling_mut();
-        assert_eq!(copy_for_process(&pool, 1, &mut copy), 7);
+        assert_eq!(
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            7
+        );
         assert!(copy.pipe_current.is_null());
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
         pool.ipc_mode = 2;
         pool.queue = 3 as *mut c_void;
-        assert_eq!(copy_for_process(&pool, 1, &mut copy), -1);
+        assert_eq!(
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            -1
+        );
         assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue, 2));
         pool.on_message = Some(on_message);
-        assert_eq!(copy_for_process(&pool, 1, &mut copy), -1);
+        assert_eq!(
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            -1
+        );
         assert!(copy.queue.is_null());
     }
 
