@@ -132,6 +132,17 @@ impl PortConfig {
             .is_some_and(|fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
     }
 
+    /// `verify_peer` with no client certificate file, cafile or capath.
+    #[must_use]
+    pub fn ssl_verify_without_ca(&self) -> bool {
+        self.ssl_fields()
+            .is_some_and(|fields| fields.verify_peer != 0)
+            && self
+                .ssl_context
+                .as_deref()
+                .is_some_and(swoole_rs_tls::OwnedTlsContext::names_no_ca)
+    }
+
     /// The fields of the port's `SSLContext`, if it has one.
     pub(crate) fn ssl_fields(&self) -> Option<&swoole_rs_tls::OwnedTlsFields> {
         let fields = swr_v1_tls_owner_view(self.ssl_context.as_ref()?).fields;
