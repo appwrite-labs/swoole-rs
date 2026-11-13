@@ -253,32 +253,43 @@ pub unsafe fn dispatch(callback: Callback) {
 }
 
 /// What `swoole_signal_callback` should do for a signal.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Lookup {
-    /// 0 call `handler`; 1 the number is out of range; 2 nothing is registered;
-    /// 3 the handler is `SIG_IGN` or `SIG_DFL`.
-    pub status: u32,
-    /// The registered handler (`swoole_signal_get_handler`).
-    pub handler: usize,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lookup {
+    /// Call the registered handler.
+    Handler(usize),
+    /// The number is out of range.
+    OutOfRange,
+    /// Nothing is registered (`SIG_DFL`).
+    Default,
+    /// The handler is `SIG_IGN`.
+    Ignored,
+}
+
+impl Lookup {
+    /// `swoole_signal_get_handler`: the registered handler, `SIG_DFL` or `SIG_IGN`,
+    /// and 0 out of range.
+    #[must_use]
+    pub fn handler(self) -> usize {
+        match self {
+            Self::Handler(handler) => handler,
+            Self::OutOfRange => 0,
+            Self::Default => SIG_DFL,
+            Self::Ignored => SIG_IGN,
+        }
+    }
 }
 
 /// The handler registered for `signo`.
 #[must_use]
 pub fn signal_lookup(signo: c_int) -> Lookup {
     let Some(slot) = slot(signo) else {
-        return Lookup {
-            status: 1,
-            handler: 0,
-        };
+        return Lookup::OutOfRange;
     };
-    let handler = slot.handler.load(Relaxed);
-    let status = match handler {
-        SIG_DFL => 2,
-        SIG_IGN => 3,
-        _ => 0,
-    };
-    Lookup { status, handler }
+    match slot.handler.load(Relaxed) {
+        SIG_DFL => Lookup::Default,
+        SIG_IGN => Lookup::Ignored,
+        handler => Lookup::Handler(handler),
+    }
 }
 
 /// `bool swoole_signal_isset(int)`: a handler is registered and active.
@@ -405,7 +416,7 @@ mod tests {
         let handler = record as *const () as usize;
         signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup { status: 0, handler });
+        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Handler(handler));
         // SAFETY: SIGUSR1 has the immediate handler installed above.
         unsafe { libc::raise(libc::SIGUSR1) };
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR1);
@@ -427,10 +438,10 @@ mod tests {
 
         signal_clear();
         assert!(!swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(signal_lookup(libc::SIGUSR1).status, 2);
-        assert_eq!(signal_lookup(200).status, 1);
+        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Default);
+        assert_eq!(signal_lookup(200), Lookup::OutOfRange);
         assert_eq!(set_action(libc::SIGUSR1, 0, false, false), SIG_DFL);
-        assert_eq!(signal_lookup(libc::SIGUSR1).status, 2);
+        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Default);
         set_action(libc::SIGUSR1, usize::MAX, false, false);
     }
 

@@ -34,7 +34,7 @@ use swoole_rs_process::workers::ops::{
 use crate::base_factory::{SendData, is_stream_event, low16};
 use crate::callbacks::{CB_CLOSE, CallbackSlot, EventSlot};
 use crate::reactor_ops::ThreadRecord;
-use crate::records::{VERIFIED, VERIFIED_TLS};
+use crate::records::Lookup;
 use crate::{ConnectionRecord, view};
 
 /// What a factory operation runs over: the server, and the worker, send and exit
@@ -308,13 +308,17 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(signed(worker));
         }
         OP_SEND_CONN_ACTIVE => {
-            ctx.conn = ctx.state().connection(ctx.fd.into(), 0);
+            ctx.conn = ctx.state().connection(ctx.fd.into(), Lookup::ByFd);
             return Some(u64::from(
                 ctx.conn().is_some_and(crate::Connection::is_active),
             ));
         }
         OP_SESSION_CONN => {
-            let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
+            let kind = if arg != 0 {
+                Lookup::Verified
+            } else {
+                Lookup::VerifiedTls
+            };
             let session = ctx.send().info.fd;
             ctx.conn = ctx.state().connection(session, kind);
             return Some(u64::from(ctx.conn.is_some()));

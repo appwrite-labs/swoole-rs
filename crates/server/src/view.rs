@@ -6,6 +6,7 @@
 //! `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
+use crate::records::Lookup;
 use crate::{Connection, ServerConfig, ServerCounters, ServerState};
 use core::ffi::{c_int, c_long, c_void};
 use core::marker::PhantomData;
@@ -348,33 +349,33 @@ impl<'a> Server<'a> {
     /// `Server::get_connection_verify(session_id)`.
     #[must_use]
     pub fn verified(self, session_id: i64) -> Option<Connection<'a>> {
-        self.state().connection(session_id, 2)
+        self.state().connection(session_id, Lookup::Verified)
     }
 
     /// `Server::get_connection_by_session_id(session_id)`: the session's slot,
     /// unverified.
     #[must_use]
     pub fn by_session(self, session_id: i64) -> Option<Connection<'a>> {
-        self.state().connection(session_id, 1)
+        self.state().connection(session_id, Lookup::BySession)
     }
 
     /// `Server::get_connection_for_iterator(fd)`.
     #[must_use]
     pub fn iterated(self, fd: c_int) -> Option<Connection<'a>> {
-        self.state().connection(c_long::from(fd), 4)
+        self.state().connection(c_long::from(fd), Lookup::Iterated)
     }
 
     /// `Server::get_connection(fd)`.
     #[must_use]
     pub fn at(self, fd: c_int) -> Option<Connection<'a>> {
-        self.state().connection(c_long::from(fd), 0)
+        self.state().connection(c_long::from(fd), Lookup::ByFd)
     }
 
     /// `field` of the connection at `key`; `None` for no slot.
     fn connection_field<T>(
         self,
         key: c_long,
-        kind: u32,
+        kind: Lookup,
         field: impl FnOnce(Connection<'a>) -> T,
     ) -> Option<T> {
         self.state().connection(key, kind).map(field)
@@ -508,7 +509,7 @@ impl<'a> Server<'a> {
     /// listening socket at `fd`, or `None`.
     #[must_use]
     pub fn server_socket(self, fd: c_long) -> Option<(c_int, c_int)> {
-        let socket = self.connection_field(fd, 0, Connection::socket)??;
+        let socket = self.connection_field(fd, Lookup::ByFd, Connection::socket)??;
         Some(socket.read(|s| (s.fd, s.socket_type)))
     }
 
@@ -531,7 +532,8 @@ impl<'a> Server<'a> {
     /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.
     #[must_use]
     pub fn port_by_fd(self, fd: c_int) -> Option<Port<'a>> {
-        let server_fd = self.connection_field(c_long::from(fd), 0, Connection::server_fd)?;
+        let server_fd =
+            self.connection_field(c_long::from(fd), Lookup::ByFd, Connection::server_fd)?;
         self.port_by_server_fd(server_fd)
     }
 
@@ -562,7 +564,8 @@ impl<'a> Server<'a> {
             return true;
         }
         // `get_port_by_session_id`.
-        let Some(fd) = self.connection_field(conn.session_id(), 1, Connection::fd) else {
+        let Some(fd) = self.connection_field(conn.session_id(), Lookup::BySession, Connection::fd)
+        else {
             return true;
         };
         let Some(port) = self.port_of_fd(fd) else {
@@ -599,7 +602,9 @@ impl ServerState {
     /// `server_fd`.
     pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
         // A listening socket's record holds its port.
-        let port = self.connection(c_long::from(server_fd), 0)?.object();
+        let port = self
+            .connection(c_long::from(server_fd), Lookup::ByFd)?
+            .object();
         // SAFETY: null, or one of the server's ports, which live as long as it.
         unsafe { Port::from_raw(port) }
     }

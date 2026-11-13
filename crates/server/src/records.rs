@@ -333,16 +333,20 @@ impl Default for ServerTables {
     }
 }
 
-/// `get_connection(fd)`: the fd's slot, active or not.
-pub(crate) const BY_FD: u32 = 0;
-/// `get_connection_by_session_id(id)`: the session's slot, unverified.
-pub(crate) const BY_SESSION: u32 = 1;
-/// `get_connection_verify_no_ssl(id)`: the session's active slot.
-pub(crate) const VERIFIED: u32 = 2;
-/// `get_connection_verify(id)`: as [`VERIFIED`], and TLS-ready.
-pub(crate) const VERIFIED_TLS: u32 = 3;
-/// `get_connection_for_iterator(fd)`: an open, TLS-ready slot.
-pub(crate) const ITERATED: u32 = 4;
+/// Which of upstream's `get_connection*` finds a connection slot for a key.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Lookup {
+    /// `get_connection(fd)`: the fd's slot, active or not.
+    ByFd,
+    /// `get_connection_by_session_id(id)`: the session's slot, unverified.
+    BySession,
+    /// `get_connection_verify_no_ssl(id)`: the session's active slot.
+    Verified,
+    /// `get_connection_verify(id)`: as [`Lookup::Verified`], and TLS-ready.
+    VerifiedTls,
+    /// `get_connection_for_iterator(fd)`: an open, TLS-ready slot.
+    Iterated,
+}
 
 impl crate::ServerState {
     /// The session-table slot of `id`, by the original shared-table modulo rule,
@@ -352,24 +356,27 @@ impl crate::ServerState {
         Some(self.tables_ref().session_slot(index)?.into())
     }
 
-    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`.
-    pub(crate) fn connection(&self, key: libc::c_long, kind: u32) -> Option<Connection<'_>> {
+    /// The connection slot `kind` finds for `key`.
+    pub(crate) fn connection(&self, key: libc::c_long, kind: Lookup) -> Option<Connection<'_>> {
         self.lookup(key, kind)
     }
 
-    /// The connection slot `kind` (`BY_FD` .. `ITERATED`) finds for `key`, or null.
+    /// The connection slot `kind` finds for `key`, or null.
     /// The pointer is the table's own, not one taken from a reference, so a
     /// later lookup of the slot (onClose's `exist()` during the close holding
     /// this one) leaves it valid.
-    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: u32) -> *mut ConnectionRecord {
+    pub(crate) fn connection_ptr(&self, key: libc::c_long, kind: Lookup) -> *mut ConnectionRecord {
         self.lookup(key, kind)
             .map_or(core::ptr::null_mut(), Connection::as_ptr)
     }
 
-    fn lookup(&self, key: libc::c_long, kind: u32) -> Option<Connection<'_>> {
+    fn lookup(&self, key: libc::c_long, kind: Lookup) -> Option<Connection<'_>> {
         let tables = self.tables_ref();
         let mut session_id = 0;
-        let fd = if matches!(kind, BY_SESSION..=VERIFIED_TLS) {
+        let fd = if matches!(
+            kind,
+            Lookup::BySession | Lookup::Verified | Lookup::VerifiedTls
+        ) {
             // Session ids are positive; a negative key names no session.
             let session = self.session(key)?;
             session_id = session.id();
@@ -384,12 +391,16 @@ impl crate::ServerState {
         };
         let value = tables.connection_at(fd)?;
         let found = match kind {
-            BY_FD | BY_SESSION => true,
+            Lookup::ByFd | Lookup::BySession => true,
             _ if !value.is_active() => false,
-            VERIFIED | VERIFIED_TLS if session_id != key || value.session_id() != key => false,
-            ITERATED if value.closed().load(Relaxed) != 0 => false,
-            VERIFIED_TLS | ITERATED => value.ssl() == 0 || value.ssl_ready() != 0,
-            _ => true,
+            Lookup::Verified | Lookup::VerifiedTls
+                if session_id != key || value.session_id() != key =>
+            {
+                false
+            }
+            Lookup::Iterated if value.closed().load(Relaxed) != 0 => false,
+            Lookup::VerifiedTls | Lookup::Iterated => value.ssl() == 0 || value.ssl_ready() != 0,
+            Lookup::Verified => true,
         };
         found.then_some(value)
     }
@@ -417,14 +428,25 @@ pub extern "C" fn swr_v1_server_session(
         .map_or(core::ptr::null_mut(), Session::as_ptr)
 }
 
-/// [`ServerState::connection_ptr`] for the C++ test fixtures.
+/// [`ServerState::connection_ptr`] for the C++ test fixtures, whose `kind` is the
+/// [`Lookup`] in declaration order (0 to 4); null for any other.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_connection(
     state: &crate::ServerState,
     key: libc::c_long,
     kind: u32,
 ) -> *mut ConnectionRecord {
-    state.connection_ptr(key, kind)
+    let kinds = [
+        Lookup::ByFd,
+        Lookup::BySession,
+        Lookup::Verified,
+        Lookup::VerifiedTls,
+        Lookup::Iterated,
+    ];
+    let kind = usize::try_from(kind).ok().and_then(|kind| kinds.get(kind));
+    kind.map_or(core::ptr::null_mut(), |kind| {
+        state.connection_ptr(key, *kind)
+    })
 }
 
 #[cfg(test)]
