@@ -636,7 +636,7 @@ pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
 pub fn package_max_length(serv: view::Server<'_>, fd: c_int) -> u32 {
     // The connection's live port, as in C++, which doesn't check it either.
     serv.port_of_fd(fd)
-        .map_or(0, |port| port.protocol.package_max_length)
+        .map_or(0, |port| port.protocol.get().package_max_length)
 }
 
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.

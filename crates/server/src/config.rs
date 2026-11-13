@@ -5,8 +5,8 @@
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
-    Ordering::Relaxed,
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
+    AtomicUsize, Ordering::Relaxed,
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
@@ -45,6 +45,7 @@ plain! {
     bool => AtomicBool;
     u8 => AtomicU8;
     u16 => AtomicU16;
+    i32 => AtomicI32;
     u32 => AtomicU32;
     u64 => AtomicU64;
     usize => AtomicUsize;
@@ -83,6 +84,59 @@ impl<T: Plain> Setting<T> {
     #[inline]
     pub fn set(&self, value: T) {
         T::store(&self.0, value);
+    }
+}
+
+/// A port field no atomic holds (a struct native code reads by reference, or an
+/// owner), written through `&` while the port is configured. Reads copy and
+/// writes replace, so no reference into it outlives a call; the port's own
+/// synchronization ([`crate::view::Port::from_raw`]) keeps writers apart from
+/// readers, as for every other setting. It is laid out as the value it holds.
+#[repr(transparent)]
+pub struct Shared<T>(core::cell::UnsafeCell<T>);
+
+impl<T> Shared<T> {
+    pub const fn new(value: T) -> Self {
+        Self(core::cell::UnsafeCell::new(value))
+    }
+
+    #[inline]
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        // SAFETY: no reference into the cell escapes a call, so none is live.
+        unsafe { *self.0.get() }
+    }
+
+    /// The value before `value`, which the caller drops once the cell holds `value`.
+    #[must_use]
+    pub fn replace(&self, value: T) -> T {
+        // SAFETY: no reference into the cell escapes a call, so none is live.
+        core::mem::replace(unsafe { &mut *self.0.get() }, value)
+    }
+
+    pub fn set(&self, value: T) {
+        drop(self.replace(value));
+    }
+
+    /// `f` over a copy, which then replaces the value.
+    pub fn update(&self, f: impl FnOnce(&mut T))
+    where
+        T: Copy,
+    {
+        let mut value = self.get();
+        f(&mut value);
+        self.set(value);
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
+
+    /// The value's address, which native code reads and writes by reference.
+    pub const fn as_ptr(&self) -> *mut T {
+        self.0.get()
     }
 }
 
@@ -384,10 +438,9 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             let port = *port?;
             match op {
                 OP_PORT_DEFAULT_IDLE => {
-                    // Only the field is written: no reference to a listed port's
-                    // settings is formed.
-                    let idle = config.heartbeat_check_interval.get().wrapping_mul(2);
-                    port.set_heartbeat_idle_time(idle);
+                    port.config()
+                        .heartbeat_idle_time
+                        .set(config.heartbeat_check_interval.get().wrapping_mul(2));
                     return Some(0);
                 }
                 OP_PORT_REMOVED => {
@@ -401,8 +454,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                 OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
                 OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
                 OP_PORT_SSL_AT => u64::from(port.ssl),
-                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol),
-                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time),
+                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol.get()),
+                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time.get()),
                 _ => i64::from(fd).cast_unsigned(),
             }
         }

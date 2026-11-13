@@ -1,8 +1,7 @@
 # WebSocket tests
 
 The frame codec is `crates/websocket`, which forbids `unsafe`. Its C ABI is
-`crates/websocket-ffi`: the mask export in `docs/abi-v1.md` and
-`native/include/swoole_rs_websocket.h`, the codec/policy exports in
+`crates/websocket-ffi`: the mask export in `docs/abi-v1.md`, the codec/policy exports in
 `native/websocket/swoole_rs_websocket_codec.h`, and `websocket.cc`'s C++-symbol
 entry points (`frame_api`). The PHP side is `crates/phphttp/src/websocket.rs`.
 

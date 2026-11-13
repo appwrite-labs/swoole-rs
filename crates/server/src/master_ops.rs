@@ -229,7 +229,7 @@ impl<'a> Objects<'a> {
     }
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
-        unsafe { &*self.port().gs.cast::<PortCounters>() }
+        unsafe { &*self.port().gs.get().cast::<PortCounters>() }
     }
     /// The context's live reactor.
     fn reactor(&self) -> crate::reactor_handle::Reactor {
@@ -318,10 +318,10 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let state = o.state;
     Some(match op {
         OP_PORT_SSL => u64::from(o.port().ssl),
-        OP_PORT_IDLE_TIME => o.port().max_idle_time.to_bits(),
-        OP_PORT_RCVBUF => sign(o.port().kernel_socket_recv_buffer_size),
-        OP_PORT_SNDBUF => sign(o.port().kernel_socket_send_buffer_size),
-        OP_PORT_NODELAY => u64::from(o.port().open_tcp_nodelay && o.port_is_tcp()),
+        OP_PORT_IDLE_TIME => o.port().max_idle_time.get().to_bits(),
+        OP_PORT_RCVBUF => sign(o.port().kernel_socket_recv_buffer_size.get()),
+        OP_PORT_SNDBUF => sign(o.port().kernel_socket_send_buffer_size.get()),
+        OP_PORT_NODELAY => u64::from(o.port().open_tcp_nodelay.get() && o.port_is_tcp()),
         OP_COUNT_ACCEPT => {
             o.gs().accept_count.fetch_add(1, Relaxed);
             o.port_gs().accept_count.fetch_add(1, Relaxed);
@@ -403,7 +403,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SESSION_BIND => {
             o.gs().session_round.store(arg.cast_signed(), Relaxed);
             o.conn().set_session_id(arg.cast_signed());
-            let buffer_size = o.port().socket_buffer_size.cast_unsigned();
+            let buffer_size = o.port().socket_buffer_size.get().cast_unsigned();
             let conn = o.ctx.conn;
             o.edit_sock(|sock| {
                 sock.object = conn;
@@ -546,7 +546,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // SAFETY: as `config`, for the counters `swr_v1_server_new` mapped; and before
     // the server forks or after its workers are reaped, no process shares them.
     let counters = || unsafe { &mut *gs() };
-    let port_gs = |index| Some(o.port_at(index)?.config().gs.cast::<PortCounters>());
+    let port_gs = |index| Some(o.port_at(index)?.config().gs.get().cast::<PortCounters>());
     // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
     let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
     let mode = || u64::from(o.config().mode_);
@@ -575,7 +575,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let fd = o.port_fd();
             let port = o.port();
             let socket = port.socket;
-            let size = port.socket_buffer_size.cast_unsigned();
+            let size = port.socket_buffer_size.get().cast_unsigned();
             swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
             let config = config();
             config.have_dgram_sock = true;
@@ -802,13 +802,13 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_RCVBUF => {
-            let size = o.port().kernel_socket_recv_buffer_size;
+            let size = o.port().kernel_socket_recv_buffer_size.get();
             let m = format_args!("setsockopt(SO_RCVBUF, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);
             0
         }
         LOG_SNDBUF => {
-            let size = o.port().kernel_socket_send_buffer_size;
+            let size = o.port().kernel_socket_send_buffer_size.get();
             let m = format_args!("setsockopt(SO_SNDBUF, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);
             0
@@ -1328,9 +1328,9 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SET_RCVBUF | OP_SET_SNDBUF => {
             let port = o.port();
             let (name, size) = if op == OP_SET_RCVBUF {
-                (libc::SO_RCVBUF, port.kernel_socket_recv_buffer_size)
+                (libc::SO_RCVBUF, port.kernel_socket_recv_buffer_size.get())
             } else {
-                (libc::SO_SNDBUF, port.kernel_socket_send_buffer_size)
+                (libc::SO_SNDBUF, port.kernel_socket_send_buffer_size.get())
             };
             let fd = o.port_fd();
             sign(swoole_rs_corebase::sys::setsockopt(
@@ -1476,7 +1476,7 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if op == OP_PORT_MIN_LENGTH {
                 port.set_package_max_length(BUFFER_MIN_SIZE);
             }
-            u64::from(port.config().protocol.package_max_length)
+            u64::from(port.config().protocol.get().package_max_length)
         }
         OP_ST_PIPE_BIND => {
             let fd = c_int::try_from(arg).ok()?;
@@ -1623,7 +1623,9 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let size = o.sock()?.read(|s| s.output.buffer_size);
             u64::from(swr_cpp_buffer_length(out()) >= size)
         }
-        OP_SC_OUT_HIGH => u64::from(swr_cpp_buffer_length(out()) >= o.port().buffer_high_watermark),
+        OP_SC_OUT_HIGH => {
+            u64::from(swr_cpp_buffer_length(out()) >= o.port().buffer_high_watermark.get())
+        }
         OP_SC_APPEND => {
             // SAFETY: the context lends `length` bytes at `data`.
             unsafe { swr_cpp_buffer_append(out(), o.ctx.data.cast(), o.ctx.length) };
@@ -2432,7 +2434,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
         // for the connection's reads, or the context socket's sends.
         OP_ADD_RECV_TIMER | OP_SC_IDLE_TIMER => {
-            let idle = o.port().max_idle_time;
+            let idle = o.port().max_idle_time.get();
             let sock = if op == OP_ADD_RECV_TIMER {
                 o.conn_socket()
             } else {
@@ -2875,7 +2877,7 @@ mod tests {
         let config = crate::port_config::swr_v1_port_config_new(0);
         sock.output.buffer_size = 4;
         // SAFETY: the settings allocated above.
-        unsafe { (*config).buffer_high_watermark = 2 };
+        unsafe { (*config).buffer_high_watermark.set(2) };
         let data = *b"abc";
         ctx.sock = (&raw mut sock).cast();
         ctx.conn = (&raw mut conn).cast();

@@ -12,13 +12,10 @@
 #include "swoole_protocol.h"
 #include "swoole_lock.h"
 #include "swoole_pipe.h"
-#include "swoole_rs_ossupport.h"
 #include "swoole_message_bus.h"
-#include "swoole_rs_corebase_worker_registry.h"
 // Worker and ProcessPool's fields are the Rust records' (crates/process), which
 // tools/process_records.py writes into swoole_rs_process_views.h; tools/headers.sh
 // --check fails when that header is stale. #629.
-#include "swoole_rs_process.h"
 
 #include <sys/wait.h>
 
