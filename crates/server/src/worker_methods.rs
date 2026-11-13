@@ -37,10 +37,8 @@ pub(crate) fn workers_start(serv: view::Server<'_>) {
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.
-///
-/// # Safety
-/// `serv` is a live `Server` and `worker` a live `Worker` that outlives it.
-pub unsafe fn add_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) -> c_int {
+#[must_use]
+pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> c_int {
     let config = serv.config();
     if !config.factory_.is_null() {
         let m = format_args!("must add worker before server is created");
@@ -52,11 +50,9 @@ pub unsafe fn add_worker(serv: view::Server<'_>, worker: *mut WorkerRecord) -> c
         );
         return -1;
     }
-    let index = serv.registry().pending_add(worker.cast());
+    let index = serv.registry().pending_add(worker.raw().cast());
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
-    // SAFETY: the caller's live worker.
-    let worker = unsafe { Worker::new(worker) };
     worker.set_id(id);
     worker.set_kind(SW_USER_WORKER);
     worker.id().cast_signed()
