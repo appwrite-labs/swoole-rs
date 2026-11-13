@@ -582,6 +582,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 pub(crate) mod tests {
     use super::*;
     use core::ffi::{CStr, c_void};
+    use swoole_rs_http_ffi::NativeOp;
 
     /// The effects a [`Fake`] records.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -625,7 +626,7 @@ pub(crate) mod tests {
     /// The request's native effects (`swoole_rs_http`'s `HttpNative` ops): heap
     /// strings and libc's files.
     unsafe extern "C" fn request_native(
-        op: u32,
+        op: NativeOp,
         a: *mut c_void,
         b: *const u8,
         n: u64,
@@ -635,7 +636,7 @@ pub(crate) mod tests {
         let file = a.cast::<libc::FILE>();
         match op {
             // `new String(n)` or `new String(b, n)`, which has room for a NUL after the copy.
-            0 => {
+            NativeOp::StringNew => {
                 let mut bytes = Vec::with_capacity(length + usize::from(!b.is_null()));
                 if !b.is_null() {
                     bytes.extend_from_slice(unsafe { core::slice::from_raw_parts(b, length) });
@@ -654,13 +655,13 @@ pub(crate) mod tests {
                 TEXTS.with_borrow_mut(|texts| texts.push(text));
                 text as u64
             }
-            1 => {
+            NativeOp::StringFree => {
                 TEXTS.with_borrow_mut(|texts| texts.retain(|&t| t != a.cast()));
                 drop(unsafe { Box::from_raw(a.cast::<Text>()) });
                 0
             }
             // `a->append(b, n)`: a string made here, or a fake's receive buffer, which has room.
-            2 => {
+            NativeOp::StringAppend => {
                 let data = unsafe { core::slice::from_raw_parts(b, length) };
                 if TEXTS.with_borrow(|texts| texts.contains(&a.cast())) {
                     let text = unsafe { &mut *a.cast::<Text>() };
@@ -676,13 +677,15 @@ pub(crate) mod tests {
                 }
                 0
             }
-            6 => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),
-            7 => unsafe { libc::fdopen(c_int::try_from(n).unwrap(), c"wb+".as_ptr()) as u64 },
-            8 => unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
-            9 => u64::from(unsafe { libc::fflush(file) } == 0),
-            10 => u64::from(unsafe { libc::fclose(file) } == 0),
-            11 => u64::from(unsafe { libc::unlink(a.cast()) } == 0),
-            _ => 0,
+            NativeOp::Tmpfile => i64::from(unsafe { libc::mkstemp(a.cast()) }).cast_unsigned(),
+            NativeOp::Fdopen => unsafe {
+                libc::fdopen(c_int::try_from(n).unwrap(), c"wb+".as_ptr()) as u64
+            },
+            NativeOp::Fwrite => unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
+            NativeOp::Fflush => u64::from(unsafe { libc::fflush(file) } == 0),
+            NativeOp::Fclose => u64::from(unsafe { libc::fclose(file) } == 0),
+            NativeOp::Unlink => u64::from(unsafe { libc::unlink(a.cast()) } == 0),
+            NativeOp::NumberErrors => 0,
         }
     }
 
