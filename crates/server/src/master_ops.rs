@@ -229,7 +229,7 @@ impl<'a> Objects<'a> {
     }
     fn port_gs(&self) -> &PortCounters {
         // SAFETY: the port's slot in `port_gs_list`, once the server is created.
-        unsafe { &*self.port().gs.cast::<PortCounters>() }
+        unsafe { &*self.port().gs.get().cast::<PortCounters>() }
     }
     /// The context's live reactor.
     fn reactor(&self) -> crate::reactor_handle::Reactor {
@@ -546,7 +546,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // SAFETY: as `config`, for the counters `swr_v1_server_new` mapped; and before
     // the server forks or after its workers are reaped, no process shares them.
     let counters = || unsafe { &mut *gs() };
-    let port_gs = |index| Some(o.port_at(index)?.config().gs.cast::<PortCounters>());
+    let port_gs = |index| Some(o.port_at(index)?.config().gs.get().cast::<PortCounters>());
     // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
     let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
     let mode = || u64::from(o.config().mode_);
@@ -1476,7 +1476,7 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             if op == OP_PORT_MIN_LENGTH {
                 port.set_package_max_length(BUFFER_MIN_SIZE);
             }
-            u64::from(port.config().protocol.package_max_length)
+            u64::from(port.config().protocol.get().package_max_length)
         }
         OP_ST_PIPE_BIND => {
             let fd = c_int::try_from(arg).ok()?;

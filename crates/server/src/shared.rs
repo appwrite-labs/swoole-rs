@@ -284,7 +284,7 @@ mod tests {
         // A `ListenPort` is its settings.
         let config = swr_v1_port_config_new(0);
         // SAFETY: the settings were just allocated.
-        unsafe { (*config).gs = (&raw mut port).cast() };
+        unsafe { (*config).gs.set((&raw mut port).cast()) };
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();

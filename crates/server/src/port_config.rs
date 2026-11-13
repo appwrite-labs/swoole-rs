@@ -1,5 +1,5 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
-use crate::config::Setting;
+use crate::config::{Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
 use std::sync::OnceLock;
@@ -91,7 +91,7 @@ pub struct PortConfig {
     pub open_tcp_keepalive: Setting<bool>,
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
-    pub gs: *mut c_void,
+    pub gs: Shared<*mut c_void>,
     /// The Port object's property, which phpserver links and reads through `&`.
     pub ptr: AtomicPtr<c_void>,
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
@@ -101,7 +101,7 @@ pub struct PortConfig {
     /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
     pub host: Box<StringSlot>,
     /// `ListenPort::protocol`, which native code reads and writes by reference.
-    pub protocol: Protocol,
+    pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: *mut c_void,
     /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
@@ -114,7 +114,7 @@ pub struct PortConfig {
     /// The owner of the callable `protocol.private_data_1` names, when the port
     /// has a `package_length_func`. A thin box: native code's mirror holds a
     /// `void *` here.
-    pub length_owner: Option<LengthOwner>,
+    pub length_owner: Shared<Option<LengthOwner>>,
 }
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
@@ -189,7 +189,7 @@ impl PortConfig {
     /// The port's slot in `port_gs_list`, once the server has made it.
     pub(crate) fn counters(&self) -> Option<&crate::shared::PortCounters> {
         // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
-        unsafe { self.gs.cast::<crate::shared::PortCounters>().as_ref() }
+        unsafe { self.gs.get().cast::<crate::shared::PortCounters>().as_ref() }
     }
     /// The port's listening socket, or `None` before it has one or after it closes
     /// (`OP_PORT_CLOSE_SOCKET`), which ends every handle to it: one is used within the
@@ -234,16 +234,16 @@ impl PortConfig {
             open_tcp_keepalive: Setting::new(false),
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
-            gs: core::ptr::null_mut(),
+            gs: Shared::new(core::ptr::null_mut()),
             ptr: AtomicPtr::new(core::ptr::null_mut()),
             websocket_frames: Setting::new(0),
             websocket_protocol: None,
             host: Box::default(),
-            protocol: default_protocol(),
+            protocol: Shared::new(default_protocol()),
             on_read: core::ptr::null_mut(),
             ssl_context: None,
             tls: None,
-            length_owner: None,
+            length_owner: Shared::new(None),
         })
     }
 }

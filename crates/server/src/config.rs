@@ -87,6 +87,59 @@ impl<T: Plain> Setting<T> {
     }
 }
 
+/// A port field no atomic holds (a struct native code reads by reference, or an
+/// owner), written through `&` while the port is configured. Reads copy and
+/// writes replace, so no reference into it outlives a call; the port's own
+/// synchronization ([`crate::view::Port::from_raw`]) keeps writers apart from
+/// readers, as for every other setting. It is laid out as the value it holds.
+#[repr(transparent)]
+pub struct Shared<T>(core::cell::UnsafeCell<T>);
+
+impl<T> Shared<T> {
+    pub const fn new(value: T) -> Self {
+        Self(core::cell::UnsafeCell::new(value))
+    }
+
+    #[inline]
+    pub fn get(&self) -> T
+    where
+        T: Copy,
+    {
+        // SAFETY: no reference into the cell escapes a call, so none is live.
+        unsafe { *self.0.get() }
+    }
+
+    /// The value before `value`, which the caller drops once the cell holds `value`.
+    #[must_use]
+    pub fn replace(&self, value: T) -> T {
+        // SAFETY: no reference into the cell escapes a call, so none is live.
+        core::mem::replace(unsafe { &mut *self.0.get() }, value)
+    }
+
+    pub fn set(&self, value: T) {
+        drop(self.replace(value));
+    }
+
+    /// `f` over a copy, which then replaces the value.
+    pub fn update(&self, f: impl FnOnce(&mut T))
+    where
+        T: Copy,
+    {
+        let mut value = self.get();
+        f(&mut value);
+        self.set(value);
+    }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
+
+    /// The value's address, which native code reads and writes by reference.
+    pub const fn as_ptr(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
 /// The independently configurable server fields and borrowed native handles.
 #[repr(C)]
 pub struct ServerConfig {
