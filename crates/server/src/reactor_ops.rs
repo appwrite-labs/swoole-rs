@@ -12,8 +12,8 @@ use core::sync::atomic::Ordering::SeqCst;
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::cpp::{
-    CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_pop,
-    swr_cpp_buffer_typed_close, swr_cpp_buffer_typed_front,
+    CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
+    swr_cpp_buffer_typed_front,
 };
 use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
@@ -34,15 +34,13 @@ use crate::conn_io::{
 };
 use crate::ops::OP_PORT_DTLS;
 use crate::ops::{
-    LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, LOG_RT_CLOSED_BY_SERVER, LOG_RT_DISCARD,
-    LOG_RT_SET_WRITE, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL, OP_CC_VALID,
-    OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD, OP_CONN_FORCE, OP_CONN_HANDSHAKING,
-    OP_CONN_REACTOR, OP_CONN_READING, OP_CONN_SESSION, OP_HAVE_DGRAM, OP_MICROTIME, OP_PEER_CERT,
-    OP_PIPE_FD, OP_PIPE_TYPE, OP_QUEUE_FULL, OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID,
-    OP_REACTOR_NUM, OP_RT_BUF_EMPTY, OP_RT_DISCARD_TIMEOUT, OP_RT_FRONT_CONN,
-    OP_RT_FRONT_CONN_CLOSED, OP_RT_FRONT_STREAM, OP_RT_HAS_PIPE_COMMAND, OP_RT_TOUCH_SEND,
-    OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER,
-    OP_WAIT_EXIT, OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE,
+    LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT,
+    OP_CC_TIMER_DEL, OP_CC_VALID, OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD,
+    OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_REACTOR, OP_CONN_READING, OP_CONN_SESSION,
+    OP_HAVE_DGRAM, OP_MICROTIME, OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_TYPE, OP_QUEUE_FULL,
+    OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER, OP_SESSION_CONN,
+    OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER, OP_WAIT_EXIT,
+    OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE,
     OP_WR_TIMER_DEL, OP_WR_WAIT,
 };
 use crate::ops::{
@@ -50,16 +48,14 @@ use crate::ops::{
     OP_CC_REDIS_OBJECT, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_WATCH_WRITE,
     OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_HEARTBEAT_TIMER_CLEAR, OP_KILL_SELF,
     OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD, OP_REACTOR_CLOSE,
-    OP_REACTOR_DEL, OP_RT_DGRAM_BIND, OP_RT_POP, OP_RT_REMOVE_WRITE, OP_RT_SETUP, OP_SSL_ACCEPT,
-    OP_WR_BUFFER_EMPTY, OP_WR_CLOSE, OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE,
-    OP_WR_READ_ONLY,
+    OP_REACTOR_DEL, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT, OP_WR_BUFFER_EMPTY, OP_WR_CLOSE,
+    OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_READ_ONLY,
 };
 use crate::port_config::{self, PortConfig};
-use crate::reactor_entry as entry;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, ConnectionRecord};
 use crate::view;
-use crate::{ServerConfig, ServerState, ServerTables};
+use crate::{ServerConfig, ServerState};
 
 /// `PREQUEUE` in builds with `--fix-halfclose` (`SW_HALFCLOSE_PREQUEUE`), else nothing.
 const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
@@ -69,13 +65,10 @@ const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
 };
 
 const SW_LOG_TRACE: c_int = 1;
-const SW_LOG_NOTICE: c_int = 3;
-const SW_LOG_WARNING: c_int = 4;
-/// `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER` and `SW_FD_PIPE`.
+/// `SW_FD_SESSION` and `SW_FD_DGRAM_SERVER`.
 const FD_SESSION: c_int = 0;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 const FD_DGRAM_SERVER: c_int = 2;
-const FD_PIPE: c_int = 3;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `SW_SERVER_EVENT_CLOSE`, `_CONNECT` and `_BUFFER_EMPTY`, which master.cc asserts.
@@ -104,13 +97,6 @@ pub(crate) struct ReactorContext<'a> {
         expect(dead_code, reason = "only the reactor threads' ops read it")
     )]
     pub(crate) pkt: *mut c_void,
-    /// The worker-pipe message at the front of the output buffer.
-    pub(crate) front: *const DataHead,
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops read it")
-    )]
-    pub(crate) front_length: usize,
     pub(crate) task: SendData,
 }
 
@@ -128,8 +114,6 @@ impl<'a> ReactorContext<'a> {
             conn: null.cast(),
             resp: core::ptr::null(),
             pkt: null,
-            front: core::ptr::null(),
-            front_length: 0,
             task: SendData {
                 info: DataHead::default(),
                 data: core::ptr::null(),
@@ -169,7 +153,7 @@ pub(crate) fn sign(value: impl Into<i64>) -> u64 {
 }
 
 /// `Server::is_stream_event`.
-fn stream_event(kind: u8) -> bool {
+pub(crate) fn stream_event(kind: u8) -> bool {
     // RECV_DATA, SEND_DATA, SEND_FILE, CLOSE, CONNECT, PAUSE_RECV, RESUME_RECV,
     // BUFFER_FULL and BUFFER_EMPTY.
     matches!(kind, 0 | 2..=5 | 11..=14)
@@ -196,9 +180,6 @@ impl<'c> Objects<'_, 'c> {
     }
     fn config(&self) -> &ServerConfig {
         self.state.config_ref()
-    }
-    fn tables(&self) -> &ServerTables {
-        self.state.tables_ref()
     }
     fn conn(&self) -> Option<Connection<'c>> {
         self.ctx.connection()
@@ -228,10 +209,6 @@ impl<'c> Objects<'_, 'c> {
     }
     fn resp(&self) -> Option<&'c DataHead> {
         self.ctx.message()
-    }
-    fn front(&self) -> Option<&DataHead> {
-        // SAFETY: null, or the live front message OP_RT_FRONT stored.
-        unsafe { self.ctx.front.as_ref() }
     }
     /// The context's live reactor.
     fn handle(&self) -> Option<Reactor> {
@@ -455,10 +432,6 @@ fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Ar
 /// Answers `op` when it is one of this module's, else `None`, as an op does when the
 /// context lacks an object it reads. Always inlined: each caller's constant op folds
 /// the match, so the hot runners' other ops cost nothing.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
 #[inline(always)]
 pub(crate) fn answer(
     ctx: &mut ReactorContext<'_>,
@@ -478,37 +451,6 @@ pub(crate) fn answer(
             let m = format_args!("force close connection failed, session#{session} does not exist");
             let origin = c"ReactorThread::close_connection";
             error(SW_LOG_TRACE, E::SW_ERROR_SESSION_NOT_EXIST, origin, m);
-            0
-        }
-        LOG_RT_CLOSED_BY_SERVER => {
-            let m = format_args!("Session#{} is closed by server", o.front()?.fd);
-            let origin = c"ReactorThread_onPipeWrite";
-            error(
-                SW_LOG_NOTICE,
-                E::SW_ERROR_SESSION_CLOSED_BY_SERVER,
-                origin,
-                m,
-            );
-            0
-        }
-        LOG_RT_DISCARD => {
-            let front = o.front()?;
-            let m = format_args!(
-                "[1] ignore data[{} bytes] received from session#{}",
-                front.len, front.fd
-            );
-            let origin = c"ReactorThread_onPipeWrite";
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SESSION_DISCARD_TIMEOUT_DATA,
-                origin,
-                m,
-            );
-            0
-        }
-        LOG_RT_SET_WRITE => {
-            let m = format_args!("reactor->set({}) failed", o.event()?.fd());
-            log::sys_warning(c"ReactorThread_onPipeWrite", m);
             0
         }
         LOG_CC_LINGER => {
@@ -581,14 +523,8 @@ pub(crate) fn answer(
             o.reactor()?.set_wait_exit(true);
             0
         }
-        OP_SESSION_CONN | OP_RT_FRONT_CONN => {
-            // The front's fd is the session id.
-            let (key, kind) = if op == OP_SESSION_CONN {
-                (arg.cast_signed(), Lookup::Verified)
-            } else {
-                (o.front()?.fd, Lookup::VerifiedTls)
-            };
-            o.ctx.conn = o.connection(key, kind);
+        OP_SESSION_CONN => {
+            o.ctx.conn = o.connection(arg.cast_signed(), Lookup::Verified);
             u64::from(!o.ctx.conn.is_null())
         }
         OP_CONN_FORCE => u64::from(o.conn()?.close_force()),
@@ -610,19 +546,7 @@ pub(crate) fn answer(
             o.conn()?.recv_queued_bytes().fetch_sub(bytes, SeqCst);
             0
         }
-        OP_RT_BUF_EMPTY => {
-            let sock = o.event_socket()?;
-            u64::from(sock.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b))))
-        }
-        OP_RT_FRONT_STREAM => u64::from(stream_event(o.front()?.kind)),
-        OP_RT_TOUCH_SEND => {
-            o.conn()?.set_last_send_time(microtime());
-            0
-        }
-        OP_RT_FRONT_CONN_CLOSED => u64::from(o.conn()?.closed().load(SeqCst)),
-        OP_RT_DISCARD_TIMEOUT => u64::from(o.config().discard_timeout_request.get()),
         OP_SERVER => u64::try_from(o.ctx.serv.raw().expose_provenance()).unwrap_or(0),
-        OP_RT_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
         OP_WR_WAIT => {
             let (close, send) = o.read_sock(|s| (s.output.close_wait, s.output.send_wait));
             (if close { CLOSE_WAIT } else { 0 }) | (if send { SEND_WAIT } else { 0 })
@@ -733,11 +657,6 @@ impl ThreadRecord {
 
 /// The ops over the context's reactor, sockets, connection, port and thread
 /// and the server's counters; else `None`. Inlined, as [`answer`] is.
-#[expect(
-    clippy::too_many_lines,
-    clippy::cognitive_complexity,
-    reason = "one arm per op, as master.cc's switch was"
-)]
 #[inline(always)]
 fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     let reactor = o.handle();
@@ -745,28 +664,11 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     let change = |socket, kind, events| reactor.map(|r| sign(r.change(socket, kind, events)));
     // `reactor->remove_read_event(socket)` (4) and `remove_write_event` (5).
     let interest = |socket, kind| reactor.map(|r| sign(r.interest(socket, kind, 0)));
-    let port = || {
-        let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-        Some(*port)
-    };
     Some(match op {
         OP_REACTOR_DEL => change(o.sock()?, 2, 0)?,
         OP_PORT_DEL => {
             change(o.server().port_socket_at(usize::try_from(arg).ok()?)?, 2, 0);
             0
-        }
-        OP_RT_DGRAM_BIND => {
-            // listen UDP port
-            let port = port()?;
-            let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
-            let fd = socket.fd();
-            // The connection table's slot for the listening fd.
-            let serv_sock = o.state.connection(c_long::from(fd), Lookup::ByFd)?;
-            serv_sock.set_fd(fd);
-            serv_sock.set_socket_type(port.config().r#type);
-            serv_sock.set_object(port.raw());
-            port.set_thread_id(pthread_self());
-            change(socket, 0, SW_EVENT_READ)?
         }
         OP_CONN_UNREAD => interest(o.conn_socket()?, 4)?,
         OP_RD_UNREAD => interest(o.sock()?, 4)?,
@@ -806,29 +708,6 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             let id = o.config().reactor_num.get();
             o.reactor()?.set_id(id);
             swoole_rs_corebase::set_thread(swoole_rs_corebase::thread_kind(), id);
-            0
-        }
-        OP_RT_SETUP => {
-            let reactor = o.reactor()?;
-            reactor.set_object(o.ctx.serv.raw());
-            reactor.set_id(u16::try_from(arg & 0xffff).unwrap_or_default());
-            reactor.set_wait_exit(false);
-            reactor.set_max_socket(o.tables().max_connection);
-            reactor.set_close(Some(crate::reactor_entry::close_connection));
-            let handle = o.handle()?;
-            handle.set_error_handler(entry::on_close);
-            let read: swoole_rs_reactor::Handler = entry::on_pipe_read;
-            for (event, handler) in [
-                (SW_EVENT_READ, read),
-                (SW_EVENT_WRITE, entry::on_pipe_write),
-            ] {
-                handle.set_handler(FD_PIPE, event, handler);
-            }
-            0
-        }
-        OP_RT_POP => {
-            o.event_socket()?
-                .read(|s| out_buffer(s).map(|b| swr_cpp_buffer_pop(b)));
             0
         }
         OP_WR_FRONT => o.sock()?.read(|s| {
@@ -973,11 +852,11 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SESSION_HANDLERS => {
             let reactor = o.handle()?;
-            let received: swoole_rs_reactor::Handler = entry::on_packet_received;
+            let received: swoole_rs_reactor::Handler = crate::reactor_entry::on_packet_received;
             for (fd_type, event, handler) in [
                 (FD_DGRAM_SERVER, SW_EVENT_READ, received),
-                (FD_SESSION, SW_EVENT_WRITE, entry::on_write),
-                (FD_SESSION, SW_EVENT_READ, entry::on_read),
+                (FD_SESSION, SW_EVENT_WRITE, crate::reactor_entry::on_write),
+                (FD_SESSION, SW_EVENT_READ, crate::reactor_entry::on_read),
             ] {
                 reactor.set_handler(fd_type, event, handler);
             }

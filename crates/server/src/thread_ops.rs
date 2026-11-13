@@ -9,6 +9,7 @@ use core::ptr;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
+use crate::reactor_io::owns;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::Worker;
@@ -24,12 +25,9 @@ use crate::ops::{
     OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
     OP_ON_PIPE_MESSAGE, OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND, OP_PORT_LISTEN, OP_PORT_READ,
     OP_RD_ABORT, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE, OP_RESUME_TIMER,
-    OP_RT_ADD_WORKER_PIPE, OP_RT_BUS_SETUP, OP_RT_CATCH_WAIT, OP_RT_FRONT, OP_RT_HEARTBEAT_TIMER,
-    OP_RT_INIT_PIPE_SOCKETS, OP_RT_INIT_REACTOR, OP_RT_PIPE_COMMAND, OP_RT_SEND_FRONT,
-    OP_RT_THREAD_WORKER, OP_SEND_CLOSE_FORCE, OP_STOP_THREAD_WORKER, OP_THREAD_CLEAN,
-    OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_WORKER_PIPE_UNREAD,
-    OP_WORKER_START, OP_WORKER_STOP, RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD,
-    RUN_RESUME_RECEIVING,
+    OP_SEND_CLOSE_FORCE, OP_STOP_THREAD_WORKER, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT,
+    OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP,
+    RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_RESUME_RECEIVING,
 };
 use crate::ops::{
     OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_CLOSE_FORWARD, OP_DESTROY_CALLBACK, OP_FORCE_CLOSE,
@@ -43,10 +41,11 @@ use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
 use swoole_rs_buffer::string::with_thread_buffer;
 
-/// `SW_EVENT_READ`, `Server::THREAD_REACTOR` and `SW_WAIT`.
+/// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
 const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_REACTOR: u8 = 2;
-const SW_WAIT: c_int = 2;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+const FD_PIPE: c_int = 3;
 /// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`
 /// and `Server::CLOSE_ACTIVELY`.
 const EVENT_RECV_DGRAM: u8 = 1;
@@ -60,12 +59,6 @@ struct DgramPacket {
     socket_type: c_int,
     socket_addr: SocketAddress,
     length: u32,
-}
-
-/// The front entry of the context event socket's output buffer, if it has one.
-fn out_front(ctx: &ReactorContext<'_>) -> Option<swoole_rs_buffer::TypedFront> {
-    let front = swoole_rs_buffer::cpp::swr_cpp_buffer_typed_front;
-    event_socket(ctx)?.read(|s| crate::reactor_ops::out_buffer(s).map(|b| front(b)))
 }
 
 /// The `MessageBus` of the context's thread, once an op has set it.
@@ -113,6 +106,109 @@ fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
             swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
         };
     }
+}
+
+/// `Server::heartbeat_check`'s timer, which `reactor` arms for itself and runs on
+/// its thread.
+fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> *mut c_void {
+    let msec = c_long::from(state.config_ref().heartbeat_check_interval.get()) * 1000;
+    swoole_rs_timer::add_fn(msec, true, move || {
+        // SAFETY: a server reactor whose `ptr` is its live server, which outlives its
+        // timers.
+        let serv = unsafe { entry::server(reactor) };
+        let mut ctx = ReactorContext::new(serv, Some(reactor));
+        ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
+        run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
+    })
+}
+
+/// `ReactorThread::init`: thread `id`'s reactor handlers, its UDP ports, worker
+/// pipes and message bus; `None` when the context lacks its reactor or thread.
+fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Option<c_int> {
+    let (server, handle) = (ctx.serv, ctx.reactor?);
+    let (config, tables) = (state.config_ref(), state.tables_ref());
+    let reactor = handle.handle();
+    reactor.set_object(server.raw());
+    reactor.set_id(id);
+    reactor.set_wait_exit(false);
+    reactor.set_max_socket(tables.max_connection);
+    reactor.set_close(Some(entry::close_connection));
+    handle.set_error_handler(entry::on_close);
+    handle.set_handler(FD_PIPE, SW_EVENT_READ, entry::on_pipe_read);
+    handle.set_handler(FD_PIPE, SW_EVENT_WRITE, entry::on_pipe_write);
+    let reactors = config.reactor_num.get();
+    // Listen on this thread's UDP ports.
+    if config.have_dgram_sock {
+        for (index, port) in tables.ports().iter().enumerate() {
+            let dgram = matches!(port.config().r#type, 2 | 4 | 6);
+            if !dgram || !owns(i64::from(port.fd()), reactors, id) {
+                continue;
+            }
+            let socket = server.port_socket_at(index)?;
+            let fd = socket.fd();
+            // The connection table's slot for the listening fd.
+            let serv_sock = state.connection(c_long::from(fd), Lookup::ByFd)?;
+            serv_sock.set_fd(fd);
+            serv_sock.set_socket_type(port.config().r#type);
+            serv_sock.set_object(port.raw());
+            // The reactor thread that reads the datagram port.
+            port.config()
+                .thread_id
+                .set(crate::reactor_ops::pthread_self());
+            if handle.change(socket, 0, SW_EVENT_READ) < 0 {
+                return Some(-1);
+            }
+        }
+    }
+    entry::init_reactor(server, handle);
+    let thread = ctx.thread_record()?;
+    let bus = thread.message_bus();
+    methods::init_pipe_sockets(server, bus);
+    if u64::from(config.mode_) == crate::MODE_THREAD {
+        let worker = worker(server, id)?;
+        crate::worker_methods::init_event_worker(server, worker);
+        if let Some(sock) = pipe_socket(&bus, worker_pipe(worker, false)) {
+            let _ = handle.add(sock, SW_EVENT_READ);
+        }
+        if config.heartbeat_check_interval.get() > 0 {
+            thread.heartbeat_timer.set(heartbeat_timer(state, handle));
+        }
+    }
+    if !config.pipe_command.is_null() {
+        // The server's live command pipe.
+        let fd = config.command_pipe()?.worker_end()?.fd();
+        bus.init_pipe_socket(fd);
+        thread.pipe_command.set(bus.pipe_fd(fd).cast());
+        bus.rust()
+            .pipe(fd)?
+            .edit(|s| s.output.buffer_size = u32::MAX);
+    }
+    let gs = crate::shared::server_counters(state)?;
+    // SAFETY: the shared counter outlives every reactor thread's bus.
+    let counter = unsafe {
+        &*gs.pipe_packet_msg_id
+            .as_ptr()
+            .cast::<core::sync::atomic::AtomicU64>()
+    };
+    bus.rust().count_ids(counter);
+    bus.set_always_chunked();
+    if !bus.alloc_buffer(config.ipc_max_size() as usize) {
+        return Some(-1);
+    }
+    for w in (0..config.worker_num.get()).filter(|&w| owns(i64::from(w), reactors, id)) {
+        let Some(worker) = worker(server, w) else {
+            return Some(-1);
+        };
+        let sock = pipe_socket(&bus, worker_pipe(worker, true));
+        if sock.is_none_or(|sock| handle.add(sock, SW_EVENT_READ) < 0) {
+            return Some(-1);
+        }
+        // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
+        if thread.notify_pipe.get().is_null() {
+            thread.notify_pipe.set(worker.pipe_worker().cast());
+        }
+    }
+    Some(0)
 }
 
 /// Answers `op` when it is one of this module's, else `None`, as `reactor_ops::answer`.
@@ -289,7 +385,7 @@ pub(crate) fn answer(
             // its new reactor.
             let mut init = ReactorContext::new(server, handle);
             init.thread = ctx.thread;
-            let ret = entry::int(run(crate::ops::RUN_RT_INIT, u64::from(id), &mut init));
+            let ret = init_thread(&mut init, state, id).unwrap_or(-1);
             sign(if op == OP_THREAD0_INIT { 0 } else { ret })
         }
         OP_THREAD_CLEAN => {
@@ -309,26 +405,11 @@ pub(crate) fn answer(
         }
         OP_REACTOR_THREAD_ENTRY => reactor_thread_entry as *const () as u64,
         OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
-        OP_HEARTBEAT_TIMER | OP_RT_HEARTBEAT_TIMER => {
-            let msec = c_long::from(config().heartbeat_check_interval.get()) * 1000;
-            // `Server::heartbeat_check`: the reactor arms its own heartbeat, which the
-            // timer checks on this thread.
-            let reactor = handle?;
-            let timer = swoole_rs_timer::add_fn(msec, true, move || {
-                // SAFETY: this context's reactor, a server reactor whose `ptr` is its
-                // live server, which outlives its timers.
-                let serv = unsafe { entry::server(reactor) };
-                let mut ctx = ReactorContext::new(serv, Some(reactor));
-                ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
-                run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
-            });
-            if op == OP_HEARTBEAT_TIMER {
-                config()
-                    .heartbeat_timer
-                    .store(timer, core::sync::atomic::Ordering::Relaxed);
-            } else {
-                ctx.thread_record()?.heartbeat_timer.set(timer);
-            }
+        OP_HEARTBEAT_TIMER => {
+            let timer = heartbeat_timer(state, handle?);
+            config()
+                .heartbeat_timer
+                .store(timer, core::sync::atomic::Ordering::Relaxed);
             0
         }
         OP_RESUME_TIMER => {
@@ -347,68 +428,10 @@ pub(crate) fn answer(
             u64::from(!timer.is_null())
         }
 
-        OP_RT_INIT_REACTOR => {
-            entry::init_reactor(server, handle?);
-            0
-        }
-        OP_RT_INIT_PIPE_SOCKETS => {
-            methods::init_pipe_sockets(server, ctx.thread_record()?.message_bus());
-            0
-        }
-        OP_RT_THREAD_WORKER => {
-            let worker = worker(server, reactor_id()?)?;
-            crate::worker_methods::init_event_worker(server, worker);
+        OP_WORKER_PIPE_UNREAD => {
+            let worker = worker(server, arg)?;
             let bus = ctx.thread_record()?.message_bus();
-            sign(add_read(pipe_socket(&bus, worker_pipe(worker, false))));
-            0
-        }
-        OP_RT_PIPE_COMMAND => {
-            // The server's live command pipe.
-            let fd = config().command_pipe()?.worker_end()?.fd();
-            let thread = ctx.thread_record()?;
-            let bus = thread.message_bus();
-            bus.init_pipe_socket(fd);
-            thread.pipe_command.set(bus.pipe_fd(fd).cast());
-            bus.rust()
-                .pipe(fd)?
-                .edit(|s| s.output.buffer_size = u32::MAX);
-            0
-        }
-        OP_RT_BUS_SETUP => {
-            let thread = ctx.thread_record()?;
-            let gs = crate::shared::server_counters(state)?;
-            // SAFETY: the shared counter outlives every reactor thread's bus.
-            let counter = unsafe {
-                &*gs.pipe_packet_msg_id
-                    .as_ptr()
-                    .cast::<core::sync::atomic::AtomicU64>()
-            };
-            thread.message_bus().rust().count_ids(counter);
-            thread.message_bus().set_always_chunked();
-            u64::from(
-                thread
-                    .message_bus()
-                    .alloc_buffer(config().ipc_max_size() as usize),
-            )
-        }
-        OP_RT_ADD_WORKER_PIPE | OP_WORKER_PIPE_UNREAD => {
-            let Some(worker) = worker(server, arg) else {
-                return Some(sign(-1));
-            };
-            let thread = ctx.thread_record()?;
-            let bus = thread.message_bus();
-            let sock = pipe_socket(&bus, worker_pipe(worker, true));
-            if op == OP_WORKER_PIPE_UNREAD {
-                handle?.interest(sock?, 4, 0);
-                return Some(0);
-            }
-            if add_read(sock) < 0 {
-                return Some(sign(-1));
-            }
-            // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
-            if thread.notify_pipe.get().is_null() {
-                thread.notify_pipe.set(worker.pipe_worker().cast());
-            }
+            handle?.interest(pipe_socket(&bus, worker_pipe(worker, true))?, 4, 0);
             0
         }
 
@@ -469,24 +492,6 @@ pub(crate) fn answer(
                 state.callbacks.pipe_message(server, event);
             }
             0
-        }
-
-        OP_RT_FRONT => {
-            let front = out_front(ctx)?;
-            ctx.front = front.data.cast();
-            ctx.front_length = front.length as usize;
-            0
-        }
-        OP_RT_SEND_FRONT => {
-            let sock = event_socket(ctx)?;
-            let (front, length) = (ctx.front.cast(), ctx.front_length);
-            // SAFETY: the event's live socket and the front message's bytes.
-            let sent = unsafe { swoole_rs_tls::upstream::socket_send(sock, front, length, 0) };
-            sign(i64::try_from(sent).unwrap_or(-1))
-        }
-        OP_RT_CATCH_WAIT => {
-            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            u64::from(event_socket(ctx)?.catch_error(errno) == SW_WAIT)
         }
 
         OP_INCOMING => {

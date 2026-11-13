@@ -656,11 +656,6 @@ impl<'a> Port<'a> {
             .protocol
             .update(|protocol| protocol.package_max_length = length);
     }
-    /// `port->thread_id = thread`: the reactor thread that reads a datagram port.
-    pub(crate) fn set_thread_id(self, thread: libc::pthread_t) {
-        self.config().thread_id.set(thread);
-    }
-
     /// The port's settings, to write.
     ///
     /// # Safety
