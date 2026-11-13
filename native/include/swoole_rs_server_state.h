@@ -20,12 +20,6 @@ extern "C" {
 #endif
 
 typedef struct swr_v1_server_state swr_v1_server_state;
-const void *swr_v1_server_static_owner(const swr_v1_server_state *, uint32_t);
-const void *swr_v1_server_static_owner_clone(const void *);
-void swr_v1_server_static_owner_free(const void *);
-bool swr_v1_server_static_mime(const void *, const uint8_t *, size_t);
-size_t swr_v1_server_static_config(const swr_v1_server_state *, uint32_t, uint32_t, const uint8_t *, size_t);
-const uint8_t *swr_v1_server_static_text(const swr_v1_server_state *, uint32_t, size_t, size_t *);
 /* Server's text members, which Rust owns (crates/server/src/state.rs). */
 enum {
     SWR_SERVER_TEXT_CHROOT, SWR_SERVER_TEXT_USER, SWR_SERVER_TEXT_GROUP, SWR_SERVER_TEXT_PID_FILE,

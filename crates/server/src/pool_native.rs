@@ -29,8 +29,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::pool::{PoolCall, Warning, raise_bailout};
 use swoole_rs_process::process_pool::{
-    CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP, Hooks,
-    MainLoopFn, Op, PoolNative, PoolRef, RAISE, RecvData, pool_run_main,
+    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, RAISE, RecvData, pool_run_main,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -643,15 +642,15 @@ impl PoolNative for Native {
     }
 
     /// The pool's callbacks, inside the bailout trap.
-    fn callback(&self, c: &mut PoolCall) {
+    fn callback(&self, c: &mut PoolCall, callback: Callback) {
         let (pool, worker) = (c.pool(), c.worker());
-        match (c.flags(), worker) {
-            (CB_START, _) => pool.call_on_start(),
-            (CB_BEFORE_RELOAD, _) => pool.call_on_before_reload(),
-            (CB_SHUTDOWN, _) => pool.call_on_shutdown(),
-            (CB_WORKER_START, Some(worker)) => pool.call_on_worker_start(worker),
-            (CB_WORKER_STOP, Some(worker)) => pool.call_on_worker_stop(worker),
-            (CB_MAIN_LOOP, Some(worker)) => {
+        match (callback, worker) {
+            (Callback::Start, _) => pool.call_on_start(),
+            (Callback::BeforeReload, _) => pool.call_on_before_reload(),
+            (Callback::Shutdown, _) => pool.call_on_shutdown(),
+            (Callback::WorkerStart, Some(worker)) => pool.call_on_worker_start(worker),
+            (Callback::WorkerStop, Some(worker)) => pool.call_on_worker_stop(worker),
+            (Callback::MainLoop, Some(worker)) => {
                 if let Some(code) = pool.call_main_loop(worker) {
                     c.set_result(code as isize);
                 }
