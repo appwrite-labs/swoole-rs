@@ -97,10 +97,10 @@ static End end_fn;
 void swr_case_reactor_set_end_callback(Reactor *r, int id, End fn) {
     end_reactor = r;
     end_fn = fn;
-    r->set_end_callback(static_cast<Reactor::EndCallback>(id), [] { end_fn(end_reactor); });
+    r->set_end_callback(id, [] { end_fn(end_reactor); });
 }
 void swr_case_reactor_erase_end_callback(Reactor *r, int id) {
-    r->erase_end_callback(static_cast<Reactor::EndCallback>(id));
+    r->erase_end_callback(id);
 }
 // `sw_reactor()->defer(fn, data)`.
 void swr_case_event_defer(Plain fn, void *data) {

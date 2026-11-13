@@ -702,7 +702,7 @@ fn set_process_name(call: &Call) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RINIT_END, RSHUTDOWN_END};
+    use super::{CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RINIT_END, RSHUTDOWN_BEGIN, RSHUTDOWN_END};
     use std::mem::{offset_of, size_of};
 
     #[test]
@@ -717,5 +717,7 @@ mod tests {
             (RINIT_END, CALL_USER_SHUTDOWNFUNC_BEGIN, RSHUTDOWN_END),
             (1, 2, 4)
         );
+        let header = include_str!("../../../native/phphelpers/swoole_rs_phphost.h");
+        assert!(header.contains(&format!("PHP_SWOOLE_RSHUTDOWN_BEGIN = {RSHUTDOWN_BEGIN},")));
     }
 }
