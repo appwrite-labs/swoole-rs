@@ -49,7 +49,7 @@ impl StaticEffects for Native {
         swoole_rs_corebase::swoole_random_string(out.get_mut(..=count).unwrap_or_default());
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
     }
     fn overflow(&self) {
         swoole_rs_corebase::sys::set_errno(libc::EOVERFLOW);
@@ -146,7 +146,13 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     pub fn is_modified(&self, date: &[u8]) -> bool {
         let timezone = self.server.config().timezone_;
         let mtime = self.context.borrow().mtime();
-        swoole_rs_http::conditional(date, 0, mtime, timezone, &self.effects)
+        swoole_rs_http::conditional(
+            date,
+            swoole_rs_http::Conditional::ModifiedSince,
+            mtime,
+            timezone,
+            &self.effects,
+        )
     }
 
     /// Whether the static handler answers the request.
