@@ -31,7 +31,7 @@ pub struct Host {
     /// writes the header length.
     pub package_length: fn(Co, u32, &mut u32) -> isize,
     /// Packet error diagnostics, with the same kinds as the packet receive.
-    pub packet_fail: fn(Co, u32, isize),
+    pub packet_fail: fn(Co, crate::packet::Failure, isize),
 }
 
 #[cfg(not(test))]
@@ -230,11 +230,12 @@ mod native {
     const NOT_FOUND: c_int = 1202;
     const LOG_WARNING: c_int = 4;
 
-    fn packet_fail(socket: Co, kind: u32, length: isize) {
+    fn packet_fail(socket: Co, kind: crate::packet::Failure, length: isize) {
         use super::Message;
+        use crate::packet::Failure;
         let (error, message) = match kind {
-            0 => (NOT_FOUND, Message::Static(c"get package length failed")),
-            1 => {
+            Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
+            Failure::TooLarge => {
                 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
@@ -254,7 +255,7 @@ mod native {
                 );
                 (TOO_LARGE, Message::LastError)
             }
-            _ => (
+            Failure::NoEof => (
                 TOO_LARGE,
                 Message::Static(c"no package eof, package_max_length exceeded"),
             ),

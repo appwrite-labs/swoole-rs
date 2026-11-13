@@ -4,7 +4,7 @@
 //! Rust's framing with the same inputs. `ported.txt` holds the pinned bodies'
 //! traces, one line per scenario, without their EOF scans and `String::clear`
 //! calls, which Rust performs itself.
-use super::{ReadBuffer, recv_packet};
+use super::{Failure, ReadBuffer, recv_packet};
 use crate::co_io::{HOST, Host, errno, set_errno};
 use crate::co_socket::{Co, CoSocket, TestSocket};
 use core::ffi::c_void;
@@ -151,16 +151,16 @@ fn package_length(_: Co, n: u32, header: &mut u32) -> isize {
     })
 }
 
-fn packet_fail(_: Co, kind: u32, length: isize) {
+fn packet_fail(_: Co, kind: Failure, length: isize) {
     with(|s| {
         let (error, message) = match kind {
-            0 => (1781, "get package length failed"),
-            1 => {
+            Failure::LengthNotFound => (1781, "get package length failed"),
+            Failure::TooLarge => {
                 s.trace.extend(["address".into(), "port".into()]);
                 s.trace.push(format!("diagnostic:private:9602:{length}"));
                 (1782, "native diagnostic")
             }
-            _ => (1782, "no package eof, package_max_length exceeded"),
+            Failure::NoEof => (1782, "no package eof, package_max_length exceeded"),
         };
         s.trace.push(format!("error:{error}:{message}"));
         set_errno(error);
