@@ -397,16 +397,8 @@ impl HttpRequest {
     #[must_use]
     pub fn get_header(&self, name: &[u8]) -> Option<HttpSpan> {
         let (_, input) = self.input();
-        let mut value = HttpSpan::default();
         let start = self.url_offset as usize + self.url_length as usize + 10;
-        let found = swoole_rs_http::header_value(
-            input,
-            start,
-            self.header_length as usize,
-            name,
-            &mut value,
-        );
-        (found == 1).then_some(value)
+        swoole_rs_http::header_value(input, start, self.header_length as usize, name)
     }
 
     /// Leaves the errno `strtoull` would: bit 1 of `errors` `ERANGE`, bit 2 its
