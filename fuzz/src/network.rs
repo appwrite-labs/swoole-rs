@@ -23,7 +23,7 @@ pub fn http2_frame(bytes: &[u8]) {
     };
     let length = frame_length(data);
     let previous = u32::from(previous) << 23;
-    let decoded = sw_rs_http2_decode_frame(data, previous, u32::from(client & 1));
+    let decoded = sw_rs_http2_decode_frame(data, previous, client & 1 != 0);
     let Some(header) = data.first_chunk::<9>() else {
         assert_eq!((length, decoded), (0, None), "short header {data:?}");
         return;
@@ -37,7 +37,7 @@ pub fn http2_frame(bytes: &[u8]) {
         (wire, u32::from(header[3]), u32::from(header[4]), id),
         "frame header {header:?}"
     );
-    assert_eq!(facts.publish_last_id, u32::from(id > previous));
+    assert_eq!(facts.publish_last_id, id > previous);
     if let Some(entry) = data.get(9..).and_then(|rest| rest.first_chunk::<6>()) {
         let (setting, value) = sw_rs_http2_unpack_setting(entry);
         assert_eq!(
@@ -305,15 +305,15 @@ pub fn http2_hpack(bytes: &[u8]) {
                 assert_eq!(value, expected, "value from {input:?}");
             }
             input = input.get(read..).expect("inflate read past its input");
-            let step = sw_rs_http2_inflate_step(flags, input.len(), u32::from(role & 1));
+            let step = sw_rs_http2_inflate_step(flags, input.len(), role & 1 != 0);
             // The client ends its (always final) block on any finished step too.
-            if step.end_headers != 0 || step.finish != 0 && role & 1 != 0 && last {
+            if step.end_headers || step.finish && role & 1 != 0 && last {
                 // SAFETY: a live inflater.
                 unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
                 decoder.end_headers();
                 break;
             }
-            if step.finish != 0 {
+            if step.finish {
                 break;
             }
         }

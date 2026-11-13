@@ -387,8 +387,8 @@ fn client_block_then_table_size_update() {
         loop {
             let step = decoder.decode(input, true)?;
             input = &input[step.read..];
-            let plan = swoole_rs_http2::sw_rs_http2_inflate_step(step.flags(), input.len(), 1);
-            if plan.end_headers != 0 || plan.finish != 0 {
+            let plan = swoole_rs_http2::sw_rs_http2_inflate_step(step.flags(), input.len(), true);
+            if plan.end_headers || plan.finish {
                 if end {
                     decoder.end_headers();
                 }
