@@ -1,7 +1,6 @@
 name: Merge
 on:
-  push:
-    branches: [main]
+  # No push trigger: the merge queue already ran this tier on each group before it landed.
   # Weekly, and on a dispatch, upstream's PHPT shards run even when nothing they depend on
   # changed, so drift that no commit explains still gets caught (phpt-build's baseline).
   schedule:
@@ -10,13 +9,6 @@ on:
   # main's merge queue: each group of queued PRs is tested on top of main before it lands,
   # and the `required` job below decides whether it does.
   merge_group:
-# Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
-# next run always covers main's head. Never cancel-in-progress, or no run finishes.
-# A scheduled or dispatched run has a group of its own: pending in the pushes' group, the
-# next push would replace it and the weekly upstream run would rarely happen. So does a
-# merge-queue run: the queue tests its groups side by side.
-concurrency:
-  group: merge-${{ github.event_name == 'push' && github.ref || github.run_id }}
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -137,7 +129,7 @@ jobs:
           engines: upstream cargo
       # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
       # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
-      - if: github.event_name == 'push' || github.event_name == 'merge_group'
+      - if: github.event_name == 'merge_group'
         uses: actions/cache/restore@v6
         with:
           path: baseline-cache
@@ -145,7 +137,7 @@ jobs:
           restore-keys: phpt-baseline-
       - name: Find PHPT baseline
         id: baseline
-        if: github.event_name == 'push' || github.event_name == 'merge_group'
+        if: github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
