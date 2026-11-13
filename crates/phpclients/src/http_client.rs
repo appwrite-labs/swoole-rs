@@ -358,20 +358,16 @@ impl Client {
         unsafe { swr_zend_property_not_null(self.object, name, length) }
     }
 
-    /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
-    /// 2 if it bailed out.
-    fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
+    /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
+    /// its bailout.
+    fn call_write(&self, callable: &Callable, data: &[u8]) -> Result<bool, Bailout> {
         // The string argument's reference, released when it drops.
         let data = Owned::string(ZString::new(data));
         // SAFETY: the object outlives its client, so the call; it is borrowed
         // for the call as upstream's `ZVAL_OBJ`.
         let this = unsafe { object_zval(self.object) };
         let mut args = [this, data.copy_value()];
-        match callable.call(&mut args, None, false) {
-            Ok(true) => 0,
-            Ok(false) => 1,
-            Err(bailout::Bailout) => 2,
-        }
+        callable.call(&mut args, None, false)
     }
 
     /// `zval_get_long` of a declared property of the client object.
@@ -1492,10 +1488,10 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
             None => client.body.borrow_mut().clear(),
         }
         client.in_callback.set(false);
-        if result == 2 {
+        if result.is_err() {
             client.bailout.set(true);
         }
-        return if result == 0 { 0 } else { -1 };
+        return if matches!(result, Ok(true)) { 0 } else { -1 };
     }
     if decompress {
         if !client.decompress(data) {
@@ -1510,20 +1506,16 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
     }
     // Out of the client while the file calls yield to other coroutines.
     let mut body = client.body.take();
-    let result = if body.is_empty() {
-        0
-    } else {
-        write_download(client, &body)
-    };
-    if result == 0 {
+    let written = body.is_empty() || write_download(client, &body);
+    if written {
         body.clear();
     }
     drop(client.body.replace(body));
-    result
+    if written { 0 } else { -1 }
 }
 
-/// Append a body chunk to the download, opening its file first.
-fn write_download(client: &Client, body: &[u8]) -> c_int {
+/// Append a body chunk to the download, opening its file first: whether it was written.
+fn write_download(client: &Client, body: &[u8]) -> bool {
     if client.download_file.get().is_none() {
         let name = client.download_name.borrow();
         let path = c_bytes(name.as_ref().map_or(&[][..], ZString::bytes));
@@ -1533,14 +1525,10 @@ fn write_download(client: &Client, body: &[u8]) -> c_int {
             .download_file
             .set(native::swoole_http_client_coro_file_open(&path, offset));
     }
-    let Some(fd) = client.download_file.get() else {
-        return -1;
-    };
-    if native::swoole_http_client_coro_file_write(fd, body) {
-        0
-    } else {
-        -1
-    }
+    client
+        .download_file
+        .get()
+        .is_some_and(|fd| native::swoole_http_client_coro_file_write(fd, body))
 }
 
 fn on_message_complete(hooks: &mut Hooks) -> c_int {
