@@ -89,19 +89,20 @@ fn dispatch(serv: Server<'_>, signo: c_int) {
         }
         libc::SIGIO => serv.event_pool_ref().set_read_message(true),
         libc::SIGWINCH => reopen_logger(serv),
-        _ if sigrtmin() == Some(signo) => reopen_logger(serv),
+        _ if sigrtmin() != 0 && signo == sigrtmin() => reopen_logger(serv),
         _ => {}
     }
 }
 
+/// `SIGRTMIN`, or 0 where there is none.
 #[cfg(target_os = "linux")]
-fn sigrtmin() -> Option<c_int> {
-    Some(libc::SIGRTMIN())
+fn sigrtmin() -> c_int {
+    libc::SIGRTMIN()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn sigrtmin() -> Option<c_int> {
-    None
+fn sigrtmin() -> c_int {
+    0
 }
 
 /// This process's log file reopens.
