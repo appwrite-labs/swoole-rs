@@ -12,7 +12,7 @@ use swoole_rs_http2::{
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_oracle::nghttp2;
-use swoole_rs_protocols::{RespPhpState, resp_php_next};
+use swoole_rs_protocols::{RespKind, RespPhpState, resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
 /// `frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
@@ -335,15 +335,14 @@ pub fn resp_server(bytes: &[u8]) {
         };
         assert!(state.cursor.position > before, "stalled on {bytes:?}");
         assert!(
-            span.kind == 1
-                || span.kind == 2
+            matches!(span.kind, RespKind::Integer | RespKind::Null)
                 || span
                     .offset
                     .checked_add(span.length)
                     .is_some_and(|end| end <= bytes.len()),
             "span {span:?} outside {bytes:?}"
         );
-        commands += usize::from(span.kind == 3);
+        commands += usize::from(span.kind == RespKind::Command);
         assert!(commands <= 1, "second command in {bytes:?}");
     }
     panic!("no end for {bytes:?}");

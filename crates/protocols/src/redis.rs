@@ -56,13 +56,24 @@ fn number(bytes: &[u8], range: &mut bool) -> Option<Number> {
     })
 }
 
-#[repr(C)]
+/// What a RESP span holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RespKind {
+    /// A string parameter.
+    #[default]
+    String,
+    Integer,
+    Null,
+    /// The first string: the command.
+    Command,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RespSpan {
     pub offset: usize,
     pub length: usize,
     pub integer: i32,
-    pub kind: u32,
+    pub kind: RespKind,
 }
 
 /// Render the native PHP handler property key: ASCII lowercase `_handler_`,
@@ -86,45 +97,52 @@ pub fn resp_handler_key(bytes: &[u8]) -> ([u8; 64], usize) {
     (key, length)
 }
 
-/// Borrowed RESP walk state. Native callers may allocate between events; no
-/// Rust frame or allocation survives a call. All-zero initializes a new walk.
-#[repr(C)]
+/// Where a RESP walk is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RespPhase {
+    /// Before the array header.
+    #[default]
+    Start,
+    /// Before an item.
+    Item,
+    /// After a bulk string's length, before its bytes.
+    Bulk,
+}
+
+/// A RESP walk's state between events. The default starts a new walk.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RespCursor {
     pub position: usize,
     pub length: i32,
-    pub state: u8,
+    pub phase: RespPhase,
 }
 
 impl RespCursor {
     #[inline]
     fn next(&mut self, bytes: &[u8], range: &mut bool) -> Result<Option<RespSpan>, ()> {
-        if self.state > 2 {
-            return Err(());
-        }
         while let Some(rest) = bytes.get(self.position..)
             && let Some(&first) = rest.first()
         {
-            if self.state == 0 && first == b'*' {
+            if self.phase == RespPhase::Start && first == b'*' {
                 self.position += number(rest, range).ok_or(())?.consumed;
-                self.state = 1;
-            } else if self.state <= 1 && first == b'$' {
+                self.phase = RespPhase::Item;
+            } else if self.phase != RespPhase::Bulk && first == b'$' {
                 let value = number(rest, range).ok_or(())?;
                 self.position += value.consumed;
                 if value.value == -1 {
                     return Ok(Some(RespSpan {
-                        kind: 2,
+                        kind: RespKind::Null,
                         ..RespSpan::default()
                     }));
                 }
                 self.length = value.value;
-                self.state = 2;
-            } else if self.state <= 1 && first == b':' {
+                self.phase = RespPhase::Bulk;
+            } else if self.phase != RespPhase::Bulk && first == b':' {
                 let value = number(rest, range).ok_or(())?;
                 self.position += value.consumed;
                 return Ok(Some(RespSpan {
                     integer: value.value,
-                    kind: 1,
+                    kind: RespKind::Integer,
                     ..RespSpan::default()
                 }));
             } else {
@@ -141,7 +159,7 @@ impl RespCursor {
                     ..RespSpan::default()
                 };
                 self.position = end.checked_add(2).ok_or(())?;
-                self.state = 1;
+                self.phase = RespPhase::Item;
                 return Ok(Some(span));
             }
         }
@@ -157,7 +175,7 @@ pub fn resp_spans(bytes: &[u8], mut emit: impl FnMut(RespSpan), range: &mut bool
     let mut count = 0;
     while let Some(span) = cursor.next(bytes, range).ok()? {
         // The native vector parser omits nulls; PHP keeps them as parameters.
-        if span.kind != 2 {
+        if span.kind != RespKind::Null {
             emit(span);
             count += 1;
         }
@@ -165,20 +183,18 @@ pub fn resp_spans(bytes: &[u8], mut emit: impl FnMut(RespSpan), range: &mut bool
     Some(count)
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RespPhpState {
     pub cursor: RespCursor,
-    pub command_seen: u8,
+    pub command_seen: bool,
 }
 
 /// A RESP command that doesn't parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Malformed;
 
-/// One PHP request event, or `None` at the end. Span kinds are 0 string parameter,
-/// 1 integer, 2 null, 3 first string (command). Integers and nulls preceding the
-/// command remain parameters. `range` reports native ERANGE without touching errno.
+/// One PHP request event, or `None` at the end. The first string is the
+/// [`RespKind::Command`]; integers and nulls preceding it remain parameters. `range` reports native ERANGE without touching errno.
 /// Invalid input leaves `state` unchanged.
 ///
 /// # Errors
@@ -189,14 +205,11 @@ pub fn resp_php_next(
     range: &mut bool,
 ) -> Result<Option<RespSpan>, Malformed> {
     let mut current = *state;
-    if current.command_seen > 1 {
-        return Err(Malformed);
-    }
     let event = current.cursor.next(bytes, range).map_err(|()| Malformed)?;
     let event = event.map(|mut event| {
-        if event.kind == 0 && current.command_seen == 0 {
-            event.kind = 3;
-            current.command_seen = 1;
+        if event.kind == RespKind::String && !current.command_seen {
+            event.kind = RespKind::Command;
+            current.command_seen = true;
         }
         event
     });
@@ -275,17 +288,30 @@ pub struct RespRequest {
     pub offset: i32,
 }
 
-/// Legacy receive-state policy. Returns 0 malformed,1 read again,2 wait for next
-/// event,3 dispatch whole buffer,4 package too big. Native does I/O/growth/callbacks.
+/// What the receive loop does with its buffer next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RespAction {
+    Malformed,
+    /// Read again, growing the buffer if it is full.
+    ReadAgain,
+    /// Wait for the next readable event.
+    Wait,
+    /// Dispatch the whole buffer.
+    Dispatch,
+    TooBig,
+}
+
+/// Legacy receive-state policy, and whether the request's offset moved. The caller
+/// does the I/O, growth and callbacks.
 pub fn resp_receive(
     bytes: &[u8],
     capacity: usize,
     maximum: usize,
     request: &mut RespRequest,
-) -> (u32, bool) {
+) -> (RespAction, bool) {
     resp_receive_range(bytes, capacity, maximum, request, &mut false)
 }
-/// Size to extend a RESP receive buffer to after action 1 (upstream 0c954199e):
+/// Size to extend a RESP receive buffer to after [`RespAction::ReadAgain`] (upstream 0c954199e):
 /// 0 unless it is full and below the maximum; the maximum once it is half way;
 /// otherwise double, then `swoole_size_align` (which always adds up to a whole
 /// page, even to an aligned value) and cap.
@@ -314,13 +340,13 @@ pub fn resp_receive_range(
     maximum: usize,
     request: &mut RespRequest,
     range: &mut bool,
-) -> (u32, bool) {
+) -> (RespAction, bool) {
     if !bytes.ends_with(b"\r\n") {
         return (
             if capacity >= maximum && bytes.len() == capacity {
-                4
+                RespAction::TooBig
             } else {
-                1
+                RespAction::ReadAgain
             },
             false,
         );
@@ -329,26 +355,26 @@ pub fn resp_receive_range(
     let mut set_offset = false;
     loop {
         let Some(rest) = bytes.get(position..) else {
-            return (0, set_offset);
+            return (RespAction::Malformed, set_offset);
         };
         let Some(&first) = rest.first() else {
-            return (0, set_offset);
+            return (RespAction::Malformed, set_offset);
         };
         if request.state == 0 && first == b'*' {
             let Some(value) = number(rest, range) else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
             request.lines_total = value.value;
             request.state = 1;
         } else if request.state <= 1 && first == b'$' {
             let Some(value) = number(rest, range) else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
             if value.value < 0 {
                 if position == bytes.len() {
-                    return (0, set_offset);
+                    return (RespAction::Malformed, set_offset);
                 }
                 continue;
             }
@@ -356,18 +382,18 @@ pub fn resp_receive_range(
                 .checked_add(position)
                 .is_none_or(|n| n > maximum)
             {
-                return (4, set_offset);
+                return (RespAction::TooBig, set_offset);
             }
             request.bytes_total = value.value;
             request.state = 2;
         } else if request.state <= 1 && first == b':' {
             let Some(value) = number(rest, range) else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
         } else if request.state <= 2 {
             let Some(remaining) = request.bytes_total.checked_sub(request.bytes_received) else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             if (bytes.len() - position) < remaining.max(0).unsigned_abs() as usize {
                 // Fewer bytes than `remaining`, an i32, are left.
@@ -375,34 +401,34 @@ pub fn resp_receive_range(
                     .ok()
                     .and_then(|left| request.bytes_received.checked_add(left))
                 else {
-                    return (0, set_offset);
+                    return (RespAction::Malformed, set_offset);
                 };
                 request.bytes_received = received;
-                return (2, set_offset);
+                return (RespAction::Wait, set_offset);
             }
             let Some(next) = usize::try_from(request.bytes_total)
                 .ok()
                 .and_then(|n| position.checked_add(n + 2))
             else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             // Past the end is fine: the line still counts, and the next pass fails.
             position = next;
             request.bytes_total = 0;
             let Some(lines) = request.lines_received.checked_add(1) else {
-                return (0, set_offset);
+                return (RespAction::Malformed, set_offset);
             };
             request.lines_received = lines;
             request.state = 1;
             set_offset = true;
             if request.lines_received == request.lines_total {
-                return (3, set_offset);
+                return (RespAction::Dispatch, set_offset);
             }
         } else {
-            return (0, set_offset);
+            return (RespAction::Malformed, set_offset);
         }
         if position >= bytes.len() {
-            return (0, set_offset);
+            return (RespAction::Malformed, set_offset);
         }
     }
 }
@@ -469,14 +495,22 @@ mod tests {
             };
             kinds.push(event.kind);
             ranges.push(range);
-            if event.kind == 1 {
+            if event.kind == RespKind::Integer {
                 assert_eq!(event.integer, -1);
             }
-            if event.kind == 3 {
+            if event.kind == RespKind::Command {
                 assert_eq!(&wire[event.offset..event.offset + event.length], b"ECHO");
             }
         }
-        assert_eq!(kinds, [2, 1, 3, 0]);
+        assert_eq!(
+            kinds,
+            [
+                RespKind::Null,
+                RespKind::Integer,
+                RespKind::Command,
+                RespKind::String
+            ]
+        );
         assert_eq!(ranges, [false, true, false, false]);
         let malformed = b"$9223372036854775808x\r\n";
         state = RespPhpState::default();
@@ -484,8 +518,8 @@ mod tests {
         assert!(resp_php_next(malformed, &mut state, &mut range).is_err());
         assert!(range);
         assert_eq!(state.cursor.position, 0);
-        assert_eq!(state.cursor.state, 0);
-        assert_eq!(state.command_seen, 0);
+        assert_eq!(state.cursor.phase, RespPhase::Start);
+        assert!(!state.command_seen);
     }
     fn scan(bytes: &[u8], emit: impl FnMut(RespSpan)) -> Option<usize> {
         resp_spans(bytes, emit, &mut false)
@@ -548,18 +582,18 @@ mod tests {
         let mut request = RespRequest::default();
         assert_eq!(
             resp_receive(b"*1\r\n$3\r\nGET\r\n", 64, 64, &mut request),
-            (3, true)
+            (RespAction::Dispatch, true)
         );
         let mut request = RespRequest::default();
         assert_eq!(
             resp_receive(b"*1\r\n$10\r\nabc\r\n", 64, 64, &mut request),
-            (2, false)
+            (RespAction::Wait, false)
         );
         assert_eq!(request.state, 2);
         assert_eq!(request.bytes_received, 5);
         assert_eq!(
             resp_receive(b"abcd", 4, 4, &mut RespRequest::default()),
-            (4, false)
+            (RespAction::TooBig, false)
         );
     }
     #[test]
@@ -568,11 +602,11 @@ mod tests {
         // completes the request even though its CRLF would end past the buffer.
         assert_eq!(
             resp_receive(b"*2\r\n\n\r\n", 64, 64, &mut RespRequest::default()),
-            (3, true)
+            (RespAction::Dispatch, true)
         );
         assert_eq!(
             resp_receive(b"*3\r\n\n\r\n", 64, 64, &mut RespRequest::default()),
-            (0, true)
+            (RespAction::Malformed, true)
         );
     }
 }

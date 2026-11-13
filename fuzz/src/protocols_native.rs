@@ -18,7 +18,7 @@ pub fn resp_parse(data: &[u8]) -> (Vec<u8>, bool) {
         data,
         |span| {
             let decimal = span.integer.to_string();
-            let item = if span.kind == 1 {
+            let item = if span.kind == swoole_rs_protocols::RespKind::Integer {
                 decimal.as_bytes()
             } else {
                 &data[span.offset..span.offset + span.length]
