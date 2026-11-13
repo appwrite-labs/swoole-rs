@@ -14,11 +14,6 @@ use swoole_rs_corebase::{log, swoole_print_backtrace};
 const ERR: c_long = -1;
 const MIN_SEC: f64 = 0.001;
 
-/// `SwooleTG.timer`.
-fn slot() -> *mut *mut Timer {
-    swoole_rs_corebase::swr_v1_core_timer_slot().cast()
-}
-
 pub(crate) fn timer() -> *mut Timer {
     swoole_rs_corebase::thread_timer().cast()
 }
@@ -28,8 +23,7 @@ pub(crate) fn publish(timer: *mut Timer) {
     if !timer.is_null() {
         GENERATION.set(GENERATION.get() + 1);
     }
-    // SAFETY: this thread's live slot.
-    unsafe { *slot() = timer };
+    swoole_rs_corebase::set_thread_timer(timer.cast());
 }
 
 thread_local! {

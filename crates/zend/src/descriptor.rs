@@ -3,14 +3,9 @@
 use crate::{
     Class, Value, ZStr,
     bailout::{self, Bailout},
-    sys::{
-        IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_restore_shutdown,
-        swr_zend_event_socket_fd, swr_zend_instanceof, swr_zend_last_fatal_error,
-        swr_zend_stack_restore, swr_zend_stack_unlimit, swr_zend_stream_select_fd, zend_long,
-        zend_memory_usage,
-    },
+    sys::{IS_RESOURCE, swr_zend_event_socket_fd, swr_zend_stream_select_fd, zend_long},
 };
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
 
 unsafe extern "C" {
@@ -26,6 +21,27 @@ unsafe extern "C" {
         name: &ZStr,
         found: &mut Option<&Value>,
     ) -> std::ffi::c_int;
+    /// Whether the executor's last error was fatal; if so its message, its
+    /// file and its line are written, the strings as PHP keeps them until the
+    /// next error. It reads the executor's globals only.
+    safe fn swr_zend_last_fatal_error(
+        message: &mut *const c_char,
+        file: &mut *const c_char,
+        line: &mut c_int,
+    ) -> bool;
+    /// `zend_memory_usage`: it reads the allocator's statistics.
+    safe fn zend_memory_usage(real: bool) -> usize;
+    /// Clears the executor's in-shutdown flag and returns whether it was set;
+    /// no PHP code runs.
+    safe fn swr_zend_event_pause_shutdown() -> u8;
+    /// Sets the in-shutdown flag when `previous` is nonzero; no PHP code runs.
+    safe fn swr_zend_event_restore_shutdown(previous: u8);
+    /// Saves the executor's stack limit and base in `saved`, then clears both,
+    /// so Zend stops checking the stack's depth. The two are only ever compared
+    /// with stack addresses.
+    safe fn swr_zend_stack_unlimit(saved: &mut [*mut c_void; 2]);
+    /// Sets the executor's stack limit and base to `saved`'s.
+    safe fn swr_zend_stack_restore(saved: &[*mut c_void; 2]);
 }
 
 impl Value {
@@ -33,11 +49,10 @@ impl Value {
     /// a class not registered.
     #[must_use]
     pub fn instance_of(&self, class: &Class) -> bool {
-        let (Some(ce), parent) = (self.class(), class.entry()) else {
-            return false;
-        };
-        // SAFETY: a live object's class and a registered one.
-        !parent.is_null() && unsafe { swr_zend_instanceof(ce, parent) }
+        match (self.class_entry(), class.class_entry()) {
+            (Some(own), Some(parent)) => own.instance_of(parent),
+            _ => false,
+        }
     }
 
     /// A stream resource's descriptor (`php_stream_cast` for select), if it
@@ -94,9 +109,7 @@ impl Value {
 /// and file until the next error, and its line.
 fn fatal_parts() -> Option<([*const c_char; 2], c_int)> {
     let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
-    // SAFETY: writable slots; the executor's last error is only read.
-    unsafe { swr_zend_last_fatal_error(&raw mut message, &raw mut file, &raw mut line) }
-        .then_some(([message, file], line))
+    swr_zend_last_fatal_error(&mut message, &mut file, &mut line).then_some(([message, file], line))
 }
 
 /// `php_swoole_is_fatal_error()`: the last error was fatal.
@@ -130,33 +143,28 @@ pub fn fatal_error() -> Option<FatalError> {
 /// `zend_memory_usage(real)`: the bytes this thread's PHP heap holds.
 #[must_use]
 pub fn memory_usage(real: bool) -> usize {
-    // SAFETY: the allocator's statistics, read on the thread that owns the heap.
-    unsafe { zend_memory_usage(real) }
+    zend_memory_usage(real)
 }
 
 /// Clear the executor's in-shutdown flag, as a loop waiting in a shutdown
 /// function does: whether it was set, for [`restore_shutdown`].
 #[must_use]
 pub fn pause_shutdown() -> bool {
-    // SAFETY: an SDK leaf that edits executor flags without running PHP.
-    unsafe { swr_zend_event_pause_shutdown() != 0 }
+    swr_zend_event_pause_shutdown() != 0
 }
 
 /// Set the in-shutdown flag again when [`pause_shutdown`] found it set.
 pub fn restore_shutdown(was: bool) {
-    // SAFETY: as above.
-    unsafe { swr_zend_event_restore_shutdown(u8::from(was)) };
+    swr_zend_event_restore_shutdown(u8::from(was));
 }
 
 /// `f()` with the executor's stack limit lifted, as `HOOK_PHP_CALL_STACK` does
 /// for a call from a stack that isn't the VM's, such as a reactor thread's.
 pub fn with_unlimited_stack<R>(f: impl FnOnce() -> R) -> R {
     let mut saved = [ptr::null_mut(); 2];
-    // SAFETY: two writable slots for the executor's limit and base.
-    unsafe { swr_zend_stack_unlimit(saved.as_mut_ptr()) };
+    swr_zend_stack_unlimit(&mut saved);
     let result = f();
-    // SAFETY: what `swr_zend_stack_unlimit` saved.
-    unsafe { swr_zend_stack_restore(saved.as_ptr()) };
+    swr_zend_stack_restore(&saved);
     result
 }
 

@@ -8,6 +8,17 @@ unsafe extern "C" {
     /// Zend's interned empty string: set at startup, before any extension code
     /// runs, and never written again.
     safe static zend_empty_string: *mut zend_string;
+    /// `emalloc(size)`: it takes a size and returns storage; Zend's allocator
+    /// never returns null and doesn't bail out (docs/zend.md, `memory_limit`).
+    safe fn swr_zend_emalloc(size: usize) -> *mut std::ffi::c_void;
+}
+
+/// `emalloc(size)`: `size` uninitialised bytes of the request's heap, aligned
+/// for a zval and never null, until `efree` or the request's end frees them.
+#[must_use]
+#[inline]
+pub fn emalloc(size: usize) -> *mut std::ffi::c_void {
+    swr_zend_emalloc(size)
 }
 
 /// Every `zend_value` field sits at the zval's first byte, so one read takes it.

@@ -4,9 +4,9 @@ use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
         IS_OBJECT, IS_OBJECT_EX, object_init_ex, object_properties_init, swr_zend_object_alloc,
-        swr_zend_objects_hold, swr_zend_try_facade_update, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        swr_zend_try_facade_update, zend_class_entry, zend_long, zend_object, zend_object_handlers,
+        zend_object_std_dtor, zend_object_std_init, zend_objects_destroy_object,
+        zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -24,6 +24,15 @@ unsafe extern "C" {
         name: *const c_char,
         length: usize,
     ) -> Option<&'a Value>;
+    /// The executor's live object at `handle` whose handlers are `handlers`
+    /// (compared, never read), if there is one: `found` then holds it, with a
+    /// reference of its own, in place of what it held, which is not released.
+    /// No PHP code runs.
+    safe fn swr_zend_objects_hold(
+        handle: u32,
+        handlers: *const zend_object_handlers,
+        found: &Owned,
+    ) -> bool;
 }
 
 /// `data` followed by the object Zend sees; `std` must stay last, since Zend
@@ -167,10 +176,7 @@ impl<T: Custom> Weak<T> {
     #[must_use]
     pub fn get(&self) -> Option<Owned> {
         let found = Owned::default();
-        // SAFETY: reads the executor's object store on its thread, and writes
-        // the empty zval `found` owns only with a counted object.
-        unsafe { swr_zend_objects_hold(self.0, T::class().handlers(), found.as_ptr()) }
-            .then_some(found)
+        swr_zend_objects_hold(self.0, T::class().handlers(), &found).then_some(found)
     }
 }
 

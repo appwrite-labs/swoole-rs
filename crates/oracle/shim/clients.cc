@@ -397,3 +397,49 @@ void swr_oracle_clients_dns_lookup(const char *domain, int family, double timeou
     }
 }
 }
+
+// The pinned form formats and sw_snprintf, under the request formatter's calls.
+namespace upstream_http_format {
+#include "clients_http_format.inc"
+// The pinned request formatter calls, by swoole_rs_clients::http_format kind.
+static size_t bounded(unsigned kind, const std::string &a, const std::string &b, const std::string &c,
+                      const std::string &d, size_t number, char *output, size_t capacity) {
+    switch (kind) {
+    case 0:
+        return sw_snprintf(output, capacity, "Content-Length: %zu\r\n\r\n", number);
+    case 1:
+        if (std::memchr(a.data(), ':', a.size()))
+            return sw_snprintf(output, capacity, "%s%s%s", "http://", a.c_str(), b.c_str());
+        else
+            return sw_snprintf(output, capacity, "%s%s:%u%s", "http://", a.c_str(), static_cast<unsigned>(number),
+                               b.c_str());
+    case 2:
+        return sw_snprintf(output, capacity, "Content-Type: multipart/form-data; boundary=%.*s\r\n",
+                           static_cast<int>(a.size()), a.c_str());
+    case 3:
+        return sw_snprintf(output, capacity, SW_HTTP_FORM_RAW_DATA_FMT, static_cast<int>(a.size()), a.c_str(),
+                           static_cast<int>(b.size()), b.c_str());
+    case 4:
+        return sw_snprintf(output, capacity, SW_HTTP_FORM_FILE_DATA_FMT, static_cast<int>(a.size()), a.c_str(),
+                           static_cast<int>(b.size()), b.c_str(), static_cast<int>(c.size()), c.c_str(),
+                           static_cast<int>(d.size()), d.c_str());
+    case 5:
+        return sw_snprintf(output, capacity, "--%.*s--\r\n", static_cast<int>(a.size()), a.c_str());
+    }
+    return 0;
+}
+}  // namespace upstream_http_format
+
+extern "C" {
+// The request formatter's sw_snprintf call for `kind` over four texts, from errno 17;
+// errno afterwards goes to *error.
+size_t swr_oracle_clients_http_format(unsigned kind, const char *const *texts, const size_t *lengths, size_t number,
+                                      char *output, size_t capacity, int *error) {
+    const std::string a(texts[0], lengths[0]), b(texts[1], lengths[1]), c(texts[2], lengths[2]),
+        d(texts[3], lengths[3]);
+    errno = 17;
+    const size_t written = upstream_http_format::bounded(kind, a, b, c, d, number, output, capacity);
+    *error = errno;
+    return written;
+}
+}

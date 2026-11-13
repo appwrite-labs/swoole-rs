@@ -27,7 +27,8 @@ the crates and system.py's static libswoole.a (the pin's thirdparty and native/'
 callbacks by `client::listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their
-upstream symbols.
+upstream symbols (`ssl_get_peer_cert_chain(limit)`'s PEM of each certificate is
+crates/tls' `CertRef::pem`).
 `set_tls_host_name` assigns a fresh `SSLContext` with the name set.
 `SyncClient` and `AsyncClient` are `Client`'s `created`/`connected` bookkeeping.
 `swoole_timer_after` takes the Rust closure through crates/timer's
@@ -46,20 +47,22 @@ accept queue is full, not to the address upstream assumes drops the SYN
 (19.168.0.99, 192.168.1.199): a network that rejects the route answers
 `ENETUNREACH` instead of letting the connect time out.
 
-`http_format_gate.py` compiles the pinned request formatter calls and
-`sw_snprintf` next to `swr_v1_clients_http_format` from the hybrid build's archive
-and compares them at bounded capacities:
+`http_format.rs` (the `http_format` test of `swoole-rs-clients`) is the former
+`http_format_witness.cpp`, one Rust test per block of checks, comparing
+`http_format::http_format` with the pinned request formatter calls
+(`swoole_rs_oracle::clients::http_format`: the pinned `sw_snprintf` and form formats)
+at the same texts, numbers and bounded capacities. The `swr_v1_clients_http_format`
+export the witness called had no other caller and is gone, replaced by the safe
+function that was its body:
 
-```sh
-python3 tests/modules/clients/http_format_gate.py --source /path/to/pinned-git \
-  --archive /path/to/libswoole_rs_ffi.a --output target/clients.json [--sanitize] [--rust-sanitized]
-```
+| Witness block | Rust test |
+| --- | --- |
+| 230,400 bounded-capacity cases: result, errno and the 4096-byte output | `bounded_capacities_match_upstream` |
+| six null-output cases | `null_output_matches_upstream` |
+| a span that is null with a length | `an_invalid_span_is_an_error` |
 
-`--sanitize` adds native ASan/UBSan; `--rust-sanitized` records that the archive
-was ASan-built (requires `--sanitize`).
-
-`python3 -m unittest discover -s tests/modules/clients -p 'test_*.py'` checks
-that the gates' shared command recorder (`gate.py`) keeps non-UTF-8 diagnostics.
+The witness's last case, a null output of capacity 1, checked the export's own
+argument validation, which went with the export: a slice is never null.
 
 The persistent-pool witness runs in `clients-unit` (`pool::tests`): the same
 100,000 operations, 700,000 state checks, fork isolation, token teardown and

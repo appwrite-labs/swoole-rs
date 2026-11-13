@@ -233,8 +233,8 @@ mod tests {
         assert_eq!(rewrite("~a[^]~", b"a\n"), Some(b"<a\n>".to_vec()));
         assert_eq!(rewrite("~\\Bb~", b"ab b"), Some(b"a<b> b".to_vec()));
         // A range's ends and members compare as `char`, as libstdc++'s do: where it is
-        // signed (x86_64), a range across 0x7f/0x80 runs backwards, the http-rewrites gate's
-        // first random-rule finding.
+        // signed (x86_64), a range across 0x7f/0x80 runs backwards, the first
+        // random-rule finding of `tests/modules/http/rewrite.rs`'s sweep.
         let signed = c_char::from_ne_bytes([0x80]) < c_char::from_ne_bytes([0x7f]);
         let across = (!signed).then(|| b"<a>1<\xff>".to_vec());
         assert_eq!(rewrite("~[a-\\xff]~", b"a1\xff"), across);

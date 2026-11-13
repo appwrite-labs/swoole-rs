@@ -33,7 +33,7 @@ const CANDIDATE: Engine = Engine {
     frame: request::frame,
     expect: request::expect,
     header: request::header,
-    method: swoole_rs_http_ffi::swr_v1_http_method_string,
+    method: swoole_rs_http_ffi::http_server::get_method_string,
     header_info: request::header_info,
 };
 

@@ -24,9 +24,28 @@ use swoole_rs_zend::{
     observer::{self, Observer},
     sys::{
         self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
-        swr_zend_tracer_lineno, swr_zend_try_write, zend_long,
+        swr_zend_try_write, zend_long,
     },
 };
+
+// Reads of this PHP thread's executor, which take nothing from their caller and
+// run no PHP code.
+unsafe extern "C" {
+    /// The executing file's NUL-terminated name, which Zend keeps while that
+    /// file's code runs, or the static "[no active file]".
+    safe fn zend_get_executed_filename() -> *const std::ffi::c_char;
+    /// The line of the innermost user frame, 0 without one.
+    safe fn swr_zend_tracer_lineno() -> u32;
+    /// The executor's frames as a new array in `trace`, written without reading
+    /// what the slot held; `options` are `DEBUG_BACKTRACE_*` and `limit` 0 is
+    /// every frame.
+    safe fn zend_fetch_debug_backtrace(
+        trace: &Owned,
+        skip_last: std::ffi::c_int,
+        options: std::ffi::c_int,
+        limit: std::ffi::c_int,
+    );
+}
 
 handlers! {
     zif_swoole_tracer_leak_detect => leak_detect;
@@ -132,12 +151,10 @@ fn coroutine_id() -> c_long {
 /// `tracer_get_file_and_line`: `file:line` of the running user code, or
 /// `None` outside any file.
 fn file_and_line() -> Option<Vec<u8>> {
-    // SAFETY: Zend's executor; it answers "[no active file]" when idle.
-    let file = unsafe { z::zend_get_executed_filename() };
-    // SAFETY: Zend's NUL-terminated file name.
-    let file = unsafe { CStr::from_ptr(file) }.to_bytes();
-    // SAFETY: as above.
-    let line = unsafe { swr_zend_tracer_lineno() };
+    // SAFETY: Zend's NUL-terminated file name ("[no active file]" when idle),
+    // copied below before any PHP code runs.
+    let file = unsafe { CStr::from_ptr(zend_get_executed_filename()) }.to_bytes();
+    let line = swr_zend_tracer_lineno();
     if line == 0 && file == b"[no active file]" {
         return None;
     }
@@ -161,8 +178,7 @@ fn format_bytes(size: u64) -> String {
 /// `zend_fetch_debug_backtrace(.., 0, options, 0)`.
 fn backtrace(options: i32) -> Owned {
     let trace = Owned::default();
-    // SAFETY: an undefined zval this owns; Zend walks its own frames.
-    unsafe { z::zend_fetch_debug_backtrace(trace.as_ptr(), 0, options, 0) };
+    zend_fetch_debug_backtrace(&trace, 0, options, 0);
     trace
 }
 

@@ -272,8 +272,7 @@ impl ReactorState {
             target_os = "dragonfly"
         ))]
         if kind == 2 {
-            // SAFETY: kqueue creates a new descriptor owned by this state.
-            self.backend_fd = unsafe { libc::kqueue() };
+            self.backend_fd = swoole_rs_corebase::sys::kqueue();
         }
         if kind != 3 && self.backend_fd < 0 {
             return false;

@@ -42,7 +42,8 @@ use swoole_rs_tls::ssl_context_create;
 #[cfg(not(test))]
 use swoole_rs_tls::upstream::{
     self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_check_host,
-    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify,
+    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_set_host_name,
+    socket_ssl_verify,
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
@@ -52,8 +53,8 @@ use swoole_rs_tls::{
 use tests::{
     async_dispatch, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
     socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
-    socket_ssl_verify, ssl_context_create, swoole_event_write, with_thread_buffer,
-    writable_callback,
+    socket_ssl_set_host_name, socket_ssl_verify, ssl_context_create, swoole_event_write,
+    with_thread_buffer, writable_callback,
 };
 
 /// The flags `swr_v1_clients_flag` reads.
@@ -127,9 +128,6 @@ pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// OpenSSL's `SSL_CTRL_SET_TLSEXT_HOSTNAME` and `TLSEXT_NAMETYPE_host_name`.
-const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
-const TLSEXT_NAMETYPE_HOST_NAME: libc::c_long = 0;
 /// The proxy states of `native/protocols/swoole_proxy.h`, which asserts them.
 const SOCKS5_WAIT: c_int = 0;
 const SOCKS5_HANDSHAKE: c_int = 1;
@@ -180,17 +178,10 @@ pub fn set_framing(framing: Framing) {
     FRAMING.get_or_init(|| framing);
 }
 
-// crates/protocols-ffi's definitions (the SOCKS5 codec) and OpenSSL's, which
-// the hybrid links (the unit tests define doubles). crates/protocols-ffi sits above
-// this one, so it reaches them by symbol.
+// crates/protocols-ffi's definitions (the SOCKS5 codec), which the hybrid links (the
+// unit tests define doubles). crates/protocols-ffi sits above this one, so it reaches
+// them by symbol.
 unsafe extern "C" {
-    #[link_name = "SSL_ctrl"]
-    fn ssl_ctrl(
-        ssl: *mut c_void,
-        cmd: c_int,
-        larg: libc::c_long,
-        parg: *mut c_void,
-    ) -> libc::c_long;
     /// `Socks5Proxy::admit`: 0 (logged) when a credential is too long, 2 when
     /// both are set, else 1. A length check over two scalars, which
     /// crates/protocols-ffi defines as a safe fn.
@@ -1248,15 +1239,8 @@ fn ssl_handshake(this: Handle) -> c_int {
         }
         let name = this.tls_host_name();
         if !name.is_empty() {
-            // SAFETY: `SSL_set_tlsext_host_name` on the new session; OpenSSL copies the name.
-            unsafe {
-                ssl_ctrl(
-                    this.socket().read(swoole_rs_reactor::SocketFields::ssl),
-                    SSL_CTRL_SET_TLSEXT_HOSTNAME,
-                    TLSEXT_NAMETYPE_HOST_NAME,
-                    name.as_ptr().cast_mut().cast(),
-                )
-            };
+            // On the new session; OpenSSL copies the name.
+            socket_ssl_set_host_name(this.socket(), name);
         }
     }
     if socket_ssl_connect(this.socket()) < 0 {

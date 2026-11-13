@@ -82,8 +82,7 @@ pub mod view;
 pub mod worker_methods;
 pub use static_config::{
     swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,
-    swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free,
-    swr_v1_server_static_rewrite, swr_v1_server_static_rewrite_add, swr_v1_server_static_text,
+    swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free, swr_v1_server_static_text,
 };
 
 pub use records::{

@@ -301,6 +301,17 @@ impl<'a> From<&'a mut PoolRecord> for PoolRef<'a> {
     }
 }
 
+impl<'a> From<&'a core::cell::UnsafeCell<PoolRecord>> for PoolRef<'a> {
+    /// The record a cell keeps live for `'a`: its owner reaches it only through
+    /// handles like this one, which read and write a field at a time.
+    fn from(record: &'a core::cell::UnsafeCell<PoolRecord>) -> Self {
+        Self {
+            raw: record.get(),
+            live: core::marker::PhantomData,
+        }
+    }
+}
+
 impl<'a> PoolRef<'a> {
     /// The pool's worker at `raw` ([`PoolRecord::own`]), or `None` when `raw` is
     /// none of its records.

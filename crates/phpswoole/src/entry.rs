@@ -11,8 +11,14 @@ use std::{
 use swoole_rs_corebase::{Switch as C, built_with};
 use swoole_rs_zend::{
     bailout,
-    sys::{swr_zend_module_template, zend_module_dep, zend_module_entry},
+    sys::{zend_module_dep, zend_module_entry},
 };
+
+unsafe extern "C" {
+    /// `*entry = { STANDARD_MODULE_HEADER_EX, ..., STANDARD_MODULE_PROPERTIES }`:
+    /// it overwrites the record with the build's module header.
+    safe fn swr_zend_module_template(entry: &mut zend_module_entry);
+}
 
 /// `MODULE_DEP_REQUIRED` and `MODULE_DEP_CONFLICTS`.
 const REQUIRED: u8 = 1;
@@ -72,8 +78,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
         return current;
     }
     let mut entry: zend_module_entry = swoole_rs_zend::zeroed();
-    // SAFETY: a live record.
-    unsafe { swr_zend_module_template(&raw mut entry) };
+    swr_zend_module_template(&mut entry);
     entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();
     entry.name = c"swoole".as_ptr();
     entry.functions = table::functions();

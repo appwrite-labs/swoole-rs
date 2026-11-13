@@ -7,7 +7,6 @@ use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, query};
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
-use swoole_rs_http_ffi::{swr_v1_http_multipart_filename, swr_v1_http_multipart_result};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
@@ -152,8 +151,9 @@ impl swoole_rs_http::multipart_parser::Parts for Parts {
     fn on_headers_complete(&mut self) -> i32 {
         let mut value = std::mem::take(&mut self.value);
         value.push(0);
-        // SAFETY: `value` is writable and NUL-terminated.
-        let status = unsafe { swr_v1_http_multipart_filename(value.as_mut_ptr(), value.len()) };
+        // The scan reads the value through its first NUL.
+        let end = value.iter().position(|&byte| byte == 0).unwrap_or_default();
+        let status = swoole_rs_http::multipart_filename(&mut value[..=end]);
         assert!(matches!(status, 0 | 1), "filename status {status}");
         0
     }
@@ -182,7 +182,7 @@ pub fn multipart(bytes: &[u8]) {
             "processed {processed} of {}",
             chunk.len()
         );
-        if swr_v1_http_multipart_result(processed as i64, chunk.len(), 0) != 2 {
+        if swoole_rs_http::multipart_result(processed as i64, chunk.len(), 0) != 2 {
             break;
         }
     }
@@ -352,7 +352,7 @@ pub fn resp_server(bytes: &[u8]) {
 /// Up to 32 bytes of pattern, a replacement and up to 64 bytes of URL, NUL-separated, as one
 /// `~pattern~` rule of `RewriteRules`: compiling and applying it ends, and a pattern of
 /// letters, digits and `/` (all literal) replaces each occurrence, left to right, as
-/// `std::regex_replace` does. libstdc++ itself is compared in the `http-rewrites` gate.
+/// `std::regex_replace` does. libstdc++ itself is compared in `tests/modules/http/rewrite.rs`.
 pub fn http_rewrite(bytes: &[u8]) {
     let mut parts = bytes.splitn(3, |&b| b == 0);
     let (pattern, replacement, url) = (

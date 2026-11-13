@@ -63,8 +63,7 @@ impl SocketFields {
     /// listening.
     pub fn listen(&mut self, backlog: c_int) -> c_int {
         let backlog = if backlog <= 0 { BACKLOG } else { backlog };
-        // SAFETY: listen(2) has no memory preconditions.
-        if unsafe { libc::listen(self.fd, backlog) } != 0 {
+        if swoole_rs_corebase::sys::listen(self.fd, backlog) != 0 {
             return ERR;
         }
         self.listened = true;

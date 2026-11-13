@@ -140,43 +140,6 @@ pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
     }
 }
 
-/// [`url`] for native: `outcome` 0 with the rest set, or a `URL_*` outcome.
-#[repr(C)]
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct UrlAssign {
-    pub outcome: c_int,
-    pub kind: c_int,
-    pub host_offset: usize,
-    pub host_length: usize,
-    pub port: c_int,
-}
-
-/// # Safety
-/// `data` denotes `length` readable bytes, or is null for 0. No pointer is retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_url(data: *const u8, length: usize) -> UrlAssign {
-    if data.is_null() || length == 0 {
-        return UrlAssign {
-            outcome: URL_INVALID,
-            ..UrlAssign::default()
-        };
-    }
-    // SAFETY: the caller lends `length` readable bytes.
-    match url(unsafe { std::slice::from_raw_parts(data, length) }) {
-        Ok((kind, host, port)) => UrlAssign {
-            outcome: 0,
-            kind,
-            host_offset: host.start,
-            host_length: host.len(),
-            port,
-        },
-        Err(outcome) => UrlAssign {
-            outcome,
-            ..UrlAssign::default()
-        },
-    }
-}
-
 #[must_use]
 pub fn swr_v1_clients_port(port: i32, for_connect: u8) -> u8 {
     u8::from((0..=65535).contains(&port) && (port != 0 || for_connect == 0))
@@ -338,24 +301,14 @@ mod tests {
     }
     #[test]
     fn url_outcomes() {
-        let url = |url: &[u8]| unsafe { swr_v1_clients_url(url.as_ptr(), url.len()) };
-        let plan = url(b"tcp://127.0.0.1:080");
-        assert_eq!(
-            (
-                plan.outcome,
-                plan.kind,
-                plan.host_offset,
-                plan.host_length,
-                plan.port
-            ),
-            (0, TCP, 6, 9, 80)
-        );
-        assert_eq!(url(b"tcp://1.2.3.4:8x").outcome, URL_INVALID);
-        assert_eq!(url(b"tcp://1.2.3.4:99999999999").outcome, URL_PORT_RANGE);
-        assert_eq!(url(b"tcp://1.2.3.4:2147483647").port, i32::MAX);
-        assert_eq!(url(b"udp://[::1]:53").kind, UDP6);
-        assert_eq!(url(b"udg:///tmp/a.sock").kind, UNIX_DGRAM);
-        assert_eq!(url(b"http://a:1").outcome, URL_INVALID);
+        assert_eq!(url(b"tcp://127.0.0.1:080"), Ok((TCP, 6..6 + 9, 80)));
+        assert_eq!(url(b"tcp://1.2.3.4:8x"), Err(URL_INVALID));
+        assert_eq!(url(b"tcp://1.2.3.4:99999999999"), Err(URL_PORT_RANGE));
+        let field = |text: &[u8]| url(text).map(|(kind, _, port)| (kind, port));
+        assert_eq!(field(b"tcp://1.2.3.4:2147483647"), Ok((TCP, i32::MAX)));
+        assert_eq!(field(b"udp://[::1]:53"), Ok((UDP6, 53)));
+        assert_eq!(field(b"udg:///tmp/a.sock"), Ok((UNIX_DGRAM, 0)));
+        assert_eq!(url(b"http://a:1"), Err(URL_INVALID));
     }
     #[test]
     fn port() {

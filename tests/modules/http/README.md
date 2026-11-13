@@ -2,38 +2,53 @@
 
 The HTTP module is `crates/http`; its exports' contracts are their doc comments.
 
-Rust unit tests and the archive the native gates link against:
+Rust unit tests:
 
 ```sh
-cargo test --locked -p swoole-rs-http
+cargo test --locked -p swoole-rs-http -p swoole-rs-http-ffi
 cargo clippy --locked -p swoole-rs-http --all-targets -- -D warnings
-cargo build --locked -p swoole-rs-ffi --release
 ```
 
-## Native differential gates
+## Differential tests against the pinned bodies
 
-Each gate compiles pinned (v6.2.5) bodies against the Cargo build SDK `--archive`
-comes from and compares outcomes. The two sides compile apart (`Sides` in
-`gate.py`): upstream fragments against the pin's headers only, the rest against
-the SDK's headers and switches (`native_flags`). Native code runs under ASan/UBSan;
-the Rust archive is uninstrumented unless `--rust-sanitize` is used (Linux;
-links a private ASan HTTP archive instead, precompiled std stays uninstrumented).
-All take `--source PINNED_GIT --archive HYBRID_ARCHIVE --output REPORT`; gates
-marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
-`http-*` phase.
+`locale.rs` and `rewrite.rs` (the `locale` and `rewrite` tests of `swoole-rs-http-ffi`,
+in the `http-unit` phase) are the former native gates `locale_gate.cc` and
+`rewrite_gate.cc`: the same inputs against the same pinned (v6.2.5) bodies, which
+`crates/oracle` compiles unchanged (`http_locale`, `http_rewrite`). One Rust test per
+block of checks, each C export the gate called replaced by the safe function that was
+its body. The exports, their headers (`swoole_rs_http.h`, `swoole_rs_http_context.h`)
+and the gates' scripts are gone.
 
-| Script | Checks |
-| --- | --- |
-| `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
-| `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
+| `locale_gate.cc` checks, per available locale | Rust test (`locale.rs`) | Export → function |
+| --- | --- | --- |
+| Every byte pair as URL and location against pinned `swoole_str_istarts_with` | `location` | `swr_v1_http_static_location` → `location_match` |
+| Each method name under 256 `tolower` masks against pinned `get_method` | `methods` | `swr_v1_http_method_string`, `swr_v1_http_method` → `method_string`, `method` |
+| `filename` under 256 `toupper` masks against pinned `swoole_strcaseeq` | `filename` | `swr_v1_http_multipart_filename` → `multipart_filename` |
+| Every byte at every position of `boundary=` against pinned `parse_multipart_boundary` | `boundaries` | `swr_v1_http_boundary` → `boundary` |
+| Every byte at every position of `content-disposition` against pinned `swoole_strcaseeq` | `disposition` | `swr_v1_http_multipart_disposition` → `multipart_disposition` |
 
-Locale semantic runs must be unsanitized: under ASan the macOS interceptor
-compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them
-as equal. Unavailable locales are reported as unsupported.
+The locales are `C`, `C.UTF-8`, `en_US.ISO8859-1`, `tr_TR.ISO8859-9` and `tr_TR.UTF-8`.
+One the host lacks is reported on stderr as unsupported, not passed, and a host with
+none fails. The process locale is global, so the tests take turns.
 
-`gate.py` holds the helpers these share (`body`, `Sides`, `run`). The status, method,
-URL and boundary helpers are Rust behind thin facades, so crates/http-ffi's
-`pin_helpers` tests compare them with the pin's bodies (unchanged since v6.2.4) instead.
+| `rewrite_gate.cc` checks | Rust test (`rewrite.rs`) | Export → function |
+| --- | --- | --- |
+| 20 URLs under each of the rule sets | `rule_table` | `swr_v1_server_static_rewrite_add`, `swr_v1_server_static_rewrite`, `swr_v2_http_context_new`, `swr_v2_http_context_text` → `RewriteRules::add`, `HttpStaticContext::rewrite`, `new`, `text` |
+| 2048 random URLs under random prefix rules (`std::mt19937(34129)`) | `random_prefix_rules` | as above |
+| 15000 random regex rules (`std::mt19937(7349)`), every mismatch listed | `regex_sweep` | as above |
+| A server without rules returns before reading its handler | `no_rules_short_circuit` | the pinned side only, as in the gate |
+
+Each case compares whether a rule applied, the URL, the original URL and the number of
+publications. The draws are `std::mt19937`'s own (`swr_oracle_mt19937`). The Rust dialect
+is libstdc++'s `std::regex`, so `rewrite.rs` is compiled on Linux only, where the oracle
+links libstdc++; it runs on a thread with the gate's 8 MiB main stack. The gate went
+through the server's two rewrite exports, which only passed their arguments to
+`RewriteRules::add` and `HttpStaticContext::rewrite` and went with it; the tests call those. The gate ran
+its C++ under ASan/UBSan; the tests don't.
+
+The status, method, URL and boundary helpers are Rust behind thin facades, so
+crates/http-ffi's `pin_helpers` tests compare them with the pin's bodies (unchanged
+since v6.2.4) instead.
 
 ### Ported GoogleTests
 
@@ -145,7 +160,7 @@ one function per TEST under its own name (#2533). Its `schedule*` TESTs are
 `schedule_worker` under one dispatch mode, with the workers' status, `coroutine_num` or
 `concurrency` and the fake connections' `uid` and `worker_id` set as upstream sets them.
 Upstream's stack `network::Socket fake_sock{}` is `make_socket(fd)`, its `info` assigned by
-the `Address::assign` body (`swr_v1_clients_address_assign`).
+the `Address::assign` body (crates/clients' `address::assign`).
 
 | Upstream TEST | Dispatch mode |
 | --- | --- |

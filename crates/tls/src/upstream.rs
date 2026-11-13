@@ -11,7 +11,7 @@ use crate::{
     swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send,
     swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
-use openssl_sys::{X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
+use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
@@ -922,33 +922,6 @@ fn warn_x509(written: c_int) -> c_int {
     -1
 }
 
-/// `_ssl_read_x509_file`: `cert` as PEM into at most `length` bytes at `buffer`, the
-/// bytes written; -1, after a warning, when `BIO_new` or `PEM_write_bio_X509` failed.
-/// When `consume`, frees `cert`.
-///
-/// # Safety
-/// `cert` is a live X509 (owned by the caller when `consume`), and `buffer` denotes
-/// `length` writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_ssl_read_x509(
-    cert: *mut X509,
-    buffer: *mut c_char,
-    length: usize,
-    consume: bool,
-) -> c_int {
-    // SAFETY: the caller's live certificate.
-    let borrowed = unsafe { CertRef::new(cert) };
-    // SAFETY: the caller's reference when `consume`, which this side now owns.
-    let owned = consume.then(|| unsafe { Cert::from_raw(cert) });
-    // SAFETY: the caller lends `length` writable bytes.
-    let mut buffer = unsafe { Fill::from_raw(buffer.cast(), length) };
-    let buffer = buffer.slots();
-    let written = borrowed.map_or(-2, |cert| cert.pem(buffer));
-    // The reference the caller handed over, released as this side's own.
-    drop(owned);
-    warn_x509(written)
-}
-
 /// The leading fields of `swoole::String`.
 #[repr(C)]
 struct NativeString {
@@ -1067,10 +1040,8 @@ fn file_request(
 }
 
 /// `int Socket::sendfile_sync(const char *filename, off_t offset, size_t length)`:
-/// corked for a large file, through `wait_for`'s loop.
-///
-/// # Safety
-/// `filename` is NUL-terminated.
+/// corked for a large file, through `wait_for`'s loop. `filename` is the caller's
+/// NUL-terminated string, lent for the call.
 #[cfg_attr(
     all(feature = "upstream-symbols", target_os = "macos"),
     unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKcxm")
@@ -1080,14 +1051,13 @@ fn file_request(
     unsafe(export_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm")
 )]
 #[must_use]
-pub unsafe extern "C" fn socket_sendfile_sync(
+pub extern "C" fn socket_sendfile_sync(
     socket: Socket<'_>,
-    filename: *const c_char,
+    filename: CText<'_>,
     offset: libc::off_t,
     length: usize,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    sendfile_sync(socket, unsafe { CStr::from_ptr(filename) }, offset, length)
+    sendfile_sync(socket, filename.get(), offset, length)
 }
 
 /// [`socket_sendfile_sync`] of the file `filename` names.
@@ -1327,6 +1297,16 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
     result == 1
 }
 
+/// `SSL_set_tlsext_host_name` on the record's SSL: false without one, or when OpenSSL
+/// refuses the name.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "a client's handshake ignores the result, as upstream does"
+)]
+pub fn socket_ssl_set_host_name(socket: Socket<'_>, name: &CStr) -> bool {
+    Ssl::of(socket).is_some_and(|ssl| ssl.set_host_name(name))
+}
+
 /// `void Socket::ssl_close()`: shuts down unless already closed (OpenSSL 1.0.2f
 /// complains about `SSL_shutdown` during a handshake), then frees the SSL.
 ///
@@ -1495,18 +1475,16 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
 }
 
 /// `Socket *make_server_socket(SocketType, const char *address, int port, int backlog)`:
-/// a bound (and, for a stream, listening) socket, or null after a warning.
-///
-/// # Safety
-/// `address` is NUL-terminated.
+/// a bound (and, for a stream, listening) socket, or null after a warning. `address`
+/// is the caller's NUL-terminated string, lent for the call.
 #[must_use]
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii")
 )]
-pub unsafe extern "C-unwind" fn make_server_socket(
+pub extern "C-unwind" fn make_server_socket(
     kind: c_int,
-    address: *const c_char,
+    address: CText<'_>,
     port: c_int,
     backlog: c_int,
 ) -> *mut SocketRecord {
@@ -1532,8 +1510,7 @@ pub unsafe extern "C-unwind" fn make_server_socket(
             );
         }
     }
-    // SAFETY: as the caller promises.
-    let address = unsafe { CStr::from_ptr(address) };
+    let address = address.get();
     let host = address.to_string_lossy();
     // Bound, listening when a stream, and named; else the warning for what failed.
     let served = if bind_host(record, address, port) < 0 {
@@ -1725,7 +1702,7 @@ mod tests {
         let sent = unsafe {
             socket_sendfile_sync(
                 Socket::from_ptr(&raw mut left).unwrap(),
-                name.as_ptr(),
+                name.as_c_str().into(),
                 2,
                 5,
             )
@@ -1735,7 +1712,7 @@ mod tests {
         let rejected = unsafe {
             socket_sendfile_sync(
                 Socket::from_ptr(&raw mut left).unwrap(),
-                name.as_ptr(),
+                name.as_c_str().into(),
                 20,
                 0,
             )
@@ -1744,7 +1721,7 @@ mod tests {
         let missing = unsafe {
             socket_sendfile_sync(
                 Socket::from_ptr(&raw mut left).unwrap(),
-                c"/nonexistent/x".as_ptr(),
+                c"/nonexistent/x".into(),
                 0,
                 0,
             )
@@ -1787,7 +1764,7 @@ mod tests {
 
     #[test]
     fn make_server_socket_binds_and_listens() {
-        let socket = unsafe { make_server_socket(1, c"127.0.0.1".as_ptr(), 0, 8) };
+        let socket = make_server_socket(1, c"127.0.0.1".into(), 0, 8);
         assert!(!socket.is_null());
         let record = unsafe { &*socket };
         assert!(record.bound && record.listened);
@@ -1797,7 +1774,7 @@ mod tests {
             "getsockname filled the port"
         );
         unsafe { socket_free(socket) };
-        let invalid = unsafe { make_server_socket(1, c"not an address".as_ptr(), 0, 8) };
+        let invalid = make_server_socket(1, c"not an address".into(), 0, 8);
         assert!(invalid.is_null());
         assert_ne!(log::last_error(), 0);
     }

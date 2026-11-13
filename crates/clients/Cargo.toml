@@ -28,5 +28,10 @@ libc = "=0.2.191"
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
 
+# The request formatter against the pinned calls (tests/modules/clients/README.md).
+[[test]]
+name = "http_format"
+path = "../../tests/modules/clients/http_format.rs"
+
 [lints]
 workspace = true

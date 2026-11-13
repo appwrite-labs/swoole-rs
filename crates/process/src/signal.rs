@@ -218,7 +218,8 @@ extern "C" fn immediate(signo: c_int) {
 }
 
 /// `void swoole_signal_dispatch()`: runs `swoole_signal_callback` for each signal
-/// the deferred handler marked.
+/// the deferred handler marked, in signal order, clearing each mark after its
+/// callback.
 #[unsafe(export_name = "_Z22swoole_signal_dispatchv")]
 pub extern "C" fn swoole_signal_dispatch() {
     if !PENDING.load(Relaxed) {
@@ -229,22 +230,11 @@ pub extern "C" fn swoole_signal_dispatch() {
     let Some(callback) = callback() else {
         return;
     };
-    // SAFETY: upstream calls dispatch from a safe context, never a signal frame.
-    unsafe { dispatch(callback) };
-}
-
-/// Runs `callback` for each signal the deferred handler marked, in signal order,
-/// clearing each mark after its callback.
-///
-/// # Safety
-/// `callback` may run PHP; no value with a destructor is live across it.
-pub unsafe fn dispatch(callback: Callback) {
-    if !PENDING.load(Relaxed) {
-        return;
-    }
     for (signo, triggered) in (0..).zip(&TRIGGERED) {
         if triggered.load(Relaxed) {
-            // SAFETY: the native callback takes any signal number.
+            // SAFETY: the native callback takes any signal number, and upstream calls
+            // dispatch from a safe context, never a signal frame; the callback may
+            // run PHP, and no value with a destructor is live across it.
             unsafe { callback(signo) };
             triggered.store(false, Relaxed);
         }

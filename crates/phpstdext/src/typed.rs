@@ -11,16 +11,16 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, Owned, UNDEF, Value, ZString,
+    Call, ClassEntry, Owned, UNDEF, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, swr_zend_emalloc, swr_zend_instanceof, swr_zend_separate_array,
-        swr_zend_try_lookup_class, zend_class_entry, zend_execute_data, zend_internal_function,
-        zend_long, zend_value, zif_handler, zval, zval_ptr_dtor,
+        swr_zend_efree, swr_zend_separate_array, swr_zend_try_lookup_class, zend_class_entry,
+        zend_execute_data, zend_internal_function, zend_long, zend_value, zif_handler, zval,
+        zval_ptr_dtor,
     },
     throw_error, type_error,
     value::{self, table},
@@ -404,7 +404,7 @@ pub(crate) fn check(typed: Typed, key: KeyType, value: &Value) -> bool {
         ]));
         return false;
     }
-    match (value.class(), Typed::of(&value)) {
+    match (value.class_entry(), Typed::of(&value)) {
         (Some(actual), _) => check_object(typed, &value, actual),
         (None, element) if expected == IS_ARRAY => check_array(typed, element),
         _ => true,
@@ -446,16 +446,13 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
 
 /// Whether `value`, an object of class `actual`, is of the class `typed`'s
 /// values have.
-fn check_object(typed: Typed, value: &Value, actual: *mut zend_class_entry) -> bool {
-    let ce = typed.header().ce;
-    // SAFETY: live classes: `value`'s own, and the one the definition's parse
-    // looked up for its object values.
-    if unsafe { swr_zend_instanceof(actual, ce) } {
+fn check_object(typed: Typed, value: &Value, actual: ClassEntry<'_>) -> bool {
+    // SAFETY: the class the definition's parse looked up for its object values,
+    // and so never null; classes outlive the request's arrays.
+    let expected = unsafe { ClassEntry::from_ptr(typed.header().ce) };
+    if expected.is_some_and(|expected| actual.instance_of(expected)) {
         return true;
     }
-    // SAFETY: that class, which the definition's parse found and so is never
-    // null; classes outlive the request's arrays.
-    let expected = unsafe { swoole_rs_zend::ClassEntry::from_ptr(ce) };
     type_error(&message(&[
         b"Array value type mismatch, expected `",
         expected.map_or(&[][..], |class| class.name().bytes()),
@@ -510,8 +507,8 @@ pub(crate) unsafe fn separate<'a>(container: &'a Value, source: Typed<'a>) -> Ty
     // `source` remains shared or immutable; `ht` is the fresh unshared copy.
     let source_info = info_of(source.ht);
     let extra = info_size(usize::from(source.header().len));
-    // SAFETY: allocate the real table header and trailing type metadata.
-    let copy = unsafe { swr_zend_emalloc(size_of::<HashTable>() + extra) }.cast::<HashTable>();
+    // The real table header and trailing type metadata.
+    let copy = value::emalloc(size_of::<HashTable>() + extra).cast::<HashTable>();
     // SAFETY: both hold a table.
     unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
@@ -634,8 +631,8 @@ fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure>
 
 /// `make_typed_array`: a table with room for `len` bytes of definition.
 fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
-    // SAFETY: Zend's request allocator.
-    let ht = unsafe { swr_zend_emalloc(size_of::<HashTable>() + info_size(len)) }.cast();
+    // Zend's request allocator.
+    let ht = value::emalloc(size_of::<HashTable>() + info_size(len)).cast();
     // SAFETY: room for a table.
     unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
     ht

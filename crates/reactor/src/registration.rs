@@ -46,12 +46,11 @@ mod epoll {
         interest as u32
     }
 
-    /// `epoll_ctl` for add (0), set (1) or del (2) of `fd` with `socket` as its token;
-    /// the kernel's result.
-    ///
-    /// # Safety
-    /// `socket` stays valid while registered; the wait loop hands it back to native.
-    pub(crate) unsafe fn epoll_ctl(
+    /// `epoll_ctl` for add (0), set (1) or del (2) of `fd` with `socket` as its token,
+    /// which the kernel keeps as a number; the kernel's result. The wait loop reads the
+    /// token back as the socket `swr_v1_reactor_change`'s caller keeps live while it is
+    /// registered.
+    pub(crate) fn epoll_ctl(
         epfd: c_int,
         op: u32,
         fd: c_int,
@@ -67,13 +66,8 @@ mod epoll {
             events: interest(events),
             u64: socket as usize as u64,
         };
-        let event = if op == libc::EPOLL_CTL_DEL {
-            std::ptr::null_mut()
-        } else {
-            &raw mut event
-        };
-        // SAFETY: `event` is null (DEL) or a valid record for the call.
-        unsafe { libc::epoll_ctl(epfd, op, fd, event) }
+        let event = (op != libc::EPOLL_CTL_DEL).then_some(&mut event);
+        swoole_rs_corebase::sys::epoll_ctl(epfd, op, fd, event)
     }
 
     #[cfg(test)]
@@ -168,15 +162,9 @@ mod kqueue {
     }
 
     /// `ReactorKqueue::add`'s kernel calls: 0, or 1 (read) or 2 (write) for the failed one.
-    ///
-    /// # Safety
-    /// `socket` stays valid while registered; the wait loop hands it back to native.
-    pub(crate) unsafe fn kqueue_add(
-        kq: c_int,
-        fd: c_int,
-        socket: *mut c_void,
-        events: c_int,
-    ) -> c_int {
+    /// The kernel keeps `socket` as a number: the wait loop reads it back as the socket
+    /// `swr_v1_reactor_change`'s caller keeps live while it is registered.
+    pub(crate) fn kqueue_add(kq: c_int, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
         if reads(events) && !read(kq, fd, libc::EV_ADD, socket) {
             return 1;
         }
@@ -187,16 +175,8 @@ mod kqueue {
     }
 
     /// `ReactorKqueue::set`'s kernel calls: 0, or the failed one: 1 read add, 2 read
-    /// delete, 3 write add, 4 write delete.
-    ///
-    /// # Safety
-    /// As for [`kqueue_add`].
-    pub(crate) unsafe fn kqueue_set(
-        kq: c_int,
-        fd: c_int,
-        socket: *mut c_void,
-        events: c_int,
-    ) -> c_int {
+    /// delete, 3 write add, 4 write delete. The token is [`kqueue_add`]'s.
+    pub(crate) fn kqueue_set(kq: c_int, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
         let read_flags = if reads(events) {
             libc::EV_ADD
         } else {

@@ -10,7 +10,7 @@ use swoole_rs_zend::{
     Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount},
+    sys::swr_zval_facade_refcount,
 };
 
 handlers! {
@@ -19,6 +19,8 @@ handlers! {
 
 unsafe extern "C" {
     fn php_printf(format: *const c_char, ...) -> usize;
+    /// `EG(exit_status) = status`: one value of the executor's is written.
+    safe fn swr_zend_set_exit_status(status: c_int);
 }
 
 /// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
@@ -26,8 +28,7 @@ unsafe extern "C" {
 /// crosses own nothing.
 #[unsafe(no_mangle)]
 pub extern "C" fn sw_php_exit(status: c_int) {
-    // SAFETY: a request's executor globals.
-    unsafe { swr_zend_set_exit_status(status) };
+    swr_zend_set_exit_status(status);
     if built_with(Switch::Thread) {
         crate::optional::thread_exit();
     } else {

@@ -201,39 +201,6 @@ pub extern "C" fn swr_v1_server_static_text(
 pub(crate) fn add_rewrite_rule(state: &ServerState, pattern: &[u8], replacement: &[u8]) {
     owner(state).rewrite_rules.add(pattern, replacement);
 }
-/// # Safety
-/// Each span lends `length` readable bytes (null only when empty).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_static_rewrite_add(
-    state: &ServerState,
-    pattern: *const u8,
-    pattern_length: usize,
-    replacement: *const u8,
-    replacement_length: usize,
-) {
-    let span = |data: *const u8, length| {
-        if length == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the caller lends `length` readable bytes at `data`.
-            unsafe { core::slice::from_raw_parts(data, length) }
-        }
-    };
-    add_rewrite_rule(
-        state,
-        span(pattern, pattern_length),
-        span(replacement, replacement_length),
-    );
-}
-/// Upstream's `Server::apply_rewrite_rules`: rewrite the static context's URL by the
-/// server's rules. True when a rule applied.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_static_rewrite(
-    state: &ServerState,
-    context: &mut HttpStaticContext,
-) -> bool {
-    apply_rewrite_rules(state, context)
-}
 /// Upstream's `Server::apply_rewrite_rules` over the server's rules.
 pub(crate) fn apply_rewrite_rules(state: &ServerState, context: &mut HttpStaticContext) -> bool {
     context.rewrite(&owner(state).rewrite_rules)

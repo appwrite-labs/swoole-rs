@@ -25,9 +25,8 @@ use crate::view::Port;
 pub struct PortMethods {
     /// On a port being made, before the server keeps it.
     pub ssl_context_init: fn(&mut PortConfig) -> bool,
-    /// `ssl_create(sock)`, of a socket the port accepted; `port` is its `ListenPort *`,
-    /// unchecked as the accept path passes it.
-    pub ssl_create: fn(port: *mut c_void, sock: Option<Socket<'_>>) -> bool,
+    /// `ssl_create(sock)`, of a socket the port accepted.
+    pub ssl_create: fn(&PortConfig, sock: Option<Socket<'_>>) -> bool,
     /// `import(fd)`, of an inherited descriptor, on a port being made.
     pub import: fn(&mut PortConfig, fd: c_int) -> bool,
     pub close: fn(Port<'_>),

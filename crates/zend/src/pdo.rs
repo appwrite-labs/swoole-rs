@@ -2,7 +2,7 @@
 //! driver table, behind [`Minit::pdo`], which checks PDO's own MINIT has run.
 use crate::{
     Minit, Mshutdown,
-    sys::{swr_zend_pdo_declare_long, swr_zend_pdo_declared, swr_zend_pdo_loaded, zend_long},
+    sys::{swr_zend_pdo_declare_long, swr_zend_pdo_declared, zend_long},
 };
 use std::{
     ffi::{CStr, c_int},
@@ -27,6 +27,9 @@ unsafe extern "C" {
     /// PDO's `php_pdo_unregister_driver`: nothing once PDO has shut down, or
     /// when it is not loaded. It raises no error.
     fn php_pdo_unregister_driver(driver: &'static Driver);
+    /// Whether PDO has registered its class: it reads one pointer PDO's MINIT
+    /// wrote.
+    safe fn swr_zend_pdo_loaded() -> bool;
 }
 
 /// PDO, loaded, during this module's MINIT: what makes its class and driver
@@ -38,8 +41,7 @@ impl Minit {
     /// not loaded, or starts after this module.
     #[must_use]
     pub fn pdo(&self) -> Option<Pdo<'_>> {
-        // SAFETY: MINIT; reads PDO's class pointer.
-        unsafe { swr_zend_pdo_loaded() }.then_some(Pdo(PhantomData))
+        swr_zend_pdo_loaded().then_some(Pdo(PhantomData))
     }
 }
 

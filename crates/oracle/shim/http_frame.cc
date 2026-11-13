@@ -10,7 +10,6 @@
 #include <strings.h>
 #include <sys/types.h>
 #include <vector>
-#include "swoole_rs_http.h"
 
 #define SWR_CAT2(a, b) a##_##b
 #define SWR_CAT(a, b) SWR_CAT2(a, b)

@@ -200,10 +200,6 @@ def plan(args, reports):
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
     if 'http' in modules:
-        for name, runner in [('http-rewrites', 'tests/modules/http/rewrite_gate.py'),
-                             ('http-locales', 'tests/modules/http/locale_gate.py')]:
-            script(name, runner, '--source', ROOT / 'target/upstream/src',
-                   '--archive', archive, *report(name))
         pytest('http-smuggling', 'tests/modules/http/test_smuggling.py', *php,
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
         pytest('http-header-reentry', 'tests/modules/http/test_header_reentry.py', *php, '--engine', f'cargo={cargo}')
@@ -222,9 +218,6 @@ def plan(args, reports):
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
         script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
     if 'clients' in modules:
-        script('clients-http-format', 'tests/modules/clients/http_format_gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize',
-               *report('clients-http-format'))
         script('clients-php-reentrant-close', 'tests/modules/clients/php_reentrant_close.py', *php_for('curl', 'sockets'),
                '--engine', f'cargo={cargo}', *report('clients-php-reentrant-close'))
         script('clients-php-property-array', 'tests/modules/clients/php_property_array.py', *php_for('curl', 'sockets'),

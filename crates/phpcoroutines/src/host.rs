@@ -505,28 +505,25 @@ extern "C" fn defers(_context: *mut c_void) {
     let Some(ctx) = current_task() else {
         return;
     };
-    loop {
-        let task = crate::context::defer_next(ctx);
-        if task.is_null() {
-            return;
+    while let Some((task, returned)) = crate::context::defer_next(ctx) {
+        let (fcc, mut argc, mut argv, _) = task.parts();
+        if let Some(returned) = returned {
+            (argc, argv) = (1, returned);
         }
-        let fci = task
-            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fci))
-            .cast::<swoole_rs_zend::sys::zend_fcall_info>();
-        let fcc = task
-            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
-            .cast::<swoole_rs_zend::sys::zend_fcall_info_cache>();
-        // SAFETY: a kept callable.
-        if unsafe { swoole_rs_zend::host::call_anyway(fci, fcc) } != 0 {
+        // The call's own frame: the task keeps its arguments, which its release drops.
+        let mut fci = swoole_rs_zend::EMPTY_FCI;
+        fci.size = size_of::<swoole_rs_zend::sys::zend_fcall_info>();
+        fci.param_count = argc;
+        fci.params = argv;
+        // SAFETY: a kept callable's resolved cache, over its kept arguments or the
+        // context's live return value.
+        if unsafe { swoole_rs_zend::host::call_anyway(&raw mut fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         if !swoole_rs_zend::host::exception().is_null() {
             bailout::raise(Err(bailout::Bailout));
         }
-        // SAFETY: the callable's cache, then its emalloc'd holder.
-        unsafe { swoole_rs_zend::host::cache_free(fcc) };
-        // SAFETY: as above.
-        unsafe { swoole_rs_zend::sys::swr_zend_efree(task.cast()) };
+        bailout::raise(task.release());
     }
 }
 

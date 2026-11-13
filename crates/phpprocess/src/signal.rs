@@ -1,14 +1,10 @@
 //! `Process::signal()`: the PHP callable registered for each signal, and the
 //! handler Swoole's signal layer runs for them.
 use crate::{
-    host::{self, Callable},
+    host::{self, Callable, Slot},
     report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
-use std::{
-    ffi::{c_int, c_void},
-    ptr,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::ffi::c_int;
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
@@ -28,27 +24,8 @@ const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
 
-/// A signal's callable: null, or what [`Callable::into_raw`] gave up to
-/// [`Slot::replace`], the only writer.
-struct Slot(AtomicPtr<c_void>);
-
-impl Slot {
-    /// Whether a callable is set.
-    fn is_set(&self) -> bool {
-        !self.0.load(Ordering::Acquire).is_null()
-    }
-
-    /// Store `callable` (`None`: empty the slot), and take what was there.
-    fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
-        let new = callable.map_or(ptr::null_mut(), Callable::into_raw);
-        // SAFETY: null or a callable `replace` stored, which the swap took out
-        // of the slot, so it is taken back once.
-        unsafe { Callable::from_raw(self.0.swap(new, Ordering::AcqRel)) }
-    }
-}
-
 /// `signal_fci_caches`: the callable per signal.
-static CALLABLES: [Slot; SLOTS] = [const { Slot(AtomicPtr::new(ptr::null_mut())) }; SLOTS];
+static CALLABLES: [Slot; SLOTS] = [const { Slot::empty() }; SLOTS];
 
 /// The slot of `signo`, or `None` outside `0..SW_SIGNO_MAX`.
 fn slot(signo: i64) -> Option<&'static Slot> {
@@ -60,14 +37,14 @@ extern "C" fn on_signal(signo: c_int) {
     let Some(slot) = slot(i64::from(signo)) else {
         return;
     };
-    // SAFETY: null or the live callable `signal()` stored, which the slot
-    // keeps; borrowed here, not taken.
-    let Some(callable) = (unsafe { Callable::from_raw(slot.0.load(Ordering::Acquire)) }) else {
+    if !slot.is_set() {
+        return;
+    }
+    let coroutine = host::enable_coroutine();
+    // The callable `signal()` stored, borrowed from its slot, not taken.
+    let Some(called) = slot.call(&[&Owned::long(i64::from(signo))], coroutine) else {
         return;
     };
-    let callable = std::mem::ManuallyDrop::new(callable);
-    let coroutine = host::enable_coroutine();
-    let called = callable.call(&[&Owned::long(i64::from(signo))], coroutine);
     if !called && !bailout::pending() {
         fatal(
             E_WARNING,

@@ -3,9 +3,10 @@
 //! `process_host` table).
 use std::{
     cell::Cell,
-    ffi::{c_int, c_void},
+    ffi::c_int,
     ptr,
     rc::Rc,
+    sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
@@ -165,43 +166,76 @@ impl Callable {
         deferred(callable::Callable::new(value)).flatten().map(Self)
     }
 
-    /// Take back a callable [`Callable::into_raw`] gave up (none for null).
-    /// # Safety
-    /// `raw` is null or a callable `into_raw` gave up, taken back once.
-    pub(crate) unsafe fn from_raw(raw: *mut c_void) -> Option<Self> {
-        // SAFETY: per the caller, the `Rc` that `into_raw` gave up.
-        (!raw.is_null()).then(|| Self(unsafe { Rc::from_raw(raw.cast()) }))
-    }
-
-    pub(crate) fn into_raw(self) -> *mut c_void {
-        Rc::into_raw(self.0).cast_mut().cast()
-    }
-
     /// `zend::function::call(callable->ptr(), argc, argv, nullptr, coroutine)`
     /// with at most two arguments, copied without a reference as upstream
     /// passes them: false with a bailout pending is one the caller stops on.
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> bool {
-        let mut argv = [swoole_rs_zend::UNDEF; 2];
-        for (slot, arg) in argv.iter_mut().zip(args) {
-            // Copied bitwise; the copy is never released.
-            *slot = arg.copy_value();
+        call(&self.0, args, coroutine)
+    }
+}
+
+/// [`Callable::call`] of the callable itself.
+fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool {
+    let mut argv = [swoole_rs_zend::UNDEF; 2];
+    for (slot, arg) in argv.iter_mut().zip(args) {
+        // Copied bitwise; the copy is never released.
+        *slot = arg.copy_value();
+    }
+    let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
+    let cache = callable.cache_ptr();
+    // SAFETY: a live cache and `argc` zvals; the leaves are phpcoroutines' and C's.
+    let called = unsafe {
+        function_call(
+            cache,
+            argc,
+            argv.as_mut_ptr(),
+            ptr::null_mut(),
+            coroutine,
+            create_coroutine,
+            swr_zend_callable_warning,
+            swoole_rs_zend::host::NO_THEN,
+        )
+    };
+    deferred(called).unwrap_or(false)
+}
+
+/// A callable a static keeps (a signal's): null, or the `Rc` of a [`Callable`]
+/// that [`Slot::replace`], the only writer, gave up to it.
+pub(crate) struct Slot(AtomicPtr<callable::Callable>);
+
+impl Slot {
+    /// A slot with no callable.
+    pub(crate) const fn empty() -> Self {
+        Self(AtomicPtr::new(ptr::null_mut()))
+    }
+
+    /// Whether a callable is set.
+    pub(crate) fn is_set(&self) -> bool {
+        !self.0.load(Ordering::Acquire).is_null()
+    }
+
+    /// Store `callable` (`None`: empty the slot), and take what was there.
+    pub(crate) fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
+        let new = callable.map_or(ptr::null(), |callable| Rc::into_raw(callable.0));
+        let old = self.0.swap(new.cast_mut(), Ordering::AcqRel);
+        // SAFETY: null or the `Rc` a `replace` gave up, which the swap took out of
+        // the slot, so it is taken back once.
+        (!old.is_null()).then(|| Callable(unsafe { Rc::from_raw(old) }))
+    }
+
+    /// [`Callable::call`] of the slot's callable, which the slot keeps: `None`
+    /// when it has none.
+    pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> Option<bool> {
+        let stored = self.0.load(Ordering::Acquire);
+        if stored.is_null() {
+            return None;
         }
-        let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
-        let cache = self.0.cache_ptr();
-        // SAFETY: a live cache and `argc` zvals; the leaves are phpcoroutines' and C's.
-        let called = unsafe {
-            function_call(
-                cache,
-                argc,
-                argv.as_mut_ptr(),
-                ptr::null_mut(),
-                coroutine,
-                create_coroutine,
-                swr_zend_callable_warning,
-                swoole_rs_zend::host::NO_THEN,
-            )
-        };
-        deferred(called).unwrap_or(false)
+        // SAFETY: the `Rc` `replace` stored, still the slot's: one more reference to it.
+        unsafe { Rc::increment_strong_count(stored) };
+        // SAFETY: the reference just added, so the callable outlives a handler that
+        // replaces it.
+        let callable = unsafe { Rc::from_raw(stored) };
+        Some(call(&callable, args, coroutine))
     }
 }
 

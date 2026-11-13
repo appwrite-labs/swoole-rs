@@ -63,7 +63,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
             return OK;
         }
         if port.config().ssl != 0 {
-            if !(crate::port_config::methods().ssl_create)(port.raw(), Some(sock)) {
+            if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock)) {
                 abort(serv, reactor, Some(port), sock);
                 return OK;
             }

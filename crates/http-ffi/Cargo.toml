@@ -27,3 +27,12 @@ swoole-rs-ossupport = { path = "../ossupport" }
 [dev-dependencies]
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-oracle = { path = "../oracle" }
+
+# The former native gates against the pinned bodies (tests/modules/http/README.md).
+[[test]]
+name = "locale"
+path = "../../tests/modules/http/locale.rs"
+
+[[test]]
+name = "rewrite"
+path = "../../tests/modules/http/rewrite.rs"

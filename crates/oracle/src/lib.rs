@@ -111,6 +111,82 @@ pub mod http {
     }
 }
 
+/// The pinned `get_method` and `parse_multipart_boundary` and swoole.h's two
+/// case-insensitive helpers (see `shim/http_locale.cc`): each folds case through libc's
+/// `strncasecmp`, so in the process locale.
+pub mod http_locale {
+    use std::ffi::{c_char, c_int, c_uint};
+
+    unsafe extern "C" {
+        /// Upstream `http_server::get_method`.
+        #[link_name = "swr_oracle_http_get_method"]
+        pub fn get_method(method: *const c_char, length: usize) -> c_int;
+        /// Upstream `http_server::parse_multipart_boundary`: the boundary's offset in
+        /// `at` and its length, written only when it returns true.
+        #[link_name = "swr_oracle_http_boundary"]
+        pub fn boundary(
+            at: *const c_char,
+            length: usize,
+            offset: usize,
+            found_offset: *mut usize,
+            found_length: *mut c_int,
+        ) -> bool;
+        /// Upstream `swoole_strcaseeq`.
+        #[link_name = "swr_oracle_http_strcaseeq"]
+        pub fn strcaseeq(
+            a: *const c_char,
+            a_length: usize,
+            b: *const c_char,
+            b_length: usize,
+        ) -> c_uint;
+        /// Upstream `swoole_str_istarts_with`.
+        #[link_name = "swr_oracle_http_istarts_with"]
+        pub fn istarts_with(
+            text: *const c_char,
+            length: usize,
+            prefix: *const c_char,
+            prefix_length: usize,
+        ) -> c_uint;
+    }
+}
+
+/// The pinned `Server::add_rewrite_rule` and `apply_rewrite_rules` over a handler that
+/// publishes into strings (see `shim/http_rewrite.cc`). Its regexes are the C++
+/// standard library's `std::regex`.
+pub mod http_rewrite {
+    use std::ffi::{c_char, c_int, c_uint, c_void};
+
+    pub use super::http_static_select::Line;
+
+    #[repr(C)]
+    pub struct Rule {
+        pub pattern: *const c_char,
+        pub pattern_length: usize,
+        pub replacement: *const c_char,
+        pub replacement_length: usize,
+    }
+
+    unsafe extern "C" {
+        /// Adds each rule to a new server and applies them to a handler for `url`: the
+        /// handler's URL and then its original URL go to `text`, and its
+        /// `set_request_url` calls are counted in `publications`. The result of
+        /// `apply_rewrite_rules`, or -1 for an exception it let through.
+        #[link_name = "swr_oracle_rewrite"]
+        pub fn rewrite(
+            rules: *const Rule,
+            count: usize,
+            url: *const c_char,
+            length: usize,
+            publications: *mut c_uint,
+            text: Line,
+            out: *mut c_void,
+        ) -> c_int;
+        /// `apply_rewrite_rules` with a null handler on a server without rules.
+        #[link_name = "swr_oracle_rewrite_without_rules"]
+        pub safe fn without_rules() -> c_int;
+    }
+}
+
 pub mod http_proxy {
     unsafe extern "C" {
         /// Upstream `HttpProxy::create`: returns its port and copies its host,
@@ -733,7 +809,7 @@ pub mod protocols {
 }
 
 pub mod clients {
-    use std::ffi::{c_char, c_int, c_void};
+    use std::ffi::{c_char, c_int, c_uint, c_void};
 
     /// What the pinned `Address::assign(type, host, port, resolve)` leaves in a
     /// record filled with 0x73, type -1, length 987, errno 17 and last error 11.
@@ -768,6 +844,20 @@ pub mod clients {
             host_length: *mut usize,
             logs: *mut c_int,
         ) -> c_int;
+        /// The request formatter's pinned `sw_snprintf` call for `kind` (0 length, 1
+        /// proxy URI, 2 multipart type, 3 field, 4 file, 5 closing boundary) over four
+        /// texts and `number`, into `capacity` bytes at `output` (null for 0), from
+        /// errno 17; errno afterwards goes to `error`.
+        #[link_name = "swr_oracle_clients_http_format"]
+        pub fn http_format(
+            kind: c_uint,
+            texts: *const *const c_char,
+            lengths: *const usize,
+            number: usize,
+            output: *mut c_char,
+            capacity: usize,
+            error: *mut c_int,
+        ) -> usize;
         /// The pinned `Address::verify_port`.
         #[link_name = "swr_oracle_clients_verify_port"]
         pub fn verify_port(port: c_int, for_connect: bool) -> bool;

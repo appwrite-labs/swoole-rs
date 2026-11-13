@@ -138,12 +138,6 @@ unsafe extern "C" {
     fn swr_v1_tls_owner_free(owner: *const c_void);
     fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: i32) -> IovPrepared;
     fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
-    fn swr_v1_socket_ssl_read_x509(
-        cert: *mut c_void,
-        buffer: *mut c_char,
-        length: usize,
-        consume: bool,
-    ) -> c_int;
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
@@ -1478,12 +1472,10 @@ fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
     let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
     (0..n)
         .filter_map(|i| {
-            // SAFETY: `i` is within the stack.
-            let cert = unsafe { OPENSSL_sk_value(chain, i) };
-            // SAFETY: a live X509 and a writable buffer of its length.
-            let rv = unsafe {
-                swr_v1_socket_ssl_read_x509(cert, buffer.as_mut_ptr().cast(), buffer.len(), false)
-            };
+            // SAFETY: `i` is within the stack, whose certificates the SSL keeps alive.
+            let cert = unsafe { swoole_rs_tls::CertRef::new(OPENSSL_sk_value(chain, i).cast()) };
+            // `_ssl_read_x509_file`, which fails without a certificate.
+            let rv = cert.map_or(-1, |cert| cert.pem(&mut buffer));
             (rv > 0).then(|| buffer[..rv as usize].to_vec())
         })
         .collect()

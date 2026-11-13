@@ -28,9 +28,6 @@ unsafe extern "C" {
     safe fn inet_pton(family: c_int, source: CText<'_>, destination: &mut [u8; 16]) -> c_int;
 }
 
-/// `network::gethostbyname(family, name, address)`: writes the address, < 0 on failure.
-pub type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
-
 /// `clients_parse_ip`: the host as an IP literal of `family` into `destination`,
 /// which holds any family's address.
 fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
@@ -54,7 +51,7 @@ fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
 
 /// [`assign`] with `resolve` for a host that is no IP literal: the address, or the
 /// `SW_ERROR_*` code.
-fn assign_with(
+pub fn assign_with(
     address: &mut AddressStorage,
     length: &mut libc::socklen_t,
     kind: c_int,
@@ -105,38 +102,6 @@ pub fn assign(
     })
 }
 
-/// [`assign`] for native code, whose `resolve` is native `gethostbyname` or null.
-///
-/// # Safety
-/// `host` points to a NUL-terminated string of `host_length` bytes before that
-/// NUL; `resolve` is native `gethostbyname` or null (`resolve_name` false).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_assign(
-    address: &mut AddressStorage,
-    length: &mut libc::socklen_t,
-    kind: c_int,
-    host: *const c_char,
-    host_length: usize,
-    port: c_int,
-    resolve: Option<Resolve>,
-) -> c_int {
-    // SAFETY: the caller passes `host_length` bytes of host, then its NUL.
-    let bytes =
-        unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length.saturating_add(1)) };
-    assign_with(address, length, kind, bytes, port, |family, name| {
-        let Some(resolve) = resolve else {
-            return Err(BAD_HOST_ADDR);
-        };
-        let mut address = [0u8; 16];
-        // SAFETY: native `gethostbyname`, a terminated name and room for either
-        // family's address.
-        if unsafe { resolve(family, name.as_ptr(), address.as_mut_ptr().cast()) } < 0 {
-            return Err(DNSLOOKUP_RESOLVE_FAILED);
-        }
-        Ok(address)
-    })
-}
-
 // Address::addr_str and verify_ip deliberately share one per-thread buffer.
 // Its pointer stays valid until thread exit and each operation overwrites it.
 thread_local! {
@@ -173,19 +138,6 @@ pub fn address_string(family: c_int, address: &[u8]) -> *const c_char {
         // family's bytes, writes at most its supplied capacity and retains neither.
         unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.get().cast(), 46) }
     })
-}
-
-/// [`address_string`] for native code.
-/// # Safety
-/// `address` points to the address bytes for `family`, as required by `inet_ntop`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_string(
-    family: c_int,
-    address: *const c_void,
-) -> *const c_char {
-    // SAFETY: the family's address bytes, per the caller.
-    let address = unsafe { std::slice::from_raw_parts(address.cast(), address_size(family)) };
-    address_string(family, address)
 }
 
 /// `Address::verify_ip` for Rust: whether `host` is an IP literal of `family`. The
@@ -343,38 +295,33 @@ mod tests {
         un: libc::sockaddr_un,
     }
 
-    unsafe extern "C" fn resolves(family: c_int, _: *const c_char, out: *mut c_char) -> c_int {
+    /// A `gethostbyname` double that finds an address of the family, or fails.
+    fn lookup(family: c_int, found: bool) -> Result<[u8; 16], c_int> {
         let bytes: &[u8] = if family == libc::AF_INET {
             &[10, 0, 0, 7]
         } else {
             &[0xfe, 0x80]
         };
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast(), bytes.len()) };
-        0
+        let mut address = [0; 16];
+        address[..bytes.len()].copy_from_slice(bytes);
+        found.then_some(address).ok_or(DNSLOOKUP_RESOLVE_FAILED)
     }
-    unsafe extern "C" fn fails(_: c_int, _: *const c_char, _: *mut c_char) -> c_int {
-        -1
-    }
+    const RESOLVES: Option<bool> = Some(true);
+    const FAILS: Option<bool> = Some(false);
 
     fn assign(
         kind: c_int,
         host: &std::ffi::CStr,
         port: c_int,
-        resolve: Option<Resolve>,
+        resolve: Option<bool>,
     ) -> (c_int, Union, libc::socklen_t) {
         let mut address: Union = unsafe { std::mem::zeroed() };
         let mut length = 0;
-        let error = unsafe {
-            swr_v1_clients_address_assign(
-                &mut *(&raw mut address).cast::<AddressStorage>(),
-                &mut length,
-                kind,
-                host.as_ptr(),
-                host.to_bytes().len(),
-                port,
-                resolve,
-            )
-        };
+        let storage = unsafe { &mut *(&raw mut address).cast::<AddressStorage>() };
+        let host = host.to_bytes_with_nul();
+        let error = assign_with(storage, &mut length, kind, host, port, |family, _| {
+            resolve.map_or(Err(BAD_HOST_ADDR), |found| lookup(family, found))
+        });
         (error, address, length)
     }
 
@@ -399,14 +346,14 @@ mod tests {
         );
         assert_eq!(unsafe { address.v6 }.sin6_addr.s6_addr[15], 1);
 
-        let (error, address, _) = assign(TCP, c"example.test", 1, Some(resolves));
+        let (error, address, _) = assign(TCP, c"example.test", 1, RESOLVES);
         assert_eq!(
             (error, unsafe { address.v4 }.sin_addr.s_addr.to_ne_bytes()),
             (0, [10, 0, 0, 7])
         );
         assert_eq!(assign(TCP, c"example.test", 1, None).0, BAD_HOST_ADDR);
         assert_eq!(
-            assign(TCP6, c"example.test", 1, Some(fails)).0,
+            assign(TCP6, c"example.test", 1, FAILS).0,
             DNSLOOKUP_RESOLVE_FAILED
         );
 
@@ -443,17 +390,8 @@ mod tests {
             kind,
             ..SocketAddress::default()
         };
-        let error = unsafe {
-            swr_v1_clients_address_assign(
-                &mut address.addr,
-                &mut address.len,
-                kind,
-                host.as_ptr(),
-                host.to_bytes().len(),
-                80,
-                None,
-            )
-        };
+        let (storage, length) = (&mut address.addr, &mut address.len);
+        let error = super::assign(storage, length, kind, host.to_bytes_with_nul(), 80, false);
         assert_eq!(error, 0, "{host:?}");
         address
     }

@@ -368,7 +368,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('phphelpers-runtime', commands)
         self.assertIn('corebase-native',commands)
         self.assertIn('ossupport-unit', commands)
-        self.assertIn('http-rewrites', commands)
+        self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])
         self.assertIn('swoole-rs-memory', commands['memory-rust-asan'])
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
@@ -424,8 +424,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)
         self.assertIn('--archive', commands['ports-policy'])
-        self.assertIn('--archive', commands['clients-http-format'])
-        self.assertIn('--sanitize', commands['clients-http-format'])
+        self.assertNotIn('clients-http-format', commands)  # Its cases run in clients-unit.
         self.assertNotIn('clients-pool', commands)  # Its cases run in clients-unit.
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
             command = commands['clients-php-' + family]
@@ -435,8 +434,7 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('clients-ip', commands)  # So do these.
         self.assertNotIn('clients-codec', commands)  # Its cases run in clients-unit.
         self.assertNotIn('clients-ip-text', commands)  # So do these.
-        self.assertIn('--archive',commands['http-locales'])
-        self.assertIn('--archive',commands['http-rewrites'])
+        self.assertNotIn('http-locales', commands)  # So do these.
         self.assertIn('timer-bailout',commands)
         self.assertFalse(any(name.startswith('halfclose-') for name in commands))
 
