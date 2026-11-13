@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::ffi::{c_char, c_int, c_void};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
-use swoole_rs_corebase::native::{self, LOGGER_NEW, NativeHost};
+use swoole_rs_corebase::native::{self, LoggerOp, NativeHost};
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_memory::members::pool;
 
@@ -56,7 +56,7 @@ fn init() {
     swoole_rs_error::swoole_clear_last_error_msg();
     swoole_rs_corebase::swr_v1_core_set_stdout(swr_v1_ffi_stdout());
     swoole_rs_corebase::swr_v1_core_set_fatal_error(swr_v1_ffi_fatal_error as *mut c_void);
-    swoole_rs_process::methods::logger_op(LOGGER_NEW);
+    swoole_rs_process::methods::logger_op(LoggerOp::New);
     if built_with(Switch::Debug) {
         swoole_rs_utilities::swoole_set_log_level(0);
         swoole_rs_corebase::swr_v1_core_set_trace_flags(0x7fff_ffff);

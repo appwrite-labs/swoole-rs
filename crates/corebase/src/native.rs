@@ -3,7 +3,7 @@
 //! crates/ffi's `swoole_init` registers each before it runs the body, so corebase
 //! and its tests link without them.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::c_void;
 use std::sync::OnceLock;
 
 /// One function per leaf, in the crate that owns it.
@@ -19,8 +19,8 @@ pub struct NativeHost {
     pub delete_buffer: fn(),
     /// `delete SwooleG.memory_pool`.
     pub delete_pool: fn(),
-    /// One `LOGGER_*` operation on the process logger (crates/process).
-    pub logger: fn(op: c_int),
+    /// One operation on the process logger (crates/process).
+    pub logger: fn(op: LoggerOp),
     /// `swoole_signal_clear()`, which C++ calls too.
     pub signal_clear: extern "C" fn(),
     pub timer_free: fn(),
@@ -29,12 +29,18 @@ pub struct NativeHost {
     pub coroutine_is_in: fn() -> bool,
 }
 
-/// `new Logger()` on `SwooleG.stdout`, into `SwooleG.logger`.
-pub const LOGGER_NEW: c_int = 0;
-/// `SwooleG.logger->reopen()`, `->close()` and `delete SwooleG.logger`.
-pub const LOGGER_REOPEN: c_int = 1;
-pub const LOGGER_CLOSE: c_int = 2;
-pub const LOGGER_DELETE: c_int = 3;
+/// An operation on the process logger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoggerOp {
+    /// `new Logger()` on `SwooleG.stdout`, into `SwooleG.logger`.
+    New,
+    /// `SwooleG.logger->reopen()`.
+    Reopen,
+    /// `SwooleG.logger->close()`.
+    Close,
+    /// `delete SwooleG.logger`.
+    Delete,
+}
 
 static HOST: OnceLock<NativeHost> = OnceLock::new();
 
