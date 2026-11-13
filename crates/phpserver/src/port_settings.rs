@@ -417,9 +417,10 @@ impl Source for Zend<'_> {
         }
         // The port's owner now, which `release` (or the port's release) drops.
         Ok(callable.map(|callable| {
-            let named = std::rc::Rc::as_ptr(&callable).cast_mut().cast();
-            let owner: Box<dyn std::any::Any> = Box::new(callable);
-            (named, Box::new(owner))
+            let named = swoole_rs_phpswoole::length::Named::new(callable);
+            let pointer = named.as_ptr();
+            let owner: Box<dyn std::any::Any> = Box::new(named);
+            (pointer, Box::new(owner))
         }))
     }
 
