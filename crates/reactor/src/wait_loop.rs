@@ -10,9 +10,17 @@ use std::sync::OnceLock;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 
-pub const POLL: u32 = 0;
-pub const EPOLL: u32 = 1;
-pub const KQUEUE: u32 = 2;
+/// Which kernel wait a reactor's backend runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendKind {
+    Poll,
+    Epoll,
+    #[cfg_attr(
+        target_os = "linux",
+        expect(dead_code, reason = "only the BSDs open a kqueue backend")
+    )]
+    Kqueue,
+}
 
 /// The effects of one `wait()`. Every function receives `reactor`.
 pub(crate) struct WaitOps<'a> {
@@ -117,7 +125,7 @@ impl Event {
 
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
-    backend: u32,
+    backend: BackendKind,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
     events: *const c_void,
     /// poll only: the socket each `pollfd` entry was built from.
@@ -184,9 +192,13 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
                 // upstream's Reactor::catch_error()
                 if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                     wait_failed(&run, entries);
-                    return if run.backend == POLL { 0 } else { -1 };
+                    return if run.backend == BackendKind::Poll {
+                        0
+                    } else {
+                        -1
+                    };
                 }
-                if run.backend == EPOLL
+                if run.backend == BackendKind::Epoll
                     && let Some(uring) = uring()
                     && (uring.interrupted)()
                 {
@@ -201,7 +213,11 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
                 continue;
             }
             core::cmp::Ordering::Greater => {
-                let count = if run.backend == POLL { entries } else { ready };
+                let count = if run.backend == BackendKind::Poll {
+                    entries
+                } else {
+                    ready
+                };
                 // The kernel filled the first `count` entries of `events`.
                 run.ready.set(count.unsigned_abs() as usize);
                 for index in 0..run.ready.get() {
@@ -223,7 +239,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
         return;
     }
     let (socket, fd, mask) = match ops.backend {
-        POLL => {
+        BackendKind::Poll => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
             // SAFETY: `index` is below poll's entry count, checked above.
             let pollfd = unsafe { pollfd.read() };
@@ -241,7 +257,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             (unsafe { socket.read() }, pollfd.fd, mask)
         }
         #[cfg(target_os = "linux")]
-        EPOLL => {
+        BackendKind::Epoll => {
             let event = ops.events.cast::<libc::epoll_event>().wrapping_add(index);
             // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read_unaligned() };
@@ -264,7 +280,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        KQUEUE => {
+        BackendKind::Kqueue => {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
             // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read() };
@@ -420,17 +436,17 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
         (fields.id, state.backend_fd, fields.max_event_num, timeout)
     });
     match ops.backend {
-        EPOLL => log::sys_warning(
+        BackendKind::Epoll => log::sys_warning(
             c"ReactorEpoll::wait",
             format_args!(
                 "[Reactor#{id}] epoll_wait(epfd={epfd}, max_events={max_event_num}, timeout={timeout}) failed"
             ),
         ),
-        KQUEUE => log::sys_warning(
+        BackendKind::Kqueue => log::sys_warning(
             c"ReactorKqueue::wait",
             format_args!("kevent(epfd={epfd}) failed "),
         ),
-        _ => log::sys_warning(
+        BackendKind::Poll => log::sys_warning(
             c"ReactorPoll::wait",
             format_args!("[Reactor#{id}] poll(nfds={entries}, timeout={timeout}) failed"),
         ),
@@ -443,7 +459,7 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
     let fd = event.fd;
     let name = |names: [&'static str; 3]| names.get(kind as usize).copied().unwrap_or_default();
     match ops.backend {
-        EPOLL => {
+        BackendKind::Epoll => {
             let name = name(["EPOLLIN", "EPOLLOUT", "EPOLLERR"]);
             log::sys_warning(
                 c"ReactorEpoll::wait",
@@ -451,14 +467,14 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
             );
             return;
         }
-        KQUEUE => {
+        BackendKind::Kqueue => {
             let name = if kind == 0 { "read" } else { "write" };
             log::sys_warning(
                 c"ReactorKqueue::wait",
                 format_args!("kqueue event {name} socket#{fd} handler failed"),
             );
         }
-        _ => {
+        BackendKind::Poll => {
             let name = name(["POLLIN", "POLLOUT", "POLLERR"]);
             log::sys_warning(
                 c"ReactorPoll::wait",
@@ -514,7 +530,7 @@ fn registered(socket: Socket<'_>) -> bool {
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
-        if ops.backend == EPOLL {
+        if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             ops.reactor
                 .with(|state| state.record(socket, crate::ChangeOp::Del, 0));
