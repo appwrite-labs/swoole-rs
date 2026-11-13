@@ -79,12 +79,19 @@ pub struct IovState {
     pub offset_bytes: usize,
 }
 
-/// `Socket::ssl_sendfile`'s outcome: what it returns, and which warning native code
-/// writes (1 `write() failed`, 2 `pread() failed`).
+/// The call `Socket::ssl_sendfile` warns failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SslSendfileWarning {
+    Write,
+    Pread,
+}
+
+/// `Socket::ssl_sendfile`'s outcome: what it returns, and the warning the caller
+/// writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SslSendfileResult {
     pub value: isize,
-    pub warn: c_int,
+    pub warn: Option<SslSendfileWarning>,
 }
 
 /// `Socket::ssl_sendfile`: pread(2) up to `SW_BUFFER_SIZE_BIG` bytes of `file_fd`
@@ -102,7 +109,10 @@ pub fn ssl_sendfile(
     let at = *offset;
     let n = swoole_rs_corebase::sys::pread(file_fd, &mut buffer, at);
     if n <= 0 {
-        return SslSendfileResult { value: -1, warn: 2 };
+        return SslSendfileResult {
+            value: -1,
+            warn: Some(SslSendfileWarning::Pread),
+        };
     }
     // pread(2) fills at most the buffer; a longer answer sends the buffer.
     let sent = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer));
@@ -111,13 +121,13 @@ pub fn ssl_sendfile(
         let failed = catch_error(error, kernel_nobufs) == ERROR;
         return SslSendfileResult {
             value: sent,
-            warn: c_int::from(failed),
+            warn: failed.then_some(SslSendfileWarning::Write),
         };
     }
     *offset = at + libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
     SslSendfileResult {
         value: sent,
-        warn: 0,
+        warn: None,
     }
 }
 
@@ -361,12 +371,24 @@ mod tests {
         let result = ssl_sendfile(file.as_raw_fd(), &mut offset, 6, sends_three, &mut nobufs);
         assert_eq!(
             (result, offset),
-            (SslSendfileResult { value: 3, warn: 0 }, 7)
+            (
+                SslSendfileResult {
+                    value: 3,
+                    warn: None
+                },
+                7
+            )
         );
         offset = 10;
         // Nothing is left to read.
         let result = ssl_sendfile(file.as_raw_fd(), &mut offset, 6, sends_three, &mut nobufs);
-        assert_eq!(result, SslSendfileResult { value: -1, warn: 2 });
+        assert_eq!(
+            result,
+            SslSendfileResult {
+                value: -1,
+                warn: Some(SslSendfileWarning::Pread)
+            }
+        );
         std::fs::remove_file(&path).unwrap();
     }
 }
