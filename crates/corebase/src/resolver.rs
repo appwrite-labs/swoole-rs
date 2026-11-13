@@ -86,25 +86,6 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
     Some((bytes, length))
 }
 
-/// [`gethostbyname`] into `addr`; 0, or -1 if it does not resolve.
-///
-/// # Safety
-/// `name` is NUL-terminated; `addr` holds an address of the family.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_gethostbyname(
-    flags: c_int,
-    name: *const c_char,
-    addr: *mut c_char,
-) -> c_int {
-    // SAFETY: the caller's NUL-terminated name.
-    let Some((bytes, length)) = lookup(flags, unsafe { CStr::from_ptr(name) }) else {
-        return -1;
-    };
-    // SAFETY: the caller's `addr` holds the family's `h_length` bytes.
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr, length) };
-    0
-}
-
 /// What `getaddrinfo` found.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

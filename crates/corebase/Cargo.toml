@@ -27,5 +27,14 @@ crate-type = ["rlib"]
 name = "resolver"
 path = "../../tests/modules/corebase/resolver.rs"
 
+# The former corebase-native gate: the number helpers against the pinned base.cc
+# bodies (tests/modules/corebase/README.md).
+[[test]]
+name = "numbers"
+path = "../../tests/modules/corebase/numbers.rs"
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
 [lints]
 workspace = true

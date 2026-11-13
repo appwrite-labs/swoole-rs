@@ -1147,3 +1147,36 @@ pub mod utilities {
         ) -> usize;
     }
 }
+
+/// The pinned base.cc's number helpers (`shim/corebase.cc`), in the target's plain
+/// `char` mode.
+pub mod corebase {
+    use std::ffi::{c_char, c_int, c_long, c_ulong};
+    unsafe extern "C" {
+        /// `swoole_type_size`.
+        #[link_name = "swr_oracle_corebase_type_size"]
+        pub safe fn type_size(kind: c_char) -> c_int;
+        /// `swoole_dec2hex`: a `strndup` allocation the caller frees. `base` is 2 to 36.
+        #[link_name = "swr_oracle_corebase_dec2hex"]
+        pub fn dec2hex(value: c_ulong, base: c_int) -> *mut c_char;
+        /// `swoole_hex2dec` of a NUL-terminated string.
+        #[link_name = "swr_oracle_corebase_hex2dec"]
+        pub fn hex2dec(hex: *const c_char, parsed: *mut usize) -> c_ulong;
+        /// `swoole_version_compare` of two NUL-terminated strings.
+        #[link_name = "swr_oracle_corebase_version_compare"]
+        pub fn version_compare(left: *const c_char, right: *const c_char) -> c_int;
+        /// `swoole_common_divisor`: both operands above zero.
+        #[link_name = "swr_oracle_corebase_common_divisor"]
+        pub fn common_divisor(u: u32, v: u32) -> u32;
+        /// `swoole_common_multiple`: both operands above zero.
+        #[link_name = "swr_oracle_corebase_common_multiple"]
+        pub fn common_multiple(u: u32, v: u32) -> u32;
+        /// `swoole_itoa` into a buffer that holds the digits and their NUL.
+        #[link_name = "swr_oracle_corebase_itoa"]
+        pub fn itoa(buffer: *mut c_char, value: c_long) -> c_int;
+        /// `swoole_get_env(name, value)`: 1 with `*value` set, 0 for an unset variable,
+        /// -1 where `std::stoi` threw `std::invalid_argument`, -2 for `std::out_of_range`.
+        #[link_name = "swr_oracle_corebase_get_env"]
+        pub fn get_env(name: *const c_char, value: *mut c_int) -> c_int;
+    }
+}

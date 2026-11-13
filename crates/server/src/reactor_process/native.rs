@@ -32,7 +32,7 @@ const EVENT_COMMAND_RESPONSE: u8 = 18;
 pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
     let config = serv.config();
     let workers = serv.workers();
-    let pool = workers.event_pool;
+    let pool = workers.event_pool.raw();
     // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
     unsafe { pool.write_bytes(0, 1) };
     let pool_ref = serv.event_pool_ref();

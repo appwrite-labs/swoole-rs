@@ -6,9 +6,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Success matches the representable decimal portion of std::stoi; native code
- * retains its exception path and publishes output only after success. */
-uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
 /* Rust also defines swoole_init, swoole_fork, swoole_waitpid, swoole_clean,
  * swoole_thread_init/_clean and swoole_is_main_thread. */
 /* swoole_init's body (crates/corebase/src/lifecycle.rs), which crates/ffi's
@@ -17,7 +14,7 @@ void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_free/sw_calloc
  * (libc's allocator), swoole_common_divisor/_multiple, swoole_version_compare,
- * swoole_dec2hex, swoole_type_size, swoole_itoa, swoole_rand (both overloads),
+ * swoole_dec2hex, swoole_type_size, swoole_rand (both overloads),
  * swoole_random_int and swoole::DataHead::dump. sw_malloc and swoole::microtime
  * are Rust's too; no C++ calls them. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both

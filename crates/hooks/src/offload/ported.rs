@@ -2,13 +2,13 @@
 //! Upstream's `coroutine::async`, `async(fn)`, `System::sleep`, `gethostbyname_impl_with_async`
 //! and `System::getaddrinfo` run in `swoole_rs_oracle::hooks_async` over a recording facade;
 //! here the hybrid's offload (`swr_v1_hook_async`, `swr_v1_hook_async_job`,
-//! `sleep_timeout`, `swr_v1_core_resolver_finish`), composed as system.cc's
+//! `sleep_timeout`, `ResolverCompletion::after_await`), composed as system.cc's
 //! glue composes it, runs over the same facade, and every scenario's effects must match.
 use super::*;
 use crate::sleep_timeout;
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::rc::Rc;
-use swoole_rs_corebase::swr_v1_core_resolver_finish;
+use swoole_rs_corebase::ResolverCompletion;
 
 const AIO_TIMEOUT: c_int = 1779;
 const RESOLVE_TIMEOUT: c_int = 1780;
@@ -240,16 +240,13 @@ fn gethostbyname(name: &str, domain: c_int, timeout: f64) -> String {
     let request = Rc::new(Request::default());
     event.retval = 1;
     async_event(handler_gethostbyname, &mut event, Some(&request), timeout);
-    // SAFETY: no request error slot.
-    let completion = unsafe {
-        swr_v1_core_resolver_finish(
-            event.retval,
-            event.error,
-            core::ptr::null(),
-            AIO_TIMEOUT,
-            RESOLVE_TIMEOUT,
-        )
-    };
+    let completion = ResolverCompletion::after_await(
+        event.retval,
+        event.error,
+        || 0,
+        AIO_TIMEOUT,
+        RESOLVE_TIMEOUT,
+    );
     let result = if completion.failed {
         set_last_error(completion.error);
         String::new()
@@ -277,16 +274,13 @@ fn getaddrinfo(
     async_event(handler_getaddrinfo, &mut event, Some(&request), timeout);
     let mut values = Vec::new();
     let error = request.error.get();
-    // SAFETY: the request's error slot, settled once the wait succeeded.
-    let completion = unsafe {
-        swr_v1_core_resolver_finish(
-            event.retval,
-            event.error,
-            &raw const error,
-            AIO_TIMEOUT,
-            RESOLVE_TIMEOUT,
-        )
-    };
+    let completion = ResolverCompletion::after_await(
+        event.retval,
+        event.error,
+        || error,
+        AIO_TIMEOUT,
+        RESOLVE_TIMEOUT,
+    );
     if completion.failed {
         set_last_error(completion.error);
     } else {

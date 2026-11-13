@@ -97,8 +97,6 @@ static_assert(offsetof(Request, url_offset_) == 12 && offsetof(Request, content_
 const char *get_method_string(int method);
 const char *get_status_message(int code);
 extern int list_of_status_code[128];
-// Decodes in place.
-size_t url_decode(char *str, size_t len);
 ssize_t get_package_length(const Protocol *protocol, network::Socket *conn, PacketLength *pl);
 uint8_t get_package_length_size(network::Socket *conn);
 }  // namespace http_server

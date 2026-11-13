@@ -6,11 +6,10 @@ use crate::{
     Invalid,
     sys::{
         swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try, swr_zend_try_call,
-        swr_zend_try_report, swr_zend_try_report_code, zend_fcall_info, zend_fcall_info_cache,
-        zval,
+        zend_fcall_info, zend_fcall_info_cache, zval,
     },
 };
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 
 unsafe extern "C" {
     /// The shim's whole-thread exit mark: a C thread-local of its own, not
@@ -156,42 +155,6 @@ pub fn trapped(bailed: c_int) -> Result<(), Bailout> {
     } else {
         Ok(())
     }
-}
-
-/// `report(message)` inside `zend_try`, for a C or C++ reporter of a PHP
-/// error (Swoole's `php_swoole_error` family lives in C++). Nothing is
-/// reported while a bailout is pending.
-/// # Errors
-/// A user error handler bailed out.
-/// # Safety
-/// `report` is C or C++ and may be called from here.
-pub unsafe fn report(
-    report: unsafe extern "C" fn(*const c_char),
-    message: &CStr,
-) -> Result<(), Bailout> {
-    if pending() {
-        return Err(Bailout);
-    }
-    // SAFETY: per the caller; the shim's setjmp sits between this frame and `report`.
-    trapped(unsafe { swr_zend_try_report(Some(report), message.as_ptr()) })
-}
-
-/// [`report`] of a reporter that takes an error code and an int flag.
-/// # Errors
-/// A user error handler bailed out.
-/// # Safety
-/// As [`report`].
-pub unsafe fn report_code(
-    report: unsafe extern "C" fn(c_int, c_int, *const c_char),
-    code: c_int,
-    flag: c_int,
-    message: &CStr,
-) -> Result<(), Bailout> {
-    if pending() {
-        return Err(Bailout);
-    }
-    // SAFETY: as in `report`.
-    trapped(unsafe { swr_zend_try_report_code(Some(report), code, flag, message.as_ptr()) })
 }
 
 /// Run `body(arg)` inside `zend_try`.

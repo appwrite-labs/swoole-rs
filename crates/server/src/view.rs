@@ -443,12 +443,11 @@ impl<'a> Server<'a> {
 
     /// The server's worker arrays and counts.
     #[must_use]
-    pub fn workers(self) -> ServerWorkers {
-        let task_pool = self.task_pool();
+    pub fn workers(self) -> ServerWorkers<'a> {
         let config = self.config();
         ServerWorkers {
-            event_pool: task_pool.wrapping_add(1),
-            task_pool,
+            event_pool: self.event_pool_ref(),
+            task_pool: self.task_pool_ref(),
             event_workers: config.workers.as_ptr().cast(),
             user_workers: config.user_workers.as_ptr().cast(),
             event_count: config.worker_num.get(),
@@ -461,9 +460,7 @@ impl<'a> Server<'a> {
     /// workers; null past the last.
     #[must_use]
     pub fn worker(self, id: u16) -> *mut WorkerRecord {
-        let view = self.workers();
-        // SAFETY: the server's live pools and worker arrays, with their counts.
-        unsafe { swr_v1_process_server_worker(&view, id) }
+        swr_v1_process_server_worker(&self.workers(), id)
     }
 
     /// [`Server::worker`]'s record, or `None` past the last.

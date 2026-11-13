@@ -88,14 +88,10 @@ fn types() -> impl Iterator<Item = (&'static CStr, &'static CStr, i64)> {
     .filter(|(_, _, kind)| KINDS & (1 << kind) != 0)
 }
 
-swoole_rs_zend::minit!(lock_minit => register);
-
 /// `php_swoole_lock_minit`: register the class and its constants.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "minit! raises the bailout a MINIT body returns"
-)]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn lock_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Held>(c"Swoole\\Lock", &METHODS.0, 0);
     for (name, _, kind) in types() {
         minit.class_constant_long(&LOCK, name, kind);

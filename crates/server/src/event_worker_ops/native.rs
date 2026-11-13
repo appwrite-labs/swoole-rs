@@ -147,10 +147,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             sized(unsafe { event_write(pipe, ctx.info.cast(), len()) })
         }
         OP_PIPE_SEND_SYNC => {
-            let send_sync = swoole_rs_tls::upstream::socket_send_sync;
-            let (pipe, info) = (ctx.socket, ctx.info.cast());
+            let send_sync = swoole_rs_tls::upstream::send_sync_drain;
             // SAFETY: as above.
-            sized(pipe.map_or(-1, |pipe| unsafe { send_sync(pipe, info, len(), 0) }))
+            let info = unsafe { swoole_rs_reactor::Drain::from_raw(ctx.info.cast(), len()) };
+            sized(ctx.socket.map_or(-1, |pipe| send_sync(pipe, info, 0)))
         }
         OP_RECV_CONN => {
             let info = *ctx.info();

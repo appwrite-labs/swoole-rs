@@ -1,7 +1,7 @@
-//! `swoole::http_server`'s free helpers from `src/protocol/http.cc` that hand out or
-//! take C strings, defined under their upstream (Itanium) symbols with
-//! `upstream-symbols`. `get_method`, `url_encode` and `parse_multipart_boundary` are
-//! crates/http's `method`, `url_encode` and `boundary`, over slices.
+//! `swoole::http_server`'s free helpers from `src/protocol/http.cc` that hand out C
+//! strings, defined under their upstream (Itanium) symbols with `upstream-symbols`.
+//! `get_method`, `url_encode`, `url_decode` and `parse_multipart_boundary` are
+//! crates/http's `method`, `url_encode`, `url_decode` and `boundary`, over slices.
 use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 
@@ -49,28 +49,6 @@ pub extern "C" fn get_method_string(method: c_int) -> *const c_char {
     swoole_rs_http::method_string(method).map_or(std::ptr::null(), std::ffi::CStr::as_ptr)
 }
 
-/// `size_t url_decode(char *str, size_t len)`: decodes in place and terminates it.
-///
-/// # Safety
-/// `str` is writable for `len + 1` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole11http_server10url_decodeEPcm")
-)]
-pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
-    // A null buffer: upstream's loop writes through it.
-    if str.is_null() || len >= isize::MAX as usize {
-        swoole_rs_corebase::fatal("url_decode of a null or oversized buffer");
-    }
-    // SAFETY: non-null, `len + 1 <= isize::MAX`; the caller lends that many writable bytes.
-    let buffer = unsafe { std::slice::from_raw_parts_mut(str.cast::<u8>(), len + 1) };
-    let written = swoole_rs_http::url_decode(buffer.get_mut(..len).unwrap_or_default());
-    if let Some(nul) = buffer.get_mut(written) {
-        *nul = 0;
-    }
-    written
-}
-
 #[cfg(test)]
 mod tests {
     // Upstream's `core-tests/src/server/http_server.cpp` TESTs over these helpers, one
@@ -88,18 +66,36 @@ mod tests {
         unsafe { CStr::from_ptr(pointer) }.to_str().unwrap()
     }
 
+    /// Upstream's `url_decode(str, len)`: crates/http's decoder over the `len` bytes,
+    /// then the terminator upstream writes after what it decoded.
+    fn url_decode(buffer: &mut [u8], len: usize) -> usize {
+        let written = swoole_rs_http::url_decode(&mut buffer[..len]);
+        buffer[written] = 0;
+        written
+    }
+
+    fn terminated(buffer: &[u8]) -> &str {
+        CStr::from_bytes_until_nul(buffer)
+            .unwrap()
+            .to_str()
+            .unwrap()
+    }
+
     /// `url_encode`, then `url_decode` in place.
     fn encode_decode(input: &str, expected: &str) {
         let capacity = swoole_rs_http::url_capacity(input.as_bytes()).unwrap();
         let mut encoded = vec![std::mem::MaybeUninit::new(0u8); capacity];
         let length = swoole_rs_http::url_encode(input.as_bytes(), &mut encoded).unwrap();
         assert_eq!(length + 1, capacity);
-        let encoded = encoded.as_mut_ptr().cast::<c_char>();
-        assert_eq!(text(encoded), expected);
-        // SAFETY: `encoded` is NUL-terminated and writable.
-        let decoded = unsafe { url_decode(encoded, expected.len()) };
+        // SAFETY: every slot started initialized, and the encoder writes only bytes.
+        let mut encoded: Vec<u8> = encoded
+            .iter()
+            .map(|slot| unsafe { slot.assume_init() })
+            .collect();
+        assert_eq!(terminated(&encoded), expected);
+        let decoded = url_decode(&mut encoded, expected.len());
         assert_eq!(decoded, input.len());
-        assert_eq!(text(encoded), input);
+        assert_eq!(terminated(&encoded), input);
     }
 
     #[test]
@@ -214,8 +210,7 @@ mod tests {
     #[test]
     fn url_decode_decodes_in_place() {
         let mut buffer = *b"a%20b+c%zz\0";
-        // SAFETY: `buffer` holds the 10 bytes and their terminator.
-        let written = unsafe { url_decode(buffer.as_mut_ptr().cast(), 10) };
+        let written = url_decode(&mut buffer, 10);
         assert_eq!(&buffer[..=written], b"a b c%zz\0");
     }
 }

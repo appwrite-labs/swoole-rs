@@ -425,14 +425,13 @@ pub fn set_worker_thread_start(start: Option<WorkerThreadStart>) {
 /// `serv->worker_thread_start(thread, fn)`, from a `ThreadFactory` thread.
 ///
 /// # Safety
-/// `thread` is the thread's live `swoole::Thread` and `run(context)` its body.
-pub unsafe fn worker_thread_start(thread: *mut c_void, run: WorkerMain, context: *mut c_void) {
+/// `run(context)` is the body of `thread`, which it runs on.
+pub unsafe fn worker_thread_start(thread: &Thread, run: WorkerMain, context: *mut c_void) {
     let start = *WORKER_THREAD_START
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     match start {
-        // SAFETY: per the caller, the thread's live `swoole::Thread`.
-        Some(start) => start(unsafe { &*thread.cast::<Thread>() }, run, context),
+        Some(start) => start(thread, run, context),
         // SAFETY: per the caller.
         None => unsafe { run(context) },
     }

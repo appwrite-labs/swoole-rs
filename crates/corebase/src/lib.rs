@@ -68,8 +68,8 @@ pub use log::fatal;
 pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
+use std::cmp::Ordering;
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
-use std::{cmp::Ordering, ptr};
 
 unsafe extern "C" {
     fn toupper(value: c_int) -> c_int;
@@ -150,8 +150,7 @@ pub fn atoi(input: &[u8]) -> c_int {
 }
 
 /// The successful, representable portion of `std::stoi`: [`strtol`], none where
-/// `std::stoi` throws (no digits, or out of `int` range). Native code retains the
-/// throwing path.
+/// `std::stoi` throws (no digits, or out of `int` range).
 #[must_use]
 pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
     let (value, end) = strtol(input);
@@ -159,29 +158,6 @@ pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
         return None;
     }
     c_int::try_from(value).ok()
-}
-
-/// [`parse_stoi`] for native code: 1 with `*output` set, else 0.
-/// # Safety
-/// `input` is null or a valid NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
-    input: *const c_char,
-    output: Option<&mut c_int>,
-) -> u8 {
-    let Some(output) = output else {
-        return 0;
-    };
-    if input.is_null() {
-        return 0;
-    }
-    // SAFETY: a non-null, NUL-terminated string.
-    let input = unsafe { CStr::from_ptr(input) };
-    let Some(value) = parse_stoi(input.to_bytes()) else {
-        return 0;
-    };
-    *output = value;
-    1
 }
 
 /// `swoole_get_env(name, &value)`: the variable as `std::stoi` reads it, or `None`
@@ -340,26 +316,15 @@ pub fn get_systemd_listen_fds() -> c_int {
     }
 }
 
-/// `int swoole_itoa(char *buf, long value)`: the decimal digits and a NUL; returns the
-/// byte count before the NUL.
-/// # Safety
-/// `output` is writable for the value's decimal representation plus NUL.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z11swoole_itoaPcl")
-)]
-pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_int {
+/// `int swoole_itoa(char *buf, long value)`: the decimal digits and a NUL into `output`,
+/// as far as it reaches; returns the digit count, the bytes before the NUL.
+pub fn swoole_itoa(output: &mut [u8], value: c_long) -> c_int {
     let mut buffer = itoa::Buffer::new();
-    let bytes = buffer.format(value).as_bytes();
-    // The digits (a sign and at most 19 of them for 64 bits) with the NUL after them.
-    let mut terminated = [0_u8; 24];
-    let length = bytes.len().min(terminated.len() - 1);
-    for (to, from) in terminated.iter_mut().zip(bytes) {
+    let digits = buffer.format(value).as_bytes();
+    for (to, from) in output.iter_mut().zip(digits.iter().chain(&[0])) {
         *to = *from;
     }
-    // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from the local.
-    unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), output.cast(), length + 1) };
-    bytes.len().c_cast::<c_int>()
+    digits.len().c_cast::<c_int>()
 }
 
 /// Format backwards into `output`, NUL-terminated at its end; return the first digit's
@@ -641,22 +606,10 @@ mod tests {
             (" -2147483648x", i32::MIN),
             ("2147483647", i32::MAX),
         ] {
-            let input = std::ffi::CString::new(text).unwrap();
-            let mut output = 0x1357_9bdf;
-            assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
-                1
-            );
-            assert_eq!(output, expected);
+            assert_eq!(parse_stoi(text.as_bytes()), Some(expected));
         }
         for text in ["", "x", "  ", "+", "2147483648", "-2147483649"] {
-            let input = std::ffi::CString::new(text).unwrap();
-            let mut output = 0x1357_9bdf;
-            assert_eq!(
-                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
-                0
-            );
-            assert_eq!(output, 0x1357_9bdf);
+            assert_eq!(parse_stoi(text.as_bytes()), None);
         }
     }
 
@@ -713,7 +666,7 @@ mod tests {
         assert_eq!(radix(0, 10, &mut output), usize::MAX);
         assert_eq!(output, [0xa5; 2]);
         let mut decimal = [0xa5u8; 4];
-        assert_eq!(unsafe { swoole_itoa(decimal.as_mut_ptr().cast(), -1) }, 2);
+        assert_eq!(swoole_itoa(&mut decimal, -1), 2);
         assert_eq!(decimal, [b'-', b'1', 0, 0xa5]);
     }
 }

@@ -309,8 +309,6 @@ pub fn lookup<S: DnsSocket>(
     exchange.found
 }
 
-pub use swoole_rs_corebase::swr_v1_clients_gethostbyname;
-
 /// The first `nameserver` of the file at `path`, read in `fgets` lines of up to 99
 /// bytes: the server, if one (at most 15 bytes, nonempty) is named.
 fn resolv_conf(path: &CStr) -> std::io::Result<Option<Vec<u8>>> {
@@ -492,34 +490,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn resolves_through_libc() {
-        let mut addr: [c_char; 16] = [0; 16];
+        let addr = swoole_rs_corebase::gethostbyname(libc::AF_INET, c"localhost");
         assert_eq!(
-            unsafe {
-                swr_v1_clients_gethostbyname(
-                    libc::AF_INET,
-                    c"localhost".as_ptr(),
-                    addr.as_mut_ptr(),
-                )
-            },
-            0
-        );
-        assert_eq!(
-            addr[..4]
+            addr.unwrap()[..4]
                 .iter()
                 .map(|&b| b.to_ne_bytes()[0])
                 .collect::<Vec<_>>(),
             [127, 0, 0, 1]
         );
-        assert_eq!(
-            unsafe {
-                swr_v1_clients_gethostbyname(
-                    libc::AF_UNIX,
-                    c"localhost".as_ptr(),
-                    addr.as_mut_ptr(),
-                )
-            },
-            -1
-        );
+        assert!(swoole_rs_corebase::gethostbyname(libc::AF_UNIX, c"localhost").is_none());
     }
 
     #[test]

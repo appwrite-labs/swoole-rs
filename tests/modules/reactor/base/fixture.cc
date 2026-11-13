@@ -131,9 +131,6 @@ int swr_case_event_wait() {
 int swr_case_event_add(Socket *socket, int events) {
     return swoole_event_add(socket, events);
 }
-int swr_case_event_del(Socket *socket) {
-    return swoole_event_del(socket);
-}
 ssize_t swr_case_event_write(Socket *socket, const void *data, size_t len) {
     return swoole_event_write(socket, data, len);
 }
@@ -217,8 +214,5 @@ size_t swr_case_random_bytes(char *buf, size_t size) {
 }
 String *swr_case_tg_buffer() {
     return sw_tg_buffer();
-}
-void swr_case_string_append(String *str, const char *data, size_t len) {
-    str->append(data, len);
 }
 }

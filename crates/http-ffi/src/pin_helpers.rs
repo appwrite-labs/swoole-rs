@@ -228,10 +228,8 @@ fn encode(input: &[u8]) -> Vec<u8> {
 }
 
 fn decode(input: &[u8]) -> Vec<u8> {
-    let mut data = [input, b"\0"].concat();
-    // SAFETY: `data` holds the input and its NUL.
-    let written = unsafe { crate::http_server::url_decode(data.as_mut_ptr().cast(), input.len()) };
-    assert_eq!(data[written], 0);
+    let mut data = input.to_vec();
+    let written = swoole_rs_http::url_decode(&mut data);
     data.truncate(written);
     data
 }

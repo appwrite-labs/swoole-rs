@@ -25,8 +25,7 @@ use swoole_rs_zend::{
         swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
         swr_zend_module_globals_init, swr_zend_print_stack_trace,
         swr_zend_register_shutdown_function, swr_zend_runtime_call_handler,
-        swr_zend_stream_constant_no_close, swr_zend_try_hook, swr_zend_try_minit, zend_class_entry,
-        zval,
+        swr_zend_stream_constant_no_close, swr_zend_try_hook, zend_class_entry,
     },
 };
 
@@ -140,8 +139,8 @@ pub fn enable_library() -> bool {
     globals().enable_library.get()
 }
 
-/// A family's MINIT hook, with the module's number (C ABI: it runs inside `zend_try`).
-pub type Minit = unsafe extern "C" fn(c_int);
+/// A family's MINIT step, which runs inside `zend_try`; the phase raises the bailout it returns.
+pub type Minit = fn(&swoole_rs_zend::Minit) -> Result<(), Bailout>;
 /// Any other phase hook, likewise.
 pub type Hook = unsafe extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
@@ -223,7 +222,7 @@ pub struct Families {
     /// `php_swoole_socket_set(socket, settings)` over a coroutine socket, for
     /// crates/phpruntime; `which` 2 applies only the SSL ones
     /// (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
-    pub socket_settings: unsafe extern "C" fn(*mut c_void, *const zval, c_int) -> bool,
+    pub socket_settings: fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, c_int) -> bool,
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
     pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,
@@ -234,6 +233,25 @@ pub struct Families {
     pub client_class: fn() -> &'static Class,
     /// crates/phphttp's and phphttp2's.
     pub http: Http,
+    /// crates/phpprocess's and phpruntime's, which depend on this crate.
+    pub process: ProcessSteps,
+    pub runtime: RuntimeSteps,
+}
+
+/// crates/phpprocess's phase steps: `php_swoole_process_minit`, `_pool_minit` and
+/// `_rshutdown`.
+pub struct ProcessSteps {
+    pub minit: fn(&swoole_rs_zend::Minit),
+    pub pool_minit: fn(&swoole_rs_zend::Minit),
+    pub rshutdown: Hook,
+}
+
+/// crates/phpruntime's phase steps: `php_swoole_runtime_minit`, `_mshutdown` and
+/// `_rshutdown`.
+pub struct RuntimeSteps {
+    pub minit: fn(&swoole_rs_zend::Minit),
+    pub mshutdown: Hook,
+    pub rshutdown: Hook,
 }
 
 /// crates/phphttp's and phphttp2's phase steps, and the server events and
@@ -268,16 +286,9 @@ pub fn families() -> Option<&'static Families> {
     FAMILIES.get().copied()
 }
 
-// The class crates' MINIT and shutdown hooks: declared, since each of those crates
-// depends on this one.
 unsafe extern "C" {
-    fn php_swoole_process_minit(module_number: c_int);
-    fn php_swoole_process_pool_minit(module_number: c_int);
-    fn php_swoole_runtime_minit(module_number: c_int);
-    fn php_swoole_runtime_mshutdown();
+    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT, a `zend_try` body.
     fn php_swoole_runtime_rinit();
-    fn php_swoole_runtime_rshutdown();
-    fn php_swoole_process_rshutdown();
 }
 
 /// A `zend_try` shim's result.
@@ -321,11 +332,12 @@ enum Phase<'a> {
 fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
     for step in steps {
         match (step, phase) {
-            (Step::Minit(hook), Phase::Minit(minit)) => {
-                // SAFETY: a C or C++ hook that Zend may run at MINIT; the shim's
-                // setjmp sits between this frame and the hook.
-                flag(unsafe { swr_zend_try_minit(Some(hook), minit.module()) })
-            }
+            // SAFETY: a family's MINIT step, which registers with Zend and keeps
+            // nothing that needs a drop where Zend could bail out or where the
+            // bailout it returns is raised; neither does the closure.
+            (Step::Minit(step), Phase::Minit(minit)) => unsafe {
+                bailout::trap_with(|| bailout::raise(step(minit)))
+            },
             // SAFETY: a MINIT step, which registers with Zend and keeps nothing
             // that needs a drop where Zend could bail out; neither does the closure.
             (Step::Typed(step), Phase::Minit(minit)) => unsafe {
@@ -358,8 +370,8 @@ pub(crate) fn startup(minit: &swoole_rs_zend::Minit) {
         // base
         M(families.locks_minit[0]),
         M(families.locks_minit[1]),
-        M(php_swoole_process_minit),
-        M(php_swoole_process_pool_minit),
+        T(families.process.minit),
+        T(families.process.pool_minit),
         M(families.collections_minit[0]),
         M(families.timer_minit),
     ];
@@ -368,12 +380,12 @@ pub(crate) fn startup(minit: &swoole_rs_zend::Minit) {
     steps.extend([
         M(families.locks_minit[2]),
         M(families.collections_minit[1]),
-        M(php_swoole_runtime_minit),
+        T(families.runtime.minit),
     ]);
     // client
     steps.extend(families.client_minit.map(M));
     steps.extend([T(http_minit::<6>)]);
-    // The bundled C clients, ssh2 and ftp.
+    // The bundled C client, ssh2.
     steps.extend(optional::client_minit());
     steps.extend([
         // server
@@ -548,10 +560,8 @@ extern "C" fn event_free() {
 /// # Safety
 /// Zend's MSHUTDOWN.
 pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number: c_int) -> c_int {
-    let mut steps = vec![
-        Step::Hook(swoole_rs_zend::host::known_free),
-        Step::Hook(php_swoole_runtime_mshutdown),
-    ];
+    let mut steps = vec![Step::Hook(swoole_rs_zend::host::known_free)];
+    steps.extend(families().map(|families| Step::Hook(families.runtime.mshutdown)));
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
@@ -636,8 +646,8 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
         Step::Hook(families.coroutine_rshutdown[0]),
         Step::Hook(families.coroutine_rshutdown[1]),
         Step::Hook(families.timer_rshutdown),
-        Step::Hook(php_swoole_runtime_rshutdown),
-        Step::Hook(php_swoole_process_rshutdown),
+        Step::Hook(families.runtime.rshutdown),
+        Step::Hook(families.process.rshutdown),
     ];
     steps.extend(optional::rshutdown(families));
     steps.extend([

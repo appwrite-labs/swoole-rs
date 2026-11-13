@@ -53,7 +53,7 @@ use swoole_rs_timer::{
     swoole_timer_select,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
-use swoole_rs_tls::upstream::{self, socket_free, socket_read_sync, socket_recv_sync};
+use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`,
@@ -684,41 +684,6 @@ impl PoolNative for Native {
         swoole_rs_process::signal::swoole_signal_dispatch();
     }
 
-    fn queue_pop(&self, c: &mut PoolCall) {
-        io(c, |c| {
-            let queue = c.pool().queue();
-            if queue.is_null() {
-                return -1;
-            }
-            // SAFETY: the pool's queue and the call's buffer.
-            unsafe {
-                swoole_rs_ossupport::swr_v1_os_msg_queue_pop(
-                    queue.cast(),
-                    c.data().cast(),
-                    c.length(),
-                )
-            }
-        });
-    }
-
-    fn queue_push(&self, c: &mut PoolCall) {
-        io(c, |c| {
-            let queue = c.pool().queue();
-            if queue.is_null() {
-                return 0;
-            }
-            // SAFETY: the pool's queue and the call's message.
-            let pushed = unsafe {
-                swoole_rs_ossupport::swr_v1_os_msg_queue_push(
-                    queue.cast(),
-                    c.data().cast(),
-                    c.length(),
-                )
-            };
-            isize::from(pushed)
-        });
-    }
-
     fn accept(&self, c: &mut PoolCall) {
         let socket = ipc_listener(c.pool()).map_or(ptr::null_mut(), |listener| {
             listener.edit(swoole_rs_reactor::SocketFields::accept)
@@ -731,9 +696,9 @@ impl PoolNative for Native {
     fn recv(&self, c: &mut PoolCall) {
         io(c, |c| {
             let (data, length, flags) = (c.data(), c.length(), c.flags());
-            // SAFETY: the call's connection and buffer.
-            let recv = |socket| unsafe { socket_recv_sync(socket, data, length, flags) };
-            call_socket(c).map_or(-1, recv)
+            // SAFETY: the call's buffer.
+            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
+            call_socket(c).map_or(-1, |socket| recv_sync_fill(socket, buffer, flags))
         });
     }
 
@@ -754,8 +719,9 @@ impl PoolNative for Native {
             let next = swoole_timer_get_next_msec();
             let timeout = next.c_cast::<f64>() / 1000.0;
             pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
-            // SAFETY: the worker's pipe and the call's buffer.
-            unsafe { socket_read_sync(pipe, c.data(), c.length()) }
+            // SAFETY: the call's buffer.
+            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
+            read_sync_fill(pipe, buffer)
         });
     }
 

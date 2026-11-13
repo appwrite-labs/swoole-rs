@@ -113,7 +113,7 @@ impl<'a> Context<'a> {
     fn counters(&self) -> &crate::ServerCounters {
         self.server().counters()
     }
-    fn workers(&self) -> ServerWorkers {
+    fn workers(&self) -> ServerWorkers<'a> {
         self.server().workers()
     }
     /// The server's event worker pool.

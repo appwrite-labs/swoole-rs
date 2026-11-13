@@ -4,7 +4,6 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -12,7 +11,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_tls::{
-    DtlsSession, dtls_session_listen, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
+    DtlsSession, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
 
 use crate::ops::EVENT_INCOMING;
@@ -202,20 +201,10 @@ pub(crate) unsafe fn on_packet(
 /// on `sock` goes to the session on `fd`; whether a pending handshake failed.
 pub(crate) fn on_read(port: &port_config::PortConfig, sock: Socket<'_>, fd: c_int) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
-    // SAFETY: a `dtls::Buffer` header and its payload; the session frees it.
-    let buffer = unsafe { libc::malloc(2 + size) }.cast::<u16>();
-    // The payload follows the header.
-    let data = buffer.wrapping_add(1).cast::<c_void>();
-    // SAFETY: the live socket and the payload's `size` bytes.
-    let read = unsafe { libc::read(sock.fd(), data, size) };
-    // SAFETY: the header just allocated.
-    unsafe {
-        *buffer = read.c_cast::<u16>();
-    }
     let session = (port_config::methods().dtls_session)(port, fd);
     // SAFETY: the socket's live session.
     let session = unsafe { &*session };
-    // SAFETY: the session takes the buffer.
-    appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
+    // A `dtls::Buffer` of the socket's next datagram, which the session queues.
+    appended(dtls_session_receive(session, sock.fd(), size));
     !session.listened() && !dtls_session_listen(session)
 }

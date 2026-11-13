@@ -25,7 +25,8 @@ not compared; Rust's result is still checked.
 
 For HTTP, `http_url_decode`, `http_url_encode` and `http_cookies` (keys and
 values in order) compare with upstream's `url_decode`, `url_encode` and
-`parse_cookie`. The shim gives each upstream `sw_malloc` one spare byte, so
+`parse_cookie` (`url_decode` over a slice, with the terminator upstream writes added
+before the buffers are compared). The shim gives each upstream `sw_malloc` one spare byte, so
 upstream runs to completion on every input.
 
 

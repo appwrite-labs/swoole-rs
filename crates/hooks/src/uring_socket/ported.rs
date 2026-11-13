@@ -11,6 +11,7 @@
 use super::*;
 use crate::co_socket::TestSocket;
 use crate::uring::testing::{HOST, with_engine};
+use crate::vector::Vectors;
 use openssl_sys as ssl;
 use std::ffi::CString;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -166,8 +167,14 @@ impl Sock {
     }
 
     fn vector(&self, iov: &mut [libc::iovec], write: bool, all: bool) -> isize {
-        let count = c_int::try_from(iov.len()).unwrap();
-        let mut vector = unsafe { IoVector::new(iov.as_ptr(), count, write) }.expect("IOVector");
+        let (at, count) = (iov.as_mut_ptr(), iov.len());
+        // An iovec is an `IoSlice`'s layout, over the caller's live buffers.
+        let vectors = if write {
+            Vectors::Write(unsafe { core::slice::from_raw_parts(at.cast(), count) })
+        } else {
+            Vectors::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), count) })
+        };
+        let mut vector = IoVector::new(vectors).expect("IOVector");
         swr_v1_hook_uring_vector(&self.ops, &mut vector, all)
     }
 

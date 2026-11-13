@@ -361,16 +361,6 @@ impl EventData {
     }
 }
 
-/// [`TaskBuffer::pack`] into the task at `task`.
-///
-/// # Safety
-/// `task` is a writable `EventData`.
-pub unsafe fn task_pack(task: *mut EventHead, data: &[u8]) -> bool {
-    // SAFETY: as the caller promises; a `TaskBuffer` is an `EventData` whose
-    // payload may be uninitialized.
-    unsafe { &mut *task.cast::<TaskBuffer>() }.pack(data)
-}
-
 /// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
 /// bytes it counts (the payload, or a temporary file's `PacketTask`).
 /// [`Packed::from_raw`] is the one unsafe step. It is laid out as the pointer, so a
@@ -715,7 +705,7 @@ mod tests {
             let task = buf.as_mut_ptr().cast::<EventHead>();
             let event = task.cast::<EventData>();
             swr_v1_core_set_current_task_id(41);
-            assert!(unsafe { task_pack(task, b"hello") });
+            assert!(unsafe { &mut *task.cast::<TaskBuffer>() }.pack(b"hello"));
             let head = unsafe { &*task };
             assert_eq!(
                 (head.fd, head.len, head.kind, head.ext_flags),
@@ -741,7 +731,7 @@ mod tests {
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
             let event = task.cast::<EventData>();
-            assert!(unsafe { task_pack(task, &data) });
+            assert!(unsafe { &mut *task.cast::<TaskBuffer>() }.pack(&data));
             let head = unsafe { &*task };
             assert_eq!(
                 (head.len as usize, head.ext_flags),

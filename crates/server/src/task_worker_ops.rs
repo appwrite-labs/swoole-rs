@@ -13,7 +13,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods::{set_worker_type, swoole_set_worker_id, worker_set_max_request};
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{EventHead, task_pack};
+use swoole_rs_process::task_file::TaskBuffer;
 use swoole_rs_process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
 use swoole_rs_process::workers::ops::{
     LOG_INVALID_SOURCE, LOG_READ_TASK, LOG_RESULT_WRITE, LOG_UNKNOWN_COMMAND, OP_ADD_REQUEST_COUNT,
@@ -315,10 +315,10 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             } else {
                 ctx.result_slot().cast()
             };
-            let packed = ctx.packed.cast::<EventHead>();
-            // SAFETY: an `EventData` (the context's, or the source's result slot) and
-            // the result's bytes.
-            u64::from(unsafe { task_pack(packed, ctx.data) })
+            let packed = ctx.packed.cast::<TaskBuffer>();
+            // SAFETY: a writable `EventData` (the context's, or the source's result
+            // slot), which a `TaskBuffer` is; its payload may be uninitialized.
+            u64::from(unsafe { &mut *packed }.pack(ctx.data))
         }
         OP_ZERO_RESULT => {
             ctx.edit_packed(|packed| packed.len = 0);

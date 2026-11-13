@@ -5,7 +5,6 @@
 use core::ffi::{c_int, c_void};
 use core::ptr::null_mut;
 use core::sync::atomic::Ordering;
-use std::sync::Arc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::WorkerType;
 
@@ -75,7 +74,7 @@ impl Context<'_> {
     fn tables(&self) -> &crate::records::ServerTables {
         self.state().tables_ref()
     }
-    fn workers(&self) -> ServerWorkers {
+    fn workers(&self) -> ServerWorkers<'_> {
         self.server().workers()
     }
     /// `serv->get_all_worker_num()`.
@@ -249,7 +248,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_WORKER_THREAD_START => {
-            let thread = Arc::as_ptr(ctx.manager()?.thread(slot)).cast_mut().cast();
+            let thread = ctx.manager()?.thread(slot);
             let mut main = (*ctx, arg);
             // SAFETY: the slot's live thread, and `thread_main` over the context it lends.
             unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };

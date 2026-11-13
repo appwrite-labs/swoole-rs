@@ -81,14 +81,10 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(atomic_minit => register);
-
 /// `php_swoole_atomic_minit`: register both classes.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "minit! raises the bailout a MINIT body returns"
-)]
-fn register(minit: &Minit) -> Result<(), swoole_rs_zend::bailout::Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn atomic_minit(minit: &Minit) -> Result<(), swoole_rs_zend::bailout::Bailout> {
     minit.register_object::<Atomic>(c"Swoole\\Atomic", &ATOMIC_METHODS.0, 0);
     minit.register_object::<Long>(c"Swoole\\Atomic\\Long", &LONG_METHODS.0, 0);
     Ok(())

@@ -47,9 +47,10 @@ pub use interfaces::sys_warning;
 pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
     CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
-    RSHUTDOWN_BEGIN, RSHUTDOWN_END, codecs, display_errors, enable_library, families, globals,
-    load_library, php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown,
-    swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+    ProcessSteps, RSHUTDOWN_BEGIN, RSHUTDOWN_END, RuntimeSteps, codecs, display_errors,
+    enable_library, families, globals, load_library, php_swoole_register_shutdown_function,
+    swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
+    zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
@@ -59,7 +60,7 @@ pub use serialize::{serialize, unserialize, unserialize_from};
 pub use swoole_rs_corebase::{Switch, built_with};
 
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, c_int},
     ptr,
     sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering},
 };
@@ -114,15 +115,13 @@ pub fn swoole_fatal_error(
     code: c_int,
     message: &CStr,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    /// The hook, from the shim's `zend_try`, through this frame, which owns nothing.
-    unsafe extern "C" fn fatal(code: c_int, _: c_int, message: *const c_char) {
-        // SAFETY: `report_code`'s NUL-terminated message.
-        let message = unsafe { CStr::from_ptr(message) };
-        // SAFETY: as above.
-        unsafe { swoole_rs_corebase::fatal_error(code, message) };
-    }
-    // SAFETY: `fatal` is a C-ABI reporter.
-    unsafe { swoole_rs_zend::bailout::report_code(fatal, code, 0, message) }
+    // Nothing is reported while a bailout is pending.
+    swoole_rs_zend::bailout::outcome(())?;
+    // SAFETY: as upstream raises it; the bailout jumps over this closure only,
+    // which holds a number and a borrow.
+    let fatal = || unsafe { swoole_rs_corebase::fatal_error(code, message) };
+    // SAFETY: the body owns nothing that needs a drop, and nor does what it calls.
+    unsafe { swoole_rs_zend::bailout::trap_with(fatal) }
 }
 
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the

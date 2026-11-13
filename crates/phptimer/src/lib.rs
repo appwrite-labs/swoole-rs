@@ -52,11 +52,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(minit => register);
-
 /// MINIT: `Swoole\Timer` (not instantiable) and the `swoole_timer_*` functions,
 /// `Swoole\Timer\Iterator` (an `ArrayIterator`) and the `SWOOLE_TIMER_*` constants.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&TIMER, c"Swoole\\Timer", &METHODS.0);
     minit.function_aliases(&TIMER, &METHODS.0, &ALIASES)?;
     let parent = minit.array_iterator();

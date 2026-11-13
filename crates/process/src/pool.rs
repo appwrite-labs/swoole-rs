@@ -3,8 +3,8 @@
 //! buffer) and the three worker loops over it (`SW_PROTOCOL_TASK`, `_STREAM` and
 //! `_MESSAGE`), plus the master's side: picking an idle worker and sending it a
 //! message. Rust owns the state, each loop's receive, framing, error policy and
-//! reply. Native code lends its objects through [`PoolNative`]: the queue's
-//! `msgrcv`/`msgsnd`, the sockets' blocking calls (which wait and dispatch
+//! reply, and the pool's queue's `msgrcv`/`msgsnd`. Native code lends its objects
+//! through [`PoolNative`]: the sockets' blocking calls (which wait and dispatch
 //! signals), the message bus, the timers and the callbacks into the user's code.
 //!
 //! A hook that can reach PHP (a callback, a signal handler run while a socket
@@ -255,7 +255,9 @@ struct Worker<'a> {
 
 impl Worker<'_> {
     const fn ipc(&mut self) -> &mut PoolIpc {
-        // SAFETY: `pool_run`'s live handle, borrowed until the next callback at most.
+        // SAFETY: `pool_run` found its live pool's IPC state there, not null: the
+        // field is crate-private, written by `create` and cleared by `destroy`, which
+        // no loop reaches. Borrowed until the next callback at most.
         unsafe { &mut *self.ipc }
     }
 
@@ -391,25 +393,21 @@ impl Worker<'_> {
         if let Some(word) = out.get_mut(1 + HEAD_SERVER_FD / 8) {
             *word = server_fd << (8 * (HEAD_SERVER_FD % 8));
         }
-        let base = out.as_mut_ptr().cast::<u8>();
-        let buf = base.wrapping_add(MTYPE);
+        let mut buf = out.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE);
 
         while self.running() {
             let n = match mode {
                 Mode::Queue => {
                     // The received mtype stays in `out` for the next receive, as upstream.
-                    let call = self.io(
-                        |native, call| native.queue_pop(call),
-                        ptr::null_mut(),
-                        base,
-                        event_size,
-                        0,
-                    )?;
-                    if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_MSGRCV, call.error, 0, 0);
+                    let call = self.call();
+                    let (n, error) = trapped(|| call.pool().queue_pop(&mut out, event_size))?;
+                    // The receive borrowed `out`: its payload's address again.
+                    buf = out.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE);
+                    if n < 0 && fatal(error) {
+                        self.warn(WARN_MSGRCV, error, 0, 0);
                         break;
                     }
-                    call.result
+                    n
                 }
                 Mode::Socket => {
                     let socket = match self.accept()? {
@@ -493,22 +491,20 @@ impl Worker<'_> {
         while self.running() {
             let (data, n) = match mode {
                 Mode::Queue => {
-                    let call = self.io(
-                        |native, call| native.queue_pop(call),
-                        ptr::null_mut(),
-                        packet,
-                        MSGMAX,
-                        0,
-                    )?;
-                    if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_MSGRCV, call.error, 0, 0);
+                    let call = self.call();
+                    let node = &mut self.ipc().packet;
+                    let (n, error) = trapped(|| call.pool().queue_pop(node, MSGMAX))?;
+                    if n < 0 && fatal(error) {
+                        self.warn(WARN_MSGRCV, error, 0, 0);
                         break;
                     }
-                    self.warn(TRACE_POP, 0, call.result as i64, 0);
-                    if let Some(mtype) = self.ipc().packet.first_mut() {
+                    self.warn(TRACE_POP, 0, n as i64, 0);
+                    let node = &mut self.ipc().packet;
+                    if let Some(mtype) = node.first_mut() {
                         *mtype = 0;
                     }
-                    (packet.wrapping_add(MTYPE), call.result)
+                    // The receive borrowed the packet: its payload's address again.
+                    (node.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE), n)
                 }
                 Mode::Socket => {
                     let socket = match self.accept()? {
@@ -850,11 +846,11 @@ fn mode(ipc_mode: IpcMode) -> Mode {
     }
 }
 
-/// What a worker loop needs to know about its pool.
-pub struct PoolLoop {
-    pub ipc: *mut PoolIpc,
-    pub pool: *mut c_void,
-    pub worker: *mut c_void,
+/// What a worker loop needs to know about its pool, which holds the loop's IPC
+/// state, and its worker.
+pub struct PoolLoop<'a> {
+    pub pool: crate::process_pool::PoolRef<'a>,
+    pub worker: Record<'a>,
     pub worker_id: u32,
     /// `use_msgqueue`/`use_socket` as an IPC mode.
     pub ipc_mode: IpcMode,
@@ -866,17 +862,19 @@ pub struct PoolLoop {
 
 /// `ProcessPool::run_with_task_protocol`/`_stream_protocol`/`_message_protocol`
 /// (`protocol` is `SW_PROTOCOL_*`), between `at_worker_enter` and
-/// `at_worker_exit`: [`DONE`], or [`BAILED`] to raise at once.
-///
-/// # Safety
-/// `pool_loop` describes a live pool, worker and IPC state for this call.
+/// `at_worker_exit`: [`DONE`] (at once for a pool `create` never made, which has no
+/// IPC state), or [`BAILED`] to raise at once.
 #[must_use]
-pub unsafe fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop, protocol: c_int) -> c_int {
+pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int {
+    let ipc = pool_loop.pool.record().ipc;
+    if ipc.is_null() {
+        return DONE;
+    }
     let mut worker = Worker {
         native,
-        ipc: pool_loop.ipc,
-        pool: pool_loop.pool,
-        worker: pool_loop.worker,
+        ipc,
+        pool: pool_loop.pool.raw().cast(),
+        worker: pool_loop.worker.raw().cast(),
     };
     let mode = mode(pool_loop.ipc_mode);
     let result = match protocol {
@@ -941,11 +939,8 @@ pub unsafe fn swr_v1_process_worker_send(
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
         native.warn(&call, TRACE_PUSH, length.c_cast::<i64>(), 0);
-        call.data = base.cast();
-        call.length = length;
-        // The native queue's push, which cannot reach PHP.
-        native.queue_push(&mut call);
-        return if call.result != 0 {
+        // The queue's push, which cannot reach PHP.
+        return if call.pool().queue_push(&message, length) {
             length.cast_signed()
         } else {
             -1
@@ -1169,8 +1164,6 @@ mod tests {
         fn end(&self) {
             with(|s| s.ends += 1);
         }
-        fn queue_pop(&self, _: &mut PoolCall) {}
-        fn queue_push(&self, _: &mut PoolCall) {}
         fn accept(&self, c: &mut PoolCall) {
             let next = with(|s| s.accepts.pop());
             c.socket = next.map_or(ptr::null_mut(), |id| id as *mut c_void);
@@ -1241,18 +1234,20 @@ mod tests {
             *s = script;
             s.ipc = ipc as usize;
         });
+        let mut pool = crate::process_pool::PoolRecord::empty();
+        pool.ipc = ipc;
+        let pool = std::cell::UnsafeCell::new(pool);
+        let mut worker = crate::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {
-            ipc,
-            pool: ptr::null_mut(),
-            worker: ptr::null_mut(),
+            pool: (&pool).into(),
+            worker: (&mut worker).into(),
             worker_id: 3,
             ipc_mode,
             schedule_by_sysvmsg: false,
             max_packet_size: 64,
             event_size: 128,
         };
-        // SAFETY: a live handle; the scripted hooks read no pool or worker.
-        assert_eq!(unsafe { pool_run(&Scripted, &pool_loop, protocol) }, DONE);
+        assert_eq!(pool_run(&Scripted, &pool_loop, protocol), DONE);
         // SAFETY: as above.
         pool_ipc_free(*unsafe { Box::from_raw(ipc) }, |_| {});
         with(std::mem::take)

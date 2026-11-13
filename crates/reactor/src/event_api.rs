@@ -88,28 +88,6 @@ pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_i
     unsafe { reactor_change(current(), socket, 0, events) }
 }
 
-/// `int swoole_event_set(Socket *socket, int events)`.
-///
-/// # Safety
-/// As `Reactor::set`, with a live `SwooleTG.reactor`.
-pub unsafe fn swoole_event_set(socket: *mut SocketRecord, events: c_int) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { reactor_change(current(), socket, 1, events) }
-}
-
-/// `int swoole_event_del(Socket *socket)`.
-///
-/// # Safety
-/// As `Reactor::del`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z16swoole_event_delPN6swoole7network6SocketE")
-)]
-pub unsafe extern "C" fn swoole_event_del(socket: *mut SocketRecord) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { reactor_change(current(), socket, 2, 0) }
-}
-
 /// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; -1 without one.
 fn change(socket: crate::Socket<'static>, op: u32, events: c_int) -> c_int {
     running().map_or(-1, |reactor| {
@@ -124,15 +102,15 @@ pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> c_int {
     change(socket, 0, events)
 }
 
-/// [`swoole_event_set`] of a socket that is never freed while registered (kqueue's set
-/// registers its address again); -1 without a reactor.
+/// `int swoole_event_set(Socket *socket, int events)` of a socket that is never freed
+/// while registered (kqueue's set registers its address again); -1 without a reactor.
 #[must_use]
 pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> c_int {
     change(socket, 1, events)
 }
 
-/// [`swoole_event_del`]: -1 without a reactor. Any live socket: a removal leaves its
-/// address nowhere.
+/// `int swoole_event_del(Socket *socket)`: -1 without a reactor. Any live socket: a
+/// removal leaves its address nowhere.
 #[must_use]
 pub fn event_del(socket: crate::Socket<'_>) -> c_int {
     running().map_or(-1, |reactor| {

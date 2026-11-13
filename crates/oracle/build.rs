@@ -482,6 +482,25 @@ fn hooks_async() {
     fs::write(out("hooks_async.inc"), parts.join("\n") + "\n").unwrap();
 }
 
+/// `swoole_type_size`, `swoole_dec2hex`, `swoole_hex2dec`, `swoole_version_compare`,
+/// `swoole_common_divisor`, `swoole_common_multiple`, `swoole_itoa` and `swoole_get_env`
+/// from the pinned base.cc, copied unchanged for `shim/corebase.cc`.
+fn corebase() {
+    let base = fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc");
+    let text = [
+        slice(&base, "int swoole_type_size(char type)", "#ifndef RAND_MAX"),
+        slice(&base, "int swoole_version_compare(", "size_t sw_snprintf("),
+        slice(&base, "int swoole_itoa(", "int swoole_shell_exec("),
+        slice(
+            &base,
+            "bool swoole_get_env(",
+            "int swoole_get_systemd_listen_fds(",
+        ),
+    ]
+    .concat();
+    fs::write(out("corebase.inc"), text).unwrap();
+}
+
 /// The hashes from the pinned misc.cc, and from log.cc `get_pretty_name` (as `pretty`)
 /// and the level clamp, rotation format, level label, line and microsecond formatting
 /// out of `set_level`, `gen_real_file` and `put` wrapped as functions, with base.cc's
@@ -676,6 +695,7 @@ fn main() {
     clients();
     hooks_async();
     utilities();
+    corebase();
     locks();
     // The hashes promote `char`, so each signedness is its own engine.
     for engine in ["signed", "unsigned"] {
@@ -687,6 +707,10 @@ fn main() {
             .file("shim/utilities.cc")
             .compile(&format!("swoole_oracle_utilities_{engine}"));
     }
+    cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/corebase.cc")
+        .compile("swoole_oracle_corebase");
     cpp()
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/hooks_async.cc")

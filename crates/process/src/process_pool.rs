@@ -361,6 +361,20 @@ impl<'a> PoolRef<'a> {
             .unwrap_or(0)
     }
 
+    /// `queue->pop(node, size)` into a `QueueNode` held in words, and `errno` right
+    /// after it; -1 without a queue.
+    pub(crate) fn queue_pop(self, node: &mut [u64], size: usize) -> (isize, c_int) {
+        let result = self.with_queue(|queue| queue.pop_words(node, size));
+        (result.unwrap_or(-1), swoole_rs_corebase::sys::errno())
+    }
+
+    /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
+    /// queue.
+    pub(crate) fn queue_push(self, node: &[u64], length: usize) -> bool {
+        self.with_queue(|queue| queue.push_words(node, length))
+            .unwrap_or(false)
+    }
+
     /// `f` over the pool's message queue; `None` without one.
     fn with_queue<R>(self, f: impl FnOnce(&swoole_rs_ossupport::QueueRecord) -> R) -> Option<R> {
         let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
@@ -599,10 +613,6 @@ pub trait PoolNative: Sync {
     fn running(&self, call: &PoolCall) -> bool;
     /// Run the expired timers and dispatch the pending signals.
     fn end(&self);
-    /// `queue->pop(data, length)`.
-    fn queue_pop(&self, call: &mut PoolCall);
-    /// `queue->push(data, length)`: 1 when pushed.
-    fn queue_push(&self, call: &mut PoolCall);
     /// The stream listener's `accept()`: the connection in `socket`.
     fn accept(&self, call: &mut PoolCall);
     /// `socket->recv_sync(data, length, flags)`.
@@ -841,7 +851,7 @@ pub(crate) trait PoolHost {
     /// Run `CB_*` inside the trap: its result, or [`Bailed`].
     fn callback(&mut self, cb: c_int, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
-    fn run_loop(&mut self, pool_loop: &PoolLoop, protocol: c_int) -> c_int;
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int;
     /// The native side, which tests leave out.
     fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
@@ -884,9 +894,8 @@ impl PoolHost for Native<'_> {
         Ok(call.result)
     }
 
-    fn run_loop(&mut self, pool_loop: &PoolLoop, protocol: c_int) -> c_int {
-        // SAFETY: the loop describes this live pool, its worker and IPC state.
-        unsafe { pool_run(self.native, pool_loop, protocol) }
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int {
+        pool_run(self.native, pool_loop, protocol)
     }
 
     fn native(&self) -> Option<&dyn PoolNative> {
@@ -1603,10 +1612,11 @@ impl<H: PoolHost> Pool<'_, H> {
             // A pool `create` never made.
             return SW_ERR;
         }
-        let Some(worker_id) = self.record().own(worker).map(Worker::id) else {
+        let Some(own) = self.p.worker_of(worker) else {
             // None of the pool's workers.
             return SW_ERR;
         };
+        let worker_id = own.id();
         let ipc_mode = if self.use_msgqueue() {
             IpcMode::MsgQueue
         } else if self.use_socket() {
@@ -1615,9 +1625,8 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::UnixSock
         };
         let pool_loop = PoolLoop {
-            ipc: self.ipc(),
-            pool: self.p.raw().cast(),
-            worker: worker.cast(),
+            pool: self.p,
+            worker: own,
             worker_id,
             ipc_mode,
             schedule_by_sysvmsg: self.schedule_by_sysvmsg(),
@@ -2192,7 +2201,7 @@ mod tests {
                 Ok(0)
             }
         }
-        fn run_loop(&mut self, _: &PoolLoop, _: c_int) -> c_int {
+        fn run_loop(&mut self, _: &PoolLoop<'_>, _: c_int) -> c_int {
             crate::pool::DONE
         }
         fn native(&self) -> Option<&dyn PoolNative> {

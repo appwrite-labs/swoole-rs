@@ -190,7 +190,6 @@ pub(crate) fn clean() {
 }
 
 /// `php_swoole_process_rshutdown`.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_process_rshutdown() {
     clean();
     bailout::finish();

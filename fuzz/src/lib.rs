@@ -284,10 +284,9 @@ pub fn http_url_decode(bytes: &[u8]) {
     let mut ours = theirs.clone();
     // SAFETY: `theirs` owns `length + 1` bytes.
     let want = unsafe { upstream_http::url_decode(theirs.as_mut_ptr(), bytes.len()) };
-    // SAFETY: `ours` owns `length + 1` bytes.
-    let written = unsafe {
-        swoole_rs_http_ffi::http_server::url_decode(ours.as_mut_ptr().cast(), bytes.len())
-    };
+    let written = swoole_rs_http::url_decode(&mut ours[..bytes.len()]);
+    // Upstream terminates what it decoded; the Rust decoder leaves that to its caller.
+    ours[written] = 0;
     assert_eq!(written, want, "length for {bytes:?}");
     assert!(theirs == ours, "decoded bytes for {bytes:?}");
 }

@@ -52,6 +52,12 @@ The status, method, URL and boundary helpers are Rust, so crates/http-ffi's
 symbols that no C or C++ linked; the tests call crates/http's `method`, `url_encode` and
 `boundary`, which were their bodies. `boundary_outputs_untouched_on_a_miss` checked the
 facade's two out-pointers and went with it.
+`url_decode`'s facade (`char *` and a length) had only the tests and the `http_url_decode`
+fuzz target as callers; they call crates/http's `url_decode` over a slice. The facade
+added the terminator upstream writes after the decoded bytes: `encode_decode_*` and
+`url_decode_decodes_in_place` write it themselves to keep upstream's `ASSERT_STREQ`, the
+fuzz target writes it before comparing whole buffers with upstream's, and
+`pin_helpers`' `decode` no longer asserts it.
 
 ### Ported GoogleTests
 
