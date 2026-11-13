@@ -972,11 +972,23 @@ mod tests {
     }
 
     fn new(socket: &mut CoSocket, how: New, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
+        new_by_code(socket, how as c_int, fd, ty, d, k)
+    }
+
+    /// [`swr_v1_hook_co_socket_new`] with a raw `how`, as native code passes it.
+    fn new_by_code(
+        socket: &mut CoSocket,
+        how: c_int,
+        fd: c_int,
+        ty: c_int,
+        d: c_int,
+        k: c_int,
+    ) -> u32 {
         let owner = (&raw mut *socket).cast();
         // The constructor writes the record again.
         socket.fini();
         let storage = unsafe { &mut *(&raw mut *socket).cast() };
-        swr_v1_hook_co_socket_new(storage, owner, how as c_int, fd, ty, d, k, 0)
+        swr_v1_hook_co_socket_new(storage, owner, how, fd, ty, d, k, 0)
     }
 
     fn option(fd: c_int, level: c_int, name: c_int) -> c_int {
@@ -1085,6 +1097,26 @@ mod tests {
         assert!(socket.socket.get().is_null());
         assert_eq!(socket.sock_fd.get(), -1);
         release(socket);
+    }
+
+    /// An unknown constructor code from native code neither opens a socket nor adopts
+    /// the fd it was given.
+    #[test]
+    fn an_unknown_constructor_kind_opens_and_adopts_nothing() {
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        for how in [-1, 4] {
+            let mut socket = record();
+            assert_eq!(new_by_code(&mut socket, how, fd, 1, 0, 0), 0, "{how}");
+            assert!(socket.socket.get().is_null(), "{how}: no network socket");
+            assert_eq!(socket.sock_fd.get(), -1, "{how}: no fd");
+            release(socket);
+        }
+        // Still the caller's, untouched: blocking and open.
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
+            0
+        );
+        assert_eq!(unsafe { libc::close(fd) }, 0);
     }
 
     #[test]
