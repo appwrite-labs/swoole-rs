@@ -554,8 +554,8 @@ fn relay(bailed: bool) {
 }
 
 /// `SW_OK` / `SW_ERR`.
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// Port-level callbacks the slots choose.
 const ON_CONNECT: c_int = 0;
 const ON_RECEIVE: c_int = 1;

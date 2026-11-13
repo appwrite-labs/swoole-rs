@@ -13,8 +13,8 @@ use std::ffi::{c_int, c_void};
 use std::rc::Rc;
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const EVENT_READ: c_int = 512;
-const EVENT_WRITE: c_int = 1024;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// `SwooleTG.reactor`.
 fn current() -> *mut c_void {

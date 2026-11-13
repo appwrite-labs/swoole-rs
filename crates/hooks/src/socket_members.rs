@@ -32,7 +32,7 @@ use swoole_rs_tls::upstream::{
 };
 
 /// `SW_EVENT_WRITE`.
-const WRITE: u32 = 1 << 10;
+const WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {

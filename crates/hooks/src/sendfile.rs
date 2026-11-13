@@ -4,8 +4,7 @@
 //! the file and writes the errors.
 use core::ffi::c_int;
 
-/// `SW_SENDFILE_CHUNK_SIZE`.
-const CHUNK: usize = 65536;
+const CHUNK: usize = swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as usize;
 /// Outcomes besides 0 (all sent).
 pub(crate) const ZERO: c_int = 1;
 pub(crate) const FAILED: c_int = 2;
@@ -46,8 +45,8 @@ pub(crate) fn send_range(
 /// `SW_BUFFER_SIZE_BIG`, `UringSocket::ssl_sendfile`'s stack buffer.
 pub const TLS_CHUNK: usize = 65536;
 /// `swReturnCode`'s `SW_CLOSE` and `SW_ERROR`, as `catch_write_error` classifies.
-const SW_CLOSE: c_int = 3;
-const SW_ERROR: c_int = 4;
+const SW_CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
+const SW_ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
 /// [`tls_sendfile`]'s warnings: none, `pread() failed`, `write() failed`.
 pub const TLS_WARN_PREAD: c_int = 1;
 pub const TLS_WARN_WRITE: c_int = 2;

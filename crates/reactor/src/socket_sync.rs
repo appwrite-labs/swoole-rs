@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`'s `SW_WAIT` (from `catch_error`).
-const WAIT: c_int = 2;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 /// `SW_ERROR_SOCKET_POLL_TIMEOUT`.
-const POLL_TIMEOUT: c_int = 6002;
+const POLL_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 
 /// `send`: everything, retrying short writes.
 pub const SYNC_SEND: c_int = 0;

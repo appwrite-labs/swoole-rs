@@ -14,7 +14,7 @@
 #define SW_LOG_DATE_STRLEN 128
 #define SW_LOG_DEFAULT_DATE_FORMAT "%F %T"
 
-// Explicit, because crates/tls's tests read SW_LOG_NOTICE's value here.
+// Explicit, because crates/corebase's tests compare them with its LogLevel.
 enum {
     SW_LOG_DEBUG = 0,
     SW_LOG_TRACE = 1,

@@ -14,15 +14,15 @@ use crate::view;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) mod native;
 
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_SERVER_EVENT_CLOSE`,
 /// `Server::TASK_IPC_UNIXSOCK` and `SW_SSL_STATE_READY`.
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
 const EVENT_CLOSE: c_int = 4;
 const TASK_IPC_UNIXSOCK: u8 = 1;
-const SSL_READY: u32 = 1;
+const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
 
 /// `Socket::is_stream(type)`.
 fn is_stream(port: view::Port<'_>) -> bool {

@@ -23,7 +23,7 @@ use swoole_rs_tls::upstream::write_sync;
 
 /// `SW_FD_AIO`, `SW_EVENT_READ` and `Reactor::EXIT_CONDITION_AIO_TASK`.
 const FD_AIO: c_int = 5;
-const EVENT_READ: c_int = 1 << 9;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const EXIT_CONDITION_AIO_TASK: c_int = 5;
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_WRONG_OPERATION`, `SW_ERROR_AIO_BAD_REQUEST`
 /// and `SW_ERROR_AIO_CANCELED`.

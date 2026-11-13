@@ -42,12 +42,12 @@ const PROXY_HTTP: c_int = 2;
 const LAST_ERROR: c_int = -1;
 /// `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`; `swReturnCode`'s `SW_WAIT`
 /// and `SW_READY`.
-const SSL_STATE_READY: c_int = 1;
-const SSL_STATE_WAIT_STREAM: c_int = 2;
-const WAIT: c_int = 2;
-const READY: c_int = 5;
+const SSL_STATE_READY: c_int = swoole_rs_tls::SslState::SW_SSL_STATE_READY as c_int;
+const SSL_STATE_WAIT_STREAM: c_int = swoole_rs_tls::SslState::SW_SSL_STATE_WAIT_STREAM as c_int;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
+const READY: c_int = swoole_rs_corebase::constants::ReturnCode::SW_READY as c_int;
 /// `SW_EVENT_RDWR`.
-const RDWR: u32 = (1 << 9) | (1 << 10);
+const RDWR: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_RDWR as u32;
 /// `SW_SOCKS5_STATE_HANDSHAKE` and `SW_SOCKS5_STATE_READY`, crates/clients's (a test
 /// compares them).
 const SOCKS5_HANDSHAKE: u8 = 1;

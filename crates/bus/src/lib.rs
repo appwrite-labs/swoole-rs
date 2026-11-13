@@ -45,9 +45,9 @@ const HEAD: usize = size_of::<BusHead>();
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
 /// `swReturnCode`'s `SW_WAIT`.
-const WAIT: c_int = 2;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 /// `swReturnCode`'s `SW_REDUCE_SIZE`.
-const REDUCE_SIZE: c_int = 7;
+const REDUCE_SIZE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_REDUCE_SIZE as c_int;
 /// `SW_DEFAULT_ALIGNMENT`.
 const ALIGNMENT: usize = size_of::<std::ffi::c_ulong>();
 

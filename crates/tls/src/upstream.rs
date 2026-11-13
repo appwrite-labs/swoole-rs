@@ -37,9 +37,8 @@ unsafe extern "C" {
     safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
 }
 
-/// `SW_LOG_NOTICE` (a test reads it from `native/utilities/swoole_log.h`), `SW_LOG_WARNING`,
-/// `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
-const LOG_NOTICE: c_int = 3;
+/// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = 702;
 const INVALID_PARAMS: c_int = 505;
@@ -1418,15 +1417,6 @@ pub extern "C-unwind" fn make_server_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn log_notice_is_the_native_level() {
-        let header = include_str!("../../../native/utilities/swoole_log.h");
-        assert!(
-            header.contains(&format!("SW_LOG_NOTICE = {LOG_NOTICE},")),
-            "native/utilities/swoole_log.h's SW_LOG_NOTICE"
-        );
-    }
 
     #[test]
     fn peer_prints_the_address_as_upstream() {

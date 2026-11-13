@@ -3,8 +3,8 @@
 use crate::registry::Registry;
 use std::ffi::{c_int, c_void};
 
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// `translate_events_to_poll`: the poll bits for swoole `events`.
 #[must_use]
@@ -76,7 +76,8 @@ mod tests {
 
     #[test]
     fn translates_events_like_upstream() {
-        const SW_EVENT_ERROR: c_int = 1 << 11;
+        const SW_EVENT_ERROR: c_int =
+            swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
         assert_eq!(swr_v1_reactor_poll_events_to(0), 0);
         assert_eq!(swr_v1_reactor_poll_events_to(SW_EVENT_READ), libc::POLLIN);
         assert_eq!(

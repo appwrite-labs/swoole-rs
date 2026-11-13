@@ -24,9 +24,9 @@ use crate::reactor_ops::{ReactorContext, ThreadRecord};
 use crate::{ServerState, factory, server_methods as methods, view};
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
-const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const THREAD_REACTOR: u8 = 2;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const FD_PIPE: c_int = 3;
 /// `Server::CLOSE_ACTIVELY`.
 const CLOSE_ACTIVELY: c_int = 1 << 2;

@@ -15,7 +15,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, errno};
 
 const SW_LOG_INFO: c_int = 2;
-const SW_LOG_NOTICE: c_int = 3;
+const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SW_LOG_ERROR: c_int = 5;
 const SW_LOG_DATE_STRLEN: usize = 128;
 const SW_LOG_BUFFER_SIZE: usize = 16384 + 256;

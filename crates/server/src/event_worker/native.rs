@@ -56,7 +56,7 @@ const HOOK_BEFORE_WORKER_STOP: c_int = 8;
 const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
-const WARNING: c_int = 4;
+const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const INVALID_PARAMS: c_int = 505;
 const WRONG_OPERATION: c_int = 509;
 const SESSION_DISCARD_TIMEOUT_DATA: c_int = 1007;

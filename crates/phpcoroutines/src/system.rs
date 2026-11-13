@@ -28,7 +28,7 @@ unsafe extern "C" {
 }
 
 /// `SW_EVENT_READ`.
-const EVENT_READ: c_long = 1 << 9;
+const EVENT_READ: c_long = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_long;
 /// `SW_FILE_LOCK`, the `FILE_LOCK` constant.
 const FILE_LOCK: c_long = libc::LOCK_EX as c_long;
 /// `SW_FILE_APPEND`: PHP's `FILE_APPEND`.

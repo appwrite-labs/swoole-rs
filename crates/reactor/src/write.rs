@@ -11,7 +11,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::CCast;
 
 /// `SwReturnCode::SW_WAIT`.
-const SW_WAIT: c_int = 2;
+const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]

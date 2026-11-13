@@ -16,7 +16,8 @@ const ADD: u32 = 0;
 const DEL: u32 = 2;
 const REMOVE_READ: u32 = 4;
 /// `SW_EVENT_READ`.
-pub(crate) const EVENT_READ: c_int = 1 << 9;
+pub(crate) const EVENT_READ: c_int =
+    swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 
 /// A live `Reactor`, used by the thread that runs it.
 #[derive(Clone, Copy)]
