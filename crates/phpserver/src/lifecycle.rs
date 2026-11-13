@@ -16,7 +16,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_phpcoroutines::Coroutine;
-use swoole_rs_process::worker_record::WorkerRecord;
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
@@ -179,12 +179,12 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
     }
     let mut added = -3;
     let add = || {
-        let worker = checked_worker(process).cast::<WorkerRecord>();
-        // SAFETY: a live server that has not started, and the process's worker.
-        let id = unsafe { swoole_rs_server::worker_methods::add_worker(serv, worker) };
+        // SAFETY: the process's live worker, which the server's copy of the
+        // Process object keeps for the server's life.
+        let worker = unsafe { Worker::new(checked_worker(process).cast()) };
+        let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
         added = if id >= 0 {
-            // SAFETY: the process's live worker.
-            unsafe { &mut *worker }.set_user_data(user_data.cast());
+            worker.set_user_data(user_data.cast());
             id.into()
         } else {
             -1
