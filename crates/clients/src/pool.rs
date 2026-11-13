@@ -43,13 +43,6 @@ pub struct Pool<T> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct OutOfMemory;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct PoolState {
-    /// 0 absent, 1 present and empty, 2 present and nonempty.
-    pub kind: u32,
-    pub length: usize,
-}
-
 impl<T> Pool<T> {
     /// An empty pool; key and queue allocations stay lazy and fallible.
     #[must_use]
@@ -90,14 +83,11 @@ impl<T> Pool<T> {
         Ok(())
     }
 
+    /// How many tokens `key` holds, or `None` without an entry.
     #[must_use]
-    pub fn state(&self, key: &[u8]) -> PoolState {
-        self.queues
-            .get(key)
-            .map_or_else(PoolState::default, |queue| PoolState {
-                kind: if queue.is_empty() { 1 } else { 2 },
-                length: queue.len(),
-            })
+    pub fn queued(&self, key: &[u8]) -> Option<usize> {
+        let queue = self.queues.get(key)?;
+        Some(queue.len())
     }
 
     /// The oldest token under `key`, retaining the entry when it empties.
@@ -137,11 +127,8 @@ mod tests {
                 _ => OUT_OF_MEMORY,
             }
         }
-        fn state(&self, key: &[u8]) -> PoolState {
-            self.0
-                .as_ref()
-                .map(|pool| pool.state(key))
-                .unwrap_or_default()
+        fn queued(&self, key: &[u8]) -> Option<usize> {
+            self.0.as_ref().and_then(|pool| pool.queued(key))
         }
         fn take(&mut self, key: &[u8]) -> *mut c_void {
             self.0
@@ -174,18 +161,18 @@ mod tests {
         for budget in 0..=2 {
             allocation_budget(budget);
             assert_eq!(pool.push(key, first), OUT_OF_MEMORY);
-            assert_eq!(pool.state(key).kind, u32::from(budget == 2));
+            assert_eq!(pool.queued(key), (budget == 2).then_some(0));
         }
         allocation_budget(-1);
         assert_eq!(pool.push(key, first), OK);
         assert_eq!(pool.push(key, second), OK);
-        assert_eq!(pool.state(key).length, 2);
+        assert_eq!(pool.queued(key), Some(2));
         assert_eq!(pool.remove_empty(key), 0);
         assert_eq!(pool.take(key), first);
         assert_eq!(pool.take(key), second);
-        assert_eq!(pool.state(key).kind, 1);
+        assert_eq!(pool.queued(key), Some(0));
         assert_eq!(pool.remove_empty(key), 1);
-        assert_eq!(pool.state(key).kind, 0);
+        assert_eq!(pool.queued(key), None);
     }
 
     #[test]
@@ -196,8 +183,7 @@ mod tests {
             allocation_budget(budget);
             assert_eq!(pool.push(b"fault", token), OUT_OF_MEMORY);
             allocation_budget(-1);
-            assert_eq!(pool.state(b"fault").kind, u32::from(budget == 3));
-            assert_eq!(pool.state(b"fault").length, 0);
+            assert_eq!(pool.queued(b"fault"), (budget == 3).then_some(0));
             assert_eq!(pool.push(b"fault", token), OK);
             assert_eq!(pool.take(b"fault"), token);
             assert_eq!(pool.remove_empty(b"fault"), 1);
@@ -218,11 +204,11 @@ mod tests {
         }
         allocation_budget(0);
         assert_eq!(pool.push(key, token), OUT_OF_MEMORY);
-        assert_eq!(pool.state(key).length, capacity);
+        assert_eq!(pool.queued(key), Some(capacity));
         for _ in 0..capacity {
             assert_eq!(pool.take(key), token);
         }
-        assert_eq!(pool.state(key).kind, 1);
+        assert_eq!(pool.queued(key), Some(0));
         assert!(pool.take(key).is_null());
     }
 
@@ -260,7 +246,7 @@ mod tests {
         {
             let mut pool = Witness(None);
             let mut expected: BTreeMap<&[u8], VecDeque<*mut c_void>> = BTreeMap::new();
-            assert_eq!(pool.state(b"absent").kind, 0);
+            assert_eq!(pool.queued(b"absent"), None);
             assert!(pool.take(b"absent").is_null());
             let mut random = 0x0009_1cd8_1a63_u64;
             let mut checks = 0;
@@ -293,14 +279,9 @@ mod tests {
                     }
                 }
                 for probe in &keys {
-                    let queue = expected.get(probe.as_slice());
-                    let kind = queue.map_or(0, |q| if q.is_empty() { 1 } else { 2 });
                     assert_eq!(
-                        pool.state(probe),
-                        PoolState {
-                            kind,
-                            length: queue.map_or(0, VecDeque::len)
-                        }
+                        pool.queued(probe),
+                        expected.get(probe.as_slice()).map(VecDeque::len)
                     );
                     checks += 1;
                 }
@@ -337,7 +318,7 @@ mod tests {
                     code = 7;
                 }
                 pool.remove_empty(key);
-                if pool.state(key).kind != 0 {
+                if pool.queued(key).is_some() {
                     code = 8;
                 }
                 drop(pool);
@@ -350,7 +331,7 @@ mod tests {
             assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
             assert!(libc::WIFEXITED(status));
             assert_eq!(libc::WEXITSTATUS(status), 0);
-            assert_eq!(pool.state(key).length, 2);
+            assert_eq!(pool.queued(key), Some(2));
             assert_eq!(pool.take(key), pointers[0]);
             assert_eq!(pool.take(key), pointers[1]);
             pool.remove_empty(key);

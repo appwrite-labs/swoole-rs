@@ -7,8 +7,7 @@ use swoole_rs_clients::address::{
 use swoole_rs_clients::dns::{DnsExchange, INVALID_DOMAIN, hosts_lookup, set_hosts_path};
 use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
-    URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode,
-    swr_v1_clients_port,
+    URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode, valid_port,
 };
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED};
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
@@ -502,7 +501,7 @@ fn url_and_port_match_upstream() {
         for connect in [false, true] {
             // SAFETY: no pointers.
             let expected = unsafe { upstream::verify_port(port, connect) };
-            let actual = swr_v1_clients_port(port, u8::from(connect)) != 0;
+            let actual = valid_port(port, connect);
             assert_eq!(actual, expected, "{port} {connect}");
             cases += 1;
         }
