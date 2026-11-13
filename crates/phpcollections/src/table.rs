@@ -13,7 +13,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_memory::{
     members::SharedTable,
-    table::{Column, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table},
+    table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table},
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
@@ -301,9 +301,9 @@ fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool)
     };
     match column.kind {
         // Copied, cut to the column with a warning.
-        TYPE_STRING => row.set_bytes(column, value.applied_string()?.bytes()),
-        TYPE_FLOAT => row.set_number(column, value.applied_double()?.to_bits()),
-        _ => row.set_number(column, (value.applied_long()?).c_cast::<u64>()),
+        ColumnType::String => row.set_bytes(column, value.applied_string()?.bytes()),
+        ColumnType::Float => row.set_number(column, value.applied_double()?.to_bits()),
+        ColumnType::Int => row.set_number(column, (value.applied_long()?).c_cast::<u64>()),
     }
     Some(())
 }
@@ -374,7 +374,7 @@ fn update(call: &Call, subtract: bool) {
         row.clear_row();
     }
     match column.kind {
-        TYPE_STRING => {
+        ColumnType::String => {
             drop(row);
             fatal(
                 E_WARNING,
@@ -386,7 +386,7 @@ fn update(call: &Call, subtract: bool) {
             );
             call.set_bool(false);
         }
-        TYPE_FLOAT => {
+        ColumnType::Float => {
             let Some(by) = by.map_or(Some(1.0), Value::applied_double) else {
                 return;
             };
@@ -396,7 +396,7 @@ fn update(call: &Call, subtract: bool) {
             drop(row);
             set_double(call, value);
         }
-        _ => {
+        ColumnType::Int => {
             let Some(by) = by.map_or(Some(1), Value::applied_long) else {
                 return;
             };
@@ -458,9 +458,9 @@ enum Field<'a> {
 
 fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
     match column.kind {
-        TYPE_STRING => Field::Bytes(row.bytes(column)),
-        TYPE_FLOAT => Field::Double(f64::from_bits(row.number(column))),
-        _ => Field::Long(row.number(column).c_cast::<i64>()),
+        ColumnType::String => Field::Bytes(row.bytes(column)),
+        ColumnType::Float => Field::Double(f64::from_bits(row.number(column))),
+        ColumnType::Int => Field::Long(row.number(column).c_cast::<i64>()),
     }
 }
 

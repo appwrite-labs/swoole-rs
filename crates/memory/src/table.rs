@@ -27,10 +27,31 @@ use std::{ptr, slice};
 use swoole_rs_corebase::CCast;
 use swoole_rs_locks::SharedMutex;
 
-/// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`.
+/// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`: [`ColumnType`]'s codes.
 pub const TYPE_INT: u32 = 1;
 pub const TYPE_FLOAT: u32 = 2;
 pub const TYPE_STRING: u32 = 3;
+
+/// `TableColumn::Type`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnType {
+    Int,
+    Float,
+    String,
+}
+
+impl ColumnType {
+    /// The type a `TYPE_*` code names.
+    #[must_use]
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            TYPE_INT => Some(Self::Int),
+            TYPE_FLOAT => Some(Self::Float),
+            TYPE_STRING => Some(Self::String),
+            _ => None,
+        }
+    }
+}
 /// `SW_TABLE_FLAG_NEW_ROW`, `SW_TABLE_FLAG_CONFLICT`.
 pub const NEW_ROW: i32 = 1;
 pub const CONFLICT: i32 = 2;
@@ -218,9 +239,8 @@ impl Live {
 }
 
 /// A declared column.
-#[repr(C)]
 pub struct Column {
-    pub kind: u32,
+    pub kind: ColumnType,
     /// Bytes in a row: 8 for a number, the capacity plus a 4-byte length for a string.
     pub width: u32,
     /// Offset in the row's data.
@@ -452,14 +472,14 @@ impl Table {
     /// `Table::add_column`. Refused once the table is created: its rows have no
     /// room for another column.
     pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
-        if !(TYPE_INT..=TYPE_STRING).contains(&kind) {
+        let Some(kind) = ColumnType::from_code(kind) else {
             warn(self.warning, b"Table::add_column(): unknown column type");
             return false;
-        }
+        };
         if self.created {
             return false;
         }
-        let width = if kind == TYPE_STRING {
+        let width = if kind == ColumnType::String {
             size.wrapping_add(4).c_cast::<u32>()
         } else {
             8
@@ -1032,7 +1052,7 @@ impl Data {
         let Some(at) = self.slot(column) else {
             return;
         };
-        if column.kind != TYPE_STRING {
+        if column.kind != ColumnType::String {
             if let Some(number) = value.first_chunk::<8>() {
                 // SAFETY: the column's 8 bytes inside the row (`slot`), under its lock.
                 unsafe { at.cast::<[u8; 8]>().write_unaligned(*number) };
@@ -1059,7 +1079,11 @@ impl Data {
     /// `TableColumn::clear()`: an empty string or a zero number.
     fn clear(self, column: &Column) {
         if let Some(at) = self.slot(column) {
-            let width = if column.kind == TYPE_STRING { 4 } else { 8 };
+            let width = if column.kind == ColumnType::String {
+                4
+            } else {
+                8
+            };
             // SAFETY: the column's first `width` bytes inside the row (`slot`).
             unsafe { ptr::write_bytes(at, 0, width) };
         }
@@ -1115,7 +1139,7 @@ impl Locked<'_> {
     /// `TableRow::set_value` of a string column: cut to it with a warning.
     /// Nothing for a number column.
     pub fn set_bytes(&self, column: &Column, value: &[u8]) {
-        if column.kind == TYPE_STRING {
+        if column.kind == ColumnType::String {
             self.set(column, value);
         }
     }
