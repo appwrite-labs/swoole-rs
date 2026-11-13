@@ -4,7 +4,7 @@
 //! The export the gate called is replaced by the safe function that was its body.
 use std::ffi::c_int;
 
-use swoole_rs_clients::http_format::http_format;
+use swoole_rs_clients::http_format::{Format, http_format};
 use swoole_rs_oracle::clients as reference;
 
 /// The pinned call into `output` (none for a null one of no capacity): its result and
@@ -40,7 +40,7 @@ fn native(
 
 /// The Rust formatter phpclients calls, with its error mapped to the errno
 /// `sw_snprintf` sets, from errno 17.
-fn rust(kind: u32, texts: [&[u8]; 4], number: usize, output: &mut [u8]) -> (usize, c_int) {
+fn rust(kind: Format, texts: [&[u8]; 4], number: usize, output: &mut [u8]) -> (usize, c_int) {
     let result = http_format(kind, texts.map(Some), number, output);
     let error = match result.error {
         0 => 17,
@@ -68,20 +68,21 @@ fn bounded_capacities_match_upstream() {
             if length > 2 {
                 b[length - 1] = b':';
             }
-            for kind in 0..6 {
+            for kind in Format::ALL {
                 for capacity in capacities {
                     let (mut x, mut y) = ([0x5a_u8; 4096], [0x5a_u8; 4096]);
-                    let number = if kind == 1 {
+                    let number = if kind == Format::ProxyUri {
                         usize::from(byte) * 257
                     } else {
                         numbers[usize::from(byte) % numbers.len()]
                     };
                     let texts = [&a[..], &b, &c, &d];
-                    let expected = native(kind, texts, number, Some(&mut x[..capacity]));
+                    let expected = native(kind as u32, texts, number, Some(&mut x[..capacity]));
                     let actual = rust(kind, texts, number, &mut y[..capacity]);
                     assert!(
                         expected == actual && x == y,
-                        "bounded {kind}:{byte}:{length}:{capacity}:{expected:?}:{actual:?}"
+                        "bounded {}:{byte}:{length}:{capacity}:{expected:?}:{actual:?}",
+                        kind as u32
                     );
                     cases += 1;
                 }
@@ -93,13 +94,18 @@ fn bounded_capacities_match_upstream() {
 
 #[test]
 fn null_output_matches_upstream() {
-    for kind in 0..6 {
+    for kind in Format::ALL {
         let texts: [&[u8]; 4] = [b"boundary", b"host", b"file", b"application/octet-stream"];
-        let number = if kind == 1 { 65535 } else { usize::MAX };
+        let number = if kind == Format::ProxyUri {
+            65535
+        } else {
+            usize::MAX
+        };
         assert_eq!(
-            native(kind, texts, number, None),
+            native(kind as u32, texts, number, None),
             rust(kind, texts, number, &mut []),
-            "{kind}"
+            "{}",
+            kind as u32
         );
     }
 }
@@ -110,6 +116,6 @@ fn null_output_matches_upstream() {
 #[test]
 fn an_invalid_span_is_an_error() {
     let mut defensive = [0x5a_u8; 16];
-    let invalid = http_format(2, [None; 4], 0, &mut defensive[..]);
+    let invalid = http_format(Format::MultipartType, [None; 4], 0, &mut defensive[..]);
     assert_eq!((invalid.error, invalid.written, defensive[0]), (1, 0, 0));
 }
