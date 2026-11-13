@@ -4,9 +4,9 @@
 use crate::{
     Call, ClassEntry, ZStr,
     sys::{
-        _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF,
-        swr_zend_class_set_create_object, zend_class_entry, zend_function, zend_function_entry,
-        zend_internal_arg_info, zend_object, zend_object_handlers, zend_op, zend_op_array, zval,
+        _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
+        zend_function, zend_function_entry, zend_internal_arg_info, zend_object,
+        zend_object_handlers, zend_op, zend_op_array, zval,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of, ptr};
@@ -156,8 +156,8 @@ pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut z
 
 /// `SW_SET_CLASS_CREATE(.., sw_zend_create_object_deny)`.
 pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
-    // SAFETY: a registered entry, written at MINIT.
-    unsafe { swr_zend_class_set_create_object(entry, Some(create_object_deny)) };
+    // `ce->create_object`, in the union it shares with an interface's hook.
+    entry.__bindgen_anon_2.create_object = Some(create_object_deny);
 }
 
 /// The arginfo of `method` in a method table (null if absent).

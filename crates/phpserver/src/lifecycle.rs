@@ -1085,7 +1085,6 @@ fn register_callback(object: ServerObject<'_>, serv: view::Server<'_>) {
 fn port_facts(object: &Value) -> PortFacts<'_> {
     let port = crate::port::bound_port(object);
     let c = port.config();
-    let owner = c.ssl_context.as_deref();
     PortFacts {
         port,
         protocols: [
@@ -1101,9 +1100,7 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
         // `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream socket.
         stream: matches!(c.r#type, 1 | 3 | 5),
         ssl: c.ssl != 0,
-        // SAFETY: the port's live TLS context, which nothing writes meanwhile.
-        ssl_verify_without_ca: owner
-            .is_some_and(|owner| unsafe { swoole_rs_tls::verify_without_ca(owner) }),
+        ssl_verify_without_ca: c.ssl_verify_without_ca(),
     }
 }
 

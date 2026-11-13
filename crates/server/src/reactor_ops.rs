@@ -765,16 +765,14 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         OP_RT_DGRAM_BIND => {
             // listen UDP port
             let port = port()?;
-            // SAFETY: one of the server's live ports.
-            let config = unsafe { port.config_mut() };
             let socket = o.server().port_socket_at(usize::try_from(arg).ok()?)?;
             let fd = socket.fd();
             // The connection table's slot for the listening fd.
             let serv_sock = o.state.connection(c_long::from(fd), 0)?;
             serv_sock.set_fd(fd);
-            serv_sock.set_socket_type(config.r#type);
+            serv_sock.set_socket_type(port.config().r#type);
             serv_sock.set_object(port.raw());
-            config.thread_id = pthread_self();
+            port.set_thread_id(pthread_self());
             change(socket, 0, SW_EVENT_READ)?
         }
         OP_CONN_UNREAD => interest(o.conn_socket()?, 4)?,
@@ -955,7 +953,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_timer::swoole_timer_delay;
     Some(match op {
         OP_DTLS_ACCEPT => {
-            let (serv, reactor) = (o.ctx.serv, o.handle()?.ptr());
+            let (serv, reactor) = (o.ctx.serv, o.handle()?);
             let (single_thread, close) = (o.config().single_thread.get(), o.reactor()?.close());
             let (port, pkt) = (o.conn()?.object(), o.ctx.pkt.cast());
             // SAFETY: the context's live server and reactor, the DTLS port the packet

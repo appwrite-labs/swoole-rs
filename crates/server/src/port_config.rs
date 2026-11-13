@@ -77,7 +77,7 @@ pub struct PortConfig {
     pub ssl: u8,
     pub port: c_int,
     pub socket: *mut c_void,
-    pub thread_id: libc::pthread_t,
+    pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
     pub open_http_protocol: Setting<bool>,
@@ -138,6 +138,17 @@ impl PortConfig {
     pub fn is_dtls(&self) -> bool {
         self.ssl_fields()
             .is_some_and(|fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
+    }
+
+    /// `verify_peer` with no client certificate file, cafile or capath.
+    #[must_use]
+    pub fn ssl_verify_without_ca(&self) -> bool {
+        self.ssl_fields()
+            .is_some_and(|fields| fields.verify_peer != 0)
+            && self
+                .ssl_context
+                .as_deref()
+                .is_some_and(swoole_rs_tls::OwnedTlsContext::names_no_ca)
     }
 
     /// The fields of the port's `SSLContext`, if it has one.
@@ -220,7 +231,7 @@ impl PortConfig {
             port: 0,
             socket: core::ptr::null_mut(),
             // Zero is the original native empty sentinel.
-            thread_id: swoole_rs_corebase::sys::zeroed(),
+            thread_id: Shared::new(swoole_rs_corebase::sys::zeroed()),
             heartbeat_idle_time: Setting::new(0),
             open_eof_check: Setting::new(false),
             open_http_protocol: Setting::new(false),

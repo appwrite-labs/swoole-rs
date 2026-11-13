@@ -226,15 +226,10 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_THREAD_SHUTDOWN => {
+            // This reactor thread's reactor, and its own record.
             let reactor = Reactor::thread();
             let id = usize::from(reactor.handle().id());
-            let threads = ctx
-                .tables()
-                .reactor_threads
-                .cast::<crate::reactor_ops::ThreadRecord>();
-            let thread = threads.wrapping_add(id).cast();
-            // SAFETY: the reactor thread's live record and its reactor.
-            unsafe { crate::reactor_entry::thread_shutdown(thread, reactor.ptr()) };
+            crate::reactor_entry::thread_shutdown(ctx.server(), reactor, id);
             0
         }
         OP_SET_ISOLATION => {

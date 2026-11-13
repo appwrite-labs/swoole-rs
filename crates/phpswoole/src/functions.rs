@@ -64,6 +64,8 @@ const JSON_OBJECT_AS_ARRAY: i64 = 1;
 unsafe extern "C" {
     /// `<netdb.h>`; not in the libc crate. Any code names a static message.
     safe fn hstrerror(error: c_int) -> *const c_char;
+    /// `<netdb.h>`, likewise.
+    safe fn gai_strerror(error: c_int) -> *const c_char;
 }
 
 /// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)`.
@@ -112,8 +114,7 @@ fn strerror(call: &Call) {
         return;
     };
     let message = if kind == STRERROR_GAI {
-        // SAFETY: libc's message table.
-        unsafe { libc::gai_strerror(int(code)) }
+        gai_strerror(int(code))
     } else if kind == STRERROR_DNS {
         hstrerror(int(code))
     } else if kind == STRERROR_SWOOLE || (code > ERROR_BEGIN && code < ERROR_END) {

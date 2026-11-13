@@ -137,12 +137,7 @@ pub(super) mod net {
         io("recvfrom_sync", buffer.len())
     }
 }
-pub(super) unsafe fn socket_sendfile_sync(
-    _: Socket<'_>,
-    _: *const c_char,
-    _: i64,
-    _: usize,
-) -> c_int {
+pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
     log("sendfile false");
     OK
 }

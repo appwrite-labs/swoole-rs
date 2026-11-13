@@ -1,6 +1,6 @@
 //! Actual class and function alias construction, lookup and ownership.
 use crate::{
-    Value, ZString,
+    Array, Value,
     bailout::Bailout,
     string,
     sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info, zend_internal_function},
@@ -29,12 +29,12 @@ pub unsafe fn function_alias(
     alias: &CStr,
     info: *const zend_internal_arg_info,
 ) -> Result<c_int, Bailout> {
-    let lower = ZString::new(&origin.to_bytes().to_ascii_lowercase());
-    // SAFETY: the source table and lowercase Zend string remain live for lookup.
-    let slot = unsafe { z::zend_hash_find(source, lower.as_ptr()) };
-    drop(lower);
-    // SAFETY: null, or a slot of the caller's live table.
-    let Some(function) = unsafe { Value::from_ptr(slot) }.and_then(Value::pointer) else {
+    let lower = origin.to_bytes().to_ascii_lowercase();
+    // SAFETY: per the caller, a live function table, borrowed for the lookup
+    // only: nothing is registered until the borrow ended.
+    let functions = unsafe { Array::from_ptr(source) };
+    let found = functions.and_then(|functions| functions.find(&lower));
+    let Some(function) = found.and_then(Value::pointer) else {
         return Ok(-1);
     };
     // SAFETY: the source table owns this live function, which remains live and
@@ -89,15 +89,15 @@ pub unsafe fn class_alias(
     // SAFETY: Zend consumes or interns the persistent string, as its native API
     // does; the successful result belongs to the process intern pool.
     leaf(unsafe { z::swr_zend_try_facade_intern(alias, &raw mut interned) })?;
-    // SAFETY: successful interning returns a process-lived initialized string.
-    let count = unsafe { (*interned).len };
+    // Interning returns `alias` or the pool's string of the same bytes: either
+    // way `length` of them.
     let mut result = -1;
     // SAFETY: the interned binary name and registered CE remain process-lived;
     // Zend copies the alias registration inside the contained leaf.
     leaf(unsafe {
         z::swr_zend_try_facade_class_alias(
             string::val(interned).cast(),
-            count,
+            length,
             entry,
             &raw mut result,
         )

@@ -5,6 +5,12 @@
 use crate::signal::{SIGNALS, Slot, signal_reset};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering::Relaxed};
+use swoole_rs_corebase::sys;
+
+const _: () = assert!(
+    std::mem::offset_of!(libc::signalfd_siginfo, ssi_signo) == 0,
+    "signalfd_receive reads ssi_signo from the record's first bytes"
+);
 
 const SIG_IGN: usize = 1;
 const FLAGS: c_int = libc::SFD_NONBLOCK | libc::SFD_CLOEXEC;
@@ -22,13 +28,11 @@ fn bit(signo: c_int) -> Option<(&'static AtomicU64, u64)> {
 
 /// `MASK` as a `sigset_t`.
 fn sigset() -> libc::sigset_t {
-    let mut set: libc::sigset_t = swoole_rs_corebase::sys::zeroed();
-    // SAFETY: `set` is a valid sigset_t.
-    unsafe { libc::sigemptyset(&raw mut set) };
+    let mut set: libc::sigset_t = sys::zeroed();
+    sys::sigemptyset(&mut set);
     for signo in 0..128 {
         if bit(signo).is_some_and(|(word, bit)| word.load(Relaxed) & bit != 0) {
-            // SAFETY: as above.
-            unsafe { libc::sigaddset(&raw mut set, signo) };
+            sys::sigaddset(&mut set, signo);
         }
     }
     set
@@ -36,14 +40,12 @@ fn sigset() -> libc::sigset_t {
 
 /// `sigprocmask(how, mask, NULL)`.
 fn sigprocmask(how: c_int, mask: &libc::sigset_t) -> c_int {
-    // SAFETY: `mask` is an initialized sigset_t; the old mask is not wanted.
-    unsafe { libc::sigprocmask(how, mask, std::ptr::null_mut()) }
+    sys::sigprocmask(how, Some(mask), None)
 }
 
 /// `signalfd(fd, mask, FLAGS)`: a new signalfd for -1, else `fd` with the new mask.
 fn signalfd(fd: c_int, mask: &libc::sigset_t) -> c_int {
-    // SAFETY: `mask` is an initialized sigset_t.
-    unsafe { libc::signalfd(fd, mask, FLAGS) }
+    sys::signalfd(fd, mask, FLAGS)
 }
 
 fn clear_mask() {
@@ -142,7 +144,7 @@ pub fn signalfd_create() -> Created {
     if sigprocmask(libc::SIG_BLOCK, &mask) == -1 {
         let error = errno();
         // `fd` was just opened here.
-        swoole_rs_corebase::sys::close(fd);
+        sys::close(fd);
         return Created {
             status: 3,
             fd,
@@ -163,7 +165,7 @@ pub fn signalfd_close() {
     let fd = FD.swap(-1, Relaxed);
     if fd != -1 {
         // `fd` was this module's signalfd.
-        swoole_rs_corebase::sys::close(fd);
+        sys::close(fd);
     }
 }
 
@@ -193,17 +195,17 @@ pub struct Received {
 
 /// `swoole_signalfd_event_callback`: reads one `signalfd_siginfo` from `fd`.
 pub fn signalfd_receive(fd: c_int) -> Received {
-    let mut info: libc::signalfd_siginfo = swoole_rs_corebase::sys::zeroed();
-    let size = size_of::<libc::signalfd_siginfo>();
-    // SAFETY: `info` is writable for `size` bytes.
-    if unsafe { libc::read(fd, (&raw mut info).cast(), size) } < 0 {
+    // One `signalfd_siginfo`, which begins with its `ssi_signo`.
+    let mut info = [0_u8; size_of::<libc::signalfd_siginfo>()];
+    if sys::read(fd, &mut info) < 0 {
         return Received {
             status: 1,
             error: errno(),
             ..Received::default()
         };
     }
-    let signo = info.ssi_signo;
+    let [a, b, c, d, ..] = info;
+    let signo = u32::from_ne_bytes([a, b, c, d]);
     let Some(slot) = c_int::try_from(signo).ok().and_then(slot) else {
         return Received {
             status: 2,
