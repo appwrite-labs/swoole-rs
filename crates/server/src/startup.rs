@@ -419,7 +419,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
             hybrid().step(serv, Step::CommandHandler);
         }
         if let Some(master) = pipe.master_end() {
-            reactor.change(master, 0, EVENT_READ);
+            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, EVENT_READ);
         }
     }
     if hybrid().step(serv, Step::MasterTimer) < 0 {

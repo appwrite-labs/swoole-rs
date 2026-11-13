@@ -170,7 +170,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         .command_pipe()
         .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
     {
-        reactor.change(master, 2, 0);
+        reactor.change(master, swoole_rs_reactor::ChangeOp::Del, 0);
     }
     clear_timer(serv);
     if serv.config().max_wait_time.get() > 0 {

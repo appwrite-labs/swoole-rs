@@ -19,7 +19,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Drain, Socket, record_send, steady_ms};
+use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, steady_ms};
 
 /// `ServerEventType`.
 const SEND_FILE: u8 = 3;
@@ -30,14 +30,6 @@ const RESUME_RECV: u8 = 12;
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`.
 const EVENT_READ: c_int = 1 << 9;
 const EVENT_WRITE: c_int = 1 << 10;
-/// `Reactor::change`'s add, set and del; `Reactor::interest`'s add-read, add-write and
-/// remove-read.
-const ADD: u32 = 0;
-const SET: u32 = 1;
-const DEL: u32 = 2;
-const ADD_READ: u32 = 2;
-const ADD_WRITE: u32 = 3;
-const REMOVE_READ: u32 = 4;
 /// `SW_OK` and `SW_ERR`.
 const SW_OK: c_int = 0;
 const SW_ERR: c_int = -1;
@@ -198,11 +190,11 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             return SW_OK;
         }
         return if halfclose {
-            reactor.interest(sock, REMOVE_READ, 0)
+            reactor.interest(sock, Interest::RemoveRead, 0)
         } else if writing {
-            reactor.change(sock, SET, EVENT_WRITE)
+            reactor.change(sock, ChangeOp::Set, EVENT_WRITE)
         } else {
-            reactor.change(sock, DEL, 0)
+            reactor.change(sock, ChangeOp::Del, 0)
         };
     }
     if kind == RESUME_RECV {
@@ -216,11 +208,11 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             return SW_OK;
         }
         return if halfclose {
-            reactor.interest(sock, ADD_READ, 0)
+            reactor.interest(sock, Interest::AddRead, 0)
         } else if writing {
-            reactor.change(sock, SET, EVENT_READ | EVENT_WRITE)
+            reactor.change(sock, ChangeOp::Set, EVENT_READ | EVENT_WRITE)
         } else {
-            reactor.change(sock, ADD, EVENT_READ)
+            reactor.change(sock, ChangeOp::Add, EVENT_READ)
         };
     }
     let mut data = data;
@@ -246,7 +238,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
         conn.set_close_queued(true);
         if halfclose {
-            reactor.interest(sock, REMOVE_READ, 0);
+            reactor.interest(sock, Interest::RemoveRead, 0);
         }
     } else if kind == SEND_FILE {
         if send_file(sock, data) < 0 {
@@ -294,7 +286,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         idle_timer(conn, sock, idle);
     }
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
-        reactor.interest(sock, ADD_WRITE, 0);
+        reactor.interest(sock, Interest::AddWrite, 0);
     }
     SW_OK
 }

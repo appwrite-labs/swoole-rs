@@ -44,15 +44,15 @@ pub unsafe extern "C" fn reactor_change(
     changed(unsafe { crate::swr_v1_reactor_change(owner, socket, op, events, swr_v1_reactor_log) })
 }
 
-/// `Reactor::add` (op 0) or `set` (1) of a socket that is never freed while registered.
+/// `Reactor::add` or `set` of a socket that is never freed while registered.
 /// A registered record's address stays in the registry and with the kernel until its
 /// removal, which a `'static` record outlives: it is live until an unsafe free, whose
-/// caller answers for every user left, the reactor among them. Any other op is `del`.
+/// caller answers for every user left, the reactor among them, or its `del`.
 #[must_use]
 pub fn change(
     reactor: crate::Running<'_>,
     socket: crate::Socket<'static>,
-    op: u32,
+    op: crate::ChangeOp,
     events: c_int,
 ) -> c_int {
     // SAFETY: the handle's live state, which no reference borrows (its contract), and
@@ -61,22 +61,20 @@ pub fn change(
         crate::swr_v1_reactor_change(
             reactor.state(),
             socket.as_ptr(),
-            op,
+            op.code(),
             events,
             swr_v1_reactor_log,
         )
     })
 }
 
-/// `Reactor::interest` (`add_event` 0, `del_event` 1, `add_read_event` 2,
-/// `add_write_event` 3, `remove_read_event` 4, `remove_write_event` 5) of a socket that
-/// is never freed while registered, as [`change`] takes one: the change's result, or 0
+/// `Reactor::interest` of a socket that is never freed while registered, as [`change`] takes one: the change's result, or 0
 /// when nothing changes.
 #[must_use]
 pub fn interest(
     reactor: crate::Running<'_>,
     socket: crate::Socket<'static>,
-    kind: u32,
+    kind: crate::Interest,
     event: c_int,
 ) -> c_int {
     crate::change::interest_change(socket, kind, event)
@@ -89,7 +87,13 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_
     // SAFETY: the handle's live state, which no reference borrows (its contract), and
     // a live record; del registers nothing, and the log reads neither.
     unsafe {
-        crate::swr_v1_reactor_change(reactor.state(), socket.as_ptr(), 2, 0, swr_v1_reactor_log)
+        crate::swr_v1_reactor_change(
+            reactor.state(),
+            socket.as_ptr(),
+            crate::ChangeOp::Del.code(),
+            0,
+            swr_v1_reactor_log,
+        )
     }
 }
 
@@ -111,11 +115,12 @@ pub unsafe extern "C" fn reactor_interest(
     let Some(record) = (unsafe { crate::Socket::from_ptr(socket) }) else {
         return -1;
     };
+    let kind = crate::Interest::from_code(kind);
     let Some((op, events)) = crate::change::interest_change(record, kind, event) else {
         return 0;
     };
     // SAFETY: as the caller promises.
-    unsafe { reactor_change(reactor, socket, op, events) }
+    unsafe { reactor_change(reactor, socket, op.code(), events) }
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:

@@ -516,7 +516,8 @@ fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
         if ops.backend == EPOLL {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            ops.reactor.with(|state| state.record(socket, 2, 0));
+            ops.reactor
+                .with(|state| state.record(socket, crate::ChangeOp::Del, 0));
         } else {
             // poll and kqueue run `Reactor::del`.
             crate::reactor_upstream::reactor_del(ops.reactor, socket);
@@ -615,7 +616,12 @@ mod tests {
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
             assert_eq!(
-                crate::reactor_state::tests::record(state.owner, &raw mut socket, 0, events),
+                crate::reactor_state::tests::record(
+                    state.owner,
+                    &raw mut socket,
+                    crate::ChangeOp::Add,
+                    events
+                ),
                 0
             );
             assert!((*state.handlers).set(5, 512, Some(read)));
@@ -623,7 +629,13 @@ mod tests {
             #[cfg(target_os = "linux")]
             if kind == 1 {
                 assert_eq!(
-                    crate::registration::epoll_ctl(descriptor, 0, fds[0], token, events),
+                    crate::registration::epoll_ctl(
+                        descriptor,
+                        crate::ChangeOp::Add,
+                        fds[0],
+                        token,
+                        events
+                    ),
                     0
                 );
             }
