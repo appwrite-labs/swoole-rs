@@ -465,7 +465,7 @@ fn task_worker() {
 
     listen(serv);
 
-    serv.set_callback(CallbackKind::Task, task_worker_on_task as *const c_void);
+    serv.set_callback(Slot::Task, task_worker_on_task as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -567,16 +567,16 @@ fn task_worker2() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(CallbackKind::Task, task_zero as *const c_void);
+    serv.set_callback(Slot::Task, task_zero as *const c_void);
     serv.set_callback(
-        CallbackKind::PipeMessage,
+        Slot::PipeMessage,
         task_worker2_on_pipe_message as *const c_void,
     );
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         task_worker2_on_worker_start as *const c_void,
     );
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -650,18 +650,18 @@ fn task_worker_3() {
     // A missed worker restart must fail the test instead of leaving the server running
     // until the CI watchdog fires.
     serv.set_callback(
-        CallbackKind::ManagerStart,
+        Slot::ManagerStart,
         task_worker_3_on_manager_start as *const c_void,
     );
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(CallbackKind::Task, task_zero as *const c_void);
+    serv.set_callback(Slot::Task, task_zero as *const c_void);
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         task_worker_3_on_worker_start as *const c_void,
     );
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -733,14 +733,14 @@ fn test_task(mode: c_int, task_ipc_mode: u8) {
 
     listen(serv);
 
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
-    serv.set_callback(CallbackKind::Task, finish_packet as *const c_void);
-    serv.set_callback(CallbackKind::Finish, finished_packet as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Task, finish_packet as *const c_void);
+    serv.set_callback(Slot::Finish, finished_packet as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         test_task_on_worker_start as *const c_void,
     );
 
@@ -775,13 +775,13 @@ fn coroutine_task_server(on_worker_start: *const c_void) -> Server {
 
     listen(serv);
 
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
-    serv.set_callback(CallbackKind::Task, finish_packet as *const c_void);
-    serv.set_callback(CallbackKind::Finish, finished_packet as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Task, finish_packet as *const c_void);
+    serv.set_callback(Slot::Finish, finished_packet as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CallbackKind::WorkerStart, on_worker_start);
+    serv.set_callback(Slot::WorkerStart, on_worker_start);
     serv
 }
 
@@ -969,15 +969,15 @@ fn task_sync_multi_task() {
 
     listen(serv);
 
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
-    serv.set_callback(CallbackKind::Task, task_sync_multi_on_task as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Task, task_sync_multi_on_task as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
     // `SwooleG.current_task_id = 100`.
     swr_v1_core_set_current_task_id(100);
 
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         task_sync_multi_on_worker_start as *const c_void,
     );
 
@@ -1039,13 +1039,13 @@ fn task_sync() {
 
     listen(serv);
 
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
-    serv.set_callback(CallbackKind::Task, task_sync_on_task as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Task, task_sync_on_task as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         task_sync_on_worker_start as *const c_void,
     );
 
@@ -1090,17 +1090,14 @@ unsafe extern "C" fn task_ipc_on_worker_start(
 fn test_task_ipc(serv: Server) {
     listen(serv);
 
-    serv.set_callback(CallbackKind::Receive, receive_ok as *const c_void);
-    serv.set_callback(CallbackKind::Task, finish_packet as *const c_void);
-    serv.set_callback(CallbackKind::Finish, task_ipc_on_finish as *const c_void);
+    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Slot::Task, finish_packet as *const c_void);
+    serv.set_callback(Slot::Finish, task_ipc_on_finish as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        CallbackKind::WorkerStart,
-        task_ipc_on_worker_start as *const c_void,
-    );
-    serv.set_callback(CallbackKind::BeforeShutdown, ignore_server as *const c_void);
+    serv.set_callback(Slot::WorkerStart, task_ipc_on_worker_start as *const c_void);
+    serv.set_callback(Slot::BeforeShutdown, ignore_server as *const c_void);
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -1276,16 +1273,10 @@ fn thread() {
         },
     );
 
-    serv.set_callback(CallbackKind::Start, unlock_on_start as *const c_void);
-    serv.set_callback(
-        CallbackKind::WorkerStart,
-        thread_on_worker_start as *const c_void,
-    );
-    serv.set_callback(CallbackKind::Receive, thread_on_receive as *const c_void);
-    serv.set_callback(
-        CallbackKind::PipeMessage,
-        thread_on_pipe_message as *const c_void,
-    );
+    serv.set_callback(Slot::Start, unlock_on_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, thread_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, thread_on_receive as *const c_void);
+    serv.set_callback(Slot::PipeMessage, thread_on_pipe_message as *const c_void);
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -1380,17 +1371,14 @@ fn task_thread() {
         },
     );
 
-    serv.set_callback(CallbackKind::Start, unlock_on_start as *const c_void);
+    serv.set_callback(Slot::Start, unlock_on_start as *const c_void);
     serv.set_callback(
-        CallbackKind::WorkerStart,
+        Slot::WorkerStart,
         task_thread_on_worker_start as *const c_void,
     );
-    serv.set_callback(CallbackKind::Finish, task_thread_on_finish as *const c_void);
-    serv.set_callback(CallbackKind::Task, task_thread_on_task as *const c_void);
-    serv.set_callback(
-        CallbackKind::Receive,
-        task_thread_on_receive as *const c_void,
-    );
+    serv.set_callback(Slot::Finish, task_thread_on_finish as *const c_void);
+    serv.set_callback(Slot::Task, task_thread_on_task as *const c_void);
+    serv.set_callback(Slot::Receive, task_thread_on_receive as *const c_void);
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -1487,13 +1475,10 @@ fn no_idle_task_worker() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CallbackKind::Start, no_idle_on_start as *const c_void);
-    serv.set_callback(
-        CallbackKind::WorkerStart,
-        no_idle_on_worker_start as *const c_void,
-    );
-    serv.set_callback(CallbackKind::Receive, no_idle_on_receive as *const c_void);
-    serv.set_callback(CallbackKind::Task, no_idle_on_task as *const c_void);
+    serv.set_callback(Slot::Start, no_idle_on_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, no_idle_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, no_idle_on_receive as *const c_void);
+    serv.set_callback(Slot::Task, no_idle_on_task as *const c_void);
 
     assert_eq!(serv.start(), 0);
 

@@ -330,9 +330,9 @@ fn ssl() {
     let (serv, port) = tls_server(MODE_PROCESS, SW_LOG_WARNING, "server.crt", "server.key");
     port.ssl_init();
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(CallbackKind::Start, ssl_start as *const c_void);
-    serv.set_callback(CallbackKind::WorkerStart, unlock as *const c_void);
-    serv.set_callback(CallbackKind::Receive, echo_receive as *const c_void);
+    serv.set_callback(Slot::Start, ssl_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
+    serv.set_callback(Slot::Receive, echo_receive as *const c_void);
     run_server(serv);
     serv.delete();
 }
@@ -374,10 +374,10 @@ fn ssl_error() {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(CallbackKind::Start, ssl_error_start as *const c_void);
-    serv.set_callback(CallbackKind::WorkerStart, unlock as *const c_void);
-    serv.set_callback(CallbackKind::Receive, ignore_receive as *const c_void);
-    serv.set_callback(CallbackKind::Connect, count_connect as *const c_void);
+    serv.set_callback(Slot::Start, ssl_error_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
+    serv.set_callback(Slot::Receive, ignore_receive as *const c_void);
+    serv.set_callback(Slot::Connect, count_connect as *const c_void);
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 0);
     serv.delete();
@@ -446,9 +446,9 @@ fn ssl_write() {
     assert!(port.ssl_init());
     assert_eq!(serv.create(), SW_OK);
     wbuf();
-    serv.set_callback(CallbackKind::Start, ssl_write_start as *const c_void);
-    serv.set_callback(CallbackKind::WorkerStart, unlock as *const c_void);
-    serv.set_callback(CallbackKind::Receive, ssl_write_receive as *const c_void);
+    serv.set_callback(Slot::Start, ssl_write_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
+    serv.set_callback(Slot::Receive, ssl_write_receive as *const c_void);
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 1);
     serv.delete();
@@ -517,9 +517,9 @@ fn dtls() {
     port6.ssl_init();
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(CallbackKind::Start, dtls_start as *const c_void);
-    serv.set_callback(CallbackKind::WorkerStart, unlock as *const c_void);
-    serv.set_callback(CallbackKind::Receive, echo_receive as *const c_void);
+    serv.set_callback(Slot::Start, dtls_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
+    serv.set_callback(Slot::Receive, echo_receive as *const c_void);
     run_server(serv);
     serv.delete();
 }
@@ -535,7 +535,7 @@ fn dtls2() {
     port.ssl_init();
 
     server.create();
-    server.set_callback(CallbackKind::Receive, echo_receive as *const c_void);
+    server.set_callback(Slot::Receive, echo_receive as *const c_void);
 
     let pid = fork_with(move || {
         sleep(1.0);
@@ -683,9 +683,9 @@ fn test_ssl_client_cert(mode: c_int) {
     port.ssl_init();
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(CallbackKind::Start, client_cert_start as *const c_void);
-    serv.set_callback(CallbackKind::WorkerStart, unlock as *const c_void);
-    serv.set_callback(CallbackKind::Receive, client_cert_receive as *const c_void);
+    serv.set_callback(Slot::Start, client_cert_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
+    serv.set_callback(Slot::Receive, client_cert_receive as *const c_void);
     run_server(serv);
     serv.delete();
 }
