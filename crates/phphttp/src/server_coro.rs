@@ -549,8 +549,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings.as_ptr()) } {
         props.long(c"errCode", EINVAL);
-        #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
-        let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
+        let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));

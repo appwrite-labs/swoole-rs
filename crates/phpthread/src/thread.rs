@@ -149,7 +149,12 @@ fn construct(call: &Call) {
     }
     thread.constructed.set(true);
     if let Some(id) = thread.thread.id() {
-        call.update_property_long(Some(&*THREAD), c"id", id.c_cast::<i64>());
+        // `pthread_t` is an integer on glibc and macOS and a pointer on musl.
+        #[expect(
+            clippy::cast_possible_wrap,
+            reason = "upstream's (zend_long) pthread_t"
+        )]
+        call.update_property_long(Some(&*THREAD), c"id", id as i64);
     }
 }
 
@@ -202,7 +207,11 @@ fn get_arguments(call: &Call) {
 
 fn get_id(call: &Call) {
     let id = swoole_rs_ossupport::pthread_self();
-    call.set_long(id.c_cast::<i64>());
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "upstream's (zend_long) pthread_t, a pointer on musl"
+    )]
+    call.set_long(id as i64);
 }
 
 fn get_info(call: &Call) {
