@@ -24,7 +24,7 @@ use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_task};
-use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, readable};
+use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
@@ -44,7 +44,7 @@ struct Read<'a> {
     server: view::Server<'a>,
     /// The port, whose settings nothing writes while it serves.
     port: &'a PortConfig,
-    kind: u32,
+    kind: Readable,
     /// A WebSocket connection on a port with `open_websocket_protocol`: its
     /// frames go to [`Frames`], past the port protocol's callbacks.
     frames: bool,
@@ -64,7 +64,7 @@ pub(crate) unsafe fn on_read(
     reactor: Running<'_>,
     port: view::Port<'_>,
     event: &mut Event,
-    kind: u32,
+    kind: Readable,
 ) -> c_int {
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
@@ -90,7 +90,7 @@ pub(crate) unsafe fn on_read(
         kind,
         frames: false,
     };
-    if kind == ON_READ_HTTP {
+    if kind == Readable::Http {
         read.frames = read.conn().websocket_status >= WebSocketStatus::Handshake
             && port.open_websocket_protocol.get();
     }
@@ -174,7 +174,7 @@ impl Connection for Read<'_> {
     }
 
     fn warn_recv(&mut self) {
-        let origin: &CStr = if self.kind == ON_READ_HTTP {
+        let origin: &CStr = if self.kind == Readable::Http {
             c"ListenPort::readable_callback_http"
         } else {
             c"ListenPort::readable_callback_raw"
