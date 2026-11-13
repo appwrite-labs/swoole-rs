@@ -1,8 +1,7 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
-//! [`RespConnection`]; the ports crate runs it over the server's own records, and
-//! [`swr_v1_resp_recv`] over C's effects.
-use core::ffi::{c_int, c_void};
+//! [`RespConnection`], which the ports crate runs over the server's own records.
+use core::ffi::c_int;
 use swoole_rs_corebase::{log, set_errno, sw_calloc};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{resp_extend_size, resp_receive_range};
@@ -117,122 +116,6 @@ fn zero(request: &mut RespRequest) {
     unsafe { core::ptr::from_mut(request).write_bytes(0, 1) };
 }
 
-/// The head of `swoole::String`.
-#[repr(C)]
-pub struct RespBuffer {
-    pub length: usize,
-    pub size: usize,
-    pub offset: i64,
-    pub str: *mut u8,
-}
-
-/// The socket and buffer effects of one receive, lent by the caller.
-#[repr(C)]
-pub struct RespIo {
-    pub context: *mut c_void,
-    /// [`RespConnection::recv`] of at most `n` bytes into `at`.
-    pub recv: unsafe extern "C" fn(context: *mut c_void, at: *mut u8, n: usize) -> isize,
-    /// `buffer->extend(size)`.
-    pub extend: unsafe extern "C" fn(context: *mut c_void, size: usize),
-    /// `protocol->onPackage` of the buffer's first `length` bytes: negative when it
-    /// fails, 1 when the socket was removed meanwhile, else 0.
-    pub dispatch: unsafe extern "C" fn(context: *mut c_void, length: usize) -> c_int,
-}
-
-/// [`swr_v1_resp_recv`]'s connection: C's effects over its String head and request.
-struct Effects<'a> {
-    io: &'a RespIo,
-    buffer: *mut RespBuffer,
-    request: *mut RespRequest,
-}
-
-impl Effects<'_> {
-    fn head(&mut self) -> &mut RespBuffer {
-        // SAFETY: the caller's live String head, which only `extend` reallocates and
-        // this borrow is not held across.
-        unsafe { &mut *self.buffer }
-    }
-
-    fn state(&mut self) -> &mut RespRequest {
-        // SAFETY: the live request, used by nothing else between effects.
-        unsafe { &mut *self.request }
-    }
-}
-
-impl RespConnection for Effects<'_> {
-    fn recv(&mut self) -> isize {
-        let RespBuffer {
-            length, size, str, ..
-        } = *self.head();
-        // SAFETY: the free tail of the buffer, `size - length` writable bytes.
-        let received =
-            unsafe { (self.io.recv)(self.io.context, str.wrapping_add(length), size - length) };
-        self.head().length = length + received.max(0).cast_unsigned();
-        received
-    }
-
-    fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
-        let RespBuffer {
-            length, size, str, ..
-        } = *self.head();
-        // SAFETY: `length` initialized bytes of a `size`-byte buffer, read before any effect.
-        let bytes = unsafe { crate::input(str, length) }.unwrap_or_default();
-        (bytes, size, self.state())
-    }
-
-    fn set_offset(&mut self, offset: i64) {
-        self.head().offset = offset;
-    }
-
-    fn extend(&mut self, size: usize) {
-        // SAFETY: as the caller promises.
-        unsafe { (self.io.extend)(self.io.context, size) };
-    }
-
-    fn dispatch(&mut self) -> c_int {
-        let length = self.head().length;
-        // SAFETY: as the caller promises.
-        unsafe { (self.io.dispatch)(self.io.context, length) }
-    }
-
-    fn clear(&mut self) {
-        let head = self.head();
-        head.length = 0;
-        head.offset = 0;
-    }
-}
-
-/// [`recv_packet`] over `io`'s effects into `buffer`, with the request state in
-/// `*request` (allocated with `sw_malloc` when null).
-///
-/// # Safety
-/// `io`'s callbacks are valid for its context; `buffer` is that context's live
-/// String head, which only `extend` reallocates; `request` points to null or to a
-/// live `swr_resp_request` from `sw_malloc`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_recv(
-    io: &RespIo,
-    buffer: *mut RespBuffer,
-    request: *mut *mut RespRequest,
-    maximum: u32,
-    page: usize,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let request = self::request(unsafe { &mut *request });
-    if request.is_null() {
-        return SW_ERR;
-    }
-    recv_packet(
-        &mut Effects {
-            io,
-            buffer,
-            request,
-        },
-        maximum,
-        page,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     #![expect(
@@ -242,63 +125,65 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
+    /// A scripted socket, its receive buffer of `size` bytes and the request state.
     struct Script {
         reads: VecDeque<Vec<u8>>,
-        buffer: RespBuffer,
+        content: Vec<u8>,
+        size: usize,
+        offset: i64,
+        request: RespRequest,
         packages: Vec<Vec<u8>>,
     }
 
-    unsafe extern "C" fn script_recv(context: *mut c_void, at: *mut u8, n: usize) -> isize {
-        let s = unsafe { &mut *context.cast::<Script>() };
-        let Some(mut chunk) = s.reads.pop_front() else {
-            return RESP_RECV_DONE;
-        };
-        if chunk.len() > n {
-            s.reads.push_front(chunk.split_off(n));
+    impl RespConnection for Script {
+        fn recv(&mut self) -> isize {
+            let Some(mut chunk) = self.reads.pop_front() else {
+                return RESP_RECV_DONE;
+            };
+            let room = self.size - self.content.len();
+            if chunk.len() > room {
+                self.reads.push_front(chunk.split_off(room));
+            }
+            self.content.extend_from_slice(&chunk);
+            isize::try_from(chunk.len()).unwrap()
         }
-        unsafe { at.copy_from_nonoverlapping(chunk.as_ptr(), chunk.len()) };
-        isize::try_from(chunk.len()).unwrap()
-    }
 
-    unsafe extern "C" fn script_extend(context: *mut c_void, size: usize) {
-        let s = unsafe { &mut *context.cast::<Script>() };
-        let grown = unsafe { libc::realloc(s.buffer.str.cast(), size) };
-        s.buffer.str = grown.cast();
-        s.buffer.size = size;
-    }
+        fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
+            (&self.content, self.size, &mut self.request)
+        }
 
-    unsafe extern "C" fn script_dispatch(context: *mut c_void, length: usize) -> c_int {
-        let s = unsafe { &mut *context.cast::<Script>() };
-        let data = unsafe { std::slice::from_raw_parts(s.buffer.str, length) };
-        s.packages.push(data.to_vec());
-        0
+        fn set_offset(&mut self, offset: i64) {
+            self.offset = offset;
+        }
+
+        fn extend(&mut self, size: usize) {
+            self.size = size;
+        }
+
+        fn dispatch(&mut self) -> c_int {
+            self.packages.push(self.content.clone());
+            0
+        }
+
+        fn clear(&mut self) {
+            self.content.clear();
+            self.offset = 0;
+        }
     }
 
     fn run(reads: &[&[u8]], size: usize, maximum: u32) -> (Vec<c_int>, Script) {
         let mut script = Script {
             reads: reads.iter().map(|r| r.to_vec()).collect(),
-            buffer: RespBuffer {
-                length: 0,
-                size,
-                offset: 0,
-                str: unsafe { libc::malloc(size) }.cast(),
-            },
+            content: Vec::new(),
+            size,
+            offset: 0,
+            request: RespRequest::default(),
             packages: Vec::new(),
         };
-        let mut request: *mut RespRequest = core::ptr::null_mut();
         let mut results = Vec::new();
         while !script.reads.is_empty() && results.last() != Some(&SW_ERR) {
-            let io = RespIo {
-                context: (&raw mut script).cast(),
-                recv: script_recv,
-                extend: script_extend,
-                dispatch: script_dispatch,
-            };
-            let buffer = &raw mut script.buffer;
-            results.push(unsafe { swr_v1_resp_recv(&io, buffer, &raw mut request, maximum, 4096) });
+            results.push(recv_packet(&mut script, maximum, 4096));
         }
-        unsafe { libc::free(request.cast()) };
-        unsafe { libc::free(script.buffer.str.cast()) };
         (results, script)
     }
 
@@ -311,7 +196,7 @@ mod tests {
             script.packages,
             [b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n".to_vec()]
         );
-        assert_eq!((script.buffer.length, script.buffer.offset), (0, 0));
+        assert_eq!((script.content.len(), script.offset), (0, 0));
     }
 
     #[test]

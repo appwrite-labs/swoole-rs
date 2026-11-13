@@ -161,7 +161,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     if let Err(error) = table::register_aliases(&minit, flags) {
         error.defer();
     } else {
-        module::startup(module_number);
+        module::startup(&minit);
     }
     swoole_rs_zend::bailout::finish();
     0

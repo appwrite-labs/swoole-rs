@@ -26,15 +26,13 @@ known/system/unknown paths have not been re-measured.
 
 ## Ignored-error set
 
-`swoole_rs_error.h` declares `swr_v1_error_ignore`,
-`swr_v1_error_is_ignored`, `swr_v1_error_ignored_release` and
-`swr_v1_error_ignore_global`. The process-global set behind `swoole_ignore_error`
-and `swoole_is_ignored_error` is a Rust static that lazily owns an opaque
-`HashSet<i32>`; null is the empty initial state.
+The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`
+is a Rust static that lazily owns a `HashSet<i32>`; null is the empty initial
+state. It has no other C entry point.
 
 - Insert is idempotent and accepts any int32. If allocation fails, the existing
-  set is kept, a failed first insert leaves the holder null, and Rust returns
-  -2 without unwinding. `swoole_ignore_error` then aborts: upstream threw
+  set is kept, a failed first insert leaves the holder null, and the insert
+  reports it without unwinding. `swoole_ignore_error` then aborts: upstream threw
   `std::bad_alloc`, which nothing in the extension catches.
 - The global set lives until exit. No callbacks or Zend values are retained.
 - The set is process-local and copied on fork; it is not shared memory. It has no

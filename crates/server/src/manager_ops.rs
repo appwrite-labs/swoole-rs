@@ -8,7 +8,7 @@ use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
-use swoole_rs_process::process_pool::PoolRef;
+use swoole_rs_process::process_pool::{Hooks, PoolRef};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
@@ -310,7 +310,13 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .manager_pid
                 .store(pid, core::sync::atomic::Ordering::Relaxed);
             let event_pool = ctx.pool();
-            event_pool.set_on_worker_message(Some(read_worker_message));
+            let hooks = Hooks {
+                on_worker_message: Some(read_worker_message),
+                ..Hooks::default()
+            };
+            // SAFETY: the hook reads the event pool's `ptr` as its server, which
+            // `swr_v1_process_server_workers_start` set and which outlives the pool.
+            unsafe { event_pool.install(&hooks) };
             event_pool.set_max_wait_time(config.max_wait_time.get());
             event_pool.set_master_pid(pid);
             ctx.task_pool().set_master_pid(pid);

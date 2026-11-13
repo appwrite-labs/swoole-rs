@@ -7,6 +7,8 @@
 use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
 use swoole_rs_corebase::log;
+#[cfg(target_vendor = "apple")]
+use swoole_rs_corebase::sys::Text;
 
 // libc's own declarations, each a call over plain values that reads and writes no
 // caller memory: the caller's ids and session are the kernel's to check.
@@ -24,6 +26,9 @@ unsafe extern "C" {
     safe fn setuid(uid: libc::uid_t) -> c_int;
     #[link_name = "pthread_self"]
     safe fn libc_pthread_self() -> libc::pthread_t;
+    /// Darwin's: names the calling thread, reading `name` up to its NUL.
+    #[cfg(target_vendor = "apple")]
+    safe fn pthread_setname_np(name: Text<'_>) -> c_int;
 }
 
 #[must_use]
@@ -61,13 +66,11 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     redirected
 }
 
-/// `SW_FORK_DAEMON`, `SW_FORK_PRECHECK` and `SW_GLOBAL_HOOK_AFTER_FORK`.
+/// `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 const FORK_DAEMON: c_int = 4;
 #[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
 const FORK_PRECHECK: c_int = 8;
-#[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
-const HOOK_AFTER_FORK: c_int = 12;
 
 /// `int swoole_daemon(int nochdir, int noclose)`. Darwin's `daemon(3)` is
 /// deprecated, so it detaches, forks and calls `setsid` itself.
@@ -108,8 +111,7 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     }
     let rv = daemon(nochdir, noclose);
     if rv == 0 {
-        // SAFETY: the after-fork hooks take no argument.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };
+        swoole_rs_corebase::hook::call_after_fork();
     }
     rv
 }
@@ -121,20 +123,14 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
 fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
     let mut gid = None;
     if !group.is_empty() {
-        // SAFETY: a valid C string; the entry is read before the next lookup.
-        let entry = unsafe { libc::getgrnam(group.as_ptr()) };
-        // SAFETY: getgrnam returned null or a valid entry.
-        gid = unsafe { entry.as_ref() }.map(|entry| entry.gr_gid);
+        gid = swoole_rs_corebase::sys::group_id(group);
         if gid.is_none() {
             warn(1);
         }
     }
     let mut uid = None;
     if !user.is_empty() {
-        // SAFETY: a valid C string; the entry is read before the next lookup.
-        let entry = unsafe { libc::getpwnam(user.as_ptr()) };
-        // SAFETY: getpwnam returned null or a valid entry.
-        uid = unsafe { entry.as_ref() }.map(|entry| entry.pw_uid);
+        uid = swoole_rs_corebase::sys::user_id(user);
         if uid.is_none() {
             warn(2);
         }
@@ -223,40 +219,6 @@ pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
     let _ = signal;
 }
 
-#[cfg(target_os = "freebsd")]
-type CpuSet = libc::cpuset_t;
-#[cfg(any(target_os = "linux", target_os = "android"))]
-type CpuSet = libc::cpu_set_t;
-
-/// `int swoole_get_cpu_affinity(cpu_set_t *set)`: the whole process.
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
-#[cfg_attr(
-    all(feature = "upstream-symbols", target_os = "freebsd"),
-    unsafe(export_name = "_Z23swoole_get_cpu_affinityP7_cpuset")
-)]
-#[cfg_attr(
-    all(feature = "upstream-symbols", not(target_os = "freebsd")),
-    unsafe(export_name = "_Z23swoole_get_cpu_affinityP9cpu_set_t")
-)]
-pub extern "C" fn swoole_get_cpu_affinity(set: &mut CpuSet) -> c_int {
-    #[cfg(target_os = "freebsd")]
-    // SAFETY: `set` is a writable `cpu_set_t`.
-    unsafe {
-        libc::cpuset_getaffinity(
-            libc::CPU_LEVEL_WHICH,
-            libc::CPU_WHICH_PID,
-            -1,
-            size_of::<CpuSet>(),
-            set,
-        )
-    }
-    #[cfg(not(target_os = "freebsd"))]
-    {
-        // Upstream pins the process's main thread (tid == pid), not the calling thread.
-        crate::cpu_set::get_process(swoole_rs_corebase::sys::getpid(), set)
-    }
-}
-
 /// `swoole_thread_get_native_id`: the kernel's id for the calling thread.
 #[must_use]
 #[cfg_attr(
@@ -296,8 +258,7 @@ pub fn pthread_self() -> libc::pthread_t {
 #[must_use]
 pub fn thread_set_name(name: &CStr) -> bool {
     #[cfg(target_vendor = "apple")]
-    // SAFETY: a NUL-terminated name, read for the call.
-    let rc = unsafe { libc::pthread_setname_np(name.as_ptr()) };
+    let rc = pthread_setname_np(name.into());
     #[cfg(not(target_vendor = "apple"))]
     // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
     let rc = unsafe { libc::pthread_setname_np(pthread_self(), name.as_ptr()) };
@@ -414,33 +375,33 @@ mod tests {
         .unwrap_or_else(|_| panic!("the thread's assertions failed"));
     }
 
-    /// Upstream's `os.cpu_affinity`. `swoole_set_cpu_affinity` left the build (Rust pins
-    /// workers in crates/process `affinity.rs`), so the set is its body,
-    /// `sched_setaffinity(getpid())`; the gets are Rust's `swoole_get_cpu_affinity`.
+    /// Upstream's `os.cpu_affinity`. `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity`
+    /// left the build (Rust pins workers in crates/process `affinity.rs`), so the set and
+    /// the gets are their bodies, `sched_setaffinity(getpid())` and
+    /// `sched_getaffinity(getpid())`, as `CpuSet` makes them.
     #[cfg(target_os = "linux")]
     #[test]
     #[cfg_attr(miri, ignore = "Miri models one CPU")]
     fn os_cpu_affinity() {
-        let set = |set: &libc::cpu_set_t| unsafe {
-            libc::sched_setaffinity(libc::getpid(), size_of::<libc::cpu_set_t>(), set)
-        };
-        let mut affinity: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-        assert_eq!(swoole_get_cpu_affinity(&mut affinity), 0);
+        use crate::CpuSet;
+        let pid = swoole_rs_corebase::sys::getpid();
+        let mut affinity = CpuSet::empty();
+        assert_eq!(affinity.get_process(pid), 0);
         let ori_affinity = affinity;
 
-        unsafe { libc::CPU_ZERO(&mut affinity) };
-        unsafe { libc::CPU_SET(1, &mut affinity) };
+        affinity = CpuSet::empty();
+        affinity.insert(1);
 
-        assert_eq!(set(&affinity), 0);
-        assert_eq!(swoole_get_cpu_affinity(&mut affinity), 0);
+        assert_eq!(affinity.set_process(pid), 0);
+        assert_eq!(affinity.get_process(pid), 0);
 
         // SW_CPU_NUM, as swoole_init sets it.
         let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);
         for i in 0..usize::try_from(cpu_n).unwrap() {
-            assert_eq!(unsafe { libc::CPU_ISSET(i, &affinity) }, i == 1, "cpu {i}");
+            assert_eq!(affinity.contains(i), i == 1, "cpu {i}");
         }
 
-        assert_eq!(set(&ori_affinity), 0);
+        assert_eq!(ori_affinity.set_process(pid), 0);
     }
 
     /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs

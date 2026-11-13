@@ -9,10 +9,9 @@
 //! and `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
-    BIO, BIO_METHOD, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK, OPENSSL_sk_num,
-    OPENSSL_sk_value, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
-    SSL_peek, SSL_read, SSL_set_bio, SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host,
-    X509_free, stack_st_X509,
+    BIO, BIO_METHOD, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER,
+    SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio,
+    SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -54,7 +53,11 @@ unsafe extern "C" {
     safe fn SSL_pending(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_set_accept_state(ssl: Ssl<'_>);
     safe fn SSL_set_connect_state(ssl: Ssl<'_>);
-    safe fn SSL_get_peer_cert_chain(ssl: Ssl<'_>) -> *mut stack_st_X509;
+    /// `get0`: the SSL's own chain, null without one.
+    safe fn SSL_get_peer_cert_chain<'a>(ssl: Ssl<'a>) -> Option<Chain<'a>>;
+    safe fn OPENSSL_sk_num(chain: Chain<'_>) -> c_int;
+    /// The chain's certificate at `index`, null outside it.
+    safe fn OPENSSL_sk_value<'a>(chain: Chain<'a>, index: c_int) -> Option<CertRef<'a>>;
     safe fn SSL_get_rbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
     safe fn SSL_get_wbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
     safe fn SSL_get_ex_data(ssl: Ssl<'_>, index: c_int) -> *mut c_void;
@@ -79,7 +82,8 @@ unsafe extern "C" {
     /// The SSL takes its own reference to `context` (null: its session's context)
     /// and releases the one it held.
     safe fn SSL_set_SSL_CTX(ssl: Ssl<'_>, context: Option<&SslCtx>) -> *mut SSL_CTX;
-    fn DTLSv1_listen(ssl: *mut SSL, peer: *mut c_void) -> c_int;
+    /// One listen step, which writes the peer's address when given somewhere to.
+    safe fn DTLSv1_listen(ssl: Ssl<'_>, peer: Option<&mut BioAddr>) -> c_int;
     fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
     /// OpenSSL 3 (build.rs): a reference the caller then owns.
@@ -95,6 +99,18 @@ unsafe extern "C" {
         integer: c_int,
     ) -> c_long;
 }
+
+/// A `BIO_ADDR`, which this side never makes.
+#[repr(C)]
+struct BioAddr {
+    _opaque: [u8; 0],
+}
+
+/// The peer's certificate chain an SSL holds, borrowed as the SSL is: only
+/// `SSL_get_peer_cert_chain` makes one, so its entries are certificates.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Chain<'a>(NonNull<OPENSSL_STACK>, PhantomData<&'a SSL>);
 
 /// The `BIO_int_ctrl` command behind `BIO_set_write_buffer_size`.
 #[derive(Clone, Copy)]
@@ -305,22 +321,17 @@ impl<'a> Ssl<'a> {
     /// `SSL_get_peer_cert_chain` (`get0`): the SSL's own chain, null without one.
     #[must_use]
     pub fn peer_cert_chain(self) -> *mut stack_st_X509 {
-        SSL_get_peer_cert_chain(self)
+        SSL_get_peer_cert_chain(self).map_or(std::ptr::null_mut(), |chain| chain.0.as_ptr().cast())
     }
 
     /// `f` over each certificate of the peer's chain, in order.
     pub fn each_peer_cert(self, mut f: impl FnMut(CertRef<'_>)) {
-        let chain = self.peer_cert_chain().cast::<OPENSSL_STACK>();
-        if chain.is_null() {
+        let Some(chain) = SSL_get_peer_cert_chain(self) else {
             return;
-        }
-        // SAFETY: the SSL's live chain.
-        let count = unsafe { OPENSSL_sk_num(chain) };
-        for index in 0..count {
-            // SAFETY: an index within the live chain, whose entries are certificates.
-            let cert = unsafe { OPENSSL_sk_value(chain, index) };
-            if let Some(cert) = NonNull::new(cert.cast()) {
-                f(CertRef(cert, PhantomData));
+        };
+        for index in 0..OPENSSL_sk_num(chain) {
+            if let Some(cert) = OPENSSL_sk_value(chain, index) {
+                f(cert);
             }
         }
     }
@@ -441,8 +452,7 @@ impl<'a> Ssl<'a> {
     /// One `DTLSv1_listen` step, without the peer's address.
     #[must_use]
     pub fn dtls_listen(self) -> c_int {
-        // SAFETY: a live SSL; OpenSSL takes a null peer.
-        unsafe { DTLSv1_listen(self.as_ptr(), std::ptr::null_mut()) }
+        DTLSv1_listen(self, None)
     }
 }
 

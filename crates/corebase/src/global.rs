@@ -237,7 +237,7 @@ pub fn bug_report_message() -> String {
 unsafe extern "C" {
     /// native/corebase/switches.cc: the banner, the compiler and the TLS library
     /// line, as C++ compiled them.
-    safe static swr_cpp_bug_report: [*const c_char; 3];
+    safe static swr_cpp_bug_report: [crate::sys::Text<'static>; 3];
 }
 
 /// base.cc's `bug_report_message_init`, from the lines C++ compiled. Inline, so
@@ -245,8 +245,7 @@ unsafe extern "C" {
 /// archive without libswoole still resolve every symbol.
 #[inline]
 pub fn bug_report_init() {
-    // SAFETY: switches.cc's NUL-terminated strings.
-    let [banner, compiler, ssl] = swr_cpp_bug_report.map(|line| unsafe { CStr::from_ptr(line) });
+    let [banner, compiler, ssl] = swr_cpp_bug_report.map(crate::sys::Text::get);
     bug_report_lines(banner, compiler, ssl);
 }
 

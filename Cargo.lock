@@ -474,6 +474,7 @@ version = "0.1.0"
 name = "swoole-rs-error-ffi"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "swoole-rs-error",
 ]
 
@@ -1082,6 +1083,7 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-oracle",
  "swoole-rs-protocols",
  "swoole-rs-reactor",
 ]
@@ -1206,6 +1208,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-oracle",
  "swoole-rs-websocket",
 ]
 

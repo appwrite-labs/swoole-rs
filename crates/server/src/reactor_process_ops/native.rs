@@ -5,7 +5,7 @@ use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
-use swoole_rs_process::process_pool::PoolRef;
+use swoole_rs_process::process_pool::{Hooks, PoolRef};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
@@ -233,13 +233,19 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
         config.max_request.get(),
         config.max_request_grace.get(),
     );
+    let hooks = Hooks {
+        ptr: Some(ctx.serv.raw()),
+        main_loop: Some(main_loop),
+        on_worker_not_found: Some(worker_not_found),
+        ..Hooks::default()
+    };
+    // SAFETY: both hooks read the pool's `ptr` as the server that owns the pool, which
+    // is what this sets it to; the server outlives its event pool.
+    unsafe { pool_ref.install(&hooks) };
     // SAFETY: as above.
     let record = unsafe { &mut *pool };
-    record.ptr = ctx.serv.raw();
     record.max_wait_time = config.max_wait_time.get();
     record.use_msgqueue = false;
-    record.main_loop = Some(main_loop);
-    record.on_worker_not_found = Some(worker_not_found);
     let count = config.worker_num.get() as usize;
     // SAFETY: the pool's and the server's worker arrays, `count` records each.
     unsafe { core::ptr::copy_nonoverlapping(record.workers(), workers.event_workers, count) };
@@ -267,12 +273,8 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-///
-/// # Safety
-/// As [`swoole_rs_process::process_pool::NotFoundFn`]: `pool` is a reactor process
-/// pool, whose `ptr` is its live server.
-unsafe extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
-    // SAFETY: as the caller promises, `ptr` is the pool's live server.
+extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
+    // SAFETY: a reactor process pool's `ptr` is its live server, as `main_loop`'s.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
     crate::manager_ops::restart_worker_process(serv, status)
 }

@@ -156,21 +156,21 @@ pub fn socket_create(fd: c_int) -> (Owned, bool) {
 pub(crate) fn minit() -> Vec<Step> {
     let drivers: Vec<Step> = Vec::from([
         #[cfg(feature = "pgsql")]
-        Step::Minit(swoole_rs_pgsql::minit::php_swoole_pgsql_minit),
+        Step::Typed(swoole_rs_pgsql::minit::minit),
         #[cfg(feature = "odbc")]
-        Step::Minit(odbc_minit),
+        Step::Typed(swoole_rs_odbc::minit::minit),
         #[cfg(feature = "oci")]
-        Step::Minit(swoole_rs_oci::minit::php_swoole_oracle_minit),
+        Step::Typed(swoole_rs_oci::minit::minit),
         #[cfg(feature = "sqlite")]
-        Step::Minit(swoole_rs_sqlite::minit::php_swoole_sqlite_minit),
+        Step::Typed(swoole_rs_sqlite::minit::minit),
         #[cfg(feature = "firebird")]
-        Step::Minit(swoole_rs_firebird::minit::php_swoole_firebird_minit),
+        Step::Typed(swoole_rs_firebird::minit::minit),
     ]);
     let stdext: Vec<Step> = Vec::from([
         #[cfg(feature = "stdext")]
         Step::Hook(swoole_rs_phpstdext::swr_v1_phpstdext_minit),
     ]);
-    let thread = built([(Switch::Thread, Step::Minit(thread_minit))]);
+    let thread = built([(Switch::Thread, Step::Typed(thread_minit))]);
     drivers.into_iter().chain(thread).chain(stdext).collect()
 }
 
@@ -178,13 +178,13 @@ pub(crate) fn minit() -> Vec<Step> {
 pub(crate) fn mshutdown() -> Vec<Step> {
     Vec::from([
         #[cfg(feature = "pgsql")]
-        Step::Hook(swoole_rs_pgsql::minit::php_swoole_pgsql_mshutdown),
+        Step::Shutdown(swoole_rs_pgsql::minit::mshutdown),
         #[cfg(feature = "oci")]
-        Step::Hook(swoole_rs_oci::minit::php_swoole_oracle_mshutdown),
+        Step::Shutdown(swoole_rs_oci::minit::mshutdown),
         #[cfg(feature = "sqlite")]
-        Step::Hook(swoole_rs_sqlite::minit::php_swoole_sqlite_mshutdown),
+        Step::Shutdown(swoole_rs_sqlite::minit::mshutdown),
         #[cfg(feature = "firebird")]
-        Step::Hook(swoole_rs_firebird::minit::php_swoole_firebird_mshutdown),
+        Step::Shutdown(swoole_rs_firebird::minit::mshutdown),
     ])
 }
 
@@ -250,26 +250,16 @@ pub(crate) fn thread_bailout() {
     }
 }
 
-#[cfg(feature = "odbc")]
-extern "C" fn odbc_minit(module_number: std::ffi::c_int) {
-    // SAFETY: MINIT, with the module's number; upstream ignores the result too.
-    unsafe { swoole_rs_odbc::minit::php_swoole_odbc_minit(module_number) };
-}
-
 /// `Swoole\Thread` and its locks, atomics, barrier and containers, in
 /// upstream's order, inside one `zend_try` as upstream's MINIT.
-/// # Safety
-/// Zend's MINIT of this module, numbered `module_number`.
-unsafe extern "C" fn thread_minit(module_number: c_int) {
+fn thread_minit(minit: &swoole_rs_zend::Minit) {
     let Some(families) = families() else {
         return;
     };
-    // SAFETY: per the caller; the token lives for this call.
-    let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
-    (families.thread_minit)(&minit);
+    (families.thread_minit)(minit);
     // SAFETY: MINIT, with the module's number, before any PHP thread starts.
-    unsafe { (families.locks_minit[3])(module_number) };
+    unsafe { (families.locks_minit[3])(minit.module()) };
     for register in families.thread_classes_minit {
-        register(&minit);
+        register(minit);
     }
 }

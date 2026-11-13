@@ -25,13 +25,10 @@ def main():
     parser.add_argument('--source', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'target/reports/error-differential.json')
     parser.add_argument('--archive', type=Path, required=True, help='Rust archive of the hybrid build under test; it and its headers are the hybrid side')
-    parser.add_argument('--allocator-faults', action='store_true', help='Link unchanged Rust compiled with a test allocator instead of the archive and check NOMEM handling')
     parser.add_argument('--sanitize', action='store_true', help='Instrument the native oracle, adapter and driver with ASan/UBSan')
     parser.add_argument('--benchmark', action='store_true', help='Requires an explicit exclusive benchmark lease; seven matched optimized trials')
     parser.add_argument('--prepare-benchmark', type=Path, help='Retain a verified optimized executable without running timed trials')
     args = parser.parse_args()
-    if args.allocator_faults and (args.benchmark or args.prepare_benchmark):
-        parser.error('Allocator-fault artifacts are test-only, never published archives or benchmarks')
     if (args.benchmark or args.prepare_benchmark) and args.sanitize:
         parser.error('Benchmarks require an optimized unsanitized build')
     if args.prepare_benchmark and args.prepare_benchmark.exists():
@@ -106,19 +103,6 @@ extern char sw_error[1024];
             archive = args.archive.resolve()
             report['published_archive'] = str(archive)
             assert archive.is_file(), f'Missing published archive: {archive}'
-            if args.allocator_faults:
-                rust = ROOT / 'crates/error-ffi/src/lib.rs'
-                wrapper = (ROOT / 'tests/modules/error/allocator.rs').read_text()
-                wrapper = wrapper.replace('/* ERROR_MODULE */', f'#[path = {json.dumps(str(rust))}] mod error;')
-                (work / 'allocator.rs').write_text(wrapper)
-                optimized = ['--edition=2024', '-C', 'opt-level=3', '-C', 'panic=abort']
-                safe = work / 'libswoole_rs_error.rlib'
-                run(['rustc', *optimized, '--crate-name', 'swoole_rs_error', '--crate-type', 'rlib',
-                     ROOT / 'crates/error/src/lib.rs', '-o', safe])
-                archive = work / 'liberror.a'
-                run(['rustc', *optimized, '--crate-name', 'swoole_rs_error_ffi', '--crate-type', 'staticlib',
-                     '--cfg', 'feature="upstream-symbols"', '--extern', f'swoole_rs_error={safe}',
-                     work / 'allocator.rs', '-o', archive])
             rename = ['swoole_strerror', 'swoole_throw_error', 'swoole_ignore_error',
                       'swoole_is_ignored_error', 'swoole_clear_last_error_msg', 'swoole_get_last_error_msg']
             common = ['-std=c++17', '-O2']
@@ -128,11 +112,6 @@ extern char sw_error[1024];
                  *[f'-D{name}=reference_{name}' for name in rename], '-c', upstream / 'original.cc', '-o', work / 'original.o'])
             # The driver uses the hybrid build's headers.
             flags = [*common, '-I', work, *hybrid_flags]
-            if args.allocator_faults:
-                run(['c++', *flags, ROOT / 'tests/modules/error/allocator.cc',
-                     archive, '-o', work / 'allocator-probe'])
-                report['allocator_faults'] = json.loads(run([work / 'allocator-probe']))
-                report['allocator_archive_scope'] = 'Unchanged production Rust with test-only failing global allocator; not a published PHP archive or Rust-ASan build'
             driver = (ROOT / 'tests/modules/error/driver.cc').read_text()
             driver = driver.replace('/* KNOWN_CASES */', ', '.join(cases))
             driver = driver.replace('/* ALL_ENUMS */', ', '.join(names))

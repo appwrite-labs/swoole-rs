@@ -340,7 +340,7 @@ method_table! {
 
 /// MINIT: the class, as `php_swoole_http_server_coro_minit` registered it.
 pub fn server_coro_minit(args: &MinitArgs) {
-    let minit = &args.minit;
+    let minit = args.minit;
     if let Err(error) = register(minit, args.shortname, args.compression) {
         error.defer();
         swoole_rs_zend::bailout::finish();

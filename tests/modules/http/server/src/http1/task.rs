@@ -479,8 +479,9 @@ fn task_worker() {
         // SAFETY: the created server's task pool, its first worker and its main loop.
         unsafe {
             (*pool).running = true;
-            let main_loop = (*pool).main_loop.unwrap();
-            main_loop(PoolRef::new(pool), Worker::new((*pool).workers()));
+            PoolRef::new(pool)
+                .call_main_loop(Worker::new((*pool).workers()))
+                .unwrap();
         }
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);

@@ -1943,8 +1943,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // SAFETY: reads the environment.
         OP_SYSTEMD_FDS => sign(swoole_get_systemd_listen_fds()),
         OP_ST_INIT_PIPE => {
-            // SAFETY: the context's live `MessageBus`.
-            let bus = unsafe { crate::objects::Bus::of(o.ctx.object) };
+            // SAFETY: the bus handle `init_pipe_sockets` lends for the operation.
+            let bus = unsafe { *o.ctx.object.cast::<crate::objects::Bus>() };
             let id = u16::try_from(arg).unwrap_or(u16::MAX);
             let serv = o.server();
             bus.init_pipe_socket(serv.worker_pipe(id, true)?.fd());

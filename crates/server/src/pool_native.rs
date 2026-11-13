@@ -31,8 +31,8 @@ use swoole_rs_process::pool::{
     WARN_TASK_FAILED, raise_bailout,
 };
 use swoole_rs_process::process_pool::{
-    CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP,
-    OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_AVAILABLE,
+    CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP, Hooks,
+    MainLoopFn, OP_ADD_PIPE, OP_ALLOC_WORKERS, OP_BUS_BUFFER, OP_DONT_RESTART, OP_EVENT_AVAILABLE,
     OP_EVENT_INIT, OP_EVENT_WAIT, OP_EXIT_CALLBACK, OP_FREE_MESSAGE_BUS, OP_FREE_PIPES,
     OP_FREE_WORKERS, OP_HAVE_MSGQUEUE, OP_KILL_TIMER, OP_MAIN_LOOP, OP_NEW_MESSAGE_BUS,
     OP_NEW_PIPE, OP_NEW_PIPES, OP_ON_AFTER_RELOAD, OP_ON_WORKER_MESSAGE, OP_ON_WORKER_NOT_FOUND,
@@ -306,11 +306,8 @@ thread_local! {
 
 /// `onWorkerExit`, then stop the loop once it may exit.
 extern "C-unwind" fn worker_exit() {
-    if let (Some(pool), Some(worker)) = (LOOP_POOL.get(), EXITING.get())
-        && let Some(on_worker_exit) = pool.on_worker_exit()
-    {
-        // SAFETY: the pool that holds the callback, and the worker exiting.
-        unsafe { on_worker_exit(pool, worker) };
+    if let (Some(pool), Some(worker)) = (LOOP_POOL.get(), EXITING.get()) {
+        pool.call_on_worker_exit(worker);
     }
     // The loop running this end callback.
     let reactor = crate::objects::Reactor::thread();
@@ -442,12 +439,19 @@ fn objects(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
         }
         OP_NEW_PIPES => address(Box::into_raw(Box::new(Pipes::new()))),
         OP_MAIN_LOOP => {
-            pool.set_main_loop(Some(match arg {
+            let main_loop: MainLoopFn = match arg {
                 1 => run_task,
                 2 => run_stream,
                 3 => run_message,
                 _ => run_async,
-            }));
+            };
+            let hooks = Hooks {
+                main_loop: Some(main_loop),
+                ..Hooks::default()
+            };
+            // SAFETY: these loops run crates/process' own worker loop over the pool
+            // and worker they are given, and read nothing through the pool's `ptr`.
+            unsafe { pool.install(&hooks) };
             0
         }
         OP_NEW_MESSAGE_BUS => address(new_message_bus()),
@@ -532,10 +536,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
             worker_report_error(worker, &status);
-            if let Some(on_worker_error) = pool.on_worker_error() {
-                // SAFETY: the pool that holds the callback, its worker and its status.
-                unsafe { on_worker_error(pool, worker, &status) };
-            }
+            pool.call_on_worker_error(worker, &status);
             0
         }
         _ => return None,
@@ -586,16 +587,10 @@ fn master_ops(pool: Pool<'_>, op: u32, arg: u64) -> i64 {
             }
         }
         OP_ON_WORKER_NOT_FOUND => {
-            if let Some(not_found) = pool.on_worker_not_found() {
-                // SAFETY: the pool that holds the callback, and the reaped status.
-                unsafe { not_found(pool, &exit_status(arg)) };
-            }
+            let _ = pool.call_on_worker_not_found(&exit_status(arg));
         }
         OP_ON_AFTER_RELOAD => {
-            if let Some(on_after_reload) = pool.on_after_reload() {
-                // SAFETY: the pool that holds the callback.
-                unsafe { on_after_reload(pool) };
-            }
+            pool.call_on_after_reload();
         }
         OP_KILL_TIMER => {
             // The pool owns the timer in `kill_timer`, so `wait`, `destroy` or
@@ -656,28 +651,18 @@ impl PoolNative for Native {
     /// The pool's callbacks, inside the bailout trap.
     fn callback(&self, c: &mut PoolCall) {
         let (pool, worker) = (c.pool(), c.worker());
-        let (pool_fn, worker_fn) = match c.flags() {
-            CB_START => (pool.on_start(), None),
-            CB_BEFORE_RELOAD => (pool.on_before_reload(), None),
-            CB_SHUTDOWN => (pool.on_shutdown(), None),
-            CB_WORKER_START => (None, pool.on_worker_start()),
-            CB_WORKER_STOP => (None, pool.on_worker_stop()),
-            CB_MAIN_LOOP => {
-                if let (Some(main_loop), Some(worker)) = (pool.main_loop(), worker) {
-                    // SAFETY: the pool that holds the callback, and its worker.
-                    let code = unsafe { main_loop(pool, worker) };
+        match (c.flags(), worker) {
+            (CB_START, _) => pool.call_on_start(),
+            (CB_BEFORE_RELOAD, _) => pool.call_on_before_reload(),
+            (CB_SHUTDOWN, _) => pool.call_on_shutdown(),
+            (CB_WORKER_START, Some(worker)) => pool.call_on_worker_start(worker),
+            (CB_WORKER_STOP, Some(worker)) => pool.call_on_worker_stop(worker),
+            (CB_MAIN_LOOP, Some(worker)) => {
+                if let Some(code) = pool.call_main_loop(worker) {
                     c.set_result(code as isize);
                 }
-                return;
             }
-            _ => return,
-        };
-        if let Some(f) = pool_fn {
-            // SAFETY: the pool that holds the callback.
-            unsafe { f(pool) };
-        } else if let (Some(f), Some(worker)) = (worker_fn, worker) {
-            // SAFETY: the pool that holds the callback, and its worker.
-            unsafe { f(pool, worker) };
+            _ => {}
         }
     }
 
@@ -794,13 +779,13 @@ impl PoolNative for Native {
 
     fn task(&self, c: &mut PoolCall) {
         let (pool, worker) = (c.pool(), c.worker());
-        if let (Some(on_task), Some(worker)) = (pool.on_task(), worker) {
+        if let Some(worker) = worker {
             // SAFETY: the task the worker read into the call's buffer, its head and
             // the `len` bytes after it.
             let task = unsafe { Packed::from_raw(c.data().cast()) };
-            // SAFETY: the pool that holds the callback, its worker and that task.
-            let code = unsafe { on_task(pool, worker, task) };
-            c.set_result(code as isize);
+            if let Some(code) = pool.call_on_task(worker, task) {
+                c.set_result(code as isize);
+            }
         }
     }
 

@@ -10,7 +10,6 @@ use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 unsafe extern "C" {
-    fn printf(format: *const c_char, ...) -> c_int;
     fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
     fn exit(status: c_int) -> !;
 }
@@ -21,7 +20,7 @@ unsafe extern "C" {
     fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
 }
 
-use crate::sys::{close, dup2, errno, set_errno};
+use crate::sys::{Text, close, dup2, errno, set_errno};
 
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
@@ -140,11 +139,13 @@ pub extern "C" fn swoole_print_backtrace() {
         if symbols.is_null() {
             return;
         }
-        for index in 0..usize::try_from(count).unwrap_or(0) {
-            // SAFETY: backtrace_symbols returns `count` strings.
-            let symbol = unsafe { symbols.wrapping_add(index).read() };
-            // SAFETY: `%s` takes one NUL-terminated string.
-            unsafe { printf(c"%s\n".as_ptr(), symbol) };
+        let count = usize::try_from(count).unwrap_or(0);
+        // SAFETY: backtrace_symbols returns `count` NUL-terminated strings, each a
+        // `Text` until the array is freed below.
+        let lines = unsafe { std::slice::from_raw_parts(symbols.cast::<Text<'_>>(), count) };
+        for line in lines {
+            crate::sys::print(line.get().to_bytes());
+            put("\n");
         }
         // SAFETY: backtrace_symbols' array is one malloc'd block.
         unsafe { libc::free(symbols.cast()) };
@@ -307,18 +308,6 @@ pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]
 pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
     crate::sys::calloc(count, size)
-}
-
-/// `void *sw_realloc(void *, size_t)`.
-/// # Safety
-/// `pointer` is null or a live allocation from this allocator.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z10sw_reallocPvm")
-)]
-pub unsafe extern "C" fn sw_realloc(pointer: *mut c_void, size: usize) -> *mut c_void {
-    // SAFETY: the caller passes null or a live allocation.
-    unsafe { libc::realloc(pointer, size) }
 }
 
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.

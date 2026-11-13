@@ -7,6 +7,8 @@
 )]
 
 use std::ffi::{c_int, c_long, c_void};
+use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 /// `CURL`, only ever passed by pointer.
 #[repr(C)]
@@ -18,6 +20,31 @@ pub struct CURL {
 pub struct CURLM {
     _opaque: [u8; 0],
 }
+/// A multi handle `curl_multi_init` made, live until the unsafe `curl_multi_cleanup`
+/// of it, whose caller drops the owner unused. It is not `Send`: libcurl leaves a
+/// handle to one thread at a time.
+#[repr(transparent)]
+pub struct MultiHandle(NonNull<CURLM>);
+
+impl MultiHandle {
+    /// The handle, for the calls that stay unsafe and for native code.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *mut CURLM {
+        self.0.as_ptr()
+    }
+
+    /// The handle while its owner is borrowed, for the safe calls.
+    #[must_use]
+    pub const fn live(&self) -> LiveMulti<'_> {
+        LiveMulti(self.0, PhantomData)
+    }
+}
+
+/// A [`MultiHandle`], borrowed: what a safe libcurl call takes.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct LiveMulti<'a>(NonNull<CURLM>, PhantomData<&'a MultiHandle>);
+
 /// `curl_socket_t` on POSIX.
 pub type curl_socket_t = c_int;
 pub type CURLcode = c_int;
@@ -77,18 +104,6 @@ impl CURLMsg {
     }
 }
 
-/// `curl_socket_callback`.
-pub type curl_socket_callback = unsafe extern "C" fn(
-    easy: *mut CURL,
-    s: curl_socket_t,
-    what: c_int,
-    userp: *mut c_void,
-    socketp: *mut c_void,
-) -> c_int;
-/// `curl_multi_timer_callback`.
-pub type curl_multi_timer_callback =
-    unsafe extern "C" fn(multi: *mut CURLM, timeout_ms: c_long, userp: *mut c_void) -> c_int;
-
 #[link(name = "curl")]
 unsafe extern "C" {
     pub fn curl_easy_init() -> *mut CURL;
@@ -96,8 +111,8 @@ unsafe extern "C" {
     pub fn curl_easy_reset(curl: *mut CURL);
     pub fn curl_easy_setopt(curl: *mut CURL, option: CURLoption, ...) -> CURLcode;
     pub fn curl_easy_getinfo(curl: *mut CURL, info: CURLINFO, ...) -> CURLcode;
-    /// A new multi handle, or null: it takes nothing and touches no caller state.
-    pub safe fn curl_multi_init() -> *mut CURLM;
+    /// A new multi handle, or none: it takes nothing and touches no caller state.
+    pub safe fn curl_multi_init() -> Option<MultiHandle>;
     pub fn curl_multi_cleanup(multi: *mut CURLM) -> CURLMcode;
     pub fn curl_multi_setopt(multi: *mut CURLM, option: CURLMoption, ...) -> CURLMcode;
     pub fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;
@@ -107,12 +122,22 @@ unsafe extern "C" {
         sockfd: curl_socket_t,
         sockp: *mut c_void,
     ) -> CURLMcode;
-    pub fn curl_multi_timeout(multi: *mut CURLM, milliseconds: *mut c_long) -> CURLMcode;
+    /// How long to wait before calling the handle again, into `milliseconds`: it reads
+    /// the handle's timeouts and runs no callback. `CURLM_BAD_HANDLE` without a handle.
+    pub safe fn curl_multi_timeout(
+        multi: Option<LiveMulti<'_>>,
+        milliseconds: &mut c_long,
+    ) -> CURLMcode;
     pub fn curl_multi_socket_action(
         multi: *mut CURLM,
         s: curl_socket_t,
         ev_bitmask: c_int,
         running_handles: *mut c_int,
     ) -> CURLMcode;
-    pub fn curl_multi_info_read(multi: *mut CURLM, msgs_in_queue: *mut c_int) -> *mut CURLMsg;
+    /// The next message of the handle's queue, which libcurl keeps until the handle's
+    /// next call, or null (as without a handle): it pops the queue and runs no callback.
+    pub safe fn curl_multi_info_read(
+        multi: Option<LiveMulti<'_>>,
+        msgs_in_queue: &mut c_int,
+    ) -> *mut CURLMsg;
 }

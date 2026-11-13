@@ -1,32 +1,37 @@
 # WebSocket tests
 
 The frame codec is `crates/websocket`, which forbids `unsafe`. Its C ABI is
-`crates/websocket-ffi`: the mask export in `docs/abi-v1.md`, the codec/policy exports in
-`native/websocket/swoole_rs_websocket_codec.h`, and `websocket.cc`'s C++-symbol
-entry points (`frame_api`). The PHP side is `crates/phphttp/src/websocket.rs`.
+`crates/websocket-ffi`: the mask export in `docs/abi-v1.md` and `websocket.cc`'s
+C++-symbol entry points (`frame_api`). The PHP side is `crates/phphttp/src/websocket.rs`.
 
 ## Codec
 
-`cargo test -p swoole-rs-websocket -p swoole-rs-websocket-ffi` covers the codec
-at every opcode/flags combination and length boundary, and the C exports'
-pointer contracts. The `fuzz/` targets `ws_frame_length`, `ws_decode` and
+`cargo test -p swoole-rs-websocket -p swoole-rs-websocket-ffi` (`websocket-unit`) covers
+the codec at every opcode/flags combination and length boundary, and the mask
+export's pointer contract. The `fuzz/` targets `ws_frame_length`, `ws_decode` and
 `ws_mask` compare the codec with the pinned C++ bodies.
 
-`test_codec.py` (`websocket-codec`) compiles the pinned codec function bodies and
-PHP policy snippets from `target/upstream/src` and compares them with the Rust
-exports exhaustively over opcode, flag and length inputs:
+`codec.rs` (the `codec` test of `swoole-rs-websocket-ffi`) compares the codec with the
+pinned codec function bodies and PHP policy snippets, which `crates/oracle` compiles
+unchanged, exhaustively over opcode, flag and length inputs. It is the former C++
+gate `codec.cc`, one Rust test per block of checks, each C export replaced by the
+safe function that was its body:
 
-```sh
-cargo build --release -p swoole-rs-ffi
-python3 -m pytest tests/modules/websocket/test_codec.py \
-  --archive target/release/libswoole_rs_ffi.a --sanitize
-```
+| `codec.cc` checks | Rust test | Export → function |
+| --- | --- | --- |
+| The three `static_assert`s on struct sizes | `layouts` | `swr_ws_decoded`, `swr_ws_context`, `swr_ws_decision` → `DecodedFrame`, `Context`, `Decision` |
+| `php_policy` loop against the pinned pack and message policy | `php_policy` | `swr_v1_ws_pack_policy`, `swr_v1_ws_message_policy` → `pack_policy`, `message_policy` |
+| `encoded` and `decoded` loops against pinned `encode` and `decode` | `encode_and_decode_prefixes` | `swr_v1_ws_encoded_size`, `swr_v1_ws_encode`, `swr_v1_ws_control_invalid`, `swr_v1_ws_decode` → `encoded_size`, `encode_parts`, `control_invalid`, `decode_in_place` |
+| `closes` loop against pinned `pack_close_frame` | `close_frames` | `swr_v1_ws_encode_close` → `encode_close_into` |
+| Every first byte, masked and unmasked, against pinned `decode` | `decoder_reads_every_first_byte` | `swr_v1_ws_decode` → `decode_in_place` |
+| `check(...)` policy table | `decision_policy` | `swr_v1_ws_decide` → `decide_frame` |
+| Output capacities 0 to 6 leave the output untouched | `short_output_is_left_untouched` | `swr_v1_ws_encode` → `encode_parts` |
+| `encoded_size(SIZE_MAX)`, empty decode, a frame outside its wire | `rejected_arguments` | `encoded_size`, `decode_in_place`, `decide_frame` |
+| Non-minimal extended ping | `extended_ping_dispatches_from_offset_two` | `swr_v1_ws_decide` → `decide_frame` |
 
-Its C++ sanitizer run excludes alignment: the original codec does unaligned
-integer loads. For Rust ASan (Linux; macOS's runtime cannot link it), build the
-archive with `RUSTC_BOOTSTRAP=1 RUSTFLAGS='-Zsanitizer=address
--Zexternal-clangrt=yes' cargo rustc -p swoole-rs-websocket-ffi --release --crate-type
-staticlib` and add `--rust-asan`.
+Ten of the gate's assertions passed null pointers or a `SIZE_MAX` length or capacity
+to the exports. They checked the exports' own argument validation, which went with
+the exports: slices and references cannot carry those arguments.
 
 ## PHP behaviour
 

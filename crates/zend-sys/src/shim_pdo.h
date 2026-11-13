@@ -3,11 +3,16 @@
 #define SWOOLE_RS_ZEND_SHIM_PDO_H
 #include "php.h"
 
+/* Whether PDO's MINIT has registered the PDO class, which the two below need. */
+bool swr_zend_pdo_loaded(void);
+
 /* Whether the PDO class declares constant `name`. */
 bool swr_zend_pdo_declared(const char *name);
 
-/* REGISTER_PDO_CLASS_CONST_LONG; from PHP 8.5, REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85. */
-void swr_zend_pdo_declare_long(const char *name, zend_long value);
+/* REGISTER_PDO_CLASS_CONST_LONG; from PHP 8.5, REGISTER_PDO_CLASS_CONST_LONG_DEPRECATED_85.
+ * False, declaring nothing, where Zend would raise a fatal error: `name` is declared
+ * already, or is "class". */
+bool swr_zend_pdo_declare_long(const char *name, zend_long value);
 
 /* A pdo_dbh_t's driver_data. */
 void *swr_zend_pdo_driver_data(void *dbh);

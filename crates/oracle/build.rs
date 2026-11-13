@@ -301,8 +301,9 @@ fn framing() {
     fs::write(out("framing.inc"), text).unwrap();
 }
 
-/// The pinned WebSocket length query, mask and decoder with the header definitions
-/// they use, copied unchanged for shim/websocket.cc to compile.
+/// The pinned WebSocket length query, mask, encoder, decoder and close packer with the
+/// header definitions they use, and the PHP server's pack and message policy with the
+/// two bit macros it uses, copied unchanged for shim/websocket.cc to compile.
 fn websocket() {
     let source =
         fs::read_to_string("upstream/src/protocol/websocket.cc").expect("vendored websocket.cc");
@@ -325,11 +326,37 @@ fn websocket() {
         slice(
             &source,
             "static ssize_t get_package_length_impl",
-            "bool encode(",
+            "void print_frame(",
         ),
-        slice(&source, "bool decode(", "bool pack_close_frame("),
     ]
     .concat();
+    let server = fs::read_to_string("upstream/ext-src/swoole_websocket_server.cc")
+        .expect("vendored swoole_websocket_server.cc");
+    let bits: String = fs::read_to_string("upstream/include/swoole.h")
+        .expect("vendored swoole.h")
+        .lines()
+        .filter(|line| {
+            line.starts_with("#define sw_unset_bit(") || line.starts_with("#define sw_set_bit(")
+        })
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    fs::write(out("websocket_bits.inc"), bits).unwrap();
+    fs::write(
+        out("websocket_pack.inc"),
+        slice(
+            &server,
+            "    bool need_compress =",
+            "    if (need_compress)",
+        ),
+    )
+    .unwrap();
+    // The condition alone, without its `if (` and `) {`.
+    let drop = slice(&server, "    if ((opcode == WebSocket::OPCODE_CLOSE", ") {");
+    fs::write(
+        out("websocket_drop.inc"),
+        drop.strip_prefix("    if (").unwrap(),
+    )
+    .unwrap();
     fs::write(out("websocket.inc"), text).unwrap();
 }
 

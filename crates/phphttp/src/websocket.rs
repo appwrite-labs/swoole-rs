@@ -234,7 +234,7 @@ method_table! {
 /// After `Swoole\Http\Server` is registered.
 pub fn websocket_minit(args: &MinitArgs) {
     let serializable = args.thread;
-    let minit = &args.minit;
+    let minit = args.minit;
     ZLIB.store(args.zlib, Relaxed);
     swoole_rs_phpclients::register_websocket(client_websocket);
     // Its objects are the parent's (no handlers of its own are installed).

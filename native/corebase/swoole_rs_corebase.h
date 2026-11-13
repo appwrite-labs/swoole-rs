@@ -18,7 +18,7 @@ uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
 void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
- * sw_calloc/sw_realloc (libc's allocator), swoole_common_divisor/_multiple,
+ * sw_calloc (libc's allocator), swoole_common_divisor/_multiple,
  * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa, swoole_rand
  * (both overloads), swoole_random_int, swoole::microtime and
  * swoole::DataHead::dump. */

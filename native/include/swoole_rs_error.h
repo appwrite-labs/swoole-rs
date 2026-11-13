@@ -140,8 +140,6 @@ typedef enum swErrorCode {
   SW_ERROR_END = 10020,
 } swErrorCode;
 
-typedef struct SwrErrorIgnored SwrErrorIgnored;
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -157,14 +155,6 @@ const char *swr_v1_error_resolve(int32_t code, const char *(*fallback)(int32_t))
 char *swr_v1_error_buffer(void);
 
 const char *swr_v1_error_strerror(int32_t code, const char *(*system)(int32_t));
-
-int32_t swr_v1_error_ignore(struct SwrErrorIgnored **state, int32_t code);
-
-int32_t swr_v1_error_is_ignored(const struct SwrErrorIgnored *state, int32_t code);
-
-void swr_v1_error_ignored_release(struct SwrErrorIgnored *state);
-
-int32_t swr_v1_error_ignore_global(int32_t code);
 
 #ifdef __cplusplus
 }  // extern "C"

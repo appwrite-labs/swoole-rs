@@ -98,7 +98,6 @@
  "utilities-unit": 2,
  "utilities-wait": 1,
  "websocket-close": 1,
- "websocket-codec": 9,
  "websocket-differential": 1,
  "websocket-invalid": 2,
  "websocket-unit": 2

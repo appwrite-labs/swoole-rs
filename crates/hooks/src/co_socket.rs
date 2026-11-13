@@ -472,7 +472,7 @@ impl CoSocket {
 
     /// `init_sock`: a nonblocking, close-on-exec socket of the record's type.
     fn open(&mut self, owner: *mut c_void) -> Option<Socket<'static>> {
-        let socket = SocketRecord::open(
+        let socket = SocketRecord::opened(
             self.kind,
             FD_CO_SOCKET,
             self.sock_domain,
@@ -483,12 +483,15 @@ impl CoSocket {
         self.attach(socket, owner)
     }
 
-    /// The fields `init_sock` and `init_reactor_socket` set on a new socket; `None`,
-    /// with the record left alone, for null.
-    fn attach(&mut self, socket: *mut SocketRecord, owner: *mut c_void) -> Option<Socket<'static>> {
-        // SAFETY: null or a live record the caller just made, which this record owns now.
-        let network = unsafe { Socket::from_ptr(socket) }?;
-        self.socket = socket;
+    /// The fields `init_sock` and `init_reactor_socket` set on a new socket, which
+    /// this record owns from here; `None`, with the record left alone, for none.
+    fn attach(
+        &mut self,
+        socket: Option<Box<SocketRecord>>,
+        owner: *mut c_void,
+    ) -> Option<Socket<'static>> {
+        let network = socket?.into_socket();
+        self.socket = network.as_ptr();
         self.sock_fd = network.edit(|record| {
             record.object = owner;
             record.info.kind = self.kind;
@@ -503,7 +506,7 @@ impl CoSocket {
         record.socket_type = self.kind;
         record.output.nonblock = true;
         record.cloexec = true;
-        self.attach(record.into_raw(), owner)
+        self.attach(Some(Box::new(record)), owner)
     }
 
     /// `init_options`: `TCP_NODELAY` for TCP, the default buffer size for UDP, and
@@ -646,12 +649,11 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
 /// `Socket(SocketType)`, [`NEW_FD_BY_TYPE`] `Socket(fd, SocketType)` and
 /// [`NEW_FD_BY_FAMILY`] `Socket(fd, domain, type, protocol)`. `owner` is the native
 /// `Socket`, which the new `network::Socket` points back to. Returns the bits above.
-///
-/// # Safety
-/// `socket` is writable storage for one record; `owner` is its native object.
+/// `storage` holds one record, which needn't be initialized yet (a record already
+/// there is overwritten, not dropped); the native object owns it for its lifetime.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
-    socket: *mut CoSocket,
+pub extern "C" fn swr_v1_hook_co_socket_new(
+    socket: &mut MaybeUninit<CoSocket>,
     owner: *mut c_void,
     how: c_int,
     fd: c_int,
@@ -660,10 +662,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_new(
     kind: c_int,
     protocol: c_int,
 ) -> u32 {
-    // SAFETY: as the caller promises: storage for one record, which needn't be
-    // initialized yet; the native object owns it for its lifetime.
-    let storage = unsafe { &mut *socket.cast::<MaybeUninit<CoSocket>>() };
-    let record = storage.write(CoSocket::new());
+    let record = socket.write(CoSocket::new());
     record.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
@@ -735,7 +734,7 @@ impl CoSocket {
         let socket = self;
         let (mut domain, mut kind) = (0, 0);
         domain_and_type(socket_type, &mut domain, &mut kind);
-        let made = SocketRecord::open(
+        let made = SocketRecord::opened(
             socket_type,
             FD_CO_SOCKET,
             domain,
@@ -936,7 +935,8 @@ mod tests {
         let owner = (&raw mut *socket).cast();
         // The constructor writes the record again.
         socket.fini();
-        unsafe { swr_v1_hook_co_socket_new(socket, owner, how, fd, ty, d, k, 0) }
+        let storage = unsafe { &mut *(&raw mut *socket).cast() };
+        swr_v1_hook_co_socket_new(storage, owner, how, fd, ty, d, k, 0)
     }
 
     fn option(fd: c_int, level: c_int, name: c_int) -> c_int {

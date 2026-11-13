@@ -31,9 +31,10 @@ extern "C" fn on_event<const BITMASK: c_int>(
     let Some(socket) = event.socket() else {
         return -1;
     };
-    let object = socket.read(|socket| socket.object);
-    // SAFETY: the multi set the object and keeps it live while the socket is registered.
-    unsafe { crate::socket_event(object, BITMASK) };
+    let object = socket.read(|socket| socket.object).cast::<crate::Socket>();
+    // SAFETY: the multi set the object, its socket, which it keeps live while the
+    // reactor socket is registered.
+    crate::socket_event(unsafe { &*object }, BITMASK);
     0
 }
 
@@ -122,19 +123,19 @@ pub(crate) fn timer_available() -> bool {
 }
 
 /// A one-shot timer of `ms` that reaches `multi`, which deletes it, unless it
-/// fired, before it is freed.
-pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> *mut c_void {
+/// fired, before it is freed: its id, or none.
+pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
     let multi = ptr::from_ref(multi);
-    swoole_rs_timer::add_fn(ms, false, move || {
+    swoole_rs_timer::add_fn_held(ms, false, move || {
         // SAFETY: the multi deletes its timer before it is freed.
         let multi = unsafe { &*multi };
-        multi.timer.set(std::ptr::null_mut());
+        multi.timer.set(None);
         multi.callback(None);
     })
 }
 
-/// `swoole_timer_del` of a pending timer [`timer_add`] returned.
-pub(crate) use swoole_rs_timer::swoole_timer_del as timer_del;
+/// `swoole_timer_del` of the timer [`timer_add`] returned, by its id.
+pub(crate) use swoole_rs_timer::cancel_held as timer_del;
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {
@@ -154,20 +155,30 @@ pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
 /// `co->resume()` of a live, suspended coroutine.
 pub(crate) use swoole_rs_coroutine::resume;
 
-unsafe extern "C-unwind" fn deferred(multi: *mut c_void) {
-    // SAFETY: the multi waits on the deferral it queued.
-    if crate::multi_deferred(unsafe { &*multi.cast::<Multi>() }) {
-        // SAFETY: released while the deferral was queued; nothing else uses it.
-        unsafe { crate::swr_v1_curl_multi_free(multi.cast()) };
+/// A multi's queued wake-up. `defer` marks the multi before it queues one, and
+/// `swr_v1_curl_multi_free` leaves a marked multi to its wake-up.
+struct Wake(*const Multi);
+
+impl event_api::Deferred for Wake {
+    fn run(self) {
+        // SAFETY: the multi `defer` marked, which is kept until this runs.
+        if crate::multi_deferred(unsafe { &*self.0 }) {
+            // SAFETY: released while the wake-up was queued; nothing else uses it.
+            unsafe { crate::swr_v1_curl_multi_free(self.0.cast_mut()) };
+        }
     }
+
+    /// A reactor freed first runs no wake-up, as `swoole_event_defer`'s queue.
+    fn dispose(self) {}
 }
 
-/// `swoole_event_defer` of the multi's wake-up.
-/// # Safety
-/// The event loop is available and `multi` outlives the deferral.
-pub(crate) unsafe fn defer(multi: *const Multi) {
-    // SAFETY: `deferred` takes the multi, which outlives the deferral as the caller promises.
-    unsafe { swoole_rs_reactor::swoole_event_defer(deferred, multi.cast_mut().cast()) };
+/// `swoole_event_defer` of the multi's wake-up, unless one is queued; nothing without
+/// an event loop.
+pub(crate) fn defer(multi: &Multi) {
+    if multi.defer_callback.replace(true) {
+        return;
+    }
+    _ = event_api::swoole_event_defer_value(Wake(multi));
 }
 
 /// `swoole_curl_multi_new`: a multi for `curl_multi_init`.

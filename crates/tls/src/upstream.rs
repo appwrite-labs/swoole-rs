@@ -19,7 +19,7 @@ use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_reactor::socket_upstream::{
-    make_socket_typed, socket_cork, socket_set_fd_option, socket_uncork,
+    make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, ReactorIov, SYNC_ONCE, SYNC_RECV,
@@ -297,16 +297,15 @@ fn tls_send(socket: Socket<'_>, data: Drain<'_>) -> isize {
 /// `ssize_t Socket::ssl_recv(void *buf, size_t n)`, for native callers.
 ///
 /// # Safety
-/// `socket` is a live record and `buffer` denotes `length` writable bytes.
+/// `buffer` denotes `length` writable bytes.
 #[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_ZN6swoole7network6Socket8ssl_recvEPvm")]
 unsafe extern "C" fn socket_ssl_recv(
-    socket: *mut c_void,
+    socket: Option<Socket<'_>>,
     buffer: *mut c_void,
     length: usize,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+    let Some(socket) = socket else {
         return -1;
     };
     // SAFETY: the caller lends `length` writable bytes.
@@ -316,16 +315,15 @@ unsafe extern "C" fn socket_ssl_recv(
 /// `ssize_t Socket::ssl_send(const void *buf, size_t n)`, for native callers.
 ///
 /// # Safety
-/// `socket` is a live record and `buffer` denotes `length` readable bytes.
+/// `buffer` denotes `length` readable bytes.
 #[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_ZN6swoole7network6Socket8ssl_sendEPKvm")]
 unsafe extern "C" fn socket_ssl_send(
-    socket: *mut c_void,
+    socket: Option<Socket<'_>>,
     buffer: *mut c_void,
     length: usize,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
+    let Some(socket) = socket else {
         return -1;
     };
     // SAFETY: the caller lends `length` readable bytes.
@@ -796,7 +794,7 @@ pub unsafe extern "C" fn socket_write_sync(
 /// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)`.
 ///
 /// # Safety
-/// `address` is a live `network::Address` and `buffer` denotes `length` readable bytes.
+/// `buffer` denotes `length` readable bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket11sendto_syncERKNS0_7AddressEPKvmi")
@@ -804,13 +802,11 @@ pub unsafe extern "C" fn socket_write_sync(
 #[must_use]
 pub unsafe extern "C" fn socket_sendto_sync(
     socket: Socket<'_>,
-    address: *const SocketAddress,
+    address: &SocketAddress,
     buffer: *const c_void,
     length: usize,
     flags: c_int,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let address = unsafe { &*address };
     // SAFETY: as the caller promises.
     let data = unsafe { Drain::from_raw(buffer, length) };
     sync_out(socket, Io::SendTo(address, data), SYNC_ONCE, flags)
@@ -820,7 +816,7 @@ pub unsafe extern "C" fn socket_sendto_sync(
 /// address's storage and length.
 ///
 /// # Safety
-/// `buffer` denotes `length` writable bytes, and `address` is a live `network::Address`.
+/// `buffer` denotes `length` writable bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE")
@@ -830,10 +826,8 @@ pub unsafe extern "C" fn socket_recvfrom_sync_address(
     buffer: *mut c_void,
     length: usize,
     flags: c_int,
-    address: *mut SocketAddress,
+    address: &mut SocketAddress,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let address = unsafe { &mut *address };
     // SAFETY: as the caller promises.
     let buffer = unsafe { Fill::from_raw(buffer, length) };
     sync(
@@ -1517,12 +1511,13 @@ pub unsafe extern "C-unwind" fn make_server_socket(
     backlog: c_int,
 ) -> *mut SocketRecord {
     const ORIGIN: &CStr = c"make_server_socket";
-    let socket = make_socket_typed(kind, FD_STREAM_SERVER, SOCK_CLOEXEC);
-    // SAFETY: null or the new record, which only this function holds.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+    // The new record, which only this function holds.
+    let Some(record) = make_typed(kind, FD_STREAM_SERVER, SOCK_CLOEXEC) else {
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
-        return socket;
+        return std::ptr::null_mut();
     };
+    let record = record.into_socket();
+    let socket = record.as_ptr();
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
     // datagram sockets can allow duplicate binds.

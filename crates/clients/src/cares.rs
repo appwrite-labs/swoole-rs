@@ -67,7 +67,7 @@ struct Query {
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
     retired: Arc<AtomicBool>,
-    /// The wrapper of each descriptor c-ares watches, live until [`free`]: one per
+    /// The wrapper of each descriptor c-ares watches, live until `socket_state` detaches it: one per
     /// server it asks, so a list beats a hash map.
     sockets: RefCell<Vec<(i32, Socket<'static>)>>,
     results: RefCell<Vec<Vec<u8>>>,
@@ -134,30 +134,13 @@ fn install() {
     event_api::on_destroy(cleanup);
 }
 const FD: i32 = FdType::SW_FD_CARES as i32;
-/// `Socket::free` of a wrapper whose descriptor c-ares keeps: the record goes on the
-/// next deferred pass while a reactor runs, as the event being handled may hold it.
-/// # Safety
-/// `wrapper` is out of the reactor, and nothing uses it or a copy of it afterwards.
-unsafe fn free(wrapper: Socket<'static>) {
-    // c-ares retains the OS descriptor.
-    wrapper.edit(|wrapper| wrapper.fd = -1);
-    let detached = Detached(wrapper.as_ptr());
-    let Err(detached) = (if event_api::swr_v1_event_reactor().is_null() {
-        Err(detached)
-    } else {
-        event_api::swoole_event_defer_value(detached)
-    }) else {
-        return;
-    };
-    // No reactor to defer to: now.
-    event_api::Deferred::run(detached);
-}
-/// A detached wrapper the next deferred pass frees (a freed reactor leaks it, as
-/// upstream's).
+/// A wrapper `socket_state` took out of the reactor and of its query's registry,
+/// which the next deferred pass frees (a freed reactor leaks it, as upstream's).
 struct Detached(*mut SocketRecord);
 impl event_api::Deferred for Detached {
     fn run(self) {
-        // SAFETY: the detached wrapper, which nothing has used since `free`.
+        // SAFETY: the detached wrapper, which nothing has used since `socket_state`
+        // took it out of the reactor and the registry.
         unsafe { SocketRecord::free(self.0) };
     }
     fn dispose(self) {}
@@ -184,9 +167,21 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         if events == 0 {
             // Remove the registered native socket before detaching its descriptor.
             _ = event_api::event_del(wrapper);
-            // SAFETY: out of the reactor above, and of the registry below; free
-            // detaches fd first, as c-ares retains ownership of the OS descriptor.
-            unsafe { free(wrapper) };
+            // `Socket::free` of a wrapper whose descriptor c-ares keeps.
+            wrapper.edit(|wrapper| wrapper.fd = -1);
+            // Out of the reactor above, and of the registry below: the record goes on
+            // the next deferred pass while a reactor runs, as the event being handled
+            // may hold it.
+            let detached = Detached(wrapper.as_ptr());
+            let deferred = if event_api::swr_v1_event_reactor().is_null() {
+                Err(detached)
+            } else {
+                event_api::swoole_event_defer_value(detached)
+            };
+            if let Err(detached) = deferred {
+                // No reactor to defer to: now.
+                event_api::Deferred::run(detached);
+            }
             query
                 .sockets
                 .borrow_mut()
@@ -200,15 +195,15 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
             return;
         }
         // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
-        // `make_socket(fd, SW_FD_CARES)`: the fresh record, leaked until `free`,
-        // which only this function calls, on taking it out of the registry.
+        // `make_socket(fd, SW_FD_CARES)`: the fresh record, leaked until this function
+        // takes it out of the registry and its `Detached` frees it.
         let wrapper = Socket::new(Box::leak(Box::new(SocketRecord::with_fd(fd, FD))));
         wrapper.edit(|wrapper| wrapper.object = data);
         query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
     };
     if wrapper.read(|wrapper| wrapper.events) != 0 {
-        // Update this registered wrapper, which lives until `free` above.
+        // Update this registered wrapper, which lives until it is detached above.
         _ = event_api::event_set(wrapper, events);
     } else {
         // Register this fresh wrapper.

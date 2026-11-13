@@ -42,6 +42,25 @@ pub struct Minit {
     _thread: PhantomData<*mut ()>,
 }
 
+/// This module's MSHUTDOWN, running on the main thread after every PHP thread
+/// has ended: what makes undoing MINIT's process-wide registrations safe.
+/// Neither `Send` nor `Clone`, as [`Minit`].
+pub struct Mshutdown {
+    _thread: PhantomData<*mut ()>,
+}
+
+impl Mshutdown {
+    /// # Safety
+    /// Zend is running this module's MSHUTDOWN on this thread, and the token
+    /// is dropped before it returns.
+    #[must_use]
+    pub unsafe fn new() -> Self {
+        Self {
+            _thread: PhantomData,
+        }
+    }
+}
+
 /// A registered class another may extend.
 #[derive(Clone, Copy)]
 pub struct Parent(*mut zend_class_entry);

@@ -249,6 +249,13 @@ impl SocketRecord {
         Box::into_raw(Box::new(self))
     }
 
+    /// A new heap record as the socket its maker holds: live until an unsafe free
+    /// ([`Self::free`], `Socket::free`), whose caller answers for the handles left.
+    #[must_use]
+    pub fn into_socket(self: Box<Self>) -> crate::Socket<'static> {
+        crate::Socket::new(Box::leak(self))
+    }
+
     /// `Socket::operator delete`.
     ///
     /// # Safety
@@ -273,15 +280,30 @@ impl SocketRecord {
         protocol: c_int,
         flags: c_int,
     ) -> *mut Self {
+        Self::opened(socket_type, fd_type, domain, kind, protocol, flags)
+            .map_or(ptr::null_mut(), Box::into_raw)
+    }
+
+    /// [`Self::open`]'s record, still its maker's own; none, with errno set, if
+    /// socket(2) failed.
+    #[must_use]
+    pub fn opened(
+        socket_type: c_int,
+        fd_type: c_int,
+        domain: c_int,
+        kind: c_int,
+        protocol: c_int,
+        flags: c_int,
+    ) -> Option<Box<Self>> {
         let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags);
         if fd < 0 {
-            return ptr::null_mut();
+            return None;
         }
         let mut socket = Self::with_fd(fd, fd_type);
         socket.output.nonblock = flags & crate::socket_types::NONBLOCK != 0;
         socket.cloexec = flags & crate::socket_types::CLOEXEC != 0;
         socket.socket_type = socket_type;
-        socket.into_raw()
+        Some(Box::new(socket))
     }
 
     /// `make_socket(type, fd_type, flags)`: [`Self::open`] with the domain and type
@@ -293,13 +315,24 @@ impl SocketRecord {
         flags: c_int,
         unknown: &mut bool,
     ) -> *mut Self {
+        Self::opened_typed(socket_type, fd_type, flags, unknown)
+            .map_or(ptr::null_mut(), Box::into_raw)
+    }
+
+    /// [`Self::open_typed`]'s record, still its maker's own; none where that is null.
+    pub fn opened_typed(
+        socket_type: c_int,
+        fd_type: c_int,
+        flags: c_int,
+        unknown: &mut bool,
+    ) -> Option<Box<Self>> {
         let (mut domain, mut kind) = (0, 0);
         if !crate::swr_v1_socket_domain_and_type(socket_type, &mut domain, &mut kind) {
             *unknown = true;
             crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
-            return ptr::null_mut();
+            return None;
         }
-        Self::open(socket_type, fd_type, domain, kind, 0, flags)
+        Self::opened(socket_type, fd_type, domain, kind, 0, flags)
     }
 }
 
@@ -390,6 +423,12 @@ impl SocketFields {
     /// Without accept4 the listener is marked close-on-exec, as upstream's
     /// `set_fd_option` call does.
     pub fn accept(&mut self) -> *mut SocketRecord {
+        self.accepted().map_or(ptr::null_mut(), Box::into_raw)
+    }
+
+    /// [`Self::accept`]'s record, still its maker's own; none (errno set) where that
+    /// is null.
+    pub fn accepted(&mut self) -> Option<Box<SocketRecord>> {
         let mut socket = SocketRecord::new();
         socket.removed = true;
         socket.socket_type = self.socket_type;
@@ -403,12 +442,12 @@ impl SocketFields {
             self.cloexec = true;
         }
         if socket.fd < 0 {
-            return ptr::null_mut();
+            return None;
         }
         socket.info.kind = self.socket_type;
         socket.output.nonblock = self.output.nonblock;
         socket.cloexec = true;
-        socket.into_raw()
+        Some(Box::new(socket))
     }
 }
 

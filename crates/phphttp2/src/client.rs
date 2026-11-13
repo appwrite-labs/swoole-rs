@@ -1247,7 +1247,7 @@ method_table! {
 pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
     // phphttp2's one MINIT entry also hands its server to phphttp.
     swoole_rs_phphttp::http2::register(&crate::server::HOOKS);
-    let minit = &args.minit;
+    let minit = args.minit;
     if let Err(error) = register(minit, args.shortname) {
         error.defer();
         swoole_rs_zend::bailout::finish();

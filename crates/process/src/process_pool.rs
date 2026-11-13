@@ -57,19 +57,19 @@ pub struct PoolRecord {
     pub max_request_grace: u32,
     pub scheduler_warning: bool,
     pub warning_time: i64,
-    pub on_start: Option<PoolFn>,
-    pub on_shutdown: Option<PoolFn>,
-    pub on_before_reload: Option<PoolFn>,
-    pub on_after_reload: Option<PoolFn>,
-    pub on_task: Option<TaskFn>,
-    pub on_worker_start: Option<WorkerFn>,
-    pub on_message: Option<MessageFn>,
-    pub on_worker_exit: Option<WorkerFn>,
-    pub on_worker_stop: Option<WorkerFn>,
-    pub on_worker_error: Option<ErrorFn>,
-    pub on_worker_message: Option<EventFn>,
-    pub on_worker_not_found: Option<NotFoundFn>,
-    pub main_loop: Option<MainLoopFn>,
+    pub(crate) on_start: Option<PoolFn>,
+    pub(crate) on_shutdown: Option<PoolFn>,
+    pub(crate) on_before_reload: Option<PoolFn>,
+    pub(crate) on_after_reload: Option<PoolFn>,
+    pub(crate) on_task: Option<TaskFn>,
+    pub(crate) on_worker_start: Option<WorkerFn>,
+    pub(crate) on_message: Option<MessageFn>,
+    pub(crate) on_worker_exit: Option<WorkerFn>,
+    pub(crate) on_worker_stop: Option<WorkerFn>,
+    pub(crate) on_worker_error: Option<ErrorFn>,
+    pub(crate) on_worker_message: Option<EventFn>,
+    pub(crate) on_worker_not_found: Option<NotFoundFn>,
+    pub(crate) main_loop: Option<MainLoopFn>,
     /// The round robin's next worker, which other processes update atomically.
     pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
@@ -77,7 +77,8 @@ pub struct PoolRecord {
     // `worker_num` and the pointers from `workers` on are crate-private, like
     // `registry`: the pool's operations trust them, so safe code elsewhere reads
     // them through the getters below and writes them only through the `unsafe`
-    // setters.
+    // setters. So are the hooks above and `ptr`, which the hooks read: their owner
+    // installs them together ([`PoolRef::install`]).
     /// Null, or the box `create` made.
     pub(crate) registry: *mut WorkerRegistry,
     pub(crate) queue: *mut c_void,
@@ -85,7 +86,7 @@ pub struct PoolRecord {
     pub(crate) message_box: *mut c_void,
     pub(crate) message_bus: *mut c_void,
     pub(crate) reload_task: *mut ReloadTask,
-    pub ptr: *mut c_void,
+    pub(crate) ptr: *mut c_void,
     /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
     /// running. It stays armed after `wait` returns, which reaps only the first,
     /// and goes with the pool: `destroy`, or dropping the record, deletes it.
@@ -389,27 +390,189 @@ pub struct RecvData {
 /// Each takes the live pool and the objects of the event, which the pool lends for
 /// the call. `C-unwind`, as a PHP bailout longjmps over them.
 ///
+/// A hook runs only through the pool that holds it ([`PoolRef::call_on_start`] and
+/// the calls beside it), and only its owner installs it ([`PoolRef::install`]), with
+/// the `ptr` it reads. So a hook whose other arguments are handles and references is
+/// a safe fn: the pool it is given is the one it was installed on.
+pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
+/// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
+pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
+/// `main_loop`: the worker's loop, and its exit code.
+pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
+/// `onTask`: the task the worker read.
+pub type TaskFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
+/// `onMessage`.
+///
 /// # Safety
-/// Every callback trusts its arguments beyond their types, so each is `unsafe`: the
-/// pool is the one whose record holds the callback (its owner set `ptr`), and the
-/// other arguments are the ones the pool lends for that event.
-pub type PoolFn = unsafe extern "C-unwind" fn(PoolRef<'_>);
-/// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`; the safety of [`PoolFn`].
-pub type WorkerFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
-/// `main_loop`: the worker's loop, and its exit code; the safety of [`PoolFn`].
-pub type MainLoopFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
-/// `onTask`: the task the worker read; the safety of [`PoolFn`].
-pub type TaskFn = unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
-/// `onMessage`; the safety of [`PoolFn`], and `data` points at `info.len` bytes.
+/// The pool is the one that holds the callback, and `data` points at `info.len` bytes.
 pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
-/// `onWorkerMessage`: an `EventData` the master popped; the safety of [`PoolFn`].
+/// `onWorkerMessage`.
+///
+/// # Safety
+/// The pool is the one that holds the callback, and the pointer is an `EventData`
+/// the master popped.
 pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
-/// `onWorkerError`; the safety of [`PoolFn`].
-pub type ErrorFn =
-    unsafe extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
-/// `onWorkerNotFound`: 1 when the pid was handled; the safety of [`PoolFn`].
-pub type NotFoundFn =
-    unsafe extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
+/// `onWorkerError`.
+pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+/// `onWorkerNotFound`: 1 when the pid was handled.
+pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
+
+/// What a pool's owner installs ([`PoolRef::install`]): the object its hooks read
+/// as the pool's `ptr`, and the hooks. `None` leaves what the pool has.
+#[derive(Clone, Copy, Default)]
+pub struct Hooks {
+    pub ptr: Option<*mut c_void>,
+    pub on_start: Option<PoolFn>,
+    pub on_shutdown: Option<PoolFn>,
+    pub on_task: Option<TaskFn>,
+    pub on_worker_start: Option<WorkerFn>,
+    pub on_message: Option<MessageFn>,
+    pub on_worker_exit: Option<WorkerFn>,
+    pub on_worker_stop: Option<WorkerFn>,
+    pub on_worker_message: Option<EventFn>,
+    pub on_worker_not_found: Option<NotFoundFn>,
+    pub main_loop: Option<MainLoopFn>,
+}
+
+impl PoolRef<'_> {
+    /// Installs `hooks`' object and hooks on the pool.
+    ///
+    /// # Safety
+    /// Every hook the pool then holds is sound to run on this pool with what the
+    /// pool lends it: what a hook reads through the pool's `ptr` is what `ptr` then
+    /// is, and stays live while the pool can run the hook.
+    pub unsafe fn install(self, hooks: &Hooks) {
+        // One write per field named: the pool's own code and its signal handlers
+        // read the record meanwhile.
+        if let Some(ptr) = hooks.ptr {
+            self.set_ptr(ptr);
+        }
+        if hooks.on_start.is_some() {
+            self.set_on_start(hooks.on_start);
+        }
+        if hooks.on_shutdown.is_some() {
+            self.set_on_shutdown(hooks.on_shutdown);
+        }
+        if hooks.on_task.is_some() {
+            self.set_on_task(hooks.on_task);
+        }
+        if hooks.on_worker_start.is_some() {
+            self.set_on_worker_start(hooks.on_worker_start);
+        }
+        if hooks.on_message.is_some() {
+            self.set_on_message(hooks.on_message);
+        }
+        if hooks.on_worker_exit.is_some() {
+            self.set_on_worker_exit(hooks.on_worker_exit);
+        }
+        if hooks.on_worker_stop.is_some() {
+            self.set_on_worker_stop(hooks.on_worker_stop);
+        }
+        if hooks.on_worker_message.is_some() {
+            self.set_on_worker_message(hooks.on_worker_message);
+        }
+        if hooks.on_worker_not_found.is_some() {
+            self.set_on_worker_not_found(hooks.on_worker_not_found);
+        }
+        if hooks.main_loop.is_some() {
+            self.set_main_loop(hooks.main_loop);
+        }
+    }
+
+    /// `pool->main_loop = nullptr`: the pool's workers run no loop of its own.
+    pub fn clear_main_loop(self) {
+        self.set_main_loop(None);
+    }
+
+    /// `hook(pool)` when the pool has it.
+    fn call_pool(self, hook: Option<PoolFn>) {
+        if let Some(hook) = hook {
+            hook(self);
+        }
+    }
+
+    /// `hook(pool, worker)` when the pool has it.
+    fn call_worker(self, hook: Option<WorkerFn>, worker: Worker<'_>) {
+        if let Some(hook) = hook {
+            hook(self, worker);
+        }
+    }
+
+    /// `onStart(pool)`; nothing without one.
+    pub fn call_on_start(self) {
+        self.call_pool(self.on_start());
+    }
+
+    /// `onShutdown(pool)`; nothing without one.
+    pub fn call_on_shutdown(self) {
+        self.call_pool(self.on_shutdown());
+    }
+
+    /// `onBeforeReload(pool)`; nothing without one.
+    pub fn call_on_before_reload(self) {
+        self.call_pool(self.on_before_reload());
+    }
+
+    /// `onAfterReload(pool)`; nothing without one.
+    pub fn call_on_after_reload(self) {
+        self.call_pool(self.on_after_reload());
+    }
+
+    /// `onWorkerStart(pool, worker)`; nothing without one.
+    pub fn call_on_worker_start(self, worker: Worker<'_>) {
+        self.call_worker(self.on_worker_start(), worker);
+    }
+
+    /// `onWorkerStop(pool, worker)`; nothing without one.
+    pub fn call_on_worker_stop(self, worker: Worker<'_>) {
+        self.call_worker(self.on_worker_stop(), worker);
+    }
+
+    /// `onWorkerExit(pool, worker)`; nothing without one.
+    pub fn call_on_worker_exit(self, worker: Worker<'_>) {
+        self.call_worker(self.on_worker_exit(), worker);
+    }
+
+    /// `main_loop(pool, worker)`: its exit code, or `None` without one.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "callers ignore the result where upstream's do"
+    )]
+    pub fn call_main_loop(self, worker: Worker<'_>) -> Option<c_int> {
+        Some(self.main_loop()?(self, worker))
+    }
+
+    /// Whether the pool has a `main_loop`.
+    #[must_use]
+    pub fn has_main_loop(self) -> bool {
+        self.main_loop().is_some()
+    }
+
+    /// `onTask(pool, worker, task)`: its result, or `None` without one.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "callers ignore the result where upstream's do"
+    )]
+    pub fn call_on_task(self, worker: Worker<'_>, task: Packed<'_>) -> Option<c_int> {
+        Some(self.on_task()?(self, worker, task))
+    }
+
+    /// `onWorkerError(pool, worker, status)`; nothing without one.
+    pub fn call_on_worker_error(self, worker: Worker<'_>, status: &crate::methods::ExitStatus) {
+        if let Some(hook) = self.on_worker_error() {
+            hook(self, worker, status);
+        }
+    }
+
+    /// `onWorkerNotFound(pool, status)`: its result, or `None` without one.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "callers ignore the result where upstream's do"
+    )]
+    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) -> Option<c_int> {
+        Some(self.on_worker_not_found()?(self, status))
+    }
+}
 
 /// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
 /// native objects, which this crate can't depend on, and its callbacks. Each takes
@@ -866,18 +1029,21 @@ struct Pool<'a, H> {
 /// [`PoolRef`]'s field reads, and [`Pool`]'s over its handle. A read copies the one
 /// field out, so no reference to the record outlives it.
 macro_rules! getters {
-    (@get $field:ident: $ty:ty) => {
+    (@get $vis:vis $field:ident: $ty:ty) => {
         #[doc = concat!("The record's `", stringify!($field), "`.")]
         #[must_use]
-        pub fn $field(self) -> $ty {
+        $vis fn $field(self) -> $ty {
             // SAFETY: a live pool (the handle's contract); only the field is read.
             unsafe { (*self.raw).$field }
         }
     };
-    ($($field:ident: $ty:ty),* $(,)? ; $($only:ident: $only_ty:ty),* $(,)?) => {
+    (
+        $($vis:vis $field:ident: $ty:ty),* $(,)? ;
+        $($only_vis:vis $only:ident: $only_ty:ty),* $(,)?
+    ) => {
         impl PoolRef<'_> {
-            $(getters!(@get $field: $ty);)*
-            $(getters!(@get $only: $only_ty);)*
+            $(getters!(@get $vis $field: $ty);)*
+            $(getters!(@get $only_vis $only: $only_ty);)*
         }
         impl<H> Pool<'_, H> {
             $(
@@ -901,11 +1067,11 @@ macro_rules! setters {
     };
     (
         $($vis:vis $field:ident / $set:ident: $ty:ty),* ;
-        $($only:ident / $only_set:ident: $only_ty:ty),* $(,)?
+        $($only_vis:vis $only:ident / $only_set:ident: $only_ty:ty),* $(,)?
     ) => {
         impl PoolRef<'_> {
             $(setters!(@set $vis $field / $set: $ty);)*
-            $(setters!(@set pub $only / $only_set: $only_ty);)*
+            $(setters!(@set $only_vis $only / $only_set: $only_ty);)*
         }
         impl<H> Pool<'_, H> {
             $(
@@ -918,50 +1084,52 @@ macro_rules! setters {
 }
 
 getters!(
-    running: bool,
-    reload_init: bool,
-    read_message: bool,
-    schedule_by_sysvmsg: bool,
-    is_async: bool,
-    ipc_mode: u8,
-    master_pid: c_int,
-    max_wait_time: u32,
-    reload_count: u64,
-    kind: u8,
-    start_id: u16,
-    use_msgqueue: bool,
-    use_socket: bool,
-    max_packet_size: u32,
-    worker_num: u32,
-    on_start: Option<PoolFn>,
-    on_shutdown: Option<PoolFn>,
-    on_before_reload: Option<PoolFn>,
-    on_after_reload: Option<PoolFn>,
-    on_message: Option<MessageFn>,
-    on_worker_start: Option<WorkerFn>,
-    on_worker_stop: Option<WorkerFn>,
-    on_worker_exit: Option<WorkerFn>,
-    on_worker_message: Option<EventFn>,
-    on_worker_not_found: Option<NotFoundFn>,
-    main_loop: Option<MainLoopFn>,
-    workers: *mut WorkerRecord,
-    pipes: *mut c_void,
-    registry: *mut WorkerRegistry,
-    queue: *mut c_void,
-    ipc: *mut PoolIpc,
-    message_box: *mut c_void,
-    message_bus: *mut c_void,
-    reload_task: *mut ReloadTask,
+    pub running: bool,
+    pub reload_init: bool,
+    pub read_message: bool,
+    pub schedule_by_sysvmsg: bool,
+    pub is_async: bool,
+    pub ipc_mode: u8,
+    pub master_pid: c_int,
+    pub max_wait_time: u32,
+    pub reload_count: u64,
+    pub kind: u8,
+    pub start_id: u16,
+    pub use_msgqueue: bool,
+    pub use_socket: bool,
+    pub max_packet_size: u32,
+    pub worker_num: u32,
+    // The hooks only this type's `call_*` run, on the pool that holds them.
+    pub(crate) on_start: Option<PoolFn>,
+    pub(crate) on_shutdown: Option<PoolFn>,
+    pub(crate) on_before_reload: Option<PoolFn>,
+    pub(crate) on_after_reload: Option<PoolFn>,
+    pub(crate) on_worker_start: Option<WorkerFn>,
+    pub(crate) on_worker_stop: Option<WorkerFn>,
+    pub(crate) on_worker_exit: Option<WorkerFn>,
+    pub(crate) on_worker_not_found: Option<NotFoundFn>,
+    pub(crate) main_loop: Option<MainLoopFn>,
+    // The `unsafe fn`s, whose caller says the pool holds them.
+    pub on_message: Option<MessageFn>,
+    pub on_worker_message: Option<EventFn>,
+    pub workers: *mut WorkerRecord,
+    pub pipes: *mut c_void,
+    pub registry: *mut WorkerRegistry,
+    pub queue: *mut c_void,
+    pub ipc: *mut PoolIpc,
+    pub message_box: *mut c_void,
+    pub message_bus: *mut c_void,
+    pub reload_task: *mut ReloadTask,
     ;
-    ptr: *mut c_void,
-    started: bool,
-    protocol_type: c_int,
-    max_request: u32,
-    max_request_grace: u32,
-    on_task: Option<TaskFn>,
-    on_worker_error: Option<ErrorFn>,
-    scheduler_warning: bool,
-    warning_time: i64,
+    pub ptr: *mut c_void,
+    pub started: bool,
+    pub protocol_type: c_int,
+    pub max_request: u32,
+    pub max_request_grace: u32,
+    pub scheduler_warning: bool,
+    pub warning_time: i64,
+    pub(crate) on_task: Option<TaskFn>,
+    pub(crate) on_worker_error: Option<ErrorFn>,
 );
 
 setters!(
@@ -995,18 +1163,20 @@ setters!(
     pub(crate) reload_task / set_reload_task: *mut ReloadTask,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
-    is_async / set_is_async: bool,
+    pub is_async / set_is_async: bool,
+    pub warning_time / set_warning_time: i64,
+    pub schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
+    // The object the hooks read and the hooks, which `install` writes together.
+    ptr / set_ptr: *mut c_void,
     on_start / set_on_start: Option<PoolFn>,
     on_shutdown / set_on_shutdown: Option<PoolFn>,
     on_message / set_on_message: Option<MessageFn>,
     on_worker_exit / set_on_worker_exit: Option<WorkerFn>,
-    warning_time / set_warning_time: i64,
-    schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
-    ptr / set_ptr: *mut c_void,
     on_task / set_on_task: Option<TaskFn>,
     on_worker_start / set_on_worker_start: Option<WorkerFn>,
     on_worker_stop / set_on_worker_stop: Option<WorkerFn>,
     on_worker_message / set_on_worker_message: Option<EventFn>,
+    on_worker_not_found / set_on_worker_not_found: Option<NotFoundFn>,
     main_loop / set_main_loop: Option<MainLoopFn>,
 );
 
