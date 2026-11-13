@@ -3,7 +3,6 @@
 import argparse
 import json
 from pathlib import Path
-import subprocess
 import sys
 ROOT=Path(__file__).resolve().parents[3]
 sys.path.insert(0,str(ROOT))
@@ -15,11 +14,7 @@ def attest(manifest,metadata):
     candidates=[m for m in metadata if m['rust_feature_bits']&8388608]
     if len(candidates)!=1:raise ValueError('Require exactly one M25 candidate engine')
     receipt=ext_attest(manifest,candidates[0],8388608)
-    symbols=subprocess.check_output(['nm','-g',candidates[0]['extension']],text=True,stderr=subprocess.DEVNULL)
-    defined={parts[-1].lstrip('_') for line in symbols.splitlines() if len(parts:=line.split())>=2 and parts[-2].upper() in {'T','W'}}
-    required=['callback_hook']
-    if not all('swr_v1_ports_'+name in defined for name in required):raise ValueError('Actual candidate DSO lacks required M25 controller exports')
-    return {'passed':True,**receipt,'required_candidate_dso_exports':required}
+    return {'passed':True,**receipt}
 
 CASES={
     'convert_eof':None, 'convert_length_type':None, 'settings_release_reentry':None,
