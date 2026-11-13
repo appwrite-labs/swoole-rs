@@ -20,7 +20,7 @@ use swoole_rs_process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, Worke
 use swoole_rs_process::worker_record::{Worker, WorkerRecord, WorkerStatus, WorkerType};
 use swoole_rs_process::{
     methods,
-    process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
+    process_pool::{PoolRecord, Protocol, max_package_size, packet_limit},
     signal::swoole_signal_isset,
     worker_record,
 };
@@ -864,7 +864,7 @@ fn start(call: &Call) {
 /// a stream.
 fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
     if !message_bus {
-        methods::set_protocol(pool, PROTOCOL_STREAM);
+        methods::set_protocol(pool, Protocol::Stream);
         return true;
     }
     if pool.message_bus().is_null() && methods::create_message_bus(pool) != 0 {
@@ -873,7 +873,7 @@ fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
     let bus = pool.message_bus().cast::<BusHead>();
     // SAFETY: the pool's message bus, whose allocator its next buffer uses.
     unsafe { (*bus).allocator = swoole_rs_phpswoole::sw_zend_string_allocator() };
-    methods::set_protocol(pool, PROTOCOL_MESSAGE);
+    methods::set_protocol(pool, Protocol::Message);
     true
 }
 
