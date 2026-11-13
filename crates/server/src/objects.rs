@@ -55,6 +55,7 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
+// Only the upstream-symbol operations, which the unit tests don't link, use these.
 #[cfg(not(test))]
 impl crate::ServerState {
     /// The server's own `MessageBus`.

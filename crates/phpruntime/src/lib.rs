@@ -312,10 +312,8 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     requested &= !unavailable;
     let installed = HOOKED.load(Ordering::Relaxed);
 
-    requested = transports(requested, installed, |index, hook| {
-        transport::register(index, hook, factory())
-    });
-    wrappers(requested, installed);
+    requested = transports(&mut Php, requested, installed);
+    wrappers(&mut Php, requested, installed);
     functions::hook_all(requested, installed)?;
     mongodb(requested, installed)?;
 
@@ -348,24 +346,20 @@ const fn transition(requested: u32, installed: u32, bit: u32) -> Option<bool> {
 
 /// `hook_stream_factory`: a transport that fails to register is dropped from
 /// the flags, with an exception.
-fn transports(
-    mut requested: u32,
-    installed: u32,
-    mut register: impl FnMut(usize, bool) -> i32,
-) -> u32 {
+fn transports(host: &mut impl Host, mut requested: u32, installed: u32) -> u32 {
     for (index, name) in transport::NAMES.iter().enumerate() {
         let bit = flags::TCP << index;
         match transition(requested, installed, bit) {
             Some(true) => {
-                if register(index, true) != 0 {
+                if host.register(index, true) != 0 {
                     requested ^= bit;
                     let name = name.to_string_lossy();
                     let message = message!("failed to register `{name}` stream transport factory");
-                    throw(&message, SW_ERROR_PHP_FATAL_ERROR);
+                    host.throw(&message, SW_ERROR_PHP_FATAL_ERROR);
                 }
             }
             Some(false) => {
-                register(index, false);
+                host.register(index, false);
             }
             None => {}
         }
@@ -375,18 +369,18 @@ fn transports(
 
 /// `hook_stream_ops` and `hook_pdo_driver`: the plain-files wrapper, the stdio
 /// ops and the PDO drivers built in.
-fn wrappers(requested: u32, installed: u32) {
+fn wrappers(host: &mut impl Host, requested: u32, installed: u32) {
     for (bit, stdio) in [(flags::FILE, 0), (flags::STDIO, 1)] {
         if let Some(hook) = transition(requested, installed, bit) {
-            stream_ops(stdio, u8::from(hook));
+            host.stream_ops(stdio, u8::from(hook));
         }
     }
     for (bit, driver) in flags::PDO.into_iter().zip(DRIVERS) {
-        if features() & bit == 0 {
+        if !host.built_with(driver) {
             continue;
         }
         if let Some(hook) = transition(requested, installed, bit) {
-            set_blocking(driver, !hook);
+            host.set_blocking(driver, !hook);
         }
     }
 }
@@ -419,26 +413,52 @@ fn class(name: &CStr) -> Option<*mut zend_class_entry> {
 }
 
 /// `zend_throw_exception(swoole_exception_ce, message, code)`.
-#[cfg(not(test))]
 fn throw(message: &Message, code: i64) {
     swoole_rs_phpswoole::exception().throw(message.as_cstr(), code);
 }
 
-/// Swap the plain-files wrapper (0) or the stdio ops (1).
-#[cfg(not(test))]
-fn stream_ops(stdio: u8, hook: u8) {
-    // `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
-    // PHP's originals; it has no preconditions.
-    unsafe extern "C" {
-        safe fn php_swoole_runtime_stream_ops(stdio: u8, hook: u8);
-    }
-    php_swoole_runtime_stream_ops(stdio, hook);
+/// What changing the hooks does to the process: PHP's, or a unit test's trace
+/// (unit tests link no PHP).
+trait Host {
+    /// Register (or restore) the transport at `index` of [`transport::NAMES`].
+    fn register(&mut self, index: usize, hook: bool) -> i32;
+    /// [`throw`]: unit tests link no Zend.
+    fn throw(&mut self, message: &Message, code: i64);
+    /// Swap the plain-files wrapper (0) or the stdio ops (1).
+    fn stream_ops(&mut self, stdio: u8, hook: u8);
+    /// Whether the PDO driver behind `driver` is built in.
+    fn built_with(&self, driver: Switch) -> bool;
+    /// `swoole_<driver>_set_blocking(blocking)`.
+    fn set_blocking(&mut self, driver: Switch, blocking: bool);
 }
 
-/// Unit tests link no PHP, so they see the swap as a trace entry.
-#[cfg(test)]
-fn stream_ops(stdio: u8, hook: u8) {
-    tests::record(format!("stream:{stdio}:{hook}"));
+struct Php;
+
+impl Host for Php {
+    fn register(&mut self, index: usize, hook: bool) -> i32 {
+        transport::register(index, hook, factory())
+    }
+
+    fn throw(&mut self, message: &Message, code: i64) {
+        throw(message, code);
+    }
+
+    fn stream_ops(&mut self, stdio: u8, hook: u8) {
+        // `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
+        // PHP's originals; it has no preconditions.
+        unsafe extern "C" {
+            safe fn php_swoole_runtime_stream_ops(stdio: u8, hook: u8);
+        }
+        php_swoole_runtime_stream_ops(stdio, hook);
+    }
+
+    fn built_with(&self, driver: Switch) -> bool {
+        built_with(driver)
+    }
+
+    fn set_blocking(&mut self, driver: Switch, blocking: bool) {
+        swoole_rs_phpswoole::set_blocking(driver, blocking);
+    }
 }
 
 /// The PDO drivers' switches, in [`flags::PDO`]'s order.
@@ -452,7 +472,6 @@ const DRIVERS: [Switch; 5] = [
 
 /// The `HOOK_*` bits of the PDO drivers built in, and `HOOK_NATIVE_CURL`
 /// when native curl is.
-#[cfg(not(test))]
 fn features() -> u32 {
     let native_curl = [(Switch::Curl, flags::NATIVE_CURL)];
     flags::PDO
@@ -460,35 +479,8 @@ fn features() -> u32 {
         .zip(DRIVERS)
         .map(|(bit, driver)| (driver, bit))
         .chain(native_curl)
-        .filter(|(switch, _)| swoole_rs_corebase::built_with(*switch))
+        .filter(|(switch, _)| built_with(*switch))
         .fold(0, |features, (_, bit)| features | bit)
-}
-
-/// Unit tests have two PDO drivers built in, and no native curl.
-#[cfg(test)]
-fn features() -> u32 {
-    flags::PDO_PGSQL | flags::PDO_SQLITE
-}
-
-/// `swoole_<driver>_set_blocking(blocking)`.
-#[cfg(not(test))]
-fn set_blocking(driver: Switch, blocking: bool) {
-    swoole_rs_phpswoole::set_blocking(driver, blocking);
-}
-
-#[cfg(test)]
-fn set_blocking(driver: Switch, blocking: bool) {
-    let bit = flags::PDO[DRIVERS.iter().position(|d| *d == driver).unwrap_or(0)];
-    tests::record(format!("pdo:{bit}:{}", u8::from(blocking)));
-}
-
-/// Unit tests link no PHP, so they see the exception as a trace entry.
-#[cfg(test)]
-fn throw(message: &Message, code: i64) {
-    tests::record(format!(
-        "throw:{code}:{}",
-        message.as_cstr().to_string_lossy()
-    ));
 }
 
 /// `sw_logger()->put(SW_LOG_WARNING, message)`, which the level filters.
@@ -592,25 +584,37 @@ mod tests {
         assert_eq!(transition(flags::UDP, 0, flags::TCP), None);
     }
 
-    thread_local! {
-        static TRACE: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
+    /// The calls a hook change makes, with two PDO drivers built in.
+    impl Host for Vec<String> {
+        fn register(&mut self, index: usize, hook: bool) -> i32 {
+            self.push(format!("transport:{index}:{}", u8::from(hook)));
+            0
+        }
 
-    pub(super) fn record(entry: String) {
-        TRACE.with(|trace| trace.borrow_mut().push(entry));
-    }
+        fn throw(&mut self, message: &Message, code: i64) {
+            let text = message.as_cstr().to_string_lossy();
+            self.push(format!("throw:{code}:{text}"));
+        }
 
-    fn trace() -> Vec<String> {
-        TRACE.with(|trace| std::mem::take(&mut *trace.borrow_mut()))
+        fn stream_ops(&mut self, stdio: u8, hook: u8) {
+            self.push(format!("stream:{stdio}:{hook}"));
+        }
+
+        fn built_with(&self, driver: Switch) -> bool {
+            matches!(driver, Switch::Pgsql | Switch::Sqlite)
+        }
+
+        fn set_blocking(&mut self, driver: Switch, blocking: bool) {
+            let bit = flags::PDO[DRIVERS.iter().position(|d| *d == driver).unwrap_or(0)];
+            self.push(format!("pdo:{bit}:{}", u8::from(blocking)));
+        }
     }
 
     fn run(requested: u32, installed: u32) -> (u32, Vec<String>) {
-        let requested = transports(requested, installed, |index, hook| {
-            record(format!("transport:{index}:{}", u8::from(hook)));
-            0
-        });
-        wrappers(requested, installed);
-        (requested, trace())
+        let mut trace = Vec::new();
+        let requested = transports(&mut trace, requested, installed);
+        wrappers(&mut trace, requested, installed);
+        (requested, trace)
     }
 
     #[test]

@@ -6,6 +6,7 @@ use crate::json::{self, Json};
 use crate::tcp_info::{TCP_INFO, TcpInfo, tcp_fields};
 use core::ffi::c_int;
 
+// The live facts read through `port_config::methods`, which the unit tests don't link.
 #[cfg(not(test))]
 #[path = "admin_live.rs"]
 mod live;
