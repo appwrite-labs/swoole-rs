@@ -108,7 +108,7 @@ pub(crate) trait Hybrid: Sync {
     }
 
     /// Thread mode's `Server` method `operation`.
-    fn thread_mode(&self, _serv: Server<'_>, _operation: u32) -> i64 {
+    fn thread_mode(&self, _serv: Server<'_>, _operation: crate::thread_mode::ThreadOp) -> i64 {
         missing()
     }
 
@@ -277,7 +277,7 @@ pub(crate) mod tests {
         Notify(c_long, i16, u8, u16),
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
-        ThreadMode(u32),
+        ThreadMode(crate::thread_mode::ThreadOp),
         StopSingleWorker,
         SendShutdown,
         Thread0Shutdown,
@@ -354,7 +354,7 @@ pub(crate) mod tests {
             hear(Call::Pipe(worker_id, message.head().kind, sent))
         }
 
-        fn thread_mode(&self, _: Server<'_>, operation: u32) -> i64 {
+        fn thread_mode(&self, _: Server<'_>, operation: crate::thread_mode::ThreadOp) -> i64 {
             hear(Call::ThreadMode(operation));
             0
         }
