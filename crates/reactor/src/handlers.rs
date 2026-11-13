@@ -167,8 +167,7 @@ impl Drop for Borrowing {
     }
 }
 
-/// `SW_MAX_FDTYPE`.
-const FD_TYPES: usize = 32;
+const FD_TYPES: usize = swoole_rs_corebase::constants::SW_MAX_FDTYPE as usize;
 const SW_EVENT_DEAULT: c_int = 1 << 8;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
