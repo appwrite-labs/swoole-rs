@@ -115,15 +115,16 @@ const ENTRIES: [zend_ini_entry_def; 11] = [
 /// after making the module globals they write (`swoole_globals`, or its id under ZTS).
 pub(crate) fn register(minit: &Minit, kind: c_int) {
     let globals = crate::module::globals_init();
-    // Zend keeps each definition it registers: these live as long as the process.
-    let entries = Box::leak(Box::new(ENTRIES));
+    // Zend copies each definition into an entry of its own, so these needn't outlive
+    // the call (a leaked copy was a LeakSanitizer report in every process, #3650).
+    let mut entries = ENTRIES;
     // All but the terminator.
     for entry in &mut entries[..10] {
         entry.mh_arg2 = globals;
     }
-    // SAFETY: MINIT, as the token says; the terminated definitions and the globals
-    // their handlers write have process lifetime; the native leaf traps Zend
-    // allocation/update-handler bailouts below this frame.
+    // SAFETY: MINIT, as the token says; the terminated definitions, which Zend
+    // copies, and the process-lifetime globals their handlers write; the native
+    // leaf traps Zend allocation/update-handler bailouts below this frame.
     let bailed = unsafe { swr_zend_try_module_ini(entries.as_ptr(), minit.module(), kind) };
     bailout::defer(if bailed == 0 { Ok(()) } else { Err(Bailout) });
     bailout::finish();
