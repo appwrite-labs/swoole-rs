@@ -1,11 +1,10 @@
 //! The server's worker side: event workers (upstream's `src/server/worker.cc`), the
-//! manager (upstream's `src/server/manager.cc`), the process-mode factory (upstream's
-//! `src/server/process.cc`) and thread mode (upstream's `src/server/thread.cc`).
+//! manager (upstream's `src/server/manager.cc`) and thread mode (upstream's
+//! `src/server/thread.cc`).
 //! crates/server keeps the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
 mod event_worker;
-mod factory;
 mod log;
 mod manager;
 pub mod ops;
@@ -66,13 +65,8 @@ pub fn run_over(context: &mut dyn Answer, operation: u32, arg: u64) -> i64 {
     run(&mut Over(context), operation, arg)
 }
 
-/// Runs a process-factory `operation` with `arg` over `context`, compiled for its
+/// Runs an event-worker `operation` with `arg` over `context`, compiled for its
 /// type: each step's op is a constant, so an inlined answer folds to its arm.
-pub fn run_factory<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
-    factory::run(&mut Over(context), operation, arg)
-}
-
-/// [`run_factory`] for an event-worker `operation`.
 pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
     event_worker::run(&mut Over(context), operation, arg)
 }
@@ -85,7 +79,7 @@ pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) ->
 #[inline(always)]
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::{c_int, c_void};
-    use swoole_rs_corebase::log::{last_error, set_last_error};
+    use swoole_rs_corebase::log::set_last_error;
     // crates/reactor's and crates/timer's safe functions, under their
     // upstream symbols and signatures. Declarations, since crates/reactor (and
     // through it crates/timer) depends on this crate.
@@ -110,10 +104,8 @@ fn effect(op: u32) -> Option<u64> {
         safe fn swoole_timer_get_next_msec() -> i64;
 
     }
-    /// `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_OUTPUT_SEND_YIELD`, `SW_ERROR_SOCKET_POLL_TIMEOUT`.
+    /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
     const NOT_SUPPORT: c_int = 507;
-    const SEND_YIELD: c_int = 1010;
-    const POLL_TIMEOUT: c_int = 6002;
     let int = |value: c_int| i64::from(value).cast_unsigned();
     Some(match op {
         ops::OP_EVENT_INIT => int(swoole_event_init(0)),
@@ -162,21 +154,9 @@ fn effect(op: u32) -> Option<u64> {
             swoole_rs_error::swoole_clear_last_error_msg();
             0
         }
-        ops::OP_SET_SEND_YIELD => {
-            set_last_error(SEND_YIELD);
-            0
-        }
         ops::OP_SET_NOT_SUPPORTED => {
             set_last_error(NOT_SUPPORT);
             0
-        }
-        ops::OP_SEND_TIMED_OUT => {
-            let errno = std::io::Error::last_os_error().raw_os_error();
-            u64::from(
-                errno == Some(libc::EAGAIN)
-                    || errno == Some(libc::ETIMEDOUT)
-                    || last_error() == POLL_TIMEOUT,
-            )
         }
         _ => return None,
     })
@@ -192,18 +172,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_RESTART_WORKER
         | ops::RUN_READ_WORKER_MESSAGE
         | ops::RUN_RELOAD => manager::run(h, operation, arg),
-        ops::RUN_CREATE_PROCESS_FACTORY
-        | ops::RUN_DESTROY_PROCESS_FACTORY
-        | ops::RUN_KILL_TASK_WORKERS
-        | ops::RUN_SPAWN_EVENT_WORKER
-        | ops::RUN_SPAWN_USER_WORKER
-        | ops::RUN_CHECK_EXIT_STATUS
-        | ops::RUN_PROCESS_FACTORY_SHUTDOWN
-        | ops::RUN_CREATE_WORKER_PIPES
-        | ops::RUN_PROCESS_FACTORY_START
-        | ops::RUN_PROCESS_DISPATCH
-        | ops::RUN_PROCESS_FINISH
-        | ops::RUN_PROCESS_END => factory::run(h, operation, arg),
         ops::RUN_THREAD_MANAGER_WAIT
         | ops::RUN_THREAD_RELOAD
         | ops::RUN_THREAD_TERMINATE_MANAGER

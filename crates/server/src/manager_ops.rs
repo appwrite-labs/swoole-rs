@@ -5,7 +5,6 @@ use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
 use swoole_rs_process::worker_record::WorkerType;
 
-use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus};
@@ -32,13 +31,13 @@ use swoole_rs_process::workers::ops::{
     OP_WAIT_STATUS, OP_WORKER_BY_PID, OP_WORKER_NUM, OP_WORKER_REGISTRY, OP_WORKER_TYPE,
 };
 use swoole_rs_process::workers::ops::{
-    RUN_CHECK_EXIT_STATUS, RUN_KILL_TASK_WORKERS, RUN_MANAGER_MAIN, RUN_MANAGER_SIGNAL,
-    RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER, RUN_SPAWN_EVENT_WORKER,
-    RUN_SPAWN_USER_WORKER, RUN_START_MANAGER,
+    RUN_MANAGER_MAIN, RUN_MANAGER_SIGNAL, RUN_READ_WORKER_MESSAGE, RUN_RELOAD, RUN_RESTART_WORKER,
+    RUN_START_MANAGER,
 };
 
 use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
 use crate::commands::CommandHandler;
+use crate::process_factory::native::{spawn_event_worker, spawn_user_worker};
 use crate::{view, worker_methods};
 
 /// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes, aligned for its head.
@@ -329,7 +328,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_BEFORE_RELOAD => callback(CB_BEFORE_RELOAD),
         OP_ON_AFTER_RELOAD => callback(CB_AFTER_RELOAD),
         OP_DROP_RELOAD_TASK => methods::drop_reload_task(ctx.server().event_pool_ref()),
-        OP_KILL_TASK_WORKERS => _ = crate::factory_ops::run_server(serv, RUN_KILL_TASK_WORKERS),
+        OP_KILL_TASK_WORKERS => crate::process_factory::native::kill_task_workers(serv),
         OP_SET_RUNNING => ctx.state().set_running(arg != 0),
         OP_SET_RELOAD_INIT => ctx.pool().set_reload_init(arg != 0),
         OP_SET_READ_MESSAGE => ctx.pool().set_read_message(arg != 0),
@@ -406,19 +405,18 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
 fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.server();
     // `Factory::spawn_*_worker(worker)`: the child's pid, or -1.
-    let spawn = |op, worker| {
-        let pid = run(serv, op, worker, None, None, 0);
-        c_int::try_from(pid).unwrap_or(-1)
+    let spawn = |spawn: fn(view::Server<'_>, Worker<'_>) -> c_int, worker: Option<Worker<'_>>| {
+        worker.map_or(-1, |worker| spawn(serv, worker))
     };
     let pid = match op {
-        OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg)),
+        OP_SPAWN_EVENT_WORKER => spawn(spawn_event_worker, ctx.worker_at(arg)),
         OP_SPAWN_USER_WORKER => {
             // The manager spawns the pending workers by index, below their count.
             let at = index(arg);
             if at >= ctx.registry().pending_count() {
                 return None;
             }
-            spawn(RUN_SPAWN_USER_WORKER, ctx.server().pending_worker(at))
+            spawn(spawn_user_worker, ctx.server().pending_worker(at))
         }
         OP_WORKER_BY_PID => {
             let worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));
@@ -428,14 +426,7 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CHECK_EXIT_STATUS => {
             let status = exit_status(arg);
-            run(
-                serv,
-                RUN_CHECK_EXIT_STATUS,
-                ctx.worker,
-                None,
-                Some(&status),
-                0,
-            );
+            crate::process_factory::native::check_exit_status(serv, ctx.worker, &status);
             return Some(0);
         }
         OP_KILL_EVENT_WORKERS => {
@@ -459,8 +450,8 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             }
             pid
         }
-        OP_RESPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker),
-        OP_RESPAWN_USER_WORKER => spawn(RUN_SPAWN_USER_WORKER, ctx.worker),
+        OP_RESPAWN_EVENT_WORKER => spawn(spawn_event_worker, ctx.worker),
+        OP_RESPAWN_USER_WORKER => spawn(spawn_user_worker, ctx.worker),
         _ => return None,
     };
     Some(signed(pid))

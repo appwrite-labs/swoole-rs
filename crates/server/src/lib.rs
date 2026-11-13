@@ -35,8 +35,6 @@ mod dtls;
 pub mod event_worker_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod factory_ops;
 #[cfg(test)]
 mod fixture;
 mod hybrid;
@@ -53,6 +51,7 @@ pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod pool_native;
 pub mod port_config;
+mod process_factory;
 pub mod reactor_entry;
 mod reactor_handle;
 mod reactor_io;

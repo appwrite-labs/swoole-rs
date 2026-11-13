@@ -220,6 +220,16 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// Process mode's write of `send` to `to`: whether it went.
+    fn process_send(
+        &self,
+        _serv: Server<'_>,
+        _to: crate::process_factory::Pipe,
+        _send: &mut crate::base_factory::SendData,
+    ) -> bool {
+        missing()
+    }
+
     /// Runs `step`: negative when it failed, else 0 or what it returns.
     fn step(&self, _serv: Server<'_>, _step: Step) -> c_int {
         missing()
@@ -297,6 +307,8 @@ pub(crate) mod tests {
         /// The IPC mode's code and whether the pool listens.
         TaskPool(u8, bool),
         TaskWorkers,
+        /// Where process mode wrote, and the send's fd and kind.
+        Process(crate::process_factory::Pipe, c_long, u8),
         Step(Step),
     }
 
@@ -429,6 +441,15 @@ pub(crate) mod tests {
 
         fn task_workers(&self, _: Server<'_>) -> bool {
             hear(Call::TaskWorkers)
+        }
+
+        fn process_send(
+            &self,
+            _: Server<'_>,
+            to: crate::process_factory::Pipe,
+            send: &mut crate::base_factory::SendData,
+        ) -> bool {
+            hear(Call::Process(to, send.info.fd, send.info.kind))
         }
 
         fn step(&self, _: Server<'_>, step: Step) -> c_int {

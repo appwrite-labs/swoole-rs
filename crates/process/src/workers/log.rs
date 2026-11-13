@@ -25,112 +25,26 @@ pub(super) const LOG_KILL_TIMEOUT: u32 = 281;
 pub(super) const LOG_UNKNOWN_CHILD: u32 = 285;
 pub(super) const LOG_UNKNOWN_WORKER_TYPE: u32 = 291;
 pub(super) const LOG_RELOAD_SINGLE_PROCESS: u32 = 294;
-pub(super) const LOG_FORK_EVENT: u32 = 317;
-pub(super) const LOG_FORK_USER: u32 = 325;
-pub(super) const LOG_INVALID_TARGET: u32 = 330;
-pub(super) const LOG_CONN_NOT_ACTIVE: u32 = 334;
-pub(super) const LOG_TOO_LARGE: u32 = 341;
-pub(super) const LOG_SESSION_NOT_EXIST: u32 = 343;
-pub(super) const LOG_SESSION_CLOSED: u32 = 345;
-pub(super) const LOG_OVERFLOW: u32 = 351;
-pub(super) const LOG_END_NOT_EXIST: u32 = 353;
-pub(super) const LOG_SESSION_CLOSING: u32 = 362;
-pub(super) const LOG_END_CLOSED: u32 = 364;
 pub(super) const LOG_CANNOT_RELOAD: u32 = 382;
 pub(super) const LOG_NOTIFY_MANAGER: u32 = 384;
 pub(super) const LOG_MANAGER_ABNORMAL: u32 = 400;
 pub(super) const LOG_THREAD_UNSUPPORTED: u32 = 406;
 
 /// `SW_LOG_*`.
-const TRACE: i32 = 1;
-const NOTICE: i32 = 3;
 const WARNING: i32 = 4;
 const ERROR: i32 = 5;
 /// `SW_ERROR_*`.
 const INVALID_PARAMS: i32 = 505;
 const OPERATION_NOT_SUPPORT: i32 = 507;
 const WRONG_OPERATION: i32 = 509;
-const SESSION_CLOSING: i32 = 1003;
-const SESSION_CLOSED: i32 = 1004;
-const SESSION_NOT_EXIST: i32 = 1005;
 const SESSION_DISCARD_TIMEOUT_DATA: i32 = 1007;
-const OUTPUT_BUFFER_OVERFLOW: i32 = 1009;
-const DATA_LENGTH_TOO_LARGE: i32 = 1203;
 const SERVER_WORKER_EXIT_TIMEOUT: i32 = 9101;
 const SERVER_WORKER_UNPROCESSED_DATA: i32 = 9103;
 
 /// Logs `op` with its values `a` and `b`, as upstream's C++ formatted them.
-#[expect(clippy::too_many_lines, reason = "one arm per upstream log statement")]
 pub(super) fn emit(op: u32, a: i64, b: i64) {
     let which = if a != 0 { "all" } else { "task" };
     match op {
-        LOG_FORK_EVENT => sys_warning(
-            c"Factory::spawn_event_worker",
-            format_args!("failed to fork event worker"),
-        ),
-        LOG_FORK_USER => sys_warning(
-            c"Factory::spawn_user_worker",
-            format_args!("failed to spawn the user worker"),
-        ),
-        LOG_INVALID_TARGET => warning(
-            c"ProcessFactory::dispatch",
-            format_args!("invalid target worker id[{}]", a.c_cast::<i32>()),
-        ),
-        LOG_CONN_NOT_ACTIVE => warning(
-            c"ProcessFactory::dispatch",
-            format_args!(
-                "dispatch[type={a}] failed, connection#{} is not active",
-                b.c_cast::<i32>()
-            ),
-        ),
-        LOG_TOO_LARGE => error_log(
-            WARNING,
-            DATA_LENGTH_TOO_LARGE,
-            c"ProcessFactory::finish",
-            format_args!(
-                "The length of data [{a}] exceeds the output buffer size[{b}], please use the \
-                 sendfile, chunked transfer mode or adjust the output_buffer_size"
-            ),
-        ),
-        LOG_SESSION_NOT_EXIST => error_log(
-            TRACE,
-            SESSION_NOT_EXIST,
-            c"ProcessFactory::finish",
-            format_args!("session#{a} does not exists"),
-        ),
-        LOG_SESSION_CLOSED => error_log(
-            TRACE,
-            SESSION_CLOSED,
-            c"ProcessFactory::finish",
-            format_args!(
-                "send {} bytes failed, because session#{b} is closed",
-                a.c_cast::<i32>()
-            ),
-        ),
-        LOG_OVERFLOW => error_log(
-            WARNING,
-            OUTPUT_BUFFER_OVERFLOW,
-            c"ProcessFactory::finish",
-            format_args!("send failed, session={a} output buffer overflow"),
-        ),
-        LOG_END_NOT_EXIST => error_log(
-            TRACE,
-            SESSION_NOT_EXIST,
-            c"ProcessFactory::end",
-            format_args!("session#{a} does not exists"),
-        ),
-        LOG_SESSION_CLOSING => error_log(
-            NOTICE,
-            SESSION_CLOSING,
-            c"ProcessFactory::end",
-            format_args!("session#{a} is closing"),
-        ),
-        LOG_END_CLOSED => error_log(
-            TRACE,
-            SESSION_CLOSED,
-            c"ProcessFactory::end",
-            format_args!("session#{a} is closed"),
-        ),
         LOG_DISCARD => error_log(
             WARNING,
             SESSION_DISCARD_TIMEOUT_DATA,
@@ -258,56 +172,6 @@ mod tests {
     #[test]
     fn each_log_keeps_its_origin_level_code_and_values() {
         install();
-        emit(LOG_SESSION_CLOSED, 11, 7);
-        emit(LOG_TOO_LARGE, 4_194_305, 2_097_152);
-        emit(LOG_SESSION_CLOSING, 9, 0);
-        assert_eq!(
-            logged("ProcessFactory::finish"),
-            [
-                (
-                    ERROR_LOG,
-                    TRACE,
-                    SESSION_CLOSED,
-                    "send 11 bytes failed, because session#7 is closed".to_owned()
-                ),
-                (
-                    ERROR_LOG,
-                    WARNING,
-                    DATA_LENGTH_TOO_LARGE,
-                    "The length of data [4194305] exceeds the output buffer size[2097152], please \
-                     use the sendfile, chunked transfer mode or adjust the output_buffer_size"
-                        .to_owned()
-                ),
-            ]
-        );
-        assert_eq!(
-            logged("ProcessFactory::end"),
-            [(
-                ERROR_LOG,
-                NOTICE,
-                SESSION_CLOSING,
-                "session#9 is closing".to_owned()
-            )]
-        );
-        emit(LOG_CONN_NOT_ACTIVE, 0, 12);
-        emit(LOG_INVALID_TARGET, -3, 0);
-        assert_eq!(
-            logged("ProcessFactory::dispatch"),
-            [
-                (
-                    PLAIN_WARNING,
-                    0,
-                    0,
-                    "dispatch[type=0] failed, connection#12 is not active".to_owned()
-                ),
-                (
-                    PLAIN_WARNING,
-                    0,
-                    0,
-                    "invalid target worker id[-3]".to_owned()
-                ),
-            ]
-        );
         emit(LOG_UNKNOWN_WORKER_TYPE, 4242, 9);
         assert_eq!(
             logged("Server::restart_worker_process"),

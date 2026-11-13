@@ -13,7 +13,6 @@ use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, worker_type};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
 use swoole_rs_process::workers::ops::{
     LOG_CALLOC_CONNECTIONS, OP_CALL_WORKER_ERROR, OP_CREATE_MESSAGE_BUS, OP_DESTROY_MESSAGE_BUS,
     OP_JOIN_THREAD, OP_NEW_THREAD_FACTORY, OP_REACTOR_THREAD_MAIN, OP_SELECT_WORKER,
@@ -283,8 +282,10 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let port = || ctx.server().port_at(usize::try_from(arg).ok()?);
     Some(match op {
         OP_NEW_REACTOR_THREADS => {
-            let threads =
-                crate::factory_ops::new_reactor_threads(ctx.state(), config.reactor_num.get());
+            let threads = crate::process_factory::native::new_reactor_threads(
+                ctx.state(),
+                config.reactor_num.get(),
+            );
             tables_mut().reactor_threads = threads;
             0
         }
@@ -331,7 +332,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CREATE_WORKER_PIPES => {
-            u64::from(crate::factory_ops::run_server(serv, RUN_CREATE_WORKER_PIPES) != 0)
+            u64::from(crate::process_factory::native::create_worker_pipes(serv))
         }
         OP_CREATE_EVENT_WORKERS => u64::from(create_event_workers(serv)),
         OP_CREATE_USER_WORKERS => {
