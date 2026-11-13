@@ -195,24 +195,6 @@ impl Host for Native<'_, '_> {
     }
 }
 
-/// `operation` over a reactor-thread context without [`run`]'s match: the reads,
-/// writes and dispatches every message takes, whose detour through `run`'s frame
-/// cost about 120 instructions a message.
-#[inline(always)]
-pub(crate) fn run_reactor_with<'s, 'c>(
-    context: &'s mut reactor_ops::ReactorContext<'c>,
-    state: &'s ServerState,
-    operation: impl FnOnce(&mut Native<'s, 'c>) -> Effect<i64>,
-) -> i64 {
-    operation(&mut Native {
-        state: Some(state),
-        master: core::ptr::null_mut(),
-        server: None,
-        reactor: Some(context),
-    })
-    .unwrap_or(SW_ERR)
-}
-
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
 /// whose records `master_ops` answers. No effect here calls back into C++.
 ///
@@ -260,7 +242,8 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             startup::destroy(h)?;
             SW_OK
         }
-        _ => reactor_thread::run(h, operation)?,
+        ops::RUN_BASE_CREATE => base_factory::create(h)?,
+        _ => SW_ERR,
     })
 }
 

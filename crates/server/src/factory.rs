@@ -207,6 +207,19 @@ impl crate::hybrid::Hybrid for Linked {
         crate::master_ops::forward(serv, send)
     }
 
+    fn dtls_accept(
+        &self,
+        serv: crate::view::Server<'_>,
+        reactor: crate::reactor_handle::Reactor,
+        port: *mut c_void,
+        pkt: &mut crate::reactor_entry::DgramPacket,
+        length: u32,
+    ) -> c_int {
+        let single_thread = serv.state().config_ref().single_thread.get();
+        // SAFETY: the server's DTLS port the datagram arrived on, on its reactor.
+        unsafe { crate::dtls::on_packet(serv, single_thread, reactor, port, pkt, length) }
+    }
+
     fn dtls_read(
         &self,
         port: &crate::port_config::PortConfig,

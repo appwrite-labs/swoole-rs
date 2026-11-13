@@ -16,8 +16,6 @@ pub const RUN_DESTROY: u32 = 19;
 // Reactor threads (`src/server/reactor_thread.cc`); context reactor and its thread.
 /// `ReactorThread_onRead`: context event, socket and connection; arg the `conn_io` read facts.
 pub const RUN_RT_READ: u32 = 20;
-/// `ReactorThread_onPacketReceived`: context event.
-pub const RUN_PACKET_RECEIVED: u32 = 21;
 /// `Server::dispatch_task`: context socket, connection and received data.
 pub const RUN_DISPATCH_TASK: u32 = 30;
 
@@ -211,16 +209,6 @@ pub const FIELD_TASK_IPC_MODE: u32 = 6;
 pub const FIELD_CPU_NUM: u32 = 7;
 
 // Reactor threads. Ops 0-144 keep their meaning where master.cc's reactor-thread ops answer them.
-/// Fills the datagram task header.
-pub const OP_PACKET_INIT: u32 = 259;
-/// `recvfrom` into the packet; the `ssize_t`.
-pub const OP_RECVFROM: u32 = 260;
-/// The datagram's port is DTLS; accepts the DTLS session (arg the length) and returns
-/// `onPacketReceived`'s result.
-pub const OP_PORT_DTLS: u32 = 261;
-pub const OP_DTLS_ACCEPT: u32 = 262;
-/// Fills the task for the datagram of arg bytes; the task's address.
-pub const OP_PACKET_TASK: u32 = 263;
 pub const OP_HAVE_DGRAM: u32 = 264;
 /// Port arg's fd.
 pub const OP_PORT_FD: u32 = 265;
@@ -247,11 +235,8 @@ pub const OP_CONN_HEALTHY: u32 = 301;
 pub const OP_PORT_LISTEN: u32 = 303;
 /// `recv_queued_bytes` -= arg.
 pub const OP_QUEUE_SUB: u32 = 325;
-pub const OP_FACTORY_DISPATCH: u32 = 326;
 /// The `Server *` the thread entries take.
 pub const OP_SERVER: u32 = 328;
-
-pub const LOG_RECVFROM: u32 = 350;
 
 // `ServerEventType` values on the reactor pipe.
 pub const EVENT_CLOSE_FORCE: u32 = 6;

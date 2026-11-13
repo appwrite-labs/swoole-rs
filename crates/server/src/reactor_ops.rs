@@ -11,17 +11,14 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_reactor::{Event, Socket, SocketFields, SocketRecord};
+use swoole_rs_corebase::DataHead;
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 
-use crate::base_factory::SendData;
-use crate::ops::OP_PORT_DTLS;
 use crate::ops::{
-    LOG_RECVFROM, OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR, OP_CONN_UNREAD, OP_HAVE_DGRAM,
-    OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_QUEUE_SUB, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER,
-    OP_SESSION_CONN, OP_WORKER_NUM,
+    OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR, OP_CONN_UNREAD, OP_HAVE_DGRAM, OP_NOTIFY_CONNECT,
+    OP_PORT_DEL, OP_QUEUE_SUB, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER, OP_SESSION_CONN,
+    OP_WORKER_NUM,
 };
-use crate::port_config;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, ConnectionRecord};
 use crate::view;
@@ -45,7 +42,6 @@ pub(crate) struct ReactorContext<'a> {
         expect(dead_code, reason = "only the reactor threads' ops read it")
     )]
     pub(crate) thread: *mut c_void,
-    pub(crate) event: Option<&'a mut Event>,
     pub(crate) sock: Option<Socket<'a>>,
     pub(crate) conn: *mut ConnectionRecord,
     /// The `PipeBuffer` read from a worker, which starts with its head.
@@ -54,36 +50,26 @@ pub(crate) struct ReactorContext<'a> {
         expect(dead_code, reason = "only the reactor threads' ops read it")
     )]
     pub(crate) resp: *const DataHead,
-    /// The datagram `OP_PACKET_INIT` reads into: this thread's buffer.
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops read it")
-    )]
-    pub(crate) pkt: *mut c_void,
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops read it")
-    )]
-    pub(crate) task: SendData,
 }
 
 impl<'a> ReactorContext<'a> {
     /// A context over `serv` and `reactor` with nothing else set.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(
+            dead_code,
+            reason = "only the reactor threads' setup and shutdown make one"
+        )
+    )]
     pub(crate) fn new(serv: view::Server<'a>, reactor: Option<Reactor>) -> Self {
         let null = core::ptr::null_mut();
         Self {
             serv,
             reactor,
             thread: null,
-            event: None,
             sock: None,
             conn: null.cast(),
             resp: core::ptr::null(),
-            pkt: null,
-            task: SendData {
-                info: DataHead::default(),
-                data: core::ptr::null(),
-            },
         }
     }
 
@@ -171,9 +157,6 @@ impl<'c> Objects<'_, 'c> {
         // SAFETY: a session socket's object is null or its live connection.
         unsafe { Connection::from_ptr(conn) }
     }
-    fn event(&self) -> Option<&Event> {
-        self.ctx.event.as_deref()
-    }
     /// The context's live reactor.
     fn handle(&self) -> Option<Reactor> {
         self.ctx.reactor
@@ -214,14 +197,7 @@ pub(crate) fn answer(
 ) -> Option<u64> {
     let mut o = Objects { ctx, state };
     Some(match op {
-        LOG_RECVFROM => {
-            let m = format_args!("recvfrom({}) failed", o.event()?.fd());
-            log::sys_warning(c"ReactorThread_onPacketReceived", m);
-            0
-        }
         OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),
-        // SAFETY: the datagram server's connection, whose object is its live port.
-        OP_PORT_DTLS => u64::from(unsafe { port_config::of(o.conn()?.object()) }.is_dtls()),
         OP_REACTOR_ID => u64::from(o.reactor()?.id()),
         OP_REACTOR_NUM => u64::from(o.config().reactor_num.get()),
         OP_WORKER_NUM => u64::from(o.config().worker_num.get()),
@@ -335,37 +311,27 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             crate::server_methods::notify(o.server(), o.sock_conn()?, EVENT_CONNECT);
             0
         }
-        op => return native(o, op, arg),
+        op => return native(op),
     })
 }
 
-/// The ops that call DTLS and the event loop under their upstream symbols; else
+/// The ops that call the event loop under its upstream symbols; else
 /// `None`. A reactor thread's own loop runs, and is freed,
 /// here: master.cc no longer answers `OP_EVENT_WAIT` or `OP_EVENT_FREE`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
-fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{OP_DTLS_ACCEPT, OP_EVENT_WAIT};
+fn native(op: u32) -> Option<u64> {
+    use crate::ops::OP_EVENT_WAIT;
     use swoole_rs_reactor::event_api::swoole_event_wait;
     Some(match op {
-        OP_DTLS_ACCEPT => {
-            let (serv, reactor) = (o.ctx.serv, o.handle()?);
-            let (single_thread, close) = (o.config().single_thread.get(), o.reactor()?.close());
-            let (port, pkt) = (o.conn()?.object(), o.ctx.pkt.cast());
-            // SAFETY: the context's live server and reactor, the DTLS port the packet
-            // arrived on and the packet received, `arg` bytes.
-            sign(unsafe {
-                crate::dtls::on_packet(serv, single_thread, reactor, close, port, pkt, arg)
-            })
-        }
         OP_EVENT_WAIT => sign(swoole_event_wait()),
-        op => return crate::thread_ops::answer(o.ctx, o.state, op, arg),
+        _ => return None,
     })
 }
 
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.
 #[cfg(not(all(feature = "upstream-symbols", not(test))))]
 #[inline(always)]
-fn native(_: &mut Objects<'_, '_>, _: u32, _: u64) -> Option<u64> {
+fn native(_: u32) -> Option<u64> {
     None
 }

@@ -104,6 +104,19 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// `Server::accept_dtls_connection` of the datagram `pkt`, `length` bytes, that
+    /// arrived on the DTLS port `port` of `reactor`, then its handshake.
+    fn dtls_accept(
+        &self,
+        _serv: Server<'_>,
+        _reactor: crate::reactor_handle::Reactor,
+        _port: *mut core::ffi::c_void,
+        _pkt: &mut crate::reactor_entry::DgramPacket,
+        _length: u32,
+    ) -> c_int {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -169,6 +182,8 @@ pub(crate) mod tests {
         AcceptEvent(c_long, u8, u16),
         /// The send's session, kind and reactor.
         Forward(c_long, u8, i16),
+        /// The datagram's length.
+        DtlsAccept(u32),
     }
 
     thread_local! {
@@ -259,6 +274,18 @@ pub(crate) mod tests {
                 send.info.kind,
                 send.info.reactor_id,
             ))
+        }
+
+        fn dtls_accept(
+            &self,
+            _: Server<'_>,
+            _: crate::reactor_handle::Reactor,
+            _: *mut core::ffi::c_void,
+            _: &mut crate::reactor_entry::DgramPacket,
+            length: u32,
+        ) -> c_int {
+            hear(Call::DtlsAccept(length));
+            0
         }
 
         /// A failed handshake.
