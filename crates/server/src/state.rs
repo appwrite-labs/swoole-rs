@@ -253,11 +253,12 @@ impl ServerState {
         let entry = core::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
             usize::try_from(entry).unwrap_or(0),
         );
-        if entry.is_null() {
+        // SAFETY: native code answered with null or a `void (*)(void *, uint64_t)`.
+        let entry =
+            unsafe { core::mem::transmute::<*mut core::ffi::c_void, Option<ThreadEntry>>(entry) };
+        let Some(entry) = entry else {
             return;
-        }
-        // SAFETY: native code answered with a `void (*)(void *, uint64_t)`.
-        let entry = unsafe { core::mem::transmute::<*mut core::ffi::c_void, ThreadEntry>(entry) };
+        };
         let serv = usize::try_from(serv).unwrap_or(0);
         let thread = std::thread::Builder::new().spawn(move || {
             // SAFETY: the server outlives its threads, which it joins before it goes.
