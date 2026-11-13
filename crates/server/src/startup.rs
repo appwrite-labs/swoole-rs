@@ -1,33 +1,26 @@
 //! Creating, checking, starting and destroying a server.
 use crate::callbacks::{
-    CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_PACKET, CB_RECEIVE, CB_TASK,
-    CallbackSlot,
+    CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_PACKET, CB_RECEIVE, CB_SHUTDOWN,
+    CB_START, CB_TASK, CallbackSlot,
 };
-use crate::control::init_signals;
-use crate::hybrid::hybrid;
-use crate::ops::{
-    FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_AFTER_SHUTDOWN,
-    OP_COMMAND_HANDLER, OP_DESTROY_FACTORY, OP_DESTROY_TASK_WORKERS, OP_DESTROY_WORKER,
-    OP_EVENT_FREE, OP_EVENT_WAIT, OP_FACTORY_SHUTDOWN, OP_FIELD, OP_FREE_SERVER,
-    OP_FREE_USER_WORKERS, OP_HAS_PIPE_COMMAND, OP_IS_STARTED, OP_JOIN_REACTOR_THREADS,
-    OP_MANAGER_BARRIER, OP_MARK_SHUTDOWN, OP_MASTER_REACTOR, OP_MASTER_START, OP_MASTER_THREAD,
-    OP_MASTER_TIMER, OP_MASTER_WORKER, OP_MODE, OP_ON_SHUTDOWN, OP_PIPE_COMMAND_ADD, OP_PORT_CLOSE,
-    OP_PORT_COUNT, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SET_MASTER_PID,
-    OP_SINGLE_THREAD, OP_TIMER_DETACHED, OP_TIMER_REINIT,
-};
+use crate::hybrid::{Step, hybrid};
+use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
-use crate::shared::PortCounters;
-use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK, view};
+use crate::shared::{PortCounters, ServerCounters};
+use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, view};
 use core::ffi::c_int;
-use core::sync::atomic::Ordering::Relaxed;
+use core::mem::offset_of;
+use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::IpcMode;
-use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::ops::RUN_CREATE_THREAD_FACTORY;
+use swoole_rs_process::worker_record::{WorkerRecord, WorkerType};
+use swoole_rs_process::workers::ops::{
+    RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
+};
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -45,64 +38,69 @@ const DISPATCH_CO_CONN_LB: u64 = 8;
 const TASK_IPC_MSGQUEUE: u64 = 2;
 const TASK_IPC_PREEMPTIVE: u64 = 3;
 const TASK_IPC_STREAM: u64 = 4;
-/// `SW_LOG_WARNING`, and the direct methods' `SW_OK` and `SW_ERR`.
+/// `SW_LOG_WARNING`, `SW_LOG_ERROR`, and the direct methods' `SW_OK` and `SW_ERR`.
 const SW_LOG_WARNING: c_int = 4;
+const SW_LOG_ERROR: c_int = 5;
 const OK: c_int = 0;
 const ERR: c_int = -1;
 
-fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
-    h.op(OP_FIELD, u64::from(id))
-}
-
-/// `Server::start`. This frame holds only scalars and the Host loan: a bailout
-/// from an effect longjmps over it as over upstream's C++ frame, and nothing it
-/// owns spans the daemon fork or the factory's worker forks.
-pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    use crate::ops::{
-        LOG_LC_ONLY_ONE, OP_IS_CREATED, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_CLAIM_START,
-        OP_LC_CLEAR_ERROR, OP_LC_DAEMON, OP_LC_DAEMONIZE, OP_LC_FACTORY_START,
-        OP_LC_INIT_PROTOCOLS, OP_LC_PREPARE_WORKERS, OP_LC_START_BASE, OP_LC_START_PROCESS,
-        OP_LC_START_THREAD, OP_LC_START_TIME, OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_SET_RUNNING,
+/// `Server::start`: checks, the daemon, the factory and the mode's workers, then
+/// the master's loop until shutdown, and `destroy`.
+pub(crate) fn start(serv: view::Server<'_>) -> c_int {
+    let state = serv.state();
+    let config = state.config_ref();
+    log::set_last_error(0);
+    swoole_rs_error::swoole_clear_last_error_msg();
+    if start_check(serv) < 0 {
+        return ERR;
+    }
+    serv.call_hook(view::ServerHook::BeforeStart);
+    let Some(gs) = crate::shared::server_counters(state) else {
+        return ERR;
     };
-    h.get(OP_LC_CLEAR_ERROR)?;
-    if h.signed(OP_LC_CHECK)? < 0 {
-        return Ok(SW_ERR);
-    }
-    h.get(OP_LC_BEFORE_START)?;
     // Cannot start two servers at the same time; use process->exec.
-    if !h.is(OP_LC_CLAIM_START)? {
-        h.get(LOG_LC_ONLY_ONE)?;
-        return Ok(SW_ERR);
+    if gs.start.compare_exchange(0, 1, SeqCst, SeqCst).is_err() {
+        let code = ErrorCode::SW_ERROR_SERVER_ONLY_START_ONE as c_int;
+        let m = format_args!("can only start one server");
+        log::error_log(SW_LOG_ERROR, code, c"Server::start", m);
+        return ERR;
     }
-    if h.is(OP_LC_DAEMONIZE)? && h.signed(OP_LC_DAEMON)? < 0 {
-        return Ok(SW_ERR);
+    if config.daemonize.get() && hybrid().step(serv, Step::Daemon) < 0 {
+        return ERR;
     }
-    h.get(OP_LC_START_TIME)?;
-    h.get(OP_LC_PREPARE_WORKERS)?;
-    h.op(OP_SET_RUNNING, 1)?;
-    if !h.is(OP_LC_FACTORY_START)? {
-        return Ok(SW_ERR);
+    gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
+    crate::worker_methods::workers_start(serv);
+    state.set_running(true);
+    if hybrid().step(serv, Step::FactoryStart) < 0 {
+        return ERR;
     }
-    h.get(OP_LC_INIT_PROTOCOLS)?;
-    h.get(OP_LC_WRITE_PID)?;
-    let started = match h.get(OP_MODE)? {
-        MODE_BASE => h.signed(OP_LC_START_BASE)?,
-        MODE_PROCESS => h.signed(OP_LC_START_PROCESS)?,
+    hybrid().step(serv, Step::InitProtocols);
+    state.write_pid();
+    let started = match u64::from(config.mode_) {
+        MODE_BASE => hybrid().step(serv, Step::StartBase),
+        MODE_PROCESS => hybrid().step(serv, Step::StartProcess),
         MODE_THREAD => {
             // Before the worker threads start, which read it in onWorkerStart.
-            h.get(OP_SET_MASTER_PID)?;
-            h.signed(OP_LC_START_THREAD)?
+            set_master_pid(gs);
+            hybrid()
+                .thread_mode(serv, RUN_START_WORKER_THREADS)
+                .c_cast::<c_int>()
         }
         _ => swoole_rs_corebase::fatal("an unknown server start mode"),
     };
     if started < 0 {
-        return Ok(SW_ERR);
+        return ERR;
     }
-    if h.is(OP_IS_CREATED)? {
-        destroy(h)?;
+    if !config.factory_.is_null() {
+        destroy(serv);
     }
-    h.get(OP_LC_UNLINK_PID)?;
-    Ok(SW_OK)
+    state.unlink_pid();
+    OK
+}
+
+fn set_master_pid(gs: &crate::shared::ServerCounters) {
+    gs.master_pid
+        .store(std::process::id().cast_signed(), Relaxed);
 }
 
 /// `Server::create` after the global before-create hook: shared memory, bounded
@@ -392,43 +390,56 @@ fn check_port(
     true
 }
 
-/// `Server::start_master_thread`: the master's reactor, signals and timer, then the event loop.
-pub(crate) fn start_master_thread<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let single = h.is(OP_SINGLE_THREAD)?;
-    let thread_id = if single {
-        0
-    } else {
-        field(h, FIELD_REACTOR_NUM)?
-    };
-    h.op(OP_MASTER_THREAD, thread_id)?;
-    if h.is(OP_TIMER_DETACHED)? {
-        h.get(OP_TIMER_REINIT)?;
+/// `Server::start_master_thread`: the master's reactor, signals and timer, then the
+/// event loop.
+pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c_int {
+    /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
+    const THREAD_MASTER: u8 = 1;
+    const FD_STREAM_SERVER: c_int = 1;
+    const EVENT_READ: c_int = 1 << 9;
+    let state = serv.state();
+    let config = state.config_ref();
+    let single = config.single_thread.get();
+    let thread_id = if single { 0 } else { config.reactor_num.get() };
+    swoole_rs_corebase::set_thread(THREAD_MASTER, thread_id);
+    hybrid().step(serv, Step::TimerReinit);
+    crate::control::init_signals(serv);
+    let mode = u64::from(config.mode_);
+    swoole_rs_process::methods::set_worker_type(WorkerType::Master);
+    if mode == MODE_THREAD {
+        let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
+        swoole_rs_process::methods::swoole_set_worker_pid(tid);
+    } else if mode == MODE_PROCESS {
+        swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
     }
-    init_signals(h)?;
-    let mode = h.get(OP_MODE)?;
-    h.op(OP_MASTER_WORKER, mode)?;
-    h.get(OP_MASTER_REACTOR)?;
-    if h.is(OP_HAS_PIPE_COMMAND)? {
+    reactor.handle().set_object(serv.raw());
+    let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
+    reactor.set_handler(FD_STREAM_SERVER, EVENT_READ, accept);
+    if let Some(pipe) = config.command_pipe() {
         if !single {
-            h.get(OP_COMMAND_HANDLER)?;
+            hybrid().step(serv, Step::CommandHandler);
         }
-        h.get(OP_PIPE_COMMAND_ADD)?;
+        if let Some(master) = pipe.master_end() {
+            reactor.change(master, 0, EVENT_READ);
+        }
     }
-    if !h.is(OP_MASTER_TIMER)? {
-        h.get(OP_EVENT_FREE)?;
-        return Ok(SW_ERR);
+    if hybrid().step(serv, Step::MasterTimer) < 0 {
+        hybrid().step(serv, Step::EventFree);
+        return ERR;
     }
     if !single && mode != MODE_THREAD {
-        h.get(OP_REACTOR_BARRIER)?;
+        hybrid().step(serv, Step::ReactorBarrier);
     }
     if mode == MODE_PROCESS {
-        h.get(OP_MANAGER_BARRIER)?;
+        hybrid().step(serv, Step::ManagerBarrier);
     }
-    if mode != MODE_THREAD {
-        h.get(OP_SET_MASTER_PID)?;
+    if mode != MODE_THREAD
+        && let Some(gs) = crate::shared::server_counters(state)
+    {
+        set_master_pid(gs);
     }
-    h.get(OP_MASTER_START)?;
-    h.signed(OP_EVENT_WAIT)
+    state.callbacks.call_server(CB_START, serv);
+    hybrid().step(serv, Step::EventWait)
 }
 
 /// `Server::store_listen_socket`: each listen socket in the connection list, its
@@ -472,157 +483,174 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
 }
 
 /// `Server::destroy` once the factory exists. In process mode the reactor threads
-/// finish their write events before the factory shuts down.
-pub(crate) fn destroy<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_AFTER_SHUTDOWN)?;
-    let mode = h.get(OP_MODE)?;
+/// finish their write events before the factory shuts down. It runs in the master
+/// once no other thread uses the server, so the configuration and tables it frees
+/// have no other reader.
+pub(crate) fn destroy(serv: view::Server<'_>) {
+    let state = serv.state();
+    let config = state.config_ref();
+    serv.call_hook(view::ServerHook::AfterShutdown);
+    let mode = u64::from(config.mode_);
     if mode == MODE_PROCESS {
-        h.get(OP_JOIN_REACTOR_THREADS)?;
+        hybrid().step(serv, Step::JoinReactorThreads);
     }
-    if h.is(OP_IS_STARTED)? {
-        h.get(OP_FACTORY_SHUTDOWN)?;
+    let gs = crate::shared::server_counters(state);
+    if gs.is_some_and(|gs| gs.start.load(Relaxed) != 0) {
+        hybrid().step(serv, Step::FactoryShutdown);
     }
-    for worker in 0..field(h, FIELD_WORKER_NUM)? {
-        h.op(OP_DESTROY_WORKER, worker)?;
+    for id in 0..config.worker_num.get() {
+        if let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) {
+            crate::worker_methods::destroy_worker(worker);
+        }
     }
-    h.get(OP_RELEASE_PIPE_BUFFERS)?;
-    for port in 0..h.get(OP_PORT_COUNT)? {
-        h.op(OP_PORT_CLOSE, port)?;
+    hybrid().step(serv, Step::ReleasePipeBuffers);
+    hybrid().step(serv, Step::ClosePorts);
+    // SAFETY: as above; each write through it is that statement's only access.
+    let config = || unsafe { &mut *state.config() };
+    config().user_workers.free();
+    hybrid().step(serv, Step::ClearSignals);
+    if let Some(gs) = gs {
+        gs.start.store(0, SeqCst);
+        gs.shutdown.store(1, SeqCst);
     }
-    h.get(OP_FREE_USER_WORKERS)?;
-    h.get(OP_MARK_SHUTDOWN)?;
-    h.get(OP_ON_SHUTDOWN)?;
-    h.op(OP_DESTROY_FACTORY, mode)?;
-    if field(h, FIELD_TASK_WORKER_NUM)? > 0 {
-        h.get(OP_DESTROY_TASK_WORKERS)?;
+    state.callbacks.call_server(CB_SHUTDOWN, serv);
+    match mode {
+        MODE_BASE => destroy_base_factory(state),
+        MODE_PROCESS => _ = hybrid().step(serv, Step::DestroyProcessFactory),
+        _ => _ = hybrid().thread_mode(serv, RUN_DESTROY_THREAD_FACTORY),
     }
-    h.get(OP_FREE_SERVER)?;
-    Ok(())
+    if config().task_worker_num.get() > 0 {
+        config().task_results.free();
+        hybrid().step(serv, Step::DestroyTaskPool);
+    }
+    free_server(serv);
+}
+
+/// `Server::destroy_base_factory()`: the connection list and the connection counts.
+fn destroy_base_factory(state: &crate::ServerState) {
+    // SAFETY: as `destroy`; the write is the statement's only access to the tables.
+    unsafe { &mut *state.tables() }.connection_list.free();
+    // SAFETY: `slot` is the `connection_nums` of the server's counters, or of a port's
+    // in `port_gs_list`, which no other process shares once the workers are reaped.
+    let free = |slot: *mut Shm| unsafe { (*slot).free() };
+    let gs = state.config_ref().gs.as_ptr();
+    if !gs.is_null() {
+        free(
+            gs.wrapping_byte_add(offset_of!(ServerCounters, connection_nums))
+                .cast(),
+        );
+    }
+    for port in state.tables_ref().ports() {
+        let gs = port.config().gs.get();
+        if !gs.is_null() {
+            free(
+                gs.wrapping_byte_add(offset_of!(PortCounters, connection_nums))
+                    .cast(),
+            );
+        }
+    }
+}
+
+/// The session list, port counters, workers and factory, then `SwooleG.server`.
+fn free_server(serv: view::Server<'_>) {
+    let state = serv.state();
+    // SAFETY: as `destroy`; the reference is this statement's only access.
+    let tables = unsafe { &mut *state.tables() };
+    tables.session_list.free();
+    tables.port_gs_list.free();
+    // SAFETY: as `tables`, for the configuration; no reference outlives its statement,
+    // so the factory's deletion, which reads the configuration, aliases none.
+    let config = || unsafe { &mut *state.config() };
+    config().workers.free();
+    if !state.config_ref().factory_.is_null() {
+        hybrid().step(serv, Step::DeleteFactory);
+        config().factory_ = core::ptr::null_mut();
+    }
+    swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
+}
+
+/// What `Server::destroy` frees of a base-mode server whose single worker bailed out
+/// of its loop: the base factory's connection list and counts, the server's lists and
+/// its factory. It runs none of the shutdown (callbacks, hooks, signals, ports), only
+/// marks the server shut down, so `swr_v1_server_delete` frees the rest.
+pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
+    let state = serv.state();
+    if let Some(gs) = crate::shared::server_counters(state) {
+        gs.shutdown.store(1, SeqCst);
+    }
+    destroy_base_factory(state);
+    free_server(serv);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fixture::LiveServer;
-    use crate::hybrid::tests::{Call, calls};
-    use crate::script::Script;
-    use crate::{Host, MODE_BASE};
+    use crate::hybrid::tests::{Call, calls, fail};
+    use Step::*;
 
-    fn starting(mode: u64, daemon: bool) -> Script {
-        use crate::ops::{OP_IS_CREATED, OP_LC_CLAIM_START, OP_LC_DAEMONIZE, OP_LC_FACTORY_START};
-        Script::with(&[
-            (OP_MODE, mode),
-            (OP_IS_CREATED, 1),
-            (OP_LC_CLAIM_START, 1),
-            (OP_LC_FACTORY_START, 1),
-            (OP_LC_DAEMONIZE, u64::from(daemon)),
-        ])
+    fn steps(steps: &[Step]) -> Vec<Call> {
+        steps.iter().map(|&step| Call::Step(step)).collect()
     }
 
     #[test]
-    fn start_orders_the_daemon_workers_factory_mode_and_pid_file() {
-        use crate::ops::*;
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    fn start_runs_the_factory_protocols_then_the_mode() {
+        let live = LiveServer::new();
+        on(&live, CB_RECEIVE);
         for (mode, run) in [
-            (MODE_BASE, OP_LC_START_BASE),
-            (MODE_PROCESS, OP_LC_START_PROCESS),
-            (MODE_THREAD, OP_LC_START_THREAD),
+            (MODE_BASE, Call::Step(StartBase)),
+            (MODE_PROCESS, Call::Step(StartProcess)),
+            (MODE_THREAD, Call::ThreadMode(RUN_START_WORKER_THREADS)),
         ] {
-            for daemon in [false, true] {
-                let mut s = starting(mode, daemon);
-                assert_eq!(start(&mut s).unwrap(), SW_OK);
-                let mut expected = vec![
-                    OP_LC_CLEAR_ERROR,
-                    OP_LC_CHECK,
-                    OP_LC_BEFORE_START,
-                    OP_LC_CLAIM_START,
-                    OP_LC_DAEMONIZE,
-                ];
-                if daemon {
-                    expected.push(OP_LC_DAEMON);
-                }
-                expected.extend([
-                    OP_LC_START_TIME,
-                    OP_LC_PREPARE_WORKERS,
-                    OP_SET_RUNNING,
-                    OP_LC_FACTORY_START,
-                    OP_LC_INIT_PROTOCOLS,
-                    OP_LC_WRITE_PID,
-                    OP_MODE,
-                ]);
-                if mode == MODE_THREAD {
-                    expected.push(OP_SET_MASTER_PID);
-                }
-                expected.extend([run, OP_IS_CREATED, OP_AFTER_SHUTDOWN]);
-                let ops: Vec<u32> = s.log.iter().map(|&(op, _)| op).collect();
-                assert_eq!(
-                    ops[..expected.len()],
-                    expected,
-                    "mode {mode}, daemon {daemon}"
-                );
-                assert_eq!(ops.last(), Some(&OP_LC_UNLINK_PID));
-                assert_eq!(s.args(OP_SET_RUNNING), [1]);
-            }
-        }
-    }
-
-    #[test]
-    fn start_failures_return_before_later_effects() {
-        use crate::ops::*;
-        let failed = (-1_i64).cast_unsigned();
-        for (op, answer, absent) in [
-            (OP_LC_CHECK, failed, OP_LC_BEFORE_START),
-            (OP_LC_CLAIM_START, 0, OP_LC_DAEMONIZE),
-            (OP_LC_DAEMON, failed, OP_LC_START_TIME),
-            (OP_LC_FACTORY_START, 0, OP_LC_WRITE_PID),
-            (OP_LC_START_PROCESS, failed, OP_AFTER_SHUTDOWN),
-        ] {
-            let mut s = starting(MODE_PROCESS, true);
-            s.facts.insert(op, answer);
-            assert_eq!(start(&mut s).unwrap(), SW_ERR);
-            assert_eq!(s.called(absent), 0, "{op}");
-            assert_eq!(s.called(OP_LC_UNLINK_PID), 0, "the PID file stays");
+            set_mode(&live, mode);
+            live.counters().start.store(0, SeqCst);
+            live.counters().master_pid.store(0, Relaxed);
+            live.state().set_running(false);
+            calls();
+            assert_eq!(start(live.server()), OK, "mode {mode}");
             assert_eq!(
-                s.called(LOG_LC_ONLY_ONE),
-                usize::from(op == OP_LC_CLAIM_START)
+                calls(),
+                [Call::Step(FactoryStart), Call::Step(InitProtocols), run],
+                "mode {mode}"
+            );
+            assert!(live.state().running(), "running");
+            assert_eq!(live.counters().start.load(Relaxed), 1, "claimed");
+            assert_eq!(
+                live.counters().master_pid.load(Relaxed) != 0,
+                mode == MODE_THREAD,
+                "only thread mode sets the master pid before its workers"
             );
         }
     }
 
     #[test]
-    fn start_skips_destroy_once_the_factory_is_gone() {
-        use crate::ops::*;
-        let mut s = starting(MODE_BASE, false);
-        s.facts.insert(OP_IS_CREATED, 0);
-        assert_eq!(start(&mut s).unwrap(), SW_OK);
-        assert_eq!(s.called(OP_AFTER_SHUTDOWN), 0);
-        assert_eq!(s.called(OP_LC_UNLINK_PID), 1);
-    }
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    fn start_failures_return_before_later_steps() {
+        let live = LiveServer::new();
+        calls();
+        assert_eq!(start(live.server()), ERR, "TCP needs onReceive");
+        assert_eq!(live.counters().start.load(Relaxed), 0, "not claimed");
+        on(&live, CB_RECEIVE);
+        live.counters().start.store(1, SeqCst);
+        assert_eq!(start(live.server()), ERR, "only one server");
+        assert_eq!(calls(), [], "nothing started");
 
-    /// A script whose fields live in a table.
-    struct Fields {
-        script: Script,
-        fields: [u64; 8],
-    }
-
-    impl Host for Fields {
-        fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
-            let answer = self.script.op(op, arg)?;
-            Ok(match op {
-                OP_FIELD => self.fields[usize::try_from(arg).unwrap_or(usize::MAX)],
-                _ => answer,
-            })
+        config(&live).daemonize.set(true);
+        for (failing, ran) in [
+            (Daemon, &[Daemon][..]),
+            (FactoryStart, &[Daemon, FactoryStart]),
+            (
+                StartProcess,
+                &[Daemon, FactoryStart, InitProtocols, StartProcess],
+            ),
+        ] {
+            live.counters().start.store(0, SeqCst);
+            fail(Some(failing));
+            assert_eq!(start(live.server()), ERR, "{failing:?}");
+            assert_eq!(calls(), steps(ran), "{failing:?}");
         }
-    }
-
-    fn server(facts: &[(u32, u64)], fields: [(u32, u64); 3]) -> Fields {
-        let mut out = Fields {
-            script: Script::with(facts),
-            fields: [0; 8],
-        };
-        for (id, value) in fields {
-            out.fields[id as usize] = value;
-        }
-        out
+        fail(None);
     }
 
     /// The live server's configuration, which the test alone reads and writes.
@@ -888,95 +916,132 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn master_thread_by_mode() {
-        let mut s = server(
-            &[
-                (OP_MODE, MODE_PROCESS),
-                (OP_HAS_PIPE_COMMAND, 1),
-                (OP_MASTER_TIMER, 1),
-                (OP_EVENT_WAIT, 0),
-            ],
-            [(FIELD_REACTOR_NUM, 4); 3],
-        );
-        assert_eq!(start_master_thread(&mut s).unwrap(), SW_OK, "loop ran");
+        let live = LiveServer::new();
+        config(&live).reactor_num.set(4);
+        let master = |mode| {
+            set_mode(&live, mode);
+            live.counters().master_pid.store(0, Relaxed);
+            calls();
+            let result = start_master_thread(live.server(), live.reactor());
+            let ran: Vec<Call> = calls()
+                .into_iter()
+                .filter(|call| !matches!(call, Call::Step(Ignore(_) | Handle(_))))
+                .collect();
+            (result, ran)
+        };
         assert_eq!(
-            s.script.args(OP_MASTER_THREAD),
-            vec![4],
-            "thread id after the reactors"
+            master(MODE_PROCESS),
+            (
+                OK,
+                steps(&[
+                    TimerReinit,
+                    MasterTimer,
+                    ReactorBarrier,
+                    ManagerBarrier,
+                    EventWait
+                ])
+            ),
+            "both barriers"
+        );
+        assert_eq!(swoole_rs_corebase::thread_id(), 4, "after the reactors");
+        assert_eq!(
+            swoole_rs_process::methods::worker_type(),
+            Some(WorkerType::Master)
+        );
+        assert_ne!(live.counters().master_pid.load(Relaxed), 0, "master pid");
+        assert_eq!(
+            master(MODE_BASE),
+            (
+                OK,
+                steps(&[TimerReinit, MasterTimer, ReactorBarrier, EventWait])
+            ),
+            "no manager"
         );
         assert_eq!(
-            s.script.called(OP_COMMAND_HANDLER),
-            1,
-            "multi-threaded command results"
+            master(MODE_THREAD),
+            (OK, steps(&[TimerReinit, MasterTimer, EventWait])),
+            "no barriers"
         );
-        assert_eq!(s.script.called(OP_REACTOR_BARRIER), 1, "reactor barrier");
-        assert_eq!(s.script.called(OP_MANAGER_BARRIER), 1, "manager barrier");
-        assert_eq!(s.script.called(OP_SET_MASTER_PID), 1, "master pid");
-
-        let mut s = server(
-            &[(OP_MODE, MODE_THREAD), (OP_MASTER_TIMER, 1)],
-            [(FIELD_REACTOR_NUM, 4); 3],
-        );
-        start_master_thread(&mut s).unwrap();
         assert_eq!(
-            s.script.called(OP_SET_MASTER_PID),
+            live.counters().master_pid.load(Relaxed),
             0,
             "set before the worker threads start"
         );
 
-        let mut s = server(
-            &[(OP_MODE, MODE_BASE), (OP_SINGLE_THREAD, 1)],
-            [(FIELD_REACTOR_NUM, 4); 3],
-        );
-        assert_eq!(start_master_thread(&mut s).unwrap(), SW_ERR, "timer failed");
-        assert_eq!(s.script.called(OP_EVENT_FREE), 1, "event loop freed");
+        config(&live).single_thread.set(true);
+        fail(Some(MasterTimer));
         assert_eq!(
-            s.script.args(OP_MASTER_THREAD),
-            vec![0],
-            "single thread is 0"
+            master(MODE_BASE),
+            (ERR, steps(&[TimerReinit, MasterTimer, EventFree])),
+            "the event loop freed"
         );
+        fail(None);
+        assert_eq!(swoole_rs_corebase::thread_id(), 0, "single thread is 0");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn destroy_joins_the_reactors_before_the_factory_stops() {
-        let mut s = server(
-            &[
-                (OP_MODE, MODE_PROCESS),
-                (OP_IS_STARTED, 1),
-                (OP_PORT_COUNT, 1),
-            ],
-            [
-                (FIELD_WORKER_NUM, 2),
-                (FIELD_TASK_WORKER_NUM, 1),
-                (FIELD_REACTOR_NUM, 1),
-            ],
-        );
-        destroy(&mut s).unwrap();
-        let order: Vec<u32> = s
-            .script
-            .log
-            .iter()
-            .map(|(op, _)| *op)
-            .filter(|op| *op != OP_FIELD)
-            .collect();
-        let join = order
-            .iter()
-            .position(|op| *op == OP_JOIN_REACTOR_THREADS)
-            .unwrap();
-        let shutdown = order
-            .iter()
-            .position(|op| *op == OP_FACTORY_SHUTDOWN)
-            .unwrap();
-        assert!(
-            join < shutdown,
-            "reactor threads join before the factory stops"
-        );
-        assert_eq!(s.script.args(OP_DESTROY_WORKER), vec![0, 1], "each worker");
-        assert_eq!(
-            s.script.args(OP_DESTROY_FACTORY),
-            vec![MODE_PROCESS],
-            "process factory"
-        );
-        assert_eq!(order.last(), Some(&OP_FREE_SERVER), "server memory last");
+        for mode in [MODE_BASE, MODE_PROCESS] {
+            let live = LiveServer::new();
+            set_mode(&live, mode);
+            config(&live).worker_num.set(2);
+            assert_eq!(create_on(live.server(), 4), OK, "mode {mode}");
+            live.counters().start.store(1, SeqCst);
+            calls();
+            destroy(live.server());
+            let mut expected = Vec::new();
+            if mode == MODE_PROCESS {
+                expected.push(JoinReactorThreads);
+            }
+            expected.extend([
+                FactoryShutdown,
+                ReleasePipeBuffers,
+                ClosePorts,
+                ClearSignals,
+            ]);
+            if mode == MODE_PROCESS {
+                expected.push(DestroyProcessFactory);
+            }
+            expected.push(DeleteFactory);
+            assert_eq!(calls(), steps(&expected), "mode {mode}");
+            let counters = live.counters();
+            assert_eq!(
+                (
+                    counters.start.load(Relaxed),
+                    counters.shutdown.load(Relaxed)
+                ),
+                (0, 1),
+                "shut down"
+            );
+            let tables = live.state().tables_ref();
+            assert!(tables.session_list.is_null(), "sessions freed");
+            assert!(tables.port_gs_list.is_null(), "port counters freed");
+            assert!(config(&live).workers.is_null(), "workers freed");
+            assert!(config(&live).factory_.is_null(), "factory deleted");
+            assert_eq!(
+                tables.connection_list.is_null(),
+                mode == MODE_BASE,
+                "base mode's own connections"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
+        let live = LiveServer::new();
+        set_mode(&live, MODE_BASE);
+        assert_eq!(create_on(live.server(), 4), OK);
+        calls();
+        release_abandoned_base(live.server());
+        assert_eq!(calls(), steps(&[DeleteFactory]), "no shutdown steps");
+        assert_eq!(live.counters().shutdown.load(Relaxed), 1, "shut down");
+        let tables = live.state().tables_ref();
+        assert!(tables.connection_list.is_null(), "connections freed");
+        assert!(tables.session_list.is_null(), "sessions freed");
+        assert!(config(&live).factory_.is_null(), "factory deleted");
     }
 }

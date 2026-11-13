@@ -404,89 +404,12 @@ impl ServerConfig {
     }
 }
 
-/// Handles only owned configuration/table facts; all effects on other objects stay native.
-#[inline(always)]
-pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{
-        FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_DELAY_RECEIVE,
-        OP_DISABLE_NOTIFY, OP_ERRNO, OP_FIELD, OP_LC_DAEMONIZE, OP_MAX_WAIT_TIME, OP_MODE,
-        OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM,
-        OP_PORT_WEBSOCKET, OP_RUNNING, OP_SET_RUNNING, OP_SINGLE_THREAD,
-    };
-    if !matches!(
-        op,
-        OP_MODE
-            | OP_SINGLE_THREAD
-            | OP_LC_DAEMONIZE
-            | OP_DELAY_RECEIVE
-            | OP_DISABLE_NOTIFY
-            | OP_RUNNING
-            | OP_SET_RUNNING
-            | OP_MAX_WAIT_TIME
-            | OP_FIELD
-            | OP_ERRNO
-            | OP_PORT_COUNT
-            | OP_PORT_DGRAM
-            | OP_PORT_STREAM
-            | OP_PORT_SSL_AT
-            | OP_PORT_WEBSOCKET
-            | OP_PORT_REMOVED
-            | OP_PORT_FD
-    ) {
-        return None;
-    }
-    let config = state.config_ref();
-    let tables = state.tables_ref();
-    Some(match op {
-        OP_MODE => u64::from(config.mode_),
-        OP_SINGLE_THREAD => u64::from(config.single_thread.get()),
-        OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive.get()),
-        OP_DISABLE_NOTIFY => u64::from(config.disable_notify.get()),
-        OP_RUNNING => u64::from(state.running()),
-        OP_LC_DAEMONIZE => u64::from(config.daemonize.get()),
-        OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
-        OP_ERRNO => {
-            i64::from(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)).cast_unsigned()
-        }
-        OP_PORT_COUNT => u64::from(tables.ports.count),
-        OP_PORT_DGRAM | OP_PORT_STREAM | OP_PORT_SSL_AT | OP_PORT_WEBSOCKET | OP_PORT_REMOVED
-        | OP_PORT_FD => {
-            let port = *tables.ports().get(usize::try_from(arg).ok()?)?;
-            if op == OP_PORT_REMOVED {
-                return Some(u64::from(port.with_socket(|s| s.read(|s| s.removed))?));
-            }
-            let fd = port.fd();
-            let port = port.config();
-            match op {
-                OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
-                OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
-                OP_PORT_SSL_AT => u64::from(port.ssl),
-                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol.get()),
-                _ => i64::from(fd).cast_unsigned(),
-            }
-        }
-        OP_SET_RUNNING => {
-            state.set_running(arg != 0);
-            0
-        }
-        OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {
-            FIELD_REACTOR_NUM => u64::from(config.reactor_num.get()),
-            FIELD_WORKER_NUM => u64::from(config.worker_num.get()),
-            FIELD_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
-            _ => 0,
-        },
-        _ => return None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ops::{FIELD_WORKER_NUM, OP_FIELD, OP_RUNNING, OP_SET_RUNNING};
     use crate::state::{free_state, swr_v1_server_state_new};
 
     #[test]
-    fn runtime_defaults_and_native_views_share_owned_slots() {
+    fn runtime_defaults() {
         let state = swr_v1_server_state_new();
         unsafe {
             let config = (*state).config();
@@ -494,55 +417,26 @@ mod tests {
             assert_eq!((*config).worker_num.get(), 16);
             assert_eq!((*config).reactor_num.get(), 8);
             assert_eq!((*config).timezone_, 3600);
-            assert_eq!(
-                native_fact(&*state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
-                Some(16)
-            );
-            assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
+            (*state).set_running(false);
             assert!(!(*state).running());
-            assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
             free_state(state);
         }
     }
 
     #[test]
-    fn port_facts_read_the_pushed_ports() {
-        use crate::ops::{
-            OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_REMOVED, OP_PORT_STREAM,
-        };
+    fn pushed_ports_are_numbered_in_order() {
         let state = swr_v1_server_state_new();
-        let mut socket = swoole_rs_reactor::SocketRecord::new();
-        socket.fd = 7;
-        socket.removed = true;
         let ports: Vec<_> = [1, 2]
             .into_iter()
-            .map(|kind| {
-                let config = crate::port_config::swr_v1_port_config_new(0);
-                unsafe {
-                    (*config).r#type = kind;
-                    *(*config).socket.get_mut() = (&raw mut socket).cast();
-                }
-                // A `ListenPort` is its settings.
-                config
-            })
+            .map(|_| crate::port_config::swr_v1_port_config_new(0))
             .collect();
         unsafe {
-            assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(0));
-            assert_eq!(
-                native_fact(&*state, OP_PORT_DGRAM, 0),
-                None,
-                "no port 0 yet"
-            );
+            assert!((*state).tables_ref().ports().is_empty());
             for &port in &ports {
                 (*state).push_port(port.cast());
             }
-            assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(2));
+            assert_eq!((*state).tables_ref().ports().len(), 2);
             assert_eq!((*ports[1]).object_id, 2);
-            assert_eq!(native_fact(&*state, OP_PORT_STREAM, 0), Some(1));
-            assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 0), Some(0));
-            assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 1), Some(1));
-            assert_eq!(native_fact(&*state, OP_PORT_REMOVED, 1), Some(1));
-            assert_eq!(native_fact(&*state, OP_PORT_FD, 1), Some(7));
             free_state(state);
             for port in ports {
                 crate::port_config::swr_v1_port_config_free(port);

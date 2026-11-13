@@ -1,20 +1,13 @@
 //! Signals, the master timer and shutdown.
 use crate::hybrid::hybrid;
-use crate::ops::{
-    OP_MODE, OP_SET_MINFD, OP_SIGNAL_FD, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGRTMIN,
-};
 use crate::reactor_handle::Reactor;
 use crate::view::Server;
-use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
+use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD};
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::AtomicI64;
 use core::sync::atomic::Ordering::{Relaxed, Release};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-
-fn signal_number(signo: i32) -> u64 {
-    u64::from(signo.cast_unsigned())
-}
 
 fn mode(serv: Server<'_>) -> u64 {
     u64::from(serv.config().mode_)
@@ -274,10 +267,12 @@ pub(crate) fn master_timer(serv: Server<'_>) {
 }
 
 /// `Server::init_signal_handler`.
-pub(crate) fn init_signals<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGPIPE))?;
-    h.op(OP_SIGNAL_IGNORE, signal_number(libc::SIGHUP))?;
-    let child = if h.get(OP_MODE)? == MODE_PROCESS {
+pub(crate) fn init_signals(serv: Server<'_>) {
+    use crate::hybrid::Step::{Handle, Ignore};
+    let h = hybrid();
+    h.step(serv, Ignore(libc::SIGPIPE));
+    h.step(serv, Ignore(libc::SIGHUP));
+    let child = if mode(serv) == MODE_PROCESS {
         libc::SIGCHLD
     } else {
         libc::SIGIO
@@ -289,17 +284,14 @@ pub(crate) fn init_signals<H: Host>(h: &mut H) -> crate::Effect<()> {
         libc::SIGTERM,
         libc::SIGWINCH,
     ] {
-        h.op(OP_SIGNAL_HANDLE, signal_number(signo))?;
+        h.step(serv, Handle(signo));
     }
-    let rtmin = h.get(OP_SIGRTMIN)?;
-    if rtmin != 0 {
-        h.op(OP_SIGNAL_HANDLE, rtmin)?;
-    }
-    let signal_fd = h.signed(OP_SIGNAL_FD)?;
+    #[cfg(target_os = "linux")]
+    h.step(serv, Handle(libc::SIGRTMIN()));
+    let signal_fd = swoole_rs_corebase::swr_v1_core_signal_fd();
     if signal_fd > 0 {
-        h.op(OP_SET_MINFD, signal_fd.cast_unsigned())?;
+        serv.counters().min_fd.store(signal_fd, Relaxed);
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -307,7 +299,6 @@ mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
-    use crate::script::Script;
 
     fn set_mode(live: &LiveServer, mode: u64) {
         // SAFETY: the fixture's config, which nothing else reads meanwhile.
@@ -519,17 +510,36 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn signal_set() {
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE), (OP_SIGRTMIN, 34), (OP_SIGNAL_FD, 9)]);
-        init_signals(&mut s).unwrap();
-        assert_eq!(s.called(OP_SIGNAL_IGNORE), 2, "SIGPIPE and SIGHUP");
-        let handled = s.args(OP_SIGNAL_HANDLE);
+        use crate::hybrid::Step::{Handle, Ignore};
+        let live = LiveServer::new();
+        set_mode(&live, MODE_BASE);
+        calls();
+        init_signals(live.server());
+        let expected = [
+            Ignore(libc::SIGPIPE),
+            Ignore(libc::SIGHUP),
+            Handle(libc::SIGIO),
+            Handle(libc::SIGUSR1),
+            Handle(libc::SIGUSR2),
+            Handle(libc::SIGTERM),
+            Handle(libc::SIGWINCH),
+        ];
+        #[cfg(target_os = "linux")]
+        let expected = [&expected[..], &[Handle(libc::SIGRTMIN())]].concat();
+        let expected: Vec<_> = expected.into_iter().map(Call::Step).collect();
         assert_eq!(
-            handled[0],
-            signal_number(libc::SIGIO),
-            "SIGIO outside process mode"
+            calls(),
+            expected,
+            "SIGIO outside process mode, SIGRTMIN last"
         );
-        assert_eq!(handled.last(), Some(&34), "SIGRTMIN last");
-        assert_eq!(s.args(OP_SET_MINFD), vec![9], "signalfd");
+        set_mode(&live, MODE_PROCESS);
+        init_signals(live.server());
+        assert_eq!(
+            calls()[2],
+            Call::Step(Handle(libc::SIGCHLD)),
+            "SIGCHLD in process mode"
+        );
     }
 }
