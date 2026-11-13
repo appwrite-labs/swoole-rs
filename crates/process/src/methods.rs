@@ -17,7 +17,7 @@ use crate::process_pool::{
     swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push, swr_v1_process_pool_push_event,
     swr_v1_worker_symbol,
 };
-use crate::reload_task::{WARN_KILL_ALL_FAILED, WARN_KILL_ONE_FAILED};
+use crate::reload_task::KillWarning;
 use crate::worker_globals::{
     swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
 };
@@ -464,18 +464,18 @@ pub fn worker_report_error(worker: Worker<'_>, exit_status: &ExitStatus) {
 
 /// `swoole::reload_warn`: a reload's failed or forced kill, under the
 /// `ReloadTask` method upstream logged it from; `errno` is the failed kill's.
-pub extern "C" fn reload_warn(kind: c_int, pid: c_int, worker_id: u32) {
+pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
     use swoole_rs_corebase::log::{sys_warning, warning};
     match kind {
-        WARN_KILL_ONE_FAILED => sys_warning(
+        KillWarning::KillOneFailed => sys_warning(
             c"ReloadTask::kill_one",
             format_args!("kill({pid}, SIGTERM) [{worker_id}] failed"),
         ),
-        WARN_KILL_ALL_FAILED => sys_warning(
+        KillWarning::KillAllFailed => sys_warning(
             c"ReloadTask::kill_all",
             format_args!("failed to kill({pid}, SIGTERM) worker#[{worker_id}]"),
         ),
-        _ => warning(
+        KillWarning::ForceKill => warning(
             c"ReloadTask::kill_all",
             format_args!("force kill worker process(pid={pid}, id={worker_id})"),
         ),
@@ -787,9 +787,9 @@ pub(crate) mod tests {
     #[test]
     fn reload_kills_warn_under_upstream_reload_task() {
         install();
-        reload_warn(WARN_KILL_ALL_FAILED, 10, 1);
-        reload_warn(2, 11, 2);
-        reload_warn(WARN_KILL_ONE_FAILED, 12, 3);
+        reload_warn(KillWarning::KillAllFailed, 10, 1);
+        reload_warn(KillWarning::ForceKill, 11, 2);
+        reload_warn(KillWarning::KillOneFailed, 12, 3);
         let all = logged("ReloadTask::kill_all");
         assert_eq!(all.len(), 2, "two kill_all warnings: {all:?}");
         assert_eq!(

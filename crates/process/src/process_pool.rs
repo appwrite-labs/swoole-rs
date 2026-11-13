@@ -25,7 +25,7 @@ use crate::pool::{
     Bailed, PoolCall, PoolIpc, PoolLoop, pool_ipc_free, pool_ipc_new, pool_ipc_prepare, pool_run,
     swr_v1_process_pool_ipc_listener,
 };
-use crate::reaper::{self, RELOAD_KILL_ONE, RELOAD_NONE, Reap, Waited, wait_child};
+use crate::reaper::{self, Reap, ReloadStart, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::WorkerRegistry;
@@ -628,8 +628,8 @@ pub trait PoolNative: Sync {
     /// `socket` (a worker's pipe): `swoole_event_write` when the event loop is
     /// available and `flags` asks for it, else `send_sync`.
     fn pipe_write(&self, call: &mut PoolCall);
-    /// Report a `WARN_*` or `TRACE_*` with its numbers.
-    fn warn(&self, call: &PoolCall, kind: c_int, a: i64, b: i64);
+    /// Report a worker loop's warning.
+    fn warn(&self, call: &PoolCall, warning: crate::pool::Warning);
 }
 
 /// An export's result when a callback bailed out: the caller raises it.
@@ -1938,9 +1938,9 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
         self.op(Op::Log(Log::WaitFailed), 0);
     }
 
-    fn start_reload(&mut self) -> u32 {
+    fn start_reload(&mut self) -> ReloadStart {
         if !self.reload_init() {
-            return RELOAD_NONE;
+            return ReloadStart::None;
         }
         self.set_reload_init(false);
         let workers: Vec<_> = (0..self.worker_num() as usize)
@@ -1952,7 +1952,7 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
                 task.add(pid, id);
             }
         }
-        RELOAD_KILL_ONE
+        ReloadStart::KillOne
     }
 
     fn reap(&mut self, pid: c_int, status: c_int) -> bool {
@@ -2245,7 +2245,7 @@ mod tests {
 
     fn close(_: *mut c_void) {}
 
-    extern "C" fn warn(_: c_int, _: c_int, _: u32) {}
+    fn warn(_: crate::reload_task::KillWarning, _: c_int, _: u32) {}
 
     struct Fixture {
         record: Box<PoolRecord>,

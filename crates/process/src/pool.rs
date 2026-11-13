@@ -50,17 +50,18 @@ const MTYPE: usize = size_of::<c_long>();
 const PIPE_MASTER: c_int = 1;
 const PIPE_NONBLOCK: c_int = 2;
 
-/// Warnings native code formats (`PoolNative::warn`); `errno` is the failed
+/// A warning native code formats (`PoolNative::warn`); `errno` is the failed
 /// call's where the message is a system warning.
-pub const WARN_MSGRCV: c_int = 1;
-pub const WARN_ACCEPT: c_int = 2;
-pub const WARN_READ: c_int = 3;
-pub const WARN_BAD_PACKET: c_int = 4;
-pub const WARN_TASK_FAILED: c_int = 5;
-pub const WARN_PIPE: c_int = 6;
-pub const TRACE_POP: c_int = 7;
-pub const WARN_SEND: c_int = 8;
-pub const TRACE_PUSH: c_int = 9;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Warning {
+    Msgrcv,
+    Accept,
+    Read,
+    BadPacket { received: i64, length: i64 },
+    TaskFailed(i64),
+    Pipe,
+    Send { size: i64, worker: i64 },
+}
 
 const _: () = assert!(MTYPE == 8, "QueueNode::mtype is the u64 heading the buffer");
 
@@ -267,9 +268,9 @@ impl Worker<'_> {
         self.native.running(&self.call())
     }
 
-    fn warn(&self, kind: c_int, error: c_int, a: i64, b: i64) {
+    fn warn(&self, warning: Warning, error: c_int) {
         set_errno(error);
-        self.native.warn(&self.call(), kind, a, b);
+        self.native.warn(&self.call(), warning);
     }
 
     fn end(&self) -> Result<(), Bailed> {
@@ -406,7 +407,7 @@ impl Worker<'_> {
                         0,
                     )?;
                     if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_MSGRCV, call.error, 0, 0);
+                        self.warn(Warning::Msgrcv, call.error);
                         break;
                     }
                     call.result
@@ -415,7 +416,7 @@ impl Worker<'_> {
                     let socket = match self.accept()? {
                         Ok(socket) => socket,
                         Err(error) if fatal(error) => {
-                            self.warn(WARN_ACCEPT, error, 0, 0);
+                            self.warn(Warning::Accept, error);
                             break;
                         }
                         Err(_) => {
@@ -441,7 +442,7 @@ impl Worker<'_> {
                         0,
                     )?;
                     if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_READ, call.error, 0, 0);
+                        self.warn(Warning::Read, call.error);
                         break;
                     }
                     call.result
@@ -454,7 +455,13 @@ impl Worker<'_> {
                 let alone = self.connection().is_none();
                 if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
-                    self.warn(WARN_BAD_PACKET, 0, n as i64, size.cast_signed());
+                    self.warn(
+                        Warning::BadPacket {
+                            received: n as i64,
+                            length: size.cast_signed(),
+                        },
+                        0,
+                    );
                 } else {
                     // Without a connection to answer, nothing comes between the task
                     // and the iteration's end, so one trap covers both.
@@ -464,7 +471,7 @@ impl Worker<'_> {
                     trapped(|| {
                         self.native.task(&mut call);
                         if call.result < 0 {
-                            self.warn(WARN_TASK_FAILED, 0, read::<i64>(buf, 0), 0);
+                            self.warn(Warning::TaskFailed(read::<i64>(buf, 0)), 0);
                         }
                         if alone {
                             self.native.end();
@@ -501,10 +508,9 @@ impl Worker<'_> {
                         0,
                     )?;
                     if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_MSGRCV, call.error, 0, 0);
+                        self.warn(Warning::Msgrcv, call.error);
                         break;
                     }
-                    self.warn(TRACE_POP, 0, call.result as i64, 0);
                     if let Some(mtype) = self.ipc().packet.first_mut() {
                         *mtype = 0;
                     }
@@ -514,7 +520,7 @@ impl Worker<'_> {
                     let socket = match self.accept()? {
                         Ok(socket) => socket,
                         Err(error) if fatal(error) => {
-                            self.warn(WARN_ACCEPT, error, 0, 0);
+                            self.warn(Warning::Accept, error);
                             break;
                         }
                         Err(_) => {
@@ -546,7 +552,7 @@ impl Worker<'_> {
                         0,
                     )?;
                     if call.result < 0 && fatal(call.error) {
-                        self.warn(WARN_READ, call.error, 0, 0);
+                        self.warn(Warning::Read, call.error);
                         break;
                     }
                     (packet, call.result)
@@ -593,7 +599,7 @@ impl Worker<'_> {
             match self.receive_message()? {
                 Received::Continue | Received::Ready => self.end()?,
                 Received::Error(error) => {
-                    self.warn(WARN_PIPE, error, 0, 0);
+                    self.warn(Warning::Pipe, error);
                     self.native.shutdown(&self.call());
                 }
             }
@@ -940,7 +946,6 @@ pub unsafe fn swr_v1_process_worker_send(
         let base = message.as_mut_ptr().cast::<u8>();
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
-        native.warn(&call, TRACE_PUSH, length.c_cast::<i64>(), 0);
         call.data = base.cast();
         call.length = length;
         // The native queue's push, which cannot reach PHP.
@@ -987,7 +992,13 @@ pub unsafe fn pool_dispatch<'a>(
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
     let Some(worker) = workers(index) else {
         let call = PoolCall::new(pool, ptr::null_mut());
-        native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
+        native.warn(
+            &call,
+            Warning::Send {
+                size: i64::from(size),
+                worker: i64::from(*target),
+            },
+        );
         return false;
     };
     let (id, pipe) = (worker.id(), worker.pipe_master());
@@ -1007,7 +1018,13 @@ pub unsafe fn pool_dispatch<'a>(
     };
     if sent < 0 {
         let call = PoolCall::new(pool, ptr::null_mut());
-        native.warn(&call, WARN_SEND, i64::from(size), i64::from(*target));
+        native.warn(
+            &call,
+            Warning::Send {
+                size: i64::from(size),
+                worker: i64::from(*target),
+            },
+        );
         return false;
     }
     true
@@ -1119,7 +1136,7 @@ mod tests {
         delivered: usize,
         ends: usize,
         shutdowns: usize,
-        warnings: Vec<(c_int, i64, i64)>,
+        warnings: Vec<Warning>,
         respond: Vec<u8>,
         ipc: usize,
     }
@@ -1230,8 +1247,8 @@ mod tests {
             with(|s| s.shutdowns += 1);
         }
         fn pipe_write(&self, _: &mut PoolCall) {}
-        fn warn(&self, _: &PoolCall, kind: c_int, a: i64, b: i64) {
-            with(|s| s.warnings.push((kind, a, b)));
+        fn warn(&self, _: &PoolCall, warning: Warning) {
+            with(|s| s.warnings.push(warning));
         }
     }
 
@@ -1334,18 +1351,16 @@ mod tests {
         assert_eq!(
             script.warnings,
             vec![
-                (
-                    WARN_BAD_PACKET,
-                    HEAD.c_cast::<i64>() + 2,
-                    HEAD.c_cast::<i64>() + 4
-                ),
-                (
-                    WARN_BAD_PACKET,
-                    HEAD.c_cast::<i64>() + 4,
-                    HEAD.c_cast::<i64>() + 4
-                ),
-                (WARN_TASK_FAILED, 42, 0),
-                (WARN_READ, 0, 0),
+                Warning::BadPacket {
+                    received: HEAD.c_cast::<i64>() + 2,
+                    length: HEAD.c_cast::<i64>() + 4
+                },
+                Warning::BadPacket {
+                    received: HEAD.c_cast::<i64>() + 4,
+                    length: HEAD.c_cast::<i64>() + 4
+                },
+                Warning::TaskFailed(42),
+                Warning::Read,
             ]
         );
         // Each packet ends its iteration; the failed read ends the loop before one.
@@ -1368,7 +1383,7 @@ mod tests {
         // The delivered message and the interrupted read each end an iteration.
         assert_eq!(script.ends, 2);
         assert_eq!(script.shutdowns, 1);
-        assert_eq!(script.warnings, vec![(WARN_PIPE, 0, 0)]);
+        assert_eq!(script.warnings, vec![Warning::Pipe]);
     }
 
     #[test]
@@ -1391,6 +1406,9 @@ mod tests {
             )
         };
         assert!(!sent);
-        assert_eq!(with(|s| s.warnings.clone()), vec![(WARN_SEND, 4, 5)]);
+        assert_eq!(
+            with(|s| s.warnings.clone()),
+            vec![Warning::Send { size: 4, worker: 5 }]
+        );
     }
 }
