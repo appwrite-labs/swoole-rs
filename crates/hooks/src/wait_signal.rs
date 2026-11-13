@@ -238,9 +238,6 @@ mod native {
         swr_v1_core_signal_listener_num,
     };
 
-    /// `Reactor::EXIT_CONDITION_CO_SIGNAL_LISTENER`.
-    const EXIT_CONDITION_CO_SIGNAL_LISTENER: c_int = 3;
-
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
     use swoole_rs_reactor::signal_upstream::{self, Handler};
 
@@ -315,7 +312,7 @@ mod native {
             return;
         }
         swoole_rs_reactor::swr_v1_event_set_exit_condition(
-            EXIT_CONDITION_CO_SIGNAL_LISTENER,
+            swoole_rs_reactor::ExitCondition::CoSignalListener,
             listeners_done,
         );
         swr_v1_core_set_signal_async_listener_num(count + 1);

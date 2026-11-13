@@ -30,9 +30,7 @@ use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
-/// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`, `SW_PIPE_MASTER`.
-const PRIORITY_TRY_EXIT: c_int = 4;
-const PRIORITY_WORKER_CALLBACK: c_int = 6;
+/// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 /// `swGlobalHookType`'s worker and shutdown hooks.
@@ -422,7 +420,10 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Thread => {}
     }
     reactor.handle().set_wait_exit(true);
-    swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
+    swoole_rs_reactor::swr_v1_event_set_end_callback(
+        swoole_rs_reactor::Priority::TryExit,
+        try_to_exit,
+    );
     let now = swoole_rs_corebase::time_now();
     with_globals(|globals| globals.exit_time.store(now, Relaxed));
     try_exit(serv, reactor);
@@ -647,7 +648,10 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     ) {
         COUNTED.set(worker.raw());
         let count = count_coroutines;
-        swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_WORKER_CALLBACK, count);
+        swoole_rs_reactor::swr_v1_event_set_end_callback(
+            swoole_rs_reactor::Priority::WorkerCallback,
+            count,
+        );
     }
     worker_start_callback(serv, worker);
     let rv = reactor.wait();

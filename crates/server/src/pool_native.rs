@@ -45,13 +45,11 @@ use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
-/// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`,
-/// and the `Channel` flags.
+/// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
 const FD_PIPE: c_int = 3;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const TIMEOUT_READ: c_int = 4;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
-const PRIORITY_TRY_EXIT: c_int = 4;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
@@ -509,7 +507,10 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             // SAFETY: the worker of the loop this thread runs, which outlives the
             // loop's end callback, the one reader.
             EXITING.set(Some(unsafe { Record::new(worker.raw()) }));
-            swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, worker_exit);
+            swoole_rs_reactor::swr_v1_event_set_end_callback(
+                swoole_rs_reactor::Priority::TryExit,
+                worker_exit,
+            );
             0
         }
         Op::DontRestart => {

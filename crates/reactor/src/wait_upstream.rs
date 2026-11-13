@@ -28,9 +28,6 @@ mod registry {
     use std::sync::atomic::{AtomicBool, Ordering};
     use swoole_rs_process::wait::{Coroutines, wait_reap};
 
-    /// `Reactor::EXIT_CONDITION_WAIT_PID`.
-    const EXIT_CONDITION_WAIT_PID: c_int = 2;
-
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
 
@@ -79,7 +76,7 @@ mod registry {
         } else {
             register();
         }
-        crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_WAIT_PID, no_waiters);
+        crate::swr_v1_event_set_exit_condition(crate::ExitCondition::WaitPid, no_waiters);
         crate::event_api::on_destroy(destroyed);
         SIGNAL_READY.store(true, Ordering::Relaxed);
     }

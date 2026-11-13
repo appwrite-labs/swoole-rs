@@ -674,9 +674,6 @@ pub(crate) fn set_dns_cache_capacity(capacity: c_long) {
     swoole_rs_hooks::dns_cache::swr_v1_hook_dns_cache_capacity(capacity);
 }
 
-/// `Reactor::EXIT_CONDITION_USER_AFTER_DEFAULT`.
-const EXIT_CONDITION_USER_AFTER_DEFAULT: c_int = 1000;
-
 /// Install (`set`) or clear this thread's reactor's user exit condition,
 /// which calls `Co::set`'s `exit_condition`; nothing without a reactor.
 pub(crate) fn set_exit_condition(set: bool) {
@@ -685,10 +682,12 @@ pub(crate) fn set_exit_condition(set: bool) {
     }
     if set {
         swoole_rs_reactor::swr_v1_event_set_exit_condition(
-            EXIT_CONDITION_USER_AFTER_DEFAULT,
+            swoole_rs_reactor::ExitCondition::UserAfterDefault,
             crate::scheduler::reactor_can_exit,
         );
     } else {
-        swoole_rs_reactor::swr_v1_event_remove_exit_condition(EXIT_CONDITION_USER_AFTER_DEFAULT);
+        swoole_rs_reactor::swr_v1_event_remove_exit_condition(
+            swoole_rs_reactor::ExitCondition::UserAfterDefault,
+        );
     }
 }
