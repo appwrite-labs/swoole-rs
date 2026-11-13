@@ -22,8 +22,8 @@ use swoole_rs_corebase::sys;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketTlsState {
     pub state: u32,
-    pub want_read: u8,
-    pub want_write: u8,
+    pub want_read: bool,
+    pub want_write: bool,
 }
 
 pub use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
@@ -63,24 +63,24 @@ pub struct SocketFields {
     pub events: c_int,
     pub enable_tcp_nodelay: bool,
     pub kernel_nobufs: bool,
-    pub removed: u8,
-    pub silent_remove: u8,
-    pub cloexec: u8,
-    pub direct_send: u8,
-    pub bound: u8,
-    pub listened: u8,
-    pub ssl_renegotiation: u8,
-    pub ssl_handshake_buffer_set: u8,
-    pub ssl_quiet_shutdown: u8,
-    pub ssl_closed: u8,
-    pub dtls: u8,
-    pub tcp_nopush: u8,
-    pub tcp_nodelay: u8,
-    pub skip_recv: u8,
-    pub recv_wait: u8,
-    pub event_hup: u8,
-    pub dont_restart: u8,
-    pub close_notified: u8,
+    pub removed: bool,
+    pub silent_remove: bool,
+    pub cloexec: bool,
+    pub direct_send: bool,
+    pub bound: bool,
+    pub listened: bool,
+    pub ssl_renegotiation: bool,
+    pub ssl_handshake_buffer_set: bool,
+    pub ssl_quiet_shutdown: bool,
+    pub ssl_closed: bool,
+    pub dtls: bool,
+    pub tcp_nopush: bool,
+    pub tcp_nodelay: bool,
+    pub skip_recv: bool,
+    pub recv_wait: bool,
+    pub event_hup: bool,
+    pub dont_restart: bool,
+    pub close_notified: bool,
     pub chunk_size: u32,
     pub output: SocketOutput,
     pub object: *mut c_void,
@@ -238,7 +238,7 @@ impl SocketRecord {
         let mut socket = Self::new();
         socket.fd = fd;
         socket.fd_type = fd_type;
-        socket.removed = 1;
+        socket.removed = true;
         socket
     }
 
@@ -277,8 +277,8 @@ impl SocketRecord {
             return ptr::null_mut();
         }
         let mut socket = Self::with_fd(fd, fd_type);
-        socket.output.nonblock = u8::from(flags & crate::socket_types::NONBLOCK != 0);
-        socket.cloexec = u8::from(flags & crate::socket_types::CLOEXEC != 0);
+        socket.output.nonblock = flags & crate::socket_types::NONBLOCK != 0;
+        socket.cloexec = flags & crate::socket_types::CLOEXEC != 0;
         socket.socket_type = socket_type;
         socket.into_raw()
     }
@@ -350,13 +350,8 @@ impl SocketFields {
         if !crate::swr_v1_socket_tcp_nodelay(self.fd, nodelay) {
             return false;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream assigns the int to its flag"
-        )]
-        let flag = nodelay as u8;
-        self.tcp_nodelay = flag;
+        // Upstream's 1-bit field keeps the int's low bit.
+        self.tcp_nodelay = nodelay & 1 != 0;
         true
     }
 
@@ -364,7 +359,7 @@ impl SocketFields {
     /// (from getsockname(2), as upstream), then the descriptor closed. False when
     /// close(2) failed, with errno set.
     pub fn release(&mut self) -> bool {
-        if self.is_local() && self.bound != 0 && self.get_name() == 0 {
+        if self.is_local() && self.bound && self.get_name() == 0 {
             let path = self.info.addr.unix().sun_path;
             // c_char is i8 or u8 by target; its one byte either way.
             let path = path.map(|byte| byte.to_ne_bytes()[0]);
@@ -395,7 +390,7 @@ impl SocketFields {
     /// `set_fd_option` call does.
     pub fn accept(&mut self) -> *mut SocketRecord {
         let mut socket = SocketRecord::new();
-        socket.removed = 1;
+        socket.removed = true;
         socket.socket_type = self.socket_type;
         // Upstream passes sizeof(Address), not sizeof(Address::addr).
         #[expect(
@@ -406,16 +401,16 @@ impl SocketFields {
         socket.info.len = capacity;
         let listener_cloexec;
         (socket.fd, listener_cloexec) =
-            crate::fd_accept(self.fd, &mut socket.info, self.output.nonblock != 0);
+            crate::fd_accept(self.fd, &mut socket.info, self.output.nonblock);
         if listener_cloexec {
-            self.cloexec = 1;
+            self.cloexec = true;
         }
         if socket.fd < 0 {
             return ptr::null_mut();
         }
         socket.info.kind = self.socket_type;
         socket.output.nonblock = self.output.nonblock;
-        socket.cloexec = 1;
+        socket.cloexec = true;
         socket.into_raw()
     }
 }
@@ -439,7 +434,7 @@ mod tests {
         let mut socket = SocketRecord::new();
         socket.fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
         socket.socket_type = 5;
-        socket.bound = 1;
+        socket.bound = true;
         assert!(socket.release());
         assert!(!path.exists(), "the path is unlinked");
         socket.fd = -1;
@@ -479,7 +474,7 @@ mod tests {
         let socket = SocketRecord::with_fd(7, 3).into_raw();
         // SAFETY: the record just made.
         let record = unsafe { &*socket };
-        assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, 1));
+        assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, true));
         // SAFETY: as above, not used again.
         unsafe { SocketRecord::free(socket) };
     }
@@ -505,7 +500,7 @@ mod tests {
         assert_eq!((record.socket_type, record.fd_type), (1, 5));
         assert_eq!(
             (record.output.nonblock, record.cloexec, record.removed),
-            (1, 1, 1)
+            (true, true, true)
         );
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };

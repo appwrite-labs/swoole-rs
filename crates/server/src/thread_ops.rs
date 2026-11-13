@@ -231,7 +231,7 @@ pub(crate) fn answer(
             };
             // arg: peer_closed, the connection is no longer available
             ctx.connection()?.set_peer_closed(arg != 0);
-            ctx.sock?.edit(|s| s.close_notified = 1);
+            ctx.sock?.edit(|s| s.close_notified = true);
             u64::from(factory::notify(state, (&raw mut head).cast()))
         }
         OP_CC_COUNT => {
@@ -563,7 +563,7 @@ pub(crate) fn answer(
             let retval = unsafe { on_read(reactor, port, event.cast()) };
             // Upstream reads the socket after the read too.
             let (total_recv_bytes, notified) =
-                sock.read(|s| (s.total_recv_bytes, s.close_notified != 0));
+                sock.read(|s| (s.total_recv_bytes, s.close_notified));
             let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
             if received.cast_signed() > 0 {
                 let received = received as u64;

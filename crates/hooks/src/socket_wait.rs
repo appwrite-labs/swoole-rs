@@ -30,7 +30,7 @@ impl Wait {
     fn status(&self) -> u32 {
         self.0
             .net(|record| {
-                if record.output.close_wait != 0 {
+                if record.output.close_wait {
                     return CLOSE_WAIT;
                 }
                 let tls = !record.ssl().is_null();
@@ -38,13 +38,13 @@ impl Wait {
                 if core::mem::take(&mut record.kernel_nobufs) {
                     status |= NOBUFS;
                 }
-                if tls && record.tls.want_read != 0 {
+                if tls && record.tls.want_read {
                     status |= WANT_READ;
                 }
-                if tls && record.tls.want_write != 0 {
+                if tls && record.tls.want_write {
                     status |= WANT_WRITE;
                 }
-                if record.removed != 0 {
+                if record.removed {
                     status |= REMOVED;
                 }
                 status
@@ -265,7 +265,7 @@ pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
 pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_>) {
     for event in [WRITE, READ] {
         let (object, removed) = event_socket.read(|record| (record.object, record.removed));
-        if event == READ && (object != socket.this() || removed != 0) {
+        if event == READ && (object != socket.this() || removed) {
             return;
         }
         // The record is live: it still owns `event_socket`.
@@ -288,14 +288,14 @@ mod tests {
         install();
         let socket = TestSocket::new();
         let record = unsafe { socket.0.record() };
-        record.output.close_wait = u8::from(status & CLOSE_WAIT != 0);
+        record.output.close_wait = status & CLOSE_WAIT != 0;
         record.kernel_nobufs = status & NOBUFS != 0;
         if status & (WANT_READ | WANT_WRITE) != 0 {
             unsafe { record.set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast()) };
         }
-        record.tls.want_read = u8::from(status & WANT_READ != 0);
-        record.tls.want_write = u8::from(status & WANT_WRITE != 0);
-        record.removed = u8::from(status & REMOVED != 0);
+        record.tls.want_read = status & WANT_READ != 0;
+        record.tls.want_write = status & WANT_WRITE != 0;
+        record.removed = status & REMOVED != 0;
         record.events = (status & (READ | WRITE)).cast_signed();
         socket
     }
@@ -468,7 +468,7 @@ mod tests {
             } else {
                 core::ptr::null_mut()
             };
-            record.removed = u8::from(removed);
+            record.removed = removed;
             let event_socket = s.0.socket;
             unsafe { &mut *s.state() }.bind(READ, (&raw mut reader).cast());
             unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());

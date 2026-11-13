@@ -32,7 +32,7 @@ impl EventSocket {
 
     #[must_use]
     pub fn removed(&self) -> bool {
-        self.0.read(|record| record.removed != 0)
+        self.0.read(|record| record.removed)
     }
 
     /// `swoole_event_add(socket, events)`.

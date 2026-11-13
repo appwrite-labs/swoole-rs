@@ -121,7 +121,7 @@ pub(crate) unsafe fn import_stream(
     sock.hold_stream(stream.copy());
     // Preserve the original one-bit nonblock assignment, rather than normalize other bits.
     if let Some(net) = sock.co().and_then(Co::net) {
-        net.edit(|record| record.output.nonblock = u8::from(nonblock & 1 != 0));
+        net.edit(|record| record.output.nonblock = nonblock & 1 != 0);
     }
     Ok(Some(object))
 }

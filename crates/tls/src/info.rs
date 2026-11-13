@@ -30,17 +30,17 @@ pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     if renegotiating {
         socket.edit(|record| {
             if record.tls.state == crate::constants::SslState::SW_SSL_STATE_READY as u32 {
-                record.ssl_renegotiation = 1;
+                record.ssl_renegotiation = true;
             }
         });
     }
-    if handshake_done && socket.read(|record| record.ssl_handshake_buffer_set) == 0 {
+    if handshake_done && !socket.read(|record| record.ssl_handshake_buffer_set) {
         let write = ssl.write_bio();
         if ssl.read_bio() != write {
             if let Some(write) = write {
                 write.set_write_buffer_size(16384);
             }
-            socket.edit(|record| record.ssl_handshake_buffer_set = 1);
+            socket.edit(|record| record.ssl_handshake_buffer_set = true);
         }
     }
 }

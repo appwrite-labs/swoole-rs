@@ -328,7 +328,7 @@ fn http2_begin(socket: Co) {
 
 /// `recv_wait`: the socket waits for a request.
 fn set_recv_wait(socket: Co, waiting: bool) {
-    socket.with_network(|network| network.edit(|record| record.recv_wait = u8::from(waiting)));
+    socket.with_network(|network| network.edit(|record| record.recv_wait = waiting));
 }
 
 method_table! {
@@ -816,7 +816,7 @@ fn shutdown(call: &Call) {
                 return;
             };
             let waiting_now =
-                socket.with_network(|network| network.read(|record| record.recv_wait != 0));
+                socket.with_network(|network| network.read(|record| record.recv_wait));
             if waiting_now == Some(true) {
                 waiting.push((index, socket));
             }

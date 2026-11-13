@@ -346,7 +346,7 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
         if let Some(net) = socket.net()
             && swoole_rs_reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay)
         {
-            net.edit(|record| record.tcp_nodelay = u8::from(on));
+            net.edit(|record| record.tcp_nodelay = on);
         }
     }
     if !set_protocol(s, socket)? {

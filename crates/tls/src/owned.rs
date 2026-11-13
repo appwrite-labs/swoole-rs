@@ -457,14 +457,14 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
     });
     if dtls {
         socket.edit(|record| {
-            record.dtls = 1;
+            record.dtls = true;
             record.chunk_size = swoole_rs_corebase::constants::SW_SSL_BUFFER_SIZE;
         });
     }
     if !create(&mut owner) {
         return 2;
     }
-    socket.edit(|record| record.output.ssl_send = 1);
+    socket.edit(|record| record.output.ssl_send = true);
     0
 }
 
@@ -766,7 +766,7 @@ mod tests {
                     swr_v1_tls_owner_socket_context(prepared.owner, handle, true, true),
                     0
                 );
-                assert_eq!((*socket).fields.output.ssl_send, 1);
+                assert!((*socket).fields.output.ssl_send);
                 assert_eq!((*prepared.fields).http_v2, 1);
                 let result =
                     swr_v1_tls_owner_socket_session(prepared.owner, handle, Arc::as_ptr(&hostname));

@@ -42,8 +42,8 @@ fn errno() -> c_int {
 pub use swoole_rs_reactor::SocketTlsState as SocketTls;
 
 fn want(tls: &mut SocketTls, read: bool, write: bool) {
-    tls.want_read = u8::from(read);
-    tls.want_write = u8::from(write);
+    tls.want_read = read;
+    tls.want_write = write;
 }
 
 /// `Socket::ssl_clear_error`: clears this thread's OpenSSL error queue and the want flags.
@@ -280,12 +280,12 @@ const SHUTDOWN_WARN: c_int = 2;
 fn shutdown(
     tls: &mut SocketTls,
     ssl: Ssl,
-    closed: &mut u8,
+    closed: &mut bool,
     quiet: bool,
     repaired: bool,
     calls: &mut impl ShutdownCalls,
 ) -> c_int {
-    if *closed != 0 || ssl.in_init() {
+    if *closed || ssl.in_init() {
         return SHUTDOWN_FALSE;
     }
     // If the peer closed first, shut down quietly: sending data then makes the peer
@@ -303,13 +303,13 @@ fn shutdown(
             error == SSL_ERROR_WANT_READ,
             error == SSL_ERROR_WANT_WRITE,
         );
-        *closed = u8::from(tls.want_read == 0 && tls.want_write == 0);
+        *closed = !tls.want_read && !tls.want_write;
         (n, error)
     } else {
         // Upstream marks both directions shut first, so OpenSSL writes no alert.
         ssl.set_shutdown_mode(ssl.shutdown_mode() | SSL_RECEIVED_SHUTDOWN | SSL_SENT_SHUTDOWN);
         let n = calls.shutdown(ssl);
-        *closed = 1;
+        *closed = true;
         let error = if n != 1 && peek_error() != 0 {
             calls.error(ssl, n)
         } else {
@@ -334,7 +334,7 @@ fn shutdown(
 pub fn swr_v1_socket_ssl_shutdown(
     tls: &mut SocketTls,
     ssl: Ssl,
-    closed: &mut u8,
+    closed: &mut bool,
     quiet: bool,
     repaired: bool,
 ) -> c_int {
@@ -445,17 +445,21 @@ mod tests {
                     ..Default::default()
                 }
             );
-            assert_eq!((tls.want_read, tls.want_write), (1, 0));
-            tls.want_write = 1;
+            assert_eq!((tls.want_read, tls.want_write), (true, false));
+            tls.want_write = true;
             let sent = swr_v1_socket_ssl_send(&mut tls, handle(ssl), &buffer);
             assert_eq!(sent, read, "a write also waits for the server's hello");
             assert_eq!(
                 (tls.want_read, tls.want_write),
-                (1, 0),
+                (true, false),
                 "and replaces the flags"
             );
             swr_v1_socket_ssl_clear(&mut tls);
-            assert_eq!((tls.want_read, tls.want_write), (0, 0), "nothing pending");
+            assert_eq!(
+                (tls.want_read, tls.want_write),
+                (false, false),
+                "nothing pending"
+            );
             SSL_free(ssl);
         }
     }
@@ -474,8 +478,8 @@ mod tests {
                 tls,
                 SocketTls {
                     state: STATE_WAIT_STREAM,
-                    want_read: 1,
-                    want_write: 0
+                    want_read: true,
+                    want_write: false
                 },
                 "waiting for the server"
             );
@@ -495,7 +499,7 @@ mod tests {
             assert_eq!(failed.ssl_error, SSL_ERROR_SSL);
             assert_eq!(
                 (tls.state, tls.want_read),
-                (STATE_WAIT_STREAM, 0),
+                (STATE_WAIT_STREAM, false),
                 "a failure keeps the state"
             );
             SSL_free(ssl);
@@ -510,7 +514,7 @@ mod tests {
                 SslHandshakeResult::returning(WAIT),
                 "no client hello yet"
             );
-            assert_eq!((tls.state, tls.want_read, tls.want_write), (0, 1, 0));
+            assert_eq!((tls.state, tls.want_read, tls.want_write), (0, true, false));
             SSL_free(server);
         }
     }
@@ -614,8 +618,8 @@ mod tests {
             let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
             record.tls = SocketTls {
                 state: STATE_READY,
-                want_read: 1,
-                want_write: 1,
+                want_read: true,
+                want_write: true,
             };
             let made = swr_v1_socket_ssl_new(
                 &mut record,
@@ -752,7 +756,7 @@ mod shutdown_tests {
     struct Socket {
         ssl: *mut SSL,
         tls: SocketTls,
-        closed: u8,
+        closed: bool,
         quiet: bool,
         repaired: bool,
         calls: Observed,
@@ -765,7 +769,7 @@ mod shutdown_tests {
             Self {
                 ssl,
                 tls: SocketTls::default(),
-                closed: 0,
+                closed: false,
                 quiet: false,
                 repaired: true,
                 calls: Observed::default(),
@@ -795,7 +799,7 @@ mod shutdown_tests {
         }
 
         fn ssl_close(&mut self) {
-            if self.closed == 0 {
+            if !self.closed {
                 self.ssl_shutdown();
             }
             unsafe { SSL_free(self.ssl) };
@@ -982,7 +986,7 @@ mod shutdown_tests {
             }
             assert_eq!(
                 (sent.value, sent.error, tls.want_write),
-                (-1, libc::EAGAIN, 1),
+                (-1, libc::EAGAIN, true),
                 "try {} waits to write",
                 tries.len()
             );
@@ -1090,7 +1094,7 @@ mod shutdown_tests {
             "real nonblocking WANT_READ reported without waiting"
         );
         assert!(
-            socket.tls.want_read != 0 && socket.closed == 0,
+            socket.tls.want_read && !socket.closed,
             "pending read remains retryable"
         );
     }
@@ -1117,7 +1121,7 @@ mod shutdown_tests {
             "real pending write shutdown reports incomplete/error"
         );
         assert!(
-            socket.tls.want_write != 0 && socket.closed == 0,
+            socket.tls.want_write && !socket.closed,
             "pending write remains retryable"
         );
     }
@@ -1143,7 +1147,7 @@ mod shutdown_tests {
                 "alert transport full"
             );
             assert!(
-                !socket.ssl_shutdown() && socket.tls.want_write != 0 && socket.closed == 0,
+                !socket.ssl_shutdown() && socket.tls.want_write && !socket.closed,
                 "alert write remains retryable"
             );
             loop {
@@ -1191,7 +1195,7 @@ mod shutdown_tests {
             "real closed-peer shutdown is EPIPE with only empty/system error queue"
         );
         assert!(
-            socket.closed != 0 && socket.tls.want_read == 0 && socket.tls.want_write == 0,
+            socket.closed && !socket.tls.want_read && !socket.tls.want_write,
             "broken pipe is terminal rather than readiness retry"
         );
         assert_eq!(socket.warnings, 1, "fatal peer write remains reported");
@@ -1252,7 +1256,7 @@ mod shutdown_tests {
         socket.repaired = false;
         assert!(socket.ssl_shutdown(), "upstream shutdown succeeds");
         assert_eq!(pair.client_pending(), 0, "upstream writes no close_notify");
-        assert_ne!(socket.closed, 0, "upstream closes at once");
+        assert!(socket.closed, "upstream closes at once");
         let calls = socket.calls.shutdown_calls;
         assert!(
             !socket.ssl_shutdown() && socket.calls.shutdown_calls == calls,
@@ -1273,7 +1277,7 @@ mod shutdown_tests {
             assert_eq!(socket.warnings, usize::from(queued));
             assert_eq!(
                 (socket.closed, socket.tls.want_read, socket.tls.want_write),
-                (1, 0, 0),
+                (true, false, false),
                 "closed with no retry"
             );
         }

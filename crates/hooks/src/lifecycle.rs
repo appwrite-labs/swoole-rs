@@ -171,7 +171,7 @@ fn close(socket: Co, sys: Sys) -> bool {
         .with_state(|state| state.bound_co(READ | WRITE))
         .is_null()
     {
-        socket.net(|record| record.output.close_wait = 1);
+        socket.net(|record| record.output.close_wait = true);
         socket.cancel(WRITE);
         socket.cancel(READ);
         set_err(socket, CLOSE_WAIT_ERROR);
@@ -331,7 +331,7 @@ mod tests {
             crate::socket_extra::run_close_hook(s);
             true
         } else {
-            unsafe { (*s.socket()).fields.output.close_wait = 1 };
+            unsafe { (*s.socket()).fields.output.close_wait = true };
             upstream_cancel(s, WRITE);
             upstream_cancel(s, READ);
             set_err(s, CLOSE_WAIT_ERROR);
@@ -446,7 +446,7 @@ mod tests {
     struct Outcome {
         result: bool,
         effects: Vec<String>,
-        state: (c_int, SocketFlags, c_int, u8, c_long, c_long, c_int),
+        state: (c_int, SocketFlags, c_int, bool, c_long, c_long, c_int),
     }
 
     fn id(state: *mut SocketState, event: u32) -> c_long {
@@ -691,7 +691,7 @@ mod tests {
                     s.0.sock_fd = -1;
                 }
                 if admission == 2 {
-                    unsafe { s.0.record() }.output.close_wait = 1;
+                    unsafe { s.0.record() }.output.close_wait = true;
                 }
             };
             let hooks = move || {
