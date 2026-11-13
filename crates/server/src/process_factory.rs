@@ -13,7 +13,7 @@ use swoole_rs_process::methods::{swoole_get_worker_id, worker_type};
 use swoole_rs_process::worker_record::WorkerType;
 
 use crate::base_factory::{SendData, is_stream_event, low16};
-use crate::callbacks::{CB_CLOSE, CallbackSlot, EventSlot};
+use crate::callbacks::{CallbackKind, CallbackSlot, EventSlot};
 use crate::dispatch::schedule_worker;
 use crate::hybrid::hybrid;
 use crate::records::Lookup;
@@ -237,7 +237,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     // `Server::if_do_close_callback`: once, by whoever sets `closed`.
     let callback = state
         .callbacks
-        .slot(CB_CLOSE)
+        .slot(CallbackKind::Close)
         .is_some_and(CallbackSlot::is_set);
     if callback
         && conn

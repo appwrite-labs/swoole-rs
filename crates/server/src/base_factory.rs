@@ -8,7 +8,7 @@
         reason = "only the hybrid's factory runs a base-mode server"
     )
 )]
-use crate::callbacks::{CB_CLOSE, CallbackSlot, EventSlot, ReceiveSlot};
+use crate::callbacks::{CallbackKind, CallbackSlot, EventSlot, ReceiveSlot};
 use crate::hybrid::hybrid;
 use crate::reactor_entry::RecvData;
 use crate::reactor_handle::Reactor;
@@ -390,7 +390,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     }
     c.set_closing(true);
     // `if_do_close_callback`: once, by whoever sets `closed`.
-    let on_close = state.callbacks.slot(CB_CLOSE);
+    let on_close = state.callbacks.slot(CallbackKind::Close);
     if on_close.is_some_and(CallbackSlot::is_set)
         && c.closed()
             .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)

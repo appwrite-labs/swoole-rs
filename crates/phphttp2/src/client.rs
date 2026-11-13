@@ -13,8 +13,8 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
-    FrameAction, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings, Http2WindowPlan, Media,
-    QueueAction,
+    FrameAction, FrameType, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings,
+    Http2WindowPlan, Media, QueueAction,
     hpack::{Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
@@ -40,13 +40,6 @@ const WINDOW_UPDATE_SIZE: usize = 4;
 const SETTING_FRAME: usize = FRAME_HEADER + 6 * 6;
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// Frame types and flags.
-const TYPE_DATA: u32 = 0;
-const TYPE_HEADERS: u32 = 1;
-const TYPE_RST_STREAM: u32 = 3;
-const TYPE_SETTINGS: u32 = 4;
-const TYPE_PING: u32 = 6;
-const TYPE_GOAWAY: u32 = 7;
-const TYPE_WINDOW_UPDATE: u32 = 8;
 const FLAG_ACK: u32 = 1;
 const FLAG_END_STREAM: u32 = 1;
 const FLAG_PRIORITY: u32 = 0x20;
@@ -249,7 +242,7 @@ fn apply(socket: Co, settings: &Value) {
     }
 }
 
-fn frame_header(kind: u32, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
+fn frame_header(kind: FrameType, length: usize, flags: u32, stream: u32) -> [u8; FRAME_HEADER] {
     let length = u32::try_from(length).unwrap_or(u32::MAX);
     sw_rs_http2_pack_frame_header(kind, length, flags, stream)
 }
@@ -546,13 +539,14 @@ impl Client {
     }
 
     fn send_window_update(&self, stream: u32, size: u32) -> bool {
-        let mut frame = frame_header(TYPE_WINDOW_UPDATE, WINDOW_UPDATE_SIZE, 0, stream).to_vec();
+        let mut frame =
+            frame_header(FrameType::WindowUpdate, WINDOW_UPDATE_SIZE, 0, stream).to_vec();
         frame.extend_from_slice(&size.to_be_bytes());
         self.send(&frame)
     }
 
     fn send_ping(&self) -> bool {
-        let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, 0, 0).to_vec();
+        let mut frame = frame_header(FrameType::Ping, PING_PAYLOAD, 0, 0).to_vec();
         frame.extend_from_slice(&[0; PING_PAYLOAD]);
         self.send(&frame)
     }
@@ -560,14 +554,18 @@ impl Client {
     /// DATA frames within the peer's frame size; one empty frame for no data.
     fn send_data(&self, stream: u32, mut data: &[u8], flag: u32) -> bool {
         if data.is_empty() {
-            return self.send(&frame_header(TYPE_DATA, 0, flag, stream));
+            return self.send(&frame_header(FrameType::Data, 0, flag, stream));
         }
         while !data.is_empty() {
             let max_frame_size = send_frame_size(self.remote.get().max_frame_size);
             let chunk = sw_rs_http2_chunk(data.len(), max_frame_size, flag);
             let (part, rest) = data.split_at(chunk.length.min(data.len()));
-            if !self.send(&frame_header(TYPE_DATA, part.len(), chunk.flags, stream))
-                || !self.send(part)
+            if !self.send(&frame_header(
+                FrameType::Data,
+                part.len(),
+                chunk.flags,
+                stream,
+            )) || !self.send(part)
             {
                 return false;
             }
@@ -579,7 +577,7 @@ impl Client {
     fn send_goaway(&self, error_code: i64, debug: &[u8]) -> bool {
         let code = error_code.c_cast::<u32>();
         let mut frame =
-            frame_header(TYPE_GOAWAY, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
+            frame_header(FrameType::Goaway, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
         frame.extend_from_slice(&self.last_stream_id.get().to_be_bytes());
         frame.extend_from_slice(&code.to_be_bytes());
         frame.extend_from_slice(debug);
@@ -676,7 +674,12 @@ impl Client {
         self.stream_id.set(id + 2);
         self.create_stream(id, flags);
         let header_flags = sw_rs_http2_headers_flags(empty, true, flags);
-        let header = frame_header(TYPE_HEADERS, frame.len() - FRAME_HEADER, header_flags, id);
+        let header = frame_header(
+            FrameType::Headers,
+            frame.len() - FRAME_HEADER,
+            header_flags,
+            id,
+        );
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
         }
@@ -829,7 +832,7 @@ impl Client {
                 return Frame::Continue;
             }
             FrameAction::Settings => {
-                if !self.send(&frame_header(TYPE_SETTINGS, 0, FLAG_ACK, id)) {
+                if !self.send(&frame_header(FrameType::Settings, 0, FLAG_ACK, id)) {
                     return Frame::Fail;
                 }
                 return Frame::Continue;
@@ -838,7 +841,7 @@ impl Client {
                 let Payload::Ping(Some(echo)) = read else {
                     return Frame::Fail;
                 };
-                let mut frame = frame_header(TYPE_PING, PING_PAYLOAD, FLAG_ACK, id).to_vec();
+                let mut frame = frame_header(FrameType::Ping, PING_PAYLOAD, FLAG_ACK, id).to_vec();
                 frame.extend_from_slice(&echo);
                 return if self.send(&frame) {
                     Frame::Continue
@@ -894,14 +897,14 @@ impl Client {
             let Some(stream) = streams.get_mut(&id) else {
                 return Frame::Continue;
             };
-            let plan = sw_rs_http2_response(facts.kind, facts.flags, stream.flags, pipeline_read);
+            let plan = sw_rs_http2_response(facts.action, facts.flags, stream.flags, pipeline_read);
             if !plan.ready {
                 return Frame::Continue;
             }
             // Only this client has seen the response so far: no user code runs
             // on these writes.
             if let Some(response) = stream.response.props() {
-                if facts.kind == TYPE_RST_STREAM {
+                if facts.action == FrameAction::Reset {
                     response.own().long(c"statusCode", SERVER_RESET);
                     // A reset deletes its stream above, so upstream's stream_error is 0 here.
                     response.own().long(c"errCode", 0);

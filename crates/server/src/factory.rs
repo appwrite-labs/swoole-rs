@@ -168,7 +168,7 @@ extern "C" fn accept_command_result(
     bus.pop();
     0
 }
-use crate::{MODE_PROCESS, MODE_THREAD};
+use crate::Mode;
 
 /// `swoole::Factory` (upstream's `swoole_server.h`): its server, then thread mode's manager state
 /// (`crates/server/src/thread_mode.rs`), null in the other modes.
@@ -217,9 +217,9 @@ pub(crate) unsafe fn delete(factory: *mut c_void) {
 }
 
 /// The server's factory, and its mode.
-fn of(state: &ServerState) -> (*mut c_void, u64) {
+fn of(state: &ServerState) -> (*mut c_void, Mode) {
     let config = state.config_ref();
-    (config.factory_, u64::from(config.mode_))
+    (config.factory_, config.mode_)
 }
 
 /// The server of `factory`.
@@ -233,8 +233,8 @@ fn base(factory: *mut c_void) -> crate::view::Server<'static> {
 /// `factory_->start()`.
 pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
     match of(serv.state()) {
-        (_, MODE_PROCESS) => crate::process_factory::native::start(serv),
-        (_, MODE_THREAD) => crate::thread_mode::native::factory_start(serv),
+        (_, Mode::Process) => crate::process_factory::native::start(serv),
+        (_, Mode::Thread) => crate::thread_mode::native::factory_start(serv),
         _ => true,
     }
 }
@@ -242,8 +242,8 @@ pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
 /// `factory_->shutdown()`.
 pub(crate) fn shutdown(state: &ServerState) -> bool {
     match of(state) {
-        (factory, MODE_PROCESS) => crate::process_factory::native::shutdown(base(factory)),
-        (factory, MODE_THREAD) => {
+        (factory, Mode::Process) => crate::process_factory::native::shutdown(base(factory)),
+        (factory, Mode::Thread) => {
             // SAFETY: the server's live factory.
             if let Some(manager) = unsafe { manager(factory) } {
                 manager.join_all();
@@ -259,7 +259,7 @@ pub(crate) fn dispatch(state: &ServerState, task: *mut c_void) -> bool {
     let (factory, mode) = of(state);
     // SAFETY: the live task the caller lends, which nothing else borrows.
     let task = unsafe { &mut *task.cast::<SendData>() };
-    if mode == MODE_PROCESS {
+    if mode == Mode::Process {
         crate::process_factory::dispatch(base(factory), task)
     } else {
         crate::base_factory::dispatch(base(factory), task, false)
@@ -271,7 +271,7 @@ pub(crate) fn finish(state: &ServerState, data: *mut c_void) -> bool {
     let (factory, mode) = of(state);
     // SAFETY: the live send the caller lends.
     let send = unsafe { &*data.cast::<SendData>() };
-    if mode == MODE_PROCESS {
+    if mode == Mode::Process {
         crate::process_factory::finish(base(factory), send)
     } else {
         crate::base_factory::finish(base(factory), send)
@@ -281,7 +281,7 @@ pub(crate) fn finish(state: &ServerState, data: *mut c_void) -> bool {
 /// `factory_->notify(info)`.
 pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
     match of(state) {
-        (factory, MODE_PROCESS) => {
+        (factory, Mode::Process) => {
             // A dispatch of the event with no data.
             let mut task = SendData {
                 // SAFETY: the live event the caller hears.
@@ -301,7 +301,7 @@ pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
 /// `factory_->end(session_id, flags)`.
 pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool {
     match of(state) {
-        (factory, MODE_PROCESS) => crate::process_factory::end(base(factory), session_id, flags),
+        (factory, Mode::Process) => crate::process_factory::end(base(factory), session_id, flags),
         (factory, _) => crate::base_factory::end(base(factory), session_id, flags),
     }
 }
@@ -469,7 +469,7 @@ impl crate::hybrid::Hybrid for Linked {
     fn before_shutdown(&self, serv: crate::view::Server<'_>) {
         serv.call_hook(crate::view::ServerHook::BeforeShutdown);
         let callbacks = &serv.state().callbacks;
-        callbacks.call_server(crate::callbacks::CB_BEFORE_SHUTDOWN, serv);
+        callbacks.call_server(crate::callbacks::ServerSlot::BeforeShutdown, serv);
     }
 
     fn reload(&self, serv: crate::view::Server<'_>, all_workers: bool) -> bool {

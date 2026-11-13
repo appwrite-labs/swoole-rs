@@ -21,13 +21,14 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
+use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
     RecvData, php_swoole_get_recv_data, php_swoole_server_get_callback,
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_record::WorkerType;
-use swoole_rs_server::{Connection, view};
+use swoole_rs_server::{Connection, Mode, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_long, zval,
@@ -94,16 +95,10 @@ struct Receive {
     coroutine: bool,
 }
 
-/// `SW_SERVER_CB_onRequest`, `onHandshake` and `onMessage`.
-const ON_REQUEST: c_int = 4;
-const ON_HANDSHAKE: c_int = 5;
-const ON_MESSAGE: c_int = 8;
 /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST` (`SW_GLOBAL_HOOK_USER + 2`).
 const HOOK_BEFORE_REQUEST: c_int = 26;
-/// `SW_SOCK_TCP6` and the server modes.
+/// `SW_SOCK_TCP6`.
 const SOCK_TCP6: c_int = 3;
-const MODE_BASE: u8 = 1;
-const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
@@ -234,8 +229,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let config = port.config();
     let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
-    let http = config.open_http_protocol.get() && isset(ON_REQUEST);
-    let websocket = !http && config.open_websocket_protocol.get() && isset(ON_MESSAGE);
+    let http = config.open_http_protocol.get() && isset(PortCallback::Request);
+    let websocket = !http && config.open_websocket_protocol.get() && isset(PortCallback::Message);
     let mut facts = Receive {
         last_recv_time: conn.last_recv_time(),
         local_port: i64::from(conn.local_port()),
@@ -288,8 +283,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 #[must_use]
 pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
-    config.mode_ == MODE_BASE
-        || (config.mode_ == MODE_PROCESS && config.dispatch_mode.get() == DISPATCH_FDMOD)
+    config.mode_ == Mode::Base
+        || (config.mode_ == Mode::Process && config.dispatch_mode.get() == DISPATCH_FDMOD)
 }
 
 /// `Server::is_enable_coroutine`.
@@ -342,7 +337,7 @@ pub(crate) fn call_handler(
 pub(crate) fn call_port(
     server: view::Server<'_>,
     server_fd: c_int,
-    kind: c_int,
+    kind: PortCallback,
     args: &mut [zval],
 ) -> Result<Option<bool>, bailout::Bailout> {
     let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
@@ -463,7 +458,11 @@ fn handle(
     let handshake = server
         .by_session(session)
         .is_some_and(|conn| conn.websocket_status() == STATUS_CONNECTION);
-    let kind = if handshake { ON_HANDSHAKE } else { ON_REQUEST };
+    let kind = if handshake {
+        PortCallback::Handshake
+    } else {
+        PortCallback::Request
+    };
     let Some(callback) = php_swoole_server_get_callback(server, server_fd, kind) else {
         if handshake {
             websocket::handshake_open(ctx)?;
@@ -563,7 +562,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
     add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
-    state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);
+    state.callback = php_swoole_server_get_callback(server, facts.server_fd, PortCallback::Request);
     if state.before_request {
         if facts.unavailable {
             state.response.status = SERVICE_UNAVAILABLE_STATUS;

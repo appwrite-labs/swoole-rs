@@ -68,22 +68,31 @@ const WEBSOCKET: u32 = 2;
 const HTTP2: u32 = 4;
 const REDIS: u32 = 8;
 
-/// `Server::MODE_*`.
-const MODE_BASE: i64 = 1;
-pub(crate) const MODE_PROCESS: i64 = 2;
-pub(crate) const MODE_THREAD: i64 = 3;
 /// `SW_SOCK_TCP`.
 const SOCK_TCP: i64 = 1;
 /// `Server::Command::REACTOR_THREAD`.
 const COMMAND_REACTOR_THREAD: i64 = 1 << 2;
-/// Callback types (`php_swoole_server_callback_type`, `..._port_callback_type`).
-const ON_TASK: usize = 7;
-const ON_PIPE_MESSAGE: usize = 13;
-const CALLBACKS: usize = 14;
-const ON_RECEIVE: c_int = 1;
-const ON_PACKET: c_int = 3;
-const ON_REQUEST: c_int = 4;
-const ON_MESSAGE: c_int = 8;
+/// The server's own callbacks (`php_swoole_server_callback_type`), in slot order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub(crate) enum ServerCallback {
+    Start,
+    BeforeShutdown,
+    Shutdown,
+    WorkerStart,
+    WorkerStop,
+    BeforeReload,
+    AfterReload,
+    Task,
+    Finish,
+    WorkerExit,
+    WorkerError,
+    ManagerStart,
+    ManagerStop,
+    PipeMessage,
+}
+const CALLBACKS: usize = ServerCallback::PipeMessage as usize + 1;
+pub(crate) use swoole_rs_ports::PortCallback;
 /// Error codes.
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
@@ -131,7 +140,7 @@ impl PortInfo {
 // unconstructed one; and a copy of `sw_error`.
 use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
-use swoole_rs_server::{SharedServer, admin_register};
+use swoole_rs_server::{Mode, SharedServer, admin_register};
 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject<'_>) -> c_int {
@@ -247,7 +256,7 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
     // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
     let hash_dispatch = matches!(c.dispatch_mode.get(), 2 | 4 | 8);
     match id {
-        fact::MODE => i64::from(c.mode_),
+        fact::MODE => c.mode_ as i64,
         fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),
         fact::STARTED => i64::from(serv.is_started()),
         // SAFETY: a live server.
@@ -255,10 +264,12 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::MASTER => {
             i64::from(crate::server::worker_type() == Some(crate::server::WorkerType::Master))
         }
-        fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
+        fact::THREAD_MODE => i64::from(c.mode_ == Mode::Thread),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
         fact::SEND_YIELD => i64::from(c.send_yield.get()),
-        fact::HAS_ON_CLOSE => i64::from(serv.has_callback(swoole_rs_server::callbacks::CB_CLOSE)),
+        fact::HAS_ON_CLOSE => {
+            i64::from(serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close))
+        }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event.get()),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
         fact::WORKER_NUM => i64::from(c.worker_num.get()),
@@ -419,16 +430,14 @@ impl<'a> ServerObject<'a> {
     }
 
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
-    fn callback(self, kind: usize) -> Option<Callable> {
-        self.property(|p| p.callbacks.get(kind).and_then(Option::clone))
+    fn callback(self, kind: ServerCallback) -> Option<Callable> {
+        self.property(|p| p.callbacks.get(kind as usize).and_then(Option::clone))
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
     /// false if it is not callable, or once the old one's destructor bails out.
-    pub(crate) fn set_callback(self, kind: c_int, callable: &Value) -> bool {
-        let Ok(kind) = usize::try_from(kind) else {
-            return false;
-        };
+    pub(crate) fn set_callback(self, kind: ServerCallback, callable: &Value) -> bool {
+        let kind = kind as usize;
         // Each callable drops out of the property: its destructor may call on() again.
         let Some(old) = self.property(|p| p.callbacks.get_mut(kind).map(Option::take)) else {
             return false;
@@ -469,8 +478,7 @@ impl<'a> ServerObject<'a> {
 }
 
 /// `server_object->get_callback(kind)`: the callable, a reference the call holds, or none.
-pub(crate) fn callback(kind: c_int) -> Option<Callable> {
-    let kind = usize::try_from(kind).unwrap_or(CALLBACKS);
+pub(crate) fn callback(kind: ServerCallback) -> Option<Callable> {
     ServerObject::with_running(|object| object.callback(kind)).flatten()
 }
 
@@ -751,7 +759,7 @@ fn construct(call: &Call) {
         Ok((
             call.string(1, b"")?,
             call.long(2, 0)?,
-            call.long(3, MODE_BASE)?,
+            call.long(3, Mode::Base as i64)?,
             call.long(4, SOCK_TCP)?,
         ))
     });
@@ -759,12 +767,12 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
-    if mode != MODE_BASE && mode != MODE_PROCESS && !(thread && mode == MODE_THREAD) {
+    let Some(server_mode) = Mode::from_code(mode).filter(|&m| thread || m != Mode::Thread) else {
         set_last_error(SW_ERROR_INVALID_PARAMS);
         let text = message!("invalid $mode parameters {}", mode.c_cast::<i32>());
         call.throw_error(text.as_cstr());
         return call.set_bool(false);
-    }
+    };
     let mut existing = None;
     match crate::thread::admit(&mut existing) {
         0 => {}
@@ -793,7 +801,7 @@ fn construct(call: &Call) {
     // A supported mode.
     let share = SharedServer::new(c_int::try_from(mode).unwrap_or_default());
     let server = share.view();
-    if mode == MODE_BASE {
+    if server_mode == Mode::Base {
         server.config().reactor_num.set(1);
         server.config().worker_num.set(1);
     }
@@ -1069,10 +1077,10 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 /// `ServerObject::register_callback`.
 fn register_callback(object: ServerObject<'_>, serv: view::Server<'_>) {
     put(serv, install::CONTROL);
-    if object.callback(ON_TASK).is_some() {
+    if object.callback(ServerCallback::Task).is_some() {
         put(serv, install::TASK);
     }
-    if object.callback(ON_PIPE_MESSAGE).is_some() {
+    if object.callback(ServerCallback::PipeMessage).is_some() {
         put(serv, install::PIPE_MESSAGE);
     }
     if fact(serv, fact::SEND_YIELD) && fact(serv, fact::UNSAFE_EVENTS) {
@@ -1102,7 +1110,7 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
     }
 }
 
-fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: c_int) -> bool {
+fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: PortCallback) -> bool {
     crate::instance::php_swoole_server_isset_callback(serv, Some(port), kind)
 }
 
@@ -1185,10 +1193,10 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 put(serv, install::REDIS_RECEIVE);
             } else if http_server {
                 if kind == KIND_WEBSOCKET {
-                    if !isset(serv, primary.port, ON_MESSAGE) {
+                    if !isset(serv, primary.port, PortCallback::Message) {
                         return stop(E_ERROR, c"require onMessage callback");
                     }
-                } else if !isset(serv, primary.port, ON_REQUEST) {
+                } else if !isset(serv, primary.port, PortCallback::Request) {
                     return stop(E_ERROR, c"require onRequest callback");
                 }
                 settings.insert_bool(b"open_http_protocol", true);
@@ -1208,11 +1216,12 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 find_http_port = true;
                 put(serv, install::HTTP_RECEIVE);
             } else {
-                if primary.dgram && !primary.ssl && !isset(serv, primary.port, ON_PACKET) {
+                if primary.dgram && !primary.ssl && !isset(serv, primary.port, PortCallback::Packet)
+                {
                     return stop(E_ERROR, c"require onPacket callback");
                 }
                 if ((primary.dgram && primary.ssl) || primary.stream)
-                    && !isset(serv, primary.port, ON_RECEIVE)
+                    && !isset(serv, primary.port, PortCallback::Receive)
                 {
                     return stop(E_ERROR, c"require onReceive callback");
                 }
@@ -1246,7 +1255,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
     }
     for zport in &ports {
         let port = port_facts(zport);
-        if port.dgram && !port.ssl && !isset(serv, port.port, ON_PACKET) {
+        if port.dgram && !port.ssl && !isset(serv, port.port, PortCallback::Packet) {
             return stop(E_ERROR, c"require onPacket callback");
         }
         if port.ssl_verify_without_ca {
@@ -1268,15 +1277,15 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         }
         if http {
             find_http_port = true;
-            let receive = isset(serv, port.port, ON_RECEIVE);
+            let receive = isset(serv, port.port, PortCallback::Receive);
             if port.protocols & WEBSOCKET != 0 {
-                if !isset(serv, port.port, ON_MESSAGE) && !receive {
+                if !isset(serv, port.port, PortCallback::Message) && !receive {
                     return stop(E_ERROR, c"require onMessage callback");
                 }
-            } else if !isset(serv, port.port, ON_REQUEST) && !receive {
+            } else if !isset(serv, port.port, PortCallback::Request) && !receive {
                 return stop(E_ERROR, c"require onRequest callback");
             }
-            if !http_server && isset(serv, port.port, ON_REQUEST) {
+            if !http_server && isset(serv, port.port, PortCallback::Request) {
                 let text = message!(
                     "use {} class and open http related protocols may lead to some errors (inconsistent class type)",
                     class(object)
@@ -1286,7 +1295,9 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                     return Err(Stop);
                 }
             }
-        } else if port.protocols & REDIS == 0 && port.stream && !isset(serv, port.port, ON_RECEIVE)
+        } else if port.protocols & REDIS == 0
+            && port.stream
+            && !isset(serv, port.port, PortCallback::Receive)
         {
             return stop(E_ERROR, c"require onReceive callback");
         }
@@ -1460,6 +1471,9 @@ mod tests {
         let property = std::mem::ManuallyDrop::new(Property::default());
         assert!(property.callbacks.iter().all(Option::is_none));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
-        assert_eq!(property.callbacks.len(), ON_PIPE_MESSAGE + 1);
+        assert_eq!(
+            property.callbacks.len(),
+            ServerCallback::PipeMessage as usize + 1
+        );
     }
 }

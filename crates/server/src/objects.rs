@@ -1,6 +1,7 @@
 //! Handles over the native objects the worker ops act on: a message bus, a
 //! reactor and a socket. Each is made from a pointer its maker knows is live for as
 //! long as the handle is used, so the operations on it need no further proof.
+use crate::Mode;
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_corebase::{CoreAllocator, DataHead};
@@ -22,7 +23,7 @@ pub(crate) fn in_worker_bus<R>(
     f: impl FnOnce(Socket<'_>) -> R,
 ) -> Option<R> {
     let pipe = pipe?;
-    if u64::from(config.mode_) == crate::MODE_THREAD {
+    if config.mode_ == Mode::Thread {
         crate::master_ops::worker_message_bus(state)
             .pipe_socket(pipe)
             .map(f)

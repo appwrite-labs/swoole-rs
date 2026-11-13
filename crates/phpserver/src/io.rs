@@ -2,12 +2,13 @@
 //! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`), over the
 //! Server's records (crates/server's view) and its Rust methods.
 use crate::lifecycle::Props;
+use crate::lifecycle::ServerCallback;
 use crate::server::{fatal, no_payload, running, server};
 use std::ffi::{CStr, CString, c_int};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
-use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
+use swoole_rs_server::{callbacks::CallbackKind, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, Value, bailout, message, sys::IS_TRUE};
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
@@ -17,25 +18,37 @@ pub(crate) fn closed(serv: view::Server<'_>) -> bool {
 }
 
 /// `server_event_map`: lower-case event name, callback type and property.
-const EVENTS: [(&str, c_int, &CStr); 14] = [
-    ("start", 0, c"onStart"),
-    ("beforeshutdown", 1, c"onBeforeShutdown"),
-    ("shutdown", 2, c"onShutdown"),
-    ("workerstart", 3, c"onWorkerStart"),
-    ("workerstop", 4, c"onWorkerStop"),
-    ("beforereload", 5, c"onBeforeReload"),
-    ("afterreload", 6, c"onAfterReload"),
-    ("task", 7, c"onTask"),
-    ("finish", 8, c"onFinish"),
-    ("workerexit", 9, c"onWorkerExit"),
-    ("workererror", 10, c"onWorkerError"),
-    ("managerstart", 11, c"onManagerStart"),
-    ("managerstop", 12, c"onManagerStop"),
-    ("pipemessage", 13, c"onPipeMessage"),
+const EVENTS: [(&str, ServerCallback, &CStr); 14] = [
+    ("start", ServerCallback::Start, c"onStart"),
+    (
+        "beforeshutdown",
+        ServerCallback::BeforeShutdown,
+        c"onBeforeShutdown",
+    ),
+    ("shutdown", ServerCallback::Shutdown, c"onShutdown"),
+    ("workerstart", ServerCallback::WorkerStart, c"onWorkerStart"),
+    ("workerstop", ServerCallback::WorkerStop, c"onWorkerStop"),
+    (
+        "beforereload",
+        ServerCallback::BeforeReload,
+        c"onBeforeReload",
+    ),
+    ("afterreload", ServerCallback::AfterReload, c"onAfterReload"),
+    ("task", ServerCallback::Task, c"onTask"),
+    ("finish", ServerCallback::Finish, c"onFinish"),
+    ("workerexit", ServerCallback::WorkerExit, c"onWorkerExit"),
+    ("workererror", ServerCallback::WorkerError, c"onWorkerError"),
+    (
+        "managerstart",
+        ServerCallback::ManagerStart,
+        c"onManagerStart",
+    ),
+    ("managerstop", ServerCallback::ManagerStop, c"onManagerStop"),
+    ("pipemessage", ServerCallback::PipeMessage, c"onPipeMessage"),
 ];
 
 /// The event `name` (`zend_string_tolower`, then an exact match) names.
-fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
+fn event(name: &[u8]) -> Option<(ServerCallback, &'static CStr)> {
     EVENTS
         .iter()
         .find(|(key, ..)| name.eq_ignore_ascii_case(key.as_bytes()))
@@ -44,7 +57,7 @@ fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
 
 /// `zend::String(name)`, looked up as an event. A conversion that leaves a bailout
 /// pending finds none; upstream's ended the call there, so callers check for it.
-fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
+fn lookup(name: &Value) -> Option<(ServerCallback, &'static CStr)> {
     event(name.string().bytes())
 }
 
@@ -274,7 +287,7 @@ fn sendfile(call: &Call) {
 
 fn send_message(call: &Call) {
     let Some(serv) = running(call) else { return };
-    if !serv.has_callback(CB_PIPE_MESSAGE) {
+    if !serv.has_callback(CallbackKind::PipeMessage) {
         fatal(E_WARNING, c"onPipeMessage is null, can't use sendMessage");
         return call.set_bool(false);
     }

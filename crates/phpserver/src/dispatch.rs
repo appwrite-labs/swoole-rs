@@ -4,6 +4,7 @@
 //! `ctx`, see `swoole_rs_server::callbacks`); each re-raises a bailout it
 //! trapped last, from its outermost frame (docs/zend.md).
 use crate::callable::Callable;
+use crate::lifecycle::{PortCallback, ServerCallback};
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
@@ -21,7 +22,7 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_server::callbacks::{CB_USER_WORKER_START, Callback, Ctx};
+use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
@@ -34,7 +35,7 @@ use swoole_rs_zend::{
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
 use crate::instance::{php_swoole_get_recv_data, php_swoole_server_get_callback};
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{Mode, server_methods, view};
 
 /// What the dispatch reads of the Server, per event.
 struct Facts {
@@ -54,24 +55,6 @@ struct Packet<'a> {
     port: i64,
     server_port: i64,
 }
-
-/// `SW_SERVER_CB_*` (server-level callbacks).
-const ON_START: c_int = 0;
-const ON_BEFORE_SHUTDOWN: c_int = 1;
-const ON_SHUTDOWN: c_int = 2;
-const ON_WORKER_START: c_int = 3;
-const ON_WORKER_STOP: c_int = 4;
-const ON_BEFORE_RELOAD: c_int = 5;
-const ON_AFTER_RELOAD: c_int = 6;
-const ON_WORKER_EXIT: c_int = 9;
-const ON_WORKER_ERROR: c_int = 10;
-const ON_MANAGER_START: c_int = 11;
-const ON_MANAGER_STOP: c_int = 12;
-const ON_PIPE_MESSAGE: c_int = 13;
-/// Port-level callbacks.
-const ON_PACKET: c_int = 3;
-const ON_BUFFER_FULL: c_int = 10;
-const ON_BUFFER_EMPTY: c_int = 11;
 
 /// `DATA`'s classes.
 const EVENT: usize = 0;
@@ -193,7 +176,7 @@ pub(crate) fn use_zend_strings(server: view::Server<'_>) {
     let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
     server.set_bus_allocator(false, swoole_rs_phpswoole::zend_string_allocator());
     let config = server.config();
-    if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
+    if config.mode_ != Mode::Process {
         config
             .recv_buffer_allocator
             .store(allocator.cast_mut(), Relaxed);
@@ -206,7 +189,7 @@ fn prepare_worker(server: view::Server<'_>) {
     let config = server.config();
     if crate::server::worker_type() == Some(crate::server::WorkerType::Task)
         && !config.task_enable_coroutine.get()
-        && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
+        && config.mode_ != Mode::Thread
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
@@ -306,9 +289,9 @@ fn on_connection(
 /// `php_swoole_server_onBufferFull`/`onBufferEmpty`'s call.
 fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) -> bool {
     let (kind, event) = if full {
-        (ON_BUFFER_FULL, "onBufferFull")
+        (PortCallback::BufferFull, "onBufferFull")
     } else {
-        (ON_BUFFER_EMPTY, "onBufferEmpty")
+        (PortCallback::BufferEmpty, "onBufferEmpty")
     };
     let Some(cb) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return false;
@@ -353,7 +336,7 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
         args[2] = address.into_owned().into_zval();
         3
     };
-    let Some(cb) = php_swoole_server_get_callback(server, server_fd, ON_PACKET) else {
+    let Some(cb) = php_swoole_server_get_callback(server, server_fd, PortCallback::Packet) else {
         dtor(&mut args[1]);
         if !facts.event_object {
             dtor(&mut args[2]);
@@ -385,7 +368,7 @@ fn on_pipe_message(
     source_worker_id: i64,
     time: f64,
 ) -> bool {
-    let Some(cb) = crate::lifecycle::callback(ON_PIPE_MESSAGE) else {
+    let Some(cb) = crate::lifecycle::callback(ServerCallback::PipeMessage) else {
         return false;
     };
     let facts = facts(server);
@@ -420,25 +403,25 @@ fn on_pipe_message(
 
 /// What a lifecycle event does: its warning name, the helper it runs first and
 /// whether its callback may run in a coroutine.
-fn lifecycle(kind: c_int) -> Option<(&'static str, &'static CStr, bool)> {
+fn lifecycle(kind: ServerCallback) -> Option<(&'static str, &'static CStr, bool)> {
     Some(match kind {
-        ON_START => ("onStart", c"onStart", true),
-        ON_MANAGER_START => ("onManagerStart", c"onManagerStart", false),
-        ON_MANAGER_STOP => ("onManagerStop", c"onManagerStop", false),
-        ON_BEFORE_SHUTDOWN => ("onBeforeShutdown", c"onBeforeShutdown", true),
-        ON_SHUTDOWN => ("onShutdown", c"onShutdown", false),
-        ON_WORKER_START => ("onWorkerStart", c"onWorkerStart", true),
-        ON_BEFORE_RELOAD => ("onBeforeReload", c"onBeforeReload", false),
-        ON_AFTER_RELOAD => ("onAfterReload", c"onAfterReload", false),
-        ON_WORKER_STOP => ("onWorkerStop", c"onWorkerStop", false),
-        ON_WORKER_EXIT => ("onWorkerExit", c"onWorkerExit", false),
+        ServerCallback::Start => ("onStart", c"onStart", true),
+        ServerCallback::ManagerStart => ("onManagerStart", c"onManagerStart", false),
+        ServerCallback::ManagerStop => ("onManagerStop", c"onManagerStop", false),
+        ServerCallback::BeforeShutdown => ("onBeforeShutdown", c"onBeforeShutdown", true),
+        ServerCallback::Shutdown => ("onShutdown", c"onShutdown", false),
+        ServerCallback::WorkerStart => ("onWorkerStart", c"onWorkerStart", true),
+        ServerCallback::BeforeReload => ("onBeforeReload", c"onBeforeReload", false),
+        ServerCallback::AfterReload => ("onAfterReload", c"onAfterReload", false),
+        ServerCallback::WorkerStop => ("onWorkerStop", c"onWorkerStop", false),
+        ServerCallback::WorkerExit => ("onWorkerExit", c"onWorkerExit", false),
         _ => return None,
     })
 }
 
 /// The lifecycle events' bodies (`php_swoole_server_onStart` and friends);
 /// `worker_id` is the worker's for the worker events.
-fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
+fn on_lifecycle(server: view::Server<'_>, kind: ServerCallback, worker_id: i64) -> bool {
     let Some((event, helper_name, coroutine)) = lifecycle(kind) else {
         return false;
     };
@@ -454,20 +437,26 @@ fn on_lifecycle(server: view::Server<'_>, kind: c_int, worker_id: i64) -> bool {
         // The running server's object, held only for these writes.
         let held = ServerObject::running();
         let props = Props::running(held.as_deref());
-        if matches!(kind, ON_START | ON_MANAGER_START | ON_WORKER_START) {
+        if matches!(
+            kind,
+            ServerCallback::Start | ServerCallback::ManagerStart | ServerCallback::WorkerStart
+        ) {
             props.long(c"master_pid", facts.master_pid);
             props.long(c"manager_pid", facts.manager_pid);
         }
-        if kind == ON_WORKER_START {
+        if kind == ServerCallback::WorkerStart {
             props.long(c"worker_id", worker_id);
             props.bool(c"taskworker", facts.task_worker);
             props.long(c"worker_pid", i64::from(std::process::id()));
         }
     }
-    if kind == ON_WORKER_START {
+    if kind == ServerCallback::WorkerStart {
         prepare_worker(server);
     }
-    let argc = if matches!(kind, ON_WORKER_START | ON_WORKER_STOP | ON_WORKER_EXIT) {
+    let argc = if matches!(
+        kind,
+        ServerCallback::WorkerStart | ServerCallback::WorkerStop | ServerCallback::WorkerExit
+    ) {
         2
     } else {
         1
@@ -500,7 +489,7 @@ fn on_worker_error(
     code: i64,
     signal: i64,
 ) -> bool {
-    let cb = crate::lifecycle::callback(ON_WORKER_ERROR);
+    let cb = crate::lifecycle::callback(ServerCallback::WorkerError);
     let facts = facts(server);
     let mut args = [zserv(), undef(), undef(), undef(), undef()];
     let argc = if facts.event_object {
@@ -555,11 +544,6 @@ fn relay(bailed: bool) {
 /// `SW_OK` / `SW_ERR`.
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// Port-level callbacks the slots choose.
-const ON_CONNECT: c_int = 0;
-const ON_RECEIVE: c_int = 1;
-const ON_CLOSE: c_int = 2;
-const ON_DISCONNECT: c_int = 9;
 /// `SocketType`s of a datagram's sender.
 const UDP: c_int = 2;
 const UDP6: c_int = 4;
@@ -572,7 +556,7 @@ const WEBSOCKET_ACTIVE: u8 = 3;
 /// can't make one whose payload pointer and length disagree.
 pub use swoole_rs_server::reactor_entry::RecvData;
 
-fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> Option<Callable> {
+fn port_callback(server: view::Server<'_>, server_fd: u16, kind: PortCallback) -> Option<Callable> {
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
 
@@ -589,27 +573,39 @@ macro_rules! lifecycle_slots {
 }
 
 lifecycle_slots! {
-    on_start => ON_START;
-    on_before_shutdown => ON_BEFORE_SHUTDOWN;
-    on_shutdown => ON_SHUTDOWN;
-    on_manager_start => ON_MANAGER_START;
-    on_manager_stop => ON_MANAGER_STOP;
-    on_before_reload => ON_BEFORE_RELOAD;
-    on_after_reload => ON_AFTER_RELOAD;
+    on_start => ServerCallback::Start;
+    on_before_shutdown => ServerCallback::BeforeShutdown;
+    on_shutdown => ServerCallback::Shutdown;
+    on_manager_start => ServerCallback::ManagerStart;
+    on_manager_stop => ServerCallback::ManagerStop;
+    on_before_reload => ServerCallback::BeforeReload;
+    on_after_reload => ServerCallback::AfterReload;
 }
 
 extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
-    relay(on_lifecycle(server, ON_WORKER_START, worker_id(worker)));
+    relay(on_lifecycle(
+        server,
+        ServerCallback::WorkerStart,
+        worker_id(worker),
+    ));
 }
 
 extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     if swoole_rs_process::methods::worker_is_running() {
-        relay(on_lifecycle(server, ON_WORKER_STOP, worker_id(worker)));
+        relay(on_lifecycle(
+            server,
+            ServerCallback::WorkerStop,
+            worker_id(worker),
+        ));
     }
 }
 
 extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
-    relay(on_lifecycle(server, ON_WORKER_EXIT, worker_id(worker)));
+    relay(on_lifecycle(
+        server,
+        ServerCallback::WorkerExit,
+        worker_id(worker),
+    ));
 }
 
 extern "C" fn on_worker_error_slot(
@@ -674,7 +670,7 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Pa
 #[must_use]
 pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = request.info();
-    let Some(cb) = port_callback(server, info.server_fd, ON_RECEIVE) else {
+    let Some(cb) = port_callback(server, info.server_fd, PortCallback::Receive) else {
         return SW_OK;
     };
     let config = server.config();
@@ -790,7 +786,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
 }
 
 extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
-    if let Some(cb) = port_callback(server, info.server_fd, ON_CONNECT) {
+    if let Some(cb) = port_callback(server, info.server_fd, PortCallback::Connect) {
         let reactor_id = i64::from(info.reactor_id);
         relay(on_connection(
             server, &cb, false, info.fd, reactor_id, info.time,
@@ -826,7 +822,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     if config.enable_coroutine.get() && config.send_yield.get() {
         send_wake(session_id, true);
     }
-    let mut cb = port_callback(server, info.server_fd, ON_CLOSE);
+    let mut cb = port_callback(server, info.server_fd, PortCallback::Close);
     let Some(conn) = server.by_session(session_id) else {
         return;
     };
@@ -835,9 +831,13 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket
-            && crate::instance::php_swoole_server_isset_callback(server, port, ON_DISCONNECT)
+            && crate::instance::php_swoole_server_isset_callback(
+                server,
+                port,
+                PortCallback::Disconnect,
+            )
         {
-            cb = port_callback(server, info.server_fd, ON_DISCONNECT);
+            cb = port_callback(server, info.server_fd, PortCallback::Disconnect);
         }
     }
     let reactor_id = i64::from(info.reactor_id);
@@ -891,7 +891,7 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     let id = i64::from(worker.id());
     let config = server.config();
-    let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
+    let process = if config.mode_ == Mode::Thread {
         let index =
             id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
         let index = usize::try_from(index).unwrap_or(usize::MAX);
@@ -976,7 +976,7 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
         RECEIVE => &[Callback::Receive(on_receive)],
         HTTP_RECEIVE => &[Callback::Receive(on_http_receive)],
         REDIS_RECEIVE => &[Callback::Receive(on_redis_receive)],
-        USER_WORKER_START if server.has_callback(CB_USER_WORKER_START) => &[],
+        USER_WORKER_START if server.has_callback(CallbackKind::UserWorkerStart) => &[],
         USER_WORKER_START => &[Callback::UserWorkerStart(on_user_worker_start)],
         _ => return,
     };
@@ -1156,21 +1156,21 @@ mod tests {
     #[test]
     fn every_lifecycle_event_is_named() {
         for kind in [
-            ON_START,
-            ON_MANAGER_START,
-            ON_MANAGER_STOP,
-            ON_BEFORE_SHUTDOWN,
-            ON_SHUTDOWN,
-            ON_WORKER_START,
-            ON_BEFORE_RELOAD,
-            ON_AFTER_RELOAD,
-            ON_WORKER_STOP,
-            ON_WORKER_EXIT,
+            ServerCallback::Start,
+            ServerCallback::ManagerStart,
+            ServerCallback::ManagerStop,
+            ServerCallback::BeforeShutdown,
+            ServerCallback::Shutdown,
+            ServerCallback::WorkerStart,
+            ServerCallback::BeforeReload,
+            ServerCallback::AfterReload,
+            ServerCallback::WorkerStop,
+            ServerCallback::WorkerExit,
         ] {
             let (event, helper, _) = lifecycle(kind).unwrap();
             assert_eq!(event.as_bytes(), helper.to_bytes());
         }
-        assert!(lifecycle(ON_WORKER_ERROR).is_none());
-        assert!(lifecycle(ON_PIPE_MESSAGE).is_none());
+        assert!(lifecycle(ServerCallback::WorkerError).is_none());
+        assert!(lifecycle(ServerCallback::PipeMessage).is_none());
     }
 }

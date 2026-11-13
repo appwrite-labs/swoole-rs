@@ -13,22 +13,6 @@ namespace swoole {
 // swr_v1_reactor_head's. swoole_event_init/free (crates/reactor) make and free it.
 class Reactor : public swr_v1_reactor_head {
   public:
-    enum EndCallback {
-        PRIORITY_TIMER = 0,
-        PRIORITY_DEFER_TASK,
-        PRIORITY_IDLE_TASK,
-        PRIORITY_SIGNAL_CALLBACK,
-        PRIORITY_TRY_EXIT,
-        PRIORITY_MALLOC_TRIM,
-        PRIORITY_WORKER_CALLBACK,
-        /**
-         * PRIORITY_IOURING_SUBMIT must be the last one, as other callback functions might allocate new SQEs.
-         * It is essential to ensure that the SQE is submitted before the next event loop iteration and before the
-         * epoll_wait() call.
-         */
-        PRIORITY_IOURING_SUBMIT,
-    };
-
     Reactor() = delete;
     ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
@@ -48,13 +32,13 @@ class Reactor : public swr_v1_reactor_head {
         return change(socket, 2, 0);
     }
 
-    // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs), keyed as
-    // upstream's map was and holding plain functions.
+    // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs), keyed by
+    // upstream's PRIORITY_* values (Rust's copies) and holding plain functions.
     int wait();
-    void set_end_callback(EndCallback _id, void (*fn)(void)) {
+    void set_end_callback(int _id, void (*fn)(void)) {
         swr_v1_reactor_set_end(handle(), _id, fn);
     }
-    void erase_end_callback(EndCallback _id) {
+    void erase_end_callback(int _id) {
         swr_v1_reactor_set_end(handle(), _id, nullptr);
     }
     void set_handler(int fd_type, int event, ReactorHandler handler);

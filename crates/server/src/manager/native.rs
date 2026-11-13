@@ -1,5 +1,6 @@
 //! The manager's native side: its fork, the workers it spawns, reaps and kills, the
 //! reap loop's host, its signals and the workers' messages.
+use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 
@@ -14,17 +15,13 @@ use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
-use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
+use crate::callbacks::ServerSlot;
 use crate::event_worker::{HANDLER_NONE, HANDLER_OWN, SIGNAL_RTMIN};
 use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
 use crate::{view, worker_methods};
 
-/// `Server::Mode`.
-const MODE_BASE: u8 = 1;
-const MODE_PROCESS: u8 = 2;
-const MODE_THREAD: u8 = 3;
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
@@ -106,7 +103,7 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
             return -1;
         }
     }
-    if serv.config().mode_ == MODE_BASE {
+    if serv.config().mode_ == Mode::Base {
         main(serv);
     } else if swoole_rs_corebase::fork_exec(|| main(serv)) < 0 {
         let m = format_args!("failed fork manager process");
@@ -180,7 +177,7 @@ fn wait(serv: view::Server<'_>) {
     ] {
         set_signal(signo, HANDLER_OWN);
     }
-    if config.mode_ == MODE_PROCESS {
+    if config.mode_ == Mode::Process {
         swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
         swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, true));
         if config.reload_async.get()
@@ -190,7 +187,7 @@ fn wait(serv: view::Server<'_>) {
             state.set_isolation();
         }
     }
-    state.callbacks.call_server(CB_MANAGER_START, serv);
+    state.callbacks.call_server(ServerSlot::ManagerStart, serv);
 
     reaper::run(&mut Reaping {
         serv,
@@ -227,7 +224,7 @@ fn wait(serv: view::Server<'_>) {
     if max_wait_time != 0 {
         alarm(0);
     }
-    state.callbacks.call_server(CB_MANAGER_STOP, serv);
+    state.callbacks.call_server(ServerSlot::ManagerStop, serv);
 }
 
 /// The manager's start: its pid, the event pool's message hook and its master pid,
@@ -277,7 +274,9 @@ impl Reaping<'_> {
     fn begin(&mut self, which: &str, events: bool) {
         let serv = self.serv;
         log::info(format_args!("Server is reloading {which} workers now"));
-        serv.state().callbacks.call_server(CB_BEFORE_RELOAD, serv);
+        serv.state()
+            .callbacks
+            .call_server(ServerSlot::BeforeReload, serv);
         if events {
             self.add_workers(true);
         }
@@ -398,7 +397,9 @@ impl Reap for Reaping<'_> {
     fn finish_reload(&mut self) {
         let serv = self.serv;
         methods::drop_reload_task(serv.event_pool_ref());
-        serv.state().callbacks.call_server(CB_AFTER_RELOAD, serv);
+        serv.state()
+            .callbacks
+            .call_server(ServerSlot::AfterReload, serv);
     }
 
     fn warn(&self) -> Warn {
@@ -544,7 +545,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
 /// the task workers.
 #[must_use]
 pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
-    if serv.config().mode_ == MODE_THREAD {
+    if serv.config().mode_ == Mode::Thread {
         return crate::thread_mode::native::reload_worker_threads(serv, reload_all_workers);
     }
     let manager_pid = serv.counters().manager_pid.load(Relaxed);

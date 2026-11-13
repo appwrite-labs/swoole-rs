@@ -3,6 +3,7 @@
 //! context. Each method fills the context the way its C++ forward did and runs over
 //! it in Rust.
 
+use crate::Mode;
 use crate::records::Lookup;
 use core::ffi::{c_int, c_long};
 use std::ffi::CString;
@@ -244,7 +245,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
         return false;
     };
     let config = state.config_ref();
-    if u64::from(config.mode_) != crate::MODE_PROCESS {
+    if config.mode_ != Mode::Process {
         return socket.take_kernel_nobufs();
     }
     // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
@@ -451,12 +452,12 @@ mod tests {
         };
         // SAFETY: laid out as a Server's head, over the live state and config.
         let serv = unsafe { view::Server::from_raw((&raw const fields).cast_mut().cast()) };
-        let set_mode = |mode: u8| {
+        let set_mode = |mode: Mode| {
             // SAFETY: the state's config, which no reference holds across this write.
             unsafe { (*(*state).config()).mode_ = mode };
         };
 
-        set_mode(1);
+        set_mode(Mode::Base);
         assert!(!has_kernel_nobufs_error(serv, 2), "no socket");
         assert!(!has_kernel_nobufs_error(serv, 4), "past the table");
         assert!(has_kernel_nobufs_error(serv, 3), "the socket's flag");
@@ -464,7 +465,7 @@ mod tests {
         assert!(pipe.kernel_nobufs, "base mode leaves the pipe");
 
         sock.kernel_nobufs = true;
-        set_mode(2);
+        set_mode(Mode::Process);
         assert!(has_kernel_nobufs_error(serv, 3), "the reactor pipe's flag");
         assert!(!has_kernel_nobufs_error(serv, 3), "taken");
         assert!(sock.kernel_nobufs, "process mode leaves the socket");

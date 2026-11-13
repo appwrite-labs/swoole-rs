@@ -85,7 +85,7 @@ pub use shared::{
     PortCounters, ServerCounters, swr_v1_server_port_shared_init, swr_v1_server_shared_init,
 };
 
-pub use config::ServerConfig;
+pub use config::{Mode, ServerConfig};
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
 /// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
@@ -103,11 +103,6 @@ pub use tcp_info::tcp_fields;
 
 pub(crate) const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
 pub(crate) const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
-
-/// `Server::Mode`; native asserts each.
-pub(crate) const MODE_BASE: u64 = 1;
-pub(crate) const MODE_PROCESS: u64 = 2;
-pub(crate) const MODE_THREAD: u64 = 3;
 
 /// `message_bus->move_packet()`: the current packet's block, now the caller's.
 ///

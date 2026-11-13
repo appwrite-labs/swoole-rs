@@ -18,6 +18,7 @@ use swoole_rs_corebase::{
     constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
     log,
 };
+pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
@@ -86,7 +87,7 @@ fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
 }
 
 /// The port's callback `kind`, or none.
-fn port_callback(port: Option<view::Port<'_>>, kind: c_int) -> Option<Callable> {
+fn port_callback(port: Option<view::Port<'_>>, kind: PortCallback) -> Option<Callable> {
     port_property(port)?.callback(kind)
 }
 
@@ -95,7 +96,7 @@ fn port_callback(port: Option<view::Port<'_>>, kind: c_int) -> Option<Callable> 
 pub fn php_swoole_server_isset_callback(
     serv: view::Server<'_>,
     port: Option<view::Port<'_>>,
-    kind: c_int,
+    kind: PortCallback,
 ) -> bool {
     let primary = serv.port_at(0);
     port_callback(port, kind).is_some() || port_callback(primary, kind).is_some()
@@ -109,7 +110,7 @@ pub fn php_swoole_server_isset_callback(
 pub fn php_swoole_server_get_callback(
     serv: view::Server<'_>,
     server_fd: c_int,
-    kind: c_int,
+    kind: PortCallback,
 ) -> Option<Rc<Kept>> {
     let port = serv.port_by_server_fd(server_fd)?;
     port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))

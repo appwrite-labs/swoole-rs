@@ -6,12 +6,15 @@
 //! `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's read-event
 //! helpers, a resume skips closing connections, and a queued close stops reading.
 use crate::base_factory::{SEND_DATA, SendData, allocated};
-use crate::callbacks::{CB_BUFFER_EMPTY, CB_BUFFER_FULL, CallbackSlot};
+use crate::callbacks::{
+    CallbackKind::{BufferEmpty, BufferFull},
+    CallbackSlot,
+};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view::Server;
-use crate::{Connection, MODE_PROCESS, ServerState};
+use crate::{Connection, Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use std::io::IoSlice;
 use swoole_rs_buffer::cpp::{
@@ -61,7 +64,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
     };
     let data = data.get(..len as usize).unwrap_or(data);
     let state = serv.state();
-    let here = u64::from(serv.config().mode_) != MODE_PROCESS && sends_here(state, session_id);
+    let here = serv.config().mode_ != Mode::Process && sends_here(state, session_id);
     let sent = if here {
         match send_now(state, session_id, data) {
             Some(sent) if usize::try_from(sent) == Ok(data.len()) => true,
@@ -102,7 +105,7 @@ pub fn send_parts(
     body: &[u8],
 ) -> Option<bool> {
     let state = serv.state();
-    if u64::from(serv.config().mode_) == MODE_PROCESS || !sends_here(state, session_id) {
+    if serv.config().mode_ == Mode::Process || !sends_here(state, session_id) {
         return None;
     }
     let (conn, socket) = writes_now(state, session_id)?;
@@ -223,7 +226,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     );
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-    if conn.overflow() && u64::from(config.mode_) != MODE_PROCESS {
+    if conn.overflow() && config.mode_ != Mode::Process {
         if send_yield {
             yield_error();
         } else {
@@ -310,7 +313,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
                 .slot(index)
                 .is_some_and(CallbackSlot::is_set)
         };
-        let (on_full, on_empty) = (callback(CB_BUFFER_FULL), callback(CB_BUFFER_EMPTY));
+        let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
         if queued() >= sock.read(|s| s.output.buffer_size) {
             if send_yield {
                 yield_error();
@@ -523,7 +526,7 @@ mod tests {
         );
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { a.serv().config_mut() };
-        config.mode_ = crate::MODE_BASE.c_cast();
+        config.mode_ = Mode::Base;
         assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
         config.send_yield.set(true);
         assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
@@ -572,7 +575,7 @@ mod tests {
             "process mode sends through the factory"
         );
         // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
         assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), Some(true));
         assert_eq!(a.read(8), b"headbody");
         assert_eq!(a.queued(), 0, "nothing buffered");
@@ -588,7 +591,7 @@ mod tests {
     fn parts_the_socket_does_not_take_are_queued_in_order() {
         let mut a = Accepted::new();
         // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
         // More than a loopback socket's buffers hold while the peer reads nothing.
         let body: Vec<u8> = (0..16usize << 20).map(|at| at.to_le_bytes()[0]).collect();
         assert_eq!(send_parts(a.serv(), 1, b"head", &body), Some(true));
@@ -753,7 +756,7 @@ mod tests {
         );
         assert_eq!(counters(&a), 1, "counted");
         // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
         assert!(send(a.serv(), 1, b"here"));
         assert_eq!(calls(), [], "no factory");
         assert_eq!(a.read(4), b"here");

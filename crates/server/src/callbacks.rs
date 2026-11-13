@@ -13,32 +13,37 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 
-// Slots. The first seven are also `OP_CALLBACK`'s
-// argument and the callback its logs name.
-pub const CB_CONNECT: u32 = 0;
-pub const CB_CLOSE: u32 = 1;
-pub const CB_BUFFER_FULL: u32 = 2;
-pub const CB_BUFFER_EMPTY: u32 = 3;
-pub const CB_TASK: u32 = 4;
-pub const CB_RECEIVE: u32 = 5;
-pub const CB_PACKET: u32 = 6;
-pub const CB_START: u32 = 7;
-pub const CB_BEFORE_SHUTDOWN: u32 = 8;
-pub const CB_SHUTDOWN: u32 = 9;
-pub const CB_MANAGER_START: u32 = 10;
-pub const CB_MANAGER_STOP: u32 = 11;
-pub const CB_WORKER_ERROR: u32 = 12;
-pub const CB_BEFORE_RELOAD: u32 = 13;
-pub const CB_AFTER_RELOAD: u32 = 14;
-pub const CB_PIPE_MESSAGE: u32 = 15;
-pub const CB_WORKER_START: u32 = 16;
-pub const CB_WORKER_STOP: u32 = 17;
-pub const CB_WORKER_EXIT: u32 = 18;
-pub const CB_USER_WORKER_START: u32 = 19;
-pub const CB_FINISH: u32 = 20;
-pub const CB_DISPATCH_FUNC: u32 = 21;
+/// A server's slots. The first seven are also `OP_CALLBACK`'s
+/// argument and the callback its logs name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum CallbackKind {
+    Connect,
+    Close,
+    BufferFull,
+    BufferEmpty,
+    Task,
+    Receive,
+    Packet,
+    Start,
+    BeforeShutdown,
+    Shutdown,
+    ManagerStart,
+    ManagerStop,
+    WorkerError,
+    BeforeReload,
+    AfterReload,
+    PipeMessage,
+    WorkerStart,
+    WorkerStop,
+    WorkerExit,
+    UserWorkerStart,
+    Finish,
+    DispatchFunc,
+}
+
 /// The number of slots.
-pub(crate) const CB_COUNT: usize = 22;
+const SLOTS: usize = CallbackKind::DispatchFunc as usize + 1;
 
 /// The context every slot fn takes first, which a Rust fn ignores: null, or
 /// what native code boxed for the fn this one replaced.
@@ -93,37 +98,39 @@ pub enum Callback {
 }
 
 impl Callback {
-    /// The slot (`CB_*`) and the fn as the slot stores it.
-    fn parts(self) -> (u32, *const c_void) {
+    /// The slot and the fn as the slot stores it.
+    fn parts(self) -> (CallbackKind, *const c_void) {
         match self {
-            Self::Connect(invoke) => (CB_CONNECT, invoke as *const c_void),
-            Self::Close(invoke) => (CB_CLOSE, invoke as *const c_void),
-            Self::BufferFull(invoke) => (CB_BUFFER_FULL, invoke as *const c_void),
-            Self::BufferEmpty(invoke) => (CB_BUFFER_EMPTY, invoke as *const c_void),
-            Self::Task(invoke) => (CB_TASK, invoke as *const c_void),
-            Self::Receive(invoke) => (CB_RECEIVE, invoke as *const c_void),
-            Self::Packet(invoke) => (CB_PACKET, invoke as *const c_void),
-            Self::Start(invoke) => (CB_START, invoke as *const c_void),
-            Self::BeforeShutdown(invoke) => (CB_BEFORE_SHUTDOWN, invoke as *const c_void),
-            Self::Shutdown(invoke) => (CB_SHUTDOWN, invoke as *const c_void),
-            Self::ManagerStart(invoke) => (CB_MANAGER_START, invoke as *const c_void),
-            Self::ManagerStop(invoke) => (CB_MANAGER_STOP, invoke as *const c_void),
-            Self::WorkerError(invoke) => (CB_WORKER_ERROR, invoke as *const c_void),
-            Self::BeforeReload(invoke) => (CB_BEFORE_RELOAD, invoke as *const c_void),
-            Self::AfterReload(invoke) => (CB_AFTER_RELOAD, invoke as *const c_void),
-            Self::PipeMessage(invoke) => (CB_PIPE_MESSAGE, invoke as *const c_void),
-            Self::WorkerStart(invoke) => (CB_WORKER_START, invoke as *const c_void),
-            Self::WorkerStop(invoke) => (CB_WORKER_STOP, invoke as *const c_void),
-            Self::WorkerExit(invoke) => (CB_WORKER_EXIT, invoke as *const c_void),
-            Self::UserWorkerStart(invoke) => (CB_USER_WORKER_START, invoke as *const c_void),
-            Self::Finish(invoke) => (CB_FINISH, invoke as *const c_void),
-            Self::DispatchFunc(invoke) => (CB_DISPATCH_FUNC, invoke as *const c_void),
+            Self::Connect(invoke) => (CallbackKind::Connect, invoke as *const c_void),
+            Self::Close(invoke) => (CallbackKind::Close, invoke as *const c_void),
+            Self::BufferFull(invoke) => (CallbackKind::BufferFull, invoke as *const c_void),
+            Self::BufferEmpty(invoke) => (CallbackKind::BufferEmpty, invoke as *const c_void),
+            Self::Task(invoke) => (CallbackKind::Task, invoke as *const c_void),
+            Self::Receive(invoke) => (CallbackKind::Receive, invoke as *const c_void),
+            Self::Packet(invoke) => (CallbackKind::Packet, invoke as *const c_void),
+            Self::Start(invoke) => (CallbackKind::Start, invoke as *const c_void),
+            Self::BeforeShutdown(invoke) => (CallbackKind::BeforeShutdown, invoke as *const c_void),
+            Self::Shutdown(invoke) => (CallbackKind::Shutdown, invoke as *const c_void),
+            Self::ManagerStart(invoke) => (CallbackKind::ManagerStart, invoke as *const c_void),
+            Self::ManagerStop(invoke) => (CallbackKind::ManagerStop, invoke as *const c_void),
+            Self::WorkerError(invoke) => (CallbackKind::WorkerError, invoke as *const c_void),
+            Self::BeforeReload(invoke) => (CallbackKind::BeforeReload, invoke as *const c_void),
+            Self::AfterReload(invoke) => (CallbackKind::AfterReload, invoke as *const c_void),
+            Self::PipeMessage(invoke) => (CallbackKind::PipeMessage, invoke as *const c_void),
+            Self::WorkerStart(invoke) => (CallbackKind::WorkerStart, invoke as *const c_void),
+            Self::WorkerStop(invoke) => (CallbackKind::WorkerStop, invoke as *const c_void),
+            Self::WorkerExit(invoke) => (CallbackKind::WorkerExit, invoke as *const c_void),
+            Self::UserWorkerStart(invoke) => {
+                (CallbackKind::UserWorkerStart, invoke as *const c_void)
+            }
+            Self::Finish(invoke) => (CallbackKind::Finish, invoke as *const c_void),
+            Self::DispatchFunc(invoke) => (CallbackKind::DispatchFunc, invoke as *const c_void),
         }
     }
 
-    /// The slot this fills (`CB_*`).
+    /// The slot this fills.
     #[must_use]
-    pub fn slot(self) -> u32 {
+    pub fn slot(self) -> CallbackKind {
         self.parts().0
     }
 }
@@ -185,7 +192,7 @@ impl CallbackSlot {
 
 /// Every slot of one server.
 #[repr(C)]
-pub(crate) struct ServerCallbacks([CallbackSlot; CB_COUNT]);
+pub(crate) struct ServerCallbacks([CallbackSlot; SLOTS]);
 
 impl ServerCallbacks {
     /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
@@ -201,7 +208,7 @@ impl ServerCallbacks {
             Option<&ConnectionRecord>,
             Option<&RecvData>,
         ) -> c_int;
-        let Some(slot) = self.slot(CB_DISPATCH_FUNC) else {
+        let Some(slot) = self.slot(CallbackKind::DispatchFunc) else {
             return 0;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -212,18 +219,21 @@ impl ServerCallbacks {
     }
 
     pub(crate) const fn new() -> Self {
-        Self([const { CallbackSlot::new() }; CB_COUNT])
+        Self([const { CallbackSlot::new() }; SLOTS])
     }
 
-    pub(crate) fn slot(&self, index: u32) -> Option<&CallbackSlot> {
+    pub(crate) fn slot(&self, slot: CallbackKind) -> Option<&CallbackSlot> {
+        self.at(slot as u32)
+    }
+
+    fn at(&self, index: u32) -> Option<&CallbackSlot> {
         self.0.get(index as usize)
     }
 
-    /// `serv->onX(serv)` for slot `index`, one of the `(Server *)` slots; nothing
-    /// when the slot is empty or of another signature.
-    pub(crate) fn call_server(&self, index: u32, serv: Server<'_>) {
+    /// `serv->onX(serv)` for a `(Server *)` slot; nothing when it is empty.
+    pub(crate) fn call_server(&self, slot: ServerSlot, serv: Server<'_>) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>);
-        let Some(slot) = self.slot(index).filter(|_| SERVER_SLOTS.contains(&index)) else {
+        let Some(slot) = self.at(slot as u32) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -235,16 +245,25 @@ impl ServerCallbacks {
     }
 }
 
-/// The slots of a `void (Server *)` signature.
-const SERVER_SLOTS: [u32; 7] = [
-    CB_START,
-    CB_BEFORE_SHUTDOWN,
-    CB_SHUTDOWN,
-    CB_MANAGER_START,
-    CB_MANAGER_STOP,
-    CB_BEFORE_RELOAD,
-    CB_AFTER_RELOAD,
-];
+/// The slots of a `void (Server *)` signature ([`ServerFn`]).
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(
+        dead_code,
+        reason = "only the hybrid raises the manager, reload and shutdown hooks"
+    )
+)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum ServerSlot {
+    Start = CallbackKind::Start as u32,
+    BeforeShutdown = CallbackKind::BeforeShutdown as u32,
+    Shutdown = CallbackKind::Shutdown as u32,
+    ManagerStart = CallbackKind::ManagerStart as u32,
+    ManagerStop = CallbackKind::ManagerStop as u32,
+    BeforeReload = CallbackKind::BeforeReload as u32,
+    AfterReload = CallbackKind::AfterReload as u32,
+}
 
 /// The slots of a `void (Server *, DataInfo *)` signature ([`EventFn`]).
 #[cfg_attr(
@@ -254,18 +273,18 @@ const SERVER_SLOTS: [u32; 7] = [
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum EventSlot {
-    Connect = CB_CONNECT,
-    Close = CB_CLOSE,
-    BufferFull = CB_BUFFER_FULL,
-    BufferEmpty = CB_BUFFER_EMPTY,
+    Connect = CallbackKind::Connect as u32,
+    Close = CallbackKind::Close as u32,
+    BufferFull = CallbackKind::BufferFull as u32,
+    BufferEmpty = CallbackKind::BufferEmpty as u32,
 }
 
 /// The slots of an `int (Server *, RecvData *)` signature ([`ReceiveFn`]).
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum ReceiveSlot {
-    Receive = CB_RECEIVE,
-    Packet = CB_PACKET,
+    Receive = CallbackKind::Receive as u32,
+    Packet = CallbackKind::Packet as u32,
 }
 
 /// The typed calls the server makes in every build (see the impl below).
@@ -275,7 +294,7 @@ impl ServerCallbacks {
     #[inline(always)]
     pub(crate) fn event(&self, slot: EventSlot, serv: Server<'_>, info: &DataHead) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &DataHead);
-        let Some(slot) = self.slot(slot as u32) else {
+        let Some(slot) = self.at(slot as u32) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -291,7 +310,7 @@ impl ServerCallbacks {
     #[inline(always)]
     pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &RecvData) -> c_int;
-        let Some(slot) = self.slot(slot as u32) else {
+        let Some(slot) = self.at(slot as u32) else {
             return -1;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -306,8 +325,8 @@ impl ServerCallbacks {
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum TaskSlot {
-    Task = CB_TASK,
-    Finish = CB_FINISH,
+    Task = CallbackKind::Task as u32,
+    Finish = CallbackKind::Finish as u32,
 }
 
 /// The slots of a `void (Server *, Worker *)` signature over a worker this thread
@@ -316,9 +335,9 @@ pub(crate) enum TaskSlot {
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum WorkerSlot {
-    Start = CB_WORKER_START,
-    Stop = CB_WORKER_STOP,
-    Exit = CB_WORKER_EXIT,
+    Start = CallbackKind::WorkerStart as u32,
+    Stop = CallbackKind::WorkerStop as u32,
+    Exit = CallbackKind::WorkerExit as u32,
 }
 
 /// The typed calls. A slot's index fixes its signature: native code assigns the
@@ -334,7 +353,7 @@ impl ServerCallbacks {
     /// int type the slot holds.
     pub(crate) fn task(&self, slot: TaskSlot, serv: Server<'_>, task: Packed<'_>) -> c_int {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Packed<'_>) -> c_int;
-        let Some(slot) = self.slot(slot as u32) else {
+        let Some(slot) = self.at(slot as u32) else {
             return -1;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -346,7 +365,7 @@ impl ServerCallbacks {
     /// `serv->onPipeMessage(serv, message)`; nothing when the slot is empty.
     pub(crate) fn pipe_message(&self, serv: Server<'_>, message: Packed<'_>) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Packed<'_>);
-        let Some(slot) = self.slot(CB_PIPE_MESSAGE) else {
+        let Some(slot) = self.slot(CallbackKind::PipeMessage) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -360,7 +379,7 @@ impl ServerCallbacks {
     /// `serv->onWorkerX(serv, worker)` for a worker slot; nothing when it is empty.
     pub(crate) fn worker(&self, slot: WorkerSlot, serv: Server<'_>, worker: Worker<'_>) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>);
-        let Some(slot) = self.slot(slot as u32) else {
+        let Some(slot) = self.at(slot as u32) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -374,7 +393,7 @@ impl ServerCallbacks {
     /// `serv->onUserWorkerStart(serv, worker)`; nothing when the slot is empty.
     pub(crate) fn user_worker_start(&self, serv: Server<'_>, worker: Worker<'_>) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>);
-        let Some(slot) = self.slot(CB_USER_WORKER_START) else {
+        let Some(slot) = self.slot(CallbackKind::UserWorkerStart) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -388,7 +407,7 @@ impl ServerCallbacks {
     /// `serv->onWorkerError(serv, worker, status)`; nothing when the slot is empty.
     pub(crate) fn worker_error(&self, serv: Server<'_>, worker: Worker<'_>, status: &ExitStatus) {
         type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>, &ExitStatus);
-        let Some(slot) = self.slot(CB_WORKER_ERROR) else {
+        let Some(slot) = self.slot(CallbackKind::WorkerError) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
@@ -464,7 +483,7 @@ pub(crate) mod tests {
         extern "C" fn before(_: Ctx, _: Server<'_>) {}
 
         let callbacks = ServerCallbacks::new();
-        let slot = callbacks.slot(CB_START).unwrap();
+        let slot = callbacks.slot(CallbackKind::Start).unwrap();
         fill(slot);
         slot.invoke.store(before as *mut c_void, Relaxed);
         slot.drop.store(drop_kept as *mut c_void, Relaxed);
@@ -497,15 +516,15 @@ pub(crate) mod tests {
     #[test]
     fn clearing_a_slot_frees_its_box_once() {
         let state = ServerState::new();
-        fill(state.callbacks.slot(CB_CONNECT).unwrap());
-        fill(state.callbacks.slot(CB_TASK).unwrap());
-        fill(state.callbacks.slot(CB_DISPATCH_FUNC).unwrap());
+        fill(state.callbacks.slot(CallbackKind::Connect).unwrap());
+        fill(state.callbacks.slot(CallbackKind::Task).unwrap());
+        fill(state.callbacks.slot(CallbackKind::DispatchFunc).unwrap());
         let before = DROPPED.load(Relaxed);
-        let connect = state.callbacks.slot(CB_CONNECT).unwrap();
+        let connect = state.callbacks.slot(CallbackKind::Connect).unwrap();
         connect.clear();
         assert!(!connect.is_set(), "onConnect cleared");
         assert!(
-            state.callbacks.slot(CB_TASK).unwrap().is_set(),
+            state.callbacks.slot(CallbackKind::Task).unwrap().is_set(),
             "onTask stays"
         );
         assert_eq!(DROPPED.load(Relaxed), before + 1, "its box freed once");
