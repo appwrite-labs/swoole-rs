@@ -12,9 +12,8 @@ use swoole_rs_corebase::CCast;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
 use crate::ops::{
-    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
-    RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
-    RUN_TASKING,
+    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_SC_SEND, RUN_SENDFILE, RUN_SENDWAIT,
+    RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
 };
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
@@ -32,7 +31,6 @@ pub struct NativeContext<'a> {
     pub(crate) sock: *mut c_void,
     /// The connection the operation acts on or selects.
     pub(crate) conn: Option<crate::Connection<'a>>,
-    pub(crate) server_fd: c_int,
     pub(crate) send: *mut c_void,
     pub(crate) data: *const c_void,
     /// The bytes the operations that read a slice take: `sendwait`'s data, `sendfile`'s
@@ -56,7 +54,6 @@ impl NativeContext<'_> {
             port: ptr::null_mut(),
             sock: ptr::null_mut(),
             conn: None,
-            server_fd: 0,
             send: ptr::null_mut(),
             data: ptr::null(),
             bytes: &[],
@@ -131,11 +128,8 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
     fn start() -> c_int = RUN_START;
     fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
-    fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
-    fn get_tasking_num() -> c_int = RUN_TASKING;
     fn start_check() -> c_int = RUN_START_CHECK;
     fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
 }
@@ -306,16 +300,24 @@ pub(crate) fn store_pipe_fd(
     }
 }
 
-/// `Server::schedule_worker(fd, data)`.
-///
-/// # Safety
-/// `serv` is a live `Server`; `data` null or a live `SendData`.
-pub unsafe extern "C" fn schedule_worker(serv: *mut c_void, fd: c_int, data: *mut c_void) -> c_int {
-    let mut ctx = NativeContext::new(serv);
-    ctx.server_fd = fd;
-    ctx.send = data;
-    // SAFETY: as the caller guarantees.
-    c_int::narrow(unsafe { run(RUN_SCHEDULE_WORKER, i64::from(fd).cast_unsigned(), &mut ctx) })
+pub use crate::dispatch::schedule_worker;
+
+/// `Server::get_idle_worker_num()`.
+#[must_use]
+pub fn get_idle_worker_num(serv: view::Server<'_>) -> u32 {
+    crate::dispatch::idle_workers(serv, false)
+}
+
+/// `Server::get_idle_task_worker_num()`.
+#[must_use]
+pub fn get_idle_task_worker_num(serv: view::Server<'_>) -> c_int {
+    crate::dispatch::idle_workers(serv, true).cast_signed()
+}
+
+/// `Server::get_tasking_num()`.
+#[must_use]
+pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
+    crate::dispatch::tasking(serv)
 }
 
 /// `Server::add_port(type, host, port)`: the new port, or `None`.
@@ -603,23 +605,6 @@ pub fn send_pipe_message(
     hybrid().pipe_to_worker(serv, worker_id, msg)
 }
 
-/// Runs a command `operation` over the host of a `Server` method whose context lends
-/// `serv` and nothing else, as [`run_on`] does an operation by number; true, as the
-/// runner's `SW_ERR` narrows to, when a native fault stops it.
-fn over_server(
-    serv: view::Server<'_>,
-    operation: impl FnOnce(&mut crate::Native<'_, '_>) -> crate::Effect<bool>,
-) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    let mut host = crate::Native {
-        state: Some(serv.state()),
-        master: &raw mut ctx,
-        server: Some(serv),
-        reactor: None,
-    };
-    operation(&mut host).unwrap_or(true)
-}
-
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
 /// command joined. The server keeps the handler for its life.
 pub fn swr_v1_server_add_command(
@@ -633,7 +618,7 @@ pub fn swr_v1_server_add_command(
         accepted_types,
         handler,
     };
-    over_server(serv, |h| crate::commands::add_command(h, &add))
+    crate::commands::add_command(serv, &add)
 }
 
 /// `Server::command(process_id, process_type, name, message, callback)`: whether
@@ -654,7 +639,7 @@ pub fn swr_v1_server_command(
         message,
         callback,
     };
-    over_server(serv, |h| crate::commands::command(h, &send))
+    crate::commands::command(&send)
 }
 
 /// `Server::call_command_callback(request_id, message)`: the reply to `request_id`
@@ -721,7 +706,6 @@ mod tests {
         match op {
             RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,
             RUN_SC_SEND => -1,
-            RUN_IDLE_WORKERS => -1,
             _ => 0,
         }
     }
@@ -757,18 +741,7 @@ mod tests {
     fn methods_fill_the_context_their_forward_did() {
         let serv = fake_serv();
         let sv = serv.addr();
-        assert_eq!(get_idle_worker_num(server()), u32::MAX, "(uint32_t) -1");
         unsafe {
-            assert_eq!(
-                schedule_worker(serv, -2, ptr::null_mut()),
-                0,
-                "schedule result"
-            );
-            assert_eq!(
-                last().1,
-                u64::MAX - 1,
-                "fd sign-extends like (uint64_t)(int64_t) fd"
-            );
             assert_eq!(
                 add_port(server(), 1, c"h", 9).map(|port| port.raw().addr()),
                 Some(0x50),

@@ -3,12 +3,8 @@
 //! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
-use crate::ops::{
-    FIELD_WORKER_NUM, OP_FIELD, OP_MODE, OP_SET_WARNING, OP_ST_FINISH, OP_WORKER_IDLE,
-};
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
-#[cfg(test)]
-use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
+use crate::ops::{OP_MODE, OP_ST_FINISH};
 use crate::send::send_to_connection;
 use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::c_int;
@@ -473,50 +469,6 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
     CString::new(code.to_string()).unwrap_or_default()
 }
 
-fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
-    h.op(OP_FIELD, u64::from(id))
-}
-
-fn worker_count<H: Host>(h: &mut H) -> crate::Effect<u64> {
-    field(h, FIELD_WORKER_NUM)
-}
-
-/// `get_lowest_load_worker_id` (`OP_WORKER_COROUTINES`) and
-/// `get_lowest_concurrent_worker_id` (`OP_WORKER_CONCURRENCY`): the first worker
-/// with the fewest.
-pub(crate) fn lowest<H: Host>(h: &mut H, metric: u32) -> crate::Effect<i64> {
-    let workers = worker_count(h)?;
-    let mut lowest = 0;
-    let mut min = h.op(metric, 0)?;
-    for id in 1..workers {
-        let value = h.op(metric, id)?;
-        if value < min {
-            min = value;
-            lowest = id;
-        }
-    }
-    Ok(lowest.cast_signed())
-}
-
-/// `get_idle_worker_id`: up to `worker_num + 1` round-robin tries for an idle worker,
-/// else the last one tried, with the scheduler warning raised.
-pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let workers = u32::try_from(worker_count(h)?).unwrap_or(u32::MAX).max(1);
-    let mut key = 0;
-    let mut found = false;
-    for _ in 0..=workers {
-        key = h.state()?.next_round() % workers;
-        if h.op(OP_WORKER_IDLE, u64::from(key))? != 0 {
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        h.get(OP_SET_WARNING)?;
-    }
-    Ok(i64::from(key))
-}
-
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
@@ -542,42 +494,6 @@ mod tests {
     use super::*;
     use crate::MODE_PROCESS;
     use crate::script::Script;
-
-    fn workers(n: u64) -> Script {
-        Script::with(&[(OP_FIELD, n)])
-    }
-
-    #[test]
-    fn lowest_takes_the_first_minimum() {
-        let mut s = workers(4).queue(OP_WORKER_COROUTINES, &[5, 3, 3, 9]);
-        assert_eq!(lowest(&mut s, OP_WORKER_COROUTINES).unwrap(), 1);
-        assert_eq!(s.args(OP_WORKER_COROUTINES), vec![0, 1, 2, 3]);
-        let mut s = workers(1);
-        assert_eq!(
-            lowest(&mut s, OP_WORKER_CONCURRENCY).unwrap(),
-            0,
-            "a single worker"
-        );
-    }
-
-    #[test]
-    fn idle_worker_tries_round_robin_then_warns() {
-        let mut s = workers(3).queue(OP_WORKER_IDLE, &[0, 1]);
-        assert_eq!(idle_worker(&mut s).unwrap(), 1);
-        assert_eq!(s.args(OP_WORKER_IDLE), vec![0, 1]);
-        assert_eq!(s.called(OP_SET_WARNING), 0);
-        // The round counter continues where the last schedule left it.
-        let mut busy = workers(3);
-        busy.state = ServerState::new();
-        busy.state.round.store(2, Ordering::SeqCst);
-        assert_eq!(
-            idle_worker(&mut busy).unwrap(),
-            2,
-            "the last of worker_num + 1 tries"
-        );
-        assert_eq!(busy.args(OP_WORKER_IDLE), vec![2, 0, 1, 2]);
-        assert_eq!(busy.called(OP_SET_WARNING), 1);
-    }
 
     #[test]
     fn document_root_is_the_real_path() {

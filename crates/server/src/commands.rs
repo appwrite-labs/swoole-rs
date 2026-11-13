@@ -2,11 +2,9 @@
 //! named commands, their handlers and the callbacks of requests awaiting a reply).
 //! A handler or callback is a Rust closure, which the tables keep for as long as
 //! the server can call it.
-use crate::ops::{
-    FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD, OP_IS_STARTED, OP_MODE,
-    OP_RT_HAS_PIPE_COMMAND, OP_ST_CMD_SEND, OP_ST_PIPE_COMMAND_NEW,
-};
-use crate::{Host, MODE_BASE, MODE_PROCESS, ServerState};
+use crate::hybrid::hybrid;
+use crate::view::Server;
+use crate::{MODE_BASE, MODE_PROCESS, ServerState};
 use core::ffi::{CStr, c_int};
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
@@ -18,7 +16,12 @@ use swoole_rs_process::command::{
     TO_MASTER, route,
 };
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-use {crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead, swoole_rs_reactor::Socket};
+use {
+    crate::ops::{EVENT_COMMAND_REQUEST, EVENT_COMMAND_RESPONSE},
+    swoole_rs_corebase::{CCast, DataHead},
+    swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER},
+    swoole_rs_reactor::Socket,
+};
 
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
@@ -169,6 +172,89 @@ pub(crate) fn reply_socket<'a>(
     config.command_pipe()?.worker_end()
 }
 
+/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[repr(C)]
+struct EventData {
+    info: DataHead,
+    data: [u8; IPC_BUFFER_SIZE],
+}
+
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+const _: () = assert!(
+    size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
+    "sizeof(EventData)"
+);
+
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+/// `Server::command`'s `SW_SERVER_EVENT_COMMAND_REQUEST` to its target: a task worker
+/// through the task pool, the manager through the event pool's queue, else a worker
+/// or reactor thread's pipe. Whether it went.
+pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
+    let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
+    let head = |info: &mut DataHead| {
+        info.kind = EVENT_COMMAND_REQUEST.c_cast::<u8>();
+        info.fd = c.request_id;
+        info.server_fd = c.command_id.c_cast::<u16>();
+    };
+    if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
+        let mut buf = EventData {
+            info: DataHead::default(),
+            data: [0; IPC_BUFFER_SIZE],
+        };
+        let packed = if c.action == TO_TASK_WORKER {
+            // SAFETY: a writable `EventData` and the message's bytes.
+            unsafe {
+                swoole_rs_process::task_file::task_pack(
+                    (&raw mut buf).cast(),
+                    c.message.as_ptr().cast(),
+                    c.message.len(),
+                )
+            }
+        } else {
+            // As much of the message as the buffer holds.
+            let (message, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
+            buf.info.len = u32::try_from(message.len()).unwrap_or(u32::MAX);
+            let (data, _) = buf.data.split_at_mut(message.len());
+            data.copy_from_slice(message);
+            true
+        };
+        head(&mut buf.info);
+        if !packed {
+            return false;
+        }
+        if c.action == TO_MANAGER {
+            let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
+            let pool = serv.event_pool_ref();
+            return swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0;
+        }
+        // SAFETY: the head and the `len` bytes after it, which nothing writes while
+        // they are sent.
+        let task =
+            unsafe { swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast()) };
+        let mut dst = c_int::from(process_id);
+        let (gs, pool) = (serv.counters(), serv.task_pool_ref());
+        let dispatch = || {
+            let sent = swoole_rs_process::methods::dispatch(pool, task, &mut dst, false);
+            Ok(sent == 0)
+        };
+        return swoole_rs_process::task_sync::count_task(&gs.tasking_num, &gs.task_count, dispatch)
+            .unwrap_or(false);
+    }
+    let mut info = DataHead {
+        reactor_id: process_id.cast_signed(),
+        ..Default::default()
+    };
+    head(&mut info);
+    // The worker's pipe: its worker end to a reactor thread, else its master end.
+    let to_worker = c.action != TO_REACTOR_THREAD;
+    let Some(pipe) = serv.worker_pipe(process_id, to_worker) else {
+        return false;
+    };
+    // The bus sets the head's length to the message's.
+    serv.state().message_bus().write(pipe, &mut info, c.message)
+}
+
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, origin, message);
 }
@@ -182,17 +268,18 @@ pub(crate) struct AddCommand<'a> {
 
 /// `Server::add_command`: before start, a new name, and (outside base mode) a command
 /// pipe, made once. Ids count from 1.
-pub(crate) fn add_command<H: Host>(h: &mut H, add: &AddCommand<'_>) -> crate::Effect<bool> {
-    if h.is(OP_IS_STARTED)? || commands(h.state()?).named.contains_key(add.name) {
-        return Ok(false);
+pub(crate) fn add_command(serv: Server<'_>, add: &AddCommand<'_>) -> bool {
+    let state = serv.state();
+    if serv.is_started() || commands(state).named.contains_key(add.name) {
+        return false;
     }
-    if h.get(OP_MODE)? != MODE_BASE
-        && !h.is(OP_RT_HAS_PIPE_COMMAND)?
-        && !h.is(OP_ST_PIPE_COMMAND_NEW)?
+    let config = serv.config();
+    if u64::from(config.mode_) != MODE_BASE
+        && config.command_pipe().is_none()
+        && !new_command_pipe(serv)
     {
-        return Ok(false);
+        return false;
     }
-    let state = h.state()?;
     let id = state
         .next_command
         .fetch_add(1, core::sync::atomic::Ordering::SeqCst);
@@ -203,7 +290,22 @@ pub(crate) fn add_command<H: Host>(h: &mut H, add: &AddCommand<'_>) -> crate::Ef
         accepted_types: add.accepted_types,
     };
     commands.named.insert(add.name.to_vec(), command);
-    Ok(true)
+    true
+}
+
+/// `serv->pipe_command = new UnixSocket(false, SOCK_DGRAM)`: whether it opened.
+fn new_command_pipe(serv: Server<'_>) -> bool {
+    use swoole_rs_tls::socket_pair::{drop, unix_socket};
+    let mut pipe = Box::new(unix_socket(false, libc::SOCK_DGRAM));
+    if pipe.master_socket.is_null() || pipe.worker_socket.is_null() {
+        drop(&mut pipe);
+        return false;
+    }
+    // SAFETY: before start, only the master's thread writes the configuration, and it
+    // holds no reference into it here.
+    let config = unsafe { serv.config_mut() };
+    config.pipe_command = Box::into_raw(pipe).cast();
+    true
 }
 
 /// `Server::command`'s arguments.
@@ -216,10 +318,7 @@ pub(crate) struct SendCommand<'a> {
     pub callback: CommandCallback,
 }
 
-/// What `OP_ST_CMD_SEND` writes to the target process. Only this crate makes and
-/// reads one, by reference (no native code does); `repr(C)` as its reader is the
-/// hybrid's alone.
-#[repr(C)]
+/// A command request for another process.
 pub(crate) struct CommandSend<'a> {
     /// `CommandRoute::action`.
     pub(crate) action: i32,
@@ -231,16 +330,17 @@ pub(crate) struct CommandSend<'a> {
 
 /// `Server::command`: sends `message` to command `name` in the given process, whose
 /// reply goes to `callback`. The master answers its own commands at once.
-pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effect<bool> {
-    let started = h.is(OP_IS_STARTED)?;
-    let mode = h.get(OP_MODE)?;
-    let found = commands(h.state()?)
+pub(crate) fn command(send: &SendCommand<'_>) -> bool {
+    let (serv, state) = (send.serv, send.serv.state());
+    let config = serv.config();
+    let mode = u64::from(config.mode_);
+    let found = commands(state)
         .named
         .get(send.name)
         .map(|c| (c.id, c.accepted_types));
     let worker_id = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
     let input = CommandInput {
-        started,
+        started: serv.is_started(),
         found: found.is_some(),
         process_mode: mode == MODE_PROCESS,
         base_mode: mode == MODE_BASE,
@@ -250,26 +350,26 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         worker_id: worker_id.filter(|_| mode == MODE_BASE).unwrap_or(0),
         process_id: send.process_id,
         process_type: send.process_type,
-        reactor_num: field(h, FIELD_REACTOR_NUM)?,
-        worker_num: field(h, FIELD_WORKER_NUM)?,
-        task_worker_num: field(h, FIELD_TASK_WORKER_NUM)?,
+        reactor_num: u32::from(config.reactor_num.get()),
+        worker_num: config.worker_num.get(),
+        task_worker_num: config.task_worker_num.get(),
         length: send.message.len(),
         manager_capacity: IPC_BUFFER_SIZE,
     };
     let route = route(&input);
     log_route(route.log, route.process_id, send);
     let Some((command_id, _)) = found.filter(|_| route.request) else {
-        return Ok(false);
+        return false;
     };
     let request_id = {
-        let mut commands = commands(h.state()?);
+        let mut commands = commands(state);
         let id = commands.next_request;
         commands.next_request = id.wrapping_add(1);
         id
     };
     if route.action == TO_MASTER {
         let mut reply = Vec::<u8>::new();
-        let handler = commands(h.state()?).handlers.get(&command_id).cloned();
+        let handler = commands(state).handlers.get(&command_id).cloned();
         match handler {
             Some(handler) => handler(send.serv, send.message, &mut reply),
             None => error(
@@ -280,10 +380,10 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
             ),
         }
         (send.callback)(&reply);
-        return Ok(true);
+        return true;
     }
     // Only a reply from another process looks the callback up.
-    commands(h.state()?)
+    commands(state)
         .callbacks
         .insert(request_id, send.callback.clone());
     let message = CommandSend {
@@ -293,19 +393,12 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         request_id,
         message: send.message,
     };
-    let sent = route.action != swoole_rs_process::command::FAIL
-        && h.op(
-            OP_ST_CMD_SEND,
-            core::ptr::from_ref(&message).expose_provenance() as u64,
-        )? != 0;
+    let sent =
+        route.action != swoole_rs_process::command::FAIL && hybrid().command_send(serv, &message);
     if !sent {
-        commands(h.state()?).callbacks.remove(&request_id);
+        commands(state).callbacks.remove(&request_id);
     }
-    Ok(sent)
-}
-
-fn field<H: Host>(h: &mut H, field: u32) -> crate::Effect<u32> {
-    Ok(u32::try_from(h.op(OP_FIELD, field.into())?).unwrap_or(u32::MAX))
+    sent
 }
 
 fn log_route(log: i32, process_id: u32, send: &SendCommand<'_>) {
@@ -358,8 +451,9 @@ fn log_route(log: i32, process_id: u32, send: &SendCommand<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{OP_IS_STARTED, OP_MODE, OP_RT_HAS_PIPE_COMMAND, OP_ST_PIPE_COMMAND_NEW};
-    use crate::script::Script;
+    use crate::fixture::LiveServer;
+    use crate::hybrid::tests::{Call, calls};
+    use core::sync::atomic::Ordering::Relaxed;
 
     fn handler(prefix: &'static [u8]) -> CommandHandler {
         Arc::new(move |_, message, reply| {
@@ -368,60 +462,96 @@ mod tests {
         })
     }
 
-    /// A server none of these handlers reads.
-    fn no_server() -> crate::view::Server<'static> {
-        // SAFETY: the handlers here never read their server.
-        unsafe { crate::view::Server::from_raw(core::ptr::null_mut()) }
+    /// The live server in `mode`, with four event workers.
+    fn live(mode: u64) -> LiveServer {
+        let live = LiveServer::new();
+        // SAFETY: the fixture's configuration, which nothing else reads during the write.
+        let config = unsafe { &mut *live.state().config() };
+        config.mode_ = u8::try_from(mode).unwrap();
+        config.worker_num.set(4);
+        live
     }
 
-    fn add(h: &mut Script, name: &[u8], types: i32) -> bool {
+    fn start(live: &LiveServer) {
+        live.counters().start.store(1, Relaxed);
+    }
+
+    fn add(live: &LiveServer, name: &[u8], types: i32) -> bool {
         let add = AddCommand {
             name,
             accepted_types: types,
             handler: handler(b"re:"),
         };
-        add_command(h, &add).unwrap()
+        add_command(live.server(), &add)
+    }
+
+    /// The command pipe's address, which the test then closes.
+    fn close_command_pipe(live: &LiveServer) -> usize {
+        let pipe = live.server().config().pipe_command;
+        if !pipe.is_null() {
+            // SAFETY: the pair `add_command` boxed, which nothing uses after the test.
+            let mut pair =
+                unsafe { Box::from_raw(pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>()) };
+            swoole_rs_tls::socket_pair::drop(&mut pair);
+        }
+        pipe.addr()
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn commands_need_a_pipe_outside_base_mode() {
-        let mut base = Script::with(&[(OP_MODE, MODE_BASE)]);
-        assert!(add(&mut base, b"a", 2));
-        assert!(add(&mut base, b"b", 2));
-        assert!(!add(&mut base, b"a", 2), "names are unique");
-        let ids: Vec<_> = commands(&base.state).named.values().map(|c| c.id).collect();
+        let base = live(MODE_BASE);
+        assert!(add(&base, b"a", 2));
+        assert!(add(&base, b"b", 2));
+        assert!(!add(&base, b"a", 2), "names are unique");
+        let ids: Vec<_> = commands(base.state())
+            .named
+            .values()
+            .map(|c| c.id)
+            .collect();
         assert_eq!(ids, vec![1, 2], "ids count from 1");
-        assert_eq!(base.called(OP_ST_PIPE_COMMAND_NEW), 0);
+        assert_eq!(close_command_pipe(&base), 0, "no pipe in base mode");
+        drop(base);
 
-        let mut process = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-        assert!(!add(&mut process, b"a", 2), "the pipe failed");
-        assert!(commands(&process.state).named.is_empty());
-        let mut process = Script::with(&[(OP_MODE, MODE_PROCESS), (OP_RT_HAS_PIPE_COMMAND, 1)]);
-        assert!(add(&mut process, b"a", 2));
-        assert_eq!(process.called(OP_ST_PIPE_COMMAND_NEW), 0, "made once");
+        let process = live(MODE_PROCESS);
+        assert!(add(&process, b"a", 2));
+        let pipe = process.server().config().command_pipe().unwrap();
+        assert!(pipe.master_end().is_some() && pipe.worker_end().is_some());
+        let made = process.server().config().pipe_command;
+        assert!(add(&process, b"b", 2));
+        assert_eq!(process.server().config().pipe_command, made, "made once");
+        close_command_pipe(&process);
+        drop(process);
 
-        let mut started = Script::with(&[(OP_MODE, MODE_BASE), (OP_IS_STARTED, 1)]);
-        assert!(!add(&mut started, b"a", 2));
+        let started = live(MODE_BASE);
+        start(&started);
+        assert!(!add(&started, b"a", 2));
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn commands_keep_binary_names_for_the_listing() {
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
+        let live = live(MODE_BASE);
         let name = b"admin\0command";
-        assert!(add(&mut s, name, 62));
-        assert_eq!(listing(&s.state), [(name.to_vec(), 1, 62)]);
+        assert!(add(&live, name, 62));
+        assert_eq!(listing(live.state()), [(name.to_vec(), 1, 62)]);
         let mut reply = Vec::new();
-        super::handler(&s.state, 1).unwrap()(no_server(), b"x", &mut reply);
+        super::handler(live.state(), 1).unwrap()(live.server(), b"x", &mut reply);
         assert_eq!(reply, b"re:x");
-        assert!(super::handler(&s.state, 2).is_none());
+        assert!(super::handler(live.state(), 2).is_none());
     }
 
     type Out = Arc<std::sync::Mutex<Vec<u8>>>;
 
-    fn send<'a>(name: &'a [u8], process_type: i32, out: &Out) -> SendCommand<'a> {
+    fn send<'a>(
+        live: &'a LiveServer,
+        name: &'a [u8],
+        process_type: i32,
+        out: &Out,
+    ) -> SendCommand<'a> {
         let out = out.clone();
         SendCommand {
-            serv: no_server(),
+            serv: live.server(),
             process_id: 0,
             process_type,
             name,
@@ -432,61 +562,59 @@ mod tests {
 
     const MASTER: i32 = swoole_rs_process::command::MASTER;
     const EVENT_WORKER: i32 = swoole_rs_process::command::EVENT_WORKER;
+    const TO_EVENT_WORKER: i32 = swoole_rs_process::command::TO_EVENT_WORKER;
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_base_master_answers_its_own_commands_at_once() {
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        let add = AddCommand {
-            name: b"hi",
-            accepted_types: MASTER | EVENT_WORKER,
-            handler: handler(b"re:"),
-        };
-        assert!(add_command(&mut s, &add).unwrap());
-        s.facts.insert(OP_IS_STARTED, 1);
+        let live = live(MODE_BASE);
+        assert!(add(&live, b"hi", MASTER | EVENT_WORKER));
+        start(&live);
         let out = Out::default();
+        calls();
         // Base mode's worker 0 is the master.
-        assert!(command(&mut s, &send(b"hi", EVENT_WORKER, &out)).unwrap());
+        assert!(command(&send(&live, b"hi", EVENT_WORKER, &out)));
         assert_eq!(*out.lock().unwrap(), b"re:ping");
-        assert_eq!(s.called(OP_ST_CMD_SEND), 0);
+        assert_eq!(calls(), [], "nothing sent");
         assert!(
-            commands(&s.state).callbacks.is_empty(),
+            commands(live.state()).callbacks.is_empty(),
             "an answered request keeps no callback"
         );
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_failed_send_forgets_its_callback_and_unknown_names_take_no_request() {
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        let add = AddCommand {
-            name: b"hi",
-            accepted_types: EVENT_WORKER,
-            handler: handler(b""),
-        };
-        assert!(add_command(&mut s, &add).unwrap());
-        s.facts.extend([(OP_IS_STARTED, 1), (OP_FIELD, 4)]);
+        let live = live(MODE_BASE);
+        assert!(add(&live, b"hi", EVENT_WORKER));
+        start(&live);
         let out = Out::default();
-        let mut to_worker = send(b"hi", EVENT_WORKER, &out);
-        to_worker.process_id = 1;
-        assert!(!command(&mut s, &to_worker).unwrap(), "the send failed");
-        assert_eq!(s.called(OP_ST_CMD_SEND), 1);
-        assert!(commands(&s.state).callbacks.is_empty());
-        assert_eq!(commands(&s.state).next_request, 2);
-        assert!(!command(&mut s, &send(b"nope", EVENT_WORKER, &out)).unwrap());
-        assert_eq!(commands(&s.state).next_request, 2, "no request id taken");
-        s.facts.insert(OP_ST_CMD_SEND, 1);
-        assert!(command(&mut s, &to_worker).unwrap());
+        calls();
+        let mut to_worker = send(&live, b"hi", EVENT_WORKER, &out);
+        to_worker.process_id = 9;
+        assert!(!command(&to_worker), "there is no worker 9");
+        assert_eq!(calls(), [], "nothing sent");
+        assert!(commands(live.state()).callbacks.is_empty());
+        assert_eq!(commands(live.state()).next_request, 2);
+        assert!(!command(&send(&live, b"nope", EVENT_WORKER, &out)));
         assert_eq!(
-            commands(&s.state)
-                .callbacks
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-            vec![2]
+            commands(live.state()).next_request,
+            2,
+            "no request id taken"
         );
-        command_result(&s.state, 2, b"pong");
+        to_worker.process_id = 1;
+        assert!(command(&to_worker));
+        assert_eq!(calls(), [Call::CommandSend(TO_EVENT_WORKER, 1, 1, 2, 4)]);
+        let waiting = commands(live.state())
+            .callbacks
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(waiting, vec![2]);
+        command_result(live.state(), 2, b"pong");
         assert_eq!(*out.lock().unwrap(), b"pong");
         assert!(
-            commands(&s.state).callbacks.is_empty(),
+            commands(live.state()).callbacks.is_empty(),
             "a reply is taken once"
         );
     }

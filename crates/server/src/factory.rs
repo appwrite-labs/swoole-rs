@@ -260,6 +260,14 @@ impl crate::hybrid::Hybrid for Linked {
         crate::manager_ops::reload(serv, all_workers)
     }
 
+    fn command_send(
+        &self,
+        serv: crate::view::Server<'_>,
+        c: &crate::commands::CommandSend<'_>,
+    ) -> bool {
+        crate::commands::send(serv, c)
+    }
+
     fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
         crate::event_worker_ops::send_to_reactor_thread(serv, head)
     }
