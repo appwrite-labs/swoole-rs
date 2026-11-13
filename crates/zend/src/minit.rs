@@ -6,13 +6,11 @@ use crate::{
     function::{arg_info, deny},
     sys::{
         CONST_PERSISTENT, HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_facade_compiler_functions,
-        swr_zend_http_intern, zend_ce_arrayaccess, zend_ce_countable, zend_ce_error,
-        zend_ce_exception, zend_ce_iterator, zend_ce_stringable, zend_class_entry,
-        zend_class_implements, zend_declare_class_constant_long, zend_declare_property_bool,
-        zend_declare_property_double, zend_declare_property_long, zend_declare_property_null,
-        zend_declare_property_string, zend_function_entry, zend_long, zend_object_handlers,
-        zend_register_bool_constant, zend_register_double_constant, zend_register_long_constant,
-        zend_register_string_constant,
+        swr_zend_http_intern, zend_class_entry, zend_class_implements,
+        zend_declare_class_constant_long, zend_declare_property_bool, zend_declare_property_double,
+        zend_declare_property_long, zend_declare_property_null, zend_declare_property_string,
+        zend_function_entry, zend_long, zend_object_handlers, zend_register_bool_constant,
+        zend_register_double_constant, zend_register_long_constant, zend_register_string_constant,
     },
 };
 use std::{
@@ -27,6 +25,14 @@ unsafe extern "C" {
     /// extension depending on it, registers them; never written again.
     safe static spl_ce_ArrayIterator: *mut zend_class_entry;
     safe static spl_ce_ArrayObject: *mut zend_class_entry;
+    /// Zend's own classes and interfaces, likewise: it registers them at
+    /// startup, before any extension's MINIT, and never writes them again.
+    safe static zend_ce_exception: *mut zend_class_entry;
+    safe static zend_ce_error: *mut zend_class_entry;
+    safe static zend_ce_iterator: *mut zend_class_entry;
+    safe static zend_ce_stringable: *mut zend_class_entry;
+    safe static zend_ce_arrayaccess: *mut zend_class_entry;
+    safe static zend_ce_countable: *mut zend_class_entry;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -383,15 +389,13 @@ impl Minit {
     /// Zend's `Exception`.
     #[must_use]
     pub fn exception(&self) -> Parent {
-        // SAFETY: Zend registers its classes before any extension's MINIT.
-        Parent(unsafe { zend_ce_exception })
+        Parent(zend_ce_exception)
     }
 
     /// Zend's `Error`.
     #[must_use]
     pub fn error(&self) -> Parent {
-        // SAFETY: as above.
-        Parent(unsafe { zend_ce_error })
+        Parent(zend_ce_error)
     }
 
     /// SPL's `ArrayObject`.
@@ -403,29 +407,25 @@ impl Minit {
     /// Zend's `Iterator`.
     #[must_use]
     pub fn iterator(&self) -> Parent {
-        // SAFETY: Zend registers its interfaces before any extension's MINIT.
-        Parent(unsafe { zend_ce_iterator })
+        Parent(zend_ce_iterator)
     }
 
     /// Zend's `Stringable`.
     #[must_use]
     pub fn stringable(&self) -> Parent {
-        // SAFETY: Zend registers its interfaces before any extension's MINIT.
-        Parent(unsafe { zend_ce_stringable })
+        Parent(zend_ce_stringable)
     }
 
     /// Zend's `ArrayAccess`.
     #[must_use]
     pub fn array_access(&self) -> Parent {
-        // SAFETY: Zend registers its interfaces before any extension's MINIT.
-        Parent(unsafe { zend_ce_arrayaccess })
+        Parent(zend_ce_arrayaccess)
     }
 
     /// Zend's `Countable`.
     #[must_use]
     pub fn countable(&self) -> Parent {
-        // SAFETY: as above.
-        Parent(unsafe { zend_ce_countable })
+        Parent(zend_ce_countable)
     }
 
     /// `zend_class_implements(class, 1, interface)`.

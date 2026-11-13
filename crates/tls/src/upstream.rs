@@ -8,8 +8,8 @@ use crate::handle::CText;
 use crate::{
     Cert, CertRef, SocketTls, Ssl, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept,
     swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
-    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_pem, swr_v1_socket_ssl_recv,
-    swr_v1_socket_ssl_send, swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
+    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send,
+    swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -331,7 +331,7 @@ unsafe extern "C" fn tls_send(socket: *mut c_void, buffer: *mut c_void, length: 
 ///
 /// # Safety
 /// `buffer` is null or denotes `length` writable bytes, lent for `'a`.
-unsafe fn slots<'a>(buffer: *mut c_void, length: usize) -> &'a mut [MaybeUninit<u8>] {
+pub(crate) unsafe fn slots<'a>(buffer: *mut c_void, length: usize) -> &'a mut [MaybeUninit<u8>] {
     if buffer.is_null() {
         return &mut [];
     }
@@ -962,10 +962,13 @@ fn warn_x509(written: c_int) -> c_int {
     -1
 }
 
-/// `_ssl_read_x509_file`: `swr_v1_socket_ssl_pem` with its warnings, -1 on failure.
+/// `_ssl_read_x509_file`: `cert` as PEM into at most `length` bytes at `buffer`, the
+/// bytes written; -1, after a warning, when `BIO_new` or `PEM_write_bio_X509` failed.
+/// When `consume`, frees `cert`.
 ///
 /// # Safety
-/// As `swr_v1_socket_ssl_pem`.
+/// `cert` is a live X509 (owned by the caller when `consume`), and `buffer` denotes
+/// `length` writable bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_socket_ssl_read_x509(
     cert: *mut X509,
@@ -973,8 +976,16 @@ pub unsafe extern "C" fn swr_v1_socket_ssl_read_x509(
     length: usize,
     consume: bool,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    warn_x509(unsafe { swr_v1_socket_ssl_pem(cert, buffer, length, consume) })
+    // SAFETY: the caller's live certificate.
+    let borrowed = unsafe { CertRef::new(cert) };
+    // SAFETY: the caller's reference when `consume`, which this side now owns.
+    let owned = consume.then(|| unsafe { Cert::from_raw(cert) });
+    // SAFETY: the caller lends `length` writable bytes.
+    let buffer = unsafe { slots(buffer.cast(), length) };
+    let written = borrowed.map_or(-2, |cert| cert.pem(buffer));
+    // The reference the caller handed over, released as this side's own.
+    drop(owned);
+    warn_x509(written)
 }
 
 /// The leading fields of `swoole::String`.

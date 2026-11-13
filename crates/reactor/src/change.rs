@@ -302,10 +302,35 @@ pub unsafe fn swr_v1_reactor_change(
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 
-/// `Reactor`'s interest helpers over [`swr_v1_reactor_change`]: `add_event` (kind 0) and
-/// `del_event` (1) of `event`, then `add_read_event` (2), `add_write_event` (3),
-/// `remove_read_event` (4) and `remove_write_event` (5). Each sets, adds or deletes as
-/// upstream decides from the socket's events; its result, or 0 when nothing changes.
+/// What a `Reactor` interest helper asks of [`swr_v1_reactor_change`], as upstream decides
+/// from the socket's events: `add_event` (kind 0) and `del_event` (1) of `event`, then
+/// `add_read_event` (2), `add_write_event` (3), `remove_read_event` (4) and
+/// `remove_write_event` (5). The op and its events, or `None` when nothing changes.
+pub(crate) fn interest_change(record: Socket<'_>, kind: u32, event: c_int) -> Option<(u32, c_int)> {
+    let events = record.read(|record| record.events);
+    let (other, own) = if kind.is_multiple_of(2) {
+        (SW_EVENT_WRITE, SW_EVENT_READ)
+    } else {
+        (SW_EVENT_READ, SW_EVENT_WRITE)
+    };
+    let (op, events) = match kind {
+        0 if events & event == 0 => (SET, events | event),
+        1 if events & event != 0 => (SET, events & !event),
+        0 | 1 => return None,
+        2 | 3 if events & other != 0 => (SET, events | own),
+        2 | 3 => (ADD, own),
+        _ if events & other != 0 => (SET, events & !own),
+        _ => (2, 0),
+    };
+    if op == SET && kind >= 2 {
+        // Upstream writes the socket's events before the set, so they stay when it fails.
+        record.edit(|record| record.events = events);
+    }
+    Some((op, events))
+}
+
+/// `Reactor`'s interest helpers over [`swr_v1_reactor_change`], as [`interest_change`]
+/// chooses: the change's result, or 0 when nothing changes.
 ///
 /// # Safety
 /// As for [`swr_v1_reactor_change`].
@@ -320,25 +345,9 @@ pub unsafe fn swr_v1_reactor_interest(
     let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
         return -1;
     };
-    let events = record.read(|record| record.events);
-    let (other, own) = if kind.is_multiple_of(2) {
-        (SW_EVENT_WRITE, SW_EVENT_READ)
-    } else {
-        (SW_EVENT_READ, SW_EVENT_WRITE)
+    let Some((op, events)) = interest_change(record, kind, event) else {
+        return 0;
     };
-    let (op, events) = match kind {
-        0 if events & event == 0 => (SET, events | event),
-        1 if events & event != 0 => (SET, events & !event),
-        0 | 1 => return 0,
-        2 | 3 if events & other != 0 => (SET, events | own),
-        2 | 3 => (ADD, own),
-        _ if events & other != 0 => (SET, events & !own),
-        _ => (2, 0),
-    };
-    if op == SET && kind >= 2 {
-        // Upstream writes the socket's events before the set, so they stay when it fails.
-        record.edit(|record| record.events = events);
-    }
     // SAFETY: as the caller promises.
     unsafe { swr_v1_reactor_change(owner, socket, op, events, log) }
 }

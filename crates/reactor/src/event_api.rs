@@ -110,17 +110,11 @@ pub unsafe extern "C" fn swoole_event_del(socket: *mut SocketRecord) -> c_int {
     unsafe { reactor_change(current(), socket, 2, 0) }
 }
 
-/// `Reactor::change` of `socket` on the thread's reactor; -1 without one. A registered
-/// record's address stays in the registry and with the kernel until its removal, which
-/// a `'static` record outlives: it is live until an unsafe free, whose caller answers
-/// for every user left, the reactor among them.
+/// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; -1 without one.
 fn change(socket: crate::Socket<'static>, op: u32, events: c_int) -> c_int {
-    let Some(reactor) = running() else {
-        return -1;
-    };
-    // SAFETY: the thread's live reactor, which no reference borrows (the handle's
-    // contract), and a record that is live for as long as it stays registered.
-    unsafe { reactor_change(reactor.as_ptr(), socket.as_ptr(), op, events) }
+    running().map_or(-1, |reactor| {
+        crate::reactor_upstream::change(reactor, socket, op, events)
+    })
 }
 
 /// [`swoole_event_add`] of a socket that is never freed while registered; -1 without
@@ -165,6 +159,16 @@ pub unsafe extern "C" fn swoole_event_add_or_update(
     };
     // SAFETY: as the caller promises.
     unsafe { reactor_interest(current(), socket, kind, 0) }
+}
+
+/// [`swoole_event_add_or_update`] of a socket that is never freed while registered: -1
+/// without a reactor, or for an event that is neither `SW_EVENT_READ` nor `SW_EVENT_WRITE`.
+#[must_use]
+pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> c_int {
+    let (Some(reactor), Some(kind)) = (running(), direction(event)) else {
+        return -1;
+    };
+    crate::reactor_upstream::interest(reactor, socket, kind, 0)
 }
 
 /// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)`.
@@ -278,18 +282,6 @@ pub(crate) fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Optio
 /// nothing without one, and the process ends if it can't allocate.
 pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
     field_mut(|fields| crate::deferred::defer_destroy_any(fields, call));
-}
-
-/// Runs `call(data)` when the thread's `Reactor` is destroyed; nothing without one,
-/// and the process ends if it can't allocate.
-///
-/// # Safety
-/// `call(data)` is sound when the reactor is destroyed.
-pub unsafe fn on_destroy_with(call: crate::DeferCall, data: *mut c_void) {
-    if let Some(reactor) = running() {
-        // SAFETY: as the caller promises.
-        unsafe { crate::defer_destroy(reactor, call, data) };
-    }
 }
 
 /// `sw_reactor()->running = running`, when there is a reactor.

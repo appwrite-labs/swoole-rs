@@ -5,8 +5,8 @@ use crate::{
     ZStr,
     sys::{
         _zend_expected_type_Z_EXPECTED_PATH, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
-        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_parse_str_or_long,
-        swr_zval_copy, zend_string, zval,
+        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_parse_str_or_long, zend_string,
+        zval,
     },
 };
 use std::ptr;
@@ -178,14 +178,5 @@ impl Call {
             &arg.dereferenced(),
             crate::sys::_zend_expected_type_Z_EXPECTED_OBJECT,
         ))
-    }
-
-    /// `RETVAL_ZVAL(value, 1, 0)`: a new reference to `value`.
-    /// # Safety
-    /// `value` is a live zval.
-    #[inline]
-    pub unsafe fn set_copy(&self, value: *const zval) {
-        // SAFETY: the return slot is live and `value` per the caller.
-        unsafe { swr_zval_copy(self.value, value) };
     }
 }

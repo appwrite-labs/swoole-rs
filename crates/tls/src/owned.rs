@@ -221,6 +221,13 @@ pub unsafe fn owner_fields<'a>(owner: *const OwnedTlsContext) -> &'a OwnedTlsFie
 pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreStringView {
     owner.strings[TLS_HOST_NAME].view()
 }
+/// `tls_host_name`'s bytes, borrowed from the owner. Whoever sets the name holds the
+/// owner exclusively ([`set_text`]'s contract, and the native setters'), so no write
+/// overlaps a borrow safe code holds.
+#[must_use]
+pub fn owner_host_name(owner: &OwnedTlsContext) -> &[u8] {
+    owner.strings[TLS_HOST_NAME].bytes()
+}
 /// An owner whose caller serializes it: the borrow every operation here takes once,
 /// instead of each field access promising it again. It is not `Sync`, so only the
 /// thread holding it writes through it.
@@ -283,16 +290,13 @@ unsafe extern "C" fn slot_password(
 ) -> c_int {
     // SAFETY: per the caller.
     let passphrase = unsafe { &*slot.cast::<StringSlot>() }.bytes_with_nul();
-    // SAFETY: per the caller.
-    unsafe { copy_password(buffer, capacity, passphrase) }
+    let capacity = usize::try_from(capacity).unwrap_or(0);
+    // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
+    let buffer = unsafe { crate::upstream::slots(buffer.cast(), capacity) };
+    copy_password(buffer, passphrase)
 }
-/// # Safety
-/// owner is live/exclusive, and its logger does not throw.
-pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
-    // SAFETY: as the caller promises.
-    create(&mut unsafe { Lent::new(owner) })
-}
-/// [`swr_v1_tls_owner_create`] over the lent owner, whose logger does not throw.
+/// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
+/// held: false when OpenSSL makes none. The owner's logger does not throw.
 fn create(owner: &mut Lent<'_>) -> bool {
     let state = owner.0;
     // `configuration` copies the fields, so no borrow of them is kept across
@@ -326,7 +330,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
 ///
 /// # Safety
-/// `context` is a live owner, as for `swr_v1_tls_owner_create`.
+/// `context` is live/exclusive, and its logger does not throw.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10SSLContext6createEv")
@@ -335,7 +339,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
 pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> bool {
     crate::swoole_ssl_init();
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_tls_owner_create(context) }
+    create(&mut unsafe { Lent::new(context) })
 }
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
@@ -812,7 +816,7 @@ mod tests {
                 ),
                 0
             );
-            assert!(swr_v1_tls_owner_create(source.owner));
+            assert!(create(&mut Lent::new(source.owner)));
             let context = (*source.fields).context_ptr();
             assert_eq!(
                 swr_v1_tls_owner_assign(destination.owner, source.owner).status,
@@ -864,7 +868,7 @@ mod tests {
                 ),
                 0
             );
-            assert!(swr_v1_tls_owner_create(owner));
+            assert!(create(&mut Lent::new(owner)));
             let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
             assert!(password_binding_matches(ctx, slot, slot_password));

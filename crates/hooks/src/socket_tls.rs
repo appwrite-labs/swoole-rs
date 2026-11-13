@@ -12,7 +12,7 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, OwnedTlsSessionResult, TlsContext, owner_fields,
-    owner_tls_host_name, reason_text, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    owner_host_name, reason_text, swoole_ssl_init, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -53,9 +53,7 @@ impl Co {
         let Some(owner) = self.tls_context() else {
             return Vec::new();
         };
-        let name = owner_tls_host_name(&owner);
-        // SAFETY: the view's bytes, which `owner` keeps live, copied at once.
-        unsafe { core::slice::from_raw_parts(name.data.cast::<u8>(), name.length) }.to_vec()
+        owner_host_name(&owner).to_vec()
     }
 
     /// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the

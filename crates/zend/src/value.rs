@@ -1,8 +1,14 @@
 //! Raw zval reads and stores, and the empty string and array.
 use crate::sys::{
-    _zval_struct__bindgen_ty_1, HashTable, IS_LONG, zend_empty_array, zend_empty_string, zend_long,
-    zend_object, zend_string, zend_value, zval,
+    _zval_struct__bindgen_ty_1, HashTable, IS_LONG, zend_empty_array, zend_long, zend_object,
+    zend_string, zend_value, zval,
 };
+
+unsafe extern "C" {
+    /// Zend's interned empty string: set at startup, before any extension code
+    /// runs, and never written again.
+    safe static zend_empty_string: *mut zend_string;
+}
 
 /// Every `zend_value` field sits at the zval's first byte, so one read takes it.
 const _: () = assert!(
@@ -57,9 +63,7 @@ pub unsafe fn set_long(target: *mut zval, value: zend_long) {
 #[must_use]
 #[inline]
 pub fn empty_string() -> *mut zend_string {
-    // SAFETY: Zend sets it at startup, before any extension code runs, and
-    // never changes it.
-    unsafe { zend_empty_string }
+    zend_empty_string
 }
 
 /// `(zend_array *) &zend_empty_array`, the immutable empty array
@@ -74,5 +78,3 @@ pub fn empty_array() -> *mut HashTable {
 pub use crate::sys::add_next_index_str as push_str;
 /// `array_init(target)`.
 pub use crate::sys::swr_zend_array_init as array_init;
-/// `ZVAL_STR(target, string)`: `target` takes over the string's reference.
-pub use crate::sys::swr_zval_str as set_str;

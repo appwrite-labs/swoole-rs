@@ -19,12 +19,11 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, Owned, OwnedArray, Value, ZString, bailout, handlers,
-    string::bytes,
+    Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     sys::{
         self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
         swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
-        zend_observer_fcall_handlers, zend_string, zval,
+        zend_observer_fcall_handlers, zval,
     },
 };
 
@@ -60,8 +59,6 @@ fn blocking_detection() -> bool {
     config().is_some_and(|c| c.blocking_detection)
 }
 
-/// `zend_function.type`'s `ZEND_INTERNAL_FUNCTION`.
-const INTERNAL_FUNCTION: u8 = 1;
 /// The `internal_function.reserved` slot holding a blocking-detection span.
 const SPAN_SLOT: usize = 4;
 /// `DEBUG_BACKTRACE_IGNORE_ARGS`.
@@ -392,12 +389,6 @@ fn profiling_begin(func: Func<'_>) {
     });
 }
 
-/// `ZSTR_VAL` up to its first NUL, as `%s` and `std::string(const char *)` read it.
-fn c_bytes<'a>(string: *const zend_string) -> &'a [u8] {
-    // SAFETY: a live string.
-    until_nul(unsafe { bytes(string) })
-}
-
 /// `all` up to its first NUL.
 fn until_nul(all: &[u8]) -> &[u8] {
     all.split(|&b| b == 0).next().unwrap_or(all)
@@ -525,7 +516,7 @@ struct Span {
 /// The function a live frame calls, which Zend keeps alive for the call.
 #[derive(Clone, Copy)]
 struct Func<'a> {
-    common: &'a z::_zend_function__bindgen_ty_1,
+    function: Function<'a>,
     /// `internal_function.reserved[SPAN_SLOT]` of an internal function.
     span: Option<&'a Cell<*mut c_void>>,
 }
@@ -537,14 +528,9 @@ impl Func<'_> {
     unsafe fn of(frame: *mut zend_execute_data) -> Option<Self> {
         // SAFETY: per the caller.
         let func = unsafe { (*frame).func };
-        if func.is_null() {
-            return None;
-        }
-        // `zend_function` is a union, so each member starts at its address.
-        let common = func.cast::<z::_zend_function__bindgen_ty_1>();
-        // SAFETY: a live function; every one starts with its common header.
-        let common = unsafe { &*common };
-        let span = if common.type_ == INTERNAL_FUNCTION {
+        // SAFETY: null or the function the live frame calls.
+        let function = unsafe { Function::from_ptr(func) }?;
+        let span = if function.kind() == Function::INTERNAL {
             let internal = func.cast::<z::zend_internal_function>();
             let slot = internal
                 .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
@@ -556,22 +542,24 @@ impl Func<'_> {
         } else {
             None
         };
-        (!common.function_name.is_null()).then_some(Self { common, span })
+        function.name().map(|_| Self { function, span })
     }
 
     fn internal(self) -> bool {
-        self.common.type_ == INTERNAL_FUNCTION
+        self.function.kind() == Function::INTERNAL
     }
 
     /// `Class::function`, or the bare function name.
     fn name(self) -> Vec<u8> {
         let mut name = Vec::new();
-        if !self.common.scope.is_null() {
-            // SAFETY: the function's live class entry.
-            name.extend_from_slice(c_bytes(unsafe { (*self.common.scope).name }));
+        // `ZSTR_VAL` up to its first NUL, as `%s` reads it.
+        if let Some(class) = self.function.scope_name() {
+            name.extend_from_slice(until_nul(class.bytes()));
             name.extend_from_slice(b"::");
         }
-        name.extend_from_slice(c_bytes(self.common.function_name));
+        if let Some(function) = self.function.name() {
+            name.extend_from_slice(until_nul(function.bytes()));
+        }
         name
     }
 

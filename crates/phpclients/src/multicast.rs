@@ -102,12 +102,12 @@ fn host_error() -> c_int {
     #[cfg(target_os = "linux")]
     {
         unsafe extern "C" {
-            fn __h_errno_location() -> *mut c_int;
+            /// glibc's per-thread `h_errno` slot: no arguments, and it only
+            /// returns the calling thread's address.
+            safe fn __h_errno_location() -> *mut c_int;
         }
-        // SAFETY: glibc's per-thread slot.
-        let slot = unsafe { __h_errno_location() };
-        // SAFETY: a live slot.
-        -10000 - unsafe { *slot }
+        // SAFETY: the calling thread's live slot.
+        -10000 - unsafe { *__h_errno_location() }
     }
     #[cfg(not(target_os = "linux"))]
     {

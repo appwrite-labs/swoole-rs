@@ -1,15 +1,94 @@
 //! Internal classes registered at MINIT, with their object handlers.
-use crate::sys::{
-    std_object_handlers, swr_zend_http_property_offset, swr_zend_register_class, zend_class_entry,
-    zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string,
-    zend_throw_error, zend_throw_exception,
+use crate::{
+    ZStr,
+    sys::{
+        HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_http_property_offset,
+        swr_zend_register_class, zend_class_entry, zend_function_entry, zend_hash_find, zend_long,
+        zend_object, zend_object_handlers, zend_string, zend_throw_error, zend_throw_exception,
+    },
 };
 use std::{
     ffi::{CStr, c_char, c_void},
+    marker::PhantomData,
     mem::offset_of,
     ptr,
     sync::atomic::{AtomicPtr, Ordering},
 };
+
+unsafe extern "C" {
+    /// Zend's standard object handlers: a C `const`, initialised statically and
+    /// never written.
+    safe static std_object_handlers: zend_object_handlers;
+}
+
+/// A live class entry, borrowed for `'a`: an object's class, which outlives it,
+/// or a registered internal class, which lives for the process. Zend may change
+/// the entry (its flags, its statics) at any time, so each read takes one field
+/// through the pointer and no reference to the entry is ever made.
+#[derive(Clone, Copy)]
+pub struct ClassEntry<'a>(
+    pub(crate) *mut zend_class_entry,
+    pub(crate) PhantomData<&'a zend_class_entry>,
+);
+
+impl<'a> ClassEntry<'a> {
+    /// The class at `entry`, or None for null.
+    /// # Safety
+    /// `entry` is null or a class entry that lives for `'a`.
+    #[must_use]
+    #[inline]
+    pub unsafe fn from_ptr(entry: *mut zend_class_entry) -> Option<Self> {
+        (!entry.is_null()).then_some(Self(entry, PhantomData))
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn as_ptr(self) -> *mut zend_class_entry {
+        self.0
+    }
+
+    /// `ce->name`: the class's name, which it keeps for as long as it lives.
+    #[must_use]
+    #[inline]
+    pub fn name(self) -> &'a ZStr {
+        // SAFETY: a live class entry, per the type.
+        let name = unsafe { (*self.0).name };
+        // SAFETY: every class has a name, a string the class holds for `'a`;
+        // `ZStr` is a transparent string.
+        unsafe { &*name.cast::<ZStr>() }
+    }
+
+    /// `ce->ce_flags` (`ZEND_ACC_*`), as they are now.
+    #[must_use]
+    #[inline]
+    pub fn flags(self) -> u32 {
+        // SAFETY: a live class entry, per the type.
+        unsafe { (*self.0).ce_flags }
+    }
+
+    /// `ce->parent`: the class this one extends, once Zend resolved it
+    /// (`ZEND_ACC_RESOLVED_PARENT`: every internal class and every linked user
+    /// class, so the class of any object); None for no parent, or one still
+    /// held by name.
+    #[must_use]
+    #[inline]
+    pub fn parent(self) -> Option<Self> {
+        if self.flags() & ZEND_ACC_RESOLVED_PARENT == 0 {
+            return None;
+        }
+        // The union of the parent's entry and, until it is resolved, its name:
+        // two pointers, either of which starts it.
+        let slot = self
+            .0
+            .wrapping_byte_add(offset_of!(zend_class_entry, __bindgen_anon_1))
+            .cast::<*mut zend_class_entry>();
+        // SAFETY: a field of a live class entry; the flag says it holds the
+        // parent's entry.
+        let parent = unsafe { slot.read() };
+        // A class keeps its parent alive.
+        (!parent.is_null()).then_some(Self(parent, PhantomData))
+    }
+}
 
 /// A class entry and the object handlers its objects share: process-global,
 /// written once at MINIT and read-only afterwards.
@@ -61,8 +140,7 @@ impl Class {
         // SAFETY: MINIT, with a NUL-terminated name and the caller's static table.
         let entry =
             unsafe { swr_zend_register_class(name.as_ptr(), name.count_bytes(), methods, parent) };
-        // SAFETY: the standard handlers are initialised before any extension's MINIT.
-        let mut handlers = unsafe { std_object_handlers };
+        let mut handlers = std_object_handlers;
         // SAFETY: Zend returned the registered entry, which nothing else uses yet.
         configure(unsafe { &mut *entry }, &mut handlers);
         if self.handlers.load(Ordering::Acquire).is_null() {
@@ -78,18 +156,19 @@ impl Class {
         self.entry.load(Ordering::Acquire)
     }
 
+    /// The registered class; None before MINIT registers it.
+    #[must_use]
+    pub fn handle(&self) -> Option<ClassEntry<'static>> {
+        let entry = self.entry();
+        // A registered internal class lives for the process.
+        (!entry.is_null()).then_some(ClassEntry(entry, PhantomData))
+    }
+
     /// `ZSTR_VAL(ce->name)`: the name the class registered under (up to a
     /// NUL); None before MINIT registers it.
     #[must_use]
     pub fn name(&self) -> Option<&CStr> {
-        let entry = self.entry();
-        if entry.is_null() {
-            return None;
-        }
-        // SAFETY: a registered class, which lives for the process.
-        let name = unsafe { (*entry).name };
-        // SAFETY: a class name is a NUL-terminated zend_string its class keeps.
-        Some(unsafe { CStr::from_ptr(text(name)) })
+        Some(self.handle()?.name().c_str())
     }
 
     /// `object_init_ex` of this class, then its `__construct(args)` (Swoole's
@@ -162,23 +241,19 @@ pub unsafe extern "C" fn unset_property_deny(
     member: *mut zend_string,
     cache_slot: *mut *mut c_void,
 ) {
-    // SAFETY: a live object.
-    let class = unsafe { (*object).ce };
-    // SAFETY: class entries live for the process.
-    let own = unsafe { &*class };
+    // SAFETY: a live object, per Zend.
+    let own = unsafe { crate::Props::new(ptr::null_mut(), object) }.class_entry();
+    // The class the object's own inherits its declared properties from.
     let mut root = own;
-    loop {
-        // SAFETY: an internal class's union holds its parent entry.
-        let parent = unsafe { root.__bindgen_anon_1.parent };
-        if parent.is_null() {
-            break;
-        }
-        // SAFETY: as above.
-        root = unsafe { &*parent };
+    while let Some(parent) = root.parent() {
+        root = parent;
     }
-    // SAFETY: a live hash table and member name.
-    if !unsafe { zend_hash_find(&raw const root.properties_info, member) }.is_null() {
-        let name = own.name;
+    let declared = root
+        .as_ptr()
+        .wrapping_byte_add(offset_of!(zend_class_entry, properties_info))
+        .cast::<HashTable>();
+    // SAFETY: a live class's property table and the member name.
+    if !unsafe { zend_hash_find(declared, member) }.is_null() {
         // SAFETY: a printf format whose two `%s` take the NUL-terminated member
         // and class names.
         unsafe {
@@ -186,13 +261,12 @@ pub unsafe extern "C" fn unset_property_deny(
                 ptr::null_mut(),
                 c"Property %s of class %s cannot be unset".as_ptr(),
                 text(member),
-                text(name),
+                text(own.name().as_ptr()),
             );
         }
         return;
     }
-    // SAFETY: the standard handlers are initialised and immutable.
-    if let Some(unset) = unsafe { std_object_handlers.unset_property } {
+    if let Some(unset) = std_object_handlers.unset_property {
         // SAFETY: forwarding Zend's own arguments.
         unsafe { unset(object, member, cache_slot) };
     }
@@ -203,12 +277,9 @@ pub unsafe extern "C" fn unset_property_deny(
 /// `object` is live; the name lives as long as its class.
 #[must_use]
 pub unsafe fn class_name<'a>(object: *const zend_object) -> &'a CStr {
-    // SAFETY: a live object.
-    let class = unsafe { (*object).ce };
-    // SAFETY: class entries live for the process.
-    let name = unsafe { (*class).name };
-    // SAFETY: a class name is a NUL-terminated zend_string.
-    unsafe { CStr::from_ptr(text(name)) }
+    // SAFETY: a live object, per the caller.
+    let props = unsafe { crate::Props::new(ptr::null_mut(), object.cast_mut()) };
+    props.class_entry().name().c_str()
 }
 
 /// `ZSTR_VAL`: a `zend_string`'s NUL-terminated bytes.

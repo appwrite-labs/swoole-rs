@@ -1,13 +1,119 @@
 //! Static-method classes such as `Swoole\Timer`: global function aliases of
 //! their methods, a `create_object` that refuses instances, and array results.
+//! Also [`Function`], a borrowed `zend_function`.
 use crate::{
-    Call,
+    Call, ClassEntry, ZStr,
     sys::{
-        _zval_struct__bindgen_ty_1, IS_UNDEF, swr_zend_class_set_create_object, zend_class_entry,
-        zend_function_entry, zend_internal_arg_info, zend_object, zend_object_handlers, zval,
+        _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF,
+        swr_zend_class_set_create_object, zend_class_entry, zend_function, zend_function_entry,
+        zend_internal_arg_info, zend_object, zend_object_handlers, zend_op, zend_op_array, zval,
     },
 };
-use std::{ffi::CStr, mem::offset_of, ptr};
+use std::{ffi::CStr, marker::PhantomData, mem::offset_of, ptr};
+
+/// A live `zend_function`, borrowed for `'a`: one a frame is calling, or a
+/// resolved callable's handler. Zend may change it (its flags, its run-time
+/// cache) while PHP runs, so each read copies the header every kind of function
+/// starts with and no reference to the function is ever made.
+#[derive(Clone, Copy)]
+pub struct Function<'a>(
+    pub(crate) *mut zend_function,
+    pub(crate) PhantomData<&'a zend_function>,
+);
+
+impl<'a> Function<'a> {
+    /// `zend_function.type`'s `ZEND_INTERNAL_FUNCTION`.
+    pub const INTERNAL: u8 = 1;
+    /// `zend_function.type`'s `ZEND_USER_FUNCTION`.
+    pub const USER: u8 = 2;
+
+    /// The function at `function`, or None for null.
+    /// # Safety
+    /// `function` is null or a function that lives for `'a`.
+    #[must_use]
+    #[inline]
+    pub unsafe fn from_ptr(function: *mut zend_function) -> Option<Self> {
+        (!function.is_null()).then_some(Self(function, PhantomData))
+    }
+
+    #[must_use]
+    #[inline]
+    pub fn as_ptr(self) -> *mut zend_function {
+        self.0
+    }
+
+    /// `function->common`, copied: plain integers and pointers.
+    #[inline]
+    fn common(self) -> _zend_function__bindgen_ty_1 {
+        // SAFETY: a live function, per the type; `zend_function` is a union,
+        // every member of which starts with this header.
+        unsafe { self.0.cast::<_zend_function__bindgen_ty_1>().read() }
+    }
+
+    /// `function->type`: [`Self::INTERNAL`], [`Self::USER`] or `ZEND_EVAL_CODE`.
+    #[must_use]
+    #[inline]
+    pub fn kind(self) -> u8 {
+        self.common().type_
+    }
+
+    /// `function->common.fn_flags` (`ZEND_ACC_*`), as they are now.
+    #[must_use]
+    #[inline]
+    pub fn flags(self) -> u32 {
+        self.common().fn_flags
+    }
+
+    /// `function->common.num_args`: the declared parameters, without a variadic one.
+    #[must_use]
+    #[inline]
+    pub fn num_args(self) -> u32 {
+        self.common().num_args
+    }
+
+    /// `function->common.function_name`; None for a file's or `eval`'s code.
+    #[must_use]
+    #[inline]
+    pub fn name(self) -> Option<&'a ZStr> {
+        // SAFETY: null, or the name the function holds for as long as it lives.
+        unsafe { ZStr::from_ptr(self.common().function_name) }
+    }
+
+    /// `function->common.scope`: a method's class; None for a plain function.
+    #[must_use]
+    #[inline]
+    pub fn scope(self) -> Option<ClassEntry<'a>> {
+        let scope = self.common().scope;
+        // A function's class outlives it.
+        (!scope.is_null()).then_some(ClassEntry(scope, PhantomData))
+    }
+
+    /// `function->common.scope->name`: a method's class's name.
+    #[must_use]
+    #[inline]
+    pub fn scope_name(self) -> Option<&'a ZStr> {
+        self.scope().map(ClassEntry::name)
+    }
+
+    /// `&function->op_array` of user code (`ZEND_USER_CODE(type)`: a user
+    /// function or `eval`'s code); None for an internal function. A pointer:
+    /// Zend writes the op array's caches while it runs.
+    #[must_use]
+    #[inline]
+    pub fn op_array(self) -> Option<*mut zend_op_array> {
+        (self.kind() != Self::INTERNAL).then(|| self.0.cast())
+    }
+
+    /// `function->op_array.opcodes`: user code's first opline; None for an
+    /// internal function.
+    #[must_use]
+    #[inline]
+    pub fn opcodes(self) -> Option<*mut zend_op> {
+        let op_array = self.op_array()?;
+        // SAFETY: a live user function is its op array.
+        Some(unsafe { (*op_array).opcodes })
+    }
+}
 
 impl Call {
     /// `add_assoc_bool_ex(return_value, key, value)`, after `set_array`
