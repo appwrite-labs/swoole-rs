@@ -33,18 +33,6 @@ fn discard(value: Owned) {
 }
 
 /// # Safety
-/// A live source zval. This intentionally copies only the slot, without retaining its payload.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -> *mut zval {
-    // SAFETY: aligned, uninitialized request storage, not a reference-count operation.
-    let dest = unsafe { sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: the source is initialized, the fresh allocation has space for
-    // one slot, and neither overlaps the other.
-    unsafe { dest.copy_from_nonoverlapping(value, 1) };
-    dest
-}
-
-/// # Safety
 /// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
 pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
     // SAFETY: read the initialized cache without keeping a Rust borrow across PHP.
