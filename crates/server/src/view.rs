@@ -330,14 +330,12 @@ impl<'a> Server<'a> {
 
     /// Event worker `id`'s count of the server's connections (base mode's
     /// `gs->connection_nums[id]`), if the server counts them per worker.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn worker_connections(self, id: usize) -> Option<&'a AtomicU32> {
         self.cell(self.counters().cells(), id)
     }
 
     /// Event worker `id`'s count of `port`'s connections, as [`Self::worker_connections`];
     /// `port` is one of this server's.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn port_worker_connections(
         self,
         port: Port<'a>,

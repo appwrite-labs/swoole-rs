@@ -77,7 +77,6 @@ fn accept<'s>(
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
 ) -> Option<(*mut DtlsSession, Socket<'s>)> {
-    let port = listen.raw();
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -122,11 +121,8 @@ fn accept<'s>(
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        // SAFETY: the live server and port, and the socket just made.
-        conn = unsafe {
-            crate::server_methods::add_connection(serv.raw(), port, sock.cast(), server_fd)
-        }
-        .cast();
+        conn = crate::connection::add(serv, listen, socket, server_fd)
+            .map_or(ptr::null_mut(), crate::Connection::as_ptr);
         if conn.is_null() {
             break 'setup;
         }

@@ -23,7 +23,7 @@ const SOCK_TCP: c_int = 1;
 const FD_STREAM_SERVER: c_int = 1;
 
 /// A process-mode server with one reactor thread, its tables and shared counters,
-/// and one TCP port listening on 127.0.0.1.
+/// one TCP port listening on 127.0.0.1, and this thread's reactor.
 pub(crate) struct LiveServer {
     head: Box<Fields>,
     state: Box<ServerState>,
@@ -31,6 +31,8 @@ pub(crate) struct LiveServer {
     port_counters: Box<PortCounters>,
     port: *mut PortConfig,
     listener: *mut SocketRecord,
+    /// This thread's reactor, which the fixture made.
+    reactor: *mut core::ffi::c_void,
     /// The listening socket's fd.
     pub listener_fd: c_int,
     /// The port's address.
@@ -92,6 +94,9 @@ impl LiveServer {
         slot.set_object(port.cast());
 
         let head = Box::new(Fields::of(&state));
+        // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.
+        let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
+        swoole_rs_corebase::set_thread_reactor(reactor);
         Self {
             head,
             state,
@@ -99,6 +104,7 @@ impl LiveServer {
             port_counters,
             port,
             listener,
+            reactor,
             listener_fd: fd,
             address,
             _sessions: sessions,
@@ -127,10 +133,48 @@ impl LiveServer {
     pub(crate) fn listener(&self) -> *mut SocketRecord {
         self.listener
     }
+
+    /// A client connected to the port, once the listener can accept it.
+    pub(crate) fn connect(&self) -> std::net::TcpStream {
+        let client = std::net::TcpStream::connect(self.address).unwrap();
+        let mut ready = libc::pollfd {
+            fd: self.listener_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one live pollfd.
+        assert_eq!(
+            unsafe { libc::poll(&raw mut ready, 1, 5000) },
+            1,
+            "acceptable"
+        );
+        client
+    }
+
+    /// The listening socket's handle.
+    pub(crate) fn port_socket(&self) -> swoole_rs_reactor::Socket<'_> {
+        // SAFETY: the listener this fixture owns for the borrow.
+        unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) }.unwrap()
+    }
+
+    /// The port's settings.
+    pub(crate) fn port(&self) -> &PortConfig {
+        // SAFETY: the port this fixture boxed and owns for the borrow.
+        unsafe { &*self.port }
+    }
+
+    /// This thread's reactor, which the fixture made.
+    pub(crate) fn reactor(&self) -> crate::reactor_handle::Reactor {
+        // SAFETY: the reactor this fixture made, live until it drops, on this thread.
+        unsafe { crate::reactor_handle::Reactor::of(self.reactor) }
+    }
 }
 
 impl Drop for LiveServer {
     fn drop(&mut self) {
+        swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
+        // SAFETY: the reactor `new` made, which nothing uses afterwards.
+        unsafe { swoole_rs_reactor::swr_v1_reactor_delete(self.reactor) };
         // SAFETY: the listener this fixture opened and boxed, used by nothing after it.
         unsafe {
             libc::close(self.listener_fd);
@@ -144,26 +188,20 @@ impl Drop for LiveServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server_methods::NativeContext;
     use core::sync::atomic::Ordering::Relaxed;
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accepts_a_real_connection_into_the_tables_and_counters() {
         let live = LiveServer::new();
-        let client = std::net::TcpStream::connect(live.address).unwrap();
+        let client = live.connect();
         let listener = live.listener();
         let fd = live.listener_fd;
         // SAFETY: as above, for the event's life.
         let event =
             unsafe { swoole_rs_reactor::Event::new(fd, 0, FD_STREAM_SERVER, listener.cast()) };
-        let mut ctx = NativeContext::new(live.server().raw());
-        ctx.server_fd = fd;
-        ctx.event = Some(&event);
-        // SAFETY: the live server and the listener's event; a process-mode accept
-        // hands each connection to a reactor thread, so it reads no reactor.
-        let result = unsafe { crate::run_method(crate::ops::RUN_ACCEPT, 0, &mut ctx) };
-        assert_eq!(result, crate::SW_OK, "the batch ends at EAGAIN");
+        let result = crate::connection::accept(live.server(), live.reactor(), &event);
+        assert_eq!(result, 0, "the batch ends at EAGAIN");
 
         let session = live.state().session(1).unwrap();
         let accepted = session.fd();

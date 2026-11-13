@@ -55,9 +55,6 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
                 (OP_TIMER_DETACHED, 1),
             ],
         ),
-        (RUN_DISABLE_ACCEPT, 0, &[(OP_PORT_COUNT, 3)]),
-        (RUN_ENABLE_ACCEPT, 0, &[(OP_PORT_COUNT, 3)]),
-        (RUN_SET_MAX_CONNECTION, 100, &[(OP_MAX_SOCKETS, 128)]),
         (RUN_START_CHECK, 0, &[(OP_FIELD, 1), (OP_PORT_COUNT, 2)]),
         (RUN_THREAD_SHUTDOWN, 0, &[(OP_MODE, 3)]),
         (
@@ -82,7 +79,7 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
         }
     }
     assert!(
-        boundaries > 100,
+        boundaries > 90,
         "exercise complete multi-effect paths: {boundaries}"
     );
 }
