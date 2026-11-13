@@ -80,21 +80,17 @@ pub(crate) enum RecvOp {
 /// `SW_WAIT`.
 pub(crate) const SW_WAIT: i32 = 2;
 
-/// A `SocketImpl *`: owned (deleted on drop), or a hooked fd's, lent by the
-/// socket map until the fd's hooked close.
+/// A `SocketImpl *`, owned: deleted on drop.
 pub(crate) struct Socket {
-    /// The socket's handle, live while this owns or borrows it.
+    /// The socket's handle, live while this owns it.
     socket: Co,
-    owned: bool,
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        if self.owned {
-            // SAFETY: the socket is owned and live; `free` is native.
-            if unsafe { bailout::trap(swr_v1_hook_co_socket_free, self.raw()) }.is_err() {
-                Bailout.defer();
-            }
+        // SAFETY: the socket is owned and live; `free` is native.
+        if unsafe { bailout::trap(swr_v1_hook_co_socket_free, self.raw()) }.is_err() {
+            Bailout.defer();
         }
     }
 }
@@ -127,21 +123,9 @@ impl Socket {
         socket
     }
 
-    /// The coroutine socket of hooked `fd`, if any.
-    pub(crate) fn of_fd(fd: i32) -> Option<Self> {
-        let socket = swoole_rs_hooks::socket_map::get(fd)?;
-        Some(Self {
-            socket,
-            owned: false,
-        })
-    }
-
     /// The owner of `socket`, which `make` made and nothing else holds.
     fn owning(socket: Co) -> Self {
-        Self {
-            socket,
-            owned: true,
-        }
+        Self { socket }
     }
 
     fn raw(&self) -> *mut c_void {
@@ -285,17 +269,6 @@ impl Socket {
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
         self.co().shutdown(how)
-    }
-
-    /// `poll(SW_EVENT_WRITE or SW_EVENT_READ, timeout)`.
-    pub(crate) fn poll(&self, write: bool, timeout: f64) -> bool {
-        let event = if write { co::WRITE } else { co::READ };
-        self.co().poll(event, timeout)
-    }
-
-    /// `get_err()`: `swoole_strerror(errCode)`.
-    pub(crate) fn strerror(&self) -> Cow<'static, CStr> {
-        strerror(self.error())
     }
 
     pub(crate) fn check_liveness(&self) -> bool {

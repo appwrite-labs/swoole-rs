@@ -134,9 +134,6 @@ int swr_case_event_add(Socket *socket, int events) {
 int swr_case_event_del(Socket *socket) {
     return swoole_event_del(socket);
 }
-int swr_case_event_add_or_update(Socket *socket, int event) {
-    return swoole_event_add_or_update(socket, event);
-}
 ssize_t swr_case_event_write(Socket *socket, const void *data, size_t len) {
     return swoole_event_write(socket, data, len);
 }
@@ -166,9 +163,6 @@ bool swr_case_pair_ready(const SocketPair *pair) {
 }
 Socket *swr_case_pair_socket(const SocketPair *pair, bool master) {
     return pair->get_socket(master);
-}
-ssize_t swr_case_pair_write(const SocketPair *pair, const void *data, size_t len) {
-    return pair->write(data, len);
 }
 void swr_case_pair_set_blocking(SocketPair *pair, bool blocking) {
     pair->set_blocking(blocking);
@@ -223,9 +217,6 @@ size_t swr_case_random_bytes(char *buf, size_t size) {
 }
 String *swr_case_tg_buffer() {
     return sw_tg_buffer();
-}
-void swr_case_string_grow(String *str, size_t n) {
-    str->grow(n);
 }
 void swr_case_string_append(String *str, const char *data, size_t len) {
     str->append(data, len);

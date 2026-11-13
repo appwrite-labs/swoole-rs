@@ -175,7 +175,6 @@ unsafe extern "C" {
     fn swr_case_event_wait() -> c_int;
     fn swr_case_event_add(socket: *mut Socket, events: c_int) -> c_int;
     fn swr_case_event_del(socket: *mut Socket) -> c_int;
-    fn swr_case_event_add_or_update(socket: *mut Socket, event: c_int) -> c_int;
     fn swr_case_event_write(socket: *mut Socket, data: *const c_void, len: usize) -> isize;
     fn swr_case_event_writev(socket: *mut Socket, iov: *const Iovec, iovcnt: usize) -> isize;
     fn swr_case_event_get_socket(fd: c_int) -> *mut Socket;
@@ -186,7 +185,6 @@ unsafe extern "C" {
     fn swr_case_pair_delete(pair: *mut SocketPair);
     fn swr_case_pair_ready(pair: *const SocketPair) -> bool;
     fn swr_case_pair_socket(pair: *const SocketPair, master: bool) -> *mut Socket;
-    fn swr_case_pair_write(pair: *const SocketPair, data: *const c_void, len: usize) -> isize;
     fn swr_case_pair_set_blocking(pair: *mut SocketPair, blocking: bool);
     fn swr_case_unix_socket_set_buffer_size(pair: *const SocketPair, size: usize) -> bool;
     fn swr_case_pair_close(pair: *mut SocketPair, which: c_int) -> bool;
@@ -217,7 +215,6 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn swr_case_random_bytes(buf: *mut c_char, size: usize) -> usize;
     fn swr_case_tg_buffer() -> *mut CppString;
-    fn swr_case_string_grow(str: *mut CppString, n: usize);
     fn swr_case_string_append(str: *mut CppString, data: *const c_char, len: usize);
 }
 
@@ -322,6 +319,26 @@ static REACTOR_DESTROY_COUNT: AtomicI32 = AtomicI32::new(0);
 unsafe fn running(reactor: *mut Reactor) -> swoole_rs_ffi::Running<'static> {
     // SAFETY: as the caller guarantees; the cases hold no reference to its state.
     unsafe { swoole_rs_ffi::Running::new(reactor.cast()) }
+}
+
+/// `swoole_event_add_or_update(socket, event)`, which is crates/reactor's.
+///
+/// # Safety
+/// `socket` is a live socket that stays one while registered.
+unsafe fn event_add_or_update(socket: *mut Socket, event: c_int) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
+    swoole_rs_ffi::event_api::add_or_update(socket, event)
+}
+
+/// `pair->write(data, len)`, which is crates/tls's.
+///
+/// # Safety
+/// `pair` is a live `SocketPair`.
+unsafe fn pair_write(pair: *const SocketPair, data: &[u8]) -> isize {
+    // SAFETY: as the caller guarantees; the C++ class is the Rust record.
+    let pair = unsafe { &*pair.cast::<swoole_rs_ffi::socket_pair::SocketPair>() };
+    swoole_rs_ffi::socket_pair::write_from(pair, data)
 }
 
 /// `reactor->get_handler(fd_type, event)`, as its address.
@@ -466,10 +483,7 @@ unsafe fn wait() {
         );
         assert_eq!(ret, SW_OK);
 
-        assert_eq!(
-            swr_case_pair_write(p, HELLO.as_ptr().cast(), HELLO.len()),
-            HELLO.len() as isize
-        );
+        assert_eq!(pair_write(p, HELLO), HELLO.len() as isize);
 
         assert_eq!(swr_case_event_wait(), SW_OK);
         assert!(swr_case_tg_reactor().is_null());
@@ -601,7 +615,11 @@ extern "C" fn read_2m(reactor: *mut Reactor, event: *mut Event) -> c_int {
         if n <= 0 {
             return SW_ERR;
         }
-        swr_case_string_grow(tg_buf, n as usize);
+        // `String::grow`: count the bytes read, doubling a buffer they fill.
+        (*tg_buf).length += n as usize;
+        if (*tg_buf).length == (*tg_buf).size {
+            (*tg_buf.cast::<swoole_rs_ffi::string::CppString>()).reserve((*tg_buf).size * 2);
+        }
         if (*tg_buf).length == DATA_SIZE {
             swr_case_string_append(tg_buf, c"".as_ptr(), 1);
             del(reactor, socket);
@@ -963,10 +981,10 @@ unsafe fn add_or_update() {
         assert!(!swr_case_tg_reactor().is_null());
 
         let socket = sock(p, false);
-        assert_eq!(swr_case_event_add_or_update(socket, SW_EVENT_READ), SW_OK);
+        assert_eq!(event_add_or_update(socket, SW_EVENT_READ), SW_OK);
         assert!((*socket).events & SW_EVENT_READ != 0);
 
-        assert_eq!(swr_case_event_add_or_update(socket, SW_EVENT_WRITE), SW_OK);
+        assert_eq!(event_add_or_update(socket, SW_EVENT_WRITE), SW_OK);
         assert!((*socket).events & SW_EVENT_READ != 0);
         assert!((*socket).events & SW_EVENT_WRITE != 0);
 

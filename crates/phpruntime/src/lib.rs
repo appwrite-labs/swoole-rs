@@ -26,7 +26,6 @@
     )
 )]
 
-mod connect;
 mod functions;
 mod putenv;
 mod select;
@@ -34,7 +33,6 @@ mod sleep;
 mod socket;
 mod stream;
 mod transport;
-pub use connect::*;
 pub use putenv::*;
 pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, report, strerror};
 pub use stream::*;

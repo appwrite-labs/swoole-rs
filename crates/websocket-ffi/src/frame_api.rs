@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/protocol/websocket.cc (Swoole contributors).
 //! `src/protocol/websocket.cc`'s codec entry points over `swoole::String` and
-//! `websocket::Frame`. With `upstream-symbols` each is defined under its upstream
-//! (Itanium) symbol, and the file leaves the build.
+//! `websocket::Frame`, as safe functions over slices. Protocol tables hold
+//! [`get_package_length`], which `upstream-symbols` also defines under its upstream
+//! (Itanium) symbol.
 use std::ffi::{CStr, c_char, c_int};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
@@ -121,179 +122,127 @@ pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool
     Ok(decoded)
 }
 
-macro_rules! upstream {
-    ($($symbol:literal => $item:item)*) => {$(
-        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
-        $item
-    )*};
+/// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(
+        export_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"
+    )
+)]
+pub extern "C" fn get_package_length(
+    _protocol: *const Protocol,
+    _socket: *mut std::ffi::c_void,
+    pl: &mut PacketLength,
+) -> isize {
+    let bytes = pl.bytes();
+    if bytes.len() < 2 {
+        return 0;
+    }
+    let (length, header) = frame_length(bytes);
+    if let Some(header) = header {
+        pl.header_len = header;
+    }
+    length.c_cast::<isize>()
 }
 
-upstream! {
-    "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE" =>
-    /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-    pub extern "C" fn get_package_length(
-        _protocol: *const Protocol,
-        _socket: *mut std::ffi::c_void,
-        pl: &mut PacketLength,
-    ) -> isize {
-        let bytes = pl.bytes();
-        if bytes.len() < 2 {
-            return 0;
-        }
-        let (length, header) = frame_length(bytes);
-        if let Some(header) = header {
-            pl.header_len = header;
-        }
-        length.c_cast::<isize>()
+/// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`
+/// over the payload's bytes. A header-only frame takes their count and writes none.
+pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
+    let length = data.len();
+    if control_invalid(opcode, flags, length) {
+        control_warning(
+            c"websocket::encode",
+            opcode,
+            u8::from(flags & FIN != 0),
+            length,
+        );
+        return false;
     }
+    let size = encoded_size(length, flags);
+    let data = if flags & HEADER_ONLY != 0 { &[] } else { data };
+    append_frame(buffer, size, |out| {
+        encode_parts(length, data, opcode, flags, out)
+    }) && !header_only_mask(flags)
+}
 
-    "_ZN6swoole9websocket4maskEPcmPKc" =>
-    /// `void mask(char *data, size_t len, const char *mask_key)`: XORs `data` with the
-    /// four-byte key. Zero length is a no-op and permits null pointers; a null pointer
-    /// or a length past `isize::MAX` otherwise writes nothing and warns.
-    ///
-    /// # Safety
-    /// For nonzero length, `data` covers `len` exclusive writable bytes and `mask_key`
-    /// four readable ones. The key may overlap data: it is copied before any mutable
-    /// borrow. All other aliases must remain unused for this call.
-    pub unsafe extern "C" fn mask(data: *mut c_char, len: usize, mask_key: *const c_char) {
-        if len == 0 {
-            return;
-        }
-        if data.is_null() || mask_key.is_null() || len > isize::MAX as usize {
-            log::warning(c"websocket::mask", format_args!("Rust WebSocket mask rejected input"));
-            return;
-        }
-        // SAFETY: Copy all four key bytes before the mutable payload borrow so
-        // overlap is valid. read_unaligned preserves byte-aligned key support.
-        let key = unsafe { mask_key.cast::<[u8; 4]>().read_unaligned() };
-        // SAFETY: non-null, `len <= isize::MAX`; the caller lends `len` writable bytes and
-        // the key was copied out first, so an overlapping key is fine.
-        swoole_rs_websocket::mask(unsafe { std::slice::from_raw_parts_mut(data.cast(), len) }, key);
+/// `bool decode(Frame *frame, char *data, size_t length)`: `frame.payload` points
+/// into `data`.
+pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
+    let result = decode_frame(data);
+    let (decoded, ok, filled) = match result {
+        Ok(decoded) => (decoded, true, true),
+        Err((decoded, filled)) => (decoded, false, filled),
+    };
+    let flags = decoded.flags;
+    // Header's bitfields: FIN 1 -> bit 7, RSV1 4 -> 6, RSV2 8 -> 5, RSV3 16 -> 4.
+    frame.header[0] = (decoded.opcode & 15)
+        | (flags & 16)
+        | ((flags & 8) << 2)
+        | ((flags & 4) << 4)
+        | ((flags & FIN) << 7);
+    frame.header[1] = (decoded.length_code & 127) | ((flags & MASK) << 2);
+    if filled {
+        let header_length = decoded.header_length.c_cast::<u16>();
+        frame.header_length = header_length;
+        frame.payload_length = decoded.payload_length;
     }
-
-    "_ZN6swoole9websocket6encodeEPNS_6StringEPKcmhh" =>
-    /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`.
-    ///
-    /// # Safety
-    /// `data` covers `length` readable bytes.
-    pub unsafe extern "C" fn encode(buffer: &mut CppString, data: *const c_char, length: usize, opcode: u8, flags: u8) -> bool {
-        if control_invalid(opcode, flags, length) {
-            control_warning(c"websocket::encode", opcode, u8::from(flags & FIN != 0), length);
-            return false;
-        }
-        let size = encoded_size(length, flags);
-        let data = if flags & HEADER_ONLY != 0 || length == 0 {
-            &[]
-        } else if data.is_null() {
-            return false;
+    if ok {
+        frame.payload = if decoded.payload_length == 0 {
+            std::ptr::null_mut()
         } else {
-            // SAFETY: as the caller promises.
-            unsafe { std::slice::from_raw_parts(data.cast(), length) }
+            data.as_mut_ptr().wrapping_add(decoded.header_length).cast()
         };
-        append_frame(buffer, size, |out| encode_parts(length, data, opcode, flags, out))
-            && !header_only_mask(flags)
+        if decoded.payload_length != 0 && flags & MASK != 0 {
+            frame.mask_key = decoded.mask_key;
+        }
     }
+    ok
+}
 
-    "_ZN6swoole9websocket6decodeEPNS0_5FrameEPcm" =>
-    /// `bool decode(Frame *frame, char *data, size_t length)`.
-    ///
-    /// # Safety
-    /// `data` covers `length` writable bytes.
-    pub unsafe extern "C" fn decode(frame: &mut Frame, data: *mut c_char, length: usize) -> bool {
-        let bytes = if length == 0 {
-            &mut []
-        } else {
-            // SAFETY: as the caller promises.
-            unsafe { std::slice::from_raw_parts_mut(data.cast(), length) }
-        };
-        let result = decode_frame(bytes);
-        let (decoded, ok, filled) = match result {
-            Ok(decoded) => (decoded, true, true),
-            Err((decoded, filled)) => (decoded, false, filled),
-        };
-        let flags = decoded.flags;
-        // Header's bitfields: FIN 1 -> bit 7, RSV1 4 -> 6, RSV2 8 -> 5, RSV3 16 -> 4.
-        frame.header[0] = (decoded.opcode & 15) | (flags & 16) | ((flags & 8) << 2) | ((flags & 4) << 4) | ((flags & FIN) << 7);
-        frame.header[1] = (decoded.length_code & 127) | ((flags & MASK) << 2);
-        if filled {
-            let header_length = decoded.header_length.c_cast::<u16>();
-            frame.header_length = header_length;
-            frame.payload_length = decoded.payload_length;
-        }
-        if ok {
-            frame.payload = if decoded.payload_length == 0 {
-                std::ptr::null_mut()
-            } else {
-                data.wrapping_add(decoded.header_length)
-            };
-            if decoded.payload_length != 0 && flags & MASK != 0 {
-                frame.mask_key = decoded.mask_key;
-            }
-        }
-        ok
+/// `bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags)`.
+pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flags: u8) -> bool {
+    let origin = c"websocket::pack_close_frame";
+    let length = reason.len();
+    if length > CLOSE_REASON_MAX_LEN {
+        log::warning(
+            origin,
+            format_args!("the max length of close reason is {CLOSE_REASON_MAX_LEN}"),
+        );
+        return false;
     }
+    if control_invalid(OPCODE_CLOSE, FIN, CLOSE_CODE_LEN + length) {
+        control_warning(origin, OPCODE_CLOSE, 1, CLOSE_CODE_LEN + length);
+        return false;
+    }
+    let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
+    append_frame(buffer, size, |out| {
+        encode_close_into(code, reason, flags, out)
+    }) && !header_only_mask(flags)
+}
 
-    "_ZN6swoole9websocket16pack_close_frameEPNS_6StringEiPKcmh" =>
-    /// `bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags)`.
-    ///
-    /// # Safety
-    /// `reason` covers `length` readable bytes.
-    pub unsafe extern "C" fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: *const c_char, length: usize, flags: u8) -> bool {
-        let origin = c"websocket::pack_close_frame";
-        if length > CLOSE_REASON_MAX_LEN {
-            log::warning(origin, format_args!("the max length of close reason is {CLOSE_REASON_MAX_LEN}"));
-            return false;
-        }
-        if control_invalid(OPCODE_CLOSE, FIN, CLOSE_CODE_LEN + length) {
-            control_warning(origin, OPCODE_CLOSE, 1, CLOSE_CODE_LEN + length);
-            return false;
-        }
-        let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
-        let reason = if length == 0 {
-            &[]
-        } else if reason.is_null() {
-            return false;
-        } else {
-            // SAFETY: as the caller promises.
-            unsafe { std::slice::from_raw_parts(reason.cast(), length) }
-        };
-        append_frame(buffer, size, |out| encode_close_into(code, reason, flags, out))
-            && !header_only_mask(flags)
+/// `void print_frame(const Frame *frame)`, of a frame's `header` and its payload's bytes.
+pub fn print_frame(header: [u8; 2], payload: &[u8]) {
+    let [first, second] = header;
+    // `sw_printf`: Swoole's stdout stream, which swoole_set_stdout_stream replaces.
+    let mut line = format!(
+        "FIN: {:x}, RSV1: {}, RSV2: {}, RSV3: {}, opcode: {}, MASK: {}, length: {}\n",
+        first >> 7,
+        (first >> 6) & 1,
+        (first >> 5) & 1,
+        (first >> 4) & 1,
+        first & 15,
+        second >> 7,
+        payload.len().cast_signed(),
+    )
+    .into_bytes();
+    if !payload.is_empty() {
+        // `%.*s` stops at the first NUL.
+        let text = payload.split(|&byte| byte == 0).next().unwrap_or(payload);
+        line.extend_from_slice(b"payload: ");
+        line.extend_from_slice(text);
+        line.push(b'\n');
     }
-
-    "_ZN6swoole9websocket11print_frameEPKNS0_5FrameE" =>
-    /// `void print_frame(const Frame *frame)`.
-    ///
-    /// # Safety
-    /// `frame`'s payload covers `payload_length` bytes.
-    pub unsafe extern "C" fn print_frame(frame: &Frame) {
-        let [first, second] = frame.header;
-        // `sw_printf`: Swoole's stdout stream, which swoole_set_stdout_stream replaces.
-        let mut line = format!(
-            "FIN: {:x}, RSV1: {}, RSV2: {}, RSV3: {}, opcode: {}, MASK: {}, length: {}\n",
-            first >> 7,
-            (first >> 6) & 1,
-            (first >> 5) & 1,
-            (first >> 4) & 1,
-            first & 15,
-            second >> 7,
-            frame.payload_length.cast_signed(),
-        )
-        .into_bytes();
-        if frame.payload_length != 0 {
-            // SAFETY: the payload holds `payload_length` bytes.
-            let payload = unsafe {
-                std::slice::from_raw_parts(frame.payload.cast::<u8>(), frame.payload_length)
-            };
-            // `%.*s` stops at the first NUL.
-            let text = payload.split(|&byte| byte == 0).next().unwrap_or(payload);
-            line.extend_from_slice(b"payload: ");
-            line.extend_from_slice(text);
-            line.push(b'\n');
-        }
-        swoole_rs_corebase::sw_print(&line);
-    }
+    swoole_rs_corebase::sw_print(&line);
 }
 
 #[cfg(test)]
@@ -309,9 +258,10 @@ mod tests {
     fn encode_then_decode_restores_the_frame() {
         let mut buffer = string();
         let text = b"hello world";
-        assert!(unsafe { encode(&mut buffer, text.as_ptr().cast(), text.len(), 1, FIN | MASK,) });
+        assert!(encode(&mut buffer, text, 1, FIN | MASK));
         let mut frame: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) });
+        let mut wire = buffer.view().to_vec();
+        assert!(decode(&mut frame, &mut wire));
         assert_eq!(frame.header[0], 0x81, "FIN and OPCODE_TEXT");
         assert_eq!(frame.header[1] >> 7, 1, "MASK");
         assert_eq!(frame.header_length, 6);
@@ -327,15 +277,7 @@ mod tests {
     #[test]
     fn masked_header_only_appends_but_fails() {
         let mut buffer = string();
-        assert!(!unsafe {
-            encode(
-                &mut buffer,
-                std::ptr::null(),
-                10,
-                2,
-                FIN | MASK | HEADER_ONLY,
-            )
-        });
+        assert!(!encode(&mut buffer, &[0; 10], 2, FIN | MASK | HEADER_ONLY));
         assert_eq!(buffer.len(), 6);
         buffer.dispose();
     }
@@ -346,11 +288,11 @@ mod tests {
     fn invalid_control_frames_are_refused() {
         let mut buffer = string();
         let payload = [0u8; 126];
-        assert!(!unsafe { encode(&mut buffer, payload.as_ptr().cast(), 126, 9, FIN) });
-        assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 126, FIN) });
-        assert!(!unsafe { pack_close_frame(&mut buffer, 1000, payload.as_ptr().cast(), 124, FIN) });
+        assert!(!encode(&mut buffer, &payload, 9, FIN));
+        assert!(!pack_close_frame(&mut buffer, 1000, &payload, FIN));
+        assert!(!pack_close_frame(&mut buffer, 1000, &payload[..124], FIN));
         assert_eq!(buffer.len(), 0);
-        assert!(unsafe { pack_close_frame(&mut buffer, 1000, c"bye".as_ptr(), 3, FIN) });
+        assert!(pack_close_frame(&mut buffer, 1000, b"bye", FIN));
         assert_eq!(buffer.view(), b"\x88\x05\x03\xe8bye");
         buffer.dispose();
     }
@@ -361,13 +303,13 @@ mod tests {
     fn rejected_frames_fill_what_upstream_fills() {
         let mut frame: Frame = unsafe { std::mem::zeroed() };
         let mut short = *b"\x81\x05he";
-        assert!(!unsafe { decode(&mut frame, short.as_mut_ptr().cast(), short.len()) });
+        assert!(!decode(&mut frame, &mut short));
         assert_eq!(
             (frame.header[0], frame.header[1], frame.payload_length),
             (0x81, 5, 0)
         );
         let mut ping = *b"\xc9\x01x";
-        assert!(!unsafe { decode(&mut frame, ping.as_mut_ptr().cast(), ping.len()) });
+        assert!(!decode(&mut frame, &mut ping));
         assert_eq!(
             (frame.header[0], frame.header_length, frame.payload_length),
             (0xc9, 2, 1)
@@ -381,17 +323,10 @@ mod tests {
     fn websocket_encode() {
         let mut buffer = string();
         let packet = b"hello world\n";
-        assert!(unsafe {
-            encode(
-                &mut buffer,
-                packet.as_ptr().cast(),
-                packet.len(),
-                1,
-                FIN | MASK,
-            )
-        });
+        assert!(encode(&mut buffer, packet, 1, FIN | MASK));
         let mut ws: Frame = unsafe { std::mem::zeroed() };
-        assert!(unsafe { decode(&mut ws, buffer.as_mut_ptr().cast(), buffer.len()) });
+        let mut wire = buffer.view().to_vec();
+        assert!(decode(&mut ws, &mut wire));
 
         let log = std::env::temp_dir().join(format!(
             "swoole-websocket-encode-{}.log",
@@ -402,7 +337,8 @@ mod tests {
         assert!(!fp.is_null());
         let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
         swoole_rs_corebase::swoole_set_stdout_stream(fp.cast());
-        unsafe { print_frame(&ws) };
+        let payload = &wire[usize::from(ws.header_length)..][..ws.payload_length];
+        print_frame(ws.header, payload);
         unsafe { libc::fclose(fp) };
         swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
 
@@ -424,15 +360,12 @@ mod tests {
         let mut frame: Frame = unsafe { std::mem::zeroed() };
         for opcode in [OPCODE_CLOSE, 9, 10] {
             buffer.clear();
-            assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, opcode, FIN | RSV1) });
-            assert!(
-                !unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) },
-                "{opcode}"
-            );
+            assert!(encode(&mut buffer, b"", opcode, FIN | RSV1));
+            assert!(!decode(&mut frame, &mut buffer.view().to_vec()), "{opcode}");
         }
         buffer.clear();
-        assert!(unsafe { encode(&mut buffer, c"".as_ptr(), 0, 1, FIN | RSV1) });
-        assert!(unsafe { decode(&mut frame, buffer.as_mut_ptr().cast(), buffer.len()) });
+        assert!(encode(&mut buffer, b"", 1, FIN | RSV1));
+        assert!(decode(&mut frame, &mut buffer.view().to_vec()));
         buffer.dispose();
     }
 

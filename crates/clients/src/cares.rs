@@ -77,13 +77,6 @@ struct Completion {
     coroutine: *mut c_void,
     resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
-/// The query behind a c-ares userdata or wrapper object.
-/// # Safety
-/// `state` is a live query's userdata: `lookup` keeps it until its channel is destroyed.
-unsafe fn query<'a>(state: *mut c_void) -> &'a Query {
-    // SAFETY: as the caller promises; the query is only shared, never borrowed mutably.
-    unsafe { &*state.cast::<Query>() }
-}
 /// The deferred resume: the reactor runs it after the pass, unless the query
 /// retired first, or drops it if the reactor is freed first.
 impl event_api::Deferred for Completion {
@@ -109,8 +102,9 @@ fn process(event: &Event, write: u8) -> i32 {
         return -1;
     };
     let data = socket.read(|socket| socket.object);
-    // SAFETY: the query's channel stays live while its wrappers are registered.
-    let channel = unsafe { query(data) }.channel.get();
+    // SAFETY: the wrapper's object is its query, which `lookup` keeps (shared, never
+    // borrowed mutably) until its channel is destroyed, after its wrappers are detached.
+    let channel = unsafe { &*data.cast::<Query>() }.channel.get();
     let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
     // SAFETY: SDK callbacks run synchronously on this reactor thread.
     unsafe { sdk::ares_process_fd(channel, read, write) };
@@ -155,8 +149,9 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     } else {
         0
     };
-    // SAFETY: c-ares passes the live query's userdata.
-    let query = unsafe { query(data) };
+    // SAFETY: c-ares passes the userdata of a live query, which `lookup` keeps (shared,
+    // never borrowed mutably) until its channel is destroyed.
+    let query = unsafe { &*data.cast::<Query>() };
     let registered = query
         .sockets
         .borrow()
@@ -216,8 +211,9 @@ unsafe extern "C" fn host(
     timeouts: i32,
     entry: *mut libc::hostent,
 ) {
-    // SAFETY: c-ares passes the live query's userdata.
-    let query = unsafe { query(data) };
+    // SAFETY: c-ares passes the userdata of a live query, which `lookup` keeps (shared,
+    // never borrowed mutably) until its channel is destroyed.
+    let query = unsafe { &*data.cast::<Query>() };
     if timeouts > 0 || status != metadata().success {
         let error = if timeouts > 0 {
             ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT as i32

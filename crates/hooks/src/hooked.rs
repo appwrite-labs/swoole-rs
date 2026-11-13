@@ -1,6 +1,7 @@
 //! The hooked socket functions of upstream's `src/coroutine/hook.cc`
-//! (`swoole_coroutine_socket`, `send`, `recv`, `connect`, `accept`, `poll`,
-//! `close`, `read`, `write`, …), exported under their upstream names. Inside a
+//! (`swoole_coroutine_socket`, `send`, `recv`, `poll`, `close`, `read`, `write`, …),
+//! exported under their upstream names for the C that calls them, and those only
+//! Rust calls ([`connect`], [`accept`], [`poll_fake`], [`sendmsg`], [`recvmsg`]). Inside a
 //! coroutine an fd the socket map holds goes to its native socket through
 //! its Rust members; any other call goes to libc, the async pool or `io_uring`, as
 //! upstream routes it.
@@ -10,9 +11,13 @@ use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_p
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
+pub use crate::vector::{RecvMessage, SendMessage};
 use core::mem::MaybeUninit;
-use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
+/// `struct pollfd`, as [`poll_fake`] takes it.
+pub use libc::pollfd;
+use libc::{c_int, c_void, nfds_t, size_t, ssize_t};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
@@ -129,39 +134,20 @@ pub unsafe extern "C" fn swoole_coroutine_send(
     }
 }
 
-/// Hooked `sendmsg(2)`.
-///
-/// # Safety
-/// As for `sendmsg`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_sendmsg(
-    fd: c_int,
-    msg: *const msghdr,
-    flags: c_int,
-) -> ssize_t {
+/// Hooked `sendmsg(2)` of `msg`.
+#[must_use]
+pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
-        // SAFETY: the caller's message.
-        Some((_, socket)) => unsafe { socket.sendmsg(msg, flags) },
-        // SAFETY: as the caller promises.
-        None => unsafe { libc::sendmsg(fd, msg, flags) },
+        Some((_, socket)) => socket.sendmsg(msg, flags),
+        None => msg.send(fd, flags),
     }
 }
 
-/// Hooked `recvmsg(2)`.
-///
-/// # Safety
-/// As for `recvmsg`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_recvmsg(
-    fd: c_int,
-    msg: *mut msghdr,
-    flags: c_int,
-) -> ssize_t {
+/// Hooked `recvmsg(2)` into `msg`.
+pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
-        // SAFETY: the caller's message.
-        Some((_, socket)) => unsafe { socket.recvmsg(msg, flags) },
-        // SAFETY: as the caller promises.
-        None => unsafe { libc::recvmsg(fd, msg, flags) },
+        Some((_, socket)) => socket.recvmsg(msg, flags),
+        None => msg.recv(fd, flags),
     }
 }
 
@@ -189,60 +175,41 @@ pub unsafe extern "C" fn swoole_coroutine_recv(
     }
 }
 
-/// Hooked `connect(2)`.
-///
-/// # Safety
-/// As for `connect`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_connect(
-    fd: c_int,
-    addr: *const sockaddr,
-    len: socklen_t,
-) -> c_int {
+/// Hooked `connect(2)` of `fd` to `address`.
+#[must_use]
+pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
     match hooked(fd) {
         Some((_, socket)) => {
-            // SAFETY: the caller's address.
-            if socket.connect_addr(unsafe { crate::lifecycle::Peer::from_raw(addr, len) }) {
+            if socket.connect_addr(address) {
                 0
             } else {
                 -1
             }
         }
-        // SAFETY: as the caller promises.
-        None => unsafe { libc::connect(fd, addr, len) },
+        None => address.connect(fd),
     }
 }
 
-/// Hooked `accept(2)`: the accepted socket joins the map unless its fd has one.
-///
-/// # Safety
-/// As for `accept`, except that inside a coroutine `addr` and `len` are written
-/// unconditionally, as upstream does.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_accept(
-    fd: c_int,
-    addr: *mut sockaddr,
-    len: *mut socklen_t,
-) -> c_int {
+/// `accept(2)` on `fd`, the peer's address and its length into `peer`.
+fn sys_accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
+    peer.len = SocketAddress::CAPACITY;
+    // SAFETY: the storage is writable for the `len` given.
+    unsafe { libc::accept(fd, (&raw mut peer.addr).cast(), &raw mut peer.len) }
+}
+
+/// Hooked `accept(2)`, the peer's address into `peer`: the accepted socket joins the
+/// map unless its fd has one.
+#[must_use]
+pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::accept(fd, addr, len) };
+        return sys_accept(fd, peer);
     };
     let Some(conn) = socket.accept(0.0) else {
         return -1;
     };
     conn.net(|accepted| {
-        let info = &accepted.info;
-        // SAFETY: the caller's length slot.
-        unsafe { *len = info.len };
-        // SAFETY: info.len bytes of the address, into the caller's buffer, which upstream assumes holds them.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                (&raw const info.addr).cast::<u8>(),
-                addr.cast(),
-                info.len as usize,
-            );
-        }
+        peer.addr = accepted.info.addr;
+        peer.len = accepted.info.len;
     });
     let conn_fd = conn.sock_fd();
     keep(conn_fd, conn, false);
@@ -250,27 +217,16 @@ pub unsafe extern "C" fn swoole_coroutine_accept(
 }
 
 /// Hooked `poll(2)` of one fd that only reports it ready, after making `timeout`
-/// its socket's timeout; libc's `poll` without a socket or a timeout.
-///
-/// # Safety
-/// As for `poll`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_poll_fake(
-    fds: *mut pollfd,
-    nfds: nfds_t,
-    timeout: c_int,
-) -> c_int {
-    if nfds != 1 {
+/// its socket's timeout; libc's `poll` without a socket or a timeout. -1, with the
+/// last error, for any other number of fds.
+#[must_use]
+pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> c_int {
+    let [fd] = fds else {
         (crate::stdio::NATIVE.set_last_error)(INVALID_PARAMS);
         log::warning(
             c"swoole_coroutine_poll_fake",
             format_args!("fake poll() implementation, only supports one fd"),
         );
-        return -1;
-    }
-    // SAFETY: null or one pollfd, as the caller promises.
-    let Some(fd) = (unsafe { fds.as_mut() }) else {
-        set_errno(libc::EFAULT);
         return -1;
     };
     let socket = hooked(fd.fd).map(|(_, socket)| socket);
@@ -622,14 +578,8 @@ pub(crate) mod tests {
             let mut buf = [0u8; 16];
             assert_eq!(swoole_coroutine_send(fd, b"send".as_ptr().cast(), 4, 0), 4);
             assert_eq!(swoole_coroutine_write(fd, b"write".as_ptr().cast(), 5), 5);
-            let iov = libc::iovec {
-                iov_base: b"msg".as_ptr().cast_mut().cast(),
-                iov_len: 3,
-            };
-            let mut msg: msghdr = core::mem::zeroed();
-            msg.msg_iov = (&raw const iov).cast_mut();
-            msg.msg_iovlen = 1;
-            assert_eq!(swoole_coroutine_sendmsg(fd, &raw const msg, 0), 3);
+            let iov = [std::io::IoSlice::new(b"msg")];
+            assert_eq!(sendmsg(fd, &SendMessage::new(&iov), 0), 3);
             assert_eq!(libc::read(peer, buf.as_mut_ptr().cast(), 16), 12);
             assert_eq!(&buf[..12], b"sendwritemsg");
 
@@ -644,12 +594,8 @@ pub(crate) mod tests {
             assert_eq!(&got, b"ab");
             assert_eq!(swoole_coroutine_read(fd, got.as_mut_ptr().cast(), 2), 2);
             assert_eq!(&got, b"cd");
-            let mut into = libc::iovec {
-                iov_base: buf.as_mut_ptr().cast(),
-                iov_len: 4,
-            };
-            msg.msg_iov = &raw mut into;
-            assert_eq!(swoole_coroutine_recvmsg(fd, &raw mut msg, 0), 4);
+            let mut into = [std::io::IoSliceMut::new(&mut buf[..4])];
+            assert_eq!(recvmsg(fd, &mut RecvMessage::new(&mut into), 0), 4);
             assert_eq!(&buf[..4], b"efgh");
         });
     }
@@ -660,19 +606,12 @@ pub(crate) mod tests {
         use crate::co_io::test_host::{TIMER_OK, take};
         wrapped(|fd, _| unsafe {
             // The members record a failure on the socket.
-            let mut addr: libc::sockaddr_storage = core::mem::zeroed();
-            addr.ss_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
-            let size = socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
-            assert_eq!(
-                swoole_coroutine_connect(fd, (&raw const addr).cast(), size),
-                -1
-            );
+            let mut addr = SocketAddress::default();
+            addr.addr.unix_mut().sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
+            addr.len = libc::socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
+            assert_eq!(connect(fd, &addr), -1);
             assert_ne!(err_code(fd), 0);
-            let mut len: socklen_t = 0;
-            assert_eq!(
-                swoole_coroutine_accept(fd, (&raw mut addr).cast(), &raw mut len),
-                -1
-            );
+            assert_eq!(accept(fd, &mut addr), -1);
             assert_eq!(err_code(fd), libc::EINVAL);
 
             // wait_event polls with the timeout in every direction, then restores it.
@@ -808,10 +747,10 @@ pub(crate) mod tests {
                 revents: 0,
             }; 2];
             with(Mode::Pool, || {
-                assert_eq!(swoole_coroutine_poll_fake(fds.as_mut_ptr(), 2, 10), -1);
+                assert_eq!(poll_fake(&mut fds, 10), -1);
                 assert_eq!(LAST_ERROR.get(), INVALID_PARAMS);
                 // No socket: libc's poll.
-                assert_eq!(swoole_coroutine_poll_fake(fds.as_mut_ptr(), 1, 10), 1);
+                assert_eq!(poll_fake(&mut fds[..1], 10), 1);
                 assert_eq!(fds[0].revents, libc::POLLOUT);
                 // Without a timeout, poll is libc's even in a coroutine.
                 assert_eq!(swoole_coroutine_poll(fds.as_mut_ptr(), 1, 0), 1);
@@ -824,12 +763,8 @@ pub(crate) mod tests {
     #[test]
     fn polls_of_null_fds_fail_with_efault() {
         with(Mode::Pool, || unsafe {
-            for result in [
-                swoole_coroutine_poll(core::ptr::null_mut(), 1, 10),
-                swoole_coroutine_poll_fake(core::ptr::null_mut(), 1, 10),
-            ] {
-                assert_eq!((result, sys::errno()), (-1, libc::EFAULT));
-            }
+            let result = swoole_coroutine_poll(core::ptr::null_mut(), 1, 10);
+            assert_eq!((result, sys::errno()), (-1, libc::EFAULT));
             // No fds to read: libc's poll of none.
             assert_eq!(swoole_coroutine_poll(core::ptr::null_mut(), 0, 0), 0);
         });

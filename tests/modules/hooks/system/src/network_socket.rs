@@ -152,16 +152,6 @@ unsafe extern "C-unwind" {
     fn socket_recv(socket: *mut Record, buf: *mut c_void, n: usize, flags: c_int) -> isize;
     #[link_name = "_ZN6swoole7network6Socket4sendEPKvmi"]
     fn socket_send(socket: *mut Record, buf: *const c_void, n: usize, flags: c_int) -> isize;
-    #[link_name = "_ZNK6swoole7network6Socket4peekEPvmi"]
-    fn socket_peek(socket: *const Record, buf: *mut c_void, n: usize, flags: c_int) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket13recvfrom_syncEPcmiPNS0_7AddressE"]
-    fn socket_recvfrom_sync(
-        socket: *mut Record,
-        buf: *mut c_char,
-        n: usize,
-        flags: c_int,
-        address: *mut Address,
-    ) -> isize;
     #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
     fn socket_send_async(socket: *mut Record, data: *const c_void, n: usize) -> isize;
     #[link_name = "_ZN6swoole7network6Socket9recv_syncEPvmi"]
@@ -173,26 +163,12 @@ unsafe extern "C-unwind" {
         offset: i64,
         length: usize,
     ) -> c_int;
-    #[link_name = "_ZN6swoole7network6Socket11sendto_syncERKNS0_7AddressEPKvmi"]
-    fn socket_sendto_sync(
-        socket: *mut Record,
-        address: *const Address,
-        buf: *const c_void,
-        n: usize,
-        flags: c_int,
-    ) -> isize;
     #[link_name = "_ZNK6swoole7network6Socket5cleanEv"]
     fn socket_clean(socket: *const Record);
     #[link_name = "_ZN6swoole7network6Socket14check_livenessEv"]
     fn socket_check_liveness(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket9read_syncEPvm"]
     fn socket_read_sync(socket: *mut Record, buf: *mut c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket10write_syncEPKvm"]
-    fn socket_write_sync(socket: *mut Record, buf: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket8ssl_sendEPKvm"]
-    fn socket_ssl_send(socket: *mut Record, buf: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket8ssl_recvEPvm"]
-    fn socket_ssl_recv(socket: *mut Record, buf: *mut c_void, n: usize) -> isize;
     #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
     #[link_name = "_ZNK6swoole6Buffer6lengthEv"]
@@ -367,6 +343,12 @@ impl Socket {
         unsafe { &mut *self.0 }
     }
 
+    /// The record as crates/reactor's handle, for the members that are Rust functions.
+    fn handle(&self) -> swoole_rs_reactor::Socket<'_> {
+        // SAFETY: a live record.
+        unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap()
+    }
+
     pub(super) fn free(self) {
         // SAFETY: frees the live socket once.
         unsafe { socket_free(self.0) };
@@ -468,8 +450,7 @@ impl Socket {
     }
 
     fn peek(&self, buf: &mut [u8], flags: c_int) -> isize {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { socket_peek(self.0, buf.as_mut_ptr().cast(), buf.len(), flags) }
+        swoole_rs_tls::upstream::peek(self.handle(), buf, flags)
     }
 
     fn recv_sync(&self, buf: &mut [u8], flags: c_int) -> isize {
@@ -488,8 +469,7 @@ impl Socket {
     }
 
     fn write_sync(&self, buf: &[u8]) -> isize {
-        // SAFETY: `buf` is readable for its length.
-        unsafe { socket_write_sync(self.0, buf.as_ptr().cast(), buf.len()) }
+        swoole_rs_tls::upstream::write_sync(self.handle(), buf)
     }
 
     /// `sendto(host, port, data, len)`: assigns with the socket's type, then sendto(2).
@@ -516,8 +496,9 @@ impl Socket {
     }
 
     fn sendto_sync(&self, address: &Address, data: &[u8]) -> isize {
-        // SAFETY: `data` and the assigned address.
-        unsafe { socket_sendto_sync(self.0, address, data.as_ptr().cast(), data.len(), 0) }
+        // SAFETY: `Address` mirrors crates/corebase's record.
+        let address = unsafe { &*std::ptr::from_ref(address).cast() };
+        swoole_rs_tls::upstream::sendto_sync(self.handle(), address, data, 0)
     }
 
     /// `recvfrom(buf, len, flags, &sa)`: recvfrom(2), retried on `EINTR` up to
@@ -545,8 +526,9 @@ impl Socket {
     }
 
     fn recvfrom_sync(&self, buf: &mut [u8], address: &mut Address) -> isize {
-        // SAFETY: `buf` and the address are writable.
-        unsafe { socket_recvfrom_sync(self.0, buf.as_mut_ptr().cast(), buf.len(), 0, address) }
+        // SAFETY: `Address` mirrors crates/corebase's record.
+        let address = unsafe { &mut *std::ptr::from_mut(address).cast() };
+        swoole_rs_tls::upstream::recvfrom_sync(self.handle(), buf, 0, address)
     }
 
     fn sendfile_sync(&self, file: &str, offset: i64, length: usize) -> c_int {
@@ -698,9 +680,9 @@ fn ssl_fail() {
     assert_eq!(client.shutdown(SHUT_WR), 0);
 
     let sock = Socket(client.socket().cast());
-    // SAFETY: the client's socket; TEST_STR without its NUL.
+    // TEST_STR without its NUL.
     assert_eq!(
-        unsafe { socket_ssl_send(sock.0, TEST_STR.as_ptr().cast(), TEST_STR.len()) },
+        swoole_rs_tls::upstream::ssl_send(sock.handle(), TEST_STR),
         SW_ERR as isize
     );
     assert_eq!(errno(), SW_ERROR_SSL_RESET);
@@ -710,9 +692,10 @@ fn ssl_fail() {
     let mut buf = [0_u8; 1024];
     // SAFETY: clears errno.
     unsafe { *errno_location() = 0 };
-    // SAFETY: `buf` is writable; SW_STRL(buf) is its size less one.
+    // SW_STRL(buf) is its size less one.
+    let size = buf.len() - 1;
     assert_eq!(
-        unsafe { socket_ssl_recv(sock.0, buf.as_mut_ptr().cast(), buf.len() - 1) },
+        swoole_rs_tls::upstream::ssl_recv(sock.handle(), &mut buf[..size]),
         0
     );
     assert_eq!(errno(), 0);
@@ -720,9 +703,8 @@ fn ssl_fail() {
     assert_eq!(unsafe { close(sock.get_fd()) }, 0);
     sock.move_fd();
 
-    // SAFETY: as above.
     assert_eq!(
-        unsafe { socket_ssl_recv(sock.0, buf.as_mut_ptr().cast(), buf.len() - 1) },
+        swoole_rs_tls::upstream::ssl_recv(sock.handle(), &mut buf[..size]),
         0
     );
 }

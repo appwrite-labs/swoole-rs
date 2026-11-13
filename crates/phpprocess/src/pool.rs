@@ -920,7 +920,7 @@ fn get_process(call: &Call) {
             None => {
                 let object = class.create_object();
                 // A worker C++ allocates, as the Process object frees it.
-                let mut copy = WorkerRecord::boxed();
+                let mut copy = WorkerRecord::empty();
                 #[expect(
                     clippy::cast_sign_loss,
                     clippy::cast_possible_truncation,
@@ -936,7 +936,7 @@ fn get_process(call: &Call) {
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
                 // The Process object takes the copy.
-                set_worker_of(&object, *copy, true, c_int::from(view.is_async()));
+                set_worker_of(&object, copy, true, c_int::from(view.is_async()));
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }

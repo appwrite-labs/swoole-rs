@@ -1,8 +1,8 @@
 // What the Rust cases in src/ can't express, compiled into system.py's lib-swoole by
 // tests/modules/hooks/system.py (--fixture): swoole_event_defer and the timer, which have C++
-// linkage, and the repo-owned witnesses that check C++ copies and std::bad_alloc containment,
-// which only C++ can throw (formerly tests/modules/hooks/dns_request_owner.cpp, unchanged
-// but for these macros in place of GoogleTest's).
+// linkage. The witnesses of the resolver record's C++ views (formerly
+// tests/modules/hooks/dns_request_owner.cpp) went with those views; what they checked of
+// the record is tests/modules/corebase/resolver.rs.
 #include "swoole_coroutine.h"
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
@@ -64,29 +64,6 @@ void *operator new(size_t size) {
     }
     throw std::bad_alloc();
 }
-// What native/clients/dns.cc defined over the request views; production resolves in
-// Rust (crates/hooks/src/resolve.rs), so these witnesses keep the views' copies and
-// exception paths.
-static int gethostbyname(GethostbynameRequest *req) {
-    const int status = swr_v1_core_resolver_host(req->state_handle());
-    if (status < -1) req->addr.check(status);
-    return status;
-}
-static int getaddrinfo(swr_v1_core_resolver *request) {
-    const int status = swr_v1_core_resolver_lookup(
-        request, [](void *, int) { return true; }, nullptr);
-    if (status < -1) ResolverOwner::check(status);
-    return status;
-}
-static void parse_result(const GetaddrinfoRequest &request, std::vector<std::string> &retval) {
-    size_t cursor = 0;
-    while (true) {
-        auto address = swr_v1_core_resolver_next(request.state_handle(), &cursor);
-        if (!address.valid) break;
-        retval.emplace_back(address.bytes);
-    }
-}
-
 void operator delete(void *p) noexcept {
     std::free(p);
 }
@@ -167,93 +144,6 @@ uint32_t swr_case_worker_max_request() {
 }
 Worker *swr_case_current_worker() {
     return swr_v1_worker_globals()->worker;
-}
-
-// rust_dns_request.numeric_host_owner_and_independent_copies.
-void swr_case_numeric_host_owner_and_independent_copies() {
-    GethostbynameRequest host("127.0.0.1", AF_INET);
-    ASSERT_EQ(gethostbyname(&host), 0);
-    ASSERT_EQ(host.addr, "127.0.0.1");
-    auto copy = host;
-    copy.name = "::1";
-    copy.family = AF_INET6;
-    ASSERT_EQ(gethostbyname(&copy), 0);
-    ASSERT_EQ(copy.addr, "::1");
-    ASSERT_EQ(host.name, "127.0.0.1");
-    ASSERT_EQ(host.addr, "127.0.0.1");
-    host = copy;
-    copy.name = "changed";
-    ASSERT_EQ(host.name, "::1");
-    ASSERT_EQ(host.family, AF_INET6);
-    host = host;
-    ASSERT_EQ(host.addr, "::1");
-}
-
-// rust_dns_request.hints_vectors_and_failure_publication.
-void swr_case_hints_vectors_and_failure_publication() {
-    GetaddrinfoRequest request("127.0.0.1", AF_INET, SOCK_STREAM, 0, "");
-    ASSERT_EQ(request.count, 0);
-    ASSERT_EQ(request.error, 0);
-    int *family_address = &request.family;
-    ASSERT_EQ(getaddrinfo(request.state_handle()), 0);
-    ASSERT_GT(request.count, 0);
-    ASSERT_EQ(request.results.size(), static_cast<size_t>(request.count));
-    auto copy = request;
-    auto snapshot = copy.results;
-    const auto saved_count = request.count;
-    const std::vector<sockaddr_in6> saved = request.results;
-    request.family = -123;
-    ASSERT_EQ(getaddrinfo(request.state_handle()), -1);
-    ASSERT_NE(request.error, 0);
-    ASSERT_EQ(request.count, saved_count);
-    ASSERT_EQ(request.results.size(), saved.size());
-    ASSERT_EQ(std::memcmp(request.results.data(), saved.data(), saved.size() * sizeof(sockaddr_in6)), 0);
-    ASSERT_EQ(&request.family, family_address);
-    auto *address = reinterpret_cast<sockaddr_in *>(&copy.results[0]);
-    ASSERT_EQ(inet_pton(AF_INET, "127.0.0.2", &address->sin_addr), 1);
-    ASSERT_NE(std::memcmp(copy.results.data(), snapshot.data(), sizeof(sockaddr_in6)), 0);
-    std::vector<std::string> output{"keep"};
-    parse_result(copy, output);
-    ASSERT_EQ(output.front(), "keep");
-    ASSERT_EQ(output[1], "127.0.0.2");
-    request = copy;
-    copy.hostname = "changed";
-    copy.results.clear();
-    ASSERT_EQ(request.hostname, "127.0.0.1");
-    ASSERT_FALSE(request.results.empty());
-    request = request;
-    ASSERT_EQ(&request.family, family_address);
-    request.results.resize(0);
-    ASSERT_TRUE(request.results.empty());
-}
-
-// rust_dns_request.native_output_append_exception_is_contained.
-void swr_case_native_output_append_exception_is_contained() {
-    GetaddrinfoRequest request("::1", AF_INET6, SOCK_STREAM, 0, "");
-    request.results.resize(3);
-    const char *text = "2001:db8:1111:2222:3333:4444:5555:6666";
-    for (auto &address : request.results) {
-        address = sockaddr_in6{};
-        ASSERT_EQ(inet_pton(AF_INET6, text, &address.sin6_addr), 1);
-    }
-    std::vector<std::string> output{"keep"};
-    output.reserve(4);
-    allocation::begin(2);
-    bool caught = false;
-    try {
-        parse_result(request, output);
-    } catch (const std::bad_alloc &) {
-        caught = true;
-    }
-    allocation::end();
-    ASSERT_TRUE(caught);
-    ASSERT_EQ(output.size(), 2u);
-    ASSERT_EQ(output[0], "keep");
-    ASSERT_EQ(output[1], text);
-    ASSERT_EQ(request.results.size(), 3u);
-    output.clear();
-    parse_result(request, output);
-    ASSERT_EQ(output.size(), 3u);
 }
 
 }

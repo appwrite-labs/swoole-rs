@@ -92,7 +92,7 @@ fn with<R>(worker: Worker<'_>, f: impl FnOnce(&mut WorkerRecord) -> R) -> R {
 
 /// `new Worker()`.
 pub(crate) fn new() -> WorkerRecord {
-    *WorkerRecord::boxed()
+    WorkerRecord::empty()
 }
 
 /// `delete pair`: the pair's ends, then its box.

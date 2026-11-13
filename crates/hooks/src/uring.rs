@@ -9,7 +9,7 @@
 //! operation's frame while the coroutine is suspended, and the completion handler
 //! ([`wakeup`]) writes the result into it before resuming it.
 
-use crate::vector::IoVector;
+use crate::vector::{IoVector, RecvMessage, SendMessage};
 use io_uring::types::{Fd, FsyncFlags, Timespec};
 use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::{Cell, RefCell};
@@ -556,9 +556,19 @@ safe_operations! {
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>())
             .dest_addr((&raw const address.addr).cast())
             .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), std::convert::identity;
-    /// `IORING_OP_CONNECT` of `fd` to `peer`, whose address the kernel reads.
-    pub fn connect(fd: c_int, peer: crate::lifecycle::Peer<'_>, timeout: f64) -> c_int,
-        timeout timeout, opcode::Connect::new(Fd(fd), peer.as_ptr(), peer.len()), int;
+    /// `IORING_OP_CONNECT` of `fd` to `address`, of which the kernel reads at most its storage.
+    pub fn connect(fd: c_int, address: &SocketAddress, timeout: f64) -> c_int,
+        timeout timeout, opcode::Connect::new(
+            Fd(fd),
+            (&raw const address.addr).cast(),
+            address.len.min(SocketAddress::CAPACITY),
+        ), int;
+    /// `IORING_OP_RECVMSG` into `message`'s buffers.
+    pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> isize,
+        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), std::convert::identity;
+    /// `IORING_OP_SENDMSG` of `message`'s buffers.
+    pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> isize,
+        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), std::convert::identity;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
@@ -567,10 +577,6 @@ safe_operations! {
 operations! {
     fn open_file(pathname: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int,
         timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
-    fn recvmsg(fd: c_int, message: *mut libc::msghdr, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::RecvMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
-    fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::SendMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int,
         timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath, Fd(libc::AT_FDCWD), newpath), int;
     fn mkdir(pathname: *const c_char, mode: libc::mode_t) -> c_int,

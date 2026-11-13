@@ -10,60 +10,14 @@ use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
-use core::marker::PhantomData;
 use swoole_rs_corebase::net_types::SocketAddress;
 
-/// A `connect(2)` peer: `len` bytes of address at `at`, lent for `'a`. Only the kernel
-/// reads them, and it refuses what it cannot use (`EFAULT` for a null address).
-#[derive(Clone, Copy)]
-pub struct Peer<'a> {
-    at: *const libc::sockaddr,
-    len: libc::socklen_t,
-    lent: PhantomData<&'a SocketAddress>,
-}
-
-impl<'a> Peer<'a> {
-    /// `address`'s storage, as much of it as its length says and no more than it holds.
-    #[must_use]
-    pub fn of(address: &'a SocketAddress) -> Self {
-        Self {
-            at: (&raw const address.addr).cast(),
-            len: address.len.min(SocketAddress::CAPACITY),
-            lent: PhantomData,
-        }
-    }
-
-    /// The `len` bytes at `at`.
-    ///
-    /// # Safety
-    /// `at` is null, or denotes `len` readable bytes that nothing writes for `'a`.
-    #[must_use]
-    pub const unsafe fn from_raw(at: *const libc::sockaddr, len: libc::socklen_t) -> Self {
-        Self {
-            at,
-            len,
-            lent: PhantomData,
-        }
-    }
-
-    /// Where the address is, for a call that takes it with [`Self::len`].
-    #[cfg(feature = "iouring")]
-    pub(crate) const fn as_ptr(self) -> *const libc::sockaddr {
-        self.at
-    }
-
-    #[cfg(feature = "iouring")]
-    pub(crate) const fn len(self) -> libc::socklen_t {
-        self.len
-    }
-}
-
-/// The syscalls: `shutdown(2)`, `connect(2)` to a lent address and
+/// The syscalls: `shutdown(2)`, `connect(2)` to an address and
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
 #[derive(Clone, Copy)]
 struct Sys {
     shutdown: fn(c_int, c_int) -> c_int,
-    connect: fn(c_int, Peer<'_>) -> c_int,
+    connect: fn(c_int, &SocketAddress) -> c_int,
     option: fn(c_int, &mut c_int) -> c_int,
 }
 
@@ -74,10 +28,8 @@ const SYS: Sys = Sys {
 };
 
 /// `connect(2)` of `fd` to `peer`.
-fn sys_connect(fd: c_int, peer: Peer<'_>) -> c_int {
-    // SAFETY: connect(2) reads the lent address: `len` readable bytes, or null,
-    // which it refuses.
-    unsafe { libc::connect(fd, peer.at, peer.len) }
+fn sys_connect(fd: c_int, peer: &SocketAddress) -> c_int {
+    peer.connect(fd)
 }
 
 impl Co {
@@ -138,7 +90,7 @@ impl Co {
 
     /// `Socket::connect(addr, addrlen)`.
     #[must_use]
-    pub fn connect_addr(self, peer: Peer<'_>) -> bool {
+    pub fn connect_addr(self, peer: &SocketAddress) -> bool {
         connect(self, peer, SYS)
     }
 }
@@ -218,7 +170,7 @@ fn settle(socket: Co, sys: Sys) -> bool {
 }
 
 /// `Socket::connect(addr, addrlen)`, with `connect(2)` and the `SO_ERROR` read.
-fn connect(socket: Co, peer: Peer<'_>, sys: Sys) -> bool {
+fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
     #[cfg(feature = "iouring")]
     if let Some(ops) = crate::uring_socket::of(socket) {
         return crate::uring_socket::swr_v1_hook_uring_connect(&ops, peer);
@@ -349,11 +301,12 @@ mod tests {
         if !available(s, READ | WRITE) {
             return false;
         }
-        let address: libc::sockaddr = unsafe { core::mem::zeroed() };
-        let length = libc::socklen_t::try_from(size_of::<libc::sockaddr>()).unwrap();
+        let peer = SocketAddress {
+            len: libc::socklen_t::try_from(size_of::<libc::sockaddr>()).unwrap(),
+            ..SocketAddress::default()
+        };
         let retval = loop {
-            let peer = unsafe { Peer::from_raw(&raw const address, length) };
-            let retval = (sys.connect)(s.sock_fd(), peer);
+            let retval = (sys.connect)(s.sock_fd(), &peer);
             if !(retval < 0 && errno() == libc::EINTR) {
                 break retval;
             }
@@ -417,7 +370,7 @@ mod tests {
         }
         result
     }
-    fn fake_connect(fd: c_int, _: Peer<'_>) -> c_int {
+    fn fake_connect(fd: c_int, _: &SocketAddress) -> c_int {
         log(format!("connect:{fd}"));
         let value = CONNECTS.with_borrow_mut(|c| c.remove(0));
         if value < 0 {
@@ -710,10 +663,14 @@ mod tests {
                     }
                 })));
             };
+            let peer = SocketAddress {
+                len: 16,
+                ..SocketAddress::default()
+            };
             compare(
                 k + 752,
                 &setup,
-                &|s| connect(s, unsafe { Peer::from_raw(core::ptr::null(), 16) }, FAKE),
+                &|s| connect(s, &peer, FAKE),
                 &|s| upstream_connect(s, FAKE),
                 &hooks,
             );

@@ -121,28 +121,29 @@ unsafe extern "C" {
     fn swoole_clean();
     #[link_name = "_ZN6swoole6StringC1EmPKNS_9AllocatorE"]
     fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
-    #[link_name = "_ZN6swoole6String6repeatEPKcmm"]
-    fn string_repeat(this: *mut CppString, data: *const c_char, length: usize, count: usize);
     #[link_name = "_ZN6swoole6String19append_random_bytesEmb"]
     fn string_append_random_bytes(this: *mut CppString, length: usize, base64: bool) -> bool;
-    #[link_name = "_ZN6swoole9websocket6encodeEPNS_6StringEPKcmhh"]
-    fn ws_encode(
-        buffer: *mut CppString,
-        data: *const c_char,
-        length: usize,
-        opcode: u8,
-        flags: u8,
-    ) -> bool;
-    #[link_name = "_ZN6swoole9websocket6decodeEPNS0_5FrameEPcm"]
-    fn ws_decode(frame: *mut Frame, data: *mut c_char, length: usize) -> bool;
-    #[link_name = "_ZN6swoole9websocket4maskEPcmPKc"]
-    fn ws_mask(data: *mut c_char, length: usize, mask_key: *const c_char);
     #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
     fn ws_get_package_length(
         protocol: *const c_void,
         socket: *mut c_void,
         pl: *mut PacketLength,
     ) -> isize;
+}
+
+/// `websocket::encode`.
+///
+/// # Safety
+/// `buffer` is a live String, laid out as the crates'.
+unsafe fn ws_encode(buffer: *mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
+    // SAFETY: per the caller.
+    swoole_rs_ffi::frame_api::encode(unsafe { &mut *buffer.cast() }, data, opcode, flags)
+}
+
+/// `websocket::decode`.
+fn ws_decode(frame: &mut Frame, data: &mut [u8]) -> bool {
+    // SAFETY: `Frame` is laid out as the crates'.
+    swoole_rs_ffi::frame_api::decode(unsafe { &mut *std::ptr::from_mut(frame).cast() }, data)
 }
 
 /// `http_server::get_package_length`, over the cases' records.
@@ -341,7 +342,7 @@ fn encode_and_send(serv: *mut Server, session_id: c_long, data: &[u8], opcode: u
     let buffer = tg_buffer();
     // SAFETY: the live buffer; `data`'s bytes.
     unsafe {
-        ws_encode(buffer, data.as_ptr().cast(), data.len(), opcode, FLAG_FIN);
+        ws_encode(buffer, data, opcode, FLAG_FIN);
         swr_case_send(serv, session_id, (*buffer).str, (*buffer).length as u32);
     }
 }
@@ -530,31 +531,16 @@ fn push(cli: &mut TcpStream, data: &[u8], mask: bool) -> bool {
         flags |= FLAG_MASK;
     }
     // SAFETY: a 32-byte String over `buf`, enough for any frame header; `data`'s bytes.
-    unsafe {
-        ws_encode(
-            &mut buffer,
-            data.as_ptr().cast(),
-            data.len(),
-            OPCODE_TEXT,
-            flags,
-        )
-    };
+    unsafe { ws_encode(&mut buffer, data, OPCODE_TEXT, flags) };
     let header = &buf[..buffer.length];
     if cli.write_all(header).is_err() {
         return false;
     }
     if mask {
         let mut marked = data.to_vec();
-        // SAFETY: `marked`'s bytes and the header's last four, its mask key.
-        unsafe {
-            ws_mask(
-                marked.as_mut_ptr().cast(),
-                marked.len(),
-                header[header.len() - SW_WEBSOCKET_MASK_LEN..]
-                    .as_ptr()
-                    .cast(),
-            )
-        };
+        // The header's last four bytes, its mask key.
+        let key = *header.last_chunk::<SW_WEBSOCKET_MASK_LEN>().unwrap();
+        swoole_rs_ffi::mask(&mut marked, key);
         cli.write_all(&marked).is_ok()
     } else {
         cli.write_all(data).is_ok()
@@ -603,8 +589,7 @@ fn recv(cli: &mut TcpStream) -> Option<Vec<u8>> {
         payload_length: 0,
         payload: std::ptr::null_mut(),
     };
-    // SAFETY: the packet's bytes and a writable Frame.
-    if !unsafe { ws_decode(&mut frame, data.as_mut_ptr().cast(), packet_len) } {
+    if !ws_decode(&mut frame, &mut data[..packet_len]) {
         return None;
     }
     // SAFETY: the decoded payload inside `data`.
@@ -636,6 +621,13 @@ fn string(size: usize) -> CppString {
     str
 }
 
+/// `String::repeat`.
+fn string_repeat(str: &mut CppString, data: &[u8], count: usize) {
+    // SAFETY: `CppString` is laid out as the crates'.
+    let str = unsafe { &mut *std::ptr::from_mut(str).cast::<swoole_rs_ffi::string::CppString>() };
+    str.repeat(data, count);
+}
+
 fn value(str: &CppString) -> &[u8] {
     // SAFETY: the String's `length` bytes.
     unsafe { std::slice::from_raw_parts(str.str.cast::<u8>(), str.length) }
@@ -659,8 +651,7 @@ fn websocket_medium() {
     test_base_server(|serv| {
         signal_block_all();
         let mut str = string(8192);
-        // SAFETY: one readable byte, repeated into the String.
-        unsafe { string_repeat(&mut str, c"A".as_ptr(), 1, 8192) };
+        string_repeat(&mut str, b"A", 8192);
         websocket_test(primary_port(serv), value(&str), false);
         // SAFETY: SIGTERM to this process.
         unsafe { kill(getpid(), SIGTERM) };
@@ -672,8 +663,7 @@ fn websocket_big() {
         signal_block_all();
         let mut str = string(128 * 1024);
         let capacity = str.size;
-        // SAFETY: as above.
-        unsafe { string_repeat(&mut str, c"A".as_ptr(), 1, capacity - 1) };
+        string_repeat(&mut str, b"A", capacity - 1);
         websocket_test(primary_port(serv), value(&str), false);
         // SAFETY: SIGTERM to this process.
         unsafe { kill(getpid(), SIGTERM) };
@@ -992,15 +982,7 @@ fn get_package_length() {
     let size = unsafe { http_get_package_length_size(fake_sock) };
     assert_eq!(size, SW_WEBSOCKET_FRAME_HEADER_SIZE);
     // SAFETY: the live buffer; TEST_STR's bytes.
-    assert!(unsafe {
-        ws_encode(
-            buffer,
-            TEST_STR.as_ptr().cast(),
-            TEST_STR.len(),
-            OPCODE_TEXT,
-            FLAG_FIN,
-        )
-    });
+    assert!(unsafe { ws_encode(buffer, TEST_STR.as_bytes(), OPCODE_TEXT, FLAG_FIN) });
     // SAFETY: the live buffer.
     let mut pl = unsafe {
         PacketLength {

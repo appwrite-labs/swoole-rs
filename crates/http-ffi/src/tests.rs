@@ -1,6 +1,6 @@
 //! The C ABI's contracts: errors leave outputs alone, nulls and overflows are refused.
 use super::*;
-use crate::http_server::{get_method_string, get_status_message, parse_multipart_boundary};
+use crate::http_server::{get_method_string, get_status_message};
 use std::mem::MaybeUninit;
 /// `swoole_rs_http::url_encode` into `output`, which holds only bytes.
 fn encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
@@ -72,24 +72,11 @@ fn boundary_preserves_quotes_spaces_and_parameter_rules() {
         (&b"x=a"[..], 0, None),
         (&b"boundary=x"[..], 99, None),
     ] {
-        let (mut start, mut length) = (std::ptr::null_mut(), 0);
-        // SAFETY: `input` is initialized for its length.
-        let found = unsafe {
-            parse_multipart_boundary(
-                input.as_ptr().cast(),
-                input.len(),
-                offset,
-                &mut start,
-                &mut length,
-            )
-        };
-        assert_eq!(i32::from(found), i32::from(expected.is_some()));
+        let found = swoole_rs_http::boundary(input, offset).unwrap();
+        assert_eq!(i32::from(found.is_some()), i32::from(expected.is_some()));
         if let Some(expected) = expected {
-            let offset = start.addr() - input.as_ptr().addr();
-            assert_eq!(
-                &input[offset..offset + usize::try_from(length).unwrap()],
-                expected
-            );
+            let span = found.unwrap();
+            assert_eq!(&input[span.offset..span.offset + span.length], expected);
         }
     }
 }

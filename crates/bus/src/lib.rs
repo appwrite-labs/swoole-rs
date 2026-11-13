@@ -148,9 +148,10 @@ impl Drop for Bus {
         // timers, buffers or loop: `Socket::free` is the record's deallocation.
         #[cfg(not(all(feature = "upstream-symbols", not(test))))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
-        for &socket in self.pipe_sockets.get_mut().iter() {
-            // SAFETY: null or a record `init_pipe_socket` made, used by nothing else now.
-            let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+        // By descriptor, as `init_pipe_socket` recorded them.
+        let descriptors = c_int::try_from(self.pipe_sockets.get_mut().len()).unwrap_or(c_int::MAX);
+        for fd in 0..descriptors {
+            let Some(record) = self.pipe(fd) else {
                 continue;
             };
             record.edit(|record| record.fd = -1);

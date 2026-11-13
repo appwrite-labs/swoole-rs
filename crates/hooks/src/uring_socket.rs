@@ -11,7 +11,7 @@ use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::Co;
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
-use crate::vector::{IoVector, Lent};
+use crate::vector::{IoVector, Lent, RecvMessage, SendMessage};
 use core::ffi::{CStr, c_char, c_int, c_ulong};
 use openssl_sys::BIO;
 use swoole_rs_corebase::CCast;
@@ -121,8 +121,6 @@ pub const READ: c_int = 0;
 pub const WRITE: c_int = 1;
 pub const RECV: c_int = 2;
 pub const SEND: c_int = 3;
-pub const RECVMSG: c_int = 4;
-pub const SENDMSG: c_int = 5;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -166,28 +164,19 @@ impl UringSocketOps {
         result
     }
 
-    /// `recvmsg` ([`RECVMSG`]) or `sendmsg` ([`SENDMSG`]) of `message` with `flags`.
-    ///
-    /// # Safety
-    /// `message` is valid as for the system call.
-    pub(crate) unsafe fn message(
-        &self,
-        op: c_int,
-        message: *mut libc::msghdr,
-        flags: c_int,
-    ) -> isize {
+    /// `recvmsg` into `message` with `flags`.
+    pub(crate) fn recvmsg(&self, message: &mut RecvMessage<'_>, flags: c_int) -> isize {
         let (host, tls) = (self.host(), self.tls);
-        let (fd, rt, wt) = (tls.fd, tls.read_timeout, tls.write_timeout);
-        let event = if op == RECVMSG {
-            EVENT_READ
-        } else {
-            EVENT_WRITE
-        };
-        self.transfer(event, false, || match op {
-            // SAFETY: the caller's msghdr.
-            RECVMSG => unsafe { uring::recvmsg(host, fd, message, flags, rt) },
-            // SAFETY: as above.
-            _ => unsafe { uring::sendmsg(host, fd, message, flags, wt) },
+        self.transfer(EVENT_READ, false, || {
+            uring::recvmsg(host, tls.fd, message, flags, tls.read_timeout)
+        })
+    }
+
+    /// `sendmsg` of `message` with `flags`.
+    pub(crate) fn sendmsg(&self, message: &SendMessage<'_>, flags: c_int) -> isize {
+        let (host, tls) = (self.host(), self.tls);
+        self.transfer(EVENT_WRITE, false, || {
+            uring::sendmsg(host, tls.fd, message, flags, tls.write_timeout)
         })
     }
 
@@ -376,10 +365,7 @@ pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut Socke
 }
 
 /// `connect(addr, len)` through the ring under the connect timeout.
-pub(crate) fn swr_v1_hook_uring_connect(
-    ops: &UringSocketOps,
-    peer: crate::lifecycle::Peer<'_>,
-) -> bool {
+pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps, peer: &SocketAddress) -> bool {
     if !ops.available(EVENT_RDWR) {
         return false;
     }

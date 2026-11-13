@@ -33,7 +33,12 @@ crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and
 expected values), calling the C ABI `swoole_coroutine_*` exports; the same
-`hooks-system-rust` phase runs them. Upstream's test helpers are written out over
+`hooks-system-rust` phase runs them. Five have no caller outside Rust and are Rust
+functions, called by path: `swoole_coroutine_connect`, `_accept`, `_poll_fake`,
+`_sendmsg` and `_recvmsg` are `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and
+`recvmsg`, over a `SocketAddress` (which `address::assign` and `getsockname` fill), a
+slice of pollfds and a `SendMessage` or `RecvMessage` of borrowed buffers (as
+`coroutine_socket.sendmsg_and_recvmsg` passes `Co::sendmsg` and `recvmsg`). Upstream's test helpers are written out over
 libc (`File`, `String`, `create_socket_pair`, `file_get_contents`,
 `Address::assign`), `System::gethostbyname` is `resolve::system_gethostbyname`,
 and `exists` reads the socket's `sock_fd` through the hybrid's record layout.
@@ -90,11 +95,12 @@ DNS and network) and `dns.cancel` (a lookup that misses the resolver cache).
 `address.record` is the former repo-owned `address_record.cc` check, with the
 same assertions: the record's fields and value copies, and the per-thread scratch
 `get_addr` and `verify_ip` share.
-The repo-owned C++ witnesses of copies and `std::bad_alloc` containment, which only
-C++ can throw, are the same binary's cases with bodies in `system/fixture.cc`
-(compiled into system.py's lib-swoole with `--fixture`), unchanged but for plain
-assertion macros in place of GoogleTest's: the five `rust_dns_request.*` cases
-(formerly `dns_request_owner.cpp`). `rust_socket_scopes.protocol_snapshot_and_copy_restore`
+The repo-owned C++ witnesses of copies and `std::bad_alloc` containment
+(`rust_dns_request.*`, formerly `dns_request_owner.cpp`) checked the resolver
+record's C++ views, `GethostbynameRequest` and `GetaddrinfoRequest`. Those left
+`swoole_async.h` with the exports under them, so what the witnesses checked of the
+record is `tests/modules/corebase/resolver.rs` (tests/modules/corebase/README.md);
+`rust_dns_request.actual_async_numeric_results` stays here. `rust_socket_scopes.protocol_snapshot_and_copy_restore`
 and `.error_text_publication` (formerly `socket_scopes.cpp`) witnessed the C++
 `ProtocolSwitch` and `set_err` overloads; with those gone from the header they are
 crates/hooks unit tests, `socket_scope::tests::protocol_snapshot_and_restore` (less

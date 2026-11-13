@@ -1,8 +1,4 @@
 //! Callback-free `ListenPort` decisions. All native effects and object custody stay native.
-#![expect(
-    clippy::missing_safety_doc,
-    reason = "every export is covered by the module-local C contract"
-)]
 #![cfg_attr(
     not(test),
     deny(
@@ -11,7 +7,6 @@
     )
 )]
 use std::ffi::CStr;
-use std::slice;
 
 use swoole_rs_server::port_config::PortMethods;
 
@@ -113,16 +108,6 @@ const METHODS: PortMethods = PortMethods {
     dtls_free: lifecycle::dtls_free,
 };
 
-#[repr(C)]
-pub struct PortsSpan {
-    pub data: *const u8,
-    pub len: usize,
-}
-#[repr(C)]
-pub struct PortsEvent {
-    pub index: i32,
-    pub property: PortsSpan,
-}
 const EVENTS: &[(&[u8], &[u8])] = &[
     (b"connect", b"onConnect"),
     (b"receive", b"onReceive"),
@@ -200,59 +185,12 @@ pub fn event(name: &[u8], native_casefold: bool) -> Option<(usize, &'static [u8]
         })
 }
 
-/// The callback property `getCallback(name)` reads, matched as Zend folds ASCII.
+/// The callback property `getCallback(name)` reads, matched as Zend folds ASCII:
+/// reusing `on()`'s locale-sensitive match would change Turkish-locale behaviour.
 #[must_use]
 pub fn callback_property(name: &[u8]) -> Option<&'static [u8]> {
     EVENTS
         .iter()
         .find(|(key, _)| name.eq_ignore_ascii_case(key))
         .map(|&(_, property)| property)
-}
-
-fn span(bytes: Option<&'static [u8]>) -> PortsSpan {
-    bytes.map_or(
-        PortsSpan {
-            data: std::ptr::null(),
-            len: 0,
-        },
-        |bytes| PortsSpan {
-            data: bytes.as_ptr(),
-            len: bytes.len(),
-        },
-    )
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_event(
-    data: *const u8,
-    len: usize,
-    native_casefold: u8,
-) -> PortsEvent {
-    let found = (len != 0 && !data.is_null() && isize::try_from(len).is_ok())
-        .then(|| {
-            // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
-            event(
-                unsafe { slice::from_raw_parts(data, len) },
-                native_casefold != 0,
-            )
-        })
-        .flatten();
-    PortsEvent {
-        index: found.map_or(-1, |(index, _)| i32::try_from(index).unwrap_or(-1)),
-        property: span(found.map(|(_, property)| property)),
-    }
-}
-
-/// Callback getter normalization is Zend ASCII, distinct from registration's libc fold.
-/// Only the caller's initialized bytes are borrowed; returned property bytes are static.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_ports_callback_property(data: *const u8, len: usize) -> PortsSpan {
-    span(
-        (!data.is_null() && isize::try_from(len).is_ok())
-            .then(|| {
-                // SAFETY: `data` is non-null and the caller lends `len <= isize::MAX` initialized bytes.
-                callback_property(unsafe { slice::from_raw_parts(data, len) })
-            })
-            .flatten(),
-    )
 }

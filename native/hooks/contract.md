@@ -4,7 +4,7 @@ Feature bit 65536 (`hooks`). ABI:
 `swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
 and io_uring sources have left the build, and so has the module's last native source:
 `coroutine::Socket` and `SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
-`swoole_file_hook.h` keep only what upstream's bundled C uses (`hiredis.c`/`net.c`, `ftp.c`, `plain_wrapper.c`).
+`swoole_file_hook.h` keep only what upstream's bundled C uses (`hiredis.c`/`net.c`, `plain_wrapper.c`).
 
 ## The coroutine socket
 
@@ -34,9 +34,10 @@ bundled ext/ssh2 uses: `new SocketImpl`, `connect(host)` (`swr_v1_hook_co_socket
 ## Hooks and file locks
 
 - hook.cc's socket functions (`swoole_coroutine_socket`, `send`, `recv`,
-  `sendmsg`, `recvmsg`, `connect`, `accept`, `poll`, `poll_fake`, `close`, `read`,
+  `poll`, `close`, `read`,
   `write`, `socket_create`, `socket_unwrap`, `socket_exists`, the timeouts and
-  `socket_wait_event`, under their C++ symbols) are Rust, and
+  `socket_wait_event`, under their C++ symbols) are Rust, and `sendmsg`, `recvmsg`,
+  `connect`, `accept`, `poll_fake` (`crates/hooks/src/hooked.rs`, typed) and
   `swoole_coroutine_get_socket_object[_ex]` are plain Rust functions (no C caller left). The hooked fds' socket map is Rust's too: fd to a lent
   `SocketImpl *`, no reference count; hooked `close` removes it only after
   `Socket::close()` succeeds. The hooks make and delete those sockets in Rust and call the Rust members

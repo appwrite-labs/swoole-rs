@@ -18,7 +18,7 @@ use crate::socket_wait::{error_event, ready, wait_for};
 use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
 use crate::uring_socket as ring;
-use crate::vector::{IoVector, vector_all};
+use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
@@ -33,19 +33,6 @@ use swoole_rs_tls::upstream::{
 
 /// `SW_EVENT_WRITE`.
 const WRITE: u32 = 1 << 10;
-
-/// With `io_uring`, a `UringSocket`'s member takes the ring's path
-/// (`crate::uring_socket`, as `ring`) and returns its result.
-macro_rules! uring {
-    ($socket:expr, |$ops:ident| $body:expr) => {
-        #[cfg(feature = "iouring")]
-        if let Some($ops) = crate::uring_socket::of($socket) {
-            let $ops = &$ops;
-            // SAFETY: the socket's live view, with the member's arguments.
-            return unsafe { $body };
-        }
-    };
-}
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
@@ -606,29 +593,25 @@ impl Co {
     }
 
     /// `Socket::recvmsg(msg, flags)`.
-    ///
-    /// # Safety
-    /// `msg` is as recvmsg(2) takes it.
-    pub unsafe fn recvmsg(self, msg: *mut libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ops.message(ring::RECVMSG, msg, flags));
+    pub fn recvmsg(self, msg: &mut RecvMessage<'_>, flags: c_int) -> isize {
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ops.recvmsg(msg, flags);
+        }
         let fd = self.sock_fd();
-        let call = call!(|_, _, _| libc::recvmsg(fd, msg, flags));
+        let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
         self.transfer(0, Buffer::none(READ), call)
     }
 
     /// `Socket::sendmsg(msg, flags)`.
-    ///
-    /// # Safety
-    /// `msg` is as sendmsg(2) takes it.
     #[must_use]
-    pub unsafe fn sendmsg(self, msg: *const libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ops.message(
-            ring::SENDMSG,
-            msg.cast_mut(),
-            flags
-        ));
+    pub fn sendmsg(self, msg: &SendMessage<'_>, flags: c_int) -> isize {
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ops.sendmsg(msg, flags);
+        }
         let fd = self.sock_fd();
-        let call = call!(|_, _, _| libc::sendmsg(fd, msg, flags));
+        let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
         self.transfer(0, Buffer::none(WRITE), call)
     }
 

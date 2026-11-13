@@ -129,8 +129,17 @@ impl Sock {
 
     /// `connect(host, port)`: the ring's connect, then the TLS handshake when enabled.
     fn connect(&self, addr: &Address) -> bool {
-        let peer = unsafe { crate::lifecycle::Peer::from_raw(addr.as_ptr(), addr.len) };
-        let ok = swr_v1_hook_uring_connect(&self.ops, peer);
+        // The address's `len` bytes, as the kernel reads them.
+        let mut peer = SocketAddress {
+            len: addr.len,
+            ..SocketAddress::default()
+        };
+        unsafe {
+            addr.as_ptr()
+                .cast::<u8>()
+                .copy_to_nonoverlapping((&raw mut peer.addr).cast(), addr.len as usize);
+        }
+        let ok = swr_v1_hook_uring_connect(&self.ops, &peer);
         ok && (self.ops.tls.ssl.is_none() || self.ssl_handshake())
     }
 
@@ -498,29 +507,19 @@ fn sendmsg_and_recvmsg() {
         || {
             let sock = Sock::new(pairs[1]);
             let mut buf = vec![0_u8; length];
-            let mut ivec = libc::iovec {
-                iov_base: buf.as_mut_ptr().cast(),
-                iov_len: length,
-            };
-            let mut msg: libc::msghdr = unsafe { mem::zeroed() };
-            msg.msg_iov = &raw mut ivec;
-            msg.msg_iovlen = 1;
+            let mut ivec = [std::io::IoSliceMut::new(&mut buf)];
+            let mut msg = RecvMessage::new(&mut ivec);
 
-            let ret = unsafe { sock.ops.message(RECVMSG, &raw mut msg, 0) };
+            let ret = sock.ops.recvmsg(&mut msg, 0);
             buf.truncate(ret.max(0).unsigned_abs());
             assert_eq!(buf, text);
         },
         || {
             let sock = Sock::new(pairs[0]);
-            let mut ivec = libc::iovec {
-                iov_base: text.as_ptr().cast_mut().cast(),
-                iov_len: length,
-            };
-            let mut msg: libc::msghdr = unsafe { mem::zeroed() };
-            msg.msg_iov = &raw mut ivec;
-            msg.msg_iovlen = 1;
+            let ivec = [std::io::IoSlice::new(text)];
+            let msg = SendMessage::new(&ivec);
 
-            let ret = unsafe { sock.ops.message(SENDMSG, &raw mut msg, 0) };
+            let ret = sock.ops.sendmsg(&msg, 0);
             drop(sock);
             assert_eq!(ret, length.cast_signed());
         },

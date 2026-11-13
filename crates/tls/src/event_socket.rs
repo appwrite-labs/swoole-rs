@@ -56,8 +56,7 @@ impl EventSocket {
         if !reactor() {
             return -1;
         }
-        // SAFETY: the live record, on the thread's live reactor, with the caller's bytes.
-        unsafe { event_api::swoole_event_write(self.0.as_ptr(), data.as_ptr().cast(), data.len()) }
+        event_api::event_write(self.0, data)
     }
 
     /// `socket->free()`, which closes the fd unless `keep_fd` (`socket->fd = -1`

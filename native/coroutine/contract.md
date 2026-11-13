@@ -59,9 +59,9 @@ scheduler, `swr_v1_coroutine_{scheduler_get,bail}` and the operations Rust calls
 path (`current`, `resume`, `yield_with_cancel`), which need no timer or event loop,
 so they build in every configuration. `crates/coroutine/src/facade.rs`, which only
 the extension builds (`upstream-symbols`), defines the rest under their upstream
-symbols (`yield_ex`, `cancel`, `activate`, `deactivate`, `print_list`,
-`print_socket_bound_error`), `swr_v1_coroutine_create` and the `swoole_coroutine_*`
-C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
+symbols (`yield_ex`, `cancel`, `activate`, `deactivate`, `print_list`),
+`print_socket_bound_error` (Rust's only, by path), `swr_v1_coroutine_create` and the
+`swoole_coroutine_*` C API. The configure switches it reads (`SW_USE_THREAD_CONTEXT`,
 `SW_CONTEXT_PROTECT_STACK_PAGE`, `SW_CONTEXT_DETECT_STACK_USAGE`, `SW_CORO_TIME`) are
 `swoole_rs_corebase::built_with`'s (native/corebase/switches.cc), so the module has
 no native source left.

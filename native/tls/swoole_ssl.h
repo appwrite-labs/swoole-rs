@@ -55,26 +55,7 @@ struct SSLContext {
 
     bool ready() const { return fields().context != nullptr; }
 
-    bool set_cert_file(const std::string &file) const {
-        if (set_path(CERT_FILE, file)) return true;
-        swoole_warning("ssl cert file[%s] not found", file.c_str());
-        return false;
-    }
-    bool set_key_file(const std::string &file) const {
-        if (set_path(KEY_FILE, file)) return true;
-        swoole_warning("ssl key file[%s] not found", file.c_str());
-        return false;
-    }
-
     bool create();
-
-  private:
-    // False when the file can't be read.
-    bool set_path(Text index, const std::string &file) const {
-        auto status = swr_v1_tls_owner_set_path(handle(), index, file.c_str(), file.size());
-        if (status < 0) throw std::bad_alloc();
-        return status != 1;
-    }
 };
 }  // namespace swoole
 

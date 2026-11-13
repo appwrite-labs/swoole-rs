@@ -23,7 +23,9 @@ case at exit, as GoogleTest's nonfatal assertions do. `Reactor::get_handler` and
 `default_write_handler` have no C++ caller, so the cases read them through
 crates/reactor (`reactor_upstream::reactor_get_handler`,
 `reactor_default_write_handler`), and `defer_task`'s `reactor->defer` on the thread's
-reactor is `swoole_event_defer`.
+reactor is `swoole_event_defer`. Nor have `swoole_event_add_or_update` and
+`SocketPair::write`, which the cases call as `event_api::add_or_update` and crates/tls's
+`socket_pair::write_from`.
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A

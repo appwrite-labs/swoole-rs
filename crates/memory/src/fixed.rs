@@ -112,52 +112,6 @@ impl Fixed {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct DebugCursor {
-    next: *mut Slice,
-    line: u64,
-}
-pub(crate) struct DebugRecord {
-    pub(crate) slice: *mut Slice,
-    pub(crate) prev: *mut Slice,
-    pub(crate) next: *mut Slice,
-    pub(crate) data: *mut u8,
-    pub(crate) line: u64,
-    pub(crate) lock: u8,
-    pub(crate) self_link: bool,
-}
-
-/// The next slice `FixedPool::debug` prints, walking the live links from the head.
-pub(crate) fn debug_step(
-    pool: &Fixed,
-    cursor: &mut DebugCursor,
-    max_lines: i32,
-) -> Option<DebugRecord> {
-    let slice = if cursor.line == 0 {
-        pool.head.get()
-    } else {
-        cursor.next
-    };
-    let node = pool.nodes().get(slice)?;
-    let record = DebugRecord {
-        slice,
-        prev: node.prev,
-        next: node.next,
-        data: slice.cast::<u8>().wrapping_add(mem::size_of::<Slice>()),
-        line: cursor.line,
-        lock: node.lock,
-        self_link: node.next == slice,
-    };
-    // Preserve the original post-print `line++ > max_lines` bound: max0 emits2.
-    cursor.next = if max_lines < 0 || u64::try_from(max_lines).is_ok_and(|max| cursor.line > max) {
-        ptr::null_mut()
-    } else {
-        node.next
-    };
-    cursor.line += 1;
-    Some(record)
-}
-
 /// Complete arena plan; the native facade only supplies allocation effects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Layout {
@@ -309,4 +263,4 @@ pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/fixed.rs"]
-mod tests;
+pub(crate) mod tests;

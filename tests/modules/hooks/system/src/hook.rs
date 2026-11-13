@@ -1,8 +1,13 @@
 //! Upstream's `core-tests/src/coroutine/hook.cpp`, one function per TEST with the
 //! same inputs and expected values, over the hybrid's C ABI `swoole_coroutine_*`
 //! exports. Upstream's test helpers (`File`, `String`, `create_socket_pair`,
-//! `file_get_contents`, `Address::assign`) are written out here over libc.
+//! `file_get_contents`) are written out here over libc. `swoole_coroutine_connect`,
+//! `_accept`, `_poll_fake`, `_sendmsg` and `_recvmsg`, which nothing outside Rust calls, are
+//! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
+//! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
+//! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
 
+use super::socket::SW_SOCK_TCP;
 use super::{
     AF_INET, AF_UNIX, EINVAL, LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN, O_CREAT, O_NONBLOCK, O_RDONLY,
     O_WRONLY, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOL_SOCKET, SW_ERR, SW_EVENT_WRITE, TEST_FILE,
@@ -12,8 +17,10 @@ use super::{
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::time::Instant;
+use swoole_rs_clients::address;
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::hooked::{
-    swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
+    self, swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
 };
 
 // glibc's values (the core-tests build is Linux).
@@ -72,23 +79,6 @@ struct AddrInfo {
     addr: *mut c_void,
     canonname: *mut c_char,
     next: *mut AddrInfo,
-}
-
-#[repr(C)]
-struct IoVec {
-    base: *mut c_void,
-    len: usize,
-}
-
-#[repr(C)]
-struct MsgHdr {
-    name: *mut c_void,
-    namelen: u32,
-    iov: *mut IoVec,
-    iovlen: usize,
-    control: *mut c_void,
-    controllen: usize,
-    flags: c_int,
 }
 
 #[repr(C)]
@@ -171,13 +161,8 @@ unsafe extern "C" {
     fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int;
     fn swoole_coroutine_socket_exists(fd: c_int) -> u8;
     fn swoole_coroutine_send(fd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize;
-    fn swoole_coroutine_sendmsg(fd: c_int, msg: *const MsgHdr, flags: c_int) -> isize;
     fn swoole_coroutine_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
-    fn swoole_coroutine_recvmsg(fd: c_int, msg: *mut MsgHdr, flags: c_int) -> isize;
-    fn swoole_coroutine_connect(fd: c_int, addr: *const SockAddrIn, len: u32) -> c_int;
-    fn swoole_coroutine_accept(fd: c_int, addr: *mut SockAddrIn, len: *mut u32) -> c_int;
     fn swoole_coroutine_poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
-    fn swoole_coroutine_poll_fake(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
     fn swoole_coroutine_socket_set_timeout(fd: c_int, which: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_set_connect_timeout(fd: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_wait_event(fd: c_int, event: c_int, timeout: f64) -> c_int;
@@ -207,7 +192,6 @@ unsafe extern "C" {
     fn freeaddrinfo(ai: *mut AddrInfo);
     fn bind(fd: c_int, addr: *const SockAddrIn, len: u32) -> c_int;
     fn listen(fd: c_int, backlog: c_int) -> c_int;
-    fn getsockname(fd: c_int, addr: *mut SockAddrIn, len: *mut u32) -> c_int;
     fn __h_errno_location() -> *mut c_int;
 }
 
@@ -528,17 +512,17 @@ fn test_hook_socket() {
     // System::gethostbyname("www.baidu.com", AF_INET, 10)
     let ip = lookup(c"www.baidu.com", AF_INET, 10.0);
     // sa.assign(SW_SOCK_TCP, ip, 80)
-    let sa = SockAddrIn {
-        family: AF_INET as u16,
-        port: 80u16.to_be(),
-        addr: ip
-            .parse::<std::net::Ipv4Addr>()
-            .map_or([0; 4], |addr| addr.octets()),
-        zero: [0; 8],
-    };
-    let len = u32::try_from(size_of::<SockAddrIn>()).unwrap();
-    // SAFETY: a readable address of `len` bytes.
-    assert_eq!(unsafe { swoole_coroutine_connect(sock, &sa, len) }, 0);
+    let mut sa = SocketAddress::default();
+    let host = std::ffi::CString::new(ip).unwrap();
+    let _ = address::assign(
+        &mut sa.addr,
+        &mut sa.len,
+        SW_SOCK_TCP,
+        host.as_bytes_with_nul(),
+        80,
+        true,
+    );
+    assert_eq!(hooked::connect(sock, &sa), 0);
     // SAFETY: waits on `sock`.
     assert_eq!(
         unsafe { swoole_coroutine_socket_wait_event(sock, SW_EVENT_WRITE, 5.0) },
@@ -869,43 +853,19 @@ fn sendmsg_and_recvmsg() {
         let length = text.len();
 
         go(|| {
-            let mut ivec = IoVec {
-                base: text.as_ptr().cast_mut().cast(),
-                len: length,
-            };
-            let msg = MsgHdr {
-                name: std::ptr::null_mut(),
-                namelen: 0,
-                iov: &mut ivec,
-                iovlen: 1,
-                control: std::ptr::null_mut(),
-                controllen: 0,
-                flags: 0,
-            };
+            let ivec = [std::io::IoSlice::new(text)];
+            let msg = hooked::SendMessage::new(&ivec);
 
-            // SAFETY: a message over `text`.
-            let ret = unsafe { swoole_coroutine_sendmsg(pairs[0], &msg, 0) };
+            let ret = hooked::sendmsg(pairs[0], &msg, 0);
             assert_eq!(co_close(pairs[0]), 0);
             assert_eq!(ret, isize::try_from(length).unwrap());
         });
 
         let mut buf = vec![0u8; length + 1];
-        let mut ivec = IoVec {
-            base: buf.as_mut_ptr().cast(),
-            len: length,
-        };
-        let mut msg = MsgHdr {
-            name: std::ptr::null_mut(),
-            namelen: 0,
-            iov: &mut ivec,
-            iovlen: 1,
-            control: std::ptr::null_mut(),
-            controllen: 0,
-            flags: 0,
-        };
+        let mut ivec = [std::io::IoSliceMut::new(&mut buf[..length])];
+        let mut msg = hooked::RecvMessage::new(&mut ivec);
 
-        // SAFETY: a message over `buf`.
-        let ret = unsafe { swoole_coroutine_recvmsg(pairs[1], &mut msg, 0) };
+        let ret = hooked::recvmsg(pairs[1], &mut msg, 0);
         buf[usize::try_from(ret).unwrap()] = 0;
         assert_eq!(co_close(pairs[1]), 0);
         assert_eq!(super::c_str(&buf), text);
@@ -1067,12 +1027,12 @@ fn poll_fake() {
         });
 
         let mut fds = [
-            PollFd {
+            hooked::pollfd {
                 fd: 0,
                 events: 0,
                 revents: 0,
             },
-            PollFd {
+            hooked::pollfd {
                 fd: 0,
                 events: 0,
                 revents: 0,
@@ -1080,45 +1040,33 @@ fn poll_fake() {
         ];
         let mut buf = [0u8; 4096];
 
-        fds[0] = PollFd {
+        fds[0] = hooked::pollfd {
             fd: fd1,
             events: POLLIN,
             revents: 0,
         };
-        // SAFETY: one writable entry.
-        assert_eq!(
-            unsafe { swoole_coroutine_poll_fake(fds.as_mut_ptr(), 1, 1000) },
-            1
-        );
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
         assert!(fds[0].revents & POLLIN != 0);
 
         assert!(read_fd(fd1, &mut buf) > 1024);
 
         // bzero(fds, sizeof(pollfd)): the first entry only.
-        fds[0] = PollFd {
+        fds[0] = hooked::pollfd {
             fd: 0,
             events: 0,
             revents: 0,
         };
-        // SAFETY: two writable entries.
-        assert_eq!(
-            unsafe { swoole_coroutine_poll_fake(fds.as_mut_ptr(), 2, 1000) },
-            -1
-        );
+        assert_eq!(hooked::poll_fake(&mut fds, 1000), -1);
         assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
         co_sleep(0.02);
 
-        fds[0] = PollFd {
+        fds[0] = hooked::pollfd {
             fd: fd0,
             events: POLLIN | POLLOUT,
             revents: 0,
         };
-        // SAFETY: one writable entry.
-        assert_eq!(
-            unsafe { swoole_coroutine_poll_fake(fds.as_mut_ptr(), 1, 1000) },
-            1
-        );
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
         assert!(fds[0].revents & POLLIN != 0);
         assert!(fds[0].revents & POLLOUT != 0);
     });
@@ -1283,16 +1231,10 @@ fn accept() {
                 let client_sock = swoole_coroutine_socket(AF_INET, SOCK_STREAM, 0);
                 assert!(client_sock > 0);
 
-                let mut actual_server_addr = std::mem::zeroed::<SockAddrIn>();
-                let mut addr_len = size_of::<SockAddrIn>() as u32;
-                assert_eq!(
-                    getsockname(server_sock, &raw mut actual_server_addr, &raw mut addr_len),
-                    0
-                );
-                assert_eq!(
-                    swoole_coroutine_connect(client_sock, &raw const actual_server_addr, addr_len),
-                    0
-                );
+                // getsockname(server_sock, &actual_server_addr, &addr_len)
+                let mut actual_server_addr = SocketAddress::default();
+                assert_eq!(actual_server_addr.local_name(server_sock), 0);
+                assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
 
                 let test_message = b"test_data";
                 let sent_bytes =
@@ -1302,13 +1244,8 @@ fn accept() {
                 swoole_coroutine_close(client_sock);
             });
 
-            let mut client_addr = std::mem::zeroed::<SockAddrIn>();
-            let mut client_addr_len = size_of::<SockAddrIn>() as u32;
-            let client_sock = swoole_coroutine_accept(
-                server_sock,
-                &raw mut client_addr,
-                &raw mut client_addr_len,
-            );
+            let mut client_addr = SocketAddress::default();
+            let client_sock = hooked::accept(server_sock, &mut client_addr);
             assert!(client_sock > 0);
 
             let mut buffer = [0u8; 256];

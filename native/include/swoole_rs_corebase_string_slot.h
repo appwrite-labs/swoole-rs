@@ -14,8 +14,9 @@ typedef struct {
 swr_v1_core_string_view_t swr_v1_core_string_view(const swr_v1_core_string *);
 int32_t swr_v1_core_string_set(const swr_v1_core_string *, const char *,
                                size_t);
-const swr_v1_core_string *swr_v1_core_string_clone(const swr_v1_core_string *);
-void swr_v1_core_string_free(const swr_v1_core_string *);
+/* An owned copy, or null when its bytes can't be allocated; handed back once. */
+swr_v1_core_string *swr_v1_core_string_clone(const swr_v1_core_string *);
+void swr_v1_core_string_free(swr_v1_core_string *);
 #ifdef __cplusplus
 }
 #endif

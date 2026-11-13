@@ -1,15 +1,20 @@
 # WebSocket tests
 
-The frame codec is `crates/websocket`, which forbids `unsafe`. Its C ABI is
-`crates/websocket-ffi`: `websocket.cc`'s C++-symbol entry points (`frame_api`), the
-mask in `docs/abi-v1.md` among them. The PHP side is `crates/phphttp/src/websocket.rs`.
+The frame codec is `crates/websocket`, which forbids `unsafe`. `crates/websocket-ffi`
+(`frame_api`) is `websocket.cc`'s entry points over `swoole::String` and
+`websocket::Frame`: safe functions over slices, and `get_package_length`, the one a
+protocol table holds, also under its C++ symbol. `encode`, `decode`, `mask`,
+`pack_close_frame` and `print_frame` had C++ symbols too, which only Rust tests linked;
+those call the functions by path now. `mask`'s null-pointer and oversized-length
+refusals went with its export, and their test (`tests/kernel.rs`'s
+`invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
+cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.
 
 ## Codec
 
 `cargo test -p swoole-rs-websocket -p swoole-rs-websocket-ffi` (`websocket-unit`) covers
-the codec at every opcode/flags combination and length boundary, and
-`websocket::mask`'s pointer contract (`tests/kernel.rs`: a refused input is the one
-that logs the mask's warning). The `fuzz/` targets `ws_frame_length`, `ws_decode` and
+the codec at every opcode/flags combination and length boundary, and the mask kernel
+(`tests/kernel.rs`). The `fuzz/` targets `ws_frame_length`, `ws_decode` and
 `ws_mask` compare the codec with the pinned C++ bodies.
 
 `codec.rs` (the `codec` test of `swoole-rs-websocket-ffi`) compares the codec with the

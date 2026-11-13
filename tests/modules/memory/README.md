@@ -36,7 +36,9 @@ expected dead-owner warning never appears. macOS emits the warning.
 Upstream's fixed_pool, global_memory, table and core channel GoogleTests are Rust
 tests here, one per TEST with its inputs and expected values (#1513, #1665).
 Nothing in the build includes `swoole_table.h` or the `FixedPool` facade any more,
-so they left with these ports.
+so they left with these ports: `FixedPool` itself, the owner of an arena of its own, is
+test support in `members.rs` (and its `debug` walk in `fixed.rs`) over the crate's
+`fixed` pool, which the table's collision rows use.
 
 `memory/ringbuffer.cpp`, `core/heap.cpp` and `fixed_pool.realloc` have no port:
 their subjects went (#2599, #2849). Upstream calls `RingBuffer` from nowhere but that TEST, and the timer,

@@ -72,7 +72,12 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
 use std::{cmp::Ordering, ptr};
 
 unsafe extern "C" {
-    fn toupper(value: c_int) -> c_int;
+    /// `toupper(3)` in the current locale. ISO C defines it for an `unsigned char`'s
+    /// values and `EOF` only. Every libc this builds for defines it for any `int`:
+    /// glibc indexes its table for -128..=255 and returns the rest unchanged, and
+    /// musl, bionic and the BSDs' (Darwin's too) range-check before any lookup. So it
+    /// reads its integer and no memory of the caller's.
+    safe fn toupper(value: c_int) -> c_int;
 }
 
 /// `SWOOLE_VERSION`, `SWOOLE_VERSION_ID` and `SWOOLE_API_VERSION_ID` of the pin;
@@ -394,13 +399,11 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
 
 /// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode:
 /// native prefix, locale, signed-char and `size_t` wrap semantics.
-/// # Safety
-/// Bytes passed to toupper must satisfy the original host's ctype precondition.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z14swoole_hex2decPKcPm")
 )]
-pub unsafe extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
+pub extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
     // The compiler's plain `char` signedness, as the C++ facade saw it.
     let native_char_signed = c_char::MIN != 0;
     let mut value = 0_usize;
@@ -424,8 +427,7 @@ pub unsafe extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize
             } else {
                 c_int::from(byte)
             };
-            // SAFETY: the caller guarantees the host ctype precondition for these bytes.
-            let upper = unsafe { toupper(input) };
+            let upper = toupper(input);
             let low = upper.to_le_bytes()[0];
             let byte = if native_char_signed {
                 c_int::from(low.cast_signed())
@@ -681,12 +683,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no strncasecmp")]
     fn native_hex_accepts_non_hex_letters_and_counts_prefix() {
         let mut parsed = 0;
-        unsafe {
-            assert_eq!(swoole_hex2dec(c"FFtail".into(), &mut parsed), 16_833_333);
-            assert_eq!(parsed, 6);
-            assert_eq!(swoole_hex2dec(c"0x".into(), &mut parsed), 0);
-            assert_eq!(parsed, 2);
-        }
+        assert_eq!(swoole_hex2dec(c"FFtail".into(), &mut parsed), 16_833_333);
+        assert_eq!(parsed, 6);
+        assert_eq!(swoole_hex2dec(c"0x".into(), &mut parsed), 0);
+        assert_eq!(parsed, 2);
     }
 
     #[test]

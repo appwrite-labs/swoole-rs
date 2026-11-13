@@ -118,12 +118,6 @@ struct Tick {
 
 unsafe extern "C-unwind" {
     fn swr_v1_tls_owner_view(owner: *const c_void) -> TlsView;
-    fn swr_v1_tls_owner_set_path(
-        owner: *const c_void,
-        index: u32,
-        path: *const c_char,
-        length: usize,
-    ) -> c_int;
     fn swr_v1_core_thread_global() -> *mut c_void;
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
@@ -144,14 +138,6 @@ unsafe extern "C-unwind" {
     ) -> c_long;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     pub(super) fn swoole_timer_del(node: *mut TimerNode) -> bool;
-    #[link_name = "_ZN6swoole9websocket16pack_close_frameEPNS_6StringEiPKcmh"]
-    fn pack_close_frame(
-        buffer: *mut CppString,
-        code: c_int,
-        reason: *const c_char,
-        length: usize,
-        flags: u8,
-    ) -> bool;
     /// `SwooleG`, whose first member is `max_sockets`.
     #[link_name = "SwooleG"]
     static mut SWOOLE_G_MAX_SOCKETS: u32;
@@ -232,18 +218,15 @@ pub(super) fn tls_fields(context: *const c_void) -> &'static mut TlsFields {
 pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_char) {
     // SAFETY: a NUL-terminated path.
     let path = unsafe { CStr::from_ptr(file) };
-    // SAFETY: a live context; `path` is readable for its length.
-    let status =
-        unsafe { swr_v1_tls_owner_set_path(context, index, path.as_ptr(), path.count_bytes()) };
-    assert!(status >= 0, "bad_alloc");
-    if status == 1 {
-        let what = match index {
-            CERT_FILE => "cert",
-            KEY_FILE => "key",
-            _ => "client cert",
-        };
-        eprintln!("ssl {what} file[{}] not found", path.to_string_lossy());
-    }
+    let which = match index {
+        CERT_FILE => swoole_rs_tls::Text::CertFile,
+        KEY_FILE => swoole_rs_tls::Text::KeyFile,
+        _ => swoole_rs_tls::Text::ClientCertFile,
+    };
+    // SAFETY: a live context, which only the case's thread configures.
+    let context = unsafe { swoole_rs_tls::Lent::new(context.cast()) };
+    // The owner's setter, which warns itself and ends the process on `bad_alloc`.
+    _ = context.set_text(which, path.to_bytes());
 }
 
 pub(super) fn log_level(level: c_int) {
@@ -677,11 +660,10 @@ unsafe extern "C" fn close_timeout(_: *mut c_void, node: *mut TimerNode) {
         let buffer = swr_case_tg_buffer();
         (*buffer).length = 0;
         (*buffer).offset = 0;
-        pack_close_frame(
-            buffer,
+        swoole_rs_ffi::frame_api::pack_close_frame(
+            &mut *buffer.cast(),
             CLOSE_POLICY_ERROR,
-            reason.as_ptr().cast(),
-            reason.len(),
+            reason.as_bytes(),
             0,
         );
         swr_case_send(
