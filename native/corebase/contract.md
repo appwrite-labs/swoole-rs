@@ -117,9 +117,9 @@ bug-report text, and native pointers Rust only holds (memory pool, stdout,
 logger, server, AIO pipe socket, the fatal-error and backtrace hooks). Each has a
 `swr_v1_core_<field>`/`swr_v1_core_set_<field>` pair, exported only where native
 code calls it; Rust calls the rest by path. `swoole::Global` keeps the
-member names as `swoole::RustField` views over those pairs, so upstream's
-`SwooleG.field` code (other modules' patched lines and the upstream core-tests
-alike) compiles unchanged. A view can't be copied, so passing one through `...`
+member names C++ reads (`running`, `enable_coroutine`, `pagesize`) as
+`swoole::RustField` views over those pairs, so that `SwooleG.field` code
+compiles unchanged. A view can't be copied, so passing one through `...`
 fails to compile instead of printing garbage. `swr_v1_core_reset` clears the
 record; `swoole_clean` resets `SwooleG`'s fields, paths and name resolvers with it.
 

@@ -354,7 +354,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         crate::server_methods::notify(serv, conn, c_int::from(EVENT_CLOSE));
         conn.set_close_notify(false);
         return OK;
-    } else if config.disable_notify && conn.close_force() {
+    } else if config.disable_notify.get() && conn.close_force() {
         return close_connection(serv, reactor, Some(sock));
     }
     while let Some(kind) = sock.read(|s| {
@@ -427,7 +427,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     let (Some(conn), Some(sock)) = (conn.filter(|conn| conn.is_active()), event.socket()) else {
         return ERR;
     };
-    if state.config_ref().disable_notify {
+    if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
     if reactor.change(sock, 2, 0) != 0 {
@@ -617,13 +617,13 @@ fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
 
     /// The live server with sessions 1 and 2 accepted, and their clients.
-    fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
+    pub(crate) fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
         let live = LiveServer::new();
         let clients = [live.connect(), live.connect()];
         // SAFETY: the fixture's listener, live for the event.
@@ -634,7 +634,7 @@ mod tests {
     }
 
     /// Session `id`, which its reactor thread reads.
-    fn session(live: &LiveServer, id: c_long) -> Connection<'_> {
+    pub(crate) fn session(live: &LiveServer, id: c_long) -> Connection<'_> {
         let conn = live.state().connection(id, Lookup::Verified).unwrap();
         let sock = conn.socket().unwrap();
         if sock.read(|s| s.removed) {
@@ -649,7 +649,7 @@ mod tests {
         edit(unsafe { &mut *live.state().config() });
     }
 
-    fn closed(conn: Connection<'_>) -> bool {
+    pub(crate) fn closed(conn: Connection<'_>) -> bool {
         !conn.is_active() && conn.closed().load(Relaxed) == 1 && conn.socket().is_none()
     }
 
@@ -717,7 +717,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_closes_when_nobody_is_told() {
         let (live, _clients) = accepted();
-        configure(&live, |c| c.disable_notify = true);
+        configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 1);
         let event = conn.event(0, 0);
         assert_eq!(peer_close(live.server(), live.reactor(), &event), OK);
@@ -756,7 +756,7 @@ mod tests {
     }
 
     /// `bytes` queued on the connection's socket.
-    fn queue(conn: Connection<'_>, bytes: &[u8]) {
+    pub(crate) fn queue(conn: Connection<'_>, bytes: &[u8]) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(0);
         conn.socket()
             .unwrap()
@@ -813,7 +813,7 @@ mod tests {
         assert!(!conn.close_notify());
         assert_eq!(output(conn.socket().unwrap()).0, 4, "nothing flushed");
 
-        configure(&live, |c| c.disable_notify = true);
+        configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 2);
         conn.set_close_force(true);
         assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);

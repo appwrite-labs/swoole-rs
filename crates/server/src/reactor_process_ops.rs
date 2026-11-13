@@ -226,7 +226,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_REACTOR_WAIT => sign(ctx.reactor_handle().wait()),
         OP_MINFD => sign(ctx.counters().min_fd()),
         OP_MAXFD => sign(ctx.counters().max_fd()),
-        OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
+        OP_DISABLE_NOTIFY => u64::from(config.disable_notify.get()),
         _ => return None,
     })
 }

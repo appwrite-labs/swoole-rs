@@ -199,7 +199,7 @@ pub struct ServerConfig {
     pub have_dgram_sock: bool,
     pub have_stream_sock: bool,
     pub open_cpu_affinity: Setting<bool>,
-    pub disable_notify: bool,
+    pub disable_notify: Setting<bool>,
     pub discard_timeout_request: Setting<bool>,
     pub http_parse_cookie: Setting<bool>,
     pub http_parse_post: Setting<bool>,
@@ -287,7 +287,7 @@ impl Default for ServerConfig {
             have_dgram_sock: false,
             have_stream_sock: false,
             open_cpu_affinity: Setting::new(false),
-            disable_notify: false,
+            disable_notify: Setting::new(false),
             discard_timeout_request: Setting::new(false),
             http_parse_cookie: Setting::new(true),
             http_parse_post: Setting::new(true),
@@ -405,19 +405,13 @@ impl ServerConfig {
 }
 
 /// Handles only owned configuration/table facts; all effects on other objects stay native.
-///
-/// # Safety
-/// The caller lends a live state and synchronizes its field access as for the native view.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
+pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
-        FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
-        FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
-        OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_ERRNO, OP_FIELD, OP_LAST_PORT_FD, OP_LC_DAEMONIZE,
-        OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE, OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE,
-        OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM,
-        OP_PORT_WEBSOCKET, OP_RUNNING, OP_SET_FIELD, OP_SET_MAX_CONNECTION, OP_SET_RUNNING,
-        OP_SINGLE_THREAD,
+        FIELD_REACTOR_NUM, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_DELAY_RECEIVE,
+        OP_DISABLE_NOTIFY, OP_ERRNO, OP_FIELD, OP_LC_DAEMONIZE, OP_MAX_WAIT_TIME, OP_MODE,
+        OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM,
+        OP_PORT_WEBSOCKET, OP_RUNNING, OP_SET_RUNNING, OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
@@ -430,20 +424,14 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             | OP_SET_RUNNING
             | OP_MAX_WAIT_TIME
             | OP_FIELD
-            | OP_SET_FIELD
-            | OP_MAX_CONNECTION
-            | OP_SET_MAX_CONNECTION
             | OP_ERRNO
             | OP_PORT_COUNT
             | OP_PORT_DGRAM
             | OP_PORT_STREAM
             | OP_PORT_SSL_AT
             | OP_PORT_WEBSOCKET
-            | OP_PORT_IDLE
-            | OP_PORT_DEFAULT_IDLE
             | OP_PORT_REMOVED
             | OP_PORT_FD
-            | OP_LAST_PORT_FD
     ) {
         return None;
     }
@@ -453,35 +441,19 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         OP_MODE => u64::from(config.mode_),
         OP_SINGLE_THREAD => u64::from(config.single_thread.get()),
         OP_DELAY_RECEIVE => u64::from(config.enable_delay_receive.get()),
-        OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
+        OP_DISABLE_NOTIFY => u64::from(config.disable_notify.get()),
         OP_RUNNING => u64::from(state.running()),
         OP_LC_DAEMONIZE => u64::from(config.daemonize.get()),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
-        OP_MAX_CONNECTION => u64::from(tables.max_connection),
         OP_ERRNO => {
             i64::from(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)).cast_unsigned()
         }
         OP_PORT_COUNT => u64::from(tables.ports.count),
-        OP_PORT_DGRAM | OP_PORT_STREAM | OP_PORT_SSL_AT | OP_PORT_WEBSOCKET | OP_PORT_IDLE
-        | OP_PORT_DEFAULT_IDLE | OP_PORT_REMOVED | OP_PORT_FD | OP_LAST_PORT_FD => {
-            let ports = tables.ports();
-            let port = if op == OP_LAST_PORT_FD {
-                ports.last()
-            } else {
-                ports.get(usize::try_from(arg).ok()?)
-            };
-            let port = *port?;
-            match op {
-                OP_PORT_DEFAULT_IDLE => {
-                    port.config()
-                        .heartbeat_idle_time
-                        .set(config.heartbeat_check_interval.get().wrapping_mul(2));
-                    return Some(0);
-                }
-                OP_PORT_REMOVED => {
-                    return Some(u64::from(port.with_socket(|s| s.read(|s| s.removed))?));
-                }
-                _ => {}
+        OP_PORT_DGRAM | OP_PORT_STREAM | OP_PORT_SSL_AT | OP_PORT_WEBSOCKET | OP_PORT_REMOVED
+        | OP_PORT_FD => {
+            let port = *tables.ports().get(usize::try_from(arg).ok()?)?;
+            if op == OP_PORT_REMOVED {
+                return Some(u64::from(port.with_socket(|s| s.read(|s| s.removed))?));
             }
             let fd = port.fd();
             let port = port.config();
@@ -490,16 +462,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                 OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
                 OP_PORT_SSL_AT => u64::from(port.ssl),
                 OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol.get()),
-                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time.get()),
                 _ => i64::from(fd).cast_unsigned(),
             }
-        }
-        OP_SET_MAX_CONNECTION => {
-            let max = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
-            // SAFETY: `Server::create`, before any thread or process starts; `tables`
-            // isn't read after the write.
-            unsafe { &mut *state.tables() }.max_connection = max;
-            0
         }
         OP_SET_RUNNING => {
             state.set_running(arg != 0);
@@ -509,42 +473,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             FIELD_REACTOR_NUM => u64::from(config.reactor_num.get()),
             FIELD_WORKER_NUM => u64::from(config.worker_num.get()),
             FIELD_TASK_WORKER_NUM => u64::from(config.task_worker_num.get()),
-            FIELD_HEARTBEAT_INTERVAL => u64::from(config.heartbeat_check_interval.get()),
-            FIELD_DISPATCH_MODE => u64::from(config.dispatch_mode.get()),
-            FIELD_UNSAFE_EVENT => u64::from(config.enable_unsafe_event.get()),
-            FIELD_TASK_IPC_MODE => u64::from(config.task_ipc_mode.get()),
-            FIELD_CPU_NUM => u64::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
             _ => 0,
         },
-        OP_SET_FIELD => {
-            // `Server::create`'s and `start`'s checks, before any thread or process
-            // starts; each field is a cell, set through the shared configuration.
-            let value = arg >> 8;
-            match u32::try_from(arg & 0xff).unwrap_or(u32::MAX) {
-                FIELD_REACTOR_NUM => {
-                    config
-                        .reactor_num
-                        .set(u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default());
-                }
-                FIELD_WORKER_NUM => {
-                    config
-                        .worker_num
-                        .set(u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default());
-                }
-                FIELD_TASK_WORKER_NUM => {
-                    config
-                        .task_worker_num
-                        .set(u32::try_from(value & u64::from(u32::MAX)).unwrap_or_default());
-                }
-                FIELD_HEARTBEAT_INTERVAL => {
-                    config
-                        .heartbeat_check_interval
-                        .set(u16::try_from(value & u64::from(u16::MAX)).unwrap_or_default());
-                }
-                _ => {}
-            }
-            0
-        }
         _ => return None,
     })
 }
@@ -552,7 +482,7 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{FIELD_WORKER_NUM, OP_FIELD, OP_RUNNING, OP_SET_FIELD, OP_SET_RUNNING};
+    use crate::ops::{FIELD_WORKER_NUM, OP_FIELD, OP_RUNNING, OP_SET_RUNNING};
     use crate::state::{free_state, swr_v1_server_state_new};
 
     #[test]
@@ -568,9 +498,6 @@ mod tests {
                 native_fact(&*state, OP_FIELD, u64::from(FIELD_WORKER_NUM)),
                 Some(16)
             );
-            let encoded = (19 << 8) | u64::from(FIELD_WORKER_NUM);
-            assert_eq!(native_fact(&*state, OP_SET_FIELD, encoded), Some(0));
-            assert_eq!((*config).worker_num.get(), 19);
             assert_eq!(native_fact(&*state, OP_SET_RUNNING, 0), Some(0));
             assert!(!(*state).running());
             assert_eq!(native_fact(&*state, OP_RUNNING, 0), Some(0));
@@ -581,8 +508,7 @@ mod tests {
     #[test]
     fn port_facts_read_the_pushed_ports() {
         use crate::ops::{
-            OP_LAST_PORT_FD, OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE, OP_PORT_DGRAM, OP_PORT_FD,
-            OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_STREAM,
+            OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_REMOVED, OP_PORT_STREAM,
         };
         let state = swr_v1_server_state_new();
         let mut socket = swoole_rs_reactor::SocketRecord::new();
@@ -610,7 +536,6 @@ mod tests {
             for &port in &ports {
                 (*state).push_port(port.cast());
             }
-            (*(*state).config()).heartbeat_check_interval.set(5);
             assert_eq!(native_fact(&*state, OP_PORT_COUNT, 0), Some(2));
             assert_eq!((*ports[1]).object_id, 2);
             assert_eq!(native_fact(&*state, OP_PORT_STREAM, 0), Some(1));
@@ -618,9 +543,6 @@ mod tests {
             assert_eq!(native_fact(&*state, OP_PORT_DGRAM, 1), Some(1));
             assert_eq!(native_fact(&*state, OP_PORT_REMOVED, 1), Some(1));
             assert_eq!(native_fact(&*state, OP_PORT_FD, 1), Some(7));
-            assert_eq!(native_fact(&*state, OP_LAST_PORT_FD, 0), Some(7));
-            assert_eq!(native_fact(&*state, OP_PORT_DEFAULT_IDLE, 1), Some(0));
-            assert_eq!(native_fact(&*state, OP_PORT_IDLE, 1), Some(10));
             free_state(state);
             for port in ports {
                 crate::port_config::swr_v1_port_config_free(port);

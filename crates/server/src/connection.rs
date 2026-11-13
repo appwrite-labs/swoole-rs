@@ -401,7 +401,8 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     if now - received < idle && now - sent < idle {
         return;
     }
-    if serv.config().disable_notify || conn.closed().load(Relaxed) != 0 || conn.close_force() {
+    if serv.config().disable_notify.get() || conn.closed().load(Relaxed) != 0 || conn.close_force()
+    {
         crate::conn_io::close_connection(serv, reactor, conn.socket());
         return;
     }

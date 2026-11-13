@@ -11,50 +11,30 @@ use core::ptr;
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
 use crate::reactor_io::owns;
-use swoole_rs_corebase::DataHead;
-use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::base_factory::SendData;
-use crate::callbacks::{ReceiveSlot, TaskSlot};
+use crate::callbacks::TaskSlot;
 use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
-use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE};
-use crate::ops::{OP_PACKET_INIT, OP_PACKET_TASK, OP_RECVFROM};
 use crate::reactor_entry::{self as entry, thread};
-use crate::reactor_ops::{ReactorContext, ThreadRecord, sign};
+use crate::reactor_ops::{ReactorContext, ThreadRecord};
 use crate::{ServerState, factory, server_methods as methods, view};
-use swoole_rs_buffer::string::with_thread_buffer;
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
 const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_REACTOR: u8 = 2;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 const FD_PIPE: c_int = 3;
-/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SOCK_UDP` and `Server::CLOSE_ACTIVELY`.
-const EVENT_RECV_DGRAM: u8 = 1;
-const SOCK_UDP: c_int = 2;
+/// `Server::CLOSE_ACTIVELY`.
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-
-/// `DgramPacket`: the datagram follows it.
-#[repr(C)]
-struct DgramPacket {
-    socket_type: c_int,
-    socket_addr: SocketAddress,
-    length: u32,
-}
 
 /// The `MessageBus` of the context's thread, once an op has set it.
 fn bus_of(ctx: &ReactorContext<'_>) -> Option<*mut c_void> {
     let thread = ctx.thread;
     (!thread.is_null()).then(|| thread.wrapping_byte_add(core::mem::offset_of!(ThreadRecord, bus)))
-}
-
-/// The context's event's fd.
-fn event_fd(ctx: &ReactorContext<'_>) -> Option<c_int> {
-    ctx.event.as_deref().map(swoole_rs_reactor::Event::fd)
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
@@ -166,97 +146,6 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         }
     }
     Some(0)
-}
-
-/// Answers `op` when it is one of this module's, else `None`, as `reactor_ops::answer`.
-#[inline(always)]
-pub(crate) fn answer(
-    ctx: &mut ReactorContext<'_>,
-    state: &ServerState,
-    op: u32,
-    arg: u64,
-) -> Option<u64> {
-    let server = ctx.serv;
-    Some(match op {
-        OP_PACKET_INIT => {
-            let fd = event_fd(ctx)?;
-            // The event's fd is a listening socket's, whose slot is live.
-            let conn = state.connection(fd.into(), Lookup::ByFd)?;
-            let kind = conn.socket_type();
-            // `ctx.sock` is already the event's socket, the port's listening socket
-            // that `OP_STORE_LISTEN` stored in this slot.
-            ctx.conn = conn.as_ptr();
-            ctx.pkt = with_thread_buffer(swoole_rs_buffer::string::CppString::as_mut_ptr).cast();
-            ctx.task = SendData {
-                info: DataHead {
-                    server_fd: u16::try_from(fd).unwrap_or(u16::MAX),
-                    reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
-                    kind: EVENT_RECV_DGRAM,
-                    time: swoole_rs_corebase::microtime(),
-                    ..DataHead::default()
-                },
-                data: ptr::null(),
-            };
-            let pkt = packet(ctx)?;
-            pkt.socket_type = kind;
-            pkt.socket_addr.kind = kind;
-            0
-        }
-        OP_RECVFROM => {
-            let room = with_thread_buffer(|buffer| buffer.size()) - size_of::<DgramPacket>();
-            let fd = ctx.sock?.fd();
-            let pkt = packet(ctx)?;
-            let data = (&raw mut *pkt).wrapping_add(1).cast();
-            let address = &mut pkt.socket_addr;
-            address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
-            let (storage, len) = ((&raw mut address.addr).cast(), &raw mut address.len);
-            // SAFETY: the buffer's room after the packet head, and the address's storage.
-            let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, room, 0, storage, len) };
-            sign(i64::try_from(n).unwrap_or(-1))
-        }
-        OP_PACKET_TASK => {
-            let pkt = packet(ctx)?;
-            let fd = if pkt.socket_type == SOCK_UDP {
-                let ip = pkt.socket_addr.addr.v4().sin_addr.s_addr;
-                c_long::from(ip.cast_signed())
-            } else {
-                let host =
-                    swoole_rs_clients::address::swr_v1_clients_address_host(&pkt.socket_addr);
-                let length = pkt.socket_addr.len as usize;
-                if host.is_null() || length == 0 {
-                    0
-                } else {
-                    // SAFETY: upstream hashes as many bytes of the text as the address is long.
-                    let text = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
-                    c_long::from(swoole_rs_crc32::crc32(text))
-                }
-            };
-            pkt.length = u32::try_from(arg).unwrap_or(u32::MAX);
-            ctx.task.info.fd = fd;
-            let len = size_of::<DgramPacket>() as u64 + arg;
-            ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
-            ctx.task.data = ctx.pkt.cast();
-            (&raw mut ctx.task).expose_provenance() as u64
-        }
-        OP_ON_RECEIVE | OP_ON_PACKET => {
-            let slot = if op == OP_ON_PACKET {
-                ReceiveSlot::Packet
-            } else {
-                ReceiveSlot::Receive
-            };
-            // SAFETY: the frame's live `RecvData`, which the op's maker lends at `arg`.
-            let data = unsafe { &*(arg as *const entry::RecvData) };
-            u64::from(state.callbacks.receive(slot, server, data) == 0)
-        }
-        OP_FACTORY_DISPATCH => u64::from(factory::dispatch(state, (&raw mut ctx.task).cast())),
-        _ => return None,
-    })
-}
-
-/// The datagram `OP_PACKET_INIT` points the context at.
-fn packet<'c>(ctx: &'c mut ReactorContext<'_>) -> Option<&'c mut DgramPacket> {
-    // SAFETY: null, or this thread's buffer, which holds a packet head and its datagram.
-    unsafe { ctx.pkt.cast::<DgramPacket>().as_mut() }
 }
 
 /// The destroy callback of a reactor thread's reactor: close its connections.

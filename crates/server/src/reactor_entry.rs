@@ -3,16 +3,14 @@
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
 //! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
 //! they make is Rust's.
-use core::ffi::{c_int, c_void};
-use swoole_rs_corebase::CCast;
+use core::ffi::{c_int, c_long, c_void};
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::RUN_PACKET_RECEIVED;
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{ReactorContext, ThreadRecord};
+use crate::reactor_ops::ThreadRecord;
 use crate::view;
 
 /// `swoole::RecvData`.
@@ -64,26 +62,37 @@ impl RecvData {
 
 /// `DgramPacket`'s head; the datagram follows.
 #[repr(C)]
-struct DgramPacket {
-    socket_type: c_int,
-    socket_addr: SocketAddress,
-    length: u32,
+pub(crate) struct DgramPacket {
+    pub(crate) socket_type: c_int,
+    pub(crate) socket_addr: SocketAddress,
+    pub(crate) length: u32,
+}
+
+impl DgramPacket {
+    /// The session a datagram is dispatched under: an IPv4 sender's address, else
+    /// the CRC32 of its host text.
+    pub(crate) fn sender(&self) -> c_long {
+        /// `SW_SOCK_UDP`.
+        const SOCK_UDP: c_int = 2;
+        if self.socket_type == SOCK_UDP {
+            let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
+            return c_long::from(ip.cast_signed());
+        }
+        let host = swoole_rs_clients::address::swr_v1_clients_address_host(&self.socket_addr);
+        let length = self.socket_addr.len as usize;
+        if host.is_null() || length == 0 {
+            return 0;
+        }
+        // SAFETY: upstream hashes as many bytes of the text as the address is long.
+        let text = unsafe { std::slice::from_raw_parts(host.cast::<u8>(), length) };
+        c_long::from(swoole_rs_crc32::crc32(text))
+    }
 }
 
 /// `serv->get_thread(id)`.
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     let threads = state.tables_ref().reactor_threads;
     threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
-}
-
-/// Runs `op` over `ctx`.
-pub(crate) fn run(op: u32, arg: u64, ctx: &mut ReactorContext<'_>) -> i64 {
-    let state = ctx.serv.state();
-    crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg))
-}
-
-pub(crate) fn int(value: i64) -> c_int {
-    value.c_cast::<c_int>()
 }
 
 /// `reactor->ptr`, a server reactor's server.
@@ -102,34 +111,13 @@ fn handler<'a>(reactor: Running<'_>) -> (view::Server<'a>, Reactor) {
     (unsafe { server(reactor) }, reactor)
 }
 
-/// A context over the reactor, `reactor->ptr` (a reactor thread's server) and the event.
-fn context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
-    let (serv, reactor) = handler(reactor);
-    let mut ctx = ReactorContext::new(serv, Some(reactor));
-    ctx.event = Some(event);
-    ctx
-}
-
-/// [`context`] with the event's socket.
-fn event_context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
-    let sock = event.socket_ptr().cast();
-    // SAFETY: null, or the event's socket, live while the event is.
-    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(sock) };
-    let mut ctx = context(reactor, event);
-    ctx.sock = sock;
-    ctx
-}
-
 // The handlers below are registered only on server reactors, whose `ptr` is the live
 // `Server`.
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
-    int(run(
-        RUN_PACKET_RECEIVED,
-        0,
-        &mut event_context(reactor, event),
-    ))
+    let (serv, reactor) = handler(reactor);
+    crate::reactor_thread::packet_received(serv, reactor, event)
 }
 
 /// `ReactorThread_onClose`: the peer closed.
@@ -177,7 +165,7 @@ pub unsafe extern "C-unwind" fn close_connection(
 /// its reactor.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
-    let mut ctx = ReactorContext::new(serv, Some(reactor));
+    let mut ctx = crate::reactor_ops::ReactorContext::new(serv, Some(reactor));
     ctx.thread = thread(serv.state(), id);
     crate::thread_ops::shutdown(&ctx);
 }
@@ -252,13 +240,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let dispatched = if mode == crate::MODE_PROCESS {
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
-        let mut ctx = ReactorContext::new(server, None);
-        ctx.sock = Some(socket);
-        ctx.conn = conn;
-        let task = &raw mut task;
-        let base = mode == crate::MODE_BASE;
-        let run = |h: &mut _| crate::base_factory::dispatch(h, task, base).map(i64::from);
-        crate::run_reactor_with(&mut ctx, state, run) == 1
+        crate::base_factory::dispatch(server, &mut task, mode == crate::MODE_BASE)
     };
     if !dispatched {
         if len > 0 {

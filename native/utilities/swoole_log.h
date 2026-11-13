@@ -11,11 +11,10 @@
 #include <unistd.h>
 #include "swoole_rs_utilities.h"
 
-#define SW_LOG_BUFFER_SIZE (SW_ERROR_MSG_SIZE + 256)
 #define SW_LOG_DATE_STRLEN 128
 #define SW_LOG_DEFAULT_DATE_FORMAT "%F %T"
 
-enum swLogLevel {
+enum {
     SW_LOG_DEBUG = 0,
     SW_LOG_TRACE,
     SW_LOG_INFO,
@@ -25,7 +24,10 @@ enum swLogLevel {
     SW_LOG_NONE,
 };
 
-enum swLogRotationType {
+// Logger::set_rotation's values (log_rotation in crates/utilities/src/lib.rs); upstream's
+// TEST(log, rotation), which the utilities-logger-originals gate builds unchanged, names
+// all but the first.
+enum {
     SW_LOG_ROTATION_SINGLE = 0,
     SW_LOG_ROTATION_MONTHLY,
     SW_LOG_ROTATION_DAILY,
@@ -89,9 +91,6 @@ class Logger {
     bool is_opened() const {
         return swr_v1_logger_is_opened(logger);
     }
-    bool redirect_stdout_and_stderr(bool enable) {
-        return swr_v1_logger_redirect(logger, enable);
-    }
     void set_date_with_microseconds(bool enable) {
         swr_v1_logger_set(logger, SWR_LOGGER_MICROSECONDS, enable);
     }
@@ -151,10 +150,6 @@ swoole::Logger *sw_logger();
 
 #define swoole_sys_warning(str, ...) SWR_UTILS_LOG_RUN(6, 0, 0, swoole_set_last_error(errno), swr_facts = swoole_rs_utilities::log_level_facts(0, swoole_get_log_level()), 0, 0, (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): " str ", Error: %s[%d]", __SW_FUNC__, ##__VA_ARGS__, swoole_strerror(errno), errno)), swr_level)
 
-#define swoole_error(str, ...) SWR_UTILS_LOG_RUN(8, 0, 0, (void) 0, swr_facts = swoole_rs_utilities::log_level_facts(0, swoole_get_log_level()), 0, 0, (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): " str, __SW_FUNC__, ##__VA_ARGS__)), swr_level)
-
-#define swoole_sys_error(str, ...) SWR_UTILS_LOG_RUN(9, 0, 0, (void) 0, swr_facts = swoole_rs_utilities::log_level_facts(0, swoole_get_log_level()), 0, 0, (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): " str ", Error: %s[%d]", __SW_FUNC__, ##__VA_ARGS__, swoole_strerror(errno), errno)), swr_level)
-
 #define swoole_fatal_error(code, str, ...) ((void (*)(int, const char *, ...)) swr_v1_core_fatal_error())(code, str, ##__VA_ARGS__)
 
 #define swoole_error_log(level, error, str, ...) SWR_UTILS_LOG_RUN(7, 0, 0, swoole_set_last_error(error), if (swoole_rs_utilities::LogNumericLevel<decltype((level))>::value) { swr_facts = swoole_rs_utilities::log_complete_condition(swoole_rs_utilities::log_numeric_admit(swoole_rs_utilities::log_level_facts((level), swoole_get_log_level())) && swoole_rs_utilities::log_ignored_result(swoole_is_ignored_error(error))); } else { swr_facts = swoole_rs_utilities::log_complete_condition((level >= swoole_get_log_level() && !swoole_is_ignored_error(error)) ? true : false); }, 0, swoole_is_ignored_error(error), (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s() (ERRNO %d): " str, __SW_FUNC__, error, ##__VA_ARGS__)), level)
@@ -187,45 +182,9 @@ swoole::Logger *sw_logger();
 #define swoole_hex_dump(data, length)
 #endif
 
-enum swTraceWhat : long {
-    /**
-     * Server
-     */
-    SW_TRACE_SERVER = 1u << 1,
-    SW_TRACE_WORKER = 1u << 6,
-    SW_TRACE_REACTOR = 1u << 8,
-    SW_TRACE_PHP = 1u << 9,
-    SW_TRACE_HTTP = 1u << 10,
-    SW_TRACE_HTTP2 = 1u << 11,
-    SW_TRACE_EOF_PROTOCOL = 1u << 12,
-    SW_TRACE_LENGTH_PROTOCOL = 1u << 13,
-    SW_TRACE_CLOSE = 1u << 14,
-    SW_TRACE_WEBSOCKET = 1u << 15,
-    /**
-     * Client
-     */
-    SW_TRACE_HTTP_CLIENT = 1u << 18,
-    SW_TRACE_AIO = 1u << 19,
-    SW_TRACE_SSL = 1u << 20,
+enum : long {
     SW_TRACE_NORMAL = 1u << 21,
-    /**
-     * Coroutine
-     */
-    SW_TRACE_CHANNEL = 1u << 22,
-    SW_TRACE_SOCKET = 1u << 24,
-    SW_TRACE_COROUTINE = 1u << 25,
-    SW_TRACE_CONTEXT = 1u << 26,
     SW_TRACE_CO_CURL = 1u << 29,
-    SW_TRACE_CARES = 1u << 30,
-
-    SW_TRACE_CO_ORACLE = 1ul << 34,
-    SW_TRACE_CO_SQLITE = 1ul << 35,
-    /**
-     * Thread
-     */
-    SW_TRACE_THREAD = 1ul << 40,
-
-    SW_TRACE_ALL = 0x7fffffffffffffff
 };
 
 #ifdef SW_LOG_TRACE_OPEN

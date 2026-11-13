@@ -139,18 +139,7 @@ pub(crate) trait Host {
     fn signed(&mut self, op: u32) -> Effect<i64> {
         Ok(self.get(op)?.cast_signed())
     }
-    fn float(&mut self, op: u32) -> Effect<f64> {
-        Ok(f64::from_bits(self.get(op)?))
-    }
-    fn state(&mut self) -> Effect<&ServerState>;
-    /// `swoole_get_worker_id()`.
-    fn worker_id(&mut self) -> Effect<u64> {
-        self.get(ops::OP_WORKER_ID)
-    }
 }
-
-/// The state of a server without one, which native code never passes.
-static NO_STATE: std::sync::LazyLock<ServerState> = std::sync::LazyLock::new(ServerState::new);
 
 struct Native<'a, 'c> {
     state: Option<&'a ServerState>,
@@ -169,16 +158,11 @@ impl Host for Native<'_, '_> {
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if let Some(state) = self.state {
-            // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
-            if let Some(value) = unsafe { config::native_fact(state, op, arg) } {
+            if let Some(value) = config::native_fact(state, op, arg) {
                 return Ok(value);
             }
             // The shared counters, without holding callbacks.
             if let Some(value) = shared::native_fact(state, op, arg) {
-                return Ok(value);
-            }
-            // A slot is read or cleared, never called.
-            if let Some(value) = callbacks::native_fact(state, op, arg) {
                 return Ok(value);
             }
             if let Some(value) = state::native_fact(state, op) {
@@ -201,36 +185,6 @@ impl Host for Native<'_, '_> {
         // An op no record answers: 0, as master.cc's `default:` was.
         Ok(0)
     }
-
-    fn worker_id(&mut self) -> Effect<u64> {
-        // The process crate owns the worker record; no native call is needed.
-        Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
-    }
-
-    // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
-    #[inline(always)]
-    fn state(&mut self) -> Effect<&ServerState> {
-        // Lazily: naming `NO_STATE` checks its `LazyLock`.
-        Ok(self.state.unwrap_or_else(|| &NO_STATE))
-    }
-}
-
-/// `operation` over a reactor-thread context without [`run`]'s match: the reads,
-/// writes and dispatches every message takes, whose detour through `run`'s frame
-/// cost about 120 instructions a message.
-#[inline(always)]
-pub(crate) fn run_reactor_with<'s, 'c>(
-    context: &'s mut reactor_ops::ReactorContext<'c>,
-    state: &'s ServerState,
-    operation: impl FnOnce(&mut Native<'s, 'c>) -> Effect<i64>,
-) -> i64 {
-    operation(&mut Native {
-        state: Some(state),
-        master: core::ptr::null_mut(),
-        server: None,
-        reactor: Some(context),
-    })
-    .unwrap_or(SW_ERR)
 }
 
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
@@ -261,26 +215,18 @@ pub(crate) unsafe fn run_method(
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use ops::{
-        RUN_CREATE, RUN_DESTROY, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
-    };
+    use ops::{RUN_DESTROY, RUN_START_MASTER_THREAD};
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        RUN_CREATE => startup::create(h)?,
-        RUN_START_CHECK => startup::start_check(h)?,
         ops::RUN_START => startup::start(h)?,
         RUN_START_MASTER_THREAD => startup::start_master_thread(h)?,
-        RUN_STORE_LISTEN_SOCKET => {
-            startup::store_listen_socket(h)?;
-            SW_OK
-        }
         RUN_DESTROY => {
             startup::destroy(h)?;
             SW_OK
         }
-        _ => reactor_thread::run(h, operation, arg)?,
+        _ => SW_ERR,
     })
 }
 
@@ -288,16 +234,12 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
 pub(crate) mod script {
     //! A scripted server: answers facts from a table and records every op.
     use super::Host;
-    use crate::ServerState;
     use std::collections::HashMap;
 
     #[derive(Default)]
     pub(crate) struct Script {
         pub facts: HashMap<u32, u64>,
-        /// Answers consumed in order before `facts` for ops called repeatedly.
-        pub queued: HashMap<u32, Vec<u64>>,
         pub log: Vec<(u32, u64)>,
-        pub state: ServerState,
     }
 
     impl Script {
@@ -306,10 +248,6 @@ pub(crate) mod script {
                 facts: facts.iter().copied().collect(),
                 ..Self::default()
             }
-        }
-        pub(crate) fn queue(mut self, op: u32, answers: &[u64]) -> Self {
-            self.queued.insert(op, answers.to_vec());
-            self
         }
         pub(crate) fn called(&self, op: u32) -> usize {
             self.log.iter().filter(|(o, _)| *o == op).count()
@@ -326,15 +264,7 @@ pub(crate) mod script {
     impl Host for Script {
         fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
             self.log.push((op, arg));
-            if let Some(answers) = self.queued.get_mut(&op)
-                && !answers.is_empty()
-            {
-                return Ok(answers.remove(0));
-            }
             Ok(self.facts.get(&op).copied().unwrap_or(0))
-        }
-        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
-            Ok(&self.state)
         }
     }
 }
