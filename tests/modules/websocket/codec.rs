@@ -6,9 +6,9 @@ use std::mem::MaybeUninit;
 
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
-    Action, Context, Decision, DecodedFrame, INVALID_CONTROL, PolicyError, control_invalid,
-    decide_frame, decode_in_place, encode_close_into, encode_parts, encoded_size, message_policy,
-    pack_policy,
+    Action, Context, Decision, DecodedFrame, Delivery, INVALID_CONTROL, PolicyError,
+    control_invalid, decide_frame, decode_in_place, encode_close_into, encode_parts, encoded_size,
+    message_policy, pack_policy,
 };
 
 const FILL: u8 = 0xa5;
@@ -67,16 +67,21 @@ fn php_policy() {
     for opcode in 0..=255u8 {
         for flags in 0..=255u8 {
             for length in [0, 1, 65536, usize::MAX] {
+                // The reference packs the flags and, in bit 8, compression.
+                let (packed, compress) = pack_policy(opcode, flags, length);
                 assert_eq!(
-                    pack_policy(opcode, flags, length),
+                    u16::from(packed) | (u16::from(compress) << 8),
                     reference::pack_policy(opcode, flags, length)
                 );
                 cases += 1;
             }
-            assert_eq!(
-                message_policy(opcode, flags),
-                reference::message_policy(opcode, flags)
-            );
+            // The reference's 0 delivers, 1 discards, 2 pongs.
+            let delivery = match message_policy(opcode, flags) {
+                Delivery::Deliver => 0,
+                Delivery::Discard => 1,
+                Delivery::Pong => 2,
+            };
+            assert_eq!(delivery, reference::message_policy(opcode, flags));
             cases += 1;
         }
     }
