@@ -134,9 +134,11 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned
         .map(|conn| view::recv_buffer(conn))
         .filter(|buffer| !buffer.is_null())
     {
-        let size = serv.config().recv_buffer_size;
         // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
-        unsafe { &mut *buffer.cast::<CppString>() }.pop(size)
+        let buffer = unsafe { &mut *buffer.cast::<CppString>() };
+        // The reader gets a buffer as large as the one it gives up: how much a buffer
+        // holds decides how the connection's next request is read.
+        buffer.pop(buffer.size())
     } else {
         return Owned::string(ZString::new(req.payload()));
     };
