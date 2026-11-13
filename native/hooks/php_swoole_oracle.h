@@ -1,7 +1,7 @@
 /* The coroutine OCI calls crates/oci exports (--with-swoole-oracle), and the
  * macros that point the bundled pdo_oci driver at them. The driver includes
- * this first, after defining SW_USE_ORACLE_HOOK, and gets its php_pdo_oci_int.h
- * (oci.h and the driver's types) from here. */
+ * this first and gets its php_pdo_oci_int.h (oci.h and the driver's types) from
+ * here. */
 #ifndef PHP_SWOOLE_ORACLE_H
 #define PHP_SWOOLE_ORACLE_H
 #include "php_swoole.h"
@@ -21,7 +21,6 @@ sword swoole_oci_trans_commit(OCISvcCtx *svchp, OCIError *errhp, ub4 flags);
 sword swoole_oci_trans_rollback(OCISvcCtx *svchp, OCIError *errhp, ub4 flags);
 sword swoole_oci_ping(OCISvcCtx *svchp, OCIError *errhp, ub4 mode);
 END_EXTERN_C()
-#ifdef SW_USE_ORACLE_HOOK
 #define OCISessionBegin swoole_oci_session_begin
 #define OCIServerDetach swoole_oci_server_detach
 #define OCIStmtPrepare swoole_oci_stmt_prepare
@@ -31,6 +30,5 @@ END_EXTERN_C()
 #define OCITransCommit swoole_oci_trans_commit
 #define OCITransRollback swoole_oci_trans_rollback
 #define OCIPing swoole_oci_ping
-#endif
 #endif
 #endif
