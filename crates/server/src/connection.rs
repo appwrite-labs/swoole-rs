@@ -45,16 +45,9 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         // SAFETY: null, or the socket `accept` just made, which nothing else holds
         // until a connection takes it or `abort` frees it.
         let Some(sock) = (unsafe { Socket::from_ptr(accepted) }) else {
-            match errno() {
-                libc::EAGAIN => return OK,
-                libc::EINTR => continue,
-                libc::EMFILE | libc::ENFILE => disable_accept(serv),
-                _ => {}
+            if accept_failed(serv, errno()) {
+                continue;
             }
-            log::sys_warning(
-                c"Server::accept_connection",
-                format_args!("accept() failed"),
-            );
             return OK;
         };
         if i64::from(sock.fd()) >= i64::from(serv.max_connection()) {
@@ -95,6 +88,22 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         }
     }
     OK
+}
+
+/// Whether the batch retries after `accept()` failed with `errno`. Out of
+/// descriptors, accepting waits for the retry timer.
+fn accept_failed(serv: view::Server<'_>, errno: c_int) -> bool {
+    match errno {
+        libc::EAGAIN => return false,
+        libc::EINTR => return true,
+        libc::EMFILE | libc::ENFILE => disable_accept(serv),
+        _ => {}
+    }
+    log::sys_warning(
+        c"Server::accept_connection",
+        format_args!("accept() failed"),
+    );
+    false
 }
 
 /// `serv->send_to_reactor_thread()` of the connection's `SW_SERVER_EVENT_INCOMING`.
@@ -692,6 +701,32 @@ mod tests {
             "cleared"
         );
         assert!(reading(listener), "reading again");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
+        let live = LiveServer::new();
+        let listener = live.port_socket();
+        assert_eq!(live.reactor().add(listener, EVENT_READ), OK, "reading");
+        let tables = live.state().tables_ref();
+        let armed = || !tables.enable_accept_timer.load(Relaxed).is_null();
+        assert!(accept_failed(live.server(), libc::EINTR), "EINTR retries");
+        assert!(!accept_failed(live.server(), libc::EAGAIN), "EAGAIN ends");
+        assert!(
+            !accept_failed(live.server(), libc::ECONNABORTED),
+            "others end"
+        );
+        assert!(
+            !armed() && reading(listener),
+            "none of them disables accept"
+        );
+        for errno in [libc::EMFILE, libc::ENFILE] {
+            assert!(!accept_failed(live.server(), errno), "{errno} ends");
+            assert!(armed(), "{errno} arms the retry timer");
+            assert!(!reading(listener), "{errno} stops reading");
+            enable_accept(live.server());
+        }
     }
 
     #[test]
