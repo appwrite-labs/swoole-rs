@@ -92,16 +92,16 @@ fn sock() -> &'static mut SocketFields {
     unsafe { mock(|m| m.socket).unwrap().as_mut() }
 }
 
-/// `sw_tg_buffer()`: a 64-byte String per test thread.
-pub(super) fn thread_buffer() -> *mut c_void {
+/// `f` over `sw_tg_buffer()`: a 64-byte String per test thread.
+pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
     thread_local! {
-        static SHARED: *mut CppString = {
-            let mut buffer = Box::new(CppString::EMPTY);
+        static SHARED: std::cell::RefCell<CppString> = {
+            let mut buffer = CppString::EMPTY;
             buffer.alloc(64, None);
-            Box::into_raw(buffer)
+            std::cell::RefCell::new(buffer)
         };
     }
-    SHARED.with(|shared| shared.cast())
+    SHARED.with_borrow_mut(f)
 }
 
 // crates/tls's socket operations.

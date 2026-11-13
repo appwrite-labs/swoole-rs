@@ -38,9 +38,10 @@ use crate::ops::{
 };
 use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
 use crate::reactor_entry::{self as entry, run, thread};
-use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign, with_thread_buffer};
+use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
+use swoole_rs_buffer::string::with_thread_buffer;
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR` and `SW_WAIT`.
 const SW_EVENT_READ: c_int = 1 << 9;
