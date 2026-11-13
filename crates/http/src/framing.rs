@@ -15,14 +15,14 @@ pub struct HttpFrame {
     pub known_length: u32,
 }
 impl HttpFrame {
-    /// Operation 0 reads the request line (or an HTTP/2 preface), 1 finds the header
-    /// block's end: 0 on success.
-    pub fn parse(&mut self, input: &[u8], operation: u32) -> i32 {
-        match operation {
-            0 => request_line(input, self),
-            1 => header_end(input, self),
-            _ => INVALID,
-        }
+    /// Reads the request line (or an HTTP/2 preface): whether it is complete and valid.
+    pub fn request_line(&mut self, input: &[u8]) -> bool {
+        request_line(input, self)
+    }
+
+    /// Finds the header block's end: whether it is there yet.
+    pub fn header_end(&mut self, input: &[u8]) -> bool {
+        header_end(input, self)
     }
 }
 fn c_space(byte: u8) -> bool {
@@ -43,9 +43,9 @@ fn starts(input: &[u8], needle: &[u8]) -> bool {
 fn field(position: usize) -> u32 {
     position as u32
 }
-fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
+fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
     if input.len() < 16 {
-        return INVALID;
+        return false;
     }
     // Every method but the trailing PRI, which is matched below.
     let pri = METHODS.len() - 1;
@@ -61,13 +61,13 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
         frame.method = u32::try_from(METHODS.len()).unwrap_or(0);
         if input.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n") {
             frame.offset = 24;
-            return 0;
+            return true;
         }
         frame.excepted = 1;
-        return INVALID;
+        return false;
     } else {
         frame.excepted = 1;
-        return INVALID;
+        return false;
     };
     let mut state = 0;
     while let Some(&byte) = input.get(at) {
@@ -85,24 +85,24 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
                 }
                 b'\r' | b'\n' => {
                     frame.excepted = 1;
-                    return INVALID;
+                    return false;
                 }
                 _ => {}
             },
             2 => {
                 if byte != b' ' {
                     frame.version = match input.get(at..at + 8) {
-                        None => return INVALID,
+                        None => return false,
                         Some(b"HTTP/1.1") => 2,
                         Some(b"HTTP/1.0") => 1,
                         Some(_) => {
                             frame.excepted = 1;
-                            return INVALID;
+                            return false;
                         }
                     };
                     frame.offset = at + 8;
                     frame.line_length = field(frame.offset);
-                    return 0;
+                    return true;
                 }
             }
             _ => unreachable!(),
@@ -111,13 +111,13 @@ fn request_line(input: &[u8], frame: &mut HttpFrame) -> i32 {
     }
     // The native implementation forms input.end()+8 here even when no version
     // was found. Keep partial state but reject that out-of-allocation pointer.
-    INVALID
+    false
 }
-fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
+fn header_end(input: &[u8], frame: &mut HttpFrame) -> bool {
     // Jump to each '\r' and test the four bytes there. Upstream's get_header_length
     // compares at every position; both find the first "\r\n\r\n".
     let Some(rest) = input.get(frame.offset..) else {
-        return INVALID;
+        return false;
     };
     let mut from = 0;
     while let Some(found) = rest
@@ -128,12 +128,12 @@ fn header_end(input: &[u8], frame: &mut HttpFrame) -> i32 {
         if rest.get(at..at + 4) == Some(b"\r\n\r\n") {
             frame.offset += at + 4;
             frame.header_length = field(frame.offset);
-            return 0;
+            return true;
         }
         from = at + 1;
     }
     frame.offset = frame.offset.max(input.len().saturating_sub(3));
-    INVALID
+    false
 }
 /// Upstream's `has_expect_header`: an `Expect: 100-continue` header, found with the
 /// native scanner's exact skip/matching behavior.
@@ -340,25 +340,25 @@ mod tests {
     #[test]
     fn request_line_retains_permissive_prefix_matching_and_partial_mutations() {
         let mut f = HttpFrame::default();
-        assert_eq!(request_line(b"GET/target HTTP/1.1\r\n", &mut f), 0);
+        assert!(request_line(b"GET/target HTTP/1.1\r\n", &mut f));
         assert_eq!(
             (f.method, f.url_offset, f.url_length, f.version, f.offset),
             (2, 3, 7, 2, 19)
         );
         let mut f = HttpFrame::default();
-        assert_eq!(request_line(b"GET /long-target HTTP/1", &mut f), INVALID);
+        assert!(!request_line(b"GET /long-target HTTP/1", &mut f));
         assert_eq!(f.excepted, 0);
         assert_eq!(f.url_length, 12);
         let mut f = HttpFrame::default();
-        assert_eq!(request_line(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", &mut f), 0);
+        assert!(request_line(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n", &mut f));
         assert_eq!(f.offset, 24);
     }
     #[test]
     fn incremental_headers() {
         let mut f = HttpFrame::default();
-        assert_eq!(header_end(b"abc\r\n\r", &mut f), INVALID);
+        assert!(!header_end(b"abc\r\n\r", &mut f));
         assert_eq!(f.offset, 3);
-        assert_eq!(header_end(b"abc\r\n\r\n", &mut f), 0);
+        assert!(header_end(b"abc\r\n\r\n", &mut f));
         assert_eq!(f.header_length, 7);
     }
 }

@@ -269,7 +269,7 @@ impl HttpRequest {
         };
     }
 
-    fn frame(&mut self, operation: u32) -> i32 {
+    fn frame(&mut self, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> i32 {
         let (buffer, input) = self.input();
         let mut frame = HttpFrame {
             offset: usize::try_from(buffer.offset).unwrap_or(usize::MAX),
@@ -283,7 +283,7 @@ impl HttpRequest {
             header_length: self.header_length,
             known_length: self.known_length.into(),
         };
-        let status = frame.parse(input, operation);
+        let found = parse(&mut frame, input);
         buffer.offset = i64::try_from(frame.offset).unwrap_or(i64::MAX);
         self.content_length = frame.content_length;
         // The native fields are bytes and bits: keep their truncation.
@@ -295,17 +295,17 @@ impl HttpRequest {
         self.request_line_length = frame.line_length;
         self.header_length = frame.header_length;
         self.known_length = frame.known_length & 1 != 0;
-        if status == 0 { SW_OK } else { SW_ERR }
+        if found { SW_OK } else { SW_ERR }
     }
 
     /// The method, URL and version from the request line, or an HTTP/2 preface.
     pub fn get_protocol(&mut self) -> i32 {
-        self.frame(0)
+        self.frame(HttpFrame::request_line)
     }
 
     /// Finds the `\r\n\r\n` ending the header block.
     pub fn get_header_length(&mut self) -> i32 {
-        self.frame(1)
+        self.frame(HttpFrame::header_end)
     }
 
     /// `Content-Length`, `Connection`, `Transfer-Encoding` and a multipart `Content-Type`.
