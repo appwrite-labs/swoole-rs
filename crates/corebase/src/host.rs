@@ -10,6 +10,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 unsafe extern "C" {
+    fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
     fn exit(status: c_int) -> !;
 }
 
@@ -29,8 +30,9 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
     let Some([read, write]) = crate::sys::pipe() else {
         return -1;
     };
-    // The child only makes async-signal-safe calls before exec, as upstream's did.
-    let child = crate::sys::fork();
+    // SAFETY: fork(2) has no memory preconditions; the child only makes
+    // async-signal-safe calls before exec, as upstream's did.
+    let child = unsafe { libc::fork() };
     if child == -1 {
         let error = errno();
         close(read);
@@ -194,76 +196,39 @@ pub struct DataHead {
     pub time: f64,
 }
 
-/// `snprintf`'s destination: keeps the bytes that fit and counts all of them.
-struct Bounded<'a> {
-    room: &'a mut [u8],
-    total: usize,
-}
-
-impl std::fmt::Write for Bounded<'_> {
-    fn write_str(&mut self, text: &str) -> std::fmt::Result {
-        let room = self.room.get_mut(self.total..).unwrap_or_default();
-        for (to, from) in room.iter_mut().zip(text.bytes()) {
-            *to = from;
-        }
-        self.total += text.len();
-        Ok(())
-    }
-}
-
-/// `%f` of a `double`: six decimals; `inf` and `nan` as the host's libc spells them
-/// (Darwin's and the BSDs' drop a NaN's sign).
-struct Fixed(f64);
-
-impl std::fmt::Display for Fixed {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if !self.0.is_nan() {
-            return write!(out, "{:.6}", self.0);
-        }
-        let signed = cfg!(any(target_os = "linux", target_os = "android"));
-        out.write_str(if signed && self.0.is_sign_negative() {
-            "-nan"
-        } else {
-            "nan"
-        })
-    }
-}
-
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
 /// result: at most `buffer.len() - 1` bytes written, always NUL-terminated.
 pub fn datahead_dump(h: &DataHead, buffer: &mut [u8]) -> usize {
-    use std::fmt::Write;
     let size = buffer.len();
-    let mut out = Bounded {
-        room: buffer.get_mut(..size.saturating_sub(1)).unwrap_or_default(),
-        total: 0,
+    // SAFETY: the format's conversions match the promoted arguments one for one, and
+    // `buffer` is writable for `size` bytes.
+    let written = unsafe {
+        snprintf(
+            buffer.as_mut_ptr().cast(),
+            size,
+            c"DataHead[%p]\n{\n    long fd = %ld;\n    uint64_t msg_id = %llu;\n    uint32_t len = %d;\n    int16_t reactor_id = %d;\n    uint8_t type = %d;\n    uint8_t flags = %d;\n    uint16_t server_fd = %d;\n    uint16_t ext_flags = %d;\n    double time = %f;\n}\n".as_ptr(),
+            ptr::from_ref(h),
+            h.fd,
+            h.msg_id,
+            h.len,
+            c_int::from(h.reactor_id),
+            c_int::from(h.kind),
+            c_int::from(h.flags),
+            c_int::from(h.server_fd),
+            c_int::from(h.ext_flags),
+            h.time,
+        )
     };
-    // `%d` reads the `uint32_t` as an `int`.
-    let failed = write!(
-        out,
-        "DataHead[{:p}]\n{{\n    long fd = {};\n    uint64_t msg_id = {};\n    uint32_t len = {};\n    int16_t reactor_id = {};\n    uint8_t type = {};\n    uint8_t flags = {};\n    uint16_t server_fd = {};\n    uint16_t ext_flags = {};\n    double time = {};\n}}\n",
-        ptr::from_ref(h),
-        h.fd,
-        h.msg_id,
-        h.len.cast_signed(),
-        h.reactor_id,
-        h.kind,
-        h.flags,
-        h.server_fd,
-        h.ext_flags,
-        Fixed(h.time),
-    )
-    .is_err();
-    // `Bounded` reports no error; one would be `snprintf`'s negative result.
-    let total = if failed { 0 } else { out.total };
     if size == 0 {
-        return total;
+        return usize::try_from(written).unwrap_or(usize::MAX);
     }
-    let written = total.min(size - 1);
-    if let Some(end) = buffer.get_mut(written) {
-        *end = 0;
-    }
-    written
+    let Ok(written) = usize::try_from(written) else {
+        if let Some(first) = buffer.first_mut() {
+            *first = 0;
+        }
+        return 0;
+    };
+    written.min(size - 1)
 }
 
 thread_local! {
@@ -604,78 +569,8 @@ mod tests {
         assert!((microtime() - now).abs() < 1.0, "within a second");
     }
 
-    /// The dump against libc's `snprintf` of upstream's format, over doubles `%f`
-    /// rounds, pads or spells specially, and for every size up to the whole text.
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no snprintf")]
-    fn datahead_dump_is_libc_snprintf() {
-        let times = [
-            0.0,
-            -0.0,
-            1.5,
-            0.007_812_5,
-            0.000_000_5,
-            2.5e-7,
-            123_456_789.123_456_5,
-            1e22,
-            f64::MAX,
-            f64::MIN_POSITIVE,
-            -1.0 / 3.0,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::NAN,
-            -f64::NAN,
-        ];
-        for time in times {
-            let head = DataHead {
-                fd: c_long::MIN,
-                msg_id: u64::MAX,
-                len: u32::MAX,
-                reactor_id: i16::MIN,
-                kind: 255,
-                flags: 0,
-                server_fd: 65535,
-                ext_flags: 1,
-                reserved: 0,
-                time,
-            };
-            let mut expected = [0_u8; 1024];
-            let length = unsafe {
-                libc::snprintf(
-                    expected.as_mut_ptr().cast(),
-                    expected.len(),
-                    c"DataHead[%p]\n{\n    long fd = %ld;\n    uint64_t msg_id = %llu;\n    uint32_t len = %d;\n    int16_t reactor_id = %d;\n    uint8_t type = %d;\n    uint8_t flags = %d;\n    uint16_t server_fd = %d;\n    uint16_t ext_flags = %d;\n    double time = %f;\n}\n".as_ptr(),
-                    ptr::from_ref(&head),
-                    head.fd,
-                    head.msg_id,
-                    head.len,
-                    c_int::from(head.reactor_id),
-                    c_int::from(head.kind),
-                    c_int::from(head.flags),
-                    c_int::from(head.server_fd),
-                    c_int::from(head.ext_flags),
-                    head.time,
-                )
-            };
-            let length = usize::try_from(length).unwrap();
-            let mut actual = [0x55_u8; 1024];
-            assert_eq!(datahead_dump(&head, &mut actual), length, "{time}");
-            assert_eq!(actual[..=length], expected[..=length], "{time}");
-            assert_eq!(datahead_dump(&head, &mut []), length, "{time}");
-            for size in 1..8 {
-                let mut short = [0x55_u8; 8];
-                let n = datahead_dump(&head, &mut short[..size]);
-                assert_eq!(n, size - 1);
-                assert_eq!(short[..n], expected[..n]);
-                assert_eq!(
-                    (short[n], short[size..].iter().all(|&b| b == 0x55)),
-                    (0, true)
-                );
-            }
-        }
-    }
-
-    #[test]
     fn datahead_dump_formats_and_truncates_like_sw_snprintf() {
         let head = DataHead {
             fd: -7,
@@ -709,6 +604,7 @@ mod tests {
     /// Upstream `TEST(base, datahead_dump)`, its inputs and its assertion as written:
     /// `std::string::find` returns `npos` (greater than 1) when the text is absent.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
     fn base_datahead_dump() {
         let head = DataHead {
             fd: 123,

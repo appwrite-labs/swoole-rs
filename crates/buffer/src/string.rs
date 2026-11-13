@@ -488,17 +488,16 @@ impl CppString {
             swoole_rs_corebase::sys::print(self.view());
             swoole_rs_corebase::sys::print(b"\n");
         } else {
-            // `%p`, which glibc spells `(nil)` for a null pointer.
-            let buffer = if cfg!(target_env = "gnu") && self.str.is_null() {
-                "(nil)".to_owned()
-            } else {
-                format!("{:p}", self.str)
+            // SAFETY: the arguments match the format.
+            unsafe {
+                libc::printf(
+                    c"String[length=%zu,size=%zu,offset=%jd]=%p\n".as_ptr(),
+                    self.length,
+                    self.size,
+                    self.offset,
+                    self.str,
+                )
             };
-            let line = format!(
-                "String[length={},size={},offset={}]={buffer}\n",
-                self.length, self.size, self.offset
-            );
-            swoole_rs_corebase::sys::print(line.as_bytes());
         }
     }
 }
