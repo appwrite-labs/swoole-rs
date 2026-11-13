@@ -354,7 +354,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         crate::server_methods::notify(serv, conn, c_int::from(EVENT_CLOSE));
         conn.set_close_notify(false);
         return OK;
-    } else if config.disable_notify && conn.close_force() {
+    } else if config.disable_notify.get() && conn.close_force() {
         return close_connection(serv, reactor, Some(sock));
     }
     while let Some(kind) = sock.read(|s| {
@@ -427,7 +427,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     let (Some(conn), Some(sock)) = (conn.filter(|conn| conn.is_active()), event.socket()) else {
         return ERR;
     };
-    if state.config_ref().disable_notify {
+    if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
     if reactor.change(sock, 2, 0) != 0 {
@@ -717,7 +717,7 @@ pub(crate) mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_closes_when_nobody_is_told() {
         let (live, _clients) = accepted();
-        configure(&live, |c| c.disable_notify = true);
+        configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 1);
         let event = conn.event(0, 0);
         assert_eq!(peer_close(live.server(), live.reactor(), &event), OK);
@@ -813,7 +813,7 @@ pub(crate) mod tests {
         assert!(!conn.close_notify());
         assert_eq!(output(conn.socket().unwrap()).0, 4, "nothing flushed");
 
-        configure(&live, |c| c.disable_notify = true);
+        configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 2);
         conn.set_close_force(true);
         assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);

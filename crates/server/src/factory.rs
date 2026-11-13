@@ -207,6 +207,53 @@ impl crate::hybrid::Hybrid for Linked {
         crate::master_ops::forward(serv, send)
     }
 
+    fn process_factory(&self, serv: crate::view::Server<'_>) -> *mut c_void {
+        use swoole_rs_process::workers::ops::RUN_CREATE_PROCESS_FACTORY;
+        let made = crate::factory_ops::run_server(serv, RUN_CREATE_PROCESS_FACTORY);
+        ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0))
+    }
+
+    fn factory_new(&self, serv: crate::view::Server<'_>) -> *mut c_void {
+        new(serv.raw(), None)
+    }
+
+    fn task_pool(
+        &self,
+        serv: crate::view::Server<'_>,
+        ipc: swoole_rs_process::process_pool::IpcMode,
+        socket: Option<&core::ffi::CStr>,
+    ) -> bool {
+        use swoole_rs_process::methods as pool;
+        use swoole_rs_process::process_pool::IpcMode;
+        use swoole_rs_process::worker_record::WorkerType;
+        let config = serv.state().config_ref();
+        let task_pool = serv.task_pool();
+        // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
+        unsafe { task_pool.write_bytes(0, 1) };
+        let key = if matches!(ipc, IpcMode::MsgQueue) {
+            swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get())
+        } else {
+            0
+        };
+        let pool_ref = serv.task_pool_ref();
+        let ipc = c_int::from(ipc.code());
+        if pool::create(pool_ref, config.task_worker_num.get(), key, ipc) < 0 {
+            return false;
+        }
+        let (max, grace) = (
+            config.task_max_request.get(),
+            config.task_max_request_grace.get(),
+        );
+        pool::set_max_request(pool_ref, max, grace);
+        pool::set_start_id(pool_ref, config.worker_num.get().cast_signed());
+        pool::set_type(pool_ref, WorkerType::Task.code().into());
+        socket.is_none_or(|file| pool::listen_unix(pool_ref, file, 2048) >= 0)
+    }
+
+    fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
+        crate::task_worker_ops::init_task_workers(serv)
+    }
+
     fn dtls_accept(
         &self,
         serv: crate::view::Server<'_>,

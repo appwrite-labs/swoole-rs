@@ -139,9 +139,6 @@ pub(crate) trait Host {
     fn signed(&mut self, op: u32) -> Effect<i64> {
         Ok(self.get(op)?.cast_signed())
     }
-    fn float(&mut self, op: u32) -> Effect<f64> {
-        Ok(f64::from_bits(self.get(op)?))
-    }
 }
 
 struct Native<'a, 'c> {
@@ -161,16 +158,11 @@ impl Host for Native<'_, '_> {
     #[inline(always)]
     fn op(&mut self, op: u32, arg: u64) -> Effect<u64> {
         if let Some(state) = self.state {
-            // SAFETY: run_state lends live synchronized records; this leaf access ends before callbacks.
-            if let Some(value) = unsafe { config::native_fact(state, op, arg) } {
+            if let Some(value) = config::native_fact(state, op, arg) {
                 return Ok(value);
             }
             // The shared counters, without holding callbacks.
             if let Some(value) = shared::native_fact(state, op, arg) {
-                return Ok(value);
-            }
-            // A slot is read or cleared, never called.
-            if let Some(value) = callbacks::native_fact(state, op, arg) {
                 return Ok(value);
             }
             if let Some(value) = state::native_fact(state, op) {
@@ -223,26 +215,17 @@ pub(crate) unsafe fn run_method(
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use ops::{
-        RUN_CREATE, RUN_DESTROY, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
-    };
+    use ops::{RUN_DESTROY, RUN_START_MASTER_THREAD};
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        RUN_CREATE => startup::create(h)?,
-        RUN_START_CHECK => startup::start_check(h)?,
         ops::RUN_START => startup::start(h)?,
         RUN_START_MASTER_THREAD => startup::start_master_thread(h)?,
-        RUN_STORE_LISTEN_SOCKET => {
-            startup::store_listen_socket(h)?;
-            SW_OK
-        }
         RUN_DESTROY => {
             startup::destroy(h)?;
             SW_OK
         }
-        ops::RUN_BASE_CREATE => base_factory::create(h)?,
         _ => SW_ERR,
     })
 }
@@ -256,8 +239,6 @@ pub(crate) mod script {
     #[derive(Default)]
     pub(crate) struct Script {
         pub facts: HashMap<u32, u64>,
-        /// Answers consumed in order before `facts` for ops called repeatedly.
-        pub queued: HashMap<u32, Vec<u64>>,
         pub log: Vec<(u32, u64)>,
     }
 
@@ -267,10 +248,6 @@ pub(crate) mod script {
                 facts: facts.iter().copied().collect(),
                 ..Self::default()
             }
-        }
-        pub(crate) fn queue(mut self, op: u32, answers: &[u64]) -> Self {
-            self.queued.insert(op, answers.to_vec());
-            self
         }
         pub(crate) fn called(&self, op: u32) -> usize {
             self.log.iter().filter(|(o, _)| *o == op).count()
@@ -287,11 +264,6 @@ pub(crate) mod script {
     impl Host for Script {
         fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
             self.log.push((op, arg));
-            if let Some(answers) = self.queued.get_mut(&op)
-                && !answers.is_empty()
-            {
-                return Ok(answers.remove(0));
-            }
             Ok(self.facts.get(&op).copied().unwrap_or(0))
         }
     }
