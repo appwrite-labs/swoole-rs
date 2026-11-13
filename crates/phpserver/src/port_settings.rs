@@ -123,53 +123,53 @@ pub(crate) fn apply(s: &impl Source) -> Step {
 /// The socket and protocol options up to the WebSocket ones.
 fn sockets(s: &impl Source) -> Step {
     if let Some(v) = s.long(c"backlog")? {
-        s.config(|c| c.backlog = u16_of(v));
+        s.config(|c| c.backlog.set(u16_of(v)));
     }
     if let Some(v) = s.size(c"socket_buffer_size")? {
-        s.config(|c| c.socket_buffer_size = buffer(v));
+        s.config(|c| c.socket_buffer_size.set(buffer(v)));
     }
     if let Some(v) = s.size(c"kernel_socket_recv_buffer_size")? {
-        s.config(|c| c.kernel_socket_recv_buffer_size = buffer(v));
+        s.config(|c| c.kernel_socket_recv_buffer_size.set(buffer(v)));
     }
     if let Some(v) = s.size(c"kernel_socket_send_buffer_size")? {
-        s.config(|c| c.kernel_socket_send_buffer_size = buffer(v));
+        s.config(|c| c.kernel_socket_send_buffer_size.set(buffer(v)));
     }
     if let Some(v) = s.long(c"heartbeat_idle_time")? {
-        s.config(|c| c.heartbeat_idle_time = u16_of(v));
+        s.config(|c| c.heartbeat_idle_time.set(u16_of(v)));
     }
     if let Some(v) = s.size(c"buffer_high_watermark")? {
-        s.config(|c| c.buffer_high_watermark = u32_of(v));
+        s.config(|c| c.buffer_high_watermark.set(u32_of(v)));
     }
     if let Some(v) = s.size(c"buffer_low_watermark")? {
-        s.config(|c| c.buffer_low_watermark = u32_of(v));
+        s.config(|c| c.buffer_low_watermark.set(u32_of(v)));
     }
     let on = s.truth(c"open_tcp_nodelay").unwrap_or(true);
-    s.config(|c| c.open_tcp_nodelay = on);
+    s.config(|c| c.open_tcp_nodelay.set(on));
     if let Some(v) = s.long(c"tcp_defer_accept")? {
-        s.config(|c| c.tcp_defer_accept = i32_of(v));
+        s.config(|c| c.tcp_defer_accept.set(i32_of(v)));
     }
     if let Some(on) = s.truth(c"open_tcp_keepalive") {
-        s.config(|c| c.open_tcp_keepalive = on);
+        s.config(|c| c.open_tcp_keepalive.set(on));
     }
     if let Some(on) = s.truth(c"open_eof_check") {
-        s.config(|c| c.open_eof_check = on);
+        s.config(|c| c.open_eof_check.set(on));
     }
     if let Some(on) = s.truth(c"open_eof_split") {
         s.config(|c| {
             c.protocol.split_by_eof = on;
-            c.open_eof_check |= on;
+            c.open_eof_check.set(c.open_eof_check.get() | on);
         });
     }
     if let Some(eof) = s.bytes(c"package_eof")? {
         set_eof(s, &eof)?;
     }
     if let Some(on) = s.truth(c"open_http_protocol") {
-        s.config(|c| c.open_http_protocol = on);
+        s.config(|c| c.open_http_protocol.set(on));
     }
     if let Some(on) = s.truth(c"open_websocket_protocol") {
         s.config(|c| {
-            c.open_websocket_protocol = on;
-            c.open_http_protocol |= on;
+            c.open_websocket_protocol.set(on);
+            c.open_http_protocol.set(c.open_http_protocol.get() | on);
         });
     }
     Ok(())
@@ -184,37 +184,38 @@ fn sockets(s: &impl Source) -> Step {
 fn framing(s: &impl Source) -> Step {
     if let Some(on) = s.truth(c"open_http2_protocol") {
         s.config(|c| {
-            c.open_http2_protocol = on;
-            c.open_http_protocol |= on;
+            c.open_http2_protocol.set(on);
+            c.open_http_protocol.set(c.open_http_protocol.get() | on);
         });
     }
     if let Some(on) = s.truth(c"open_mqtt_protocol") {
-        s.config(|c| c.open_mqtt_protocol = on);
+        s.config(|c| c.open_mqtt_protocol.set(on));
     }
     if let Some(v) = s.long(c"open_redis_protocol")? {
-        s.config(|c| c.open_redis_protocol = v != 0);
+        s.config(|c| c.open_redis_protocol.set(v != 0));
     }
     if let Some(v) = s.double(c"max_idle_time")? {
         // SW_MAX: a NaN takes the minimum.
-        s.config(|c| c.max_idle_time = if v > TIMER_MIN_SEC { v } else { TIMER_MIN_SEC });
+        let idle = if v > TIMER_MIN_SEC { v } else { TIMER_MIN_SEC };
+        s.config(|c| c.max_idle_time.set(idle));
     }
     if let Some(v) = s.long(c"tcp_keepidle")? {
-        s.config(|c| c.tcp_keepidle = i32_of(v));
+        s.config(|c| c.tcp_keepidle.set(i32_of(v)));
     }
     if let Some(v) = s.long(c"tcp_keepinterval")? {
-        s.config(|c| c.tcp_keepinterval = i32_of(v));
+        s.config(|c| c.tcp_keepinterval.set(i32_of(v)));
     }
     if let Some(v) = s.long(c"tcp_keepcount")? {
-        s.config(|c| c.tcp_keepcount = i32_of(v));
+        s.config(|c| c.tcp_keepcount.set(i32_of(v)));
     }
     if let Some(v) = s.long(c"tcp_user_timeout")? {
-        s.config(|c| c.tcp_user_timeout = i32_of(v));
+        s.config(|c| c.tcp_user_timeout.set(i32_of(v)));
     }
     if let Some(on) = s.truth(c"tcp_fastopen") {
-        s.config(|c| c.tcp_fastopen = on.into());
+        s.config(|c| c.tcp_fastopen.set(on.into()));
     }
     if let Some(on) = s.truth(c"open_length_check") {
-        s.config(|c| c.open_length_check = on);
+        s.config(|c| c.open_length_check.set(on));
     }
     if let Some(kind) = s.bytes(c"package_length_type")? {
         // `str_v.val()[0]`: an empty string's NUL.
@@ -277,11 +278,11 @@ fn websocket(s: &impl Source) -> Step {
     ] {
         if let Some(on) = s.truth(key) {
             s.config(|c| {
-                c.websocket_frames = if on {
-                    c.websocket_frames | bit
+                c.websocket_frames.set(if on {
+                    c.websocket_frames.get() | bit
                 } else {
-                    c.websocket_frames & !bit
-                };
+                    c.websocket_frames.get() & !bit
+                });
             });
         }
     }
@@ -717,7 +718,7 @@ mod tests {
         .join(";");
         assert_eq!(trace, expected);
         // A missing open_tcp_nodelay turns it on.
-        assert!(c.open_tcp_nodelay);
+        assert!(c.open_tcp_nodelay.get());
     }
 
     #[test]
@@ -740,34 +741,42 @@ mod tests {
             .into_iter()
             .fold(Table::default(), |t, key| t.with(key, value.clone()));
             assert!(apply(&table, &mut c).is_ok());
-            assert_eq!(c.open_tcp_nodelay, on);
-            assert_eq!(c.open_tcp_keepalive, on);
+            assert_eq!(c.open_tcp_nodelay.get(), on);
+            assert_eq!(c.open_tcp_keepalive.get(), on);
             assert_eq!(c.protocol.split_by_eof, on);
-            assert_eq!(c.open_eof_check, on, "open_eof_split turns eof_check on");
-            assert_eq!(c.open_websocket_protocol, on);
-            assert_eq!(c.open_http2_protocol, on);
-            assert_eq!(c.open_http_protocol, on, "websocket and http2 turn http on");
-            assert_eq!(c.open_mqtt_protocol, on);
-            assert_eq!(c.open_redis_protocol, on);
-            assert_eq!(c.tcp_fastopen, c_int::from(on));
-            assert_eq!(c.open_length_check, on);
+            assert_eq!(
+                c.open_eof_check.get(),
+                on,
+                "open_eof_split turns eof_check on"
+            );
+            assert_eq!(c.open_websocket_protocol.get(), on);
+            assert_eq!(c.open_http2_protocol.get(), on);
+            assert_eq!(
+                c.open_http_protocol.get(),
+                on,
+                "websocket and http2 turn http on"
+            );
+            assert_eq!(c.open_mqtt_protocol.get(), on);
+            assert_eq!(c.open_redis_protocol.get(), on);
+            assert_eq!(c.tcp_fastopen.get(), c_int::from(on));
+            assert_eq!(c.open_length_check.get(), on);
         }
         // A false dependent leaves the flag it would set as it was.
         let mut c = port();
-        c.open_eof_check = true;
-        c.open_http_protocol = true;
+        c.open_eof_check.set(true);
+        c.open_http_protocol.set(true);
         let table = Table::default()
             .with("open_eof_split", fixture(0))
             .with("open_websocket_protocol", fixture(0))
             .with("open_http2_protocol", fixture(0));
         assert!(apply(&table, &mut c).is_ok());
-        assert!(c.open_eof_check && c.open_http_protocol);
+        assert!(c.open_eof_check.get() && c.open_http_protocol.get());
         // open_redis_protocol is read as an integer.
         for v in [i64::MIN, -1, 0, 1, i64::MAX] {
             let mut c = port();
             let table = Table::default().with("open_redis_protocol", fixture(v));
             assert!(apply(&table, &mut c).is_ok());
-            assert_eq!(c.open_redis_protocol, v != 0);
+            assert_eq!(c.open_redis_protocol.get(), v != 0);
         }
     }
 
@@ -793,24 +802,24 @@ mod tests {
             .into_iter()
             .fold(Table::default(), |t, key| t.with(key, fixture(v)));
             assert!(apply(&table, &mut c).is_ok());
-            assert_eq!(c.backlog, u16_of(v));
-            assert_eq!(c.heartbeat_idle_time, u16_of(v));
+            assert_eq!(c.backlog.get(), u16_of(v));
+            assert_eq!(c.heartbeat_idle_time.get(), u16_of(v));
             for size in [
-                c.socket_buffer_size,
-                c.kernel_socket_recv_buffer_size,
-                c.kernel_socket_send_buffer_size,
+                c.socket_buffer_size.get(),
+                c.kernel_socket_recv_buffer_size.get(),
+                c.kernel_socket_send_buffer_size.get(),
             ] {
                 assert_eq!(size, buffer(v));
             }
-            assert_eq!(c.buffer_high_watermark, u32_of(v));
-            assert_eq!(c.buffer_low_watermark, u32_of(v));
+            assert_eq!(c.buffer_high_watermark.get(), u32_of(v));
+            assert_eq!(c.buffer_low_watermark.get(), u32_of(v));
             assert_eq!(c.protocol.package_max_length, u32_of(v));
             for n in [
-                c.tcp_defer_accept,
-                c.tcp_keepidle,
-                c.tcp_keepinterval,
-                c.tcp_keepcount,
-                c.tcp_user_timeout,
+                c.tcp_defer_accept.get(),
+                c.tcp_keepidle.get(),
+                c.tcp_keepinterval.get(),
+                c.tcp_keepcount.get(),
+                c.tcp_user_timeout.get(),
             ] {
                 assert_eq!(n, i32_of(v));
             }
@@ -832,7 +841,7 @@ mod tests {
             };
             let table = Table::default().with("max_idle_time", value);
             assert!(apply(&table, &mut c).is_ok());
-            assert_eq!(c.max_idle_time.to_bits(), expected.to_bits());
+            assert_eq!(c.max_idle_time.get().to_bits(), expected.to_bits());
         }
     }
 
@@ -937,14 +946,14 @@ mod tests {
     #[test]
     fn websocket_frames_and_subprotocol() {
         let mut c = port();
-        c.websocket_frames = 2;
+        c.websocket_frames.set(2);
         let table = Table::default()
             .with("open_websocket_close_frame", fixture(1))
             .with("open_websocket_ping_frame", fixture(0))
             .with("open_websocket_pong_frame", fixture(1))
             .with("websocket_subprotocol", text(b"chat"));
         assert!(apply(&table, &mut c).is_ok());
-        assert_eq!(c.websocket_frames, 5);
+        assert_eq!(c.websocket_frames.get(), 5);
         assert_eq!(
             c.websocket_protocol.as_deref().map(Vec::as_slice),
             Some(&b"chat"[..])
@@ -965,8 +974,8 @@ mod tests {
         };
         let mut c = port();
         assert!(apply(&table, &mut c).is_ok());
-        assert_eq!(c.backlog, 9);
-        assert_eq!(c.tcp_keepidle, 7);
+        assert_eq!(c.backlog.get(), 9);
+        assert_eq!(c.tcp_keepidle.get(), 7);
         assert_eq!(c.protocol.package_max_length, 3);
     }
 

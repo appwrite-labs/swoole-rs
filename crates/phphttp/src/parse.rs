@@ -564,7 +564,7 @@ fn websocket_connection(state: &State) -> bool {
     };
     if server
         .port_of_server_fd(conn.server_fd())
-        .is_some_and(|port| port.open_websocket_protocol)
+        .is_some_and(|port| port.open_websocket_protocol.get())
     {
         conn.set_websocket_status(STATUS_CONNECTION);
     }

@@ -742,7 +742,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     };
     if !server
         .port_of_fd(conn.fd())
-        .is_some_and(|port| port.open_redis_protocol)
+        .is_some_and(|port| port.open_redis_protocol.get())
     {
         return php_swoole_server_on_receive(server, request);
     }
@@ -835,7 +835,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let websocket_status = conn.websocket_status();
     if websocket_status != WEBSOCKET_ACTIVE {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
-        let websocket = port.is_some_and(|port| port.config().open_websocket_protocol);
+        let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket
             && crate::instance::php_swoole_server_isset_callback(server, port, ON_DISCONNECT)
         {

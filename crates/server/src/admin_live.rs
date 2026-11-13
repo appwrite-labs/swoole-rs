@@ -348,7 +348,7 @@ impl Facts for Live<'_> {
                     host: Json::utf8(host),
                     protocols: Json::utf8(protocols.to_bytes()),
                     port: config.port.into(),
-                    backlog: config.backlog.into(),
+                    backlog: config.backlog.get().into(),
                     socket_type: config.r#type.into(),
                     ssl: config.ssl.into(),
                     connection_num: i64::try_from(connections).unwrap_or(i64::MAX),

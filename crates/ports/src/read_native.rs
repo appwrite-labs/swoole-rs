@@ -97,7 +97,7 @@ pub(crate) unsafe fn on_read(
     };
     if kind == ON_READ_HTTP {
         read.frames =
-            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol;
+            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
     *event = read.event.get();
@@ -321,7 +321,7 @@ impl Connection for Read<'_> {
     }
 
     fn http2_enabled(&mut self) -> bool {
-        self.port.open_http2_protocol
+        self.port.open_http2_protocol.get()
     }
 
     fn start_http2(&mut self) {

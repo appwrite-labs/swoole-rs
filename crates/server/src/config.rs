@@ -5,8 +5,8 @@
 //! operations read these records directly, without per-field native callbacks.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicBool, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize,
-    Ordering::Relaxed,
+    AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
+    AtomicUsize, Ordering::Relaxed,
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
@@ -45,6 +45,7 @@ plain! {
     bool => AtomicBool;
     u8 => AtomicU8;
     u16 => AtomicU16;
+    i32 => AtomicI32;
     u32 => AtomicU32;
     u64 => AtomicU64;
     usize => AtomicUsize;
@@ -384,10 +385,9 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             let port = *port?;
             match op {
                 OP_PORT_DEFAULT_IDLE => {
-                    // SAFETY: a listed port is live, and no native callback runs while
-                    // it is borrowed.
-                    unsafe { port.config_mut() }.heartbeat_idle_time =
-                        config.heartbeat_check_interval.get().wrapping_mul(2);
+                    port.config()
+                        .heartbeat_idle_time
+                        .set(config.heartbeat_check_interval.get().wrapping_mul(2));
                     return Some(0);
                 }
                 OP_PORT_REMOVED => {
@@ -401,8 +401,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
                 OP_PORT_DGRAM => u64::from(matches!(port.r#type, 2 | 4 | 6)),
                 OP_PORT_STREAM => u64::from(matches!(port.r#type, 1 | 3 | 5)),
                 OP_PORT_SSL_AT => u64::from(port.ssl),
-                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol),
-                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time),
+                OP_PORT_WEBSOCKET => u64::from(port.open_websocket_protocol.get()),
+                OP_PORT_IDLE => u64::from(port.heartbeat_idle_time.get()),
                 _ => i64::from(fd).cast_unsigned(),
             }
         }

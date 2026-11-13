@@ -234,8 +234,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let config = port.config();
     let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
     // Only whether either is set routes the data, so onMessage is asked only without onRequest.
-    let http = config.open_http_protocol && isset(ON_REQUEST);
-    let websocket = !http && config.open_websocket_protocol && isset(ON_MESSAGE);
+    let http = config.open_http_protocol.get() && isset(ON_REQUEST);
+    let websocket = !http && config.open_websocket_protocol.get() && isset(ON_MESSAGE);
     let mut facts = Receive {
         last_recv_time: conn.last_recv_time(),
         local_port: i64::from(conn.local_port()),

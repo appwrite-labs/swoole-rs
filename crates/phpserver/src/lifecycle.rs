@@ -1089,10 +1089,10 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
     PortFacts {
         port,
         protocols: [
-            (c.open_http_protocol, HTTP),
-            (c.open_websocket_protocol, WEBSOCKET),
-            (c.open_http2_protocol, HTTP2),
-            (c.open_redis_protocol, REDIS),
+            (c.open_http_protocol.get(), HTTP),
+            (c.open_websocket_protocol.get(), WEBSOCKET),
+            (c.open_http2_protocol.get(), HTTP2),
+            (c.open_redis_protocol.get(), REDIS),
         ]
         .iter()
         .filter(|(on, _)| *on)
@@ -1118,10 +1118,14 @@ fn protocols(port: view::Port<'_>, flags: u32, clear: bool) {
     if clear {
         swoole_rs_ports::methods::clear_protocol(c);
     }
-    c.open_http_protocol |= flags & HTTP != 0;
-    c.open_websocket_protocol |= flags & WEBSOCKET != 0;
-    c.open_http2_protocol |= flags & HTTP2 != 0;
-    c.open_redis_protocol |= flags & REDIS != 0;
+    c.open_http_protocol
+        .set(c.open_http_protocol.get() || (flags & HTTP != 0));
+    c.open_websocket_protocol
+        .set(c.open_websocket_protocol.get() || (flags & WEBSOCKET != 0));
+    c.open_http2_protocol
+        .set(c.open_http2_protocol.get() || (flags & HTTP2 != 0));
+    c.open_redis_protocol
+        .set(c.open_redis_protocol.get() || (flags & REDIS != 0));
 }
 
 fn has_key(setting: &ArrayMut, key: &CStr) -> bool {

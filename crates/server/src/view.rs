@@ -535,7 +535,7 @@ impl<'a> Server<'a> {
         let Some(port) = self.port_of_fd(fd) else {
             return true;
         };
-        let idle = port.heartbeat_idle_time;
+        let idle = port.heartbeat_idle_time.get();
         idle == 0 || conn.last_recv_time() > now - f64::from(idle)
     }
 

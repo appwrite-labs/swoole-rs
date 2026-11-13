@@ -38,8 +38,8 @@ use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_REA
 fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int)> {
     let mut options = Vec::new();
     #[cfg(target_os = "linux")]
-    if config.tcp_defer_accept != 0 {
-        let defer = config.tcp_defer_accept;
+    if config.tcp_defer_accept.get() != 0 {
+        let defer = config.tcp_defer_accept.get();
         options.push((
             libc::IPPROTO_TCP,
             libc::TCP_DEFER_ACCEPT,
@@ -47,8 +47,8 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
             defer,
         ));
     }
-    if config.tcp_fastopen != 0 {
-        let fastopen = config.tcp_fastopen;
+    if config.tcp_fastopen.get() != 0 {
+        let fastopen = config.tcp_fastopen.get();
         options.push((
             libc::IPPROTO_TCP,
             libc::TCP_FASTOPEN,
@@ -56,7 +56,7 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
             fastopen,
         ));
     }
-    if config.open_tcp_keepalive {
+    if config.open_tcp_keepalive.get() {
         options.push((libc::SOL_SOCKET, libc::SO_KEEPALIVE, "SO_KEEPALIVE", 1));
         #[cfg(target_os = "linux")]
         options.extend([
@@ -64,24 +64,24 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
                 libc::IPPROTO_TCP,
                 libc::TCP_KEEPIDLE,
                 "TCP_KEEPIDLE",
-                config.tcp_keepidle,
+                config.tcp_keepidle.get(),
             ),
             (
                 libc::IPPROTO_TCP,
                 libc::TCP_KEEPINTVL,
                 "TCP_KEEPINTVL",
-                config.tcp_keepinterval,
+                config.tcp_keepinterval.get(),
             ),
             (
                 libc::IPPROTO_TCP,
                 libc::TCP_KEEPCNT,
                 "TCP_KEEPCNT",
-                config.tcp_keepcount,
+                config.tcp_keepcount.get(),
             ),
         ]);
         #[cfg(target_os = "linux")]
-        if config.tcp_user_timeout > 0 {
-            let timeout = config.tcp_user_timeout;
+        if config.tcp_user_timeout.get() > 0 {
+            let timeout = config.tcp_user_timeout.get();
             options.push((
                 libc::IPPROTO_TCP,
                 libc::TCP_USER_TIMEOUT,
@@ -102,7 +102,7 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
     let Some(socket) = (unsafe { Socket::from_ptr(config.socket.cast()) }) else {
         return -1;
     };
-    let backlog = c_int::from(config.backlog);
+    let backlog = c_int::from(config.backlog.get());
     if !config.listening && socket.edit(|s| s.listen(backlog)) < 0 {
         log::sys_warning(
             c"ListenPort::listen",
@@ -110,7 +110,7 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
                 "listen({}:{}, {}) failed",
                 host_text(config),
                 config.port,
-                config.backlog
+                config.backlog.get()
             ),
         );
         return -1;
@@ -125,14 +125,14 @@ pub(crate) fn listen(port: *mut c_void) -> c_int {
             );
         }
     }
-    if config.buffer_high_watermark == 0 {
+    if config.buffer_high_watermark.get() == 0 {
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
             reason = "upstream's implicit double-to-uint32_t conversion of `socket_buffer_size * 0.8`"
         )]
-        let watermark = (f64::from(config.socket_buffer_size) * 0.8) as u32;
-        config.buffer_high_watermark = watermark;
+        let watermark = (f64::from(config.socket_buffer_size.get()) * 0.8) as u32;
+        config.buffer_high_watermark.set(watermark);
     }
     0
 }
@@ -274,13 +274,13 @@ fn protocol_flags(config: &PortConfig) -> u32 {
     let datagram = matches!(config.r#type, 2 | 4 | 6);
     [
         (datagram, 1),
-        (config.open_eof_check, 4),
-        (config.open_length_check, 8),
-        (config.open_http_protocol, 16),
-        (config.open_http2_protocol, 32),
-        (config.open_websocket_protocol, 64),
-        (config.open_mqtt_protocol, 128),
-        (config.open_redis_protocol, 256),
+        (config.open_eof_check.get(), 4),
+        (config.open_length_check.get(), 8),
+        (config.open_http_protocol.get(), 16),
+        (config.open_http2_protocol.get(), 32),
+        (config.open_websocket_protocol.get(), 64),
+        (config.open_mqtt_protocol.get(), 128),
+        (config.open_redis_protocol.get(), 256),
     ]
     .into_iter()
     .filter(|&(on, _)| on)
@@ -294,13 +294,13 @@ pub(crate) fn get_protocols(config: &PortConfig) -> &'static CStr {
 
 /// `ListenPort::clear_protocol()`.
 pub fn clear_protocol(config: &mut PortConfig) {
-    config.open_eof_check = false;
-    config.open_length_check = false;
-    config.open_http_protocol = false;
-    config.open_websocket_protocol = false;
-    config.open_http2_protocol = false;
-    config.open_mqtt_protocol = false;
-    config.open_redis_protocol = false;
+    config.open_eof_check.set(false);
+    config.open_length_check.set(false);
+    config.open_http_protocol.set(false);
+    config.open_websocket_protocol.set(false);
+    config.open_http2_protocol.set(false);
+    config.open_mqtt_protocol.set(false);
+    config.open_redis_protocol.set(false);
 }
 
 /// The functions a port's protocol points at.
@@ -362,7 +362,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
     }
     let protocol = &mut config.protocol;
     let c = &CALLBACKS;
-    config.on_read = if config.open_eof_check {
+    config.on_read = if config.open_eof_check.get() {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
             #[expect(clippy::cast_possible_truncation, reason = "SW_DATA_EOF_MAXLEN is 8")]
             let max = SW_DATA_EOF_MAXLEN as u8;
@@ -370,22 +370,22 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         }
         protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_eof)
-    } else if config.open_length_check {
+    } else if config.open_length_check.get() {
         if protocol.package_length_type != 0 {
             protocol.get_package_length = Some(c.default_length);
         }
         protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_length)
-    } else if config.open_http_protocol {
-        if config.open_http2_protocol && config.open_websocket_protocol {
+    } else if config.open_http_protocol.get() {
+        if config.open_http2_protocol.get() && config.open_websocket_protocol.get() {
             protocol.get_package_length = Some(c.http_length);
             protocol.get_package_length_size = Some(c.http_length_size);
             protocol.on_package = Some(c.http_dispatch_frame);
-        } else if config.open_http2_protocol {
+        } else if config.open_http2_protocol.get() {
             protocol.package_length_size = HTTP2_FRAME_HEADER_SIZE;
             protocol.get_package_length = Some(c.http2_length);
             protocol.on_package = Some(c.dispatch_task);
-        } else if config.open_websocket_protocol {
+        } else if config.open_websocket_protocol.get() {
             protocol.package_length_size = WEBSOCKET_FRAME_HEADER_SIZE;
             protocol.get_package_length = Some(c.websocket_length);
             protocol.on_package = Some(c.websocket_dispatch_frame);
@@ -393,11 +393,11 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         protocol.package_length_offset = 0;
         protocol.package_body_offset = 0;
         reader(readable_callback_http)
-    } else if config.open_mqtt_protocol {
+    } else if config.open_mqtt_protocol.get() {
         swoole_rs_protocols_ffi::set_protocol(protocol);
         protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_length)
-    } else if config.open_redis_protocol {
+    } else if config.open_redis_protocol.get() {
         protocol.on_package = Some(c.dispatch_task);
         reader(readable_callback_redis)
     } else {
@@ -419,7 +419,7 @@ pub fn init_protocol(config: &mut PortConfig) {
 /// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes: at
 /// most the first eight.
 pub fn set_eof_protocol(config: &mut PortConfig, eof: &[u8], find_from_right: bool) {
-    config.open_eof_check = true;
+    config.open_eof_check.set(true);
     let protocol = &mut config.protocol;
     protocol.split_by_eof = !find_from_right;
     let length = eof.len().min(protocol.package_eof.len());
@@ -443,7 +443,7 @@ pub fn set_length_protocol(
     length_type: c_char,
     body_offset: u32,
 ) {
-    config.open_length_check = true;
+    config.open_length_check.set(true);
     let protocol = &mut config.protocol;
     protocol.package_length_type = length_type.to_ne_bytes()[0];
     protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type) as u8;
@@ -454,7 +454,7 @@ pub fn set_length_protocol(
 /// `ListenPort::set_stream_protocol()`: length framing as `Stream::set_protocol`
 /// sets it, a network-order u32 before the body.
 pub fn set_stream_protocol(config: &mut PortConfig) {
-    config.open_length_check = true;
+    config.open_length_check.set(true);
     let protocol = &mut config.protocol;
     protocol.get_package_length = Some(CALLBACKS.default_length);
     protocol.package_length_type = b'N';
@@ -665,8 +665,8 @@ mod tests {
         let port = socket_port(libc::SOCK_STREAM, true);
         let at = port.cast::<c_void>();
         let config = unsafe { port_config::of(at) };
-        config.open_tcp_keepalive = true;
-        config.tcp_user_timeout = 5;
+        config.open_tcp_keepalive.set(true);
+        config.tcp_user_timeout.set(5);
         assert_eq!(listen(at), 0, "listened");
         let fd = unsafe { view::Port::from_raw(at) }.map_or(-1, view::Port::fd);
         assert!(config.listening, "published");
@@ -709,13 +709,14 @@ mod tests {
             );
         }
         assert_eq!(
-            config.buffer_high_watermark, 800,
+            config.buffer_high_watermark.get(),
+            800,
             "socket_buffer_size * 0.8"
         );
         // A second listen keeps a set watermark and does not listen again.
-        config.buffer_high_watermark = 7;
+        config.buffer_high_watermark.set(7);
         assert_eq!(listen(at), 0, "already listening");
-        assert_eq!(config.buffer_high_watermark, 7, "kept");
+        assert_eq!(config.buffer_high_watermark.get(), 7, "kept");
         // Parallel tests may reuse the number once it is closed, so check that
         // it no longer names this socket: a duplicate keeps the ephemeral port
         // bound, and so unique, until the check is done.
@@ -738,7 +739,7 @@ mod tests {
         assert_eq!(listen(at), -1, "failed");
         let config = unsafe { port_config::of(at) };
         assert!(!config.listening, "not published");
-        assert_eq!(config.buffer_high_watermark, 0, "options skipped");
+        assert_eq!(config.buffer_high_watermark.get(), 0, "options skipped");
         close_socket(at);
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
@@ -917,7 +918,7 @@ mod tests {
             "the C++ constructor stores the server"
         );
         assert!(
-            !config.open_length_check && !config.open_eof_check,
+            !config.open_length_check.get() && !config.open_eof_check.get(),
             "no framing"
         );
         assert!(config.on_read.is_null(), "no reader before init_protocol");
@@ -938,11 +939,11 @@ mod tests {
                 let mut eof = *b"xxxxxxxx";
                 eof[..kept].copy_from_slice(&value[..kept]);
                 let p = &config.protocol;
-                assert!(config.open_eof_check, "eof check on");
+                assert!(config.open_eof_check.get(), "eof check on");
                 assert_eq!(p.split_by_eof, !right, "split unless from the right");
                 assert_eq!(usize::from(p.package_eof_len), kept, "length {length}");
                 assert_eq!(p.package_eof, eof, "copied bytes, the rest untouched");
-                assert!(!config.open_length_check, "length check untouched");
+                assert!(!config.open_length_check.get(), "length check untouched");
             }
         }
     }
@@ -962,7 +963,7 @@ mod tests {
                     set_length_protocol(config, offset, c_kind, body);
                     let p = &config.protocol;
                     let size = swoole_rs_corebase::swoole_type_size(c_kind);
-                    assert!(config.open_length_check, "length check on");
+                    assert!(config.open_length_check.get(), "length check on");
                     assert_eq!(p.package_length_type, kind, "type");
                     assert_eq!(i32::from(p.package_length_size), size & 0xff, "type size");
                     assert_eq!(
@@ -1004,7 +1005,7 @@ mod tests {
             set_stream_protocol(config);
             let p = &config.protocol;
             assert!(
-                config.open_length_check && config.open_eof_check,
+                config.open_length_check.get() && config.open_eof_check.get(),
                 "both checks on"
             );
             assert_eq!(
@@ -1059,13 +1060,13 @@ mod tests {
         for (flags, on_read, on_package, length, length_size, framing) in branches {
             let mut port = Fresh::new();
             let config = port.config();
-            config.open_eof_check = flags & EOF != 0;
-            config.open_length_check = flags & LENGTH != 0;
-            config.open_http_protocol = flags & HTTP != 0;
-            config.open_http2_protocol = flags & HTTP2 != 0;
-            config.open_websocket_protocol = flags & WS != 0;
-            config.open_mqtt_protocol = flags & MQTT != 0;
-            config.open_redis_protocol = flags & REDIS != 0;
+            config.open_eof_check.set(flags & EOF != 0);
+            config.open_length_check.set(flags & LENGTH != 0);
+            config.open_http_protocol.set(flags & HTTP != 0);
+            config.open_http2_protocol.set(flags & HTTP2 != 0);
+            config.open_websocket_protocol.set(flags & WS != 0);
+            config.open_mqtt_protocol.set(flags & MQTT != 0);
+            config.open_redis_protocol.set(flags & REDIS != 0);
             if flags & UNTYPED != 0 {
                 config.protocol.package_length_type = 0;
             }
@@ -1101,7 +1102,7 @@ mod tests {
         for (eof_len, kept) in [(0, 0), (8, 8), (9, 8), (255, 8)] {
             let mut port = Fresh::new();
             let config = port.config();
-            config.open_eof_check = true;
+            config.open_eof_check.set(true);
             config.protocol.package_eof_len = eof_len;
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
             assert_eq!(config.protocol.package_eof_len, kept, "SW_DATA_EOF_MAXLEN");
@@ -1174,7 +1175,7 @@ mod tests {
         assert_eq!(0, create_socket(at));
 
         let config = unsafe { port_config::of(at) };
-        config.open_eof_check = true;
+        config.open_eof_check.set(true);
         config.protocol.package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
         init_protocol(config);
         assert_eq!(c"eof", get_protocols(config));
@@ -1220,54 +1221,54 @@ mod tests {
         assert_eq!(create_socket(at), 0, "add_port");
         let config = unsafe { port_config::of(at) };
 
-        config.open_eof_check = true;
+        config.open_eof_check.set(true);
         assert_eq!(get_protocols(config), c"eof");
-        config.open_eof_check = false;
+        config.open_eof_check.set(false);
 
-        config.open_length_check = true;
+        config.open_length_check.set(true);
         assert_eq!(get_protocols(config), c"length");
-        config.open_length_check = false;
+        config.open_length_check.set(false);
 
-        config.open_http_protocol = true;
+        config.open_http_protocol.set(true);
         assert_eq!(get_protocols(config), c"http");
-        config.open_http_protocol = false;
+        config.open_http_protocol.set(false);
 
-        config.open_http_protocol = true;
-        config.open_http2_protocol = true;
-        config.open_websocket_protocol = true;
+        config.open_http_protocol.set(true);
+        config.open_http2_protocol.set(true);
+        config.open_websocket_protocol.set(true);
         assert_eq!(get_protocols(config), c"http|http2|websocket");
-        config.open_http2_protocol = false;
-        config.open_websocket_protocol = false;
-        config.open_http_protocol = false;
+        config.open_http2_protocol.set(false);
+        config.open_websocket_protocol.set(false);
+        config.open_http_protocol.set(false);
 
-        config.open_http_protocol = true;
-        config.open_http2_protocol = true;
+        config.open_http_protocol.set(true);
+        config.open_http2_protocol.set(true);
         assert_eq!(get_protocols(config), c"http|http2");
-        config.open_http2_protocol = false;
-        config.open_http_protocol = false;
+        config.open_http2_protocol.set(false);
+        config.open_http_protocol.set(false);
 
-        config.open_http_protocol = true;
-        config.open_websocket_protocol = true;
+        config.open_http_protocol.set(true);
+        config.open_websocket_protocol.set(true);
         assert_eq!(get_protocols(config), c"http|websocket");
-        config.open_websocket_protocol = false;
-        config.open_http_protocol = false;
+        config.open_websocket_protocol.set(false);
+        config.open_http_protocol.set(false);
 
-        config.open_mqtt_protocol = true;
+        config.open_mqtt_protocol.set(true);
         assert_eq!(get_protocols(config), c"mqtt");
-        config.open_mqtt_protocol = false;
+        config.open_mqtt_protocol.set(false);
 
-        config.open_redis_protocol = true;
+        config.open_redis_protocol.set(true);
         assert_eq!(get_protocols(config), c"redis");
-        config.open_redis_protocol = false;
+        config.open_redis_protocol.set(false);
 
         clear_protocol(config);
-        assert!(!config.open_eof_check);
-        assert!(!config.open_length_check);
-        assert!(!config.open_http_protocol);
-        assert!(!config.open_websocket_protocol);
-        assert!(!config.open_http2_protocol);
-        assert!(!config.open_mqtt_protocol);
-        assert!(!config.open_redis_protocol);
+        assert!(!config.open_eof_check.get());
+        assert!(!config.open_length_check.get());
+        assert!(!config.open_http_protocol.get());
+        assert!(!config.open_websocket_protocol.get());
+        assert!(!config.open_http2_protocol.get());
+        assert!(!config.open_mqtt_protocol.get());
+        assert!(!config.open_redis_protocol.get());
         assert_eq!(get_protocols(config), c"raw");
 
         close_socket(at);

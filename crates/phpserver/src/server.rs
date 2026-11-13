@@ -834,7 +834,7 @@ fn get_client_info(call: &Call) {
     }
     if serv
         .port_of_fd(conn.fd())
-        .is_some_and(|port| port.open_websocket_protocol)
+        .is_some_and(|port| port.open_websocket_protocol.get())
     {
         call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status()));
     }

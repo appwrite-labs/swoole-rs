@@ -884,10 +884,10 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_CC_HTTP_OBJECT => {
-            u64::from(o.port()?.open_http_protocol && !o.conn()?.object().is_null())
+            u64::from(o.port()?.open_http_protocol.get() && !o.conn()?.object().is_null())
         }
         OP_CC_REDIS_OBJECT => {
-            u64::from(o.port()?.open_redis_protocol && !o.conn()?.object().is_null())
+            u64::from(o.port()?.open_redis_protocol.get() && !o.conn()?.object().is_null())
         }
         OP_CC_REDIS_FREE => {
             // SAFETY: the redis request the connection owns, not used again.
@@ -983,7 +983,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
                 clippy::cast_possible_truncation,
                 reason = "C++'s implicit double to long"
             )]
-            let delay = o.port()?.max_idle_time as c_long;
+            let delay = o.port()?.max_idle_time.get() as c_long;
             let timer = o.sock()?.read(|s| s.output.send_timer);
             // SAFETY: the socket's live send timer.
             unsafe { swoole_timer_delay(timer.cast(), delay) };
@@ -1074,7 +1074,7 @@ fn write_state(o: &Objects<'_, '_>) -> Option<u64> {
         .callbacks
         .slot(CB_BUFFER_EMPTY)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
-    let low_watermark = o.port()?.buffer_low_watermark;
+    let low_watermark = o.port()?.buffer_low_watermark.get();
     let flag = |set: bool, bit: u64| if set { bit } else { 0 };
     Some(
         flag(
