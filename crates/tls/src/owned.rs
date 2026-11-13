@@ -251,13 +251,9 @@ impl Lent<'_> {
         // SAFETY: the guard's contract: nothing writes the fields while it lends them.
         unsafe { &*self.0.fields.get() }
     }
-    fn fields_mut(&mut self) -> &mut OwnedTlsFields {
-        // SAFETY: the guard's contract: only its holder reaches the fields, and this
-        // borrow of the guard is its only one.
-        unsafe { &mut *self.0.fields.get() }
-    }
     fn password(&mut self) -> &mut Option<Arc<StringSlot>> {
-        // SAFETY: as `fields_mut`, for the retained password.
+        // SAFETY: the guard's contract: only its holder reaches the retained password,
+        // and this borrow of the guard is its only one.
         unsafe { &mut *self.0.context_password.get() }
     }
 }
@@ -324,10 +320,11 @@ fn create(owner: &mut Lent<'_>) -> bool {
     }
     let created = ctx.is_some();
     // The callbacks have returned.
-    let fields = owner.fields_mut();
-    // The old OpenSSL reference gives way to the new one, released as it goes.
-    fields.context = ctx;
-    fields.protocols = config.protocols;
+    owner.edit(|fields| {
+        // The old OpenSSL reference gives way to the new one, released as it goes.
+        fields.context = ctx;
+        fields.protocols = config.protocols;
+    });
     // The new context's live password data is retained independently of native views.
     *owner.password() = retained_password;
     created
@@ -424,7 +421,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     let password = source.password().clone();
     // Publish the copied scalar values and reference, releasing the destination's
     // previous one.
-    *destination.fields_mut() = fields;
+    destination.edit(|to| *to = fields);
     // Release old password ownership only after releasing its OpenSSL reference.
     *destination.password() = password;
     OwnedTlsCopy {
@@ -450,14 +447,13 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
     if dtls && !dtls_supported {
         return 1;
     }
-    {
-        // Leaf updates, before OpenSSL callbacks may run.
-        let fields = owner.fields_mut();
+    // Leaf updates, before OpenSSL callbacks may run.
+    owner.edit(|fields| {
         if dtls {
             fields.protocols = crate::SslVersion::SW_SSL_DTLS as u32;
         }
         fields.http_v2 = u8::from(http2);
-    }
+    });
     if dtls {
         socket.edit(|record| {
             record.dtls = 1;

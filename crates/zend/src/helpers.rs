@@ -1,11 +1,8 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! typed property updates.
-use crate::{
-    Value,
-    sys::{
-        module_registry, swr_zend_property_not_null, swr_zend_property_slot, time_t,
-        zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find, zend_object, zval,
-    },
+use crate::sys::{
+    module_registry, time_t, zend_fcall_info, zend_fcall_info_cache, zend_hash_str_find,
+    zend_object, zval,
 };
 use std::ffi::CStr;
 
@@ -71,29 +68,6 @@ pub fn is_main_thread() -> bool {
 #[must_use]
 pub fn time() -> i64 {
     php_time()
-}
-
-/// `sw_zend_read_property_ex`: the declared property's slot (an uninitialised
-/// typed property reads as null).
-/// # Safety
-/// `object` is live and declares `name`, for `'a`.
-#[must_use]
-pub unsafe fn property<'a>(object: *mut zend_object, name: &CStr) -> &'a Value {
-    // SAFETY: per the caller.
-    let slot = unsafe { swr_zend_property_slot(object, name.as_ptr(), name.count_bytes()) };
-    // SAFETY: a live slot, never null.
-    unsafe { &*slot.cast::<Value>() }
-}
-
-/// `sw_zend_read_property_not_null_ex`: the property unless it is null.
-/// # Safety
-/// As [`property`].
-#[must_use]
-pub unsafe fn property_not_null<'a>(object: *mut zend_object, name: &CStr) -> Option<&'a Value> {
-    // SAFETY: per the caller.
-    let found = unsafe { swr_zend_property_not_null(object, name.as_ptr(), name.count_bytes()) };
-    // SAFETY: null or a live property.
-    unsafe { Value::from_ptr(found) }
 }
 
 /// `is_numeric_string(text, len, &lval, &dval, false)`: the kind (`IS_LONG`,

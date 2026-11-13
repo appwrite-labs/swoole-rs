@@ -130,8 +130,8 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
     let Some(size) = core::mem::size_of::<Buffer>().checked_add(length) else {
         return -1;
     };
-    // SAFETY: malloc accepts any size and returns null on failure.
-    let buffer = unsafe { libc::malloc(size) }.cast::<Buffer>();
+    // `sw_malloc` is libc's malloc: null on failure.
+    let buffer = swoole_rs_corebase::sw_malloc(size).cast::<Buffer>();
     if buffer.is_null() {
         return -1;
     }
@@ -272,13 +272,18 @@ struct NewTable {
 // init stay unsafe: a method reads data as the session once init is set), and
 // OpenSSL calls each method of a table with the live BIO it is reading or writing.
 // `BIO_meth_new` copies the name and returns a table nothing else holds (null on
-// failure), and the `safe` setters store a hook any BIO may be given into the table
-// their caller holds exclusively.
+// failure), and the `safe` setters store a hook into the table their caller holds
+// exclusively: storing one runs nothing. The create and destroy hooks suit any BIO; the
+// write, read and control hooks are `unsafe` to call, and only a BIO runs them, which
+// only the unsafe `BIO_new` makes of a table, so its caller answers for them.
 unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
     safe fn BIO_meth_new(kind: c_int, name: CText<'_>) -> Option<&'static mut NewTable>;
     safe fn BIO_meth_set_create(table: &mut NewTable, create: Option<Hook>) -> c_int;
     safe fn BIO_meth_set_destroy(table: &mut NewTable, destroy: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_write(table: &mut NewTable, write: Option<Write>) -> c_int;
+    safe fn BIO_meth_set_read(table: &mut NewTable, read: Option<Read>) -> c_int;
+    safe fn BIO_meth_set_ctrl(table: &mut NewTable, control: Option<Control>) -> c_int;
     safe fn BIO_get_shutdown(bio: &DtlsBio) -> c_int;
     safe fn BIO_set_shutdown(bio: &DtlsBio, shutdown: c_int);
     safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
@@ -287,9 +292,6 @@ unsafe extern "C" {
     fn BIO_set_init(bio: &DtlsBio, init: c_int);
     fn BIO_set_data(bio: &DtlsBio, data: *mut c_void);
     fn BIO_new(table: *const BIO_METHOD) -> Option<&'static DtlsBio>;
-    fn BIO_meth_set_write(table: *mut BIO_METHOD, write: Option<Write>) -> c_int;
-    fn BIO_meth_set_read(table: *mut BIO_METHOD, read: Option<Read>) -> c_int;
-    fn BIO_meth_set_ctrl(table: *mut BIO_METHOD, control: Option<Control>) -> c_int;
 }
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
@@ -317,18 +319,19 @@ fn control_tag(command: c_int) -> u32 {
     }
 }
 
-/// The session `swr_v1_tls_dtls_init` made the BIO for: its data, live for as long as
-/// the SSL that owns the BIO. Reading the pointer dereferences nothing.
-fn session_of(bio: &DtlsBio) -> *const DtlsSession {
-    BIO_get_data(bio).cast()
+/// The session `swr_v1_tls_dtls_init` made the BIO for, or `None` for a BIO it has not
+/// given one yet (`BIO_new` runs the create hook first).
+fn session_of(bio: &DtlsBio) -> Option<&DtlsSession> {
+    let session = BIO_get_data(bio).cast::<DtlsSession>();
+    // SAFETY: a BIO of this table has no data until the unsafe `BIO_set_data`, whose one
+    // caller, `swr_v1_tls_dtls_init`, sets the live session, which outlives the SSL
+    // that owns the BIO and so every borrow of the BIO OpenSSL lends.
+    unsafe { session.as_ref() }
 }
 
 /// `dtls::BIO_write`: `Socket::write`, a write(2) on the session's socket.
 unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int) -> c_int {
-    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
-    // set to the live session, which outlives its SSL.
-    let session = unsafe { &*session_of(bio) };
-    let Some(socket) = session.live.get() else {
+    let Some(socket) = session_of(bio).and_then(|session| session.live.get()) else {
         return -1;
     };
     let fd = socket.fd();
@@ -340,9 +343,9 @@ unsafe extern "C" fn bio_write(bio: &DtlsBio, data: *const c_char, length: c_int
 /// `dtls::BIO_read`: the next queued datagram, or a read retry when there is none.
 unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -> c_int {
     BIO_clear_flags(bio, BIO_FLAGS_RWS | BIO_FLAGS_SHOULD_RETRY);
-    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
-    // set to the live session, which outlives its SSL.
-    let session = unsafe { &*session_of(bio) };
+    let Some(session) = session_of(bio) else {
+        return -1;
+    };
     // SAFETY: OpenSSL lends `length` writable bytes.
     let buffer =
         unsafe { crate::upstream::slots(data.cast(), usize::try_from(length).unwrap_or(0)) };
@@ -366,9 +369,9 @@ unsafe extern "C" fn bio_ctrl(
     } else {
         0
     };
-    // SAFETY: OpenSSL calls this for the session's BIO, whose data `swr_v1_tls_dtls_init`
-    // set to the live session, which outlives its SSL.
-    let session = unsafe { &*session_of(bio) };
+    let Some(session) = session_of(bio) else {
+        return 0;
+    };
     let plan = swr_v1_tls_dtls_control(session, tag, observed, value);
     if tag == 5
         && !pointer.is_null()
@@ -411,13 +414,10 @@ fn methods() -> *mut BIO_METHOD {
     };
     BIO_meth_set_create(table, Some(bio_create));
     BIO_meth_set_destroy(table, Some(bio_destroy));
+    BIO_meth_set_write(table, Some(bio_write));
+    BIO_meth_set_read(table, Some(bio_read));
+    BIO_meth_set_ctrl(table, Some(bio_ctrl));
     let table: *mut BIO_METHOD = ptr::from_mut(table).cast();
-    // SAFETY: the fresh table, and a callback of the slot's type.
-    unsafe { BIO_meth_set_write(table, Some(bio_write)) };
-    // SAFETY: as above.
-    unsafe { BIO_meth_set_read(table, Some(bio_read)) };
-    // SAFETY: as above.
-    unsafe { BIO_meth_set_ctrl(table, Some(bio_ctrl)) };
     match METHODS.compare_exchange(ptr::null_mut(), table, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => table,
         Err(winner) => {
@@ -478,18 +478,10 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     true
 }
 
-/// `bool dtls::Session::listen()`: once, `DTLSv1_listen` on the socket's SSL;
-/// a pending listen counts as success and a failure logs why.
-///
-/// # Safety
-/// None: as [`dtls_session_listen`], which new callers use.
-pub unsafe fn swr_v1_tls_dtls_session_listen(owner: &DtlsSession) -> bool {
-    dtls_session_listen(owner)
-}
-
-/// `bool dtls::Session::listen()`, as [`swr_v1_tls_dtls_session_listen`]: the socket is
-/// the handle `swr_v1_tls_dtls_init` took, whose caller promised it live for as long as
-/// the session, so a session lent here needs no further promise.
+/// `bool dtls::Session::listen()`: once, `DTLSv1_listen` on the socket's SSL; a pending
+/// listen counts as success and a failure logs why. The socket is the handle
+/// `swr_v1_tls_dtls_init` took, whose caller promised it live for as long as the
+/// session, so a session lent here needs no further promise.
 #[must_use]
 pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
     if owner.listened() {

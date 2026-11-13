@@ -443,12 +443,25 @@ pub(crate) fn parse_piece(state: &mut State, data: &[u8]) -> usize {
     let zdata = &mut state.request.zdata;
     let joined = [zdata.bytes().unwrap_or_default(), data].concat();
     *zdata = Owned::string(ZString::new(&joined));
-    let (start, length) = zdata_span(state);
-    // SAFETY: the appended bytes, the end of `zdata`, which the callbacks
-    // read but neither write nor replace.
-    let appended =
-        unsafe { std::slice::from_raw_parts(start.wrapping_add(length - data.len()), data.len()) };
+    // A reference of its own to `zdata`, which the callbacks read but neither
+    // write nor replace: the appended bytes are its end.
+    let held = zdata.copy();
+    let bytes = held.bytes().unwrap_or_default();
+    let appended = bytes.get(bytes.len() - data.len()..).unwrap_or_default();
     execute(state, true, appended)
+}
+
+/// The `length` bytes of `zdata` that end where the piece at `at` does: a span's
+/// pieces so far.
+fn pieces(zdata: &Value, at: *const c_char, piece: usize, length: usize) -> &[u8] {
+    let bytes = zdata.bytes().unwrap_or_default();
+    let end = at
+        .addr()
+        .wrapping_add(piece)
+        .wrapping_sub(bytes.as_ptr().addr());
+    end.checked_sub(length)
+        .and_then(|from| bytes.get(from..end))
+        .unwrap_or_default()
 }
 
 /// `request.zdata`'s bytes.
@@ -489,14 +502,9 @@ fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
         return 0;
     }
-    let url_length = state.parse.url_length;
-    // SAFETY: the URL's pieces so far end at this one, inside `zdata`.
-    let span = unsafe {
-        std::slice::from_raw_parts(
-            at.wrapping_add(length).wrapping_sub(url_length).cast(),
-            url_length,
-        )
-    };
+    // A reference of its own to `zdata`, which `url` reads but doesn't replace.
+    let held = state.request.zdata.copy();
+    let span = pieces(&held, at, length, state.parse.url_length);
     url(state, span)
 }
 
@@ -523,14 +531,9 @@ fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) ->
     }
     let name = start.wrapping_add(state.parse.header_name_offset);
     header_field(state, name, state.parse.header_name_length);
-    let value_length = state.parse.header_value_length;
-    // SAFETY: the value's pieces so far end at this one, inside `zdata`.
-    let value = unsafe {
-        std::slice::from_raw_parts(
-            at.wrapping_add(length).wrapping_sub(value_length).cast(),
-            value_length,
-        )
-    };
+    // A reference of its own to `zdata`, which `header_value` reads but doesn't replace.
+    let held = state.request.zdata.copy();
+    let value = pieces(&held, at, length, state.parse.header_value_length);
     let result = header_value(state, value);
     state.parse.header_name_length = 0;
     state.parse.header_value_length = 0;

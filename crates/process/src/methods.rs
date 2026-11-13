@@ -246,7 +246,7 @@ pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
 /// end `flags` names.
 ///
 /// # Safety
-/// `worker` is a live worker of a live pool; `data` holds `length` bytes.
+/// `worker` is a live worker of a live pool; `data` holds `length` initialized bytes.
 #[must_use]
 pub unsafe fn send_pipe_message(
     worker: *const WorkerRecord,

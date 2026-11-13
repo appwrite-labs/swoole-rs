@@ -97,11 +97,7 @@ pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         swoole_rs_corebase::fatal("a worker lock can't be initialized");
     }
     worker.set_lock(Some(lock));
-    let pipe = worker.pipe_object();
-    if !pipe.is_null() {
-        // SAFETY: the live server, and the live pipe of its worker.
-        unsafe { crate::server_methods::store_pipe_fd(serv.raw(), pipe) };
-    }
+    crate::server_methods::store_pipe_fd(serv, worker);
 }
 
 /// `Server::destroy_worker(worker)`: frees the lock [`create_worker`] gave it.

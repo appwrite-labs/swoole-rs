@@ -737,9 +737,9 @@ static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 pub(crate) unsafe fn install() {
     type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
     let handlers: [(_, Handler); 3] = [
-        (c"array_push", push),
-        (c"array_unshift", unshift),
-        (c"array_splice", splice),
+        (c"array_push", zif_swoole_array_push),
+        (c"array_unshift", zif_swoole_array_unshift),
+        (c"array_splice", zif_swoole_array_splice),
     ];
     let [push, unshift, splice] = handlers.map(|(name, handler)| {
         // `internal_function` starts the `zend_function` union.
@@ -776,62 +776,48 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again.
-/// # Safety
-/// Zend's handler contract, in the frame of the function `original` names.
-unsafe fn guarded(
-    frame: *mut zend_execute_data,
-    value: *mut zval,
+/// flag the table it rebuilt in place typed again. The original may bail out
+/// through this frame and its handler's, which own nothing to drop.
+fn guarded(
+    call: &Call,
     original: fn(&Originals) -> zif_handler,
     remark: bool,
     allowed: fn(Typed, &Call) -> bool,
 ) {
-    // SAFETY: per the caller.
-    let call = unsafe { Call::new(frame, value) };
-    let target = typed_target(&call);
+    let target = typed_target(call);
     if let Some(typed) = target
-        && !allowed(typed, &call)
+        && !allowed(typed, call)
     {
         return;
     }
     if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: per the caller, the original handler of the running frame.
-        unsafe { handler(frame, value) };
+        // SAFETY: a core function's handler, whose whole contract is a live
+        // handler frame and return slot: `call`'s. It parses its own arguments.
+        unsafe { handler(call.frame(), call.return_value()) };
     }
     if remark && let Some(typed) = target {
         typed.mark();
     }
 }
 
-unsafe extern "C" fn push(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract, as `array_push`.
-    unsafe {
-        guarded(
-            frame,
-            value,
-            |originals| originals.push,
-            false,
-            check_appended,
-        );
-    }
+// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions' slots.
+swoole_rs_zend::handlers! {
+    leaf:
+    zif_swoole_array_push => push;
+    zif_swoole_array_unshift => unshift;
+    zif_swoole_array_splice => splice;
 }
 
-unsafe extern "C" fn unshift(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract, as `array_unshift`.
-    unsafe {
-        guarded(
-            frame,
-            value,
-            |originals| originals.unshift,
-            true,
-            check_appended,
-        );
-    }
+fn push(call: &Call) {
+    guarded(call, |originals| originals.push, false, check_appended);
 }
 
-unsafe extern "C" fn splice(frame: *mut zend_execute_data, value: *mut zval) {
-    // SAFETY: Zend's handler contract, as `array_splice`.
-    unsafe { guarded(frame, value, |originals| originals.splice, true, spliced) };
+fn unshift(call: &Call) {
+    guarded(call, |originals| originals.unshift, true, check_appended);
+}
+
+fn splice(call: &Call) {
+    guarded(call, |originals| originals.splice, true, spliced);
 }
 
 /// `array_splice`'s `$replacement`, if passed, may go in `typed`.

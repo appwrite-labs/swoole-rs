@@ -99,11 +99,13 @@ impl Context<'_> {
         let kind = if tls { VERIFIED_TLS } else { VERIFIED };
         self.state().connection(self.info().fd, kind)
     }
-    fn callback(&self, index: u32, data: *mut c_void) {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            // SAFETY: the slot takes the server and the event data.
-            unsafe { slot.call(self.serv.raw(), data) };
-        }
+    /// `serv->onX(serv, data)` for slot `index`, with the event head, event data or
+    /// worker it takes; `None` for no such slot.
+    pub(super) fn callback(&self, index: u32, data: *mut c_void) -> Option<()> {
+        let slot = self.state().callbacks.slot(index)?;
+        // SAFETY: the slot takes the server and the event head, event data or worker.
+        unsafe { slot.call(self.serv.raw(), data) };
+        Some(())
     }
 
     fn worker_error(&self) {
@@ -184,8 +186,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_STORE_CLIENT_CERT => {
             if let Some(conn) = ctx.session(false) {
-                let packet = ctx.bus().packet();
-                conn.set_ssl_client_cert(client_cert(packet.data.cast(), packet.length).cast());
+                conn.set_ssl_client_cert(ctx.bus().with_packet(client_cert).cast());
                 conn.set_ssl_client_cert_pid(swoole_get_worker_pid());
             }
             0
@@ -383,11 +384,10 @@ impl Context<'_> {
 }
 
 /// `new String(data, length)`: the connection's client certificate.
-fn client_cert(data: *const u8, length: usize) -> *mut CppString {
+fn client_cert(data: &[u8]) -> *mut CppString {
     let mut cert = Box::new(CppString::EMPTY);
-    cert.alloc(length, None);
-    // SAFETY: the bus packet's `length` readable bytes.
-    unsafe { swoole_rs_buffer::string::swr_string_append(&mut cert, data, length) };
+    cert.alloc(data.len(), None);
+    cert.append(data);
     Box::into_raw(cert)
 }
 

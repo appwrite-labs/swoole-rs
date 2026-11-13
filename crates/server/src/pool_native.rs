@@ -43,7 +43,7 @@ use swoole_rs_process::process_pool::{
     OP_PIPE_HANDLER, OP_POP_MESSAGE, OP_PUSH_STOP, OP_RELOAD_TIMER, OP_REMOVE_PIPE,
     OP_REOPEN_LOGGER, OP_SNDBUF, OP_TIMER_FREE, OP_TIMER_INIT, OP_TIMER_SELECT, OP_UNLIMIT_PIPES,
     OP_WAITPID, OP_WORKER_ERROR, OP_WORKER_INIT, OP_WORKER_SHUTDOWN, PoolNative, PoolRef, RAISE,
-    RUN_MAIN, RecvData, pool_run_op,
+    RecvData, pool_run_main,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -56,7 +56,7 @@ use swoole_rs_timer::{
     swoole_timer_select,
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
-use swoole_rs_tls::upstream::{socket_free, socket_read_sync, socket_recv_sync, socket_send_sync};
+use swoole_rs_tls::upstream::{self, socket_free, socket_read_sync, socket_recv_sync};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`, `SW_WORKER`,
@@ -113,10 +113,7 @@ fn call_socket(c: &PoolCall) -> Option<Socket<'_>> {
 
 /// `socket->send_sync(data, length)` of the call's bytes on its socket, or -1 without one.
 fn send_sync(c: &PoolCall) -> isize {
-    let (data, length) = (c.data(), c.length());
-    // SAFETY: the call's live socket (its connection, or its worker's pipe) and bytes.
-    let send = |socket| unsafe { socket_send_sync(socket, data, length, 0) };
-    call_socket(c).map_or(-1, send)
+    call_socket(c).map_or(-1, |socket| upstream::send_sync(socket, c.bytes(), 0))
 }
 
 fn errno() -> c_int {
@@ -375,8 +372,7 @@ fn main_result(result: i64) -> c_int {
 macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
         extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
-            // SAFETY: the pool calls its main loop over itself and a live worker.
-            main_result(unsafe { pool_run_op(&NATIVE, pool, worker.raw(), RUN_MAIN, $protocol) })
+            main_result(pool_run_main(&NATIVE, pool, worker, $protocol))
         }
     )*};
 }
@@ -852,10 +848,7 @@ impl PoolNative for Native {
         let origin = loop_origin(pool);
         match kind {
             WARN_MSGRCV => {
-                let queue = pool.queue().cast::<swoole_rs_ossupport::QueueRecord>();
-                // SAFETY: null, or the pool's live queue.
-                let queue =
-                    unsafe { queue.as_ref() }.map_or(0, swoole_rs_ossupport::QueueRecord::id);
+                let queue = pool.queue_id();
                 log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
             }
             WARN_ACCEPT => {

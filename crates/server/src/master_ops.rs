@@ -163,10 +163,17 @@ impl<'a> Objects<'a> {
         // SAFETY: the server's shared counters, mapped for its life.
         unsafe { &*gs }
     }
-    fn conn(&self) -> crate::Connection<'_> {
-        // SAFETY: the ops reading it run with a live connection in the context.
-        let conn = unsafe { crate::Connection::from_ptr(self.ctx.conn.cast()) };
-        conn.unwrap_or_else(|| swoole_rs_corebase::fatal("a master op without a connection"))
+    /// The context's connection, which the ops reading it run with.
+    fn conn(&self) -> crate::Connection<'a> {
+        self.ctx
+            .conn
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a master op without a connection"))
+    }
+    /// The context's connection as the `Connection *` native records hold, or null.
+    fn conn_ptr(&self) -> *mut core::ffi::c_void {
+        self.ctx
+            .conn
+            .map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast())
     }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
@@ -246,21 +253,18 @@ impl<'a> Objects<'a> {
     fn host(&self) -> &CStr {
         self.ctx.host.unwrap_or_default()
     }
-    /// The bytes of the NUL-terminated string the ops reading it pass as data.
+    /// The bytes the ops reading them are lent: a name or a path up to its first
+    /// NUL, or `sendwait`'s data.
     fn data_bytes(&self) -> &'a [u8] {
-        // SAFETY: the ops reading it pass a NUL-terminated string.
-        unsafe { CStr::from_ptr(self.ctx.data.cast()) }.to_bytes()
+        self.ctx.bytes
     }
     /// The live socket native code passes as `arg`.
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
         // SAFETY: the ops reading it pass a live socket.
         unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
     }
-    /// [`Objects::data_bytes`] as text, or "" for null.
+    /// [`Objects::data_bytes`] as text.
     fn data(&self) -> std::borrow::Cow<'_, str> {
-        if self.ctx.data.is_null() {
-            return "".into();
-        }
         String::from_utf8_lossy(self.data_bytes())
     }
     /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
@@ -365,7 +369,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_RESET => {
             let fd = o.edit_sock(|s| s.fd);
             let conn = o.state.tables_ref().connection_at(fd)?;
-            o.ctx.conn = conn.as_ptr().cast();
+            o.ctx.conn = Some(conn);
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -405,7 +409,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.gs().session_round.store(arg.cast_signed(), Relaxed);
             o.conn().set_session_id(arg.cast_signed());
             let buffer_size = o.port().socket_buffer_size.get().cast_unsigned();
-            let conn = o.ctx.conn;
+            let conn = o.conn_ptr();
             o.edit_sock(|sock| {
                 sock.object = conn;
                 sock.removed = 1;
@@ -1303,9 +1307,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 (arg.cast_signed(), 3)
             };
-            let conn = state.connection(key, kind);
-            o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast());
-            u64::from(!o.ctx.conn.is_null())
+            o.ctx.conn = state.connection(key, kind);
+            u64::from(o.ctx.conn.is_some())
         }
 
         // The context's own fields.
@@ -1373,13 +1376,10 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             sign(o.sock().map_or(-1, send) as i64)
         }
         OP_SEND_SYNC => {
-            let (data, length) = (o.ctx.data, o.ctx.length as usize);
-            let send = |socket| {
-                // SAFETY: the connection's socket and the data it sends.
-                unsafe { swoole_rs_tls::upstream::socket_send_sync(socket, data.cast(), length, 0) }
-            };
+            let data = o.data_bytes();
+            let send = |socket| swoole_rs_tls::upstream::send_sync(socket, data, 0);
             let sent = o.conn_socket().map_or(-1, send);
-            u64::from(usize::try_from(sent) == Ok(length))
+            u64::from(usize::try_from(sent) == Ok(data.len()))
         }
         OP_SC_FLAGS => send_flags(o),
         OP_SC_VERIFY => verify(o),
@@ -1652,7 +1652,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
         3
     };
     let conn = o.state.connection(o.ctx.session_id, kind);
-    o.ctx.conn = conn.map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast());
+    o.ctx.conn = conn;
     let Some(conn) = conn else {
         return 0;
     };
@@ -2024,17 +2024,13 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ACCEPT_TIMER => {
-            let retry = crate::server_methods::enable_accept;
-            // SAFETY: `retry` takes the server, which outlives this one-shot timer.
-            let timer = unsafe {
-                swoole_rs_timer::swr_v1_timer_add_plain(ACCEPT_RETRY_MSEC, false, retry, serv)
-            };
+            let timer = crate::server_methods::accept_retry_timer(o.server(), ACCEPT_RETRY_MSEC);
             o.tables().enable_accept_timer.store(timer, Relaxed);
             u64::from(!timer.is_null())
         }
         OP_FORCED_EXIT => {
-            FORCED_EXIT_SERVER.store(serv, Relaxed);
-            FORCED_EXIT_TIME.store(swoole_rs_corebase::time_now(), Relaxed);
+            let wait = libc::time_t::from(o.config().max_wait_time.get());
+            FORCED_EXIT_DEADLINE.store(swoole_rs_corebase::time_now() + wait, Relaxed);
             swoole_rs_reactor::swr_v1_event_set_exit_condition(
                 EXIT_CONDITION_FORCED_TERMINATION,
                 forced_exit,
@@ -2087,22 +2083,15 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// The server and the time `Server::stop_master_thread`'s forced exit started.
+/// When `Server::stop_master_thread`'s forced exit gives up: its start plus the
+/// server's `max_wait_time`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-static FORCED_EXIT_SERVER: core::sync::atomic::AtomicPtr<core::ffi::c_void> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-static FORCED_EXIT_TIME: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+static FORCED_EXIT_DEADLINE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
 
 /// The forced-termination exit condition: past `max_wait_time`, stop the loop.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
-    let serv = FORCED_EXIT_SERVER.load(Relaxed);
-    // SAFETY: the server that is shutting down, live until its loop exits.
-    let state = unsafe { crate::view::Server::from_raw(serv) }.state();
-    let max_wait_time = state.config_ref().max_wait_time.get();
-    let now = swoole_rs_corebase::time_now();
-    if now - FORCED_EXIT_TIME.load(Relaxed) > libc::time_t::from(max_wait_time) {
+    if swoole_rs_corebase::time_now() > FORCED_EXIT_DEADLINE.load(Relaxed) {
         error(
             SW_LOG_WARNING,
             E::SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT,
@@ -2444,10 +2433,10 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let tick = crate::server_methods::idle_timeout_tick;
             #[expect(clippy::cast_possible_truncation, reason = "sec2msec's (long) cast")]
             let msec = (idle * 1000.0) as libc::c_long;
+            let conn = o.conn_ptr();
             // SAFETY: `tick` takes the live connection, which deletes the timer
             // before it goes.
-            let node =
-                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, o.ctx.conn) };
+            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, conn) };
             let now = (op != OP_ADD_RECV_TIMER).then(|| swoole_rs_reactor::steady_ms());
             sock.edit(|sock| {
                 if let Some(now) = now {
@@ -2812,7 +2801,7 @@ mod tests {
         let mut buffer = crate::server_methods::SendfileBuffer([0xff; IPC_BUFFER_SIZE]);
         let at = buffer.0.as_ptr().wrapping_add(16).addr() as u64;
         ctx.buffer = Some(&mut buffer);
-        ctx.data = c"/tmp/a".as_ptr().cast();
+        ctx.bytes = b"/tmp/a";
         // SAFETY: the context's buffer and name are live above.
         let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
         // SAFETY: created above and not used again.
@@ -2881,7 +2870,8 @@ mod tests {
         unsafe { (*config).buffer_high_watermark.set(2) };
         let data = *b"abc";
         ctx.sock = (&raw mut sock).cast();
-        ctx.conn = (&raw mut conn).cast();
+        // SAFETY: the live record above, which only this test's ops and reads touch.
+        ctx.conn = unsafe { crate::Connection::from_ptr(&raw mut conn) };
         ctx.port = config.cast();
         ctx.data = data.as_ptr().cast();
         ctx.length = 3;

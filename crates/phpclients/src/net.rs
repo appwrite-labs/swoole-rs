@@ -265,14 +265,13 @@ impl<'a> Obj<'a> {
 
     /// `ZSTR_VAL(Z_OBJCE_P(object)->name)`.
     pub(crate) fn class_name(self) -> &'a CStr {
-        // SAFETY: a live object; its class outlives it.
-        unsafe { swoole_rs_zend::class_name(self.0) }
+        self.props().class_entry().name().c_str()
     }
 
-    /// The declared property `name`.
+    /// The property `name`, which the client class declares.
     fn property(self, name: &CStr) -> &'a Value {
-        // SAFETY: a live client object; the client class declares `name`.
-        unsafe { swoole_rs_zend::property(self.0, name) }
+        let slot = self.props().slot(name);
+        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
     }
 }
 

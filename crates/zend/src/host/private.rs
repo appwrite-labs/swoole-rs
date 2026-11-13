@@ -38,10 +38,9 @@ fn discard(value: Owned) {
 pub(crate) unsafe extern "C" fn swr_v1_phphelpers_zval_dup(value: *const zval) -> *mut zval {
     // SAFETY: aligned, uninitialized request storage, not a reference-count operation.
     let dest = unsafe { sys::swr_zend_emalloc(size_of::<zval>()) }.cast::<zval>();
-    // SAFETY: the source is initialized and independent of the allocation.
-    let value = unsafe { value.read() };
-    // SAFETY: the destination has space for one initialized slot.
-    unsafe { dest.write(value) };
+    // SAFETY: the source is initialized, the fresh allocation has space for
+    // one slot, and neither overlaps the other.
+    unsafe { dest.copy_from_nonoverlapping(value, 1) };
     dest
 }
 

@@ -13,9 +13,8 @@ use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::{
-    swoole_event_is_available, swoole_event_is_running, swr_v1_event_current,
+    event_add, event_del, swoole_event_is_available, swoole_event_is_running,
 };
-use swoole_rs_reactor::reactor_upstream::reactor_change;
 use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
@@ -24,21 +23,11 @@ const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
-/// its fd's record on `reactor`.
+/// its fd's record on the thread's reactor, whose destroy callback takes the instance.
 struct Iouring {
     engine: Option<Rc<Uring>>,
     /// The ring fd's record, which this instance owns until `destroyed` frees it.
     socket: Option<Socket<'static>>,
-    /// The thread's reactor, which outlives the instance: its destroy callback takes it.
-    reactor: *mut c_void,
-}
-
-impl Iouring {
-    /// `reactor->change(socket, op, events)` of the ring fd's record.
-    fn change(&self, socket: Socket<'static>, op: u32, events: c_int) -> c_int {
-        // SAFETY: the instance's live record and its live reactor.
-        unsafe { reactor_change(self.reactor, socket.as_ptr(), op, events) }
-    }
 }
 
 thread_local! {
@@ -67,7 +56,7 @@ fn instance() -> Option<Rc<Uring>> {
                 format_args!("The event loop is unavailable, unable to create io_uring instance."),
             );
         }
-        let iouring = create(swr_v1_event_current());
+        let iouring = create();
         INSTANCE.set(Some(iouring));
     }
     current()
@@ -92,9 +81,9 @@ fn timeout_full(ring_fd: c_int) {
     );
 }
 
-/// `new Iouring(reactor)`: open the engine, logging why it failed, then register
-/// the ring fd and the reactor callbacks.
-fn create(reactor: *mut c_void) -> Iouring {
+/// `new Iouring(reactor)` on the thread's reactor: open the engine, logging why it
+/// failed, then register the ring fd and the reactor callbacks.
+fn create() -> Iouring {
     let host = crate::stdio::host();
     let config = Config {
         entries: swoole_rs_corebase::swr_v1_core_iouring_entries(),
@@ -107,7 +96,6 @@ fn create(reactor: *mut c_void) -> Iouring {
     let mut iouring = Iouring {
         engine: opened.uring,
         socket: None,
-        reactor,
     };
     let origin = c"Iouring::Iouring";
     match opened.status {
@@ -153,7 +141,7 @@ fn create(reactor: *mut c_void) -> Iouring {
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
     swoole_rs_reactor::event_api::on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
-    if iouring.change(socket, 0, EVENT_READ) < 0 {
+    if event_add(socket, EVENT_READ) < 0 {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),
@@ -184,7 +172,7 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     };
     let socket = iouring.socket.map_or(ptr::null_mut(), |record| {
         if record.read(|record| record.removed) == 0 {
-            iouring.change(record, 2, 0);
+            _ = event_del(record);
         }
         // The engine closes the fd.
         record.edit(|record| record.fd = -1);

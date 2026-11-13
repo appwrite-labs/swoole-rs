@@ -1050,10 +1050,6 @@ fn priority_who(call: &Call, which: i64, who: Option<i64>) -> Option<i64> {
     clippy::cast_sign_loss,
     reason = "upstream passes zend_long to setpriority's int and id_t parameters"
 )]
-#[expect(
-    clippy::as_underscore,
-    reason = "glibc types `which` as __priority_which_t, other libcs as int"
-)]
 fn set_priority(call: &Call) {
     let parsed = call
         .arity(2, 3)
@@ -1065,8 +1061,8 @@ fn set_priority(call: &Call) {
     let Some(who) = priority_who(call, which, who) else {
         return;
     };
-    // SAFETY: setpriority has no memory preconditions.
-    if unsafe { libc::setpriority(which as _, who as _, priority as c_int) } < 0 {
+    let who = who as libc::id_t;
+    if swoole_rs_corebase::sys::setpriority(which as c_int, who, priority as c_int) < 0 {
         set_last_error(errno());
         call.set_bool(false);
         return;
@@ -1078,10 +1074,6 @@ fn set_priority(call: &Call) {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "upstream passes zend_long to getpriority's int and id_t parameters"
-)]
-#[expect(
-    clippy::as_underscore,
-    reason = "glibc types `which` as __priority_which_t, other libcs as int"
 )]
 fn get_priority(call: &Call) {
     let parsed = call
@@ -1095,8 +1087,7 @@ fn get_priority(call: &Call) {
         return;
     };
     set_errno(0);
-    // SAFETY: getpriority has no memory preconditions.
-    let priority = unsafe { libc::getpriority(which as _, who as _) };
+    let priority = swoole_rs_corebase::sys::getpriority(which as c_int, who as libc::id_t);
     if priority == -1 && errno() != 0 {
         set_last_error(errno());
         call.set_bool(false);

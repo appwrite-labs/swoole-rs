@@ -9,7 +9,7 @@ use swoole_rs_zend::{
     Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount, zend_internal_function},
+    sys::{swr_zend_set_exit_status, swr_zval_facade_refcount},
 };
 
 handlers! {
@@ -59,14 +59,11 @@ fn implicit_fn(call: &Call) {
         call.set_long(i64::from(unsafe { swr_zval_facade_refcount(args) }));
     } else if is(b"func_handler") {
         let lookup = arg.map_or_else(|| ZString::new(b""), Value::string);
-        let found = call.php().function_table().find(lookup.bytes());
-        let Some(function) = found.and_then(Value::pointer) else {
+        // Upstream reads any function as internal; one PHP code defines has no handler.
+        let Some(handler) = call.php().internal_handler(lookup.bytes()) else {
             call.set_bool(false);
             return;
         };
-        // SAFETY: a function table's values point at its live functions, each
-        // of which upstream reads as internal.
-        let handler = unsafe { (*function.cast::<zend_internal_function>()).handler };
         let address = handler.map_or(std::ptr::null(), |handler| handler as *const c_void);
         // SAFETY: C's stdout, as upstream's printf.
         unsafe { libc::printf(c"zif_handler=%p\n".as_ptr(), address) };

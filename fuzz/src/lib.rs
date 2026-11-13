@@ -81,7 +81,7 @@ mod request {
     ) -> i32 {
         // SAFETY: the caller's state.
         let s = unsafe { &mut *state };
-        let mut r = Request::new(native);
+        let mut r = Request::new(Some(native));
         let mut buffer = on(data, length, s.offset);
         (r.method, r.version) = (s.method as u8, s.version as u8);
         (r.excepted, r.known_length) = (s.excepted != 0, s.known_length != 0);
@@ -126,7 +126,7 @@ mod request {
         header_length: u32,
         out: *mut http_frame::HeaderInfo,
     ) {
-        let mut r = Request::new(native);
+        let mut r = Request::new(Some(native));
         let mut buffer = on(data, length, 0);
         (r.request_line_length, r.header_length) = (line_length, header_length);
         r.buffer = &raw mut buffer;
@@ -154,7 +154,7 @@ mod request {
     }
 
     pub unsafe extern "C" fn expect(data: *mut c_char, length: usize) -> bool {
-        let mut r = Request::new(native);
+        let mut r = Request::new(Some(native));
         let mut buffer = on(data, length, 0);
         r.buffer = &raw mut buffer;
         r.has_expect_header()
@@ -169,7 +169,7 @@ mod request {
         name: *const c_char,
         output: *mut c_char,
     ) -> usize {
-        let mut r = Request::new(native);
+        let mut r = Request::new(Some(native));
         let mut buffer = on(data, length, 0);
         (r.url_offset, r.url_length, r.header_length) = (url_offset, url_length, header_length);
         r.buffer = &raw mut buffer;

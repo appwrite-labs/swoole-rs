@@ -52,28 +52,17 @@ impl LocalAddrs {
     }
 }
 
-unsafe extern "C" {
-    // The `libc` crate does not bind it.
-    fn inet_ntop(
-        af: c_int,
-        src: *const core::ffi::c_void,
-        dst: *mut c_char,
-        size: libc::socklen_t,
-    ) -> *const c_char;
-}
-
 /// `inet_ntop`, as `network::Address::get_addr` formats.
 fn ntop(v6: bool, bytes: &[u8]) -> CString {
     let family = if v6 { libc::AF_INET6 } else { libc::AF_INET };
-    let mut out = [0_u8; 64];
-    let len = libc::socklen_t::try_from(out.len()).unwrap_or(0);
-    // SAFETY: `bytes` holds an address of `family` and `out` has `len` bytes.
-    let text = unsafe { inet_ntop(family, bytes.as_ptr().cast(), out.as_mut_ptr().cast(), len) };
-    if text.is_null() {
-        return CString::default();
+    let mut binary = [0; 16];
+    for (to, from) in binary.iter_mut().zip(bytes) {
+        *to = c_char::from_ne_bytes([*from]);
     }
-    // `inet_ntop` wrote a terminated string into `out`.
-    CStr::from_bytes_until_nul(&out)
+    // `inet_ntop`'s terminated text, empty when it fails.
+    let text = swoole_rs_corebase::ntop(family, &binary).unwrap_or([0; 46]);
+    let text = text.map(|unit| unit.to_ne_bytes()[0]);
+    CStr::from_bytes_until_nul(&text)
         .map(CStr::to_owned)
         .unwrap_or_default()
 }

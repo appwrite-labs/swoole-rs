@@ -142,8 +142,7 @@ impl Multi {
     /// this multi, which therefore lives in a box until
     /// [`swr_v1_curl_multi_free`].
     fn create() -> *mut Self {
-        // SAFETY: no preconditions.
-        let handle = unsafe { curl_multi_init() };
+        let handle = curl_multi_init();
         let multi = Box::into_raw(Box::new(Self {
             handle,
             timer: Cell::new(ptr::null_mut()),

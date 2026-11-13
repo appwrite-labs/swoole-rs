@@ -75,10 +75,8 @@ pub fn try_box<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
         return None;
     }
     // SAFETY: a non-null global allocation with `T`'s layout; `MaybeUninit` needs no init.
-    let mut owner = unsafe { Box::from_raw(pointer) };
-    owner.write(initialize());
-    // SAFETY: initialized by the `write` just above.
-    Some(unsafe { owner.assume_init() })
+    let owner = unsafe { Box::from_raw(pointer) };
+    Some(Box::write(owner, initialize()))
 }
 
 impl Buffer {

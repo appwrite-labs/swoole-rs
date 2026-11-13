@@ -11,17 +11,15 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
-        swr_zend_array_init, swr_zend_array_is_list, swr_zend_hash_next, swr_zend_http_build_query,
-        swr_zend_object_properties, swr_zend_separate_array, swr_zend_serialize,
-        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
-        swr_zend_try_hash_update, swr_zend_try_json_encode, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zend_zval_value_name,
-        swr_zval_is_true, swr_zval_try_addref, zend_array_count, zend_class_entry,
-        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_index_find,
-        zend_hash_next_index_insert, zend_hash_str_find, zend_ini_parse_quantity, zend_long,
-        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
-        zval, zval_ptr_dtor,
+        swr_zend_array_init, swr_zend_http_build_query, swr_zend_object_properties,
+        swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
+        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
+        swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
+        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        swr_zend_url_decode, swr_zend_zval_value_name, swr_zval_is_true, zend_class_entry,
+        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert,
+        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
+        zend_string, zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -31,6 +29,31 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
+
+unsafe extern "C" {
+    /// `Z_TRY_ADDREF_P`: one more reference to what a counted zval holds, and
+    /// nothing for any other. It reads the zval and writes the count only, on
+    /// the thread the borrow is on; a reference nothing releases is a leak.
+    safe fn swr_zval_try_addref(value: &Value);
+    /// `zend_array_count`: it reads the table, and may recount its elements.
+    safe fn zend_array_count(table: &Array) -> u32;
+    /// `zend_array_is_list`: it reads the table.
+    safe fn swr_zend_array_is_list(table: &Array) -> bool;
+    /// `zend_hash_index_find`: null (`None`), or the element under `index`,
+    /// which lives as the table's others do, while the table is borrowed.
+    safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
+    /// `ZEND_HASH_FOREACH`'s step: null (`None`) past the end, or the next
+    /// defined element at or after `position` (any position: the walk stops at
+    /// the table's last slot), which then points past it, with its key (null
+    /// for an integer key) and index written. Past the end `key` is whatever
+    /// the last slot it skipped held, so it stays a raw pointer.
+    safe fn swr_zend_hash_next<'a>(
+        table: &'a Array,
+        position: &mut HashPosition,
+        key: &mut *mut zend_string,
+        index: &mut zend_ulong,
+    ) -> Option<&'a Value>;
+}
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
 /// conversion's cache), hence the cell.
@@ -569,8 +592,7 @@ impl Value {
     pub fn copy(&self) -> Owned {
         // The copy carries the reference it adds below.
         let owned = Owned(Self(UnsafeCell::new(self.copy_value())));
-        // SAFETY: as above.
-        unsafe { swr_zval_try_addref(owned.as_ptr()) };
+        swr_zval_try_addref(&owned);
         owned
     }
 }
@@ -616,8 +638,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn count(&self) -> u32 {
-        // SAFETY: a live table.
-        unsafe { zend_array_count(self.as_ptr()) }
+        zend_array_count(self)
     }
 
     /// `zend_trace_to_string(trace, false)`: a backtrace array as an exception prints it.
@@ -631,8 +652,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn is_list(&self) -> bool {
-        // SAFETY: a live table.
-        unsafe { swr_zend_array_is_list(self.as_ptr()) }
+        swr_zend_array_is_list(self)
     }
 
     /// `zend_hash_str_find`.
@@ -649,10 +669,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn index(&self, index: zend_ulong) -> Option<&Value> {
-        // SAFETY: a live table.
-        let found = unsafe { zend_hash_index_find(self.as_ptr(), index) };
-        // SAFETY: null or an element of the borrowed table.
-        unsafe { Value::from_ptr(found) }
+        zend_hash_index_find(self, index)
     }
 
     /// `php_swoole_array_get_value`: the value under `key` unless absent or null.
@@ -757,19 +774,9 @@ impl<'a> Entries<'a> {
     /// under (`zend::KeyValue`).
     pub fn next_stored(&mut self) -> Option<(Option<&'a ZStr>, zend_ulong, &'a Value)> {
         let (mut key, mut index) = (ptr::null_mut(), 0);
-        // SAFETY: a live table and our position in it; `key` and `index` are
-        // writable locals.
-        let found = unsafe {
-            swr_zend_hash_next(
-                self.table.as_ptr(),
-                &raw mut self.position,
-                &raw mut key,
-                &raw mut index,
-            )
-        };
-        // SAFETY: null or an element of the borrowed table.
-        let value = unsafe { Value::from_ptr(found) }?;
-        // SAFETY: null or a key string, which the table keeps alive.
+        let value = swr_zend_hash_next(self.table, &mut self.position, &mut key, &mut index)?;
+        // SAFETY: the found element's key: null or a string, which the table
+        // keeps alive.
         Some((unsafe { ZStr::from_ptr(key) }, index, value))
     }
 }
@@ -1088,7 +1095,8 @@ impl Owned {
         if self.kind() != IS_ARRAY {
             return None;
         }
-        // SAFETY: `OwnedArray` is a transparent `Owned` holding an array.
+        // SAFETY: `OwnedArray` is, through `ArrayMut`, a transparent `Owned`
+        // holding an array.
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
@@ -1115,7 +1123,7 @@ impl Owned {
 
 /// An array this owns (`array_init`), which pushes fill.
 #[repr(transparent)]
-pub struct OwnedArray(Owned);
+pub struct OwnedArray(ArrayMut);
 
 impl Default for OwnedArray {
     #[inline]
@@ -1123,7 +1131,7 @@ impl Default for OwnedArray {
         let owned = Owned::default();
         // SAFETY: an undefined slot this owns.
         unsafe { swr_zend_array_init(owned.as_ptr()) };
-        Self(owned)
+        Self(ArrayMut(owned))
     }
 }
 
@@ -1131,8 +1139,11 @@ impl Default for OwnedArray {
 /// ([`crate::Props::array`]). Every write separates the array first
 /// (`SEPARATE_ARRAY`), so another holder (a [`Value::copy`], a property it
 /// was copied to) never sees it, and an immutable array is never written.
+/// Only ever lent (`&mut ArrayMut`), but for the one an [`OwnedArray`] holds
+/// by value, whose drop is the zval's: nothing else makes one, so no borrowed
+/// zval is released through this.
 #[repr(transparent)]
-pub struct ArrayMut(Value);
+pub struct ArrayMut(Owned);
 
 impl ArrayMut {
     /// # Safety
@@ -1387,7 +1398,7 @@ impl OwnedArray {
     #[must_use]
     #[inline]
     pub fn into_owned(self) -> Owned {
-        self.0
+        self.0.0
     }
 }
 
@@ -1396,16 +1407,14 @@ impl std::ops::Deref for OwnedArray {
 
     #[inline]
     fn deref(&self) -> &ArrayMut {
-        // SAFETY: `ArrayMut`, `Owned` and `Value` are one transparent zval.
-        unsafe { &*ptr::from_ref::<Value>(&self.0).cast::<ArrayMut>() }
+        &self.0
     }
 }
 
 impl std::ops::DerefMut for OwnedArray {
     #[inline]
     fn deref_mut(&mut self) -> &mut ArrayMut {
-        // SAFETY: as above, borrowed mutably.
-        unsafe { ArrayMut::from_ptr(self.0.as_ptr()) }
+        &mut self.0
     }
 }
 

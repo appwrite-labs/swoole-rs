@@ -1131,19 +1131,10 @@ mod tests {
 
     #[test]
     fn destroy_http_request_frees_and_clears() {
-        unsafe extern "C" fn no_effects(
-            _: u32,
-            _: *mut c_void,
-            _: *const u8,
-            _: u64,
-            _: u64,
-        ) -> u64 {
-            0
-        }
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
-        // `request_new`'s boxed request, without the native effects it links.
-        let request = swoole_rs_http_ffi::HttpRequest::new(no_effects);
+        // `request_new`'s boxed request.
+        let request = swoole_rs_http_ffi::HttpRequest::new(None);
         conn.object = Box::into_raw(Box::new(request)).cast();
         destroy_http_request(&raw mut conn);
         assert!(conn.object.is_null(), "the request is freed and cleared");
