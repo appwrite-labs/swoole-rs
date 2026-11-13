@@ -7,6 +7,7 @@ use crate::records::Lookup;
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
+use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
@@ -97,8 +98,6 @@ const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const SW_SOCK_TCP: c_int = 1;
 const SW_SOCK_TCP6: c_int = 3;
-/// `SW_MASTER`, the master's worker type.
-const SW_MASTER: c_int = 1;
 const SW_EVENT_READ: c_int = 1 << 9;
 /// `SW_FD_STREAM_SERVER`.
 const SW_FD_STREAM_SERVER: c_int = 1;
@@ -1380,7 +1379,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_STATE => core::ptr::from_ref(state).expose_provenance() as u64,
         OP_IS_CREATED => u64::from(!o.config().factory_.is_null()),
         OP_IS_MASTER => {
-            u64::from(swoole_rs_process::methods::swoole_get_worker_type() == SW_MASTER)
+            u64::from(swoole_rs_process::methods::worker_type() == Some(WorkerType::Master))
         }
         OP_SC_YIELD_ERROR => {
             log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
@@ -1434,7 +1433,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             u64::from(swoole_rs_corebase::swr_v1_core_running() && o.state.running())
         }
         OP_MASTER_WORKER => {
-            swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
+            swoole_rs_process::methods::set_worker_type(WorkerType::Master);
             if arg == MODE_THREAD {
                 let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
                 swoole_rs_process::methods::swoole_set_worker_pid(tid);
@@ -1716,13 +1715,11 @@ struct DgramPacket {
 /// The ops over the context's reactor, sockets and pipes, the server's
 /// workers and the dispatch address, which Rust lays out; else `None`.
 fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    /// `SW_WORKER_IDLE`.
-    const WORKER_IDLE: u8 = 2;
     Some(match op {
         OP_WORKER_IDLE => {
             let id = arg.c_cast::<u16>();
             let worker = o.server().worker_record(id);
-            u64::from(worker.is_some_and(|worker| worker.status() == WORKER_IDLE))
+            u64::from(worker.is_some_and(swoole_rs_process::worker_record::Worker::is_idle))
         }
         OP_IP_KEY => {
             let fd = libc::c_long::from(o.ctx.server_fd);
@@ -2284,9 +2281,8 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     };
     use swoole_rs_process::methods as pool;
     use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
-    /// `SW_IPC_MSGQUEUE`, `SW_TASK_WORKER` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
+    /// `SW_IPC_MSGQUEUE` and `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
     const IPC_MSGQUEUE: u64 = 2;
-    const SW_TASK_WORKER: c_int = 4;
     const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
     // crates/process' `ProcessPool::listen(socket_file, backlog)`.
     use swoole_rs_process::methods::listen_unix as pool_listen;
@@ -2324,7 +2320,7 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 config.task_max_request_grace.get(),
             );
             pool::set_start_id(task_pool, config.worker_num.get().cast_signed());
-            pool::set_type(task_pool, SW_TASK_WORKER);
+            pool::set_type(task_pool, WorkerType::Task.code().into());
             0
         }
         OP_TASK_POOL_LISTEN => {

@@ -514,22 +514,18 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
-/// `swoole_get_worker_type()`'s `SW_MASTER`, `SW_EVENT_WORKER`, `SW_MANAGER` and `SW_TASK_WORKER`.
-pub(crate) const MASTER: c_int = 1;
-pub(crate) const EVENT_WORKER: c_int = 2;
-pub(crate) const MANAGER: c_int = 3;
-pub(crate) const TASK_WORKER: c_int = 4;
+pub(crate) use swoole_rs_process::worker_record::WorkerType;
 /// `Server::MODE_PROCESS`.
 const MODE_PROCESS: u8 = 2;
 
 /// `swoole_get_worker_type()`.
-pub(crate) fn worker_type() -> c_int {
-    swoole_rs_process::methods::swoole_get_worker_type()
+pub(crate) fn worker_type() -> Option<WorkerType> {
+    swoole_rs_process::methods::worker_type()
 }
 
 /// `Server::is_worker() || Server::is_task_worker()`.
 pub(crate) fn in_worker() -> bool {
-    matches!(worker_type(), EVENT_WORKER | TASK_WORKER)
+    matches!(worker_type(), Some(WorkerType::Event | WorkerType::Task))
 }
 
 /// `swoole_get_worker_id()`, as the `int` C++ reads.
@@ -905,7 +901,7 @@ fn sendwait(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    if serv.config().mode_ == MODE_PROCESS || worker_type() == TASK_WORKER {
+    if serv.config().mode_ == MODE_PROCESS || worker_type() == Some(WorkerType::Task) {
         fatal(
             E_WARNING,
             c"can only be used with base mode and must be within worker process",
@@ -972,7 +968,7 @@ fn worker<'a>(call: &Call, serv: view::Server<'a>) -> Option<Worker<'a>> {
 fn get_worker_status(call: &Call) {
     let Some(serv) = running(call) else { return };
     if let Some(worker) = worker(call, serv) {
-        call.set_long(i64::from(worker.status()));
+        call.set_long(worker.status().map_or(0, |status| i64::from(status as u8)));
     }
 }
 

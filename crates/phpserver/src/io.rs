@@ -258,7 +258,7 @@ fn sendfile(call: &Call) {
     let Ok((fd, filename, offset, length)) = parsed else {
         return call.set_bool(false);
     };
-    if crate::server::worker_type() == crate::server::MASTER {
+    if crate::server::worker_type() == Some(crate::server::WorkerType::Master) {
         // `%s`: the name up to its first NUL.
         let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
         let text = message!(

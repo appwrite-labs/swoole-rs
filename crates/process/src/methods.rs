@@ -3,7 +3,7 @@
 //! C++ forward did.
 
 use crate::task_file::Packed;
-use crate::worker_record::Worker;
+use crate::worker_record::{Worker, WorkerType};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::CCast;
@@ -519,6 +519,17 @@ pub fn swoole_get_worker_pid() -> c_int {
 #[must_use]
 pub extern "C" fn swoole_get_worker_type() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
+}
+
+/// `swoole_get_worker_type()`, `None` before the process has a type.
+#[must_use]
+pub fn worker_type() -> Option<WorkerType> {
+    WorkerType::from_code(swr_v1_worker_global_get(2))
+}
+
+/// `swoole_set_worker_type(type)`.
+pub fn set_worker_type(kind: WorkerType) {
+    swr_v1_worker_global_set(2, kind.code().into());
 }
 
 /// `swoole_set_worker_id(worker_id)`.

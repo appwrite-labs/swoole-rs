@@ -27,8 +27,6 @@ use crate::process_pool::PoolNative;
 pub const DONE: c_int = 0;
 pub const BAILED: c_int = 1;
 
-/// `SW_WORKER_IDLE`.
-const WORKER_IDLE: u8 = 2;
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
 const MSGMAX: usize = 65536;
 /// `SW_BUFFER_SIZE_STD`: the response buffer's first capacity.
@@ -912,7 +910,7 @@ pub fn pool_schedule(count: u32, round: &AtomicU32, idle: impl Fn(u32) -> bool) 
 
 /// Whether `worker` is `SW_WORKER_IDLE`.
 pub(crate) fn idle(worker: Record<'_>) -> bool {
-    worker.status() == WORKER_IDLE
+    worker.is_idle()
 }
 
 /// `Worker::send_pipe_message`: through the pool's queue (as `mtype` worker id + 1)
@@ -1071,12 +1069,11 @@ mod tests {
         assert!(ipc.packet.len() * 8 >= 4 << 20);
     }
 
-    fn records(statuses: &[u8]) -> Vec<crate::worker_record::WorkerRecord> {
-        statuses
-            .iter()
-            .map(|&status| {
+    fn records(busy: &[bool]) -> Vec<crate::worker_record::WorkerRecord> {
+        busy.iter()
+            .map(|&busy| {
                 let mut record = *crate::worker_record::WorkerRecord::boxed();
-                record.set_status(status);
+                record.set_status(crate::worker_record::WorkerStatus::busy(busy));
                 record
             })
             .collect()
@@ -1093,7 +1090,7 @@ mod tests {
 
     #[test]
     fn schedule_picks_the_next_idle_worker() {
-        let mut workers = records(&[1, 2, 1]);
+        let mut workers = records(&[true, false, true]);
         let round = AtomicU32::new(0);
         let (target, warning) = schedule(&mut workers, &round);
         assert_eq!((target, round.into_inner(), warning), (1, 2, false));
@@ -1101,7 +1098,7 @@ mod tests {
 
     #[test]
     fn schedule_warns_when_every_worker_is_busy() {
-        let mut workers = records(&[1, 1]);
+        let mut workers = records(&[true, true]);
         let round = AtomicU32::new(5);
         let (target, warning) = schedule(&mut workers, &round);
         // Three tries (count + 1): rounds 5, 6, 7; the last is 7 % 2.
@@ -1379,7 +1376,7 @@ mod tests {
     #[test]
     fn a_dispatch_to_a_worker_the_pool_lacks_warns_and_fails() {
         with(|s| *s = Script::default());
-        let mut workers = records(&[0, 0]);
+        let mut workers = records(&[true, true]);
         let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
         let mut target = 5;
         let event = [0u8; 4];

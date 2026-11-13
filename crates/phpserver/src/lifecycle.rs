@@ -161,10 +161,8 @@ fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
 /// worker, -1 `add_worker` failed, else the id.
 fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> i64 {
-    /// `SW_USER_WORKER`.
-    const USER_WORKER: c_int = 5;
     if fact(serv, fact::WORKER_THREAD) {
-        if crate::server::worker_type() != USER_WORKER {
+        if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
             return -2;
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
@@ -250,7 +248,9 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::STARTED => i64::from(serv.is_started()),
         // SAFETY: a live server.
         fact::SHUTDOWN => i64::from(serv.counters().shutdown.load(Ordering::Relaxed) != 0),
-        fact::MASTER => i64::from(crate::server::worker_type() == crate::server::MASTER),
+        fact::MASTER => {
+            i64::from(crate::server::worker_type() == Some(crate::server::WorkerType::Master))
+        }
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
         fact::SEND_YIELD => i64::from(c.send_yield.get()),

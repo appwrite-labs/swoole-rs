@@ -7,9 +7,10 @@ use core::ptr::null_mut;
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
 use swoole_rs_corebase::CCast;
+use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_memory::members::Shm;
-use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
+use swoole_rs_process::methods::{ExitStatus, start_check, worker_type};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::RUN_CREATE_WORKER_PIPES;
@@ -57,8 +58,7 @@ impl<'a> Context<'a> {
     }
 }
 
-/// `SW_MANAGER`, `SW_EVENT_READ` and `Server::THREAD_WORKER`.
-const SW_MANAGER: c_int = 3;
+/// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
 const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_WORKER: u8 = 4;
 
@@ -309,7 +309,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_USER_WORKER_NUM => ctx.workers().user_count as u64,
         OP_RUNNING => u64::from(ctx.state().running()),
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
-        OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
+        OP_IS_MANAGER => u64::from(worker_type() == Some(WorkerType::Manager)),
         OP_THREAD_REACTOR_NUM => {
             let reactor_num = config.worker_num.get().c_cast::<u16>();
             serv.config().reactor_num.set(reactor_num);

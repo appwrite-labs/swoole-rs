@@ -22,8 +22,6 @@ use {crate::ops::EVENT_COMMAND_RESPONSE, swoole_rs_corebase::DataHead, swoole_rs
 
 const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
-/// `SW_MASTER`.
-const SW_MASTER: c_int = 1;
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `Server::Command::Handler`: answers `message` to the server by appending its
@@ -246,7 +244,8 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         found: found.is_some(),
         process_mode: mode == MODE_PROCESS,
         base_mode: mode == MODE_BASE,
-        master: swoole_rs_process::methods::swoole_get_worker_type() == SW_MASTER,
+        master: swoole_rs_process::methods::worker_type()
+            == Some(swoole_rs_process::worker_record::WorkerType::Master),
         accepted_types: found.map_or(0, |(_, types)| types),
         worker_id: worker_id.filter(|_| mode == MODE_BASE).unwrap_or(0),
         process_id: send.process_id,

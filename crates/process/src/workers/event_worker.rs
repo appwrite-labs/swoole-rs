@@ -43,8 +43,7 @@ use super::{
 };
 use swoole_rs_corebase::CCast;
 
-/// `swoole::WorkerType::SW_EVENT_WORKER`.
-pub(crate) const EVENT_WORKER: u64 = 2;
+pub(crate) const EVENT_WORKER: u64 = crate::worker_record::WorkerType::Event as u64;
 
 pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {

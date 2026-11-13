@@ -9,6 +9,68 @@ use core::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
 
+/// `swWorkerStatus`. A new record's status byte is 0, which is none of them.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerStatus {
+    Busy = 1,
+    Idle = 2,
+    Exit = 3,
+}
+
+impl WorkerStatus {
+    /// The status a status byte holds, `None` for a new record's 0.
+    #[must_use]
+    pub const fn from_byte(byte: u8) -> Option<Self> {
+        match byte {
+            1 => Some(Self::Busy),
+            2 => Some(Self::Idle),
+            3 => Some(Self::Exit),
+            _ => None,
+        }
+    }
+
+    /// `SW_WORKER_BUSY` while `busy`, else `SW_WORKER_IDLE`.
+    #[must_use]
+    pub const fn busy(busy: bool) -> Self {
+        if busy { Self::Busy } else { Self::Idle }
+    }
+}
+
+/// `swWorkerType`: what the current process or thread is
+/// ([`crate::methods::worker_type`]); a worker record's kind holds its code.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerType {
+    Master = 1,
+    /// `SW_WORKER` and `SW_EVENT_WORKER`.
+    Event = 2,
+    Manager = 3,
+    Task = 4,
+    User = 5,
+}
+
+impl WorkerType {
+    /// The type `code` names, `None` for any other.
+    #[must_use]
+    pub const fn from_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Master),
+            2 => Some(Self::Event),
+            3 => Some(Self::Manager),
+            4 => Some(Self::Task),
+            5 => Some(Self::User),
+            _ => None,
+        }
+    }
+
+    /// The C++ enum's value.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+}
+
 /// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
 /// pointer and atomic fields are opaque storage here.
 #[repr(C)]
@@ -109,7 +171,6 @@ impl WorkerRecord {
         self.pid = pid;
     }
 
-    /// `SW_WORKER_IDLE`, `SW_WORKER_BUSY`, ...
     pub fn set_id(&mut self, id: u32) {
         self.id = id;
     }
@@ -132,8 +193,8 @@ impl WorkerRecord {
         self.msgqueue_mode = mode;
     }
 
-    pub fn set_status(&mut self, status: u8) {
-        *self.status.get_mut() = status;
+    pub fn set_status(&mut self, status: WorkerStatus) {
+        *self.status.get_mut() = status as u8;
     }
 
     /// `worker->ptr = data`: what its owner keeps there.
@@ -244,7 +305,7 @@ impl Worker<'_> {
                 size_of::<WorkerRecord>() - after,
             );
         };
-        *copy.status.get_mut() = self.status();
+        *copy.status.get_mut() = self.status_slot().load(Ordering::Relaxed);
         copy
     }
 
@@ -333,16 +394,22 @@ impl Worker<'_> {
         ]
     }
 
-    /// The worker's status (`SW_WORKER_IDLE`/`BUSY`/…). Relaxed: a dispatcher only
+    /// The worker's status, `None` before it has one. Relaxed: a dispatcher only
     /// picks an idle worker by it, and the message it then sends synchronizes.
     #[must_use]
-    pub fn status(self) -> u8 {
-        self.status_slot().load(Ordering::Relaxed)
+    pub fn status(self) -> Option<WorkerStatus> {
+        WorkerStatus::from_byte(self.status_slot().load(Ordering::Relaxed))
+    }
+
+    /// Whether the worker is `SW_WORKER_IDLE`.
+    #[must_use]
+    pub fn is_idle(self) -> bool {
+        self.status() == Some(WorkerStatus::Idle)
     }
 
     /// Sets the worker's status, which its dispatcher reads concurrently.
-    pub fn set_status(self, status: u8) {
-        self.status_slot().store(status, Ordering::Relaxed);
+    pub fn set_status(self, status: WorkerStatus) {
+        self.status_slot().store(status as u8, Ordering::Relaxed);
     }
 
     fn status_slot(&self) -> &AtomicU8 {
@@ -373,14 +440,14 @@ impl Worker<'_> {
     pub fn init(self) {
         self.set_start_time(swoole_rs_corebase::time_now());
         self.set_request_count(0);
-        self.set_status(2);
+        self.set_status(WorkerStatus::Idle);
         crate::worker_globals::swr_v1_worker_global_set(3, 1);
         crate::worker_globals::swr_v1_worker_global_set(4, 0);
     }
 
     /// `Worker::shutdown()`: marks the current worker exited.
     pub fn shutdown(self) {
-        self.set_status(3);
+        self.set_status(WorkerStatus::Exit);
         crate::worker_globals::swr_v1_worker_global_set(4, 1);
     }
 
@@ -597,8 +664,13 @@ mod tests {
     fn status_accessors_round_trip() {
         let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
         unsafe {
-            Worker::new(&raw mut record).set_status(2);
-            assert_eq!(Worker::new(&raw const record).status(), 2);
+            assert_eq!(Worker::new(&raw const record).status(), None, "new");
+            Worker::new(&raw mut record).set_status(WorkerStatus::Idle);
+            assert_eq!(
+                Worker::new(&raw const record).status(),
+                Some(WorkerStatus::Idle)
+            );
+            assert!(Worker::new(&raw const record).is_idle());
         }
     }
 
@@ -611,7 +683,7 @@ mod tests {
         record.msgqueue_mode = 2;
         record.ptr = core::ptr::dangling_mut();
         let worker = unsafe { Worker::new(&raw mut record) };
-        worker.set_status(1);
+        worker.set_status(WorkerStatus::Busy);
         let copy = worker.get();
         assert_eq!(
             (
@@ -633,7 +705,7 @@ mod tests {
             Worker::new(&raw mut record).set_kind(3);
             assert_eq!(Worker::new(&raw const record).kind(), 3);
             // independent of status
-            Worker::new(&raw mut record).set_status(1);
+            Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
             assert_eq!(Worker::new(&raw const record).kind(), 3);
         }
     }
@@ -646,7 +718,7 @@ mod tests {
             assert_eq!(Worker::new(&raw const record).pid(), 4242);
             // independent of the one-byte fields that follow it
             Worker::new(&raw mut record).set_kind(2);
-            Worker::new(&raw mut record).set_status(1);
+            Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
             assert_eq!(Worker::new(&raw const record).pid(), 4242);
         }
     }

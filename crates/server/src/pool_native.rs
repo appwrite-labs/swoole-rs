@@ -12,6 +12,7 @@ use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::Worker as Record;
+use swoole_rs_process::worker_record::WorkerType;
 
 use crate::objects::{Reactor, worker_pipe};
 use core::sync::atomic::AtomicU64;
@@ -24,7 +25,7 @@ use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::armed_timer::ArmedTimer;
 use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, pop_message, push_stop, reload_warn,
-    swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type, worker_report_error,
+    swoole_set_worker_id, swoole_set_worker_pid, worker_report_error,
 };
 use swoole_rs_process::pool::{
     PoolCall, WARN_ACCEPT, WARN_BAD_PACKET, WARN_MSGRCV, WARN_PIPE, WARN_READ, WARN_SEND,
@@ -55,7 +56,7 @@ use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{self, socket_free, socket_read_sync, socket_recv_sync};
 
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
-/// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`, `SW_WORKER`,
+/// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`,
 /// and the `Channel` flags.
 const PROTOCOL_TASK: c_int = 1;
 const PROTOCOL_STREAM: c_int = 2;
@@ -65,7 +66,6 @@ const EVENT_READ: c_int = 512;
 const TIMEOUT_READ: c_int = 4;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
 const PRIORITY_TRY_EXIT: c_int = 4;
-const SW_WORKER: c_int = 2;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
@@ -496,7 +496,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         OP_WORKER_INIT => {
             swr_v1_worker_init(worker);
             worker.set_pid(std::process::id().c_cast::<c_int>());
-            swoole_set_worker_type(SW_WORKER);
+            swoole_rs_process::methods::set_worker_type(WorkerType::Event);
             swoole_set_worker_id(worker.id());
             swoole_set_worker_pid(worker.pid());
             swoole_rs_process::worker_globals::set_current_worker(worker.raw());
