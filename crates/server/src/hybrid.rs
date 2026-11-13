@@ -115,6 +115,8 @@ pub(crate) mod tests {
         Reload(bool),
         /// The action, process, command, request and message length.
         CommandSend(i32, u32, i32, i64, usize),
+        /// The head's session, reactor and kind.
+        ToReactorThread(c_long, i16, u8),
     }
 
     thread_local! {
@@ -176,6 +178,11 @@ pub(crate) mod tests {
 
         fn reload(&self, _: Server<'_>, all_workers: bool) -> bool {
             hear(Call::Reload(all_workers))
+        }
+
+        fn to_reactor_thread(&self, _: Server<'_>, head: &DataHead) -> isize {
+            hear(Call::ToReactorThread(head.fd, head.reactor_id, head.kind));
+            size_of::<DataHead>().cast_signed()
         }
 
         fn command_send(&self, _: Server<'_>, c: &CommandSend<'_>) -> bool {

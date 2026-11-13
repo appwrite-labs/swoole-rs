@@ -31,17 +31,16 @@ use crate::ops::{
     LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LC_ONLY_ONE, LOG_LISTEN_PID,
     LOG_MAX_CONNECTION_MINIMUM, LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_REACTOR_NUM,
     LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT,
-    LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_STAT,
-    LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_DGRAM_PORT, OP_HAS_PIPE_COMMAND,
-    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE,
-    OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ,
-    OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER,
-    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
-    OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
-    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
-    OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID,
-    OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT, OP_VERIFY_CONN,
+    LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_STAT, LOG_TASK_POOL,
+    LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED,
+    OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_DGRAM_PORT, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE,
+    OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PORT_IDLE_TIME, OP_PORT_NUMBER,
+    OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE,
+    OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW,
+    OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE,
+    OP_SC_YIELD_ERROR, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME,
+    OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY,
+    OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -152,9 +151,6 @@ impl<'a> Objects<'a> {
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
         unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
-    }
-    fn conn_socket(&self) -> Option<Socket<'_>> {
-        self.conn().socket()
     }
     /// `edit` over the context's socket, or the default without one.
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
@@ -631,18 +627,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_SENDWAIT => {
-            let (length, session) = (o.ctx.length.cast_signed(), arg.cast_signed());
-            let m =
-                format_args!("send {length} byte failed, because session#{session} is not exists");
-            error(
-                SW_LOG_TRACE,
-                E::SW_ERROR_SESSION_NOT_EXIST,
-                c"Server::sendwait",
-                m,
-            );
-            0
-        }
         LOG_INVALID_SESSION => {
             let m = format_args!("invalid fd[{}]", o.ctx.session_id);
             error(
@@ -877,10 +861,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn().set_high_watermark(true);
             0
         }
-        OP_VERIFY_CONN => {
-            o.ctx.conn = state.connection(arg.cast_signed(), Lookup::VerifiedTls);
-            u64::from(o.ctx.conn.is_some())
-        }
 
         // The context's own fields.
         OP_PORT_TYPE => sign(o.ctx.socket_type),
@@ -928,12 +908,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 unsafe { swoole_rs_tls::upstream::socket_send(sock, data.cast(), length, 0) }
             };
             sign(o.sock().map_or(-1, send) as i64)
-        }
-        OP_SEND_SYNC => {
-            let data = o.data_bytes();
-            let send = |socket| swoole_rs_tls::upstream::send_sync(socket, data, 0);
-            let sent = o.conn_socket().map_or(-1, send);
-            u64::from(usize::try_from(sent) == Ok(data.len()))
         }
         OP_SC_FLAGS => send_flags(o),
         OP_SC_VERIFY => verify(o),
@@ -1437,43 +1411,20 @@ struct SendfileTask {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
-        OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FORWARD,
-        OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SENDFILE_FINISH,
+        OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FORWARD, OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE,
+        OP_SENDFILE_FINISH,
     };
     use swoole_rs_corebase::DataHead;
     use swoole_rs_tls::upstream::socket_sendfile_async as sendfile_async;
     /// `SW_SERVER_EVENT_SEND_FILE` and `_BUFFER_FULL`.
     const EVENT_SEND_FILE: u8 = 3;
     const EVENT_BUFFER_FULL: c_int = 13;
-    // The connection's session and reactor in a head of `kind` (C++'s uint8_t).
-    let head = |kind: u64| {
-        let conn = o.conn();
-        DataHead {
-            fd: conn.session_id(),
-            reactor_id: conn.reactor_id().into(),
-            kind: kind.c_cast::<u8>(),
-            ..DataHead::default()
-        }
-    };
-    // `serv->send_to_reactor_thread(head, sizeof(*head), head->fd)`.
-    let to_reactor_thread =
-        |head: &DataHead| crate::event_worker_ops::send_to_reactor_thread(o.server(), head);
     // The `SendData` native code lends at arg.
     let lent = || {
         // SAFETY: as above.
         unsafe { &*(arg as *const SendData) }
     };
     Some(match op {
-        OP_FEEDBACK_THREAD => u64::from(to_reactor_thread(&head(arg)) > 0),
-        OP_FEEDBACK_SEND => {
-            let send = SendData {
-                info: head(arg),
-                data: core::ptr::null(),
-            };
-            // SAFETY: the send it delivers, with no data.
-            let sent = unsafe { crate::server_methods::send_to_connection(o.server(), &send) };
-            u64::from(i64::from(sent) == crate::SW_OK)
-        }
         OP_SEND_HERE => {
             // SAFETY: the context's send and its data.
             sign(unsafe { crate::server_methods::send_to_connection(o.server(), o.send()) })
@@ -1500,7 +1451,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let SendfileTask { offset, length } = unsafe { task.read() };
             // SAFETY: the task's NUL-terminated name, which follows its head.
             let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<core::ffi::c_char>()) };
-            let socket = o.conn_socket();
+            let socket = o.conn().socket();
             sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
         }
         OP_SENDFILE_FINISH => {
