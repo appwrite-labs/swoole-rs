@@ -4,7 +4,7 @@ use super::{Command, Connection, Facts, Manager, Port, Socket, Thread, commands,
 use crate::json::Json;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
-use crate::{MODE_BASE, MODE_PROCESS, ServerConfig};
+use crate::{Mode, ServerConfig};
 use crate::{ServerState, view};
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
@@ -30,7 +30,7 @@ const THREAD_REACTOR: u8 = 2;
 pub fn admin_register(serv: view::Server<'_>, php_memory: extern "C" fn() -> usize) {
     PHP_MEMORY.get_or_init(|| php_memory);
     let config = serv.config();
-    let event_workers = u64::from(config.mode_) == MODE_BASE || config.single_thread.get();
+    let event_workers = config.mode_ == Mode::Base || config.single_thread.get();
     for (index, (name, types)) in commands(event_workers).enumerate() {
         let handler = Arc::new(
             move |serv: view::Server<'_>, message: &[u8], reply: &mut Vec<u8>| {
@@ -211,7 +211,7 @@ impl Facts for Live<'_> {
     fn connections(&mut self) -> u64 {
         self.connections.clear();
         let gs = self.serv.counters();
-        let mode = u64::from(self.config.mode_);
+        let mode = self.config.mode_;
         let reactor_id = i64::from(swoole_rs_corebase::thread_id());
         // This process's worker's id, if it runs one.
         let worker = swoole_rs_process::worker_globals::with_current(|worker| worker.id());
@@ -227,8 +227,8 @@ impl Facts for Live<'_> {
             let owner = i64::from(conn.reactor_id());
             let other_worker = || worker.is_some_and(|id| owner != i64::from(id));
             if live(conn.socket_ptr()).read(|s| s.fd_type) != FD_SESSION
-                || (mode == MODE_PROCESS && owner != reactor_id)
-                || (mode == MODE_BASE && other_worker())
+                || (mode == Mode::Process && owner != reactor_id)
+                || (mode == Mode::Base && other_worker())
             {
                 continue;
             }

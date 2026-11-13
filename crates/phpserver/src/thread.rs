@@ -1,7 +1,7 @@
 //! A thread-mode Server (`SW_THREAD`): the settings its worker threads share,
 //! the PHP thread each worker runs in, and `start()` inside that thread, which
 //! runs the worker's body.
-use crate::lifecycle::{MODE_THREAD, Props, ServerObject};
+use crate::lifecycle::{Props, ServerObject};
 use std::{
     cell::Cell,
     ffi::{c_int, c_void},
@@ -9,6 +9,7 @@ use std::{
 };
 use swoole_rs_corebase::Thread;
 use swoole_rs_phpthread::Arguments;
+use swoole_rs_server::Mode;
 use swoole_rs_server::thread_mode::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
@@ -46,7 +47,7 @@ thread_local! {
 
 /// Thread mode, in a build with `SW_THREAD`.
 fn thread_mode(serv: view::Server<'_>) -> bool {
-    crate::server::THREAD.load(Ordering::Relaxed) && i64::from(serv.config().mode_) == MODE_THREAD
+    crate::server::THREAD.load(Ordering::Relaxed) && serv.config().mode_ == Mode::Thread
 }
 
 /// `__construct`'s check: 0 no server yet, 1 this worker thread's server

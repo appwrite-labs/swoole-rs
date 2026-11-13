@@ -5,7 +5,7 @@ use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::thread_mode::ThreadOp;
-use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, view};
+use crate::{Mode, view};
 use core::ffi::c_int;
 use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
@@ -71,17 +71,16 @@ pub(crate) fn start(serv: view::Server<'_>) -> c_int {
     }
     hybrid().step(serv, Step::InitProtocols);
     state.write_pid();
-    let started = match u64::from(config.mode_) {
-        MODE_BASE => crate::reactor_process::start_reactor_processes(serv),
-        MODE_PROCESS => hybrid().step(serv, Step::StartProcess),
-        MODE_THREAD => {
+    let started = match config.mode_ {
+        Mode::Base => crate::reactor_process::start_reactor_processes(serv),
+        Mode::Process => hybrid().step(serv, Step::StartProcess),
+        Mode::Thread => {
             // Before the worker threads start, which read it in onWorkerStart.
             set_master_pid(gs);
             hybrid()
                 .thread_mode(serv, ThreadOp::StartWorkers)
                 .c_cast::<c_int>()
         }
-        _ => swoole_rs_corebase::fatal("an unknown server start mode"),
     };
     if started < 0 {
         return ERR;
@@ -151,10 +150,10 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
         return ERR;
     }
     config().workers = workers;
-    let factory = match u64::from(state.config_ref().mode_) {
-        MODE_BASE => crate::base_factory::create(serv),
-        MODE_PROCESS => hybrid().process_factory(serv),
-        _ => {
+    let factory = match state.config_ref().mode_ {
+        Mode::Base => crate::base_factory::create(serv),
+        Mode::Process => hybrid().process_factory(serv),
+        Mode::Thread => {
             let made = hybrid().thread_mode(serv, ThreadOp::CreateFactory);
             core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0))
         }
@@ -295,7 +294,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     let config = state.config_ref();
     let callbacks = &state.callbacks;
     let has = |id| callbacks.slot(id).is_some_and(CallbackSlot::is_set);
-    if u64::from(config.mode_) == MODE_PROCESS {
+    if config.mode_ == Mode::Process {
         let mode = config.dispatch_mode.get();
         let hashed = matches!(
             u64::from(mode),
@@ -400,12 +399,12 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
     swoole_rs_corebase::set_thread(THREAD_MASTER, thread_id);
     hybrid().step(serv, Step::TimerReinit);
     crate::control::init_signals(serv);
-    let mode = u64::from(config.mode_);
+    let mode = config.mode_;
     swoole_rs_process::methods::set_worker_type(WorkerType::Master);
-    if mode == MODE_THREAD {
+    if mode == Mode::Thread {
         let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
         swoole_rs_process::methods::swoole_set_worker_pid(tid);
-    } else if mode == MODE_PROCESS {
+    } else if mode == Mode::Process {
         swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
     }
     reactor.handle().set_object(serv.raw());
@@ -423,13 +422,13 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
         hybrid().step(serv, Step::EventFree);
         return ERR;
     }
-    if !single && mode != MODE_THREAD {
+    if !single && mode != Mode::Thread {
         hybrid().step(serv, Step::ReactorBarrier);
     }
-    if mode == MODE_PROCESS {
+    if mode == Mode::Process {
         hybrid().step(serv, Step::ManagerBarrier);
     }
-    if mode != MODE_THREAD
+    if mode != Mode::Thread
         && let Some(gs) = crate::shared::server_counters(state)
     {
         set_master_pid(gs);
@@ -486,8 +485,8 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     let state = serv.state();
     let config = state.config_ref();
     serv.call_hook(view::ServerHook::AfterShutdown);
-    let mode = u64::from(config.mode_);
-    if mode == MODE_PROCESS {
+    let mode = config.mode_;
+    if mode == Mode::Process {
         hybrid().step(serv, Step::JoinReactorThreads);
     }
     let gs = crate::shared::server_counters(state);
@@ -511,9 +510,9 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     }
     state.callbacks.call_server(ServerSlot::Shutdown, serv);
     match mode {
-        MODE_BASE => destroy_base_factory(state),
-        MODE_PROCESS => _ = hybrid().step(serv, Step::DestroyProcessFactory),
-        _ => _ = hybrid().thread_mode(serv, ThreadOp::DestroyFactory),
+        Mode::Base => destroy_base_factory(state),
+        Mode::Process => _ = hybrid().step(serv, Step::DestroyProcessFactory),
+        Mode::Thread => _ = hybrid().thread_mode(serv, ThreadOp::DestroyFactory),
     }
     if config().task_worker_num.get() > 0 {
         config().task_results.free();
@@ -601,26 +600,26 @@ mod tests {
             DestroyEventPool,
         ];
         for (mode, run) in [
-            (MODE_BASE, steps(&base)),
-            (MODE_PROCESS, steps(&[StartProcess])),
-            (MODE_THREAD, vec![Call::ThreadMode(ThreadOp::StartWorkers)]),
+            (Mode::Base, steps(&base)),
+            (Mode::Process, steps(&[StartProcess])),
+            (Mode::Thread, vec![Call::ThreadMode(ThreadOp::StartWorkers)]),
         ] {
             set_mode(&live, mode);
             live.counters().start.store(0, SeqCst);
             live.counters().master_pid.store(0, Relaxed);
             live.state().set_running(false);
             calls();
-            assert_eq!(start(live.server()), OK, "mode {mode}");
+            assert_eq!(start(live.server()), OK, "mode {mode:?}");
             assert_eq!(
                 calls(),
                 [steps(&[FactoryStart, InitProtocols]), run].concat(),
-                "mode {mode}"
+                "mode {mode:?}"
             );
             assert!(live.state().running(), "running");
             assert_eq!(live.counters().start.load(Relaxed), 1, "claimed");
             assert_eq!(
                 live.counters().master_pid.load(Relaxed) != 0,
-                mode == MODE_THREAD,
+                mode == Mode::Thread,
                 "only thread mode sets the master pid before its workers"
             );
         }
@@ -672,8 +671,8 @@ mod tests {
         live.state().callbacks.slot(id).unwrap().is_set()
     }
 
-    fn set_mode(live: &LiveServer, mode: u64) {
-        config(live).mode_ = u8::try_from(mode).unwrap();
+    fn set_mode(live: &LiveServer, mode: Mode) {
+        config(live).mode_ = mode;
     }
 
     #[test]
@@ -749,7 +748,7 @@ mod tests {
         };
         free(&live);
 
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         assert_eq!(create_on(live.server(), 4), OK, "base mode");
         assert_eq!(calls(), [Call::FactoryNew]);
         assert_eq!(config(&live).reactor_num.get(), 2, "a reactor per worker");
@@ -840,7 +839,7 @@ mod tests {
         assert_eq!(start_check(live.server()), OK, "unsafe events");
         assert!(UNSAFE.iter().all(|&id| is_on(&live, id)), "kept on request");
 
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         config(&live).max_queued_bytes.set(1024);
         config(&live).task_worker_num.set(1);
         assert_eq!(start_check(live.server()), ERR, "task workers need onTask");
@@ -927,7 +926,7 @@ mod tests {
     fn master_thread_by_mode() {
         let live = LiveServer::new();
         config(&live).reactor_num.set(4);
-        let master = |mode| {
+        let master = |mode: Mode| {
             set_mode(&live, mode);
             live.counters().master_pid.store(0, Relaxed);
             calls();
@@ -939,7 +938,7 @@ mod tests {
             (result, ran)
         };
         assert_eq!(
-            master(MODE_PROCESS),
+            master(Mode::Process),
             (
                 OK,
                 steps(&[
@@ -959,7 +958,7 @@ mod tests {
         );
         assert_ne!(live.counters().master_pid.load(Relaxed), 0, "master pid");
         assert_eq!(
-            master(MODE_BASE),
+            master(Mode::Base),
             (
                 OK,
                 steps(&[TimerReinit, MasterTimer, ReactorBarrier, EventWait])
@@ -967,7 +966,7 @@ mod tests {
             "no manager"
         );
         assert_eq!(
-            master(MODE_THREAD),
+            master(Mode::Thread),
             (OK, steps(&[TimerReinit, MasterTimer, EventWait])),
             "no barriers"
         );
@@ -980,7 +979,7 @@ mod tests {
         config(&live).single_thread.set(true);
         fail(Some(MasterTimer));
         assert_eq!(
-            master(MODE_BASE),
+            master(Mode::Base),
             (ERR, steps(&[TimerReinit, MasterTimer, EventFree])),
             "the event loop freed"
         );
@@ -991,16 +990,16 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn destroy_joins_the_reactors_before_the_factory_stops() {
-        for mode in [MODE_BASE, MODE_PROCESS] {
+        for mode in [Mode::Base, Mode::Process] {
             let live = LiveServer::new();
             set_mode(&live, mode);
             config(&live).worker_num.set(2);
-            assert_eq!(create_on(live.server(), 4), OK, "mode {mode}");
+            assert_eq!(create_on(live.server(), 4), OK, "mode {mode:?}");
             live.counters().start.store(1, SeqCst);
             calls();
             destroy(live.server());
             let mut expected = Vec::new();
-            if mode == MODE_PROCESS {
+            if mode == Mode::Process {
                 expected.push(JoinReactorThreads);
             }
             expected.extend([
@@ -1009,11 +1008,11 @@ mod tests {
                 ClosePorts,
                 ClearSignals,
             ]);
-            if mode == MODE_PROCESS {
+            if mode == Mode::Process {
                 expected.push(DestroyProcessFactory);
             }
             expected.push(DeleteFactory);
-            assert_eq!(calls(), steps(&expected), "mode {mode}");
+            assert_eq!(calls(), steps(&expected), "mode {mode:?}");
             let counters = live.counters();
             assert_eq!(
                 (
@@ -1030,7 +1029,7 @@ mod tests {
             assert!(config(&live).factory_.is_null(), "factory deleted");
             assert_eq!(
                 tables.connection_list.is_null(),
-                mode == MODE_BASE,
+                mode == Mode::Base,
                 "base mode's own connections"
             );
         }
@@ -1040,7 +1039,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
         let live = LiveServer::new();
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         assert_eq!(create_on(live.server(), 4), OK);
         calls();
         release_abandoned_base(live.server());

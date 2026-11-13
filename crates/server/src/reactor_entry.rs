@@ -236,11 +236,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             &c.recv_queued_bytes,
         )
     };
-    let mode = u64::from(state.config_ref().mode_);
-    let dispatched = if mode == crate::MODE_PROCESS {
+    let mode = state.config_ref().mode_;
+    let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
-        crate::base_factory::dispatch(server, &mut task, mode == crate::MODE_BASE)
+        crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
     };
     if !dispatched {
         if len > 0 {
@@ -248,7 +248,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         }
         return -1;
     }
-    if mode == crate::MODE_PROCESS {
+    if mode == crate::Mode::Process {
         let thread = thread(state, usize::from(reactor_id)).cast::<ThreadRecord>();
         // SAFETY: the connection's live reactor thread.
         let count = unsafe { &(*thread).dispatch_count };

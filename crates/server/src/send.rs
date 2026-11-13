@@ -14,7 +14,7 @@ use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view::Server;
-use crate::{Connection, MODE_PROCESS, ServerState};
+use crate::{Connection, Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
@@ -63,7 +63,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
     };
     let data = data.get(..len as usize).unwrap_or(data);
     let state = serv.state();
-    let here = u64::from(serv.config().mode_) != MODE_PROCESS && sends_here(state, session_id);
+    let here = serv.config().mode_ != Mode::Process && sends_here(state, session_id);
     let sent = if here {
         match send_now(state, session_id, data) {
             Some(sent) if usize::try_from(sent) == Ok(data.len()) => true,
@@ -172,7 +172,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     );
     let send_yield = config.send_yield.get();
     let yield_error = || log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-    if conn.overflow() && u64::from(config.mode_) != MODE_PROCESS {
+    if conn.overflow() && config.mode_ != Mode::Process {
         if send_yield {
             yield_error();
         } else {
@@ -472,7 +472,7 @@ mod tests {
         );
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { a.serv().config_mut() };
-        config.mode_ = crate::MODE_BASE.c_cast();
+        config.mode_ = Mode::Base;
         assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
         config.send_yield.set(true);
         assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
@@ -657,7 +657,7 @@ mod tests {
         );
         assert_eq!(counters(&a), 1, "counted");
         // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
         assert!(send(a.serv(), 1, b"here"));
         assert_eq!(calls(), [], "no factory");
         assert_eq!(a.read(4), b"here");

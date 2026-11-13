@@ -515,8 +515,6 @@ pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
 pub(crate) use swoole_rs_process::worker_record::WorkerType;
-/// `Server::MODE_PROCESS`.
-const MODE_PROCESS: u8 = 2;
 
 /// `swoole_get_worker_type()`.
 pub(crate) fn worker_type() -> Option<WorkerType> {
@@ -901,7 +899,9 @@ fn sendwait(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    if serv.config().mode_ == MODE_PROCESS || worker_type() == Some(WorkerType::Task) {
+    if serv.config().mode_ == swoole_rs_server::Mode::Process
+        || worker_type() == Some(WorkerType::Task)
+    {
         fatal(
             E_WARNING,
             c"can only be used with base mode and must be within worker process",

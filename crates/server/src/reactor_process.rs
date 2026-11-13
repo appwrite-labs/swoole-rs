@@ -300,7 +300,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_listens_then_the_manager_runs_the_workers() {
         let live = LiveServer::new();
-        config(&live).mode_ = u8::try_from(crate::MODE_BASE).unwrap();
+        config(&live).mode_ = crate::Mode::Base;
         config(&live).have_stream_sock = true;
         config(&live).worker_num.set(2);
         calls();

@@ -13,7 +13,7 @@ use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{Connection, Lookup};
-use crate::{MODE_BASE, ServerState, view};
+use crate::{Mode, ServerState, view};
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
@@ -67,7 +67,7 @@ fn receive_packets(
         },
         data: buffer.cast_const().cast(),
     };
-    let base = u64::from(state.config_ref().mode_) == MODE_BASE;
+    let base = state.config_ref().mode_ == Mode::Base;
     loop {
         // SAFETY: the caller's buffer, which holds a packet head and its datagram.
         let pkt = unsafe { &mut *buffer.cast::<DgramPacket>() };
@@ -290,7 +290,7 @@ mod tests {
 
         // Base mode hands it to this worker; with none here, through the bus.
         // SAFETY: the fixture's state, on this thread only.
-        unsafe { (*live.state().config()).mode_ = u8::try_from(MODE_BASE).unwrap() };
+        unsafe { (*live.state().config()).mode_ = Mode::Base };
         client.send(b"two").unwrap();
         assert_eq!(received(1), [Call::BasePass(sender, RECV_DGRAM, head + 3)]);
 
