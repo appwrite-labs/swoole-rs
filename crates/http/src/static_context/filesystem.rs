@@ -170,7 +170,7 @@ impl HttpStaticContext {
 
 #[cfg(test)]
 mod tests {
-    use super::super::FILENAME;
+    use super::super::StaticText::Filename;
     use super::*;
 
     struct Native;
@@ -198,7 +198,7 @@ mod tests {
         std::os::unix::fs::symlink("index.html", root.join("link")).unwrap();
         let mut owner = HttpStaticContext::new(b"", PATH_MAX).unwrap();
         let set = |owner: &mut HttpStaticContext, path: &std::path::Path| {
-            assert_eq!(owner.publish(FILENAME, path.as_os_str().as_bytes()), 0);
+            assert_eq!(owner.publish(Filename, path.as_os_str().as_bytes()), 0);
         };
         set(&mut owner, &root.join("index.html"));
         assert_eq!(owner.stat(&Native), 1);

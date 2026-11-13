@@ -343,7 +343,7 @@ impl Server {
             config: Box::into_raw(Box::new(server_config)),
         }));
         // SAFETY: the state boxed above, live with the server.
-        unsafe { &*state }.set_text(crate::state::TEXT_DOCUMENT_ROOT, b"/root");
+        unsafe { &*state }.set_text(crate::ServerText::DocumentRoot, b"/root");
         if config.location {
             server.strings(Locations, Op::Insert(b"/"));
         }

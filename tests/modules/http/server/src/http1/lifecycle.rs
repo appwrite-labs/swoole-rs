@@ -36,8 +36,6 @@ const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
 const SW_SERVER_EVENT_CLOSE: u8 = 4;
 const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
 const SW_ERROR_SERVER_INVALID_COMMAND: c_int = 9012;
-// Server's text members (SWR_SERVER_TEXT_*), after http1.rs's.
-const TEXT_PID_FILE: usize = 3;
 
 unsafe extern "C" {
     fn mmap(
@@ -1480,7 +1478,7 @@ unsafe extern "C" fn base_on_start(_: *mut c_void, _: *mut c_void) {
 fn test_base() {
     let serv = Server::new(MODE_BASE);
     serv.config().worker_num = 1;
-    serv.set_text(TEXT_PID_FILE, PID_FILE);
+    serv.set_text(swoole_rs_server::ServerText::PidFile, PID_FILE);
 
     counter_init();
     set_log_warning();
