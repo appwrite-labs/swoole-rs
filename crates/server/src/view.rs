@@ -2,8 +2,8 @@
 //! the crates that bind it (phpserver), without a native call.
 //!
 //! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
-//! callbacks }`, and a `ListenPort *` is the box of the port's settings
-//! (`native/include/swoole_rs_server_view.h`). `ServerGS` is `shared::ServerShared`.
+//! callbacks }`, and a `ListenPort *` is the box of the port's settings.
+//! `ServerGS` is `shared::ServerShared`.
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::{Connection, ServerConfig, ServerCounters, ServerState};

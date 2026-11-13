@@ -4,7 +4,7 @@ Feature bit 65536 (`hooks`). ABI:
 `swoole_rs_hooks.h`. Upstream's coroutine runtime, hook, socket, system, file-lock
 and io_uring sources have left the build, and so has the module's last native source:
 `coroutine::Socket` and `SocketImpl` are `swoole_rs_coroutine_socket.h`; `swoole_socket_hook.h` and
-`swoole_file_hook.h` keep only what `ftp.c` and `plain_wrapper.c` use.
+`swoole_file_hook.h` keep only what upstream's bundled C uses (`hiredis.c`/`net.c`, `ftp.c`, `plain_wrapper.c`).
 
 ## The coroutine socket
 
