@@ -161,7 +161,10 @@ pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> b
 /// [`apply`] for callers that raise no bailout of their own (crates/phpruntime,
 /// through crates/phpswoole's families): it raises one. Settings that are no
 /// array apply nothing.
-pub fn socket_settings(
+/// # Safety
+/// It raises a pending bailout: the caller is inside a trap, or the frames the
+/// jump skips own only values of the request's heap, which Zend reclaims.
+pub unsafe fn socket_settings(
     socket: swoole_rs_hooks::co_socket::Co,
     settings: &Value,
     which: c_int,
@@ -173,11 +176,14 @@ pub fn socket_settings(
 }
 
 /// `php_swoole_socket_set_protocol(socket, settings)`.
-pub fn php_swoole_socket_set_protocol(
+/// # Safety
+/// As [`socket_settings`].
+pub unsafe fn php_swoole_socket_set_protocol(
     socket: swoole_rs_hooks::co_socket::Co,
     settings: &Value,
 ) -> bool {
-    socket_settings(socket, settings, PROTOCOL)
+    // SAFETY: the caller's contract.
+    unsafe { socket_settings(socket, settings, PROTOCOL) }
 }
 
 /// `php_swoole_socket_set_protocol`.

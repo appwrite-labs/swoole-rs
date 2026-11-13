@@ -340,7 +340,8 @@ impl Socket {
             if let Some(families) = swoole_rs_phpswoole::families() {
                 // crates/phpclients ignores settings that are no array; 2 applies
                 // the SSL ones.
-                applied = (families.socket_settings)(socket, settings, 2);
+                // SAFETY: inside the trap below.
+                applied = unsafe { (families.socket_settings)(socket, settings, 2) };
             }
         };
         // SAFETY: the body holds copies and the result slot; the settings' warnings

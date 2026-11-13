@@ -20,7 +20,8 @@ use swoole_rs_httpbindings::{
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::{
-    swr_zend_http_estrndup, swr_zend_http_treat_data, swr_zend_http_upload, zval,
+    swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
+    swr_zend_http_upload, zval,
 };
 use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
@@ -379,7 +380,7 @@ impl Copied {
 fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
     // SAFETY: a fresh request-memory string, which the call frees, and a live array.
     if !unsafe { swr_zend_http_treat_data(arg, text, array) } {
-        let limit = swr_zend_http_max_input_vars();
+        let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
             format_args!(
@@ -389,10 +390,10 @@ fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
     }
 }
 
-unsafe extern "C" {
-    /// `PG(max_input_vars)`: a read of this PHP thread's core globals, which
-    /// takes no argument and runs no PHP code.
-    safe fn swr_zend_http_max_input_vars() -> i64;
+/// `PG(max_input_vars)`.
+fn max_input_vars() -> i64 {
+    // SAFETY: reads an INI value, on the request's thread.
+    unsafe { swr_zend_http_max_input_vars() }
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows.
@@ -892,7 +893,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
     let length = value_.len();
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
-    let max_input_vars = swr_zend_http_max_input_vars();
+    let max_input_vars = max_input_vars();
     if i64::from(state.parse.input_var_num) > max_input_vars {
         host::notice(&format!(
             "Input variables exceeded {max_input_vars}. To increase the limit change max_input_vars in php.ini"

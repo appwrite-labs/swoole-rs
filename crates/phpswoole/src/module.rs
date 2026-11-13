@@ -222,7 +222,8 @@ pub struct Families {
     /// `php_swoole_socket_set(socket, settings)` over a coroutine socket, for
     /// crates/phpruntime; `which` 2 applies only the SSL ones
     /// (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
-    pub socket_settings: fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, c_int) -> bool,
+    pub socket_settings:
+        unsafe fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, c_int) -> bool,
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
     pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,
