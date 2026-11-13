@@ -1218,7 +1218,7 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         flags: c_int,
         code: i64,
         compress: bool,
-    ) -> c_int {
+    ) -> Result<(), swoole_rs_phpclients::PushError> {
         let mut frame =
             FrameObject::new(Some(data), opcode, i64::from(byte(i64::from(flags))), code);
         if self.mask.get() {
@@ -1227,15 +1227,14 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         if compress {
             frame.flags |= FLAG_COMPRESS;
         }
-        pack(&frame).map_or(1, |packed| {
-            let packed = packed.bytes();
-            let written = socket.handle().send_all(packed);
-            if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
-                0
-            } else {
-                2
-            }
-        })
+        let packed = pack(&frame).ok_or(swoole_rs_phpclients::PushError::Pack)?;
+        let packed = packed.bytes();
+        let written = socket.handle().send_all(packed);
+        if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
+            Ok(())
+        } else {
+            Err(swoole_rs_phpclients::PushError::Send)
+        }
     }
 
     fn recv(&self, socket: swoole_rs_phpclients::Co, timeout: f64) -> Owned {

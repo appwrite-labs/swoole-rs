@@ -26,8 +26,10 @@ pub trait WebSocket {
     fn apply(&self, settings: &Array);
     /// Whether the client offers `permessage-deflate`.
     fn compression(&self) -> bool;
-    /// Pack a frame of `data` and send it on `socket`: 0, 1 if packing failed
-    /// (a bailout may be pending, for the handler to raise), 2 if sending did.
+    /// Pack a frame of `data` and send it on `socket`.
+    /// # Errors
+    /// Which step failed; a failed pack may leave a bailout pending, for the
+    /// handler to raise.
     fn push(
         &self,
         socket: Co,
@@ -36,10 +38,17 @@ pub trait WebSocket {
         flags: c_int,
         code: i64,
         compress: bool,
-    ) -> c_int;
+    ) -> Result<(), PushError>;
     /// `websocket::recv_frame` on `socket`: the frame for the call's return
     /// slot; a bailout it defers is the handler's to raise.
     fn recv(&self, socket: Co, timeout: f64) -> Owned;
+}
+
+/// Where [`WebSocket::push`] failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushError {
+    Pack,
+    Send,
 }
 
 static WEBSOCKET: OnceLock<fn() -> Box<dyn WebSocket>> = OnceLock::new();

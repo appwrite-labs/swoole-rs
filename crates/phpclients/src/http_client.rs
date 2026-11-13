@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, TIMEOUT_READ, WebSocket},
+    http_native::{self as native, PushError, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, UNCONSTRUCTED, swoole_rs_php_error},
     socket::Sock,
@@ -1183,7 +1183,7 @@ impl Client {
             return false;
         };
         let flags = c_int::from(flags.to_le_bytes()[0]);
-        let result = self.ws.as_ref().map_or(1, |ws| {
+        let result = self.ws.as_ref().map_or(Err(PushError::Pack), |ws| {
             ws.push(
                 socket,
                 data,
@@ -1194,9 +1194,9 @@ impl Client {
             )
         });
         match result {
-            0 => true,
-            1 if bailout::pending() => false,
-            1 => {
+            Ok(()) => true,
+            Err(PushError::Pack) if bailout::pending() => false,
+            Err(PushError::Pack) => {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 let last = swoole_rs_corebase::log::last_error();
                 self.props().long(c"errCode", i64::from(last));
@@ -1204,7 +1204,7 @@ impl Client {
                     .bytes(c"errMsg", b"websocket frame pack failed");
                 false
             }
-            _ => {
+            Err(PushError::Send) => {
                 socket_error_properties(self.props(), socket);
                 self.set_status(ErrorStatus::ServerReset);
                 self.close(true);
