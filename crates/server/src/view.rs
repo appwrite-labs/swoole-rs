@@ -206,10 +206,13 @@ impl<'a> Server<'a> {
         self.state().set_text(index, value);
     }
 
-    /// `insert(value)` into the static collection `kind`: 0 `locations`,
-    /// 1 `http_index_files`, 2 `http_compression_types`.
-    pub fn insert_static_string(self, kind: u32, value: &[u8]) {
-        crate::static_config::config(self.state(), kind, 4, value);
+    /// `insert(value)` into a static handler collection.
+    pub fn insert_static_string(self, collection: crate::StaticCollection, value: &[u8]) {
+        crate::static_config::config(
+            self.state(),
+            collection,
+            crate::static_config::Op::Insert(value),
+        );
     }
 
     /// `url_rewrite_rules`: add one rule.
@@ -217,10 +220,13 @@ impl<'a> Server<'a> {
         crate::static_config::add_rewrite_rule(self.state(), pattern, replacement);
     }
 
-    /// `f` over the static handler's collection `kind` (0 locations, 1 index files):
-    /// whether it is set, and its values, borrowed under the collection's lock.
-    pub fn static_strings<R>(self, kind: u32, f: impl FnOnce(bool, &[Arc<[u8]>]) -> R) -> R {
-        crate::static_config::strings(self.state(), kind, f)
+    /// `f` over a static handler collection: whether it is set, and its values.
+    pub fn static_strings<R>(
+        self,
+        collection: crate::StaticCollection,
+        f: impl FnOnce(bool, &[Arc<[u8]>]) -> R,
+    ) -> R {
+        crate::static_config::strings(self.state(), collection, f)
     }
 
     /// `apply_rewrite_rules` on a static context: true when a rule applied.
@@ -243,11 +249,12 @@ impl<'a> Server<'a> {
     /// `http_compression_types` lists `kind`; `None` asks whether it lists any.
     #[must_use]
     pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
+        use crate::static_config::{Op, config};
         let state = self.state();
-        let op = |operation, data: &[u8]| crate::static_config::config(state, 2, operation, data);
-        let types = op(1, &[]) != 0;
+        let op = |operation| config(state, crate::StaticCollection::CompressionTypes, operation);
+        let types = op(Op::Enabled) != 0;
         match kind {
-            Some(kind) if types => op(5, kind) != op(0, &[]),
+            Some(kind) if types => op(Op::Find(kind)) != op(Op::Count),
             _ => types,
         }
     }

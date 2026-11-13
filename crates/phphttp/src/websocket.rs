@@ -25,8 +25,8 @@ use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, control_invalid, encode_close_into, encode_into, encoded_size,
-    message_policy, pack_policy,
+    DecodedFrame, Delivery, INVALID_CONTROL, control_invalid, encode_close_into, encode_into,
+    encoded_size, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
@@ -438,9 +438,8 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         );
         return None;
     }
-    let policy = pack_policy(frame.opcode, frame.flags, data.len());
-    let mut flags = policy.to_le_bytes()[0];
-    let compressed = if policy & 0x100 == 0 {
+    let (mut flags, deflate) = pack_policy(frame.opcode, frame.flags, data.len());
+    let compressed = if !deflate {
         None
     } else if let Some(compressed) = compress(data) {
         flags |= FLAG_RSV1;
@@ -909,8 +908,8 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
     let mut data = php_swoole_get_recv_data(view, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
     let delivery = message_policy(opcode, settings);
-    if delivery != 0 {
-        if delivery == 2
+    if delivery != Delivery::Deliver {
+        if delivery == Delivery::Pong
             && let Some(pong) = encode(data.bytes().unwrap_or_default(), OPCODE_PONG, FLAG_FIN)
         {
             send(server, fd, pong.bytes(), false);

@@ -290,13 +290,13 @@ pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Opt
     Some(decide(*frame, wire, *context))
 }
 
-/// Normalize outgoing PHP frame flags and choose compression. The low byte is
-/// the normalized flags; bit 8 requests native zlib compression. The caller
-/// still owns zlib, its buffer, warnings and PHP conversions.
+/// Normalize outgoing PHP frame flags and choose compression: the normalized flags,
+/// and whether to compress with native zlib. The caller still owns zlib, its
+/// buffer, warnings and PHP conversions.
 #[must_use]
-pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> u16 {
+pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> (u8, bool) {
     const COMPRESS: u8 = 2;
-    let (flags, compress) = match opcode {
+    match opcode {
         // The pinned sw_unset_bit macro lacks parentheses: its compound
         // COMPRESS | RSV1 argument clears only COMPRESS. Preserve RSV1.
         8..=10 => ((flags & !COMPRESS) | FIN, false),
@@ -305,19 +305,27 @@ pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> u16 {
             flags,
             flags & (COMPRESS | FIN) == (COMPRESS | FIN) && length != 0,
         ),
-    };
-    u16::from(flags) | (u16::from(compress) << 8)
+    }
+}
+
+/// What happens to an incoming PHP message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// To the `onMessage` callback.
+    Deliver,
+    Discard,
+    /// Answer with an automatic pong, then discard.
+    Pong,
 }
 
 /// Choose native delivery for an incoming PHP message. Settings bits 0, 1 and 2
-/// enable close, ping and pong callbacks respectively. Return 0 to deliver, 1
-/// to discard, or 2 to send an automatic pong and discard. No state is retained.
+/// enable close, ping and pong callbacks respectively. No state is retained.
 #[must_use]
-pub fn message_policy(opcode: u8, settings: u8) -> u8 {
+pub fn message_policy(opcode: u8, settings: u8) -> Delivery {
     match opcode {
-        8 if settings & 1 == 0 => 1,
-        9 if settings & 2 == 0 => 2,
-        10 if settings & 4 == 0 => 1,
-        _ => 0,
+        8 if settings & 1 == 0 => Delivery::Discard,
+        9 if settings & 2 == 0 => Delivery::Pong,
+        10 if settings & 4 == 0 => Delivery::Discard,
+        _ => Delivery::Deliver,
     }
 }

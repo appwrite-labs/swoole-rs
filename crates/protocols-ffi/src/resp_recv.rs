@@ -4,7 +4,7 @@
 use core::ffi::c_int;
 use swoole_rs_corebase::{log, set_errno, sw_calloc};
 pub use swoole_rs_protocols::RespRequest;
-use swoole_rs_protocols::{resp_extend_size, resp_receive_range};
+use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};
 
 pub(crate) const SW_OK: c_int = 0;
 pub const SW_ERR: c_int = -1;
@@ -59,14 +59,14 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
             c.set_offset(i64::try_from(length).unwrap_or(i64::MAX));
         }
         match action {
-            1 => {
+            RespAction::ReadAgain => {
                 let grown = resp_extend_size(length, size, maximum, page);
                 if grown != 0 {
                     c.extend(grown);
                 }
             }
-            2 => return SW_OK,
-            3 => {
+            RespAction::Wait => return SW_OK,
+            RespAction::Dispatch => {
                 match c.dispatch() {
                     ..0 => return SW_ERR,
                     0 => {}
@@ -76,14 +76,14 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
                 zero(c.view().2);
                 return SW_OK;
             }
-            4 => {
+            RespAction::TooBig => {
                 log::warning(
                     ORIGIN,
                     format_args!("Package is too big. package_length={length}"),
                 );
                 return SW_ERR;
             }
-            _ => {
+            RespAction::Malformed => {
                 log::warning(ORIGIN, format_args!("redis protocol error"));
                 return SW_ERR;
             }

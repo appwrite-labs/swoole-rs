@@ -12,7 +12,7 @@ use swoole_rs_http2::{
 };
 use swoole_rs_inflate::Inflate;
 use swoole_rs_oracle::nghttp2;
-use swoole_rs_protocols::{RespPhpState, resp_php_next};
+use swoole_rs_protocols::{RespKind, RespPhpState, resp_php_next};
 
 /// Any bytes as an HTTP/2 frame header (RFC 9113 4.1) and a SETTINGS entry (6.5.1):
 /// `frame_length`, `sw_rs_http2_decode_frame` and `sw_rs_http2_unpack_setting`
@@ -23,7 +23,7 @@ pub fn http2_frame(bytes: &[u8]) {
     };
     let length = frame_length(data);
     let previous = u32::from(previous) << 23;
-    let decoded = sw_rs_http2_decode_frame(data, previous, u32::from(client & 1));
+    let decoded = sw_rs_http2_decode_frame(data, previous, client & 1 != 0);
     let Some(header) = data.first_chunk::<9>() else {
         assert_eq!((length, decoded), (0, None), "short header {data:?}");
         return;
@@ -37,7 +37,7 @@ pub fn http2_frame(bytes: &[u8]) {
         (wire, u32::from(header[3]), u32::from(header[4]), id),
         "frame header {header:?}"
     );
-    assert_eq!(facts.publish_last_id, u32::from(id > previous));
+    assert_eq!(facts.publish_last_id, id > previous);
     if let Some(entry) = data.get(9..).and_then(|rest| rest.first_chunk::<6>()) {
         let (setting, value) = sw_rs_http2_unpack_setting(entry);
         assert_eq!(
@@ -305,15 +305,15 @@ pub fn http2_hpack(bytes: &[u8]) {
                 assert_eq!(value, expected, "value from {input:?}");
             }
             input = input.get(read..).expect("inflate read past its input");
-            let step = sw_rs_http2_inflate_step(flags, input.len(), u32::from(role & 1));
+            let step = sw_rs_http2_inflate_step(flags, input.len(), role & 1 != 0);
             // The client ends its (always final) block on any finished step too.
-            if step.end_headers != 0 || step.finish != 0 && role & 1 != 0 && last {
+            if step.end_headers || step.finish && role & 1 != 0 && last {
                 // SAFETY: a live inflater.
                 unsafe { nghttp2::nghttp2_hd_inflate_end_headers(inflater) };
                 decoder.end_headers();
                 break;
             }
-            if step.finish != 0 {
+            if step.finish {
                 break;
             }
         }
@@ -335,15 +335,14 @@ pub fn resp_server(bytes: &[u8]) {
         };
         assert!(state.cursor.position > before, "stalled on {bytes:?}");
         assert!(
-            span.kind == 1
-                || span.kind == 2
+            matches!(span.kind, RespKind::Integer | RespKind::Null)
                 || span
                     .offset
                     .checked_add(span.length)
                     .is_some_and(|end| end <= bytes.len()),
             "span {span:?} outside {bytes:?}"
         );
-        commands += usize::from(span.kind == 3);
+        commands += usize::from(span.kind == RespKind::Command);
         assert!(commands <= 1, "second command in {bytes:?}");
     }
     panic!("no end for {bytes:?}");

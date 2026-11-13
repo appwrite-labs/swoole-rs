@@ -15,11 +15,6 @@ extern "C" {
 uint32_t swr_v1_abi_version(void);
 uint64_t swr_v1_feature_bits(void);
 
-/* Server::state_: the round-robin and command id counters. */
-typedef struct swr_v1_server_state swr_v1_server_state;
-swr_v1_server_state *swr_v1_server_state_new(void);
-void swr_v1_server_state_free(swr_v1_server_state *state);
-
 #ifdef __cplusplus
 }
 #endif

@@ -26,7 +26,7 @@ use std::{
 use swoole_rs_corebase::{log::set_last_error, sys::set_errno};
 use swoole_rs_phpserver::REDIS_SERVER as SERVER;
 use swoole_rs_phpstubs::redis_server as stubs;
-use swoole_rs_protocols::{RespPhpState, resp_handler_key, resp_php_next};
+use swoole_rs_protocols::{RespKind, RespPhpState, resp_handler_key, resp_php_next};
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::host::callable::Callable;
 use swoole_rs_zend::{
@@ -195,10 +195,10 @@ fn receive(
         let text = data.get(span.offset..span.offset + span.length);
         let text = text.unwrap_or_default();
         match span.kind {
-            0 => params.push_bytes(text),
-            1 => params.push_long(zend_long::from(span.integer)),
-            2 => params.push_null(),
-            _ => command = text,
+            RespKind::String => params.push_bytes(text),
+            RespKind::Integer => params.push_long(zend_long::from(span.integer)),
+            RespKind::Null => params.push_null(),
+            RespKind::Command => command = text,
         }
     };
     if result.is_err() {

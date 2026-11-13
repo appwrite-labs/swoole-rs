@@ -14,8 +14,8 @@ use std::collections::VecDeque;
 use swoole_rs_corebase::{set_errno, sys::errno};
 use swoole_rs_oracle::{protocols as pinned, resp_stream};
 use swoole_rs_protocols::{
-    Malformed, RespPhpState, RespRequest, mqtt_frame_length, resp_format, resp_handler_key,
-    resp_php_next, resp_spans, socks_auth, socks_connect,
+    Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
+    resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
 };
 use swoole_rs_protocols_ffi::{RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
 
@@ -281,7 +281,7 @@ fn rust_parse(wire: &[u8], initial: c_int) -> (Vec<Vec<u8>>, c_int) {
     let count = resp_spans(
         wire,
         |span| {
-            strings.push(if span.kind == 1 {
+            strings.push(if span.kind == RespKind::Integer {
                 span.integer.to_string().into_bytes()
             } else {
                 let end = span.offset + span.length;
@@ -345,16 +345,10 @@ fn rust_request(wire: &[u8], initial: c_int) -> (Option<Request>, c_int) {
         let end = event.offset + event.length;
         let bytes = || wire.get(event.offset..end).unwrap_or_default().to_vec();
         match event.kind {
-            3 => (command, seen) = (bytes(), true),
-            0 => parameters.push((0, bytes())),
-            1 => parameters.push((1, event.integer.to_string().into_bytes())),
-            kind => {
-                assert_eq!(
-                    kind, 2,
-                    "an event is a command, a string, an integer or a null"
-                );
-                parameters.push((2, Vec::new()));
-            }
+            RespKind::Command => (command, seen) = (bytes(), true),
+            RespKind::String => parameters.push((0, bytes())),
+            RespKind::Integer => parameters.push((1, event.integer.to_string().into_bytes())),
+            RespKind::Null => parameters.push((2, Vec::new())),
         }
     }
     (Some((command, seen, parameters)), errno())
@@ -673,13 +667,13 @@ fn format_empty_status_and_error() {
     assert_eq!(rust_format(0, b"", 0), b"-ERR\r\n");
 }
 
-/// `TEST(redis, parse)`: `redis::parse(":3\r\n")[0] == "3"`, an integer span (kind 1)
-/// in decimal.
+/// `TEST(redis, parse)`: `redis::parse(":3\r\n")[0] == "3"`, an integer span in
+/// decimal.
 #[test]
 fn parse_integer_reply() {
     let (mut spans, mut range) = (Vec::new(), false);
     let count = resp_spans(b":3\r\n", |span| spans.push(span), &mut range);
     assert_eq!((count, range), (Some(1), false));
-    assert_eq!(spans[0].kind, 1);
+    assert_eq!(spans[0].kind, RespKind::Integer);
     assert_eq!(spans[0].integer.to_string(), "3");
 }

@@ -4,7 +4,7 @@
 //! The `Server` is made and deleted by
 //! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
-//! whose pointers head the object (native/include/swoole_rs_server_state.h), as the
+//! whose pointers head the object (crates/server/src/state.rs), as the
 //! `swr_v1_port_config` is a `ListenPort`. Each new server
 //! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
 //! cases call are crates/server's `server_methods`. The fixtures read the request line
@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_server::{ConnectionRecord, server_methods, view};
+use swoole_rs_server::{ConnectionRecord, StaticCollection, server_methods, view};
 
 use crate::client::{Client, USER_AGENT};
 
@@ -66,11 +66,10 @@ const TEXT_CHROOT: usize = 0;
 const TEXT_USER: usize = 1;
 const TEXT_GROUP: usize = 2;
 
-// The static-handler sets (`crates/server/src/static_config.rs` kinds) and their insert operation.
-const LOCATIONS: u32 = 0;
-const INDEX_FILES: u32 = 1;
-const COMPRESSION_TYPES: u32 = 2;
-const STRINGS_INSERT: u32 = 4;
+// The static-handler sets.
+const LOCATIONS: StaticCollection = StaticCollection::Locations;
+const INDEX_FILES: StaticCollection = StaticCollection::IndexFiles;
+const COMPRESSION_TYPES: StaticCollection = StaticCollection::CompressionTypes;
 
 // Callback slots, in callbacks.rs's order.
 const CB_CONNECT: usize = 0;
@@ -89,7 +88,7 @@ const BY_SESSION: u32 = 1;
 // The SWR_SERVER_NATIVE pointer members, opaque here.
 type Native = *mut c_void;
 
-/// `swr_v1_server_config`.
+/// Server's configuration, as crates/server lays it out.
 #[repr(C)]
 struct ServerConfig {
     reactor_num: u16,
@@ -238,14 +237,14 @@ const CONFIG_OFFSETS: &[usize] = &[
     offset_of!(ServerConfig, mode_),
 ];
 
-/// `swr_v1_server_ports`.
+/// Server::ports, as crates/server lays it out.
 #[repr(C)]
 struct Ports {
     items: *const *mut c_void,
     count: u32,
 }
 
-/// `swr_v1_server_tables`.
+/// Server's tables, as crates/server lays them out.
 #[repr(C)]
 struct ServerTables {
     connection_list: Native,
@@ -547,13 +546,6 @@ unsafe extern "C-unwind" {
         offsets: *const usize,
         count: usize,
     ) -> bool;
-    fn swr_v1_server_static_config(
-        state: *const c_void,
-        kind: u32,
-        op: u32,
-        data: *const u8,
-        length: usize,
-    ) -> usize;
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 }
 
@@ -694,17 +686,9 @@ impl Server {
         self.slot(slot).invoke.is_null()
     }
 
-    fn insert(self, kind: u32, value: &str) {
-        // SAFETY: `value` is readable for its length.
-        unsafe {
-            swr_v1_server_static_config(
-                self.state(),
-                kind,
-                STRINGS_INSERT,
-                value.as_ptr(),
-                value.len(),
-            )
-        };
+    fn insert(self, collection: StaticCollection, value: &str) {
+        self.view()
+            .insert_static_string(collection, value.as_bytes());
     }
 
     /// `serv.user_ = value` and the other text members.

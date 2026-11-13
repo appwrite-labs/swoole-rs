@@ -10,16 +10,19 @@ use std::ffi::c_int;
 use crate::armed_timer::ArmedTimer;
 use crate::worker_record::WorkerRecord;
 
-/// `warn(kind, pid, worker_id)`, called with `errno` still set by the failed `kill`:
-/// [`WARN_KILL_ALL_FAILED`], [`WARN_FORCE_KILL`] or [`WARN_KILL_ONE_FAILED`].
-pub type Warn = extern "C" fn(kind: c_int, pid: c_int, worker_id: u32);
+/// `warn(kind, pid, worker_id)`, called with `errno` still set by a failed `kill`.
+pub type Warn = fn(kind: KillWarning, pid: c_int, worker_id: u32);
 
-/// `kill_all` could not signal a worker (a system warning).
-pub const WARN_KILL_ALL_FAILED: c_int = 1;
-/// `kill_all` sent SIGKILL to a worker.
-pub const WARN_FORCE_KILL: c_int = 2;
-/// `kill_one` could not signal a worker (a system warning).
-pub const WARN_KILL_ONE_FAILED: c_int = 3;
+/// What a reload's kill reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KillWarning {
+    /// `kill_all` could not signal a worker (a system warning).
+    KillAllFailed,
+    /// `kill_all` sent SIGKILL to a worker.
+    ForceKill,
+    /// `kill_one` could not signal a worker (a system warning).
+    KillOneFailed,
+}
 
 pub struct ReloadTask {
     workers: HashMap<c_int, u32>,
@@ -87,8 +90,8 @@ impl ReloadTask {
         for (&pid, &id) in &self.workers {
             match (self.kill)(pid, signo) {
                 Err(error) if already_gone(error) => {}
-                Err(_) => warn(WARN_KILL_ALL_FAILED, pid, id),
-                Ok(()) if signo == libc::SIGKILL => warn(WARN_FORCE_KILL, pid, id),
+                Err(_) => warn(KillWarning::KillAllFailed, pid, id),
+                Ok(()) if signo == libc::SIGKILL => warn(KillWarning::ForceKill, pid, id),
                 Ok(()) => {}
             }
         }
@@ -107,7 +110,7 @@ impl ReloadTask {
                     self.workers.remove(&pid);
                     continue;
                 }
-                Err(_) => warn(WARN_KILL_ONE_FAILED, pid, id),
+                Err(_) => warn(KillWarning::KillOneFailed, pid, id),
                 Ok(()) => {}
             }
             break;
@@ -126,7 +129,7 @@ pub(crate) mod tests {
     pub(crate) const LIVE: c_int = 1000;
 
     thread_local! {
-        static WARNED: RefCell<Vec<(c_int, c_int, u32)>> = const { RefCell::new(Vec::new()) };
+        static WARNED: RefCell<Vec<(KillWarning, c_int, u32)>> = const { RefCell::new(Vec::new()) };
         static SIGNALLED: RefCell<Vec<(c_int, c_int)>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -149,11 +152,11 @@ pub(crate) mod tests {
         }
     }
 
-    extern "C" fn record(kind: c_int, pid: c_int, id: u32) {
+    fn record(kind: KillWarning, pid: c_int, id: u32) {
         WARNED.with(|w| w.borrow_mut().push((kind, pid, id)));
     }
 
-    fn warned() -> Vec<(c_int, c_int, u32)> {
+    fn warned() -> Vec<(KillWarning, c_int, u32)> {
         WARNED.with(RefCell::take)
     }
 
@@ -201,7 +204,7 @@ pub(crate) mod tests {
         task.add(LIVE, 7);
         task.add(GONE, 8);
         task.kill_all(libc::SIGKILL, record);
-        assert_eq!(warned(), vec![(WARN_FORCE_KILL, LIVE, 7)]);
+        assert_eq!(warned(), vec![(KillWarning::ForceKill, LIVE, 7)]);
         assert!(task.kill_queue.is_empty());
         assert_eq!(task.workers.len(), 2);
     }
@@ -211,10 +214,10 @@ pub(crate) mod tests {
         let mut task = task();
         task.add(1, 3);
         task.kill_all(libc::SIGTERM, record);
-        assert_eq!(warned(), vec![(WARN_KILL_ALL_FAILED, 1, 3)]);
+        assert_eq!(warned(), vec![(KillWarning::KillAllFailed, 1, 3)]);
         task.add(1, 3);
         task.kill_one(libc::SIGTERM, record);
-        assert_eq!(warned(), vec![(WARN_KILL_ONE_FAILED, 1, 3)]);
+        assert_eq!(warned(), vec![(KillWarning::KillOneFailed, 1, 3)]);
     }
 
     #[test]

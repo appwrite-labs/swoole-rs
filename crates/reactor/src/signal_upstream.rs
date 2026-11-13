@@ -14,7 +14,7 @@ use std::ffi::c_int;
 use std::ffi::c_void;
 use swoole_rs_corebase::log;
 use swoole_rs_process::signal::signal_name;
-use swoole_rs_process::signal_loop::{self, Ops};
+use swoole_rs_process::signal_loop::{self, Ops, Report};
 
 /// `SW_FD_SIGNAL`, `SW_EVENT_READ`, `SW_LOG_WARNING` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
@@ -76,61 +76,62 @@ unsafe fn invoke(handler: usize, signo: i32) {
     unsafe { handler(signo) };
 }
 
-fn report(kind: u8, signo: i32, error: i32) {
-    let signal = signal_name(signo);
-    let name = || signal.as_cstr().to_string_lossy();
-    let unregistered = |origin| {
+fn report(report: Report) {
+    let unregistered = |origin, signo| {
         log::error_log(
             LOG_WARNING,
             UNREGISTERED_SIGNAL,
             origin,
-            format_args!("Unable to find callback function for signal {}", name()),
+            format_args!(
+                "Unable to find callback function for signal {}",
+                signal_name(signo).as_cstr().to_string_lossy()
+            ),
         );
     };
-    match kind {
-        0 => log::warning(
+    let failed = |error, origin, message: std::fmt::Arguments<'_>| {
+        log::sys_warning_errno(error, origin, message);
+        set_errno(error);
+    };
+    match report {
+        Report::CallbackOutOfRange(signo) => log::warning(
             c"swoole_signal_callback",
             format_args!("signal[{signo}] numberis invalid"),
         ),
-        1 => log::warning(
+        Report::HandlerOutOfRange(signo) => log::warning(
             c"swoole_signal_get_handler",
             format_args!("signal[{signo}] numberis invalid"),
         ),
-        2 => unregistered(c"swoole_signal_callback"),
-        3 => log::sys_warning_errno(
+        Report::CallbackUnregistered(signo) => unregistered(c"swoole_signal_callback", signo),
+        Report::SignalfdFailed(error) => failed(
             error,
             c"swoole_signalfd_create",
             format_args!("signalfd() failed"),
         ),
-        4 => log::sys_warning_errno(
+        Report::MaskFailed(error) => failed(
             error,
             c"swoole_signalfd_create",
             format_args!("sigprocmask() failed"),
         ),
-        5 => log::sys_warning_errno(
+        Report::UnblockFailed(error) => failed(
             error,
             c"swoole_signalfd_clear",
             format_args!("sigprocmask(SIG_UNBLOCK) failed"),
         ),
-        6 => log::sys_warning_errno(
+        Report::ReadFailed(error) => failed(
             error,
             c"swoole_signalfd_event_callback",
             format_args!("read from signalfd failed"),
         ),
-        7 => log::warning(
+        Report::UnknownSignal(signo) => log::warning(
             c"swoole_signalfd_event_callback",
             format_args!("unknown signal[{signo}]"),
         ),
-        8 => unregistered(c"swoole_signalfd_event_callback"),
-        9 => log::sys_warning_errno(
+        Report::ReadUnregistered(signo) => unregistered(c"swoole_signalfd_event_callback", signo),
+        Report::KeventFailed { signo, error } => failed(
             error,
             c"swoole_signal_kqueue_set",
             format_args!("kevent set signal[{signo}] error"),
         ),
-        _ => {}
-    }
-    if (3..=6).contains(&kind) || kind == 9 {
-        set_errno(error);
     }
 }
 

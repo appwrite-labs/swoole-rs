@@ -1,6 +1,5 @@
 //! Shared SSL context/configuration ownership: `swoole::SSLContext` is this owner,
-//! reference counted (`swr_v1_tls_owner_new`, `_clone`, `_free`). Native reads its
-//! scalar fields and string slots through `swr_v1_tls_owner_view`; OpenSSL
+//! reference counted (`swr_v1_tls_owner_new`, `_clone`, `_free`). OpenSSL
 //! operations read the authoritative Rust owner.
 use crate::context::{PasswordBinding, copy_password, create_context};
 use crate::{TlsConfig, Warn};
@@ -77,16 +76,6 @@ pub struct OwnedTlsPrepared {
     pub fields: *mut OwnedTlsFields,
     pub strings: [*const StringSlot; STRING_COUNT],
 }
-// The layout native's swr_v1_tls_owner_fields asserts too (swoole_rs_tls_owner.h).
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<OwnedTlsFields>() == 32
-        && std::mem::offset_of!(OwnedTlsFields, allow_self_signed) == 11
-        && std::mem::offset_of!(OwnedTlsFields, protocols) == 12
-        && std::mem::offset_of!(OwnedTlsFields, create_flag) == 16
-        && std::mem::offset_of!(OwnedTlsFields, context) == 24,
-    "native swr_v1_tls_owner_fields' layout"
-);
 /// `SSLContext`'s warnings, `function(): message` at warning level.
 pub fn tls_warning(function: &CStr, message: &str) {
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));

@@ -3,7 +3,7 @@
 //! …): inside a coroutine each libc call runs on the async thread pool while the
 //! coroutine waits; outside one it runs here, as [`NATIVE`] decides. Native code
 //! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
-//! The exports keep upstream's names: `swoole_coroutine_api.h` declares them.
+//! The exports keep upstream's names.
 use std::sync::OnceLock;
 
 use libc::{

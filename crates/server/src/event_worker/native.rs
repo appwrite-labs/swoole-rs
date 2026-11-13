@@ -701,6 +701,7 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
 /// `Worker_set_cpu_affinity`.
 #[cfg(target_os = "linux")]
 fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
+    use swoole_rs_process::affinity::AffinityError;
     const ORIGIN: &core::ffi::CStr = c"Worker_set_cpu_affinity";
     let available = config.cpu_affinity_available.get();
     let available = available.as_deref().map(Vec::as_slice);
@@ -709,21 +710,21 @@ fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
         available,
         config.mode_ == MODE_THREAD,
     );
-    match outcome.status {
-        1 => log::sys_warning_errno(
-            outcome.error,
+    match outcome {
+        Err(AffinityError::Get(error)) => log::sys_warning_errno(
+            error,
             ORIGIN,
             format_args!("get CPU affinity for worker#{worker_id} failed"),
         ),
-        2 => log::warning(
+        Err(AffinityError::NoCpu) => log::warning(
             ORIGIN,
             format_args!("no available CPU for worker#{worker_id}"),
         ),
-        3 => log::sys_warning_errno(
-            outcome.error,
+        Err(AffinityError::Set(error)) => log::sys_warning_errno(
+            error,
             ORIGIN,
             format_args!("set CPU affinity for worker#{worker_id} failed"),
         ),
-        _ => {}
+        Ok(()) => {}
     }
 }

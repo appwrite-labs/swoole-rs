@@ -9,7 +9,8 @@ use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
 use swoole_rs_http2::{
-    Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan,
+    FileCompletion, FrameAction, Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan, Media,
+    Respond, WindowAction,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
     sw_rs_http2_data_rejected, sw_rs_http2_decode_frame, sw_rs_http2_file_complete,
@@ -39,28 +40,6 @@ const FLAG_END_STREAM: u32 = 0x1;
 const FLAG_END_HEADERS: u32 = 0x4;
 const FLAG_PADDED: u32 = 0x8;
 const FLAG_PRIORITY: u32 = 0x20;
-/// `SwRsHttp2FrameAction`.
-const ACTION_SETTINGS: u32 = 0;
-const ACTION_HEADERS: u32 = 1;
-const ACTION_DATA: u32 = 2;
-const ACTION_PING_REPLY: u32 = 3;
-const ACTION_WINDOW_UPDATE: u32 = 4;
-const ACTION_RESET: u32 = 5;
-/// `SwRsHttp2RespondAction`.
-const RESP_START: u32 = 0;
-const RESP_HEADER: u32 = 1;
-const RESP_COMMIT_END: u32 = 2;
-const RESP_EMPTY: u32 = 3;
-const RESP_BODY: u32 = 4;
-const RESP_TRAILER: u32 = 5;
-const RESP_ERROR_CLOSE: u32 = 6;
-const RESP_REMOVE: u32 = 7;
-const RESP_ERROR_SHUTDOWN: u32 = 8;
-const RESP_SUCCESS_SHUTDOWN: u32 = 9;
-const RESP_TRUE: u32 = 11;
-/// `SwRsHttp2FileCompletion`.
-const FILE_TRAILER: u32 = 0;
-const FILE_CLOSE: u32 = 1;
 /// `SwRsHttp2HeaderRole` and `SwRsHttp2HeaderKind`.
 const REQUEST_HEADERS: u32 = 0;
 const SERVER_HEADERS: u32 = 2;
@@ -71,8 +50,6 @@ const HEADER_CONTENT_TYPE: u32 = 4;
 const HEADER_COOKIE: u32 = 5;
 const HEADER_CONTENT_LENGTH: u32 = 6;
 const HEADER_ACCEPT_ENCODING: u32 = 7;
-const MEDIA_URLENCODED: u32 = 1;
-const MEDIA_MULTIPART: u32 = 2;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
 const MISSING_SERVER: u32 = 2;
 const MISSING_DATE: u32 = 16;
@@ -437,11 +414,11 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
                 return Some(());
             }
             let plan = header_plan(SERVER_HEADERS, key, can_capture);
-            if plan.suppress != 0 {
+            if plan.suppress {
                 return Some(());
             }
             header_flags |= plan.publish_flags;
-            if plan.capture_content_type != 0 {
+            if plan.capture_content_type {
                 content_type = Some(string_of(value)?);
             }
             headers.add_folded(key, text);
@@ -509,7 +486,7 @@ fn header_plan(role: u32, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
         role,
         folded.get(..length).unwrap_or_default(),
         name.len(),
-        u32::from(can_capture),
+        can_capture,
     )
 }
 
@@ -553,7 +530,7 @@ fn send_header_then(
         return false;
     };
     let empty = body.is_none_or(|body| body.length == 0);
-    let flags = sw_rs_http2_headers_flags(u32::from(empty), u32::from(end_stream), 0);
+    let flags = sw_rs_http2_headers_flags(empty, end_stream, 0);
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
     }
@@ -591,12 +568,12 @@ pub(crate) fn send_body(
             // suspended, so it has no flow control.
             let may_suspend =
                 get(ctx, Field::CoSocket) == 0 && swoole_rs_phpcoroutines::in_coroutine();
-            match sw_rs_http2_window_action(send_n, window, u32::from(may_suspend)) {
-                1 => warn(
+            match sw_rs_http2_window_action(send_n, window, may_suspend) {
+                WindowAction::Warn => warn(
                     c"Stream::send_body",
                     "The data sent exceeded remote_window_size",
                 ),
-                2 => {
+                WindowAction::Yield => {
                     // In a coroutine: WINDOW_UPDATE, or the stream's removal, wakes it.
                     if !current(session, stream) {
                         return false;
@@ -607,7 +584,7 @@ pub(crate) fn send_body(
                     }
                     continue;
                 }
-                _ => {
+                WindowAction::Send | WindowAction::Truncate => {
                     send_n = window as usize;
                     send_flags = 0;
                 }
@@ -698,20 +675,19 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
     // Whether the body went out with the header.
     let mut body_sent = false;
     let mut facts = Http2RespondFacts {
-        header_sent: get(ctx, Field::SendHeader),
-        trailer_present: u32::from(trailer),
-        chunked: 0,
-        shutting_down: 0,
-        streams_empty: 0,
+        header_sent: get(ctx, Field::SendHeader) != 0,
+        trailer_present: trailer,
+        chunked: false,
+        shutting_down: false,
+        streams_empty: false,
         body_length: 0,
     };
-    let next = |action, ok: bool, facts: &Http2RespondFacts| {
-        sw_rs_http2_respond_next(action, u32::from(ok), facts)
-    };
-    let mut action = next(RESP_START, true, &facts);
+    let next =
+        |action, ok: bool, facts: &Http2RespondFacts| sw_rs_http2_respond_next(action, ok, facts);
+    let mut action = next(Respond::Start, true, &facts);
     loop {
         match action {
-            RESP_HEADER => {
+            Respond::Header => {
                 let announced = Body {
                     data,
                     length: data.len(),
@@ -739,22 +715,22 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 body_sent = appended > 0;
                 action = next(action, sent, &facts);
             }
-            RESP_COMMIT_END => {
+            Respond::CommitEnd => {
                 // Headers are sent: body failures must not permit a retry.
                 set(ctx, Field::End, 1);
                 if !compressed && get(ctx, Field::ContentCompressed) != 0 {
                     body = ctx.compressed();
                     compressed = true;
                 }
-                facts.chunked = get(ctx, Field::SendChunked);
+                facts.chunked = get(ctx, Field::SendChunked) != 0;
                 facts.body_length = if compressed { body.len() } else { data.len() };
                 action = next(action, true, &facts);
             }
-            RESP_EMPTY => {
+            Respond::Empty => {
                 let sent = send(ctx, &frame_header(TYPE_DATA, 0, FLAG_END_STREAM, stream.id));
                 action = next(action, sent, &facts);
             }
-            RESP_BODY => {
+            Respond::Body => {
                 let payload = if compressed { &body[..] } else { data };
                 // `send_body`'s check of the stream, at the same point.
                 let sent = if body_sent {
@@ -764,12 +740,12 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 };
                 action = next(action, sent, &facts);
             }
-            RESP_TRAILER => {
+            Respond::Trailer => {
                 let sent = send_trailer(ctx, &session, stream.id);
                 action = next(action, sent, &facts);
             }
-            RESP_ERROR_CLOSE | RESP_REMOVE => {
-                if action == RESP_ERROR_CLOSE {
+            Respond::ErrorClose | Respond::Remove => {
+                if action == Respond::ErrorClose {
                     // Not when the peer reset the stream or closed meanwhile.
                     if session.stream(stream.id, false).is_some() {
                         close(ctx);
@@ -777,15 +753,15 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 } else {
                     session.remove(stream.id);
                 }
-                facts.shutting_down = u32::from(session.shutting_down.get());
-                facts.streams_empty = u32::from(facts.shutting_down != 0 && session.idle());
+                facts.shutting_down = session.shutting_down.get();
+                facts.streams_empty = facts.shutting_down && session.idle();
                 action = next(action, true, &facts);
             }
-            RESP_ERROR_SHUTDOWN | RESP_SUCCESS_SHUTDOWN => {
+            Respond::ErrorShutdown | Respond::SuccessShutdown => {
                 close(ctx);
-                return action == RESP_SUCCESS_SHUTDOWN;
+                return action == Respond::SuccessShutdown;
             }
-            RESP_TRUE => return true,
+            Respond::True => return true,
             _ => return false,
         }
     }
@@ -836,21 +812,21 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
         return false;
     };
     let stream_id = get(ctx, Field::StreamId);
-    let mut action = sw_rs_http2_file_complete(u32::from(!error), u32::from(trailer));
+    let mut action = sw_rs_http2_file_complete(!error, trailer);
     loop {
         match action {
-            FILE_TRAILER => {
+            FileCompletion::Trailer => {
                 let sent = send_trailer(ctx, &session, stream_id);
-                action = sw_rs_http2_file_complete(u32::from(sent), 0);
+                action = sw_rs_http2_file_complete(sent, false);
             }
-            FILE_CLOSE => {
+            FileCompletion::Close => {
                 // Not when the peer reset the stream or closed meanwhile.
                 if session.stream(stream_id, false).is_some() {
                     close(ctx);
                 }
                 return false;
             }
-            _ => {
+            FileCompletion::Remove => {
                 session.remove(stream_id);
                 return true;
             }
@@ -916,11 +892,11 @@ pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::h
 /// header says.
 fn parse(session: &Session, frame: &[u8]) -> c_int {
     let last_stream_id = session.last_stream_id.get();
-    let Some(facts) = sw_rs_http2_decode_frame(frame, last_stream_id, 0) else {
+    let Some(facts) = sw_rs_http2_decode_frame(frame, last_stream_id, false) else {
         return SW_ERR;
     };
     let stream_id = facts.stream_id;
-    let new_stream = facts.publish_last_id != 0;
+    let new_stream = facts.publish_last_id;
     if facts.kind == TYPE_HEADERS && new_stream {
         session.last_stream_id.set(stream_id);
     }
@@ -945,8 +921,8 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
     };
     let flags = facts.flags & 0xff;
     match facts.action {
-        ACTION_SETTINGS => return settings(session, payload),
-        ACTION_HEADERS => return headers(session, stream_id, flags, payload, new_stream),
+        FrameAction::Settings => return settings(session, payload),
+        FrameAction::Headers => return headers(session, stream_id, flags, payload, new_stream),
         _ if facts.kind == TYPE_CONTINUATION => {
             let stream = session.stream(stream_id, false);
             let Some(stream) = stream.filter(|_| pending == stream_id) else {
@@ -954,8 +930,8 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             };
             return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
         }
-        ACTION_DATA => return data(session, stream_id, flags, payload),
-        ACTION_PING_REPLY => {
+        FrameAction::Data => return data(session, stream_id, flags, payload),
+        FrameAction::PingReply => {
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
             let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
@@ -971,7 +947,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             ack[FRAME_HEADER..].copy_from_slice(&echo);
             send(session.default_ctx, &ack);
         }
-        ACTION_WINDOW_UPDATE => {
+        FrameAction::WindowUpdate => {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
             let Ok(increment) = <[u8; 4]>::try_from(payload) else {
@@ -991,7 +967,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
                 }
             }
         }
-        ACTION_RESET => session.remove(stream_id),
+        FrameAction::Reset => session.remove(stream_id),
         _ => {}
     }
     SW_OK
@@ -1060,7 +1036,7 @@ fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) 
 /// `std::strtol` consumed the whole Content-Length and it is within the body limit.
 fn content_length_valid(session: &Session, value: &[u8]) -> bool {
     let (parsed, complete) = strtol(value);
-    sw_rs_http2_content_length_rejected(u32::from(complete), parsed, session.max_body_size) == 0
+    !sw_rs_http2_content_length_rejected(complete, parsed, session.max_body_size)
 }
 
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
@@ -1077,9 +1053,9 @@ fn headers_complete(stream: &Stream) -> bool {
     if let Some(value) = header(ctx, b"content-type") {
         let (folded, length) = fold(value.bytes());
         let media = sw_rs_http2_media_kind(folded.get(..length).unwrap_or_default());
-        if media == MEDIA_URLENCODED {
+        if media == Media::UrlEncoded {
             set(ctx, Field::Form, 1);
-        } else if media == MEDIA_MULTIPART
+        } else if media == Media::Multipart
             // SAFETY: a live context and the header value.
             && !ctx.multipart_start(value.bytes())
         {
@@ -1122,7 +1098,7 @@ fn header(ctx: Ctx, key: &[u8]) -> Option<ZString> {
 }
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    sw_rs_http2_window_plan(current, amount, initial, u32::from(credit))
+    sw_rs_http2_window_plan(current, amount, initial, credit)
 }
 
 fn credit(current: u32, amount: u32) -> u32 {
@@ -1144,17 +1120,17 @@ fn settings(session: &Session, payload: &[u8]) -> c_int {
             0
         };
         let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
-        let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, u32::from(change), 1);
-        if plan.set_value != 0
+        let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
+        if plan.set_value
             && let Ok(field) = usize::try_from(plan.field)
             && let Some(setting) = session.remote.get(field)
         {
             setting.set(value);
         }
-        if plan.set_window != 0 {
+        if plan.set_window {
             session.remote_window_size.set(value);
         }
-        if plan.change_deflater != 0
+        if plan.change_deflater
             && let Some(encoder) = deflater.as_mut()
         {
             encoder.set_table_size(value);
@@ -1188,8 +1164,8 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int 
     let length = payload.len();
     if length > 0 {
         let buffered = ctx.data_start();
-        let ended = get(ctx, Field::End);
-        if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) != 0 {
+        let ended = get(ctx, Field::End) != 0;
+        if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
             reset(ctx, stream_id, 0);
             session.remove(stream_id);
             return SW_OK;
@@ -1258,12 +1234,12 @@ fn parse_header(
         {
             continue;
         }
-        let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), 0);
-        if step.end_headers != 0 {
+        let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
+        if step.end_headers {
             inflater.end_headers();
             break;
         }
-        if step.finish != 0 {
+        if step.finish {
             break;
         }
     }

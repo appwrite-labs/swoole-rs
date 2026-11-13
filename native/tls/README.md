@@ -2,8 +2,8 @@
 
 Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
 and `SSLContext::create` under their upstream symbols, and `dtls::Session` is a Rust
-record. [swoole_ssl.h](swoole_ssl.h) keeps the `SSLContext` members C++ still uses; the C declarations are in
-[swoole_rs_tls_owner.h](swoole_rs_tls_owner.h).
+record. No C or C++ reads `SSLContext`; [swoole_ssl.h](swoole_ssl.h) keeps the OpenSSL
+switches and TLS constants C++ still reads.
 Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` TESTs ported to Rust
 (`ssl.*` in `hooks-system-rust`, tests/modules/hooks/README.md) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).
@@ -19,8 +19,7 @@ ex_data indexes and `swoole_ssl_get_error`'s text.
 `SSLContext` is the Rust owner itself, reference counted: `swr_v1_tls_owner_new`
 makes one and its first reference, `_clone` adds one and `_free` drops one, so a
 port, its SNI contexts and DTLS sessions, a client and a coroutine socket hold
-references rather than `std::shared_ptr`s. C++ reads its fields and string slots
-through `swr_v1_tls_owner_view`; OpenSSL's password callback reads the passphrase
+references rather than `std::shared_ptr`s. OpenSSL's password callback reads the passphrase
 slot the context retains. A copy (`ListenPort::dup_ssl_context`) is
 `swr_v1_tls_owner_assign`. Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only

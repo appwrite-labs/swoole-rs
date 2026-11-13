@@ -8,9 +8,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus};
 use swoole_rs_process::os::kill;
 use swoole_rs_process::process_pool::{Hooks, PoolRef};
-use swoole_rs_process::reaper::{
-    self, RELOAD_KILL_ONE, RELOAD_NONE, RELOAD_SIGNALLED, RELOAD_SKIP, Reap, Waited,
-};
+use swoole_rs_process::reaper::{self, Reap, ReloadStart, Waited};
 use swoole_rs_process::reload_task::{ReloadTask, Warn};
 use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
@@ -358,35 +356,35 @@ impl Reap for Reaping<'_> {
     }
 
     /// Start a requested reload: of every worker, or of the task workers only.
-    fn start_reload(&mut self) -> u32 {
+    fn start_reload(&mut self) -> ReloadStart {
         let config = self.serv.config();
         let reload = self.manager.take_reload(config.task_worker_num.get());
         if reload != Reload::None {
             self.serv.event_pool_ref().set_reload_init(false);
         }
         match reload {
-            Reload::None => RELOAD_NONE,
+            Reload::None => ReloadStart::None,
             Reload::All => {
                 self.begin("all", true);
                 // With reload_async every worker gets SIGTERM now: it stops reading,
                 // asks the manager for its replacement and exits once its work is
                 // done, so the old and the new worker briefly run side by side.
                 if !config.reload_async.get() {
-                    return RELOAD_KILL_ONE;
+                    return ReloadStart::KillOne;
                 }
                 if let Some(task) = self.active_reload() {
                     task.kill_all(libc::SIGTERM, methods::reload_warn);
                 }
-                RELOAD_SIGNALLED
+                ReloadStart::Signalled
             }
             Reload::NoTaskWorkers => {
                 let m = format_args!("cannot reload task workers, task workers is not started");
                 log::warning(c"Manager::wait", m);
-                RELOAD_SKIP
+                ReloadStart::Skip
             }
             Reload::Tasks => {
                 self.begin("task", false);
-                RELOAD_KILL_ONE
+                ReloadStart::KillOne
             }
         }
     }
