@@ -1,5 +1,5 @@
 //! Bounded equivalents of Swoole's permissive first-party HTTP framing.
-use super::{HttpSpan, INVALID, maps::METHODS};
+use super::{HttpSpan, maps::METHODS};
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
 pub struct HttpFrame {
@@ -156,20 +156,12 @@ pub fn expect(input: &[u8]) -> bool {
     }
     false
 }
-/// The value of header `name` among the lines of `input[start..end]`, into `output`:
-/// 1 when found, 0 when not, `INVALID` for bad bounds.
-pub fn header_value(
-    input: &[u8],
-    start: usize,
-    end: usize,
-    name: &[u8],
-    output: &mut HttpSpan,
-) -> i32 {
+/// The value of header `name` among the lines of `input[start..end]`; `None` when
+/// it is absent or the bounds are bad.
+#[must_use]
+pub fn header_value(input: &[u8], start: usize, end: usize, name: &[u8]) -> Option<HttpSpan> {
     let name_length = name.len();
-    *output = HttpSpan::default();
-    let Some(input) = input.get(..end).filter(|_| start <= end) else {
-        return INVALID;
-    };
+    let input = input.get(..end).filter(|_| start <= end)?;
     let (mut at, mut state, mut index, mut buffer, mut error) = (start, 0, 0usize, 0, false);
     while let Some(&byte) = input.get(at) {
         match state {
@@ -203,18 +195,17 @@ pub fn header_value(
             }
             2 => {
                 if tail(input, at).starts_with(b"\r\n") {
-                    *output = HttpSpan {
+                    return Some(HttpSpan {
                         offset: buffer,
                         length: at - buffer,
-                    };
-                    return 1;
+                    });
                 }
             }
             _ => unreachable!(),
         }
         at += 1;
     }
-    0
+    None
 }
 #[cfg(test)]
 mod tests {
@@ -322,12 +313,11 @@ mod tests {
         for name in [&b"a"[..], b"aa", b"Aa:"] {
             for input in &inputs {
                 for start in 0..input.len().min(3) {
-                    let mut got = HttpSpan::default();
-                    let found = header_value(input, start, input.len(), name, &mut got);
+                    let found = header_value(input, start, input.len(), name);
                     let want = header_value_reference(input, start, input.len(), name);
-                    assert_eq!(found, i32::from(want != HttpSpan::default()));
+                    assert_eq!(found.is_some(), want != HttpSpan::default());
                     assert_eq!(
-                        got,
+                        found.unwrap_or_default(),
                         want,
                         "{:?} in {:?}",
                         name,
