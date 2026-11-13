@@ -268,6 +268,14 @@ impl crate::hybrid::Hybrid for Linked {
         crate::commands::send(serv, c)
     }
 
+    fn factory_finish(
+        &self,
+        serv: crate::view::Server<'_>,
+        send: &mut crate::base_factory::SendData,
+    ) -> bool {
+        finish(serv.state(), (&raw mut *send).cast())
+    }
+
     fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
         crate::event_worker_ops::send_to_reactor_thread(serv, head)
     }
