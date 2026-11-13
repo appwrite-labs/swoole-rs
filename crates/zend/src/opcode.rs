@@ -45,10 +45,24 @@ impl<'a> Frame<'a> {
         unsafe { (*self.ptr).opline }
     }
 
-    /// `EX(opline) = opline`.
-    pub fn jump(self, opline: *const zend_op) {
-        // SAFETY: a live frame.
-        unsafe { (*self.ptr).opline = opline };
+    /// `EX(opline) += count`, as a handler that consumed `count` instructions
+    /// does. Zend executes `EX(opline)` next, so the move stays inside the
+    /// function's instructions: one past them leaves the frame where it is (never
+    /// so for what Zend compiles, whose op arrays end in a RETURN).
+    pub fn skip(self, count: usize) {
+        let Some((first, last)) = self.function().instructions() else {
+            return;
+        };
+        let at = self.opline();
+        let index = at.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
+        if index
+            .checked_add(count)
+            .is_none_or(|next| next >= usize::try_from(last).unwrap_or(0))
+        {
+            return;
+        }
+        // SAFETY: a live frame, and an instruction of its function.
+        unsafe { (*self.ptr).opline = at.wrapping_add(count) };
     }
 }
 

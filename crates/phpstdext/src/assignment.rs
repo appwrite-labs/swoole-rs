@@ -263,7 +263,7 @@ unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
         assign(op, data, own, key)?;
     }
     // Reload the current frame opline after reentry, as EX(opline) += 2 did.
-    frame.jump(frame.opline().wrapping_add(2));
+    frame.skip(2);
     Ok(CONTINUE)
 }
 
