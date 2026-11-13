@@ -354,11 +354,11 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             })
         }
         OP_SET_CLOSE_RESET => {
-            conn.set_close_reset(1);
+            conn.set_close_reset(true);
             0
         }
         OP_SET_CLOSE_ACTIVELY => {
-            conn.set_close_actively(1);
+            conn.set_close_actively(true);
             0
         }
         OP_CLEAR_CLOSE_ERRNO => {

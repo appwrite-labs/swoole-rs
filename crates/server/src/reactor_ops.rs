@@ -296,7 +296,7 @@ fn read_facts(o: &mut Objects<'_, '_>) -> u64 {
         cn::FOUND
             | BUILT_PREQUEUE
             | flag(sock.close_notified != 0, cn::CLOSE_NOTIFIED)
-            | flag(conn.close_queued() != 0, cn::CLOSE_QUEUED)
+            | flag(conn.close_queued(), cn::CLOSE_QUEUED)
             | flag(ssl && sock.tls.want_read != 0, cn::SSL_WANT_READ)
             | flag(ssl && sock.tls.state != SSL_READY, cn::SSL_PENDING)
             | flag(is_dgram(sock.socket_type), cn::DTLS_PORT)
@@ -329,10 +329,10 @@ fn write_facts(o: &mut Objects<'_, '_>) -> u64 {
     let pending = o.read_sock(|sock| !sock.ssl().is_null() && sock.tls.state != SSL_READY);
     cn::FOUND
         | BUILT_PREQUEUE
-        | flag(conn.close_notify() != 0, cn::CLOSE_NOTIFY)
+        | flag(conn.close_notify(), cn::CLOSE_NOTIFY)
         | flag(pending, cn::SSL_PENDING)
         | flag(o.config().disable_notify, cn::DISABLE_NOTIFY)
-        | flag(conn.close_force() != 0, cn::CLOSE_FORCE)
+        | flag(conn.close_force(), cn::CLOSE_FORCE)
 }
 
 /// `ReactorThread_onClose`'s facts over the context's event: what decides whether
@@ -362,7 +362,7 @@ fn peer_close_facts(o: &mut Objects<'_, '_>) -> u64 {
     cn::FOUND
         | BUILT_PREQUEUE
         | flag(config.disable_notify, cn::DISABLE_NOTIFY)
-        | flag(conn.close_queued() != 0, cn::CLOSE_QUEUED)
+        | flag(conn.close_queued(), cn::CLOSE_QUEUED)
         | flag(notified, cn::CLOSE_NOTIFIED)
         | flag(o.mode() == crate::MODE_PROCESS, cn::PROCESS)
         | flag(
@@ -371,10 +371,10 @@ fn peer_close_facts(o: &mut Objects<'_, '_>) -> u64 {
         )
         | flag(dispatch_func, cn::DISPATCH_FUNC)
         | flag(config.enable_coroutine.get(), cn::COROUTINE)
-        | flag(conn.ssl() != 0, cn::CONN_SSL)
+        | flag(conn.ssl(), cn::CONN_SSL)
         | flag(conn.close_errno() != 0, cn::CLOSE_ERRNO)
-        | flag(conn.close_force() != 0, cn::CLOSE_FORCE)
-        | flag(conn.close_reset() != 0, cn::CLOSE_RESET)
+        | flag(conn.close_force(), cn::CLOSE_FORCE)
+        | flag(conn.close_reset(), cn::CLOSE_RESET)
 }
 
 /// `Server::close_connection`'s facts, the socket's fd above bit 32; sets the
@@ -403,10 +403,10 @@ fn close_facts(o: &mut Objects<'_, '_>) -> u64 {
             | flag(ssl, cn::SOCKET_SSL)
             | flag(sock.dtls != 0, cn::DTLS_SOCKET)
             | flag(!sock.recv_buffer.is_null(), cn::RECV_BUFFER)
-            | flag(conn.close_force() != 0, cn::CLOSE_FORCE)
-            | flag(conn.close_reset() != 0, cn::CLOSE_RESET)
-            | flag(conn.peer_closed() != 0, cn::PEER_CLOSED)
-            | flag(conn.close_queued() != 0, cn::CLOSE_QUEUED)
+            | flag(conn.close_force(), cn::CLOSE_FORCE)
+            | flag(conn.close_reset(), cn::CLOSE_RESET)
+            | flag(conn.peer_closed(), cn::PEER_CLOSED)
+            | flag(conn.close_queued(), cn::CLOSE_QUEUED)
             | flag(sock.ssl_closed != 0, cn::SSL_CLOSED)
             | flag(
                 ssl && sock.tls.state == SSL_READY && is_stream(sock.socket_type),
@@ -515,7 +515,7 @@ pub(crate) fn answer(
             0
         }
         OP_SSL_READY => {
-            o.sock_conn()?.set_ssl_ready(1);
+            o.sock_conn()?.set_ssl_ready(true);
             0
         }
         OP_CLIENT_CERT => {
@@ -573,7 +573,7 @@ pub(crate) fn answer(
         OP_CONN_SESSION => sign(o.conn()?.session_id()),
         OP_CONN_READING => {
             let removed = o.conn_socket()?.read(|s| s.removed != 0);
-            u64::from(o.conn()?.peer_closed() == 0 && !removed)
+            u64::from(!o.conn()?.peer_closed() && !removed)
         }
         OP_WAIT_EXIT => {
             o.reactor()?.set_wait_exit(true);
@@ -590,7 +590,7 @@ pub(crate) fn answer(
             u64::from(!o.ctx.conn.is_null())
         }
         OP_CONN_FORCE => u64::from(o.conn()?.close_force()),
-        OP_CONN_HANDSHAKING => u64::from(o.conn()?.ssl() != 0 && o.conn()?.ssl_ready() == 0),
+        OP_CONN_HANDSHAKING => u64::from(o.conn()?.ssl() && !o.conn()?.ssl_ready()),
         OP_PIPE_TYPE => u64::from(o.resp()?.kind),
         OP_PIPE_FD => sign(o.resp()?.fd),
         OP_MICROTIME => microtime().to_bits(),
@@ -626,7 +626,7 @@ pub(crate) fn answer(
             (if close != 0 { CLOSE_WAIT } else { 0 }) | (if send != 0 { SEND_WAIT } else { 0 })
         }
         OP_WR_CLEAR_OVERFLOW => {
-            o.conn()?.set_overflow(0);
+            o.conn()?.set_overflow(false);
             0
         }
         OP_WR_QUEUED => {
@@ -846,7 +846,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
                 sock.edit(|s| s.output.out_buffer = buffer);
             }
             sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
-            o.conn()?.set_close_queued(1);
+            o.conn()?.set_close_queued(true);
             0
         }
         OP_CC_WATCH_WRITE => {
@@ -897,13 +897,13 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
                 OP_WR_NOTIFY_CLOSE => (o.conn()?, EVENT_CLOSE),
                 _ => {
                     let conn = o.conn()?;
-                    conn.set_high_watermark(0);
+                    conn.set_high_watermark(false);
                     (conn, EVENT_BUFFER_EMPTY)
                 }
             };
             crate::server_methods::notify(o.server(), conn, event);
             if op == OP_WR_NOTIFY_CLOSE {
-                o.conn()?.set_close_notify(0);
+                o.conn()?.set_close_notify(false);
             }
             0
         }
@@ -912,7 +912,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         OP_CC_SSL_CLOSE => {
             if let Some(socket) = o.conn_socket() {
                 let quiet = o.conn()?.peer_closed();
-                socket.edit(|record| record.ssl_quiet_shutdown = quiet);
+                socket.edit(|record| record.ssl_quiet_shutdown = u8::from(quiet));
                 // SAFETY: handles to a session live only for the operation that took
                 // them, and native code closes it between operations.
                 unsafe { tls::socket_ssl_close(socket) };
@@ -1057,15 +1057,14 @@ fn write_state(o: &Objects<'_, '_>) -> Option<u64> {
     let low_watermark = o.port()?.buffer_low_watermark.get();
     let flag = |set: bool, bit: u64| if set { bit } else { 0 };
     Some(
-        flag(
-            conn.overflow() != 0 && length < buffer_size,
-            OVERFLOW_DRAINED,
-        ) | flag(
-            buffer_empty && conn.high_watermark() != 0 && length <= low_watermark,
-            LOW_WATERMARK,
-        ) | flag(!timer.is_null(), SEND_TIMER)
+        flag(conn.overflow() && length < buffer_size, OVERFLOW_DRAINED)
+            | flag(
+                buffer_empty && conn.high_watermark() && length <= low_watermark,
+                LOW_WATERMARK,
+            )
+            | flag(!timer.is_null(), SEND_TIMER)
             | flag(out_empty, OUT_EMPTY)
-            | flag(conn.peer_closed() != 0, PEER_CLOSED)
+            | flag(conn.peer_closed(), PEER_CLOSED)
             | flag(removed, REMOVED),
     )
 }

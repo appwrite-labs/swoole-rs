@@ -133,9 +133,12 @@ fn paused(socket: &SocketFields) -> bool {
     let conn = unsafe { &*socket.object.cast::<ConnectionRecord>() };
     conn.is_active()
         && conn.closed.load(Ordering::Relaxed) == 0
-        && (conn.closing | conn.close_actively | conn.close_queued | conn.close_reset)
-            | (conn.close_force | conn.peer_closed)
-            == 0
+        && !(conn.closing
+            || conn.close_actively
+            || conn.close_queued
+            || conn.close_reset
+            || conn.close_force
+            || conn.peer_closed)
 }
 
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.

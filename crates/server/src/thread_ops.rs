@@ -144,7 +144,7 @@ pub(crate) fn answer(
         }
         OP_FORCE_CLOSE => {
             let conn = ctx.connection()?;
-            conn.set_close_force(1);
+            conn.set_close_force(true);
             let mut event = conn.event(0, 0);
             handle?.trigger_close(&mut event);
             0
@@ -229,7 +229,7 @@ pub(crate) fn answer(
                 ..DataHead::default()
             };
             // arg: peer_closed, the connection is no longer available
-            ctx.connection()?.set_peer_closed(u8::from(arg != 0));
+            ctx.connection()?.set_peer_closed(arg != 0);
             ctx.sock?.edit(|s| s.close_notified = 1);
             u64::from(factory::notify(state, (&raw mut head).cast()))
         }

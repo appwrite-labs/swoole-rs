@@ -309,15 +309,15 @@ impl Connection for Read<'_> {
         let c = self.conn();
         Upgrade {
             websocket: c.websocket_status >= STATUS_HANDSHAKE,
-            upgraded: c.http_upgrade != 0,
-            http2_stream: c.http2_stream != 0,
+            upgraded: c.http_upgrade,
+            http2_stream: c.http2_stream,
         }
     }
 
     fn activate_websocket(&mut self) {
         let conn = self.conn();
         conn.websocket_status = STATUS_ACTIVE;
-        conn.http_upgrade = 1;
+        conn.http_upgrade = true;
     }
 
     fn http2_enabled(&mut self) -> bool {
@@ -325,7 +325,7 @@ impl Connection for Read<'_> {
     }
 
     fn start_http2(&mut self) {
-        self.conn().http2_stream = 1;
+        self.conn().http2_stream = true;
         // `http2::send_setting_frame`: the server's default settings.
         let settings = swoole_rs_http2::sw_rs_http2_default_settings();
         let mut frame = [0u8; SETTING_FRAME_SIZE];

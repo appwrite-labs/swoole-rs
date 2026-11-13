@@ -558,7 +558,7 @@ impl<'a> Server<'a> {
     /// received within its port's heartbeat idle time.
     #[must_use]
     pub fn healthy(self, now: f64, conn: Connection<'_>) -> bool {
-        if conn.protect() != 0 || conn.last_recv_time() == 0.0 {
+        if conn.protect() || conn.last_recv_time() == 0.0 {
             return true;
         }
         // `get_port_by_session_id`.

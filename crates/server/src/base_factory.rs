@@ -86,7 +86,7 @@ fn session<H: Host>(h: &mut H, id: c_long) -> crate::Effect<Option<(u32, c_int)>
 fn close_event(c: crate::Connection<'_>, fd: c_long) -> DataHead {
     DataHead {
         fd,
-        reactor_id: if c.close_actively() != 0 {
+        reactor_id: if c.close_actively() {
             -1
         } else {
             i16::from(c.reactor_id())
@@ -111,9 +111,9 @@ pub(crate) fn on_close<'a>(
 ) -> Option<()> {
     let c = conn()?;
     let mut info = close_event(c, fd);
-    c.set_closing(1);
+    c.set_closing(true);
     call(&mut info);
-    conn()?.set_closing(0);
+    conn()?.set_closing(false);
     Some(())
 }
 
@@ -329,12 +329,12 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         return Ok(false);
     };
     if flags & CLOSE_RESET != 0 {
-        c.set_close_reset(1);
+        c.set_close_reset(true);
     }
     if flags & CLOSE_ACTIVELY != 0 {
-        c.set_close_actively(1);
+        c.set_close_actively(true);
     }
-    if c.closing() != 0 {
+    if c.closing() {
         log::error_log(
             LOG_NOTICE,
             SESSION_CLOSING,
@@ -343,7 +343,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    if c.close_force() == 0 && c.close_reset() == 0 && c.closed().load(Ordering::Relaxed) != 0 {
+    if !c.close_force() && !c.close_reset() && c.closed().load(Ordering::Relaxed) != 0 {
         log::error_log(
             LOG_TRACE,
             SESSION_CLOSED,
@@ -352,7 +352,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    c.set_closing(1);
+    c.set_closing(true);
     // `if_do_close_callback`: once, by whoever sets `closed`. The slot's presence
     // is Rust's fact, so nothing else reaches the record before onClose.
     if h.is(OP_HAS_ON_CLOSE)?
@@ -363,7 +363,7 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         let info = close_event(c, id);
         h.op(OP_ON_CLOSE, address(&raw const info))?;
     }
-    c.set_closing(0);
+    c.set_closing(false);
     c.set_close_errno(0);
     let socket = c.socket_ptr();
     if socket.is_null() {
@@ -373,11 +373,11 @@ pub(crate) fn end<H: Host>(h: &mut H, id: c_long, flags: u64) -> crate::Effect<b
         );
         return Ok(false);
     }
-    let now = c.close_reset() != 0 || c.peer_closed() != 0 || c.close_force() != 0;
+    let now = c.close_reset() || c.peer_closed() || c.close_force();
     if h.op(OP_OUT_EMPTY, address(socket))? != 0 || now {
         return Ok(h.op(OP_CLOSE_SOCKET, address(socket))?.cast_signed() == SW_OK);
     }
-    c.set_close_queued(1);
+    c.set_close_queued(true);
     Ok(h.op(OP_QUEUE_CLOSE, address(socket))? != 0)
 }
 
@@ -615,7 +615,7 @@ mod tests {
         let mut s = t.script(&[(OP_WORKER_ID, 1), (OP_FORWARD, 1)]);
         assert!(end(&mut s, 1, CLOSE_ACTIVELY).unwrap(), "forwarded");
         assert_eq!(s.called(OP_FORWARD), 1);
-        assert_eq!(t.conn().close_actively, 0, "the owner marks it");
+        assert!(!t.conn().close_actively, "the owner marks it");
         let mut s = t.script(&[]);
         assert!(!end(&mut s, 0, 0).unwrap(), "no session");
     }
@@ -633,7 +633,7 @@ mod tests {
                 c.closing,
                 c.closed.load(Ordering::Relaxed)
             ),
-            (1, 0, 1)
+            (true, false, 1)
         );
         // Closed now: a second close stops unless forced or reset.
         let mut s = t.script(&[(OP_HAS_ON_CLOSE, 1)]);
@@ -652,16 +652,16 @@ mod tests {
         let mut t = Tables::new();
         let mut s = t.script(&[(OP_QUEUE_CLOSE, 1)]);
         assert!(end(&mut s, 1, 0).unwrap());
-        assert_eq!((s.called(OP_QUEUE_CLOSE), t.conn().close_queued), (1, 1));
+        assert_eq!((s.called(OP_QUEUE_CLOSE), t.conn().close_queued), (1, true));
         let mut s = t.script(&[]);
-        t.conn().close_queued = 0;
+        t.conn().close_queued = false;
         assert!(!end(&mut s, 1, 0).unwrap(), "the read event stayed");
-        assert_eq!(t.conn().close_queued, 1, "queued all the same");
-        t.conn().closing = 1;
+        assert!(t.conn().close_queued, "queued all the same");
+        t.conn().closing = true;
         let mut s = t.script(&[]);
         assert!(!end(&mut s, 1, 0).unwrap(), "closing");
-        t.conn().closing = 0;
-        t.conn().close_force = 1;
+        t.conn().closing = false;
+        t.conn().close_force = true;
         t.conn().socket = core::ptr::null_mut();
         assert!(!end(&mut s, 1, 0).unwrap(), "no socket");
         t.conn().active.store(0, Ordering::Relaxed);
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn on_close_reaches_the_record_by_session() {
         let mut t = Tables::new();
-        t.conn().close_actively = 1;
+        t.conn().close_actively = true;
         let s = t.script(&[]);
         // As process mode's factory holds the slot `OP_SESSION_CONN` looked up.
         let conn = s.state.connection_ptr(1, crate::records::VERIFIED);
@@ -700,7 +700,7 @@ mod tests {
             c.set_close_errno(104);
         };
         on_close(|| unsafe { crate::Connection::from_ptr(conn) }, 1, call).unwrap();
-        assert_eq!(seen, Some((1, -1, 7, 1)), "closing during onClose");
-        assert_eq!((t.conn().closing, t.conn().close_errno), (0, 104));
+        assert_eq!(seen, Some((1, -1, 7, true)), "closing during onClose");
+        assert_eq!((t.conn().closing, t.conn().close_errno), (false, 104));
     }
 }
