@@ -408,9 +408,9 @@ mod tests {
         let mut socket = TestSocket::new();
         unsafe { socket.0.record() }.timeouts.read = 1.0;
         unsafe { socket.0.record() }.timeouts.write = 1.0;
-        socket.0.err_code = 9;
+        socket.0.err_code.set(9);
         if failure == 1 {
-            socket.0.sock_fd = -1;
+            socket.0.sock_fd.set(-1);
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
@@ -442,8 +442,8 @@ mod tests {
             |()| transfer(),
             |()| remaining(),
         );
-        let error = socket.0.err_code;
-        socket.0.sock_fd = 100;
+        let error = socket.0.err_code.get();
+        socket.0.sock_fd.set(100);
         ON_SUSPEND.set(None);
         let effects = take()
             .into_iter()

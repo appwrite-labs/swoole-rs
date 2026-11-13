@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::{CoreAllocator, DataHead};
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -15,9 +15,8 @@ use crate::view;
 const FD_SESSION: c_int = 0;
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
 /// under, and what the ops before it found. The entry points (`reactor_entry`) build
-/// it. Each raw field is null or what the op setting it found, live while the context
-/// is: one of the server's reactor threads, one of its connection slots, a worker's
-/// message in this thread's bus, this thread's buffer. Its readers only test for null.
+/// it: one of the server's reactor threads, and (null or live while the context is) a
+/// worker's message in this thread's bus. Its readers only test for null.
 #[cfg_attr(
     not(all(feature = "upstream-symbols", not(test))),
     expect(dead_code, reason = "only the reactor threads' shutdown reads it")
@@ -25,7 +24,7 @@ const FD_SESSION: c_int = 0;
 pub(crate) struct ReactorContext<'a> {
     pub(crate) serv: view::Server<'a>,
     pub(crate) reactor: Option<Reactor>,
-    pub(crate) thread: *mut c_void,
+    pub(crate) thread: Option<&'a ThreadRecord>,
     /// The `PipeBuffer` read from a worker, which starts with its head.
     pub(crate) resp: *const DataHead,
 }
@@ -40,11 +39,10 @@ impl<'a> ReactorContext<'a> {
         )
     )]
     pub(crate) fn new(serv: view::Server<'a>, reactor: Option<Reactor>) -> Self {
-        let null = core::ptr::null_mut();
         Self {
             serv,
             reactor,
-            thread: null,
+            thread: None,
             resp: core::ptr::null(),
         }
     }
@@ -55,9 +53,7 @@ impl<'a> ReactorContext<'a> {
         expect(dead_code, reason = "only the reactor threads' ops call it")
     )]
     pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
-        // SAFETY: null or one of the server's live reactor threads, as the struct
-        // says, which only its own thread touches.
-        unsafe { self.thread.cast::<ThreadRecord>().as_ref() }
+        self.thread
     }
 
     /// The worker's message the pipe read stored.
@@ -75,8 +71,7 @@ pub(crate) use swoole_rs_ossupport::pthread_self;
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
-    // SAFETY: a socket's output buffer is null or the live `Buffer` it owns.
-    unsafe { socket.output.out_buffer.cast::<CppBuffer>().as_ref() }
+    socket.output.buffer()
 }
 
 /// `Socket::is_dgram(type)`.
@@ -103,16 +98,53 @@ pub(crate) struct ThreadRecord {
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
     pub(crate) heartbeat_timer: Cell<*mut c_void>,
     /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
-    pub(crate) bus: *mut c_void,
-    pub(crate) allocator: *const swoole_rs_corebase::CoreAllocator,
+    pub(crate) bus: PoolBus,
+}
+
+/// `SwooleG.std_allocator`.
+pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
+    malloc: Some(libc::malloc),
+    calloc: Some(libc::calloc),
+    realloc: Some(libc::realloc),
+    free: Some(libc::free),
+};
+
+/// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
+/// come from. crates/process and crates/phpprocess read both through a pool's
+/// `message_bus`. Only the constructors here fill one, so its allocator is
+/// `SwooleG.std_allocator` or another record's, until `Server::set_bus_allocator`
+/// stores one a [`swoole_rs_corebase::TrustedAllocator`] vouched for.
+#[repr(C)]
+pub(crate) struct PoolBus {
+    bus: Box<swoole_rs_bus::MessageBus>,
+    /// A cell: `Server::set_bus_allocator` replaces it in place.
+    allocator: Cell<&'static CoreAllocator>,
+}
+
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the hybrid makes and reads message buses")
+)]
+impl PoolBus {
+    /// A record of `bus` over `SwooleG.std_allocator`.
+    pub(crate) fn std(bus: Box<swoole_rs_bus::MessageBus>) -> Self {
+        Self {
+            bus,
+            allocator: Cell::new(&STD_ALLOCATOR),
+        }
+    }
+
+    /// The Rust bus and the allocator of its packets, as they are now.
+    pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, &'static CoreAllocator) {
+        (&self.bus, self.allocator.get())
+    }
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ThreadRecord {
     /// `message_bus`.
-    pub(crate) fn message_bus(&self) -> crate::objects::Bus {
-        // SAFETY: a live thread's bus and allocator, made together.
-        unsafe { crate::objects::Bus::from_parts(self.bus, self.allocator) }
+    pub(crate) fn message_bus(&self) -> crate::objects::Bus<'_> {
+        crate::objects::Bus::over(&self.bus)
     }
 }
 
@@ -125,37 +157,22 @@ const _: () = assert!(
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ThreadRecord {
-    /// `new ReactorThread[count]()`: each with a fresh bus over `allocator`.
-    pub(crate) fn new_array(
-        count: usize,
-        allocator: *const swoole_rs_corebase::CoreAllocator,
-    ) -> *mut c_void {
+    /// `new ReactorThread[count]()`: each with a fresh bus over the allocator of `like`.
+    pub(crate) fn new_array(count: u16, like: crate::objects::Bus<'_>) -> Box<[Self]> {
         let size = swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize;
-        let threads: Box<[Self]> = (0..count)
+        (0..count)
             .map(|_| Self {
                 id: Cell::new(0),
                 notify_pipe: Cell::new(core::ptr::null_mut()),
                 dispatch_count: Cell::new(0),
                 pipe_command: Cell::new(core::ptr::null_mut()),
                 heartbeat_timer: Cell::new(core::ptr::null_mut()),
-                bus: Box::into_raw(swoole_rs_bus::MessageBus::create(size)).cast(),
-                allocator,
+                bus: PoolBus {
+                    bus: swoole_rs_bus::MessageBus::create(size),
+                    // A record's own allocator, which every `Bus` carries.
+                    allocator: Cell::new(like.allocator()),
+                },
             })
-            .collect();
-        Box::into_raw(threads).cast()
-    }
-
-    /// `delete[] threads`: the `count` threads [`Self::new_array`] made, and their buses.
-    ///
-    /// # Safety
-    /// `threads` is [`Self::new_array`]'s array of `count`, not used again.
-    pub(crate) unsafe fn delete_array(threads: *mut c_void, count: usize) {
-        let threads = core::ptr::slice_from_raw_parts_mut(threads.cast::<Self>(), count);
-        // SAFETY: as the caller guarantees.
-        let threads = unsafe { Box::from_raw(threads) };
-        for thread in &threads {
-            // SAFETY: the thread's own bus, `new_array` boxed, freed once.
-            drop(unsafe { Box::from_raw(thread.bus.cast::<swoole_rs_bus::MessageBus>()) });
-        }
+            .collect()
     }
 }

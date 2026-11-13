@@ -48,7 +48,7 @@ const SERVER_WORKER_EXIT_TIMEOUT: c_int = 9101;
 const SERVER_WORKER_UNPROCESSED_DATA: c_int = 9103;
 
 /// `serv->get_worker_message_bus()`.
-fn bus(serv: view::Server<'_>) -> Bus {
+fn bus(serv: view::Server<'_>) -> Bus<'_> {
     crate::master_ops::worker_message_bus(serv.state())
 }
 
@@ -123,7 +123,7 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
         Some(ServerEvent::RecvDgram) => run_task(serv, worker, info, ReceiveSlot::Packet),
         Some(ServerEvent::Close) => {
             free_client_cert(serv, info);
-            _ = crate::factory::end(state, info.fd, 0);
+            _ = crate::factory::end(serv, info.fd, 0);
         }
         Some(ServerEvent::Connect) => {
             if info.len > 0 {
@@ -332,16 +332,8 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         kind: ServerEvent::Shutdown.code(),
         ..DataHead::default()
     };
-    let data = (&raw const head).cast();
-    // SAFETY: one of the live server's workers, and the event.
-    let sent = unsafe {
-        swoole_rs_process::methods::send_pipe_message(
-            worker.raw(),
-            data,
-            size_of::<DataHead>(),
-            PIPE_MASTER,
-        )
-    };
+    let data = swoole_rs_process::process_pool::head_view(&head);
+    let sent = swoole_rs_process::methods::send_pipe_message(worker, data, PIPE_MASTER);
     sent != -1
 }
 
@@ -671,14 +663,13 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let Some(pipe) = pipe else {
         return -1;
     };
-    let (info, size) = (core::ptr::from_ref(head).cast(), size_of::<DataHead>());
+    let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         let write = swoole_rs_reactor::event_api::swoole_event_write;
-        // SAFETY: the live pipe, and the event of `size` bytes it carries.
-        unsafe { write(pipe.as_ptr().cast(), info, size) }
+        // SAFETY: the live pipe, and the event's bytes.
+        unsafe { write(pipe.as_ptr().cast(), info.as_ptr().cast(), info.len()) }
     } else {
-        // SAFETY: as above.
-        let event = unsafe { swoole_rs_reactor::Drain::from_raw(info, size) };
+        let event = swoole_rs_reactor::Drain::new(info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
     }
 }

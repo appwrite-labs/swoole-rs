@@ -30,9 +30,8 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
     let Some([read, write]) = crate::sys::pipe() else {
         return -1;
     };
-    // SAFETY: fork(2) has no memory preconditions; the child only makes
-    // async-signal-safe calls before exec, as upstream's did.
-    let child = unsafe { libc::fork() };
+    // The child only makes async-signal-safe calls before exec, as upstream's did.
+    let child = crate::sys::fork();
     if child == -1 {
         let error = errno();
         close(read);

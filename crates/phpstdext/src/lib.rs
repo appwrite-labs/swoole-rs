@@ -74,7 +74,7 @@ pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
         unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, handler) };
     }
     // Function lookups, then overrides, in the original order.
-    invoke::install();
+    invoke::install(minit);
     typed::install(minit);
 }
 

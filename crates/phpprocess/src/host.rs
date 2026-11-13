@@ -13,7 +13,7 @@ use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::worker_record::WorkerType;
-use swoole_rs_process::{methods, worker_record::WorkerRecord};
+use swoole_rs_process::{methods, worker_record::Worker};
 use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
 use swoole_rs_zend::host::{callable, function_call};
@@ -79,12 +79,12 @@ thread_local! {
 
 /// In a server worker thread, `process` becomes a copy of its server worker
 /// (shared); false elsewhere, or past the server's last worker.
-pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
+pub(crate) fn worker_share(process: Worker<'_>) -> bool {
     with_server(|serv| serv.is_worker_thread() && share(serv, process)).unwrap_or(false)
 }
 
 /// [`worker_share`] in a worker thread of `serv`.
-fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
+fn share(serv: view::Server<'_>, process: Worker<'_>) -> bool {
     let user = methods::worker_type() == Some(WorkerType::User);
     let id = if user {
         methods::swoole_get_worker_id()
@@ -97,13 +97,9 @@ fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
     let Some(source) = serv.worker_record(id.c_cast::<u16>()) else {
         return false;
     };
-    *process = source.get();
-    process.pipe_current = if user {
-        process.pipe_worker
-    } else {
-        process.pipe_master
-    };
-    process.shared = true;
+    process.put(source.get());
+    process.use_pipe(!user);
+    process.set_shared(true);
     true
 }
 

@@ -114,30 +114,30 @@ mod tests {
     #[test]
     fn protocol_snapshot_and_restore() {
         let mut socket = TestSocket::new();
-        socket.0.open_eof_check = true;
-        socket.0.open_length_check = false;
-        socket.0.protocol.package_max_length = 117;
-        socket.0.protocol.package_eof_len = 2;
+        socket.0.open_eof_check.set(true);
+        socket.0.open_length_check.set(false);
+        socket.0.protocol.get_mut().package_max_length = 117;
+        socket.0.protocol.get_mut().package_eof_len = 2;
         {
             let _scope = ProtocolScope::new(socket.co());
-            socket.0.open_eof_check = false;
-            socket.0.open_length_check = true;
-            socket.0.protocol.package_max_length = 1;
-            socket.0.protocol.package_eof_len = 1;
+            socket.0.open_eof_check.set(false);
+            socket.0.open_length_check.set(true);
+            socket.0.protocol.get_mut().package_max_length = 1;
+            socket.0.protocol.get_mut().package_eof_len = 1;
         }
-        assert!(socket.0.open_eof_check);
-        assert!(!socket.0.open_length_check);
-        assert_eq!(socket.0.protocol.package_max_length, 117);
-        assert_eq!(socket.0.protocol.package_eof_len, 2);
+        assert!(socket.0.open_eof_check.get());
+        assert!(!socket.0.open_length_check.get());
+        assert_eq!(socket.0.protocol.get_mut().package_max_length, 117);
+        assert_eq!(socket.0.protocol.get_mut().package_eof_len, 2);
         {
             let _first = ProtocolScope::new(socket.co());
-            socket.0.protocol.package_max_length = 222;
+            socket.0.protocol.get_mut().package_max_length = 222;
             {
                 let _nested = ProtocolScope::new(socket.co());
-                socket.0.protocol.package_max_length = 333;
+                socket.0.protocol.get_mut().package_max_length = 333;
             }
-            assert_eq!(socket.0.protocol.package_max_length, 222);
+            assert_eq!(socket.0.protocol.get_mut().package_max_length, 222);
         }
-        assert_eq!(socket.0.protocol.package_max_length, 117);
+        assert_eq!(socket.0.protocol.get_mut().package_max_length, 117);
     }
 }

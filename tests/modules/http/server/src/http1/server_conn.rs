@@ -1624,7 +1624,11 @@ static MSG_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     // SAFETY: `server->get_worker_pipe_master(0)`: worker 0's pipe to the master, whose
     // first member is its fd.
-    let fd = unsafe { *(*serv.view().worker(0)).pipe_master.cast::<c_int>() };
+    let fd = unsafe {
+        *swoole_rs_process::worker_record::Worker::new(serv.view().worker(0))
+            .pipe_master()
+            .cast::<c_int>()
+    };
     let len = rand_between(1000, 8000) as usize;
     let mut ev = EventData::new();
     ev.info.msg_id = msg_id;

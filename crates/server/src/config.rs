@@ -458,15 +458,6 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    /// The worker registry's address, or null before a state gives the config one.
-    pub(crate) fn registry(&self) -> *mut WorkerRegistry {
-        self.worker_registry
-            .as_deref()
-            .map_or(core::ptr::null_mut(), |registry| {
-                core::ptr::from_ref(registry).cast_mut()
-            })
-    }
-
     /// `serv->ipc_max_size`.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn ipc_max_size(&self) -> u32 {
@@ -540,7 +531,7 @@ mod tests {
         unsafe {
             assert!((*state).tables_ref().ports().is_empty());
             for &port in &ports {
-                (*state).push_port(port.cast());
+                let _ = (*state).push_port(Box::from_raw(port));
             }
             assert_eq!((*state).tables_ref().ports().len(), 2);
             assert_eq!((*ports[1]).object_id, 2);

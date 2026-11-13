@@ -83,16 +83,11 @@ pub extern "C" fn realtime_add(time: &mut libc::timespec, milliseconds: i64) {
 /// `Timer::get_absolute_msec()`: `std::chrono::steady_clock` in milliseconds.
 #[must_use]
 pub fn absolute_msec() -> i64 {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
     #[cfg(target_vendor = "apple")]
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    // SAFETY: a writable timespec.
-    unsafe { libc::clock_gettime(clock, &raw mut now) };
+    let now = swoole_rs_corebase::sys::clock_time(clock);
     now.tv_sec * 1000 + now.tv_nsec / 1_000_000
 }
 

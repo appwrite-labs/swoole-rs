@@ -50,11 +50,10 @@ pub(crate) struct Slot(OnceCell<Box<UnsafeCell<WorkerRecord>>>);
 impl Slot {
     /// The object's worker, once it has one.
     pub(crate) fn get(&self) -> Option<Worker<'_>> {
-        let record = self.0.get()?.get();
-        // SAFETY: the slot's own boxed record, which lives until the slot drops,
-        // so for longer than the borrow; only the thread that runs the object's
-        // methods reads or writes it, one field at a time.
-        Some(unsafe { Worker::new(record) })
+        // The slot's own boxed record, which lives until the slot drops, so for
+        // longer than the borrow; only the thread that runs the object's methods
+        // reads or writes it, through handles, one field at a time.
+        Some(Worker::from(&**self.0.get()?))
     }
 
     /// Take `record` as the object's worker; false, with `record` dropped,
@@ -72,22 +71,12 @@ impl Drop for Slot {
             return;
         };
         let record = record.get_mut();
-        if !record.pipe_object.is_null() && !record.shared {
+        if !record.pipe_object().is_null() && !record.shared {
             // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
             // nothing uses afterwards.
-            delete_pair(unsafe { Box::from_raw(record.pipe_object.cast()) });
+            delete_pair(unsafe { Box::from_raw(record.pipe_object().cast()) });
         }
     }
-}
-
-/// `f` over the worker's record, borrowed for the call only. Private: every
-/// `f` is a closure of this module that reads or writes fields and returns.
-fn with<R>(worker: Worker<'_>, f: impl FnOnce(&mut WorkerRecord) -> R) -> R {
-    // SAFETY: the handle's record is live (`Worker::new`'s contract), and it is
-    // one this process alone uses: a Process object's own ([`Slot::get`]) or the
-    // user worker a server starts this process as. No `f` reaches a worker's
-    // record again, so the borrow is the only one while it runs.
-    f(unsafe { &mut *worker.raw() })
 }
 
 /// `new Worker()`.
@@ -103,23 +92,19 @@ fn delete_pair(mut pair: Box<SocketPair>) {
 /// In a server worker thread, the worker becomes a copy of its server worker
 /// (shared); false elsewhere, or past the server's last worker.
 pub(crate) fn share(worker: Worker<'_>) -> bool {
-    with(worker, crate::host::worker_share)
+    crate::host::worker_share(worker)
 }
 
 /// Redirect stdin, stdout and stderr to the pipe in the child.
 pub(crate) fn redirect(worker: Worker<'_>) {
-    with(worker, |worker| {
-        worker.redirect_stdin = true;
-        worker.redirect_stdout = true;
-        worker.redirect_stderr = true;
-    });
+    worker.set_redirect_stdin(true);
+    worker.set_redirect_stdout(true);
+    worker.set_redirect_stderr(true);
 }
 
 pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
-    with(worker, |record| {
-        record.set_id(id);
-        record.shared = false;
-    });
+    worker.set_id(id);
+    worker.set_shared(false);
 }
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
@@ -131,43 +116,40 @@ pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> c_int {
         return -1;
     }
     let pair = Box::into_raw(built);
-    with(worker, |record| {
-        record.pipe_master = master.cast();
-        record.pipe_worker = end.cast();
-        record.pipe_object = pair.cast();
-        record.pipe_current = master.cast();
-    });
+    // SAFETY: the two ends of the pair just boxed, which lives until `pipe_close`
+    // or the slot's drop deletes it; `pipe_close` clears the record's pipes first.
+    unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
+    worker.use_pipe(true);
     pipe(worker).map_or(-1, Socket::fd)
 }
 
 /// The worker's current pipe end, while it has one.
 fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
-    let current = with(worker, |record| record.pipe_current);
     // SAFETY: a worker's current pipe end is null or a live socket of its pair.
-    unsafe { Socket::from_ptr(current.cast()) }
+    unsafe { Socket::from_ptr(worker.pipe_current().cast()) }
 }
 
 pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
     let pipe = pipe(worker).map_or(-1, Socket::fd);
-    with(worker, |record| WorkerView {
-        id: record.id(),
-        pid: record.pid(),
+    WorkerView {
+        id: worker.id(),
+        pid: worker.pid(),
         pipe,
-        pipe_object: !record.pipe_object.is_null(),
-        redirect_stdin: record.redirect_stdin,
-        redirect_stdout: record.redirect_stdout,
-        redirect_stderr: record.redirect_stderr,
-    })
+        pipe_object: !worker.pipe_object().is_null(),
+        redirect_stdin: worker.redirect_stdin(),
+        redirect_stdout: worker.redirect_stdout(),
+        redirect_stderr: worker.redirect_stderr(),
+    }
 }
 
 /// `swoole_fork(0)`, recording the child's pid in the parent.
 pub(crate) fn fork(worker: Worker<'_>) -> c_int {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
-        with(worker, |record| record.set_pid(pid));
+        worker.set_pid(pid);
     }
     if pid >= 0 {
-        with(worker, |record| record.child_process = pid == 0);
+        worker.set_child_process(pid == 0);
     }
     pid
 }
@@ -175,11 +157,9 @@ pub(crate) fn fork(worker: Worker<'_>) -> c_int {
 /// In the child: the worker end becomes the pipe and the worker this process's.
 pub(crate) fn child_enter(worker: Worker<'_>) {
     let pid = swoole_rs_process::os::getpid();
-    let id = with(worker, |process| {
-        process.pipe_current = process.pipe_worker;
-        process.set_pid(pid);
-        process.id()
-    });
+    worker.use_pipe(false);
+    worker.set_pid(pid);
+    let id = worker.id();
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
     swoole_rs_process::worker_globals::set_current_worker(worker.raw());
@@ -230,13 +210,11 @@ pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> c_int {
         )),
     };
     if ret >= 0 && which == 0 {
+        // The record forgets the pair's ends before they go.
+        worker.clear_pipes();
         // SAFETY: the worker's pair, boxed as [`open_pipe`] and crates/server's pools
         // make them, deleted once; upstream deletes it even when shared.
         delete_pair(unsafe { Box::from_raw(pair) });
-        with(worker, |record| {
-            record.pipe_object = std::ptr::null_mut();
-            record.pipe_current = std::ptr::null_mut();
-        });
     }
     ret
 }

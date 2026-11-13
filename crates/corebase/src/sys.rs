@@ -857,6 +857,19 @@ pub fn gettid() -> libc::c_long {
     id.cast_signed()
 }
 
+/// `clock_gettime(2)` without its status, as a caller that reads a clock every
+/// platform has (the timer's): the clock's time, or zero where the call fails.
+#[inline]
+#[must_use]
+pub fn clock_time(clock: libc::clockid_t) -> libc::timespec {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    c::clock_gettime(clock, &mut now);
+    now
+}
+
 /// `clock_gettime(2)`: the clock's time, or `None` with errno set.
 #[must_use]
 pub fn clock_gettime(clock: libc::clockid_t) -> Option<libc::timespec> {

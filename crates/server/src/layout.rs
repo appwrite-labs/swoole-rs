@@ -81,7 +81,7 @@ const RECORD_1_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ServerTables, max_connection),
     offset_of!(crate::records::ServerTables, enable_accept_timer),
     offset_of!(crate::records::ServerTables, reactor_pipe_num),
-    offset_of!(crate::records::ServerTables, reactor_threads),
+    crate::records::REACTOR_THREADS_OFFSET,
     offset_of!(crate::records::ServerTables, ports),
     offset_of!(crate::records::ServerTables, message_bus),
 ];
@@ -236,20 +236,10 @@ const RECORD_8_OFFSETS: &[usize] = &[
     offset_of!(crate::shared::ServerShared, manager_barrier),
 ];
 
-/// Checks the native layout against its canonical Rust record.
-///
-/// # Safety
-/// `offsets` points to `count` readable native field offsets for this call.
-#[unsafe(no_mangle)]
-pub(crate) unsafe extern "C" fn swr_v1_server_record_layout(
-    kind: u32,
-    size: usize,
-    alignment: usize,
-    offsets: *const usize,
-    count: usize,
-) -> bool {
-    // SAFETY: the caller supplies its readable offset array for this call.
-    let actual = unsafe { core::slice::from_raw_parts(offsets, count) };
+/// Checks a mirror of record `kind` (its size, alignment and field offsets) against
+/// the canonical Rust record.
+#[must_use]
+pub fn server_record_layout(kind: u32, size: usize, alignment: usize, actual: &[usize]) -> bool {
     match kind {
         0 => {
             type Record = crate::config::ServerConfig;

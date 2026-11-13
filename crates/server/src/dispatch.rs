@@ -184,12 +184,7 @@ pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: ServerEven
     if serv.config().mode_ == Mode::Process {
         return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
     }
-    let send = SendData {
-        info,
-        data: core::ptr::null(),
-    };
-    // SAFETY: a send with no data.
-    let sent = unsafe { crate::server_methods::send_to_connection(serv, &send) };
+    let sent = crate::send::send_event_to_connection(serv, &info, &[]);
     i64::from(sent) == crate::SW_OK
 }
 
@@ -406,12 +401,9 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
     } else {
         config.have_stream_sock = true;
     }
-    let raw = Box::into_raw(port).cast();
-    // SAFETY: the new port, which the server owns from now on; as above, no other
-    // thread reads the list.
-    unsafe { serv.state().push_port(raw) };
-    // SAFETY: the port the server just kept, for its life.
-    unsafe { Port::from_raw(raw) }.unwrap_or_else(|| swoole_rs_corebase::fatal("a null port"))
+    // SAFETY: as above, no other thread reads the list, and the caller's views of
+    // it ended before the push.
+    unsafe { serv.state().push_port(port) }
 }
 
 /// `Server::add_systemd_socket()`: imports the sockets systemd passed; the number

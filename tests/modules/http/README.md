@@ -142,7 +142,7 @@ phase: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
-`http1.rs`'s copies (`swr_v1_server_record_layout`). Upstream's fixtures, inputs and
+`http1.rs`'s copies (`server_record_layout`). Upstream's fixtures, inputs and
 expected values are kept; where they ran llhttp the handlers read the request line and
 headers themselves. The client is a port of core-tests' cpp-httplib 0.7
 (`server/src/client.rs`): a failed request is `None` where httplib returns `nullptr`.

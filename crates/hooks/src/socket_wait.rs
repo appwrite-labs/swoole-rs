@@ -269,11 +269,9 @@ pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_
             return;
         }
         // The record is live: it still owns `event_socket`.
-        let co = socket.with_state(|state| state.co(event));
-        if !co.is_null() {
+        if socket.with_state(|state| !state.co(event).is_null()) {
             set_err(socket, 0);
-            // SAFETY: the coroutine bound for `event`, parked in its wait on `socket`.
-            unsafe { (NATIVE.resume)(co) };
+            crate::co_io::resume_bound(socket, event);
         }
     }
 }
@@ -361,7 +359,7 @@ mod tests {
     fn close_wait_nobufs_and_reactor_failures_stop_early() {
         let mut s = socket(CLOSE_WAIT | NOBUFS);
         assert!(!wait_on(&mut s, READ, None));
-        assert_eq!(s.0.err_code, CLOSE_WAIT_ERROR);
+        assert_eq!(s.0.err_code.get(), CLOSE_WAIT_ERROR);
         assert_eq!(effects(), Vec::<String>::new());
         // close_wait leaves the no-buffers flag for the next wait.
         assert!(unsafe { s.0.record() }.kernel_nobufs);
@@ -416,7 +414,7 @@ mod tests {
         let mut s = socket(0);
         ON_SUSPEND.set(Some(Box::new(|socket: Co, _| socket.set_sock_fd(-1))));
         assert!(!wait_on(&mut s, READ, None));
-        s.0.sock_fd = 100;
+        s.0.sock_fd.set(100);
     }
 
     // Upstream's poll: is_available, the direction's timeout when none is given,
@@ -442,10 +440,10 @@ mod tests {
         crate::co_io::test_host::TIMER_OK.set(false);
         assert!(!poll(s.co(), READ, 1.0));
         assert_eq!(effects(), ["timer:add:1"]);
-        s.0.sock_fd = -1;
+        s.0.sock_fd.set(-1);
         assert!(!poll(s.co(), READ, 1.0));
         assert_eq!(effects(), Vec::<String>::new());
-        s.0.sock_fd = 100;
+        s.0.sock_fd.set(100);
     }
 
     // Upstream's error_event_callback: resume the writer, then the reader while
@@ -469,7 +467,7 @@ mod tests {
                 core::ptr::null_mut()
             };
             record.removed = removed;
-            let event_socket = s.0.socket;
+            let event_socket = s.0.socket.get();
             unsafe { &mut *s.state() }.bind(READ, (&raw mut reader).cast());
             unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());
             ON_RESUME.set(Some(Box::new(move |cid| {
@@ -477,7 +475,7 @@ mod tests {
                     unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
                 }
             })));
-            s.0.err_code = 9;
+            s.0.err_code.set(9);
             error_event(
                 s.co(),
                 unsafe { swoole_rs_reactor::Socket::from_ptr(event_socket) }.unwrap(),
@@ -487,7 +485,7 @@ mod tests {
                 want.push("resume:7".into());
             }
             assert_eq!(effects(), want);
-            assert_eq!(s.0.err_code, 0);
+            assert_eq!(s.0.err_code.get(), 0);
             unsafe { &mut *s.state() }.bind(READ, core::ptr::null_mut());
             unsafe { &mut *s.state() }.bind(WRITE, core::ptr::null_mut());
         }

@@ -2,8 +2,6 @@
 //! the HTTP/1 server's static responses, a 404 page, a 304, a directory
 //! listing or the file's ranges, sent to the connection.
 use crate::static_handler::{Effects, StaticHandler, page_404};
-use core::ffi::c_void;
-use core::ptr;
 use swoole_rs_corebase::{CCast, ServerEvent};
 use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange};
 
@@ -250,22 +248,20 @@ impl SendfileTask {
     }
 }
 
-/// The live request, connection and server of an HTTP/1 static response.
-struct Wire {
-    server: crate::view::Server<'static>,
+/// The server, request, session and socket of an HTTP/1 static response.
+struct Wire<'a> {
+    server: crate::view::Server<'a>,
     request: *const swoole_rs_http_ffi::HttpRequest,
-    conn: *const crate::ConnectionRecord,
+    session_id: core::ffi::c_long,
+    socket: swoole_rs_reactor::Socket<'a>,
 }
 
-impl Wire {
+impl Wire<'_> {
+    /// The request, for one read: a send may close the connection and free it, and
+    /// nothing reads it after that send.
     fn request(&self) -> &swoole_rs_http_ffi::HttpRequest {
-        // SAFETY: the connection's live request, per `swr_v1_server_static_select`.
+        // SAFETY: `static_select`'s caller: the connection's request, live at each read.
         unsafe { &*self.request }
-    }
-
-    fn connection(&self) -> &crate::ConnectionRecord {
-        // SAFETY: the live connection, per `swr_v1_server_static_select`.
-        unsafe { &*self.conn }
     }
 
     /// `length` bytes of the request's buffer at `offset`.
@@ -277,7 +273,7 @@ impl Wire {
     }
 }
 
-impl Exchange for Wire {
+impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
         self.request()
             .get_header(name)
@@ -290,45 +286,39 @@ impl Exchange for Wire {
         self.request().method == HTTP_HEAD
     }
     fn cork(&self) {
-        // SAFETY: the connection's live socket.
-        swoole_rs_reactor::socket_upstream::socket_cork(unsafe {
-            &mut *self.connection().socket.cast()
-        });
+        let socket = self.socket.as_ptr();
+        // SAFETY: the connection's live socket, which no handle reads or edits during
+        // the cork: the read path that serves the request holds none across this call.
+        swoole_rs_reactor::socket_upstream::socket_cork(unsafe { &mut (*socket).fields });
     }
     fn send(&self, kind: ServerEvent, data: &[u8]) {
-        let send = crate::base_factory::SendData {
-            info: swoole_rs_corebase::DataHead {
-                fd: self.connection().session_id,
-                len: u32::try_from(data.len()).unwrap_or(u32::MAX),
-                kind: kind.code(),
-                ..Default::default()
-            },
-            data: if data.is_empty() {
-                ptr::null()
-            } else {
-                data.as_ptr().cast()
-            },
+        let info = swoole_rs_corebase::DataHead {
+            fd: self.session_id,
+            len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            kind: kind.code(),
+            ..Default::default()
         };
-        // SAFETY: a `SendData` over `data`, which lives for the call.
-        unsafe { crate::server_methods::send_to_connection(self.server, &send) };
+        crate::send::send_event_to_connection(self.server, &info, data);
     }
 }
 
-/// `Server::select_static_handler(request, conn)` for the ports read path.
-///
+/// `Server::select_static_handler(request, conn)` for the ports read path: `request`
+/// is the request of the connection of session `session_id`, whose socket is `socket`.
 /// # Safety
-/// `server` is the live server and `request` the live request of `conn`, one
-/// of its connections.
-pub unsafe fn swr_v1_server_static_select(
-    server: *mut c_void,
+/// `request` is that connection's live request. The last send may close the
+/// connection, which frees it.
+#[must_use]
+pub unsafe fn static_select(
+    server: crate::view::Server<'_>,
     request: *const swoole_rs_http_ffi::HttpRequest,
-    conn: *const crate::ConnectionRecord,
+    session_id: core::ffi::c_long,
+    socket: swoole_rs_reactor::Socket<'_>,
 ) -> bool {
     let wire = Wire {
-        // SAFETY: per the caller; the server outlives the call and the handler.
-        server: unsafe { crate::view::Server::from_raw(server) },
+        server,
         request,
-        conn,
+        session_id,
+        socket,
     };
     let url = wire.bytes(
         wire.request().url_offset as usize,

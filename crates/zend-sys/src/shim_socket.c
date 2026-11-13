@@ -33,10 +33,27 @@ HashTable *swr_zend_convert_to_array(zval *value) {
     return Z_ARRVAL_P(value);
 }
 
+/* Whether `value` is a PHP value or a reference to one: a slot the engine keeps for
+ * itself (IS_INDIRECT, IS_PTR, ...) has no type name. */
+static bool swr_zval_named(const zval *value) {
+    uint8_t kind = Z_TYPE_P(value);
+    if (kind == IS_REFERENCE) {
+        kind = Z_TYPE_P(Z_REFVAL_P(value));
+    }
+    return kind <= IS_RESOURCE;
+}
+
 const char *swr_zend_zval_value_name(const zval *value) {
+    if (!swr_zval_named(value)) {
+        return "mixed";
+    }
 #if PHP_VERSION_ID >= 80300
     return zend_zval_value_name(value);
 #else
     return zend_zval_type_name(value);
 #endif
+}
+
+const char *swr_zend_zval_type_name(const zval *value) {
+    return swr_zval_named(value) ? zend_zval_type_name(value) : "mixed";
 }

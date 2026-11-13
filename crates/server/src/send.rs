@@ -96,7 +96,7 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
     let socket = conn.socket()?;
     if conn.overflow()
         || socket.read(|record| {
-            !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
+            !record.direct_send || !record.ssl().is_null() || record.output.out_buffer.is_some()
         })
     {
         return None;
@@ -132,6 +132,15 @@ pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> c_int {
         unsafe { core::slice::from_raw_parts(send.data.cast::<u8>(), len) }
     };
     to_connection(serv, &send.info, data, None)
+}
+
+/// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> c_int {
+    to_connection(serv, info, data, None)
 }
 
 /// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
@@ -225,8 +234,8 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         if !file && sock.read(|s| s.direct_send) && direct_send(conn, sock, &mut data, first) {
             return SW_OK;
         }
-        if sock.read(|s| s.output.out_buffer.is_null()) {
-            let buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+        if sock.read(|s| s.output.out_buffer.is_none()) {
+            let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
             sock.edit(|s| s.output.out_buffer = buffer);
         }
     }

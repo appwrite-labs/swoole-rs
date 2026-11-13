@@ -80,18 +80,19 @@ pub use records::{
     swr_v1_server_connection, swr_v1_server_session,
 };
 
-pub use shared::{
-    PortCounters, ServerCounters, swr_v1_server_port_shared_init, swr_v1_server_shared_init,
-};
+pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 
 pub use config::{DispatchMode, Mode, ServerConfig, TaskIpcMode};
+pub use layout::server_record_layout;
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
 /// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-pub use state::{ServerState, ServerText, swr_v1_server_state_free, swr_v1_server_state_new};
+pub use state::{ServerState, ServerText};
+#[cfg(test)]
+pub(crate) use state::{free_state as swr_v1_server_state_free, swr_v1_server_state_new};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;

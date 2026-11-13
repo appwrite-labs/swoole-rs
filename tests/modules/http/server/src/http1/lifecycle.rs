@@ -1094,14 +1094,13 @@ unsafe extern "C" fn kill_on_worker_start(
         ev.len = 0;
         let dst = Server(serv).view().worker(1);
         // SAFETY: worker 1 of the running server; the event's head.
-        let sent = unsafe {
-            send_pipe_message(
-                dst,
-                (&raw const ev).cast(),
-                size_of::<DataHead>(),
-                SW_PIPE_MASTER | SW_PIPE_NONBLOCK,
+        let (dst, head) = unsafe {
+            (
+                swoole_rs_process::worker_record::Worker::new(dst),
+                std::slice::from_raw_parts((&raw const ev).cast::<u8>(), size_of::<DataHead>()),
             )
         };
+        let sent = send_pipe_message(dst, head, SW_PIPE_MASTER | SW_PIPE_NONBLOCK);
         check(sent > 0, "send_to_worker_from_worker(1, &ev, ...) > 0");
     }
 }

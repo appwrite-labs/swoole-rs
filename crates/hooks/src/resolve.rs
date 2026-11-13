@@ -6,7 +6,7 @@
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
 use crate::offload::{AsyncEvent, AsyncOps, Handler, hook_async};
-use crate::wait_event::native::{coroutine_yield_ex, current};
+use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_clients::dns::DnsSocket;
@@ -21,16 +21,13 @@ const TIMEOUT_ALL: c_int = 15;
 
 /// `co->yield()` of the current coroutine (fatal outside one).
 pub(crate) fn park() {
-    let co = current();
-    // SAFETY: the running coroutine.
-    unsafe { swoole_rs_coroutine::suspend(co.cast()) };
+    swoole_rs_coroutine::suspend(current().cast());
 }
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
 pub(crate) fn park_for(timeout: f64) -> bool {
-    let co = current();
-    // SAFETY: the running coroutine.
-    unsafe { coroutine_yield_ex(co.cast(), timeout) }
+    let code = swoole_rs_coroutine::yield_timed(current().cast(), timeout);
+    swoole_rs_coroutine::yield_resumed(code)
 }
 
 extern "C" fn last_error() -> c_int {

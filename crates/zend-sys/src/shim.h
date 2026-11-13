@@ -25,28 +25,18 @@ zend_class_entry *swr_zend_register_class(const char *name, size_t length,
                                           const zend_function_entry *functions,
                                           zend_class_entry *parent);
 
-/* ce->create_object, a member of an anonymous union whose bindgen name
- * depends on the PHP version. */
-void swr_zend_class_set_create_object(zend_class_entry *ce,
-                                      zend_object *(*create)(zend_class_entry *ce));
-
 #include "shim_values.h"
 
-/* emalloc, efree, ecalloc and erealloc (macros taking file and line in debug builds). */
+/* emalloc and efree (macros taking file and line in debug builds). */
 void *swr_zend_emalloc(size_t size);
 void swr_zend_efree(void *ptr);
-void *swr_zend_ecalloc(size_t count, size_t size);
-void *swr_zend_erealloc(void *ptr, size_t size);
 
-/* Z_TRY_ADDREF_P and Z_TRY_DELREF_P. */
+/* Z_TRY_ADDREF_P. */
 void swr_zval_try_addref(zval *value);
-void swr_zval_try_delref(zval *value);
 
-/* zend_string_init (request memory, or persistent), zend_string_copy (add a
- * reference), zend_string_release and ZVAL_STR (the zval takes over the reference). */
-zend_string *swr_zend_string_init(const char *text, size_t length);
+/* zend_string_init (persistent), zend_string_release and ZVAL_STR (the zval
+ * takes over the reference). */
 zend_string *swr_zend_string_persistent(const char *text, size_t length);
-zend_string *swr_zend_string_copy(zend_string *string);
 void swr_zend_string_release(zend_string *string);
 void swr_zval_str(zval *value, zend_string *string);
 

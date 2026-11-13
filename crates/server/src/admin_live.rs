@@ -125,9 +125,9 @@ impl Live<'_> {
     /// `serv->get_thread(SwooleTG.id)`.
     fn thread_record(&self) -> &ThreadRecord {
         let id = usize::from(swoole_rs_corebase::thread_id());
-        let thread = self.tables.reactor_threads.cast::<ThreadRecord>();
-        // SAFETY: a reactor thread's own record, of the live array.
-        unsafe { &*thread.wrapping_add(id) }
+        // A reactor thread's own record.
+        let thread = self.tables.reactor_thread(id);
+        thread.unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command off a reactor thread"))
     }
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.

@@ -5,9 +5,8 @@
 #define SWOOLE_RS_ZEND_SHIM_MODULE_H
 #include "shim.h"
 
-/* hook() or hook(module_number) inside zend_try: 1 if it bailed out. */
+/* hook() inside zend_try: 1 if it bailed out. */
 int swr_zend_try_hook(void (*hook)(void));
-int swr_zend_try_minit(void (*hook)(int module_number), int module_number);
 
 /* sapi_module.name. */
 const char *swr_zend_sapi_name(void);

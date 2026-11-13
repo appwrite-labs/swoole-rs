@@ -513,11 +513,11 @@ pub(crate) mod tests {
         unsafe { crate::co_socket::init(&raw mut socket.record) };
         socket.network = SocketRecord::new();
         socket.network.fd = fd;
-        socket.record.sock_fd = fd;
+        socket.record.sock_fd.set(fd);
         // The record's pointer comes from the raw one `free` reclaims, so it outlives
         // the box giving the allocation up.
         let socket = Box::into_raw(socket);
-        unsafe { (*socket).record.socket = &raw mut (*socket).network };
+        unsafe { (*socket).record.socket.set(&raw mut (*socket).network) };
         unsafe { Co::new(socket.cast()) }
     }
 
@@ -534,7 +534,8 @@ pub(crate) mod tests {
         socket.record.fini();
         call(format!(
             "free {} {}",
-            socket.record.sock_fd, socket.network.fd
+            socket.record.sock_fd.get(),
+            socket.network.fd
         ));
     }
 

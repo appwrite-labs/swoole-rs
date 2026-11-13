@@ -11,10 +11,7 @@ use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
-    sys::{
-        IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_runtime_instanceof, swr_zend_zval_release,
-        zend_lookup_class, zend_object,
-    },
+    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_zval_release, zend_object},
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -210,20 +207,23 @@ fn add(call: &Call) {
 /// `php_swoole_name_resolver_add`: register `resolver` (an object) if it is a
 /// `Swoole\NameResolver`, holding a reference to it.
 pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
-    let name = ZString::new(RESOLVER_CLASS);
-    // SAFETY: a live name; autoloads as upstream's known string does.
-    let ce = unsafe { zend_lookup_class(name.as_ptr()) };
-    drop(name);
+    // Autoloads as upstream's known string does, inside `zend_try`.
+    let instance = match resolver.instance_of_named(&ZString::new(RESOLVER_CLASS)) {
+        Ok(instance) => instance,
+        Err(bailout) => {
+            bailout.defer();
+            return false;
+        }
+    };
     let class = String::from_utf8_lossy(RESOLVER_CLASS);
-    if ce.is_null() {
+    let Some(instance) = instance else {
         warn(true, &format!("Class \"{class}\" not found"));
         return false;
-    }
-    let Some(object_ce) = resolver.class() else {
-        return false;
     };
-    // SAFETY: a live object's class and a registered class.
-    if !unsafe { swr_zend_runtime_instanceof(object_ce, ce) } {
+    if resolver.object().is_none() {
+        return false;
+    }
+    if !instance {
         warn(
             true,
             &format!("the given object is not an instance of {class}"),

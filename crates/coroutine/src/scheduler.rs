@@ -247,10 +247,13 @@ unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
 /// `co->yield()` of `co`, the running coroutine (aborting otherwise), until it
 /// is resumed.
 ///
-/// # Safety
-/// The caller's frames own nothing with a destructor: a bailout abandons the
-/// coroutine's stack.
-pub unsafe fn suspend(co: *mut c_void) {
+/// A yield asks nothing of its caller. `co` is only compared with the running
+/// coroutine. A coroutine nothing resumes (a bailout abandons every suspended one)
+/// stays parked for good with its stack, or its thread, in place: only `destroy`
+/// frees one, and only once its entry returned. So what the caller's frames own is
+/// leaked, as by a thread that never wakes, and never freed under them. Freeing a
+/// suspended coroutine anywhere (at shutdown, say) would make this `unsafe` again.
+pub fn suspend(co: *mut c_void) {
     let s = Sched::this();
     ops::yield_(s, Co::running(s, co.cast()));
 }
@@ -258,10 +261,10 @@ pub unsafe fn suspend(co: *mut c_void) {
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
 /// otherwise), where `cancel_fn` calls `cancel(co)` once `co` is marked canceled.
 ///
-/// # Safety
-/// The caller's frames own nothing with a destructor: a bailout abandons the
-/// coroutine's stack.
-pub unsafe fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+/// As [`suspend`], it asks nothing of its caller: `cancel` and its canceler sit on
+/// this frame, which stays in place while the coroutine is parked, and the
+/// coroutine's cancel function is cleared before this returns.
+pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
     let s = Sched::this();
     let co = Co::running(s, co.cast());
     let canceler = Canceler {

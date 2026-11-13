@@ -32,20 +32,20 @@ pub unsafe fn swr_v1_process_server_workers_start(
     server: *mut c_void,
     pending: &[*mut c_void],
 ) {
-    // SAFETY: startup exclusively owns the event pool before factory start.
-    let pool = unsafe { &mut *view.event_pool.raw() };
-    pool.ptr = server;
-    // The canonical event array, live for the pool's worker count.
-    pool.workers = view.event_workers;
-    pool.worker_num = view.event_count;
+    // Startup owns the event pool before the factory starts; a field at a time.
+    let pool = view.event_pool;
+    pool.set_ptr(server);
+    // The canonical event array, live for the pool's worker count (the caller's loan).
+    pool.set_workers(view.event_workers);
+    pool.set_worker_num(view.event_count);
     // This original event pool uses its pipes rather than a message queue.
-    pool.use_msgqueue = false;
+    pool.set_use_msgqueue(false);
     for index in 0..view.event_count {
         // The array just published holds `event_count` records.
         let Some(worker) = pool.worker(index as usize) else {
             break;
         };
-        worker.set_pool(view.event_pool.raw().cast());
+        worker.join(pool);
         worker.set_id(index);
         worker.set_kind(crate::worker_record::WorkerType::Event.code());
     }
@@ -94,12 +94,12 @@ pub fn swr_v1_process_server_worker(view: &ServerWorkers<'_>, id: u16) -> *mut W
 /// registry, then user entries in the Server registry. PID zero/negative values
 /// and direct record writes retain their original lookup behavior.
 /// # Safety
-/// `view` loans live canonical arrays and task pool storage; `registry` is the
-/// Server's live registry. Lookup is serialized with registry mutation.
+/// `view` loans live canonical arrays and task pool storage. Lookup is serialized
+/// with registry mutation.
 #[must_use]
 pub unsafe fn swr_v1_process_server_worker_by_pid(
     view: &ServerWorkers<'_>,
-    registry: *const crate::worker_registry::WorkerRegistry,
+    registry: Option<&crate::worker_registry::WorkerRegistry>,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
     // SAFETY: these are the canonical ordered event records and their live count:
@@ -126,8 +126,12 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
     if !worker.is_null() {
         return worker.cast();
     }
-    // SAFETY: the caller retains the Server registry, and only user category matches.
-    unsafe { (*registry).lookup_category(pid, crate::worker_registry::CATEGORY_USER) }.cast()
+    // The Server's registry, in which only the user category matches.
+    registry
+        .map_or(core::ptr::null_mut(), |registry| {
+            registry.lookup_category(pid, crate::worker_registry::CATEGORY_USER)
+        })
+        .cast()
 }
 
 #[cfg(test)]
@@ -155,8 +159,8 @@ mod tests {
         let mut event_pool = pool();
         let mut task_pool = pool();
         let registry = Box::into_raw(Box::<WorkerRegistry>::default());
-        let tasks = Box::into_raw(Box::<WorkerRegistry>::default());
-        task_pool.registry = tasks;
+        task_pool.registry = Some(Box::default());
+        let tasks = task_pool.registry();
         let view = ServerWorkers {
             event_pool: unsafe { PoolRef::new(&raw mut event_pool) },
             task_pool: unsafe { PoolRef::new(&raw mut task_pool) },
@@ -174,30 +178,29 @@ mod tests {
             (*tasks).register(-7, (&raw mut task).cast(), 1);
             (*registry).register(-7, (&raw mut user).cast(), CATEGORY_USER);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 workers
             );
             Worker::new(workers).set_pid(5);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 workers.add(1)
             );
             Worker::new(workers.add(1)).set_pid(0);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&view, registry, 0),
+                swr_v1_process_server_worker_by_pid(&view, Some(&*registry), 0),
                 workers.add(1)
             );
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 &raw mut task
             );
             (*tasks).unregister(-7);
             assert_eq!(
-                swr_v1_process_server_worker_by_pid(&view, registry, -7),
+                swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 &raw mut user
             );
-            assert!(swr_v1_process_server_worker_by_pid(&view, registry, 99).is_null());
-            drop(Box::from_raw(tasks));
+            assert!(swr_v1_process_server_worker_by_pid(&view, Some(&*registry), 99).is_null());
             drop(Box::from_raw(registry));
         }
     }

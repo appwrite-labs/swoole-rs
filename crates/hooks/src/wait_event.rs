@@ -188,8 +188,6 @@ pub(crate) mod native {
     use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
     use swoole_rs_reactor::{Socket, SocketRecord};
 
-    pub(crate) use swoole_rs_coroutine::yield_ex as coroutine_yield_ex;
-
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
 

@@ -74,8 +74,10 @@ mod tests {
     impl Records {
         fn new() -> Self {
             // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
-            let mut socket = Box::new(unsafe { core::mem::zeroed::<CoSocket>() });
-            socket.socket = Box::into_raw(Box::new(SocketRecord::new()));
+            let socket = Box::new(unsafe { core::mem::zeroed::<CoSocket>() });
+            socket
+                .socket
+                .set(Box::into_raw(Box::new(SocketRecord::new())));
             Self(socket)
         }
 
@@ -84,13 +86,13 @@ mod tests {
         }
 
         fn record(&mut self) -> &mut SocketRecord {
-            unsafe { &mut *self.0.socket }
+            unsafe { &mut *self.0.socket.get() }
         }
     }
 
     impl Drop for Records {
         fn drop(&mut self) {
-            drop(unsafe { Box::from_raw(self.0.socket) });
+            drop(unsafe { Box::from_raw(self.0.socket.get()) });
         }
     }
 

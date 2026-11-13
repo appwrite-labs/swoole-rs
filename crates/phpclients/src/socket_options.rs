@@ -766,8 +766,8 @@ fn socketpair(call: &Call) {
     let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
     let mut sockets = OwnedArray::default();
     for fd in pair {
-        // SAFETY: the new descriptor, which the object takes over.
-        match unsafe { crate::socket::owner::from_fd(fd, kind) } {
+        // The new descriptor, which the object takes over.
+        match crate::socket::owner::from_fd(fd, kind) {
             Ok(Some(object)) => sockets.push(object),
             // The first socket, if made, goes with the array.
             Ok(None) => return call.set_bool(false),
@@ -808,14 +808,14 @@ fn import(call: &Call) {
         warn_sys("fcntl(F_GETFL) failed", errno());
         return call.set_bool(false);
     }
-    // SAFETY: the stream's own descriptor, which the object takes over with the stream.
-    let object = match unsafe {
-        crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_value)
-    } {
-        Ok(Some(object)) => object,
-        Ok(None) => return call.set_bool(false),
-        Err(error) => return error.defer(),
-    };
+    // The stream's own descriptor, which the object takes over with the stream.
+    let object =
+        match crate::socket::owner::import_stream(fd, kind, flags & libc::O_NONBLOCK, stream_value)
+        {
+            Ok(Some(object)) => object,
+            Ok(None) => return call.set_bool(false),
+            Err(error) => return error.defer(),
+        };
     // SAFETY: the stream the object now holds.
     unsafe { swr_zend_stream_unbuffer(stream) };
     call.set_owned(object);

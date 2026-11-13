@@ -29,7 +29,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     object_zval,
-    sys::{ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object},
+    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -1582,8 +1582,7 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http\\Client")?;
     }
-    // SAFETY: MINIT, with the class just registered and the method its table declares.
-    unsafe { swr_zend_sensitive_parameter(CLIENT.entry(), c"setbasicauth".as_ptr(), 12, 1) };
+    minit.sensitive_parameter(&CLIENT, c"setbasicauth", 1);
     let public = ZEND_ACC_PUBLIC;
     minit.property_null(&CLIENT, c"socket", public);
     minit.property_long(&CLIENT, c"errCode", 0, public);

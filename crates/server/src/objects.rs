@@ -9,7 +9,7 @@ use swoole_rs_reactor::Socket;
 
 use swoole_rs_bus::{BusPacket, MessageBus};
 
-use crate::pool_native::read_bus;
+use crate::pool_native::{PoolBus, read_bus};
 use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
 
 pub(crate) use crate::view::{set_nonblock, worker_pipe};
@@ -54,53 +54,42 @@ pub(crate) fn timer_reinit(manually_trigger: bool) {
 #[cfg(not(test))]
 impl crate::ServerState {
     /// The server's own `MessageBus`.
-    pub(crate) fn message_bus(&self) -> Bus {
+    pub(crate) fn message_bus(&self) -> Bus<'_> {
         // SAFETY: `swr_v1_server_new`'s bus, which lives as long as the server.
         unsafe { Bus::of(self.tables_ref().message_bus) }
     }
 }
 
-/// A `MessageBus`: its Rust bus and the allocator of its packets.
+/// A `MessageBus`: its Rust bus and the allocator of its packets, as its record
+/// ([`PoolBus`]) paired them when the handle was made.
 #[derive(Clone, Copy)]
-pub(crate) struct Bus {
-    bus: *mut c_void,
-    allocator: *const CoreAllocator,
+pub(crate) struct Bus<'a> {
+    bus: &'a MessageBus,
+    allocator: &'static CoreAllocator,
 }
 
-impl Bus {
+impl<'a> Bus<'a> {
     /// The `MessageBus` at `message_bus`.
     ///
     /// # Safety
-    /// `message_bus` is a live `MessageBus` while the handle is used, and only this
-    /// thread uses it meanwhile.
+    /// `message_bus` is a live `MessageBus` record for `'a`, and only this thread uses
+    /// it meanwhile.
     pub(crate) unsafe fn of(message_bus: *mut c_void) -> Self {
-        // SAFETY: per the caller; a `MessageBus` starts with these two words.
-        let [bus, allocator] = unsafe { *message_bus.cast::<[*mut c_void; 2]>() };
-        Self {
-            bus,
-            allocator: allocator.cast(),
-        }
+        // SAFETY: per the caller; a `MessageBus` is a `PoolBus`.
+        Self::over(unsafe { &*message_bus.cast::<PoolBus>() })
     }
-    /// The bus and allocator stored apart.
-    ///
-    /// # Safety
-    /// As for [`Bus::of`]: a live bus and the allocator of its packets.
-    pub(crate) unsafe fn from_parts(bus: *mut c_void, allocator: *const CoreAllocator) -> Self {
+    /// The bus of `record`, which a thread's own record lends.
+    pub(crate) fn over(record: &'a PoolBus) -> Self {
+        let (bus, allocator) = record.parts();
         Self { bus, allocator }
     }
     /// The Rust bus, used by this thread alone while the handle is.
     pub(crate) fn rust(&self) -> &MessageBus {
-        // SAFETY: `of`'s and `from_parts`' contract: a live bus only this thread uses.
-        unsafe { &*self.bus.cast::<MessageBus>() }
+        self.bus
     }
     /// The allocator of its packets.
-    pub(crate) fn allocator(self) -> *const CoreAllocator {
+    pub(crate) fn allocator(self) -> &'static CoreAllocator {
         self.allocator
-    }
-    /// The allocator's functions.
-    fn allocator_ref(&self) -> &CoreAllocator {
-        // SAFETY: `of`'s and `from_parts`' contract: the bus's allocator, which outlives it.
-        unsafe { &*self.allocator }
     }
     /// The bus's buffer, which starts with the head of its message.
     pub(crate) fn buffer(self) -> *mut DataHead {
@@ -158,7 +147,7 @@ impl Bus {
     pub(crate) fn alloc_buffer(self, size: usize) -> bool {
         let bus = self.rust();
         bus.set_buffer_size(size);
-        let malloc = self.allocator_ref().malloc;
+        let malloc = self.allocator.malloc;
         // SAFETY: the allocator's malloc.
         let buffer = malloc.map_or(core::ptr::null_mut(), |malloc| unsafe {
             malloc(bus.buffer_size())
@@ -170,7 +159,7 @@ impl Bus {
     /// `MessageBus::free_buffer()`.
     pub(crate) fn free_buffer(self) {
         let buffer = self.buffer();
-        if let Some(free) = self.allocator_ref().free {
+        if let Some(free) = self.allocator.free {
             // SAFETY: the bus's buffer, from this allocator, unused afterwards.
             unsafe { free(buffer.cast()) };
         }

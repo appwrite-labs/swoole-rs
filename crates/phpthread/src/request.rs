@@ -13,11 +13,10 @@ use swoole_rs_corebase::sys;
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
     sys::{
-        IS_RESOURCE_EX, PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_expose,
-        swr_zend_stream_fd, swr_zend_stream_open, zend_value,
+        PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
+        swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_fd,
+        swr_zend_stream_open, swr_zend_stream_to_zval,
     },
-    value,
 };
 
 static ERROR: Class = Class::new();
@@ -66,11 +65,9 @@ pub(crate) fn stream_create(fd: c_int) -> Owned {
     if stream.is_null() {
         return error(errno());
     }
-    // SAFETY: a stream just opened; `php_stream_to_zval`.
-    let res = unsafe { swr_zend_stream_expose(stream) };
     let out = Owned::default();
-    // SAFETY: a slot this owns takes the stream's resource.
-    unsafe { value::set(out.as_ptr(), zend_value { res }, IS_RESOURCE_EX) };
+    // SAFETY: a stream just opened, whose resource a slot this owns takes.
+    unsafe { swr_zend_stream_to_zval(stream, out.as_ptr()) };
     out
 }
 
