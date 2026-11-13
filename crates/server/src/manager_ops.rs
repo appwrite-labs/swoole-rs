@@ -175,7 +175,9 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         let ctx = self;
         if op == OP_MANAGER {
             // `serv ? serv->manager_ : 0`: a signal may arrive before the server exists.
-            return ctx.serv.map_or(0, |serv| serv.config().manager_ as u64);
+            return ctx
+                .serv
+                .map_or(0, |serv| serv.config().manager_.get() as u64);
         }
         fact(ctx, op, arg)
             .or_else(|| effect(ctx, op, arg))
@@ -309,9 +311,9 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             event_pool.set_max_wait_time(config.max_wait_time.get());
             event_pool.set_master_pid(pid);
             ctx.task_pool().set_master_pid(pid);
-            // SAFETY: `Manager::start`, in the manager process its master just forked,
-            // whose only thread this is; the arm's last config access.
-            unsafe { serv.config_mut() }.manager_ = core::ptr::without_provenance_mut(index(arg));
+            config
+                .manager_
+                .set(core::ptr::without_provenance_mut(index(arg)));
         }
         OP_ON_MANAGER_START => callback(CB_MANAGER_START),
         OP_ON_MANAGER_STOP => callback(CB_MANAGER_STOP),
