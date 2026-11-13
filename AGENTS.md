@@ -159,7 +159,7 @@ ad-hoc scripts, `gh run watch`).
 ## CI
 
 Three tiers: the pre-commit hook (~5s warm), the PR tier (`pr.yml`, under 3 minutes
-warm) and the merge tier (`merge.yml`, in `main`'s merge queue and again on `main`).
+warm) and the merge tier (`merge.yml`, in `main`'s merge queue and hourly on `main`).
 `main`'s ruleset requires a pull request, the PR tier's `required` check and the merge queue, which passes when every job it
 `needs` passed or was skipped; add a blocking job there, and renaming `required`
 means updating the ruleset in the same PR. `ext` (the Cargo-built
@@ -183,10 +183,10 @@ it with that run: fix what it broke and run `gh pr merge --auto --squash <pr>` a
 only that when a job died on its runner.
 A PR lands about a merge-tier run after it's queued.
 
-On `main` the merge tier runs one at a time, latest wins: while a run is in progress, each
-push to `main` replaces the pending run, so the next run covers `main`'s head.
+On `main` the merge tier runs hourly, one at a time, latest wins: while a run is in progress, the
+next hourly run waits and a later one replaces it, so the next run covers `main`'s head.
 Its result therefore describes the commit it names, which may be several merges
-old: at most one run (about 15-30 minutes) behind `main`. Every job has a
+old: at most about an hour plus one run (about 15-30 minutes) behind `main`. Every job has a
 `timeout-minutes` cap, so a hung run can't stall the queue.
 
 ### Red main

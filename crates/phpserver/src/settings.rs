@@ -256,9 +256,9 @@ impl<'a> Settings<'a> {
         self.server().set_text(index, value);
     }
 
-    /// `insert(value)` into static collection `kind` (`view::insert_static_string`).
-    fn insert(&self, kind: u32, value: &[u8]) {
-        self.server().insert_static_string(kind, value);
+    /// `insert(value)` into a static handler collection.
+    fn insert(&self, collection: swoole_rs_server::StaticCollection, value: &[u8]) {
+        self.server().insert_static_string(collection, value);
     }
 
     /// A boolean option.
@@ -673,7 +673,7 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         c"http_index_files must be array",
         |name| {
             if !name.is_empty() {
-                s.insert(1, name);
+                s.insert(swoole_rs_server::StaticCollection::IndexFiles, name);
             }
         },
     )?;
@@ -682,7 +682,7 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         c"http_compression_types must be array",
         |kind| {
             if !kind.is_empty() && s.fact(f::HAVE_COMPRESSION) != 0 {
-                s.insert(2, kind);
+                s.insert(swoole_rs_server::StaticCollection::CompressionTypes, kind);
             }
         },
     )?;
@@ -691,7 +691,7 @@ fn http(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
         c"static_handler_locations num must be array",
         |location| {
             if location.first() == Some(&b'/') {
-                s.insert(0, location);
+                s.insert(swoole_rs_server::StaticCollection::Locations, location);
             }
         },
     )?;

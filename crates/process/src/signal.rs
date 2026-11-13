@@ -200,10 +200,10 @@ fn address(handler: extern "C" fn(c_int)) -> usize {
 /// the signal frame, dropping a signal that arrives while one is running.
 extern "C" fn immediate(signo: c_int) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    // SAFETY: `signal_set` stored a `HasReactor` before installing this handler.
+    // SAFETY: the slot holds null or the `HasReactor` `signal_set` stored.
     let has_reactor =
-        unsafe { std::mem::transmute::<*mut (), HasReactor>(HAS_REACTOR.load(Relaxed)) };
-    if has_reactor() {
+        unsafe { std::mem::transmute::<*mut (), Option<HasReactor>>(HAS_REACTOR.load(Relaxed)) };
+    if has_reactor.is_some_and(|has_reactor| has_reactor()) {
         deferred(signo);
         return;
     }

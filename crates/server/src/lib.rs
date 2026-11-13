@@ -69,16 +69,12 @@ pub mod static_handler;
 pub mod static_select;
 pub mod task_worker;
 mod tcp_info;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod thread_mode_ops;
+pub mod thread_mode;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod thread_ops;
 pub mod view;
 pub mod worker_methods;
-pub use static_config::{
-    swr_v1_server_static_config, swr_v1_server_static_mime, swr_v1_server_static_owner,
-    swr_v1_server_static_owner_clone, swr_v1_server_static_owner_free, swr_v1_server_static_text,
-};
+pub use static_config::Collection as StaticCollection;
 
 pub use records::{
     Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
@@ -92,7 +88,7 @@ pub use shared::{
 pub use config::ServerConfig;
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
-/// `thread_mode_ops`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
+/// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 

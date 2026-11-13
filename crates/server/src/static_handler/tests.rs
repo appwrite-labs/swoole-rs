@@ -5,7 +5,9 @@
 //! comparing every answer, every effect in order, and errno.
 use super::{Effects, StaticHandler};
 use crate::ServerConfig;
+use crate::StaticCollection::{IndexFiles, Locations};
 use crate::state::ServerState;
+use crate::static_config::Op;
 use crate::view;
 use core::cell::RefCell;
 use core::ffi::{CStr, c_char, c_long, c_void};
@@ -343,28 +345,20 @@ impl Server {
         // SAFETY: the state boxed above, live with the server.
         unsafe { &*state }.set_text(crate::state::TEXT_DOCUMENT_ROOT, b"/root");
         if config.location {
-            server.strings(0, 4, b"/");
+            server.strings(Locations, Op::Insert(b"/"));
         }
         if let Some(index) = &config.index {
-            server.strings(1, 2, b"");
+            server.strings(IndexFiles, Op::Enable);
             for name in index {
-                server.strings(1, 6, name);
+                server.strings(IndexFiles, Op::Append(name));
             }
         }
         server
     }
-    /// `swr_v1_server_static_config(kind, operation, bytes)`.
-    fn strings(&self, kind: u32, operation: u32, bytes: &[u8]) {
-        // SAFETY: the live state and the bytes.
-        unsafe {
-            crate::static_config::swr_v1_server_static_config(
-                &*self.0.state,
-                kind,
-                operation,
-                bytes.as_ptr(),
-                bytes.len(),
-            )
-        };
+    /// `operation` on a static collection.
+    fn strings(&self, collection: crate::StaticCollection, operation: Op<'_>) {
+        // SAFETY: the live state.
+        crate::static_config::config(unsafe { &*self.0.state }, collection, operation);
     }
     fn rules(&self, rules: &[Rule]) {
         for &(pattern, replacement, regex) in rules {

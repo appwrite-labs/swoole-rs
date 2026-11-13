@@ -11,7 +11,7 @@
 pub trait Effects {
     /// Performs `op`: applies [`FLAG_WAIT`] from `flags` to the socket first, and
     /// refreshes `flags` from the socket after.
-    fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64;
+    fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64;
     /// The buffer's `length`, `size` and `offset` now.
     fn buffer(&self) -> Buffer;
     /// Sets the buffer's `length` and `offset`.
@@ -22,38 +22,49 @@ pub trait Effects {
     fn protocol(&self) -> Protocol;
 }
 
-pub const MODE_LENGTH: u32 = 0;
-pub const MODE_EOF: u32 = 1;
-pub const MODE_SPLIT: u32 = 2;
+/// The protocol a receive frames by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `recv_with_length_protocol`.
+    Length,
+    /// `recv_with_eof_protocol`.
+    Eof,
+    /// `recv_split_by_eof`.
+    Split,
+}
 
-/// `socket->recv` of arg bytes into the buffer's tail, with upstream's read-error
-/// handling and warning: the byte count, or `RECV_CLOSE`/`RECV_DONE`.
-pub const OP_RECV: u32 = 1;
-/// `get_package_length` over the buffered bytes from byte arg.
-pub const OP_GET_LENGTH: u32 = 2;
-pub const OP_EXTEND: u32 = 3;
-/// `onPackage` of the buffer's `offset` bytes (the awaited package) from byte arg.
-pub const OP_DISPATCH: u32 = 4;
-pub const OP_REDUCE: u32 = 5;
-/// `buffer->split` on the EOF, each part to `onPackage`.
-pub const OP_SPLIT: u32 = 7;
-pub const OP_SSL_PENDING: u32 = 8;
-/// `socket->skip_recv = 0`.
-pub const OP_CLEAR_SKIP: u32 = 9;
-/// `swoole_pagesize()`.
-pub const OP_PAGE: u32 = 10;
-pub const OP_LOG_MALFORMED: u32 = 11;
-pub const OP_LOG_NO_LENGTH: u32 = 12;
-/// arg: the packet length (length protocol).
-pub const OP_LOG_TOO_LARGE: u32 = 13;
-/// Make the close that follows a reset (`SO_LINGER` 0): the length loop holds bytes
-/// past a bad package's header that upstream, reading only the header, would have
-/// left unread, and closing over unread bytes resets.
-pub const OP_RESET: u32 = 14;
+/// A receive effect, which [`Effects::effect`] performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Op {
+    /// `socket->recv` of arg bytes into the buffer's tail, with upstream's read-error
+    /// handling and warning: the byte count, or `RECV_CLOSE`/`RECV_DONE`.
+    Recv,
+    /// `get_package_length` over the buffered bytes from byte arg.
+    GetLength,
+    Extend,
+    /// `onPackage` of the buffer's `offset` bytes (the awaited package) from byte arg.
+    Dispatch,
+    Reduce,
+    /// `buffer->split` on the EOF, each part to `onPackage`.
+    Split,
+    SslPending,
+    /// `socket->skip_recv = 0`.
+    ClearSkip,
+    /// `swoole_pagesize()`.
+    Page,
+    LogMalformed,
+    LogNoLength,
+    /// arg: the packet length (length protocol).
+    LogTooLarge,
+    /// Make the close that follows a reset (`SO_LINGER` 0): the length loop holds bytes
+    /// past a bad package's header that upstream, reading only the header, would have
+    /// left unread, and closing over unread bytes resets.
+    Reset,
+}
 
-/// `OP_RECV`: the connection closes (`SW_ERR`).
+/// `Op::Recv`: the connection closes (`SW_ERR`).
 pub const RECV_CLOSE: i64 = -1;
-/// `OP_RECV`: the read ends with `SW_OK` (would block, logged error, removed socket).
+/// `Op::Recv`: the read ends with `SW_OK` (would block, logged error, removed socket).
 pub const RECV_DONE: i64 = -2;
 /// Receive flag bits: `socket->removed`, `recv_wait`, `ssl != nullptr`, and, at
 /// entry only, `skip_recv` and a dynamic `get_package_length_size`. The loop sets
@@ -109,7 +120,7 @@ struct Recv<'a, E> {
 }
 
 impl<E: Effects> Recv<'_, E> {
-    fn op(&mut self, op: u32, arg: u64) -> i64 {
+    fn op(&mut self, op: Op, arg: u64) -> i64 {
         self.effects.effect(op, arg, &mut self.flags)
     }
     fn flag(&self, bit: u32) -> bool {
@@ -159,7 +170,7 @@ impl<E: Effects> Recv<'_, E> {
         } else if self.start > 0 {
             let start = std::mem::take(&mut self.start);
             let offset = self.offset();
-            self.op(OP_REDUCE, start as u64);
+            self.op(Op::Reduce, start as u64);
             self.set_offset(offset);
         }
     }
@@ -201,7 +212,7 @@ impl<E: Effects> Recv<'_, E> {
         // Whether the last `recv` left space in the buffer, so the kernel had no more.
         let mut drained = false;
         let mut at = if self.flag(FLAG_SKIP) {
-            self.op(OP_CLEAR_SKIP, 0);
+            self.op(Op::ClearSkip, 0);
             Step::GetLength
         } else {
             Step::Recv
@@ -217,7 +228,7 @@ impl<E: Effects> Recv<'_, E> {
                     if free == 0 {
                         return SW_ERR;
                     }
-                    match self.op(OP_RECV, free as u64) {
+                    match self.op(Op::Recv, free as u64) {
                         RECV_DONE => return SW_OK,
                         RECV_CLOSE | 0 => return SW_ERR,
                         n if n < 0 => return SW_ERR,
@@ -236,7 +247,7 @@ impl<E: Effects> Recv<'_, E> {
                 }
                 Step::GetLength => self.get_length(head, drained),
                 Step::Dispatch => {
-                    if self.op(OP_DISPATCH, self.start as u64) < 0 {
+                    if self.op(Op::Dispatch, self.start as u64) < 0 {
                         self.settle();
                         return SW_ERR;
                     }
@@ -279,32 +290,32 @@ impl<E: Effects> Recv<'_, E> {
     /// here, else read more (unless the socket left the reactor).
     #[inline(always)]
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
-        let packet = self.op(OP_GET_LENGTH, self.start as u64);
+        let packet = self.op(Op::GetLength, self.start as u64);
         let header = self.header(head);
         if packet <= 0 || packet > i64::from(self.max()) {
             // Failures and a short header report the buffer as upstream holds it.
             self.settle();
         }
         if packet < 0 {
-            self.op(OP_LOG_MALFORMED, 0);
+            self.op(Op::LogMalformed, 0);
             return self.fail(header);
         }
         if packet == 0 {
             // The whole length header is here and holds no length.
             if self.pending() >= header {
-                self.op(OP_LOG_NO_LENGTH, 0);
+                self.op(Op::LogNoLength, 0);
                 return self.fail(header);
             }
             return self.more(drained);
         }
         if packet > i64::from(self.max()) {
-            self.op(OP_LOG_TOO_LARGE, packet.unsigned_abs());
+            self.op(Op::LogTooLarge, packet.unsigned_abs());
             return self.fail(header);
         }
         if usize::try_from(packet).map_or(true, |packet| self.size() - self.start < packet) {
             self.settle();
             if usize::try_from(packet).map_or(true, |packet| self.size() < packet) {
-                self.op(OP_EXTEND, packet.unsigned_abs());
+                self.op(Op::Extend, packet.unsigned_abs());
             }
         }
         self.set_wait(true);
@@ -320,7 +331,7 @@ impl<E: Effects> Recv<'_, E> {
     /// the close resets, as upstream's does over the bytes it never read.
     fn fail(&mut self, header: usize) -> Step {
         if self.length() > header {
-            self.op(OP_RESET, 0);
+            self.op(Op::Reset, 0);
         }
         Step::Fail
     }
@@ -344,7 +355,7 @@ impl<E: Effects> Recv<'_, E> {
         let mut again = false;
         loop {
             let size = self.size() - self.length();
-            match self.op(OP_RECV, size.min(BUFFER_SIZE_STD) as u64) {
+            match self.op(Op::Recv, size.min(BUFFER_SIZE_STD) as u64) {
                 RECV_DONE => return SW_OK,
                 RECV_CLOSE | 0 => return SW_ERR,
                 n if n < 0 => return SW_ERR,
@@ -363,27 +374,27 @@ impl<E: Effects> Recv<'_, E> {
             } else if self.ends_with_eof() {
                 let length = self.length();
                 self.set_offset(length.cast_signed() as i64);
-                if self.op(OP_DISPATCH, 0) < 0 {
+                if self.op(Op::Dispatch, 0) < 0 {
                     return SW_ERR;
                 }
                 if self.flag(FLAG_REMOVED) {
                     return SW_OK;
                 }
                 self.clear();
-                if self.flag(FLAG_TLS) && self.op(OP_SSL_PENDING, 0) > 0 {
+                if self.flag(FLAG_TLS) && self.op(Op::SslPending, 0) > 0 {
                     continue;
                 }
                 return SW_OK;
             }
             let (length, size, max) = (self.length(), self.size(), self.max());
             if length == max as usize {
-                self.op(OP_LOG_TOO_LARGE, length as u64);
+                self.op(Op::LogTooLarge, length as u64);
                 return SW_ERR;
             }
             if length == size {
                 again = true;
                 if size < max as usize {
-                    let page = self.op(OP_PAGE, 0);
+                    let page = self.op(Op::Page, 0);
                     let Some(page) = usize::try_from(page).ok().filter(|&page| page > 0) else {
                         return SW_ERR;
                     };
@@ -393,7 +404,7 @@ impl<E: Effects> Recv<'_, E> {
                         reason = "upstream's uint32_t extend_size"
                     )]
                     let extend = double.wrapping_add(page - double % page) as u32;
-                    self.op(OP_EXTEND, u64::from(extend.min(max)));
+                    self.op(Op::Extend, u64::from(extend.min(max)));
                 }
             }
             if !again {
@@ -406,7 +417,7 @@ impl<E: Effects> Recv<'_, E> {
         if self.length() < self.eof_len() {
             return SW_CONTINUE;
         }
-        let n = self.op(OP_SPLIT, 0);
+        let n = self.op(Op::Split, 0);
         if self.flag(FLAG_REMOVED) || n < 0 {
             return SW_CLOSE;
         }
@@ -414,7 +425,7 @@ impl<E: Effects> Recv<'_, E> {
             return SW_CONTINUE;
         }
         if usize::try_from(n).is_ok_and(|n| n < self.length()) {
-            self.op(OP_REDUCE, n.unsigned_abs());
+            self.op(Op::Reduce, n.unsigned_abs());
             let offset = self.length().saturating_sub(self.eof_len());
             self.set_offset(offset.cast_signed() as i64);
         } else {
@@ -429,7 +440,7 @@ impl<E: Effects> Recv<'_, E> {
 /// holds the socket's flags at entry and its `recv_wait` on return. Always inlined, with the
 /// length loop: each caller's `mode` is a constant, and the loop shares its caller's frame.
 #[inline(always)]
-pub fn recv<E: Effects>(mode: u32, head: u32, flags: &mut u32, effects: &mut E) -> i32 {
+pub fn recv<E: Effects>(mode: Mode, head: u32, flags: &mut u32, effects: &mut E) -> i32 {
     let mut recv = Recv {
         flags: *flags,
         start: 0,
@@ -439,10 +450,9 @@ pub fn recv<E: Effects>(mode: u32, head: u32, flags: &mut u32, effects: &mut E) 
         return SW_ERR;
     }
     let result = match mode {
-        MODE_LENGTH => recv.length_protocol(head),
-        MODE_EOF => recv.eof_protocol(),
-        MODE_SPLIT => recv.split_by_eof(),
-        _ => SW_ERR,
+        Mode::Length => recv.length_protocol(head),
+        Mode::Eof => recv.eof_protocol(),
+        Mode::Split => recv.split_by_eof(),
     };
     *flags = recv.flags;
     result
@@ -454,7 +464,7 @@ mod tests {
 
     /// A fake native side: scripted reads, a growable buffer and a log of effects.
     struct Native {
-        mode: u32,
+        mode: Mode,
         head: u32,
         flags: u32,
         protocol: Protocol,
@@ -472,7 +482,7 @@ mod tests {
     }
 
     impl Native {
-        fn new(mode: u32, size: usize, chunks: Vec<&'static [u8]>) -> Self {
+        fn new(mode: Mode, size: usize, chunks: Vec<&'static [u8]>) -> Self {
             Native {
                 mode,
                 head: 1,
@@ -502,11 +512,11 @@ mod tests {
         fn data(&self) -> &[u8] {
             &self.storage[..self.buffer.length]
         }
-        fn apply(&mut self, op: u32, arg: u64) -> i64 {
+        fn apply(&mut self, op: Op, arg: u64) -> i64 {
             let arg = usize::try_from(arg).unwrap();
             let length = self.buffer.length;
             match op {
-                OP_RECV => {
+                Op::Recv => {
                     self.events.push(format!("recv:{arg}"));
                     if self.chunks.is_empty() {
                         return RECV_DONE;
@@ -521,17 +531,17 @@ mod tests {
                     }
                     i64::try_from(n).unwrap()
                 }
-                OP_GET_LENGTH => {
+                Op::GetLength => {
                     self.events.push(format!("length:{}", length - arg));
                     self.data()[arg..].first().map_or(0, |&n| i64::from(n) + 1)
                 }
-                OP_EXTEND => {
+                Op::Extend => {
                     self.events.push(format!("extend:{arg}"));
                     self.storage.resize(arg, 0);
                     self.buffer.size = arg;
                     0
                 }
-                OP_DISPATCH => {
+                Op::Dispatch => {
                     let end = arg + usize::try_from(self.buffer.offset).unwrap();
                     let packet = String::from_utf8_lossy(&self.storage[arg..end]).into_owned();
                     self.events.push(format!("package:{packet}"));
@@ -541,14 +551,14 @@ mod tests {
                     }
                     0
                 }
-                OP_REDUCE => {
+                Op::Reduce => {
                     self.events.push(format!("reduce:{arg}"));
                     self.storage.copy_within(arg..length, 0);
                     self.buffer.length -= arg;
                     self.buffer.offset = 0;
                     0
                 }
-                OP_SPLIT => {
+                Op::Split => {
                     let mut end = 0;
                     while let Some(at) = self.storage[end..length]
                         .windows(2)
@@ -560,10 +570,10 @@ mod tests {
                     }
                     i64::try_from(end).unwrap()
                 }
-                OP_PAGE => 4096,
-                OP_CLEAR_SKIP => 0,
+                Op::Page => 4096,
+                Op::ClearSkip => 0,
                 _ => {
-                    self.events.push(format!("op{op}:{arg}"));
+                    self.events.push(format!("{op:?}:{arg}"));
                     0
                 }
             }
@@ -571,7 +581,7 @@ mod tests {
     }
 
     impl Effects for Native {
-        fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
+        fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
             self.wait = *flags & FLAG_WAIT != 0;
             let result = self.apply(op, arg);
             *flags = self.gone | if self.wait { FLAG_WAIT } else { 0 };
@@ -603,7 +613,7 @@ mod tests {
     #[test]
     fn length_protocol_reads_what_is_there_then_waits() {
         // Each chunk is one arrival: a short read means the kernel had no more.
-        let mut native = Native::new(MODE_LENGTH, 2, vec![b"\x03", b"abc\x01"]);
+        let mut native = Native::new(Mode::Length, 2, vec![b"\x03", b"abc\x01"]);
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(native.events, ["recv:2", "length:1", "extend:4"]);
         assert!(native.wait, "waits for the body");
@@ -625,7 +635,7 @@ mod tests {
 
     #[test]
     fn length_protocol_dispatches_every_package_one_read_brings() {
-        let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x02bc\x03d"]);
+        let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x02bc\x03d"]);
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
             native.events,
@@ -645,14 +655,14 @@ mod tests {
 
     #[test]
     fn length_protocol_closed_mid_buffer_stops_and_paused_delivers_the_rest() {
-        let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x01b"]);
+        let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b"]);
         native.gone_on_dispatch = FLAG_REMOVED;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(native.events, ["recv:16", "length:4", "package:\x01a"]);
 
         // Closed by a later package's callback: the buffer may be gone, so nothing is
         // removed from it, as upstream leaves it.
-        let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x01b\x01c"]);
+        let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b\x01c"]);
         native.gone_on_dispatch = FLAG_REMOVED;
         native.gone_at = 2;
         assert_eq!(run(&mut native), SW_OK);
@@ -667,7 +677,7 @@ mod tests {
             ]
         );
 
-        let mut native = Native::new(MODE_LENGTH, 16, vec![b"\x01a\x01b\x02", b"c"]);
+        let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b\x02", b"c"]);
         native.gone_on_dispatch = FLAG_REMOVED | FLAG_PAUSED;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
@@ -688,7 +698,7 @@ mod tests {
 
     #[test]
     fn length_protocol_dispatches_back_to_back_packages() {
-        let mut native = Native::new(MODE_LENGTH, 8, vec![b"\x10"]);
+        let mut native = Native::new(Mode::Length, 8, vec![b"\x10"]);
         native.storage[..3].copy_from_slice(b"\x01a\x00");
         native.buffer.length = 3;
         native.flags = FLAG_SKIP;
@@ -705,20 +715,23 @@ mod tests {
         native.events.clear();
         native.protocol.package_max_length = 4;
         assert_eq!(run(&mut native), SW_ERR);
-        assert_eq!(native.events, ["recv:8", "length:1", "op13:17"]);
+        assert_eq!(native.events, ["recv:8", "length:1", "LogTooLarge:17"]);
     }
 
     #[test]
     fn a_bad_package_with_bytes_past_its_header_closes_with_a_reset() {
-        let mut native = Native::new(MODE_LENGTH, 8, vec![b"\x10abc"]);
+        let mut native = Native::new(Mode::Length, 8, vec![b"\x10abc"]);
         native.protocol.package_max_length = 4;
         assert_eq!(run(&mut native), SW_ERR);
-        assert_eq!(native.events, ["recv:8", "length:4", "op13:17", "op14:0"]);
+        assert_eq!(
+            native.events,
+            ["recv:8", "length:4", "LogTooLarge:17", "Reset:0"]
+        );
     }
 
     #[test]
     fn length_protocol_stops_on_removed_and_dynamic_zero() {
-        let mut native = Native::new(MODE_LENGTH, 8, vec![b"\x01"]);
+        let mut native = Native::new(Mode::Length, 8, vec![b"\x01"]);
         native.flags = FLAG_REMOVED;
         native.gone = FLAG_REMOVED;
         assert_eq!(run(&mut native), SW_OK);
@@ -731,7 +744,7 @@ mod tests {
 
     #[test]
     fn eof_protocol_grows_then_dispatches() {
-        let mut native = Native::new(MODE_EOF, 4, vec![b"abcd", b"e\r\n"]);
+        let mut native = Native::new(Mode::Eof, 4, vec![b"abcd", b"e\r\n"]);
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
             native.events,
@@ -746,7 +759,7 @@ mod tests {
 
     #[test]
     fn split_keeps_the_residual() {
-        let mut native = Native::new(MODE_EOF, 16, vec![b"a\r\nb\r\nc"]);
+        let mut native = Native::new(Mode::Eof, 16, vec![b"a\r\nb\r\nc"]);
         native.protocol.split_by_eof = true;
         assert_eq!(run(&mut native), SW_OK);
         assert_eq!(
@@ -759,7 +772,7 @@ mod tests {
 
     #[test]
     fn rejects_overrun() {
-        let mut native = Native::new(MODE_EOF, 2, vec![]);
+        let mut native = Native::new(Mode::Eof, 2, vec![]);
         native.buffer.length = 3;
         assert_eq!(run(&mut native), SW_ERR);
         assert_eq!(native.events, Vec::<String>::new());
@@ -769,7 +782,7 @@ mod tests {
     /// header past the allocation fails before any effect.
     #[test]
     fn rejects_a_header_the_buffer_cannot_hold() {
-        let mut native = Native::new(MODE_LENGTH, 1, vec![b"\x01"]);
+        let mut native = Native::new(Mode::Length, 1, vec![b"\x01"]);
         native.protocol.package_length_offset = 3;
         assert_eq!(run(&mut native), SW_ERR);
         assert_eq!(native.events, Vec::<String>::new());

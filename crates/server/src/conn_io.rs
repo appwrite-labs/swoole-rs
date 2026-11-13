@@ -60,6 +60,9 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
     read_as(BUILT_PREQUEUE, serv, reactor, event)
 }
 
+/// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`.
+type OnRead = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut Event) -> c_int;
+
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
     let state = serv.state();
@@ -116,9 +119,12 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     conn.set_last_recv_time(microtime());
     let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
     let on_read = port.config().on_read.load(Relaxed);
-    // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-    let on_read: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut Event) -> c_int =
-        unsafe { core::mem::transmute(on_read) };
+    // SAFETY: the port holds null or the `int (*onRead)(Reactor *, ListenPort *, Event *)`
+    // `init_protocol` set.
+    let on_read = unsafe { core::mem::transmute::<*mut c_void, Option<OnRead>>(on_read) };
+    let Some(on_read) = on_read else {
+        return ERR;
+    };
     // SAFETY: this thread's reactor, the port and its event.
     let retval = unsafe { on_read(reactor.ptr(), port.raw(), raw) };
     // Upstream reads the socket after the read too.
@@ -867,6 +873,21 @@ pub(crate) mod tests {
         conn.set_server_fd(0);
         assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), OK);
         assert_eq!(reads(), [], "a stale event");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn read_fails_on_a_port_without_on_read() {
+        let (live, _clients) = reading();
+        live.port().on_read.store(core::ptr::null_mut(), Relaxed);
+        let conn = session(&live, 1);
+        assert_eq!(
+            read(live.server(), live.reactor(), &mut conn.event(0, 0)),
+            ERR
+        );
+        assert_eq!(reads(), [], "nothing read");
+        assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 0);
+        assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 0);
     }
 
     #[test]

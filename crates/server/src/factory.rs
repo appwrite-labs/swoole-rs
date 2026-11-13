@@ -7,9 +7,8 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use crate::base_factory::SendData;
+use crate::thread_mode::{ThreadManager, ThreadOp};
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::workers::ops::RUN_THREAD_FACTORY_START;
-use swoole_rs_process::workers::thread::ThreadManager;
 
 use crate::state::ServerState;
 
@@ -172,7 +171,7 @@ extern "C" fn accept_command_result(
 use crate::{MODE_PROCESS, MODE_THREAD};
 
 /// `swoole::Factory` (upstream's `swoole_server.h`): its server, then thread mode's manager state
-/// (crates/process/src/workers/thread.rs), null in the other modes.
+/// (`crates/server/src/thread_mode.rs`), null in the other modes.
 #[repr(C)]
 pub(crate) struct Factory {
     server: *mut c_void,
@@ -235,7 +234,7 @@ fn base(factory: *mut c_void) -> crate::view::Server<'static> {
 pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
     match of(serv.state()) {
         (_, MODE_PROCESS) => crate::process_factory::native::start(serv),
-        (_, MODE_THREAD) => crate::thread_mode_ops::run_server(serv, RUN_THREAD_FACTORY_START) != 0,
+        (_, MODE_THREAD) => crate::thread_mode::native::factory_start(serv),
         _ => true,
     }
 }
@@ -429,8 +428,8 @@ impl crate::hybrid::Hybrid for Linked {
         sent > 0
     }
 
-    fn thread_mode(&self, serv: crate::view::Server<'_>, operation: u32) -> i64 {
-        crate::thread_mode_ops::run_server(serv, operation)
+    fn thread_mode(&self, serv: crate::view::Server<'_>, operation: ThreadOp) -> i64 {
+        crate::thread_mode::native::run(serv, operation)
     }
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {

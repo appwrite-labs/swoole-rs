@@ -1153,10 +1153,10 @@ mod tests {
     struct Scripted;
 
     impl PoolNative for Scripted {
-        fn call(&self, _: &PoolCall, _: u32, _: u64) -> i64 {
+        fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) -> i64 {
             0
         }
-        fn callback(&self, _: &mut PoolCall) {}
+        fn callback(&self, _: &mut PoolCall, _: crate::process_pool::Callback) {}
         fn event_size(&self) -> usize {
             128
         }

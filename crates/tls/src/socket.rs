@@ -411,6 +411,7 @@ mod tests {
     use crate::handle::{Cert, CertRef};
     use openssl_sys::*;
     use std::os::raw::c_int;
+    use std::ptr;
 
     /// A test's live SSL.
     fn handle(ssl: *mut SSL) -> Ssl<'static> {
@@ -535,19 +536,20 @@ mod tests {
                     2
                 }
             };
-            let named = |common: &str| {
+            // The name as a subjectAltName dNSName: OpenSSL 4 no longer falls back to
+            // the subject CN when the flags are 0.
+            let named = |host: &str| {
                 let cert = X509_new();
-                let name = X509_get_subject_name(cert);
-                let common = std::ffi::CString::new(common).unwrap();
-                X509_NAME_add_entry_by_txt(
-                    name,
-                    c"CN".as_ptr(),
-                    MBSTRING_ASC,
-                    common.as_ptr().cast(),
-                    -1,
-                    -1,
-                    0,
+                let value = std::ffi::CString::new(format!("DNS:{host}")).unwrap();
+                let ext = X509V3_EXT_nconf_nid(
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    NID_subject_alt_name,
+                    value.as_ptr(),
                 );
+                assert!(!ext.is_null());
+                assert_eq!(X509_add_ext(cert, ext, -1), 1);
+                X509_EXTENSION_free(ext);
                 cert
             };
             assert_eq!(check(named("example.com"), "EXAMPLE.com"), 1);
