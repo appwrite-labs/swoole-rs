@@ -11,36 +11,21 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::{Event, Socket, SocketFields, SocketRecord};
-use swoole_rs_tls::upstream as tls;
-use swoole_rs_tls::{OwnedTlsFields, OwnedTlsPrepared, swr_v1_tls_owner_view};
 
 use crate::base_factory::SendData;
-use crate::conn_io as cn;
 use crate::ops::OP_PORT_DTLS;
 use crate::ops::{
-    LOG_RECVFROM, OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR,
-    OP_HAVE_DGRAM, OP_PEER_CERT, OP_QUEUE_SUB, OP_RD_WRITE, OP_REACTOR_ID, OP_REACTOR_NUM,
-    OP_SERVER, OP_SESSION_CONN, OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER,
-    OP_WORKER_NUM,
+    LOG_RECVFROM, OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR, OP_CONN_UNREAD, OP_HAVE_DGRAM,
+    OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_QUEUE_SUB, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER,
+    OP_SESSION_CONN, OP_WORKER_NUM,
 };
-use crate::ops::{
-    OP_CONN_UNREAD, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD, OP_REACTOR_DEL, OP_SSL_ACCEPT,
-};
-use crate::port_config::{self, PortConfig};
+use crate::port_config;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, ConnectionRecord};
 use crate::view;
 use crate::{ServerConfig, ServerState};
-
-/// `PREQUEUE` in builds with `--fix-halfclose` (`SW_HALFCLOSE_PREQUEUE`), else nothing.
-const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
-    cn::PREQUEUE
-} else {
-    0
-};
 
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
@@ -61,7 +46,6 @@ pub(crate) struct ReactorContext<'a> {
     )]
     pub(crate) thread: *mut c_void,
     pub(crate) event: Option<&'a mut Event>,
-    pub(crate) port: Option<view::Port<'a>>,
     pub(crate) sock: Option<Socket<'a>>,
     pub(crate) conn: *mut ConnectionRecord,
     /// The `PipeBuffer` read from a worker, which starts with its head.
@@ -76,6 +60,10 @@ pub(crate) struct ReactorContext<'a> {
         expect(dead_code, reason = "only the reactor threads' ops read it")
     )]
     pub(crate) pkt: *mut c_void,
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the reactor threads' ops read it")
+    )]
     pub(crate) task: SendData,
 }
 
@@ -88,7 +76,6 @@ impl<'a> ReactorContext<'a> {
             reactor,
             thread: null,
             event: None,
-            port: None,
             sock: None,
             conn: null.cast(),
             resp: core::ptr::null(),
@@ -184,10 +171,6 @@ impl<'c> Objects<'_, 'c> {
         // SAFETY: a session socket's object is null or its live connection.
         unsafe { Connection::from_ptr(conn) }
     }
-    /// `read` over the context's socket, or the default without one.
-    fn read_sock<R: Default>(&self, read: impl FnOnce(&SocketFields) -> R) -> R {
-        self.sock().map(|sock| sock.read(read)).unwrap_or_default()
-    }
     fn event(&self) -> Option<&Event> {
         self.ctx.event.as_deref()
     }
@@ -199,73 +182,15 @@ impl<'c> Objects<'_, 'c> {
     fn reactor(&self) -> Option<swoole_rs_reactor::Running<'static>> {
         self.ctx.reactor.map(Reactor::handle)
     }
-    fn port(&self) -> Option<&'c PortConfig> {
-        self.ctx.port.map(view::Port::config)
-    }
-    /// The TLS port's `SSLContext` view.
-    fn ssl(&self) -> Option<OwnedTlsPrepared> {
-        let context = self.port()?.ssl_context.as_deref()?;
-        Some(swr_v1_tls_owner_view(context))
-    }
-    fn ssl_fields(&self) -> Option<&'c OwnedTlsFields> {
-        self.port()?.ssl_fields()
-    }
     /// `get_connection(fd)` or a verified session's.
     fn connection(&self, key: c_long, kind: Lookup) -> *mut ConnectionRecord {
         self.state.connection_ptr(key, kind)
     }
-    /// `get_port_by_fd(fd)`: the port whose listening socket accepted `fd`.
-    fn port_by_fd(&self, fd: c_int) -> Option<view::Port<'c>> {
-        self.server().port_by_fd(fd)
-    }
-    fn mode(&self) -> u64 {
-        u64::from(self.config().mode_)
-    }
 }
-
-/// `bit` when `set`.
-fn flag(set: bool, bit: u64) -> u64 {
-    if set { bit } else { 0 }
-}
-
-/// `SW_SSL_STATE_READY`.
-const SSL_READY: u32 = 1;
 
 /// `Socket::is_dgram(type)`.
 pub(crate) fn is_dgram(kind: c_int) -> bool {
     matches!(kind, 2 | 4 | 6)
-}
-
-/// `ReactorThread_onRead`'s facts over the context's connection; sets the context's
-/// port. A session socket that is a datagram is a DTLS port's (UDP ports take
-/// their packets on the listening socket).
-fn read_facts(o: &mut Objects<'_, '_>) -> u64 {
-    let (Some(conn), Some(fd)) = (o.conn(), o.event().map(Event::fd)) else {
-        return 0;
-    };
-    if conn.server_fd() == 0 {
-        return 0;
-    }
-    o.ctx.port = o.port_by_fd(fd);
-    let process = o.mode() == crate::MODE_PROCESS;
-    o.read_sock(|sock| {
-        let ssl = !sock.ssl().is_null();
-        cn::FOUND
-            | BUILT_PREQUEUE
-            | flag(sock.close_notified, cn::CLOSE_NOTIFIED)
-            | flag(conn.close_queued(), cn::CLOSE_QUEUED)
-            | flag(ssl && sock.tls.want_read, cn::SSL_WANT_READ)
-            | flag(ssl && sock.tls.state != SSL_READY, cn::SSL_PENDING)
-            | flag(is_dgram(sock.socket_type), cn::DTLS_PORT)
-            | flag(sock.dtls, cn::DTLS_SOCKET)
-            | flag(process, cn::PROCESS)
-    })
-}
-
-/// The facts the read's entry passes its run.
-#[inline(always)]
-pub(crate) fn facts(ctx: &mut ReactorContext<'_>, state: &ServerState) -> u64 {
-    read_facts(&mut Objects { ctx, state })
 }
 
 /// `Server::is_valid_connection`.
@@ -294,44 +219,6 @@ pub(crate) fn answer(
             log::sys_warning(c"ReactorThread_onPacketReceived", m);
             0
         }
-        OP_SSL_READY => {
-            o.sock_conn()?.set_ssl_ready(true);
-            0
-        }
-        OP_CLIENT_CERT => {
-            // `client_cert_file`'s slot.
-            let slot = o.ssl()?.strings[7];
-            // SAFETY: a stable slot of the port's live owner.
-            u64::from(!unsafe { &*slot }.bytes().is_empty())
-        }
-        OP_VERIFY_PEER => u64::from(o.ssl_fields()?.verify_peer),
-        OP_PEER_CERT => {
-            let buffer = swoole_rs_corebase::thread_buffer();
-            // SAFETY: a TLS socket's live record and this thread's live buffer.
-            u64::from(unsafe { tls::socket_ssl_get_peer_certificate_string(o.sock()?, buffer) })
-        }
-        OP_SSL_VERIFY => {
-            let allow_self_signed = o.ssl_fields()?.allow_self_signed;
-            u64::from(
-                o.sock()
-                    .is_some_and(|sock| tls::socket_ssl_verify(sock, allow_self_signed)),
-            )
-        }
-        OP_CERT_TASK => {
-            // OP_PEER_CERT filled this thread's live buffer.
-            let (len, data) = with_thread_buffer(|buffer| (buffer.len(), buffer.as_ptr()));
-            o.ctx.task = SendData {
-                info: DataHead {
-                    fd: o.sock()?.fd().into(),
-                    kind: u8::try_from(EVENT_CONNECT).unwrap_or_default(),
-                    reactor_id: o.reactor()?.id().cast_signed(),
-                    len: u32::try_from(len).unwrap_or(u32::MAX),
-                    ..DataHead::default()
-                },
-                data: data.cast(),
-            };
-            0
-        }
         OP_HAVE_DGRAM => u64::from(o.config().have_dgram_sock),
         // SAFETY: the datagram server's connection, whose object is its live port.
         OP_PORT_DTLS => u64::from(unsafe { port_config::of(o.conn()?.object()) }.is_dtls()),
@@ -352,25 +239,12 @@ pub(crate) fn answer(
             o.ctx.conn = o.connection(arg.cast_signed(), Lookup::Verified);
             u64::from(!o.ctx.conn.is_null())
         }
-        OP_SET_WAITING_TIME => {
-            o.conn()?
-                .set_waiting_time(u16::try_from(arg & 0xffff).unwrap_or_default());
-            0
-        }
         OP_QUEUE_SUB => {
             let bytes = u32::try_from(arg & u64::from(u32::MAX)).unwrap_or_default();
             o.conn()?.recv_queued_bytes().fetch_sub(bytes, SeqCst);
             0
         }
         OP_SERVER => u64::try_from(o.ctx.serv.raw().expose_provenance()).unwrap_or(0),
-        OP_RD_WRITE => {
-            let (serv, reactor) = (o.server(), o.handle()?);
-            sign(crate::conn_io::write(
-                serv,
-                reactor,
-                o.ctx.event.as_deref_mut()?,
-            ))
-        }
         op => return effects(&mut o, op, arg),
     })
 }
@@ -452,18 +326,15 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     // `reactor->remove_read_event(socket)` (4) and `remove_write_event` (5).
     let interest = |socket, kind| reactor.map(|r| sign(r.interest(socket, kind, 0)));
     Some(match op {
-        OP_REACTOR_DEL => change(o.sock()?, 2, 0)?,
         OP_PORT_DEL => {
             change(o.server().port_socket_at(usize::try_from(arg).ok()?)?, 2, 0);
             0
         }
         OP_CONN_UNREAD => interest(o.conn_socket()?, 4)?,
-        OP_RD_UNREAD => interest(o.sock()?, 4)?,
         OP_NOTIFY_CONNECT => {
             crate::server_methods::notify(o.server(), o.sock_conn()?, EVENT_CONNECT);
             0
         }
-        OP_SSL_ACCEPT => sign(o.sock().map_or(-1, tls::socket_ssl_accept)),
         op => return native(o, op, arg),
     })
 }
@@ -474,7 +345,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{OP_BASE_PASS, OP_DTLS_ACCEPT, OP_EVENT_WAIT, OP_RD_DTLS};
+    use crate::ops::{OP_BASE_PASS, OP_DTLS_ACCEPT, OP_EVENT_WAIT};
     use swoole_rs_reactor::event_api::swoole_event_wait;
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -486,10 +357,6 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             sign(unsafe {
                 crate::dtls::on_packet(serv, single_thread, reactor, close, port, pkt, arg)
             })
-        }
-        OP_RD_DTLS => {
-            let (sock, fd) = (o.sock()?, o.event()?.fd());
-            u64::from(crate::dtls::on_read(o.ctx.port?.config(), sock, fd))
         }
         OP_BASE_PASS => {
             // SAFETY: the `SendData` (the context's task) the dispatch lends at arg.

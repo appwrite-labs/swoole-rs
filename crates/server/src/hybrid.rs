@@ -6,7 +6,10 @@ use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::task_file::TaskBuffer;
 
+use swoole_rs_reactor::Socket;
+
 use crate::commands::CommandSend;
+use crate::port_config::PortConfig;
 use crate::view::Server;
 
 /// What the hybrid links. Each default is a build without it: the reactor threads
@@ -70,6 +73,21 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// `factory_->dispatch(send)`.
+    fn factory_dispatch(
+        &self,
+        _serv: Server<'_>,
+        _send: &mut crate::base_factory::SendData,
+    ) -> bool {
+        missing()
+    }
+
+    /// A DTLS port's read: `sock`'s next datagram to the session on `fd`; whether its
+    /// pending handshake failed.
+    fn dtls_read(&self, _port: &PortConfig, _sock: Socket<'_>, _fd: c_int) -> bool {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -125,6 +143,10 @@ pub(crate) mod tests {
         /// The send's session, kind and length, and its task's offset, length and the
         /// first 8 bytes of its name.
         Finish(c_long, u8, u32, i64, usize, [u8; 8]),
+        /// The send's fd, kind and length.
+        Dispatch(c_long, u8, u32),
+        /// The session's fd.
+        DtlsRead(c_int),
     }
 
     thread_local! {
@@ -191,6 +213,19 @@ pub(crate) mod tests {
         fn to_reactor_thread(&self, _: Server<'_>, head: &DataHead) -> isize {
             hear(Call::ToReactorThread(head.fd, head.reactor_id, head.kind));
             size_of::<DataHead>().cast_signed()
+        }
+
+        fn factory_dispatch(
+            &self,
+            _: Server<'_>,
+            send: &mut crate::base_factory::SendData,
+        ) -> bool {
+            hear(Call::Dispatch(send.info.fd, send.info.kind, send.info.len))
+        }
+
+        /// A failed handshake.
+        fn dtls_read(&self, _: &PortConfig, _: Socket<'_>, fd: c_int) -> bool {
+            hear(Call::DtlsRead(fd))
         }
 
         fn factory_finish(&self, _: Server<'_>, send: &mut crate::base_factory::SendData) -> bool {

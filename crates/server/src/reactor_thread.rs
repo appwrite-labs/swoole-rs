@@ -1,10 +1,8 @@
-//! Reactor threads: the receive path and dispatch to workers, the worker pipe
-//! protocol, TLS readiness, heartbeats and the threads' lifecycle.
+//! Reactor threads: the datagram path and dispatch to workers, the worker pipe
+//! protocol, heartbeats and the threads' lifecycle.
 use crate::ops::{
-    LOG_RECVFROM, OP_CERT_TASK, OP_CLIENT_CERT, OP_DELAY_RECEIVE, OP_DTLS_ACCEPT, OP_ERRNO,
-    OP_FACTORY_DISPATCH, OP_HAS_ON_CONNECT, OP_MODE, OP_NOTIFY_CONNECT, OP_PACKET_INIT,
-    OP_PACKET_TASK, OP_PEER_CERT, OP_PORT_DTLS, OP_REACTOR_DEL, OP_RECVFROM, OP_SSL_ACCEPT,
-    OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER,
+    LOG_RECVFROM, OP_DTLS_ACCEPT, OP_ERRNO, OP_FACTORY_DISPATCH, OP_MODE, OP_PACKET_INIT,
+    OP_PACKET_TASK, OP_PORT_DTLS, OP_RECVFROM,
 };
 use core::ffi::{c_int, c_long};
 
@@ -25,44 +23,8 @@ const FD_DGRAM_SERVER: c_int = 2;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 
-/// `swReturnCode` values.
-pub(crate) const SW_CONTINUE: i64 = 1;
-pub(crate) const SW_WAIT: i64 = 2;
-pub(crate) const SW_ERROR: i64 = 4;
-pub(crate) const SW_READY: i64 = 5;
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
-
-/// `ReactorThread_verify_ssl_state` once the socket's TLS handshake is pending:
-/// finish it, then announce the connection (with the client certificate when the
-/// port asks for one).
-pub(crate) fn verify_ssl<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let code = h.signed(OP_SSL_ACCEPT)?;
-    if code != SW_READY {
-        return Ok(code);
-    }
-    h.get(OP_SSL_READY)?;
-    let mut announced = false;
-    if h.is(OP_CLIENT_CERT)? {
-        if h.is(OP_PEER_CERT)? {
-            if h.is(OP_VERIFY_PEER)? && !h.is(OP_SSL_VERIFY)? {
-                return Ok(SW_ERROR);
-            }
-            h.get(OP_CERT_TASK)?;
-            h.get(OP_FACTORY_DISPATCH)?;
-            announced = true;
-        } else if h.is(OP_VERIFY_PEER)? {
-            return Ok(SW_ERROR);
-        }
-    }
-    if !announced && h.is(OP_HAS_ON_CONNECT)? {
-        h.get(OP_NOTIFY_CONNECT)?;
-    }
-    if h.is(OP_DELAY_RECEIVE)? && h.signed(OP_REACTOR_DEL)? < 0 {
-        return Ok(SW_ERROR);
-    }
-    Ok(SW_READY)
-}
 
 /// `ReactorThread_onPacketReceived`: dispatch datagrams until the socket would block.
 pub(crate) fn packet_received<H: Host>(h: &mut H) -> crate::Effect<i64> {
@@ -230,43 +192,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
 mod tests {
     use super::*;
     use crate::script::Script;
-
-    #[test]
-    fn ssl_states() {
-        let mut s = Script::with(&[(OP_SSL_ACCEPT, 2)]);
-        assert_eq!(verify_ssl(&mut s).unwrap(), 2, "handshake waits");
-
-        let mut s = Script::with(&[
-            (OP_SSL_ACCEPT, 5),
-            (OP_HAS_ON_CONNECT, 1),
-            (OP_DELAY_RECEIVE, 1),
-        ]);
-        assert_eq!(verify_ssl(&mut s).unwrap(), SW_READY, "ready");
-        assert_eq!(s.called(OP_NOTIFY_CONNECT), 1, "onConnect");
-        assert_eq!(s.called(OP_REACTOR_DEL), 1, "delayed receive");
-
-        let cert = |peer, verify, ok| {
-            let mut s = Script::with(&[
-                (OP_SSL_ACCEPT, 5),
-                (OP_CLIENT_CERT, 1),
-                (OP_PEER_CERT, peer),
-                (OP_VERIFY_PEER, verify),
-                (OP_SSL_VERIFY, ok),
-                (OP_HAS_ON_CONNECT, 1),
-            ]);
-            let code = verify_ssl(&mut s).unwrap();
-            (
-                code,
-                s.called(OP_CERT_TASK).min(s.called(OP_FACTORY_DISPATCH)),
-                s.called(OP_NOTIFY_CONNECT),
-            )
-        };
-        assert_eq!(cert(0, 1, 0), (SW_ERROR, 0, 0), "missing certificate");
-        assert_eq!(cert(0, 0, 0), (SW_READY, 0, 1), "optional certificate");
-        assert_eq!(cert(1, 1, 0), (SW_ERROR, 0, 0), "rejected certificate");
-        assert_eq!(cert(1, 1, 1), (SW_READY, 1, 0), "verified certificate");
-        assert_eq!(cert(1, 0, 0), (SW_READY, 1, 0), "unverified certificate");
-    }
 
     #[test]
     fn datagrams_until_eagain() {
