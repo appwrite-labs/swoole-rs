@@ -3,23 +3,13 @@ use crate::{
     CONTINUE, DISPATCH, Frame, Op, offset,
     typed::{self, KeyType, Typed},
 };
-use std::{
-    borrow::Cow,
-    ffi::{c_int, c_void},
-    mem::offset_of,
-    ptr,
-};
+use std::{borrow::Cow, ffi::c_int, ptr};
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
     opcode::Handler,
     sys::{self as z, zend_execute_data, zend_op, zend_reference, zval},
 };
-
-const _: () = assert!(
-    size_of::<z::zend_property_info_source_list>() == size_of::<*mut c_void>(),
-    "a reference's source list is one pointer wide"
-);
 
 unsafe extern "C" {
     fn swr_phpstdext_undefined_cv(frame: *mut zend_execute_data, var: u32) -> u8;
@@ -99,13 +89,12 @@ impl Data<'_> {
         Ok(())
     }
 
-    /// Publish what `element`, the array's slot, holds (through a reference)
-    /// as `op`'s result, then free the operand.
+    /// Publish `element` as `op`'s result, then free the operand.
     fn publish(self, op: Op, element: &Value) -> Result<(), Bailout> {
         if let Some(result) = op.result() {
-            // SAFETY: two live zvals, the element's own or its reference's; a
-            // retained copy of the actual post-operation element.
-            unsafe { z::swr_zval_copy(result.as_ptr(), element.referent()) };
+            // SAFETY: two live zvals; a retained copy of the actual
+            // post-operation element.
+            unsafe { z::swr_zval_copy(result.as_ptr(), element.as_ptr()) };
         }
         self.free()
     }
@@ -209,17 +198,12 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
     // The reference whose typed property sources Zend must verify, if any.
     let mut typed_reference = ptr::null_mut();
     if element.kind() == z::IS_REFERENCE {
-        // `target` is the `val` of the reference the element holds.
-        let reference = target
-            .wrapping_byte_sub(offset_of!(zend_reference, val))
-            .cast::<zend_reference>();
-        // Its source list: a union that its pointer member starts.
-        let sources = reference
-            .wrapping_byte_add(offset_of!(zend_reference, sources))
-            .cast::<*mut c_void>();
-        // SAFETY: this live reference owns its PHP property-source metadata;
-        // Zend tests the source-list union through its pointer member too.
-        if !unsafe { sources.read() }.is_null() {
+        // SAFETY: a reference zval holds `ref`, at offset 0.
+        let reference = unsafe { element.as_ptr().cast::<*mut zend_reference>().read() };
+        // SAFETY: this live reference owns its PHP property-source metadata.
+        let sources = unsafe { (*reference).sources };
+        // SAFETY: Zend tests the source-list union through its pointer member too.
+        if !unsafe { sources.ptr }.is_null() {
             typed_reference = reference;
         }
     }
@@ -237,7 +221,12 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
             swr_phpstdext_typed_ref(op.frame.as_ptr(), typed_reference, value.as_ptr(), op.at)
         })?;
     }
-    data.publish(op, element)
+    // SAFETY: the element's live slot, or its reference's, after the operation.
+    let Some(target) = (unsafe { Value::from_ptr(target) }) else {
+        // Never: a referent is not null.
+        return data.abandon(op);
+    };
+    data.publish(op, target)
 }
 
 /// `ASSIGN_DIM` (or, for `operation`, `ASSIGN_DIM_OP`) at `frame`'s instruction.

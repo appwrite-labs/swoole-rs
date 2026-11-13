@@ -272,7 +272,6 @@ fn boundaries_match_the_pin() {
     for input in parameters.split('|').map(str::as_bytes) {
         for length in 0..=input.len() {
             for offset in 0..=length + 1 {
-                // Outputs a miss must leave alone.
                 let (mut start, mut size) = (std::ptr::null_mut(), 3);
                 // SAFETY: `input` is initialized for `length` bytes.
                 let found = unsafe {

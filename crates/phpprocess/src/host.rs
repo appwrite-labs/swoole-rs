@@ -237,11 +237,16 @@ impl Slot {
     /// [`Callable::call`] of the slot's callable, which the slot keeps: `None`
     /// when it has none.
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> Option<bool> {
-        // SAFETY: null or the live callable `replace` stored: whoever takes it out
-        // while a dispatch may be using it frees it once the loop is past that
-        // dispatch (`callable_defer_free`).
-        let callable = unsafe { self.0.load(Ordering::Acquire).as_ref() }?;
-        Some(call(callable, args, coroutine))
+        let stored = self.0.load(Ordering::Acquire);
+        if stored.is_null() {
+            return None;
+        }
+        // SAFETY: the `Rc` `replace` stored, still the slot's: one more reference to it.
+        unsafe { Rc::increment_strong_count(stored) };
+        // SAFETY: the reference just added, so the callable outlives a handler that
+        // replaces it.
+        let callable = unsafe { Rc::from_raw(stored) };
+        Some(call(&callable, args, coroutine))
     }
 }
 

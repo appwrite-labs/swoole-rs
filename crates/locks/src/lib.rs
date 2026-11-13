@@ -255,6 +255,9 @@ pub unsafe extern "C" fn swr_v1_locks_init(storage: *mut c_void, kind: i32, shar
     if !valid(storage, kind) {
         return EINVAL;
     }
+    // SAFETY: the kind's size in writable bytes, as the caller lends: zeroed, so that
+    // the words below are values before pthread makes a lock of them.
+    unsafe { storage.cast::<u8>().write_bytes(0, swr_v1_locks_size(kind)) };
     match kind {
         3 => {
             // SAFETY: writable, unused storage of a mutex's size and alignment, lent to

@@ -180,12 +180,10 @@ impl Narrow for usize {
     }
 }
 
-/// One export per hooked libssh2 function. A row names the function and passes
-/// the export's arguments on; an alias row ([`aliases`]) gives the call's
-/// arguments itself, after measuring the C strings it names.
+/// One export per hooked libssh2 function.
 macro_rules! hooks {
     ($($dispatch:ident $kind:ident $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident;)*) => {$(
-        hooks!(@$kind [] $export($($arg: $ty),*) -> $ret => $function($($arg),*));
+        hooks!(@$kind $export($($arg: $ty),*) -> $ret => $function);
     )*
         /// C call-site forwarding, derived from the same typed Rust hook inventory.
         pub const NATIVE_DISPATCH: &str = concat!($(hooks!(@dispatch $dispatch $function, $export($($arg),*))),*);
@@ -198,26 +196,20 @@ macro_rules! hooks {
         concat!("#undef ", stringify!($function), "\n#define ", stringify!($function), "(", hooks!(@params $($arg),*), ") ",
                 stringify!($export), "(ssh2_bound(session), session", $(", ", stringify!($arg),)* ")\n")
     };
-    (@int [$($len:ident = $text:ident),*] $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident($($call:expr),*)) => {
+    (@int $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
         #[doc = concat!("`", stringify!($function), "`, retried while it says `EAGAIN`.")]
         /// # Safety
         /// `ops` is the lent table, `wait_on` a live session, and the rest are
-        /// the libssh2 function's (or its alias's) arguments.
+        /// the libssh2 function's arguments.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
             // SAFETY: per the caller.
             let wait = unsafe { Wait::new(ops, wait_on) };
-            $(
-                // SAFETY: the caller's NUL-terminated string.
-                let $len = unsafe { libc::strlen($text) };
-                #[expect(clippy::cast_possible_truncation, reason = "libssh2.h's alias casts strlen to unsigned int")]
-                let $len = $len as c_uint;
-            )*
             // SAFETY: the caller's arguments, as libssh2 takes them.
-            wait.retry(wait.blocked(), || unsafe { $function($($call),*) }.narrow())
+            wait.retry(wait.blocked(), || unsafe { $function($($arg),*) }.narrow())
         }
     };
-    (@pointer [$($len:ident = $text:ident),*] $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident($($call:expr),*)) => {
+    (@pointer $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
         #[doc = concat!("`", stringify!($function), "`, retried while it fails with `EAGAIN`.")]
         /// # Safety
         /// As the `int` exports.
@@ -225,14 +217,8 @@ macro_rules! hooks {
         pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
             // SAFETY: per the caller.
             let wait = unsafe { Wait::new(ops, wait_on) };
-            $(
-                // SAFETY: the caller's NUL-terminated string.
-                let $len = unsafe { libc::strlen($text) };
-                #[expect(clippy::cast_possible_truncation, reason = "libssh2.h's alias casts strlen to unsigned int")]
-                let $len = $len as c_uint;
-            )*
             // SAFETY: the caller's arguments, as libssh2 takes them.
-            let call = || unsafe { $function($($call),*) };
+            let call = || unsafe { $function($($arg),*) };
             wait.retry_pointer(wait.blocked(), call, || wait.last_errno())
         }
     };

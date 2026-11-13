@@ -568,9 +568,8 @@ impl Drop for WorkerSlot {
     fn drop(&mut self) {
         let worker = self.worker.get();
         if !worker.is_null() {
-            // SAFETY: the slot owns its worker, a `WorkerRecord::boxed` that nothing
-            // uses afterwards; `queue` drops after it.
-            drop(worker::Freed(unsafe { Box::from_raw(worker.cast()) }));
+            // SAFETY: the slot owns its worker; `queue` drops after it.
+            unsafe { worker::free(worker) };
         }
     }
 }

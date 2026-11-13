@@ -133,7 +133,7 @@ pub(crate) fn create(
         argc,
         callable,
     };
-    context::current().save();
+    context::save_current();
     let cid = host::create((&raw mut args).cast());
     bailout::trapped(0)?;
     Ok(cid)

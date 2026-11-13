@@ -42,8 +42,8 @@ Each case compares whether a rule applied, the URL, the original URL and the num
 publications. The draws are `std::mt19937`'s own (`swr_oracle_mt19937`). The Rust dialect
 is libstdc++'s `std::regex`, so `rewrite.rs` is compiled on Linux only, where the oracle
 links libstdc++; it runs on a thread with the gate's 8 MiB main stack. The gate went
-through the server's two rewrite exports, which only pass their arguments to
-`RewriteRules::add` and `HttpStaticContext::rewrite`; the tests call those. The gate ran
+through the server's two rewrite exports, which only passed their arguments to
+`RewriteRules::add` and `HttpStaticContext::rewrite` and went with it; the tests call those. The gate ran
 its C++ under ASan/UBSan; the tests don't.
 
 The status, method, URL and boundary helpers are Rust behind thin facades, so

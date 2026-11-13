@@ -28,14 +28,9 @@ use swoole_rs_zend::sys::{
 use swoole_rs_zend::{Callable, Function, Value, bailout};
 
 unsafe extern "C" {
-    /// `emalloc(size)`: it takes a size and returns storage of the request's
-    /// heap, never null. Zend's allocator doesn't bail out (docs/zend.md, on
-    /// `memory_limit`) and runs no PHP code.
-    safe fn swr_zend_emalloc(size: usize) -> *mut c_void;
     /// `save_context`: this PHP thread's executor, output and serializer state,
-    /// copied into `vm`, which is all it writes besides starting a fresh output
-    /// layer for the one it moved there. It follows no pointer `vm` holds and
-    /// runs no PHP code.
+    /// moved into `vm`, with a fresh output layer started in their place. It
+    /// follows no pointer `vm` holds and runs no PHP code.
     safe fn swr_zend_coroutine_save(vm: &mut swr_zend_coroutine_vm);
 }
 
@@ -202,12 +197,6 @@ impl Ctx {
     /// The VM state, borrowed for `f`, as [`Ctx::with`].
     fn with_vm<R>(self, f: impl FnOnce(&mut swr_zend_coroutine_vm) -> R) -> R {
         self.with(|ctx| f(&mut ctx.vm))
-    }
-
-    /// `save_context`: the running VM's state into this context, as a switch out
-    /// of it does.
-    pub(crate) fn save(self) {
-        self.with_vm(|vm| swr_zend_coroutine_save(vm));
     }
 
     /// The VM state saved by the last switch out: the frame it stopped in.
@@ -388,7 +377,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     let args = unsafe { &*args.cast::<Args>() };
     let co = host::current();
     let pcid = host::origin_cid(co);
-    let ctx = swr_zend_emalloc(size_of::<Context>()).cast::<Context>();
+    let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
     // Built in place: a `Context::EMPTY` literal is staged on the stack and
     // copied over. All-zero bytes are `Context::EMPTY` except `defer`.
     // SAFETY: fresh storage for one context.
@@ -469,6 +458,12 @@ pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<*mut zval>)> {
     Some((task, returned.then(|| ctx.return_value())))
 }
 
+/// `save_context`: the running VM's state into the running context, as a switch
+/// out of it does.
+pub(crate) fn save_current() {
+    current().with_vm(|vm| swr_zend_coroutine_save(vm));
+}
+
 /// `destroy_context`, on the running, finishing coroutine. Its bailout
 /// address is null here, so a bailout in a destructor ends the process rather
 /// than longjmp.
@@ -476,11 +471,12 @@ pub(crate) fn close(ctx: Ctx) {
     host::coro_hook(true, ctx.ptr().cast());
     // SAFETY: output state is the coroutine's own.
     unsafe { swr_zend_coroutine_output_reset() };
-    // Its defer tasks were kept and are not called. Any is left only when the
-    // coroutine ended in an exception or a bailout, which `main` raises in the main
-    // context once this returns: a destructor's bailout waits for that.
+    // Its defer tasks were kept and are not called.
     for task in ctx.defers(mem::take) {
-        bailout::defer(task.release());
+        if let Err(bailout) = task.release() {
+            bailout.defer();
+            bailout::finish();
+        }
     }
     // Object destruction may yield and let the origin coroutine finish: the
     // origin is looked up again before each use.
@@ -537,7 +533,8 @@ pub(crate) fn defer(task: Callable) {
 }
 
 fn fiber_init(ctx: Ctx) {
-    let fiber = swr_zend_emalloc(size_of::<zend_fiber_context>()).cast::<zend_fiber_context>();
+    let fiber = swoole_rs_zend::value::emalloc(size_of::<zend_fiber_context>())
+        .cast::<zend_fiber_context>();
     let invalid = ptr::without_provenance_mut::<c_void>(INVALID);
     {
         // SAFETY: fresh storage; these fields are never used for a mock fiber.
