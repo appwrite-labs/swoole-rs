@@ -3,9 +3,11 @@
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
 //! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
-use crate::records::Lookup;
+use crate::reactor_thread::each_connection;
+use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
+use core::sync::atomic::Ordering::SeqCst;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
@@ -13,7 +15,7 @@ use crate::reactor_io::owns;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::base_factory::SendData;
 use crate::callbacks::{ReceiveSlot, TaskSlot};
@@ -21,21 +23,17 @@ use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
 use crate::ops::{
-    EVENT_SHUTDOWN, OP_CLOSE, OP_COMMAND_REQUEST, OP_COMMAND_RESPONSE, OP_CONN_HEALTHY,
-    OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER, OP_INCOMING, OP_ON_FINISH,
-    OP_ON_PIPE_MESSAGE, OP_PIPE_POP, OP_PIPE_READ, OP_PIPE_SEND, OP_PORT_LISTEN, OP_PORT_READ,
-    OP_RD_ABORT, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE, OP_RESUME_TIMER,
-    OP_SEND_CLOSE_FORCE, OP_STOP_THREAD_WORKER, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT,
-    OP_THREAD_NOTIFY, OP_THREAD0_INIT, OP_WORKER_PIPE_UNREAD, OP_WORKER_START, OP_WORKER_STOP,
-    RUN_HEARTBEAT_CHECK, RUN_HEARTBEAT_THREAD, RUN_RESUME_RECEIVING,
+    EVENT_SHUTDOWN, OP_CLOSE, OP_DGRAM_BUFFER, OP_HEARTBEAT_ENTRY, OP_HEARTBEAT_TIMER,
+    OP_PORT_LISTEN, OP_PORT_READ, OP_RD_ABORT, OP_REACTOR_THREAD_ENTRY, OP_REACTOR_THREAD_TYPE,
+    OP_RESUME_TIMER, OP_THREAD_CLEAN, OP_THREAD_ENTER, OP_THREAD_INIT, OP_THREAD_NOTIFY,
+    OP_THREAD0_INIT, OP_WORKER_START, OP_WORKER_STOP,
 };
 use crate::ops::{
-    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_CLOSE_FORWARD, OP_DESTROY_CALLBACK, OP_FORCE_CLOSE,
-    OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY, OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND,
-    OP_WR_SENDFILE, RUN_CLOSE_REACTOR_CONNECTIONS,
+    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY,
+    OP_REACTOR_BARRIER, OP_RECVFROM, OP_WR_SEND, OP_WR_SENDFILE,
 };
 use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
-use crate::reactor_entry::{self as entry, run, thread};
+use crate::reactor_entry::{self as entry, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, int, sign};
 use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
@@ -52,6 +50,8 @@ const EVENT_RECV_DGRAM: u8 = 1;
 const EVENT_CLOSE: u8 = 4;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
+/// The longest resume back-off, in milliseconds.
+const MAX_WAITING_TIME: u16 = 1024;
 
 /// `DgramPacket`: the datagram follows it.
 #[repr(C)]
@@ -116,9 +116,7 @@ fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> *mut c_void {
         // SAFETY: a server reactor whose `ptr` is its live server, which outlives its
         // timers.
         let serv = unsafe { entry::server(reactor) };
-        let mut ctx = ReactorContext::new(serv, Some(reactor));
-        ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
-        run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
+        crate::reactor_thread::heartbeat_check(serv, reactor);
     })
 }
 
@@ -134,7 +132,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     reactor.set_max_socket(tables.max_connection);
     reactor.set_close(Some(entry::close_connection));
     handle.set_error_handler(entry::on_close);
-    handle.set_handler(FD_PIPE, SW_EVENT_READ, entry::on_pipe_read);
+    handle.set_handler(FD_PIPE, SW_EVENT_READ, on_pipe_read);
     handle.set_handler(FD_PIPE, SW_EVENT_WRITE, entry::on_pipe_write);
     let reactors = config.reactor_num.get();
     // Listen on this thread's UDP ports.
@@ -225,7 +223,7 @@ pub(crate) fn answer(
     arg: u64,
 ) -> Option<u64> {
     let (server, handle) = (ctx.serv, ctx.reactor);
-    let (serv, reactor) = (server.raw(), handle.map_or(ptr::null_mut(), Reactor::ptr));
+    let reactor = handle.map_or(ptr::null_mut(), Reactor::ptr);
     let config = || state.config_ref();
     let reactor_id = || handle.map(|handle| handle.handle().id());
     // `reactor->add(socket, SW_EVENT_READ)`.
@@ -233,17 +231,9 @@ pub(crate) fn answer(
         (Some(socket), Some(handle)) => handle.change(socket, 0, SW_EVENT_READ),
         _ => -1,
     };
-    let resp = ctx.resp;
     Some(match op {
         OP_REACTOR_BARRIER => {
             methods::reactor_barrier(server);
-            0
-        }
-        OP_FORCE_CLOSE => {
-            let conn = ctx.connection()?;
-            conn.set_close_force(true);
-            let mut event = conn.event(0, 0);
-            handle?.trigger_close(&mut event);
             0
         }
         OP_PACKET_INIT => {
@@ -306,16 +296,6 @@ pub(crate) fn answer(
             ctx.task.data = ctx.pkt.cast();
             (&raw mut ctx.task).expose_provenance() as u64
         }
-        OP_DESTROY_CALLBACK => {
-            let running = handle?.handle();
-            // SAFETY: the call takes the reactor, which outlives it.
-            unsafe { swoole_rs_reactor::defer_destroy(running, close_connections, reactor) };
-            0
-        }
-        OP_CLOSE_FORWARD => {
-            factory::end(state, arg.cast_signed(), CLOSE_ACTIVELY);
-            0
-        }
         OP_WR_SENDFILE => sign(swoole_rs_tls::upstream::socket_handle_sendfile(ctx.sock?)),
         OP_WR_SEND => sign(swoole_rs_tls::upstream::socket_handle_send(ctx.sock?)),
         OP_PC_NOTIFY => {
@@ -331,7 +311,6 @@ pub(crate) fn answer(
             u64::from(factory::notify(state, (&raw mut head).cast()))
         }
         OP_CC_COUNT => {
-            use core::sync::atomic::Ordering::SeqCst;
             let gs = crate::shared::server_counters(state)?;
             let port = port_config(ctx)?.counters()?;
             gs.close_count.fetch_add(1, SeqCst);
@@ -372,10 +351,6 @@ pub(crate) fn answer(
             }
             0
         }
-        OP_STOP_THREAD_WORKER => {
-            stop_async_worker(server, worker(server, reactor_id()?)?);
-            0
-        }
         OP_THREAD_INIT | OP_THREAD0_INIT => {
             if op == OP_THREAD0_INIT {
                 ctx.thread = thread(state, 0);
@@ -412,115 +387,12 @@ pub(crate) fn answer(
                 .store(timer, core::sync::atomic::Ordering::Relaxed);
             0
         }
-        OP_RESUME_TIMER => {
-            let msec = c_long::from(ctx.connection()?.waiting_time());
-            let sock = ctx.sock?.as_ptr();
-            let timer = swoole_rs_timer::add_fn(msec, false, move || {
-                // SAFETY: the server whose reactor armed the timer, which outlives the
-                // timers of its sockets.
-                let serv = unsafe { view::Server::from_raw(serv) };
-                // SAFETY: the paused session socket, which deletes this timer before it goes.
-                if let Some(sock) = unsafe { Socket::from_ptr(sock) } {
-                    resume_data_receiving(serv, sock);
-                }
-            });
-            ctx.connection()?.set_timer(timer);
-            u64::from(!timer.is_null())
-        }
+        OP_RESUME_TIMER => u64::from(resume_timer(server, ctx.connection()?, ctx.sock?)),
 
-        OP_WORKER_PIPE_UNREAD => {
-            let worker = worker(server, arg)?;
-            let bus = ctx.thread_record()?.message_bus();
-            handle?.interest(pipe_socket(&bus, worker_pipe(worker, true))?, 4, 0);
-            0
-        }
-
-        OP_PIPE_READ => {
-            let thread = ctx.thread_record()?;
-            ctx.resp = thread.message_bus().buffer();
-            let sock = event_socket(ctx)?;
-            let read = crate::pool_native::read_bus(
-                thread.message_bus().rust(),
-                thread.allocator,
-                sock,
-                true,
-            );
-            sign(i64::try_from(read).unwrap_or(-1))
-        }
-        OP_PIPE_POP => {
-            ctx.thread_record()?.message_bus().pop();
-            0
-        }
-        OP_COMMAND_REQUEST => {
-            let thread = ctx.thread_record()?;
-            let id = u16::try_from(thread.id.get()).unwrap_or_default();
-            // The bus's record of the command pipe (`thread.pipe_command`).
-            let bus = thread.message_bus();
-            let end = config()
-                .command_pipe()
-                .and_then(swoole_rs_tls::socket_pair::SocketPair::worker_end);
-            let pipe = end.and_then(|end| bus.pipe_socket(end));
-            crate::commands::call_command_handler(server, bus, id, pipe);
-            0
-        }
-        OP_COMMAND_RESPONSE | OP_PIPE_SEND => {
-            let bus = ctx.thread_record()?.message_bus();
-            let packet = bus.packet();
-            // The bus's buffer, which PIPE_READ stored.
-            let mut info = *ctx.message()?;
-            if op == OP_COMMAND_RESPONSE {
-                let fd = info.fd;
-                bus.with_packet(|reply| crate::commands::command_result(state, fd, reply));
-                return Some(0);
-            }
-            info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-            let send = SendData {
-                info,
-                data: packet.data,
-            };
-            // SAFETY: a send over the bus's packet.
-            unsafe { methods::send_to_connection(server, &send) };
-            0
-        }
-        OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
-            // SAFETY: the event `OP_PIPE_READ` stored: the bus's `EventData`, its head
-            // and the payload it counts.
-            let event = unsafe { swoole_rs_process::task_file::Packed::from_raw(resp.cast()) };
-            if op == OP_ON_FINISH {
-                let _ = state.callbacks.task(TaskSlot::Finish, server, event);
-            } else {
-                state.callbacks.pipe_message(server, event);
-            }
-            0
-        }
-
-        OP_INCOMING => {
-            let conn = ctx.connection()?;
-            // SAFETY: this reactor thread's live reactor, as the context's pointer:
-            // the op runs on a context that has one.
-            let reactor = unsafe { Reactor::of(reactor) };
-            sign(methods::connection_incoming(server, reactor, conn))
-        }
         OP_CLOSE => {
             // This thread's reactor and the connection's live socket.
             let socket = ctx.connection()?.socket();
             sign(entry::close_socket(server, handle?, socket))
-        }
-        OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), ctx.connection()?)),
-        OP_SEND_CLOSE_FORCE => {
-            // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
-            let session = arg.cast_signed();
-            let pipes = i64::from(state.tables_ref().reactor_pipe_num);
-            let index = session % pipes;
-            let id = i64::from(ctx.connection()?.reactor_id())
-                + index * i64::from(config().reactor_num.get());
-            // the session id, so the reactor verifies the connection before closing it
-            send_event(
-                worker_pipe(worker(server, id)?, false),
-                session,
-                crate::ops::EVENT_CLOSE_FORCE,
-            );
-            0
         }
         OP_RD_ABORT => {
             crate::connection::abort(server, handle?, ctx.port, ctx.sock?);
@@ -540,7 +412,6 @@ pub(crate) fn answer(
             0
         }
         OP_RD_PORT_READ => {
-            use core::sync::atomic::Ordering::SeqCst;
             let event = ptr::from_mut(ctx.event.as_deref_mut()?);
             let port = ctx.port?.raw();
             ctx.connection()?
@@ -612,8 +483,10 @@ fn packet<'c>(ctx: &'c mut ReactorContext<'_>) -> Option<&'c mut DgramPacket> {
 unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
     // SAFETY: the callback's live reactor, on its own thread: a reactor thread's
     // reactor, whose `ptr` is its live server.
-    let mut ctx = unsafe { entry::reactor_context(reactor) };
-    run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx);
+    let ctx = unsafe { entry::reactor_context(reactor) };
+    if let Some(reactor) = ctx.reactor {
+        crate::reactor_thread::close_reactor_connections(ctx.serv, reactor);
+    }
 }
 
 /// What a reactor thread Rust starts runs. As `state::ThreadEntry`, whose `void *`
@@ -636,18 +509,220 @@ extern "C" fn heartbeat_main(server: view::Server<'_>, _: u64) {
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;
     swoole_rs_corebase::set_thread(kind, swoole_rs_corebase::thread_id());
-    run(
-        RUN_HEARTBEAT_THREAD,
-        0,
-        &mut ReactorContext::new(server, None),
-    );
+    heartbeat_thread(server);
 }
 
-/// `ReactorThread_resume_data_receiving`: the timer of a paused session socket,
-/// whose object is its connection.
+/// `ReactorThread_resume_data_receiving`, the timer of a paused session socket,
+/// whose object is its connection: back off (doubling up to 1024ms) while the
+/// workers still hold too many bytes, then read again.
 fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'_>) {
     let mut ctx = ReactorContext::new(serv, None);
     ctx.conn = socket.read(|s| s.object.cast::<ConnectionRecord>());
-    ctx.sock = Some(socket);
-    run(RUN_RESUME_RECEIVING, 0, &mut ctx);
+    let Some(conn) = ctx.connection() else {
+        return;
+    };
+    let config = serv.state().config_ref();
+    if conn.recv_queued_bytes().load(SeqCst) > config.max_queued_bytes.get() {
+        let waiting = conn.waiting_time();
+        if waiting != MAX_WAITING_TIME {
+            conn.set_waiting_time(waiting.saturating_mul(2));
+        }
+        if resume_timer(serv, conn, socket) {
+            return;
+        }
+    }
+    // The firing timer's reactor: this thread's.
+    Reactor::thread().interest(socket, 2, 0);
+    conn.set_timer(ptr::null_mut());
+}
+
+/// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
+fn resume_timer(serv: view::Server<'_>, conn: Connection<'_>, socket: Socket<'_>) -> bool {
+    let msec = c_long::from(conn.waiting_time());
+    let (raw, sock) = (serv.raw(), socket.as_ptr());
+    let timer = swoole_rs_timer::add_fn(msec, false, move || {
+        // SAFETY: the server whose reactor armed the timer, which outlives the
+        // timers of its sockets.
+        let serv = unsafe { view::Server::from_raw(raw) };
+        // SAFETY: the paused session socket, which deletes this timer before it goes.
+        if let Some(sock) = unsafe { Socket::from_ptr(sock) } {
+            resume_data_receiving(serv, sock);
+        }
+    });
+    conn.set_timer(timer);
+    !timer.is_null()
+}
+
+/// The heartbeat thread: every interval, ask reactor threads to force-close
+/// connections idle past their port's heartbeat time.
+fn heartbeat_thread(serv: view::Server<'_>) {
+    let state = serv.state();
+    while state.running() {
+        let now = swoole_rs_corebase::microtime();
+        each_connection(state, |conn| {
+            let session = conn.session_id();
+            if session > 0 && !serv.healthy(now, conn) {
+                send_close_force(serv, conn, session);
+            }
+        });
+        let interval = state.config_ref().heartbeat_check_interval.get();
+        std::thread::sleep(core::time::Duration::from_secs(u64::from(interval)));
+    }
+}
+
+/// `serv->get_reactor_pipe_socket(session, conn->reactor_id)` told to close
+/// `session`: the reactor verifies the connection before closing it.
+fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_long) {
+    let state = serv.state();
+    let pipes = i64::from(state.tables_ref().reactor_pipe_num);
+    let index = session.checked_rem(pipes).unwrap_or_default();
+    let reactors = i64::from(state.config_ref().reactor_num.get());
+    let id = i64::from(conn.reactor_id()) + index * reactors;
+    if let Some(worker) = worker(serv, id) {
+        send_event(
+            worker_pipe(worker, false),
+            session,
+            crate::ops::EVENT_CLOSE_FORCE,
+        );
+    }
+}
+
+/// `ReactorThread_onPipeRead`: a worker's message.
+extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+    let reactor = Reactor::running(reactor);
+    // SAFETY: the handler is registered only on server reactors.
+    let serv = unsafe { entry::server(reactor) };
+    let mut ctx = ReactorContext::new(serv, Some(reactor));
+    ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
+    pipe_read(&mut ctx, event).unwrap_or(-1)
+}
+
+/// `ReactorThread_onPipeRead`: the messages workers send their reactor thread,
+/// until the pipe is drained.
+fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
+    use crate::ops::{
+        EVENT_CLOSE_FORCE, EVENT_CLOSE_FORWARD, EVENT_COMMAND_REQUEST, EVENT_COMMAND_RESPONSE,
+        EVENT_FINISH, EVENT_INCOMING, EVENT_PIPE_MESSAGE, EVENT_SHUTDOWN_SIGNAL,
+    };
+    let (serv, reactor) = (ctx.serv, ctx.reactor?);
+    let state = serv.state();
+    let thread = ctx.thread_record()?;
+    let bus = thread.message_bus();
+    let sock = event.socket()?;
+    ctx.resp = bus.buffer();
+    loop {
+        if crate::pool_native::read_bus(bus.rust(), thread.allocator, sock, true) <= 0 {
+            return Some(0);
+        }
+        let head = *ctx.message()?;
+        let session = head.fd;
+        match u32::from(head.kind) {
+            EVENT_INCOMING => {
+                if let Some(conn) = state.connection(session, Lookup::Verified)
+                    && methods::connection_incoming(serv, reactor, conn) < 0
+                    && let Some(sock) = conn.socket()
+                {
+                    reactor.close(sock);
+                }
+            }
+            EVENT_COMMAND_REQUEST => {
+                let id = u16::try_from(thread.id.get()).unwrap_or_default();
+                // The bus's record of the command pipe (`thread.pipe_command`).
+                let end = state
+                    .config_ref()
+                    .command_pipe()
+                    .and_then(swoole_rs_tls::socket_pair::SocketPair::worker_end);
+                let pipe = end.and_then(|end| bus.pipe_socket(end));
+                crate::commands::call_command_handler(serv, bus, id, pipe);
+            }
+            EVENT_COMMAND_RESPONSE => {
+                bus.with_packet(|reply| crate::commands::command_result(state, session, reply));
+            }
+            crate::ops::EVENT_SHUTDOWN => shutdown(ctx)?,
+            EVENT_SHUTDOWN_SIGNAL => {
+                swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
+            }
+            EVENT_FINISH | EVENT_PIPE_MESSAGE => {
+                // SAFETY: the bus's buffer: its `EventData`, its head and the payload it
+                // counts.
+                let event =
+                    unsafe { swoole_rs_process::task_file::Packed::from_raw(ctx.resp.cast()) };
+                if u32::from(head.kind) == EVENT_FINISH {
+                    let _ = state.callbacks.task(TaskSlot::Finish, serv, event);
+                } else {
+                    state.callbacks.pipe_message(serv, event);
+                }
+            }
+            EVENT_CLOSE_FORCE => {
+                crate::reactor_thread::close(serv, reactor, session);
+            }
+            EVENT_CLOSE_FORWARD => {
+                factory::end(state, session, CLOSE_ACTIVELY);
+            }
+            _ => {
+                let packet = bus.packet();
+                let mut info = head;
+                info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
+                let send = SendData {
+                    info,
+                    data: packet.data,
+                };
+                // SAFETY: a send over the bus's packet.
+                unsafe { methods::send_to_connection(serv, &send) };
+            }
+        }
+        bus.pop();
+    }
+}
+
+/// `ReactorThread::shutdown`: stop reading this reactor's datagram ports, worker
+/// pipes and connections, and let it exit once its writes drain.
+pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
+    let (serv, reactor) = (ctx.serv, ctx.reactor?);
+    let state = serv.state();
+    let config = state.config_ref();
+    let (reactors, id) = (config.reactor_num.get(), reactor.handle().id());
+    if config.have_dgram_sock {
+        for (index, port) in state.tables_ref().ports().iter().enumerate() {
+            let dgram = matches!(port.config().r#type, 2 | 4 | 6);
+            if !dgram || !owns(i64::from(port.fd()), reactors, id) {
+                continue;
+            }
+            if let Some(socket) = serv
+                .port_socket_at(index)
+                .filter(|s| !s.read(|s| s.removed))
+            {
+                reactor.del(socket);
+            }
+        }
+    }
+    let thread = ctx.thread_record()?;
+    let timer = thread.heartbeat_timer.replace(ptr::null_mut());
+    if !timer.is_null() {
+        // SAFETY: the thread's live heartbeat timer.
+        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
+    }
+    // SAFETY: the call takes the reactor, which outlives it.
+    unsafe { swoole_rs_reactor::defer_destroy(reactor.handle(), close_connections, reactor.ptr()) };
+    if u64::from(config.mode_) == crate::MODE_THREAD {
+        stop_async_worker(serv, worker(serv, id)?);
+        return Some(());
+    }
+    let bus = thread.message_bus();
+    for w in (0..config.worker_num.get()).filter(|&w| owns(i64::from(w), reactors, id)) {
+        if let Some(sock) = pipe_socket(&bus, worker_pipe(worker(serv, w)?, true)) {
+            reactor.interest(sock, 4, 0);
+        }
+    }
+    each_connection(state, |conn| {
+        let Some(sock) = conn.socket() else {
+            return;
+        };
+        let reading = !conn.peer_closed() && !sock.read(|s| s.removed);
+        if reading && owns(i64::from(conn.fd()), reactors, id) {
+            reactor.interest(sock, 4, 0);
+        }
+    });
+    reactor.handle().set_wait_exit(true);
+    Some(())
 }

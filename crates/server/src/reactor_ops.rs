@@ -18,8 +18,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
-use swoole_rs_corebase::{DataHead, log, microtime};
-use swoole_rs_error::ErrorCode as E;
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::{Event, Socket, SocketFields, SocketRecord, what_event_want};
 use swoole_rs_timer::swoole_timer_del;
 use swoole_rs_tls::upstream as tls;
@@ -34,22 +33,18 @@ use crate::conn_io::{
 };
 use crate::ops::OP_PORT_DTLS;
 use crate::ops::{
-    LOG_CC_LINGER, LOG_NO_SESSION, LOG_RECVFROM, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT,
-    OP_CC_TIMER_DEL, OP_CC_VALID, OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD,
-    OP_CONN_FORCE, OP_CONN_HANDSHAKING, OP_CONN_REACTOR, OP_CONN_READING, OP_CONN_SESSION,
-    OP_HAVE_DGRAM, OP_MICROTIME, OP_PEER_CERT, OP_PIPE_FD, OP_PIPE_TYPE, OP_QUEUE_FULL,
-    OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER, OP_SESSION_CONN,
-    OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER, OP_WAIT_EXIT,
-    OP_WAITING_TIME, OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE,
-    OP_WR_TIMER_DEL, OP_WR_WAIT,
+    LOG_CC_LINGER, LOG_RECVFROM, OP_CC_SESSION_CLEAR, OP_CC_SSL_WANT, OP_CC_TIMER_DEL, OP_CC_VALID,
+    OP_CERT_TASK, OP_CLIENT_CERT, OP_CONN_AT, OP_CONN_FD, OP_CONN_REACTOR, OP_HAVE_DGRAM,
+    OP_PEER_CERT, OP_QUEUE_SUB, OP_RD_WRITE_FACTS, OP_REACTOR_ID, OP_REACTOR_NUM, OP_SERVER,
+    OP_SESSION_CONN, OP_SET_WAITING_TIME, OP_SSL_READY, OP_SSL_VERIFY, OP_VERIFY_PEER,
+    OP_WORKER_NUM, OP_WR_CLEAR_OVERFLOW, OP_WR_QUEUED, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_WAIT,
 };
 use crate::ops::{
     OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
     OP_CC_REDIS_OBJECT, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_WATCH_WRITE,
-    OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_HEARTBEAT_TIMER_CLEAR, OP_KILL_SELF,
-    OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL, OP_RD_UNREAD, OP_REACTOR_CLOSE,
-    OP_REACTOR_DEL, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT, OP_WR_BUFFER_EMPTY, OP_WR_CLOSE,
-    OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_READ_ONLY,
+    OP_CC_WEBSOCKET_FREE, OP_CONN_UNREAD, OP_MASTER_REACTOR_ID, OP_NOTIFY_CONNECT, OP_PORT_DEL,
+    OP_RD_UNREAD, OP_REACTOR_DEL, OP_RT_REMOVE_WRITE, OP_SSL_ACCEPT, OP_WR_BUFFER_EMPTY,
+    OP_WR_CLOSE, OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_READ_ONLY,
 };
 use crate::port_config::{self, PortConfig};
 use crate::reactor_handle::Reactor;
@@ -64,7 +59,6 @@ const BUILT_PREQUEUE: u64 = if cfg!(feature = "halfclose") {
     0
 };
 
-const SW_LOG_TRACE: c_int = 1;
 /// `SW_FD_SESSION` and `SW_FD_DGRAM_SERVER`.
 const FD_SESSION: c_int = 0;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -84,12 +78,20 @@ const EVENT_BUFFER_EMPTY: c_int = 14;
 pub(crate) struct ReactorContext<'a> {
     pub(crate) serv: view::Server<'a>,
     pub(crate) reactor: Option<Reactor>,
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the reactor threads' ops read it")
+    )]
     pub(crate) thread: *mut c_void,
     pub(crate) event: Option<&'a mut Event>,
     pub(crate) port: Option<view::Port<'a>>,
     pub(crate) sock: Option<Socket<'a>>,
     pub(crate) conn: *mut ConnectionRecord,
     /// The `PipeBuffer` read from a worker, which starts with its head.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the reactor threads' ops read it")
+    )]
     pub(crate) resp: *const DataHead,
     /// The datagram `OP_PACKET_INIT` reads into: this thread's buffer.
     #[cfg_attr(
@@ -122,6 +124,10 @@ impl<'a> ReactorContext<'a> {
     }
 
     /// The context's reactor thread, once an op has set it.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the reactor threads' ops call it")
+    )]
     pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
         // SAFETY: null or one of the server's live reactor threads, as the struct
         // says, which only its own thread touches.
@@ -134,7 +140,11 @@ impl<'a> ReactorContext<'a> {
         unsafe { Connection::from_ptr(self.conn) }
     }
 
-    /// The worker's message `OP_PIPE_READ` stored.
+    /// The worker's message the pipe read stored.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the reactor threads' ops call it")
+    )]
     pub(crate) fn message(&self) -> Option<&'a DataHead> {
         // SAFETY: null or the head of this thread's bus buffer, as the struct says.
         unsafe { self.resp.as_ref() }
@@ -206,9 +216,6 @@ impl<'c> Objects<'_, 'c> {
     }
     fn event(&self) -> Option<&Event> {
         self.ctx.event.as_deref()
-    }
-    fn resp(&self) -> Option<&'c DataHead> {
-        self.ctx.message()
     }
     /// The context's live reactor.
     fn handle(&self) -> Option<Reactor> {
@@ -425,10 +432,6 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
         .is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
-fn error(level: c_int, code: E, origin: &core::ffi::CStr, message: core::fmt::Arguments<'_>) {
-    log::error_log(level, code as c_int, origin, message);
-}
-
 /// Answers `op` when it is one of this module's, else `None`, as an op does when the
 /// context lacks an object it reads. Always inlined: each caller's constant op folds
 /// the match, so the hot runners' other ops cost nothing.
@@ -444,13 +447,6 @@ pub(crate) fn answer(
         LOG_RECVFROM => {
             let m = format_args!("recvfrom({}) failed", o.event()?.fd());
             log::sys_warning(c"ReactorThread_onPacketReceived", m);
-            0
-        }
-        LOG_NO_SESSION => {
-            let session = arg.cast_signed();
-            let m = format_args!("force close connection failed, session#{session} does not exist");
-            let origin = c"ReactorThread::close_connection";
-            error(SW_LOG_TRACE, E::SW_ERROR_SESSION_NOT_EXIST, origin, m);
             0
         }
         LOG_CC_LINGER => {
@@ -514,28 +510,10 @@ pub(crate) fn answer(
         }
         OP_CONN_FD => sign(o.conn()?.fd()),
         OP_CONN_REACTOR => u64::from(o.conn()?.reactor_id()),
-        OP_CONN_SESSION => sign(o.conn()?.session_id()),
-        OP_CONN_READING => {
-            let removed = o.conn_socket()?.read(|s| s.removed);
-            u64::from(!o.conn()?.peer_closed() && !removed)
-        }
-        OP_WAIT_EXIT => {
-            o.reactor()?.set_wait_exit(true);
-            0
-        }
         OP_SESSION_CONN => {
             o.ctx.conn = o.connection(arg.cast_signed(), Lookup::Verified);
             u64::from(!o.ctx.conn.is_null())
         }
-        OP_CONN_FORCE => u64::from(o.conn()?.close_force()),
-        OP_CONN_HANDSHAKING => u64::from(o.conn()?.ssl() && !o.conn()?.ssl_ready()),
-        OP_PIPE_TYPE => u64::from(o.resp()?.kind),
-        OP_PIPE_FD => sign(o.resp()?.fd),
-        OP_MICROTIME => microtime().to_bits(),
-        OP_QUEUE_FULL => u64::from(
-            o.conn()?.recv_queued_bytes().load(SeqCst) > o.config().max_queued_bytes.get(),
-        ),
-        OP_WAITING_TIME => u64::from(o.conn()?.waiting_time()),
         OP_SET_WAITING_TIME => {
             o.conn()?
                 .set_waiting_time(u16::try_from(arg & 0xffff).unwrap_or_default());
@@ -677,10 +655,6 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             change(o.sock()?, 1, SW_EVENT_READ);
             0
         }
-        OP_REACTOR_CLOSE => {
-            o.handle()?.close(o.conn_socket()?);
-            0
-        }
         OP_WR_CLOSE => sign(o.handle()?.close(o.sock()?)),
         OP_WR_CLOSE_ERRNO => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -688,20 +662,6 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             o.conn()?.set_close_errno(errno);
             let reactor = o.handle()?;
             sign(reactor.trigger_close(o.ctx.event.as_deref_mut()?))
-        }
-        OP_HEARTBEAT_TIMER_CLEAR => {
-            let thread = o.ctx.thread_record()?;
-            let timer = thread.heartbeat_timer.replace(core::ptr::null_mut());
-            if !timer.is_null() {
-                // SAFETY: the thread's live heartbeat timer.
-                unsafe { swoole_timer_del(timer.cast()) };
-            }
-            0
-        }
-        OP_KILL_SELF => {
-            let pid = std::process::id().cast_signed();
-            swoole_rs_process::os::kill(pid, libc::SIGTERM);
-            0
         }
         OP_MASTER_REACTOR_ID => {
             // a special id for the master thread
@@ -810,8 +770,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
     };
     use crate::ops::{OP_CC_DTLS_FREE, OP_DTLS_ACCEPT, OP_RD_DTLS};
     use crate::ops::{
-        OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_RESUME_READ,
-        OP_WR_TIMER_DELAY,
+        OP_CC_FINISH, OP_EVENT_FREE, OP_EVENT_INIT, OP_EVENT_WAIT, OP_WR_TIMER_DELAY,
     };
     use swoole_rs_reactor::event_api::swoole_event_wait;
     use swoole_rs_reactor::{swoole_event_free, swoole_event_init};
@@ -842,12 +801,6 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             let timer = o.sock()?.read(|s| s.output.send_timer);
             // SAFETY: the socket's live send timer.
             unsafe { swoole_timer_delay(timer.cast(), delay) };
-            0
-        }
-        OP_RESUME_READ => {
-            // The firing timer's reactor: this thread's.
-            crate::reactor_handle::Reactor::thread().interest(o.sock()?, 2, 0);
-            o.conn()?.set_timer(core::ptr::null_mut());
             0
         }
         OP_SESSION_HANDLERS => {

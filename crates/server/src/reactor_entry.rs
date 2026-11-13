@@ -11,7 +11,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ};
+use crate::ops::RUN_PACKET_RECEIVED;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
@@ -72,6 +72,10 @@ struct DgramPacket {
 }
 
 /// `serv->get_thread(id)`.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the reactor threads' ops call it")
+)]
 pub(crate) fn thread(state: &crate::ServerState, id: usize) -> *mut c_void {
     let threads = state.tables_ref().reactor_threads;
     threads.wrapping_byte_add(id * size_of::<ThreadRecord>())
@@ -157,14 +161,6 @@ pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     run_with(Facts::PeerClose, &mut ctx, crate::conn_io::peer_close)
 }
 
-/// `ReactorThread_onPipeRead`: a worker's message.
-pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = context(reactor, event);
-    let id = usize::from(reactor.id());
-    ctx.thread = thread(ctx.serv.state(), id);
-    int(run(RUN_PIPE_READ, 0, &mut ctx))
-}
-
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
@@ -220,7 +216,7 @@ pub(crate) fn close_socket(
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = thread(serv.state(), id);
-    run(crate::ops::RUN_THREAD_SHUTDOWN, 0, &mut ctx);
+    crate::thread_ops::shutdown(&ctx);
 }
 
 /// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
