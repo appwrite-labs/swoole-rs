@@ -4,6 +4,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::CString;
+use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -14,7 +15,6 @@ use swoole_rs_tls::{
     DtlsSession, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
 
-use crate::ops::EVENT_INCOMING;
 use crate::port_config;
 use crate::reactor_entry::DgramPacket;
 use crate::records::ConnectionRecord;
@@ -183,7 +183,7 @@ pub(crate) unsafe fn on_packet(
     } else {
         let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
         let ev = DataHead {
-            kind: u8::try_from(EVENT_INCOMING).unwrap_or_default(),
+            kind: ServerEvent::Incoming.code(),
             fd: session_id,
             reactor_id: i16::from(reactor_id),
             ..DataHead::default()

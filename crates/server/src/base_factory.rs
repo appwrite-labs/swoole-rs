@@ -19,6 +19,7 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
@@ -32,12 +33,6 @@ pub struct SendData {
     pub data: *const c_char,
 }
 
-/// `ServerEventType`.
-pub(crate) const SEND_DATA: u8 = 2;
-const SEND_FILE: u8 = 3;
-const CLOSE_FORWARD: u8 = 7;
-const RECV_DATA: u8 = 0;
-const RECV_DGRAM: u8 = 1;
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
 const DATA_PTR: u8 = 1 << 1;
 /// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
@@ -49,11 +44,6 @@ const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_
 const SESSION_CLOSING: c_int = 1003;
 const SESSION_CLOSED: c_int = 1004;
 const SESSION_NOT_EXIST: c_int = 1005;
-
-/// `Server::is_stream_event`.
-pub(crate) fn is_stream_event(kind: u8) -> bool {
-    matches!(kind, 0 | 2..=5 | 11..=14)
-}
 
 /// `DataHead::server_fd` is `uint16_t`; native's assignment keeps the low bits.
 pub(crate) fn low16(value: c_int) -> u16 {
@@ -173,7 +163,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
 #[inline(always)]
 pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool) -> bool {
     let info = &mut task.info;
-    if is_stream_event(info.kind) {
+    if info.event().is_some_and(ServerEvent::is_stream) {
         let conn = serv.state().connection(info.fd, Lookup::ByFd);
         let Some(c) = conn.filter(|c| c.is_active()) else {
             log::warning(
@@ -217,8 +207,8 @@ pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool
 /// untouched.
 #[inline(always)]
 fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
-    let dgram = task.info.kind == RECV_DGRAM;
-    if task.info.kind != RECV_DATA && !dgram {
+    let dgram = task.info.event() == Some(ServerEvent::RecvDgram);
+    if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
     }
     let (worker, max_request) = with_globals(|g| {
@@ -343,7 +333,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
         let send = SendData {
             info: DataHead {
                 fd: id,
-                kind: CLOSE_FORWARD,
+                kind: ServerEvent::CloseForward.code(),
                 // `int16_t` from `swoole_get_worker_id()`.
                 reactor_id: i16::from_ne_bytes(
                     u16::try_from(worker & 0xffff)
@@ -427,7 +417,10 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
         // SAFETY: the send's data is its `info.len` bytes, live for the call.
         return unsafe { crate::send::send_to_connection(serv, send) } == 0;
     }
-    if send.info.kind == SEND_DATA || send.info.kind == SEND_FILE {
+    if matches!(
+        send.info.event(),
+        Some(ServerEvent::SendData | ServerEvent::SendFile)
+    ) {
         return forward(serv, send);
     }
     log::warning(
@@ -469,11 +462,11 @@ mod tests {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 
-    fn send(fd: c_long, kind: u8, len: u32) -> SendData {
+    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData {
         SendData {
             info: DataHead {
                 fd,
-                kind,
+                kind: kind.code(),
                 len,
                 ..DataHead::default()
             },
@@ -487,14 +480,14 @@ mod tests {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
         let listen = low16(live.listener_fd);
-        let mut task = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(dispatch(serv, &mut task, true), "no worker here");
         assert_eq!(
             (task.info.fd, task.info.server_fd),
             (1, listen),
             "session id"
         );
-        let mut packet = send(9, RECV_DGRAM, 5);
+        let mut packet = send(9, ServerEvent::RecvDgram, 5);
         assert!(
             dispatch(serv, &mut packet, false),
             "datagrams need no connection"
@@ -502,18 +495,18 @@ mod tests {
         assert_eq!(
             calls(),
             [
-                Call::BasePass(1, RECV_DATA, 5),
-                Call::BasePass(9, RECV_DGRAM, 5)
+                Call::BasePass(1, ServerEvent::RecvData.code(), 5),
+                Call::BasePass(9, ServerEvent::RecvDgram.code(), 5)
             ],
             "the bus"
         );
 
         conn.closed().store(1, Ordering::Relaxed);
-        let mut task = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(!dispatch(serv, &mut task, true), "closed by server");
         conn.active().store(0, Ordering::Relaxed);
         assert!(!dispatch(serv, &mut task, true), "inactive");
-        let mut far = send(1 << 20, 4, 0);
+        let mut far = send(1 << 20, ServerEvent::Close, 0);
         assert!(!dispatch(serv, &mut far, true), "past max_connection");
         assert_eq!(task.info.fd, c_long::from(conn.fd()), "unconverted");
         assert_eq!(calls(), []);
@@ -531,7 +524,7 @@ mod tests {
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         set_current_worker(&raw mut worker);
-        let mut task = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         task.info.time = 1.5;
         assert!(dispatch(serv, &mut task, true));
         // SAFETY: as above.
@@ -544,26 +537,29 @@ mod tests {
         assert!((conn.last_dispatch_time() - 1.5).abs() < f64::EPSILON);
 
         // A datagram has no connection to check or update.
-        let mut packet = send(9, RECV_DGRAM, 5);
+        let mut packet = send(9, ServerEvent::RecvDgram, 5);
         assert!(dispatch(serv, &mut packet, true));
         assert_eq!(
             heard(),
             [
-                (RECV_DATA, 1, 0, DATA_PTR, 5),
-                (RECV_DGRAM, 9, 0, DATA_PTR, 5)
+                (ServerEvent::RecvData.code(), 1, 0, DATA_PTR, 5),
+                (ServerEvent::RecvDgram.code(), 9, 0, DATA_PTR, 5)
             ]
         );
 
         // A request limit, or a factory dispatch, takes the bus.
         with_globals(|g| g.max_request.store(1, Ordering::Relaxed));
-        let mut task = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(dispatch(serv, &mut task, true));
         with_globals(|g| g.max_request.store(0, Ordering::Relaxed));
-        let mut again = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        let mut again = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(dispatch(serv, &mut again, false));
         set_current_worker(core::ptr::null_mut());
         assert_eq!(heard(), []);
-        assert_eq!(calls(), [Call::BasePass(1, RECV_DATA, 5); 2]);
+        assert_eq!(
+            calls(),
+            [Call::BasePass(1, ServerEvent::RecvData.code(), 5); 2]
+        );
     }
 
     #[test]
@@ -571,14 +567,14 @@ mod tests {
     fn notify_converts_to_the_session() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
-        let mut head = send(c_long::from(conn.fd()), 5, 0).info;
+        let mut head = send(c_long::from(conn.fd()), ServerEvent::Connect, 0).info;
         head.flags = 9;
         assert!(notify(serv, &mut head));
         assert_eq!((head.fd, head.flags), (1, 0));
         let listen = low16(live.listener_fd);
         assert_eq!(calls(), [Call::AcceptEvent(1, 5, listen)]);
         conn.closed().store(1, Ordering::Relaxed);
-        let mut head = send(c_long::from(conn.fd()), 5, 0).info;
+        let mut head = send(c_long::from(conn.fd()), ServerEvent::Connect, 0).info;
         assert!(!notify(serv, &mut head), "closed by server");
         assert_eq!(calls(), []);
     }
@@ -590,7 +586,10 @@ mod tests {
         let (serv, conn) = (live.server(), session(&live, 1));
         live.state().session(1).unwrap().set_reactor_bits(1);
         assert!(end(serv, 1, CLOSE_ACTIVELY), "forwarded");
-        assert_eq!(calls(), [Call::Forward(1, CLOSE_FORWARD, 0)]);
+        assert_eq!(
+            calls(),
+            [Call::Forward(1, ServerEvent::CloseForward.code(), 0)]
+        );
         assert!(!conn.close_actively(), "the owner marks it");
         assert!(!end(serv, 99, 0), "no session");
     }
@@ -646,7 +645,7 @@ mod tests {
         let (live, [mut client, _]) = accepted();
         let serv = live.server();
         session(&live, 1);
-        let mut data = send(1, SEND_DATA, 3);
+        let mut data = send(1, ServerEvent::SendData, 3);
         data.data = c"abc".as_ptr();
         assert!(finish(serv, &data), "sent here");
         let mut got = [0; 3];
@@ -654,8 +653,11 @@ mod tests {
         assert_eq!(&got, b"abc");
         live.state().session(1).unwrap().set_reactor_bits(1);
         assert!(finish(serv, &data), "forwarded");
-        assert!(!finish(serv, &send(1, 4, 0)), "unknown event");
-        assert_eq!(calls(), [Call::Forward(1, SEND_DATA, 0)]);
+        assert!(
+            !finish(serv, &send(1, ServerEvent::Close, 0)),
+            "unknown event"
+        );
+        assert_eq!(calls(), [Call::Forward(1, ServerEvent::SendData.code(), 0)]);
     }
 
     /// onClose sees its connection closing through the session lookup

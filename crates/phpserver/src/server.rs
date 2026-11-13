@@ -8,7 +8,7 @@ use std::{
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{Connection, SharedServer, server_methods, view};
@@ -22,10 +22,6 @@ use swoole_rs_zend::{method_table, sys as z};
 pub(crate) const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_NO_PAYLOAD: c_int = 550;
 const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
-/// `SW_SERVER_EVENT_PAUSE_RECV` and `SW_SERVER_EVENT_RESUME_RECV`.
-const EVENT_PAUSE_RECV: c_int = 11;
-const EVENT_RESUME_RECV: c_int = 12;
-
 /// `conn->closed`.
 fn closed(conn: Connection<'_>) -> bool {
     conn.closed().load(Ordering::Relaxed) != 0
@@ -602,9 +598,9 @@ fn feedback(call: &Call, pause: bool) {
         return call.set_bool(false);
     };
     let event = if pause {
-        EVENT_PAUSE_RECV
+        ServerEvent::PauseRecv
     } else {
-        EVENT_RESUME_RECV
+        ServerEvent::ResumeRecv
     };
     call.set_bool(server_methods::feedback(serv, conn, event));
 }

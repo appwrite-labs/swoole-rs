@@ -1,6 +1,7 @@
 //! Accepting connections and their idle and health checks.
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE};
 use swoole_rs_corebase::{CCast, log};
@@ -20,8 +21,6 @@ const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
-/// `SW_SERVER_EVENT_CONNECT`.
-const EVENT_CONNECT: c_int = 5;
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
@@ -108,12 +107,10 @@ fn accept_failed(serv: view::Server<'_>, errno: c_int) -> bool {
 
 /// `serv->send_to_reactor_thread()` of the connection's `SW_SERVER_EVENT_INCOMING`.
 fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> isize {
-    /// `SW_SERVER_EVENT_INCOMING`.
-    const EVENT_INCOMING: u8 = 15;
     let head = swoole_rs_corebase::DataHead {
         fd: conn.session_id(),
         reactor_id: conn.reactor_id().into(),
-        kind: EVENT_INCOMING,
+        kind: ServerEvent::Incoming.code(),
         server_fd: u16::try_from(conn.server_fd()).unwrap_or(u16::MAX),
         ..swoole_rs_corebase::DataHead::default()
     };
@@ -362,7 +359,7 @@ pub(crate) fn incoming(
         return ERR;
     }
     if serv.has_callback(crate::callbacks::CallbackKind::Connect)
-        && !crate::server_methods::notify(serv, conn, EVENT_CONNECT)
+        && !crate::server_methods::notify(serv, conn, ServerEvent::Connect)
     {
         return ERR;
     }

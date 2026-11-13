@@ -9,6 +9,7 @@ use crate::view::{Port, Server};
 use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
@@ -180,11 +181,11 @@ pub(crate) fn tasking(serv: Server<'_>) -> c_int {
 /// `Server::feedback(conn, event)`: a connection event from a worker to the master,
 /// through a reactor thread in process mode, else sent here.
 #[must_use]
-pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
+pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: ServerEvent) -> bool {
     let info = swoole_rs_corebase::DataHead {
         fd: conn.session_id(),
         reactor_id: conn.reactor_id().into(),
-        kind: event.c_cast::<u8>(),
+        kind: event.code(),
         ..Default::default()
     };
     if u64::from(serv.config().mode_) == MODE_PROCESS {
@@ -227,8 +228,6 @@ const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 /// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
 const SENDFILE_TASK_SIZE: usize = 16;
-/// `SW_SERVER_EVENT_SEND_FILE`.
-const EVENT_SEND_FILE: u8 = 3;
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
@@ -322,7 +321,7 @@ pub fn sendfile(
     let mut send = SendData {
         info: swoole_rs_corebase::DataHead {
             fd: session_id,
-            kind: EVENT_SEND_FILE,
+            kind: ServerEvent::SendFile.code(),
             len: SENDFILE_TASK_SIZE.c_cast::<u32>() + l_file + 1,
             ..Default::default()
         },
@@ -643,7 +642,7 @@ mod tests {
         conn.set_reactor_id(1);
         calls();
         assert!(
-            feedback(live.server(), conn, 5),
+            feedback(live.server(), conn, ServerEvent::Connect),
             "process mode goes through the reactor thread"
         );
         assert_eq!(calls(), [Call::ToReactorThread(7, 1, 5)]);
@@ -688,7 +687,14 @@ mod tests {
         let len = 16 + 15 + 1;
         assert_eq!(
             calls(),
-            [Call::Finish(12, EVENT_SEND_FILE, len, 3, 99, *b"Cargo.to")],
+            [Call::Finish(
+                12,
+                ServerEvent::SendFile.code(),
+                len,
+                3,
+                99,
+                *b"Cargo.to"
+            )],
             "the task: its offset and length, then the name up to its NUL"
         );
     }

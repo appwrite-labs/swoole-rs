@@ -1,6 +1,7 @@
 //! The base-mode reactor process's native objects: its event worker pool and the
 //! reads from the server's message bus.
 use core::ffi::c_int;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::{Hooks, IpcMode, PoolRef};
 use swoole_rs_process::task_file::Packed;
@@ -13,20 +14,9 @@ use crate::objects::Bus;
 use crate::reactor_handle::{EVENT_READ, Reactor};
 use crate::view;
 
-/// `SW_FD_PIPE`, `Server::CLOSE_ACTIVELY` and the `ServerEventType`s a reactor
-/// process reads from its pipe.
+/// `SW_FD_PIPE`, `Server::CLOSE_ACTIVELY`.
 const FD_PIPE: c_int = 3;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-const EVENT_RECV_DATA: u8 = 0;
-const EVENT_SEND_DATA: u8 = 2;
-const EVENT_SEND_FILE: u8 = 3;
-const EVENT_CLOSE: u8 = 4;
-const EVENT_CLOSE_FORWARD: u8 = 7;
-const EVENT_FINISH: u8 = 9;
-const EVENT_PIPE_MESSAGE: u8 = 10;
-const EVENT_SHUTDOWN: u8 = 16;
-const EVENT_COMMAND_REQUEST: u8 = 17;
-const EVENT_COMMAND_RESPONSE: u8 = 18;
 
 /// The event worker pool over the server's workers.
 pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
@@ -113,24 +103,24 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
     let state = serv.state();
     let info = bus.head();
-    match info.kind {
-        EVENT_PIPE_MESSAGE => state.callbacks.pipe_message(serv, event_data(serv)),
-        EVENT_FINISH => {
+    match info.event() {
+        Some(ServerEvent::PipeMessage) => state.callbacks.pipe_message(serv, event_data(serv)),
+        Some(ServerEvent::Finish) => {
             _ = state
                 .callbacks
                 .task(TaskSlot::Finish, serv, event_data(serv));
         }
-        EVENT_SHUTDOWN => {
+        Some(ServerEvent::Shutdown) => {
             if let Some(worker) = serv.worker_record(reactor.handle().id()) {
                 crate::event_worker::native::stop_async_worker(serv, worker);
             }
         }
-        EVENT_SEND_FILE => {
+        Some(ServerEvent::SendFile) => {
             // The bus's `PipeBuffer`: the message's head, then its data.
             let data = bus.buffer().wrapping_add(1).cast();
             finish(state, SendData { info, data });
         }
-        EVENT_SEND_DATA => {
+        Some(ServerEvent::SendData) => {
             let workers = serv.workers();
             let all = u64::from(workers.event_count)
                 + u64::from(workers.task_count)
@@ -139,7 +129,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
             if u64::try_from(worker).is_ok_and(|id| id < all) {
                 let packet = bus.packet();
                 let mut info = info;
-                info.kind = EVENT_RECV_DATA;
+                info.kind = ServerEvent::RecvData.code();
                 info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
                 finish(
                     state,
@@ -154,10 +144,10 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
                 return false;
             }
         }
-        EVENT_CLOSE | EVENT_CLOSE_FORWARD => {
+        Some(ServerEvent::Close | ServerEvent::CloseForward) => {
             _ = crate::factory::end(state, info.fd, CLOSE_ACTIVELY);
         }
-        EVENT_COMMAND_REQUEST => {
+        Some(ServerEvent::CommandRequest) => {
             // The worker this process runs.
             let me = swoole_rs_process::worker_globals::with_current(|me| me.id());
             let pipe = serv.worker_pipe(0, true);
@@ -166,7 +156,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
                 crate::commands::call_command_handler(serv, bus, id, pipe);
             }
         }
-        EVENT_COMMAND_RESPONSE => {
+        Some(ServerEvent::CommandResponse) => {
             bus.with_packet(|reply| crate::commands::command_result(state, info.fd, reply));
         }
         _ => {}

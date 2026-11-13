@@ -3,6 +3,7 @@
 //! mode keeps the base factory's dispatch, finish, notify and end, as upstream's
 //! `ThreadFactory : BaseFactory` did.
 use core::ffi::{c_int, c_long, c_void};
+use swoole_rs_corebase::ServerEvent;
 
 use core::ptr;
 
@@ -439,12 +440,10 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn send_shutdown(&self, serv: crate::view::Server<'_>) -> bool {
-        /// `SW_SERVER_EVENT_SHUTDOWN_SIGNAL`.
-        const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
         // A worker may run as a user that cannot signal the master.
         let send = SendData {
             info: DataHead {
-                kind: EVENT_SHUTDOWN_SIGNAL,
+                kind: ServerEvent::ShutdownSignal.code(),
                 ..DataHead::default()
             },
             data: ptr::null(),

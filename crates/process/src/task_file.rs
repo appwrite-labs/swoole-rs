@@ -9,7 +9,7 @@ use std::mem::{MaybeUninit, offset_of};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, ServerEvent};
 
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{
@@ -297,7 +297,7 @@ impl TaskBuffer {
             msg_id: 0,
             len: 0,
             reactor_id,
-            kind: EVENT_TASK,
+            kind: ServerEvent::Task.code(),
             flags: 0,
             server_fd: 0,
             ext_flags: 0,
@@ -317,8 +317,6 @@ impl TaskBuffer {
     }
 }
 
-/// `SW_SERVER_EVENT_TASK`.
-const EVENT_TASK: u8 = 8;
 const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
 const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
 
@@ -457,7 +455,7 @@ impl<'a> Packed<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataHead, EVENT_TASK, PacketTask, TaskBuffer, TaskFileError, TaskPack, pack_payload,
+        DataHead, PacketTask, ServerEvent, TaskBuffer, TaskFileError, TaskPack, pack_payload,
         read_file, spill,
     };
     use crate::methods::tests::{install, logged};
@@ -544,8 +542,8 @@ mod tests {
         assert_eq!(bytes.len(), size_of::<DataHead>() + 3);
         assert_eq!(&bytes[size_of::<DataHead>()..], b"abc");
         assert_eq!(
-            (buf.head().len, buf.head().kind, buf.head().ext_flags),
-            (3, EVENT_TASK, 1 << 2)
+            (buf.head().len, buf.head().event(), buf.head().ext_flags),
+            (3, Some(ServerEvent::Task), 1 << 2)
         );
     }
 

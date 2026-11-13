@@ -13,8 +13,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{CommandInput, Rejected, Rejection, Target, route};
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use {
-    crate::ops::{EVENT_COMMAND_REQUEST, EVENT_COMMAND_RESPONSE},
-    swoole_rs_corebase::{CCast, DataHead},
+    swoole_rs_corebase::{CCast, DataHead, ServerEvent},
     swoole_rs_reactor::Socket,
 };
 
@@ -138,15 +137,11 @@ pub(crate) fn answer(
 ) -> bool {
     let mut reply = Vec::<u8>::new();
     handler(serv, message, &mut reply);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "SW_SERVER_EVENT_COMMAND_RESPONSE is 18"
-    )]
     let mut head = DataHead {
         fd,
         reactor_id: reactor_id.cast_signed(),
         server_fd: u16::MAX,
-        kind: EVENT_COMMAND_RESPONSE as u8,
+        kind: ServerEvent::CommandResponse.code(),
         ..DataHead::default()
     };
     bus.write(sock, &mut head, &reply)
@@ -174,7 +169,7 @@ pub(crate) fn reply_socket<'a>(
 pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
     let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
     let head = |info: &mut DataHead| {
-        info.kind = EVENT_COMMAND_REQUEST.c_cast::<u8>();
+        info.kind = ServerEvent::CommandRequest.code();
         info.fd = c.request_id;
         info.server_fd = c.command_id.c_cast::<u16>();
     };
@@ -194,7 +189,7 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         if !buf.pack(c.message) {
             return false;
         }
-        buf.set_kind(EVENT_COMMAND_REQUEST.c_cast::<u8>());
+        buf.set_kind(ServerEvent::CommandRequest.code());
         buf.set_fd(c.request_id);
         buf.set_server_fd(c.command_id.c_cast::<u16>());
         let task = buf.packed();
