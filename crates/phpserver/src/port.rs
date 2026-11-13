@@ -340,10 +340,11 @@ fn set(call: &Call) {
     let Ok(settings) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    let port = data(call).port.get();
-    if port.is_null() {
+    let port = data(call).port().unwrap_or_else(|| {
         invalid(call);
-    }
+        // The `E_ERROR` above bailed out.
+        std::process::abort()
+    });
     let serv = bound_server(call);
     if apply_settings(port, serv, settings).is_err() {
         return call.set_bool(false);
@@ -352,7 +353,7 @@ fn set(call: &Call) {
 }
 
 /// The `ListenPort` and TLS options of `set()`.
-fn apply_settings(port: *mut c_void, serv: view::Server<'_>, vht: &Value) -> Result<(), Stop> {
+fn apply_settings(port: view::Port<'_>, serv: view::Server<'_>, vht: &Value) -> Result<(), Stop> {
     let source = port_settings::Zend {
         settings: Settings {
             serv,

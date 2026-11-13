@@ -1,9 +1,5 @@
 //! Callback-free `ListenPort` decisions. All native effects and object custody stay native.
 #![expect(
-    clippy::disallowed_types,
-    reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
-)]
-#![expect(
     clippy::missing_safety_doc,
     reason = "every export is covered by the module-local C contract"
 )]
