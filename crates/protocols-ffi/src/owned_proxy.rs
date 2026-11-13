@@ -5,7 +5,8 @@ use std::ffi::{c_char, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
-    socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
+    SocksConfig, SocksError, SocksSend, socks_auth, socks_config, socks_connect, socks_negotiate,
+    socks_strerror, socks_transition,
 };
 
 /// `SW_LOG_NOTICE`.
@@ -183,45 +184,46 @@ pub unsafe extern "C" fn handshake_step(
 pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
     let owner = proxy.owner;
     let fields = owner.fields();
-    let decision = socks_transition(fields.state, fields.method, reply);
     let notice = |code, message: std::fmt::Arguments<'_>| {
         log::error_log(NOTICE, code, c"Socks5Proxy::handshake", message);
     };
-    match decision.error {
-        0 => {}
-        1 => notice(
-            HANDSHAKE_FAILED,
-            format_args!("SOCKS5 handshake failed, data length is too short"),
-        ),
-        2 => notice(
-            UNSUPPORT_VERSION,
-            format_args!("SOCKS version is not supported"),
-        ),
-        3 => notice(
-            UNSUPPORT_METHOD,
-            format_args!("SOCKS authentication method is not supported"),
-        ),
-        4 => notice(
-            AUTH_FAILED,
-            format_args!("SOCKS username/password authentication failed"),
-        ),
-        _ => {
-            let reason = socks_strerror(i32::from(decision.reply));
-            notice(
-                SERVER_ERROR,
-                format_args!("Socks5 server error, reason :{}", reason.to_string_lossy()),
-            );
+    let (state, send) = match socks_transition(fields.state, fields.method, reply) {
+        Ok(step) => step,
+        Err(error) => {
+            match error {
+                SocksError::Short => notice(
+                    HANDSHAKE_FAILED,
+                    format_args!("SOCKS5 handshake failed, data length is too short"),
+                ),
+                SocksError::Version => notice(
+                    UNSUPPORT_VERSION,
+                    format_args!("SOCKS version is not supported"),
+                ),
+                SocksError::Method => notice(
+                    UNSUPPORT_METHOD,
+                    format_args!("SOCKS authentication method is not supported"),
+                ),
+                SocksError::Auth => notice(
+                    AUTH_FAILED,
+                    format_args!("SOCKS username/password authentication failed"),
+                ),
+                SocksError::Server(reply) => notice(
+                    SERVER_ERROR,
+                    format_args!(
+                        "Socks5 server error, reason :{}",
+                        socks_strerror(i32::from(reply)).to_string_lossy()
+                    ),
+                ),
+            }
+            return -1;
         }
-    }
-    if decision.error != 0 {
-        return -1;
-    }
+    };
     // The state advances before packing, as in upstream's member order.
-    owner.update(|fields| fields.state = decision.state);
-    match decision.action {
-        1 => pack_auth_request(proxy),
-        2 => pack_connect_request(proxy),
-        _ => 0,
+    owner.update(|fields| fields.state = state);
+    match send {
+        Some(SocksSend::Auth) => pack_auth_request(proxy),
+        Some(SocksSend::Connect) => pack_connect_request(proxy),
+        None => 0,
     }
 }
 
@@ -238,7 +240,7 @@ pub extern "C" fn strerror(code: c_int) -> *const c_char {
 #[must_use]
 pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
     let config = socks_config(user_length, password_length);
-    if config == 0 {
+    if config == SocksConfig::Refused {
         log::error_log(
             NOTICE,
             AUTH_FAILED,
@@ -246,7 +248,12 @@ pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
             format_args!("SOCKS5 username or password is too long, max length is 250 bytes"),
         );
     }
-    config
+    // Upstream's codes: 0 refused, 1 anonymous, 2 both credentials.
+    match config {
+        SocksConfig::Refused => 0,
+        SocksConfig::Anonymous => 1,
+        SocksConfig::Credentials => 2,
+    }
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_oracle::socks5::Case;
 use swoole_rs_protocols::{
     RespRequest, resp_spans, socks_auth, socks_config, socks_connect, socks_negotiate,
-    socks_strerror, socks_transition,
+    SocksConfig, SocksSend, socks_strerror, socks_transition,
 };
 use swoole_rs_protocols_ffi::{RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
 
@@ -202,20 +202,16 @@ impl Socks5Proxy<'_> {
     }
 
     fn handshake(&mut self, data: &[u8], send: &mut dyn FnMut(&[u8]) -> i64) -> bool {
-        let decision = socks_transition(self.state, self.method, data);
-        if decision.error != 0 {
+        let Ok((state, next)) = socks_transition(self.state, self.method, data) else {
             return false;
-        }
-        self.state = decision.state;
-        if decision.action == 1 || decision.action == 2 {
-            let size = if decision.action == 1 {
-                self.pack_auth_request()
-            } else {
-                self.pack_connect_request()
-            };
-            return size >= 0 && send(&self.buf[..size as usize]) == size;
-        }
-        true
+        };
+        self.state = state;
+        let size = match next {
+            Some(SocksSend::Auth) => self.pack_auth_request(),
+            Some(SocksSend::Connect) => self.pack_connect_request(),
+            None => return true,
+        };
+        size >= 0 && send(&self.buf[..size as usize]) == size
     }
 }
 
@@ -231,13 +227,12 @@ pub fn socks5(
     reply_sizes: &[u16],
 ) -> Vec<u8> {
     let mut log = Vec::new();
-    // `create`: 0 refuses the credentials, 2 keeps both, 1 keeps neither.
     let config = socks_config(user.len(), password.len());
-    if config == 0 {
+    if config == SocksConfig::Refused {
         log.push(b'N');
         return log;
     }
-    let (username, password) = if config == 2 {
+    let (username, password) = if config == SocksConfig::Credentials {
         (user, password)
     } else {
         (&[][..], &[][..])
