@@ -14,7 +14,6 @@
   +----------------------------------------------------------------------+
 */
 
-#define SW_USE_FIREBIRD_HOOK
 #include "php_swoole_firebird.h"
 
 #if PHP_VERSION_ID >= 80500

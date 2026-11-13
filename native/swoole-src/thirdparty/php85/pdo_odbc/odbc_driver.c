@@ -13,7 +13,6 @@
   | Author: Wez Furlong <wez@php.net>                                    |
   +----------------------------------------------------------------------+
 */
-#define SW_USE_ODBC_HOOK
 #include "php_swoole_odbc.h"
 
 #if PHP_VERSION_ID >= 80500
