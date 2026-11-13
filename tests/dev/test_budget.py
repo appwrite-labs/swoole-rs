@@ -43,6 +43,14 @@ fn with(field: fn(&mut Record) -> &mut u8) {}
 fn unit(_: ()) -> &'static mut u8 {}
 fn paired(pair: (u8, u8)) -> &'static mut u8 {}
 fn borrow<'a>(arg: (&'a mut u8,)) -> &'a mut u8 {}
+#[cfg(not(test))]
+static NATIVE: Ops = OPS;
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+mod linked;
+#![cfg_attr(
+    not(test),
+    deny(clippy::undocumented_unsafe_blocks)
+)]
 '''
 
 
@@ -67,6 +75,8 @@ class Budget(unittest.TestCase):
                 # fields, slot, unit and paired; edit, pick and borrow lend a `&mut` they were
                 # given, and with's is a parameter type.
                 'mints': {'one': 4},
+                # NATIVE and linked; the lint attribute isn't a cfg.
+                'fakes': {'one': 2},
             })
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
