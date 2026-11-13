@@ -366,7 +366,6 @@ impl ServerConfig {
     }
 
     /// `Server::init_ipc_max_size()`.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn init_ipc_max_size(&self) {
         let size = swoole_rs_corebase::constants::SW_IPC_BUFFER_MAX_SIZE;
         self.ipc_max_size.store(size, Relaxed);

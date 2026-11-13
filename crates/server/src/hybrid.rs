@@ -22,8 +22,6 @@ pub(crate) enum Step {
     FactoryStart,
     /// `port->init_protocol()` of each port.
     InitProtocols,
-    /// `start_reactor_processes()`.
-    StartBase,
     /// `start_reactor_threads()`.
     StartProcess,
     /// `swoole_timer_reinit()` when the timer is detached.
@@ -60,6 +58,34 @@ pub(crate) enum Step {
     DestroyTaskPool,
     /// `delete factory_`.
     DeleteFactory,
+    /// `serv->ports[index]->listen()`.
+    Listen(usize),
+    /// `serv->ports[index]->close_socket()`, before each worker listens itself.
+    ClosePortSocket(usize),
+    /// `serv->ports[index]->create_socket()`, in the worker that listens on it.
+    CreatePortSocket(usize),
+    /// The base-mode event worker pool over the server's workers.
+    CreateEventPool,
+    /// `gs->event_workers.destroy()`.
+    DestroyEventPool,
+    /// `create_pipe_buffers()`.
+    CreatePipeBuffers,
+    /// `start_manager_process()`.
+    StartManager,
+    /// `swoole_event_init(0)`.
+    EventInit,
+    /// `worker_signal_init()`.
+    WorkerSignalInit,
+    /// The thread's reactor reads its worker pipes from the message bus.
+    PipeHandler,
+    /// `worker_start_callback(worker)` for event worker `id`.
+    WorkerStart(u32),
+    /// `worker_stop_callback(worker)` for event worker `id`.
+    WorkerStop(u32),
+    /// The heartbeat check's timer on this thread's reactor.
+    HeartbeatTimer,
+    /// `reactor->wait()` on this thread's reactor.
+    ReactorWait,
 }
 
 /// What the hybrid links. Each default is a build without it: the reactor threads

@@ -696,6 +696,12 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>
     unsafe { Socket::from_ptr(pipe.cast()) }
 }
 
+/// `sock->set_nonblock()`.
+pub(crate) fn set_nonblock(sock: Socket<'_>) {
+    let set = swoole_rs_reactor::socket_upstream::socket_set_fd_option;
+    let _ = sock.edit(|sock| set(sock, 1, -1));
+}
+
 /// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
 #[must_use]
 pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {

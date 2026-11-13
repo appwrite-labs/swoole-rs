@@ -11,7 +11,6 @@ mod factory;
 mod log;
 mod manager;
 pub mod ops;
-mod reactor_process;
 mod task_worker;
 pub mod thread;
 
@@ -195,11 +194,6 @@ fn effect(op: u32) -> Option<u64> {
 /// operation's return value as upstream's C++ function returns it.
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {
-        ops::RUN_REACTOR_PROCESS_START
-        | ops::RUN_REACTOR_PROCESS_PIPE_READ
-        | ops::RUN_REACTOR_PROCESS_MAIN
-        | ops::RUN_REACTOR_PROCESS_CLOSE
-        | ops::RUN_REACTOR_PROCESS_TIMEOUT => reactor_process::run(h, operation),
         ops::RUN_INIT_TASK_WORKERS
         | ops::RUN_TASK_COMMAND
         | ops::RUN_TASK_ON_TASK

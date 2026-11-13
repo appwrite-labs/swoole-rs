@@ -95,10 +95,6 @@ pub(crate) struct ServerShared {
     pub(crate) manager_barrier: swoole_rs_locks::Barrier,
 }
 
-#[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
-    expect(dead_code, reason = "only the native ops read the pools")
-)]
 impl ServerShared {
     /// The live server's record, which `swr_v1_server_new` maps for its life.
     pub(crate) fn of(serv: crate::view::Server<'_>) -> &Self {
