@@ -231,23 +231,26 @@ pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) 
     unsafe { run(crate::ops::RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
 }
 
-/// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on.
-///
-/// # Safety
-/// `reactor` is the reactor of `conn`, one of `serv`'s live connections.
-pub unsafe fn connection_incoming(
+/// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on:
+/// `reactor`, this thread's, takes one of `serv`'s live connections.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
+)]
+pub(crate) fn connection_incoming(
     serv: view::Server<'_>,
-    reactor: *mut c_void,
+    reactor: crate::reactor_handle::Reactor,
     conn: crate::Connection<'_>,
 ) -> c_int {
     let mut ctx = NativeContext::new(serv.raw());
-    ctx.reactor = reactor;
+    ctx.reactor = reactor.ptr();
     ctx.port = serv
         .port_by_server_fd(conn.server_fd())
         .map_or(ptr::null_mut(), view::Port::raw);
     ctx.sock = conn.socket_ptr();
     ctx.conn = Some(conn);
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live server, the live reactor its thread runs, and the live
+    // connection with its own socket and (null or live) port: all the operation reads.
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
 }
 
@@ -463,20 +466,17 @@ pub unsafe extern "C" fn swr_v1_server_set_document_root(
     set_document_root(unsafe { view::Server::from_raw(serv) }, path)
 }
 
-/// The master timer's tick, `Server::timer_callback`, as a plain timer callback.
-///
-/// # Safety
-/// `serv` is a live `Server`, in its master.
+/// Arms the master timer on this thread, the master's: each second it runs
+/// `Server::timer_callback` over `serv`. The timer's node, or null.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C-unwind" fn master_timer_tick(serv: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    unsafe {
-        run(
-            crate::ops::RUN_MASTER_TIMER,
-            0,
-            &mut NativeContext::new(serv),
-        )
-    };
+pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut c_void {
+    let serv = serv.raw();
+    swoole_rs_timer::add_fn(1000, true, move || {
+        // SAFETY: the server that armed its master timer, on its own thread; it
+        // outlives its timers, which `clear_timer` deletes before it goes.
+        let serv = unsafe { view::Server::from_raw(serv) };
+        run_on(serv, crate::ops::RUN_MASTER_TIMER, 0);
+    })
 }
 
 /// `Server::get_timeout_callback`'s timer, a plain timer callback over the

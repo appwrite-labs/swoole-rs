@@ -288,7 +288,8 @@ unsafe extern "C" fn slot_password(
     let passphrase = unsafe { &*slot.cast::<StringSlot>() }.bytes_with_nul();
     let capacity = usize::try_from(capacity).unwrap_or(0);
     // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
-    let buffer = unsafe { crate::upstream::slots(buffer.cast(), capacity) };
+    let mut buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer.cast(), capacity) };
+    let buffer = buffer.slots();
     copy_password(buffer, passphrase)
 }
 /// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
@@ -476,7 +477,6 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     record: swoole_rs_reactor::Socket<'_>,
     hostname: *const StringSlot,
 ) -> OwnedTlsSessionResult {
-    let socket = record.as_ptr();
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return OwnedTlsSessionResult {
             status: 0,
@@ -492,16 +492,8 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
         let fields = owner.fields();
         (fields.context.as_deref(), fields.disable_tls_host_name)
     };
-    let index = crate::swr_v1_tls_connection_index();
-    let (status, error) = record.edit(|record| {
-        let mut error = 0;
-        // SAFETY: the record's own socket as the SSL's ex data; OpenSSL calls nothing
-        // back while making the SSL.
-        let status = unsafe {
-            crate::swr_v1_socket_ssl_new(record, context, 0, index, socket.cast(), &mut error)
-        };
-        (status, error)
-    });
+    let mut error = 0;
+    let status = crate::socket_ssl_new(record, context, 0, &mut error);
     let ssl = crate::Ssl::of(record);
     if status != 0 {
         return OwnedTlsSessionResult { status, error };

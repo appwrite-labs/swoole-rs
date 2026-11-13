@@ -60,7 +60,7 @@ unsafe extern "C" {
     safe fn SSL_get_ex_data(ssl: Ssl<'_>, index: c_int) -> *mut c_void;
     /// OpenSSL keeps `data` as opaque ex data: the indices this side makes register
     /// no callbacks that would read it.
-    safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
+    pub(crate) safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
     safe fn SSL_get_servername(ssl: Ssl<'_>, kind: c_int) -> *const c_char;
     /// Null before the handshake, else an entry of OpenSSL's static cipher table.
     safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
@@ -409,10 +409,12 @@ impl<'a> Ssl<'a> {
         SSL_get_ex_data(self, index)
     }
 
-    /// `SSL_set_ex_data` at `index`: false when OpenSSL fails.
+    /// `SSL_set_ex_data` at `index`: false when OpenSSL fails. Also false, setting
+    /// nothing, at the connection's index: the info callback reads that entry as the
+    /// SSL's socket record, so only [`crate::socket_ssl_new`] sets it.
     #[must_use]
     pub fn set_ex_data(self, index: c_int, data: *mut c_void) -> bool {
-        SSL_set_ex_data(self, index, data) != 0
+        index != crate::swr_v1_tls_connection_index() && SSL_set_ex_data(self, index, data) != 0
     }
 
     /// The SNI host name the client sent, None without one.

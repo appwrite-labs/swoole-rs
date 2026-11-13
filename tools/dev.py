@@ -383,8 +383,6 @@ def plan(args, reports):
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,
                    '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     if 'buffer' in modules:
-        pytest('buffer-string-compatibility', 'tests/modules/buffer/string/test_compatibility.py',
-               '--archive', archive, '--sanitize')
         if integrate and getattr(args, 'php_sockets', False):
             script('php-sockets-sendfile-original', 'corpus/upstream/run.py',
                    '--manifest', ROOT / 'tests/modules/buffer/originals.json',

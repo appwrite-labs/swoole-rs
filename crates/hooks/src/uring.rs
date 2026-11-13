@@ -580,6 +580,9 @@ safe_operations! {
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
             .dest_addr((&raw const address.addr).cast())
             .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), std::convert::identity;
+    /// `IORING_OP_CONNECT` of `fd` to `peer`, whose address the kernel reads.
+    pub fn connect(fd: c_int, peer: crate::lifecycle::Peer<'_>, timeout: f64) -> c_int,
+        timeout timeout, opcode::Connect::new(Fd(fd), peer.as_ptr(), peer.len()), int;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
@@ -588,8 +591,6 @@ safe_operations! {
 operations! {
     fn open_file(pathname: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int,
         timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
-    fn connect(fd: c_int, addr: *const libc::sockaddr, len: libc::socklen_t, timeout: f64) -> c_int,
-        timeout timeout, opcode::Connect::new(Fd(fd), addr, len), int;
     fn recvmsg(fd: c_int, message: *mut libc::msghdr, flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::RecvMsg::new(Fd(fd), message).flags(flags.cast_unsigned()), std::convert::identity;
     fn sendmsg(fd: c_int, message: *const libc::msghdr, flags: c_int, timeout: f64) -> isize,

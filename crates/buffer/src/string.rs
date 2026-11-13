@@ -9,7 +9,7 @@
 //! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
 //! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and
 //! the casts are upstream's C casts.
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
 
@@ -114,9 +114,6 @@ fn checked(pointer: *mut c_void) -> *mut u8 {
     }
     pointer.cast()
 }
-
-/// The C++ side of `String::split`: calls the handler it lends.
-pub type SplitCall = unsafe extern "C" fn(*const c_void, *const c_char, usize) -> bool;
 
 impl CppString {
     pub const EMPTY: Self = Self {
@@ -509,8 +506,7 @@ impl CppString {
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and
 // elsewhere the caller ignores it. Nothing derives from String, so only the
-// complete-object (C1/D1) symbols, and the one base-object constructor a delegating
-// constructor in the header calls.
+// complete-object (C1/D1) symbols.
 // A constructor's `this` is uninitialized storage; every other `this` is a live String.
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
@@ -519,24 +515,6 @@ upstream! {
         let string = this.write(CppString::EMPTY);
         string.alloc(size, with);
         string
-    }
-    "_ZN6swoole6StringC1EPKcm", "_ZN6swoole6StringC1EPKcm" =>
-    /// `String(const char *, size_t)`: a NUL-terminated copy.
-    /// # Safety
-    /// `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_from(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        from_bytes(this, unsafe { bytes(data, length) })
-    }
-    "_ZN6swoole6StringC2EPKcm", "_ZN6swoole6StringC2EPKcm" =>
-    /// The base-object `String(const char *, size_t)`: the header's
-    /// `String(const std::string &)` delegates to it when clang emits no
-    /// constructor aliases (as under `ASan`, `tools/asan.py`'s `string-originals`).
-    /// # Safety
-    /// As `swr_string_from`.
-    pub unsafe extern "C" fn swr_string_from_base(this: &mut MaybeUninit<CppString>, data: *const u8, length: usize) -> *mut CppString {
-        // SAFETY: as the caller promises.
-        unsafe { swr_string_from(this, data, length) }
     }
     "_ZN6swoole6StringC1ERKS0_", "_ZN6swoole6StringC1ERKS0_" =>
     /// `String(const String &)`.
@@ -557,66 +535,6 @@ upstream! {
     pub extern "C" fn swr_string_drop(this: &mut CppString) -> *mut CppString {
         this.dispose();
         this
-    }
-    "_ZN6swoole6StringaSERKS0_", "_ZN6swoole6StringaSERKS0_" =>
-    /// `String &operator=(const String &)`, where `source` may be `this`.
-    /// # Safety
-    /// Both are live.
-    pub unsafe extern "C" fn swr_string_assign_copy(this: *mut CppString, source: *const CppString) -> *mut CppString {
-        if !ptr::eq(this, source) {
-            // SAFETY: as the caller promises, and they differ.
-            let string = unsafe { &mut *this };
-            string.dispose();
-            // SAFETY: as above.
-            string.copy_from(unsafe { &*source });
-        }
-        this
-    }
-    "_ZN6swoole6StringaSEOS0_", "_ZN6swoole6StringaSEOS0_" =>
-    /// `String &operator=(String &&)`, where `source` may be `this`.
-    /// # Safety
-    /// Both are live.
-    pub unsafe extern "C" fn swr_string_assign_move(this: *mut CppString, source: *mut CppString) -> *mut CppString {
-        if !ptr::eq(this, source) {
-            // SAFETY: as the caller promises, and they differ.
-            let string = unsafe { &mut *this };
-            string.dispose();
-            // SAFETY: as above.
-            string.move_from(unsafe { &mut *source });
-        }
-        this
-    }
-    "_ZNK6swoole6String8containsEPKcm", "_ZNK6swoole6String8containsEPKcm" =>
-    /// # Safety
-    /// `needle` holds `length > 0` bytes.
-    #[must_use]
-    pub unsafe extern "C" fn swr_string_contains(this: &CppString, needle: *const u8, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        strnstr(this.view(), unsafe { bytes(needle, length) }).is_some()
-    }
-    "_ZNK6swoole6String11starts_withEPKcm", "_ZNK6swoole6String11starts_withEPKcm" =>
-    /// # Safety
-    /// `needle` holds `length` bytes.
-    #[must_use]
-    pub unsafe extern "C" fn swr_string_starts_with(this: &CppString, needle: *const u8, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        this.view().starts_with(unsafe { bytes(needle, length) })
-    }
-    "_ZNK6swoole6String9ends_withEPKcm", "_ZNK6swoole6String9ends_withEPKcm" =>
-    /// # Safety
-    /// `needle` holds `length` bytes.
-    #[must_use]
-    pub unsafe extern "C" fn swr_string_ends_with(this: &CppString, needle: *const u8, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        this.view().ends_with(unsafe { bytes(needle, length) })
-    }
-    "_ZNK6swoole6String6equalsEPKcm", "_ZNK6swoole6String6equalsEPKcm" =>
-    /// # Safety
-    /// `data` holds `length` bytes.
-    #[must_use]
-    pub unsafe extern "C" fn swr_string_equals(this: &CppString, data: *const u8, length: usize) -> bool {
-        // SAFETY: as the caller promises.
-        this.view() == unsafe { bytes(data, length) }
     }
     "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
     /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
@@ -677,31 +595,6 @@ upstream! {
         let mut buffer = itoa::Buffer::new();
         this.append(buffer.format(value).as_bytes());
     }
-    "_ZN6swoole6String6appendERKS0_", "_ZN6swoole6String6appendERKS0_" =>
-    /// `append(const String &)`, which may be `this`.
-    /// # Safety
-    /// Both are live.
-    pub unsafe extern "C" fn swr_string_append_string(this: *mut CppString, source: *const CppString) {
-        // SAFETY: as the caller promises.
-        let length = unsafe { &*source }.length;
-        // SAFETY: as above; `source` is read again only when it isn't `this`.
-        let string = unsafe { &mut *this };
-        let new_size = string.length.wrapping_add(length);
-        if new_size > string.size {
-            string.reserve(new_size);
-        }
-        // Read after any reallocation; a `source` that is `this` is read through `string`,
-        // whose borrow would otherwise end the caller's `source` pointer.
-        let data = if ptr::eq(this, source) {
-            string.str
-        } else {
-            // SAFETY: as the caller promises; distinct from `string`.
-            unsafe { &*source }.str
-        };
-        // SAFETY: the buffer holds `new_size` bytes; `source` holds `length`.
-        unsafe { ptr::copy(data, string.str.wrapping_add(string.length), length) };
-        string.length = new_size;
-    }
     "_ZN6swoole6String19append_random_bytesEmb", "_ZN6swoole6String19append_random_bytesEmb" =>
     pub extern "C" fn swr_string_append_random_bytes(this: &mut CppString, length: usize, base64: bool) -> bool {
         this.append_random_bytes(length, base64)
@@ -709,13 +602,6 @@ upstream! {
     "_ZN6swoole6String5writeElRKS0_", "_ZN6swoole6String5writeExRKS0_" =>
     pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
         this.write(offset, source.view());
-    }
-    "_ZN6swoole6String5writeElPKcm", "_ZN6swoole6String5writeExPKcm" =>
-    /// # Safety
-    /// `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_write(this: &mut CppString, offset: i64, data: *const u8, length: usize) {
-        // SAFETY: as the caller promises.
-        this.write(offset, unsafe { bytes(data, length) });
     }
     "_ZN6swoole6String19set_null_terminatedEv", "_ZN6swoole6String19set_null_terminatedEv" =>
     pub extern "C" fn swr_string_set_null_terminated(this: &mut CppString) {
@@ -736,28 +622,6 @@ upstream! {
     pub extern "C" fn swr_string_reduce(this: &mut CppString, offset: i64) {
         this.reduce(offset);
     }
-}
-
-/// `String::split`, for the C++ method that lends its handler.
-///
-/// # Safety
-/// As `CppString::split`, with `this` live.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_string_split(
-    this: *mut CppString,
-    delimiter: *const u8,
-    delimiter_length: usize,
-    call: SplitCall,
-    handler: *const c_void,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let string = unsafe { &mut *this };
-    // SAFETY: as above.
-    let delimiter = unsafe { bytes(delimiter, delimiter_length) };
-    // SAFETY: each chunk lies inside the String; `call` accepts `handler`.
-    string.split(delimiter, |chunk, length| unsafe {
-        call(handler, chunk.cast(), length)
-    })
 }
 
 /// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
@@ -812,9 +676,9 @@ pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
 mod tests {
     use super::*;
 
-    fn new(text: &[u8]) -> CppString {
+    pub(super) fn new(text: &[u8]) -> CppString {
         let mut s = MaybeUninit::uninit();
-        unsafe { swr_string_from(&mut s, text.as_ptr(), text.len()) };
+        from_bytes(&mut s, text);
         unsafe { s.assume_init() }
     }
 
@@ -827,7 +691,8 @@ mod tests {
         swr_string_append_int(&mut s, -42);
         s.reduce(3);
         assert_eq!(s.view(), b"defghijkl-42");
-        unsafe { swr_string_append_string(&raw mut s, &raw const s) };
+        let copy = s.view().to_vec();
+        s.append(&copy);
         assert_eq!(s.view(), b"defghijkl-42defghijkl-42");
         s.set_null_terminated();
         assert_eq!(unsafe { *s.str.add(s.length) }, 0);
@@ -890,8 +755,8 @@ mod tests {
         assert!(sub.str.is_null() && moved.view() == b"world");
         let mut copied = CppString::EMPTY;
         copied.copy_from(&moved);
-        assert!(unsafe { swr_string_contains(&copied, b"orl".as_ptr(), 3) });
-        assert!(unsafe { swr_string_ends_with(&copied, b"ld".as_ptr(), 2) });
+        assert!(strnstr(copied.view(), b"orl").is_some());
+        assert!(copied.view().ends_with(b"ld"));
         unsafe { libc::free(moved.release().cast()) };
         copied.dispose();
         s.dispose();
@@ -907,3 +772,7 @@ mod tests {
         unsafe { delete_string(s) };
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/string/originals.rs"]
+mod originals;

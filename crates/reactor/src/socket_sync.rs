@@ -2,7 +2,7 @@
 //! (prepare, retry classification, the ENOBUFS backoff, poll and timeout) and each
 //! `*_sync` method's progress rule. Native code performs each I/O call, keeping its
 //! counters and TLS, and reads the socket's bitfields, through [`SyncHooks`].
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 use std::time::{Duration, Instant};
 
 /// `swReturnCode`'s `SW_WAIT` (from `catch_error`).
@@ -29,11 +29,10 @@ pub trait SyncEffects {
     fn prepare(&self);
     /// `what_event_want(event)` as poll bits.
     fn events(&self, event: c_int) -> i16;
-    /// One I/O call on `length` bytes at `buffer`.
-    ///
-    /// # Safety
-    /// `buffer` denotes `length` bytes valid for the call's I/O.
-    unsafe fn io(&self, buffer: *mut c_void, length: usize, flags: c_int) -> isize;
+    /// One I/O call on the bytes the call has left.
+    fn io(&mut self, flags: c_int) -> isize;
+    /// Steps past the `moved` bytes the last call moved: whether any are left.
+    fn advance(&mut self, moved: usize) -> bool;
     /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
     fn catch_error(&self, error: c_int) -> c_int;
     /// `has_kernel_nobufs()`: reads and clears the flag.
@@ -51,18 +50,13 @@ enum Step {
 use swoole_rs_corebase::sys::errno;
 pub(crate) use swoole_rs_corebase::sys::set_errno;
 
-/// `Socket::wait_for`'s loop around `kind`'s progress rule on `length` bytes at
-/// `buffer`, waiting for `event` up to `timeout_ms` (no limit unless positive;
+/// `Socket::wait_for`'s loop around `kind`'s progress rule on the bytes `hooks`
+/// holds, waiting for `event` up to `timeout_ms` (no limit unless positive;
 /// the elapsed time since the start is subtracted on every wait, as upstream does).
 /// Returns the bytes moved, or -1 with the last error and errno set.
-///
-/// # Safety
-/// `buffer` denotes `length` bytes valid for `hooks`' I/O.
-pub unsafe fn swr_v1_socket_sync(
-    hooks: &impl SyncEffects,
+pub fn swr_v1_socket_sync(
+    hooks: &mut impl SyncEffects,
     kind: c_int,
-    buffer: *mut c_void,
-    length: usize,
     flags: c_int,
     event: c_int,
     mut timeout_ms: c_int,
@@ -70,18 +64,13 @@ pub unsafe fn swr_v1_socket_sync(
     let began = Instant::now();
     hooks.prepare();
     let mut bytes: usize = 0;
+    let call_flags = if kind == SYNC_RECV {
+        flags & !libc::MSG_WAITALL
+    } else {
+        flags
+    };
     loop {
-        let (at, rest, call_flags) = match kind {
-            SYNC_ONCE => (buffer, length, flags),
-            SYNC_RECV => (
-                buffer.wrapping_byte_add(bytes),
-                length - bytes,
-                flags & !libc::MSG_WAITALL,
-            ),
-            _ => (buffer.wrapping_byte_add(bytes), length - bytes, flags),
-        };
-        // SAFETY: the rest of the caller's buffer.
-        let n = unsafe { hooks.io(at, rest, call_flags) };
+        let n = hooks.io(call_flags);
         let step = match n.cmp(&0) {
             core::cmp::Ordering::Less => {
                 let error = errno();
@@ -96,12 +85,16 @@ pub unsafe fn swr_v1_socket_sync(
             core::cmp::Ordering::Equal if kind == SYNC_SENDFILE => Step::Error,
             core::cmp::Ordering::Equal => Step::Ready,
             core::cmp::Ordering::Greater => {
-                bytes += n.cast_unsigned();
-                match kind {
-                    SYNC_SEND | SYNC_SENDFILE if bytes < length => Step::Continue,
-                    SYNC_RECV if flags & libc::MSG_WAITALL != 0 && bytes < length => Step::Continue,
-                    _ => Step::Ready,
-                }
+                let moved = n.cast_unsigned();
+                bytes += moved;
+                // Only a call that goes on steps past what it moved: `SYNC_ONCE` (and a
+                // `recv` without `MSG_WAITALL`) ends here.
+                let more = match kind {
+                    SYNC_SEND | SYNC_SENDFILE => hooks.advance(moved),
+                    SYNC_RECV if flags & libc::MSG_WAITALL != 0 => hooks.advance(moved),
+                    _ => false,
+                };
+                if more { Step::Continue } else { Step::Ready }
             }
         };
         match step {
@@ -154,6 +147,8 @@ mod tests {
         kernel_nobufs: *mut bool,
         events: fn() -> i16,
         io: fn(usize, c_int) -> isize,
+        /// The bytes the call has left.
+        left: usize,
     }
 
     impl SyncEffects for SyncHooks {
@@ -167,8 +162,15 @@ mod tests {
         fn events(&self, _: c_int) -> i16 {
             (self.events)()
         }
-        unsafe fn io(&self, _: *mut c_void, length: usize, flags: c_int) -> isize {
-            (self.io)(length, flags)
+        fn io(&mut self, flags: c_int) -> isize {
+            (self.io)(self.left, flags)
+        }
+        fn advance(&mut self, moved: usize) -> bool {
+            if moved >= self.left {
+                return false;
+            }
+            self.left -= moved;
+            true
         }
         fn catch_error(&self, error: c_int) -> c_int {
             crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
@@ -205,6 +207,7 @@ mod tests {
             kernel_nobufs: nobufs,
             events,
             io,
+            left: 0,
         }
     }
 
@@ -215,19 +218,11 @@ mod tests {
         flags: c_int,
     ) -> (isize, Vec<(usize, c_int)>) {
         CALLS.with(|calls| calls.borrow_mut().clear());
-        let mut buffer = vec![0_u8; length];
-        // SAFETY: the hooks are local and the buffer has `length` bytes.
-        let result = unsafe {
-            swr_v1_socket_sync(
-                hooks,
-                kind,
-                buffer.as_mut_ptr().cast(),
-                length,
-                flags,
-                2,
-                1000,
-            )
+        let mut hooks = SyncHooks {
+            left: length,
+            ..*hooks
         };
+        let result = swr_v1_socket_sync(&mut hooks, kind, flags, 2, 1000);
         (result, CALLS.with(|calls| calls.borrow().clone()))
     }
 
@@ -286,15 +281,12 @@ mod tests {
             0
         );
         let mut nobufs = false;
-        let hooks = SyncHooks {
+        let mut hooks = SyncHooks {
             events: readable,
+            left: 4,
             ..hooks(fds[0], &mut nobufs, again)
         };
-        let mut buffer = [0_u8; 4];
-        // SAFETY: local hooks and buffer.
-        let result = unsafe {
-            swr_v1_socket_sync(&hooks, SYNC_ONCE, buffer.as_mut_ptr().cast(), 4, 0, 1, 20)
-        };
+        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, 1, 20);
         assert_eq!((result, errno()), (-1, libc::EAGAIN));
         assert_eq!(LAST_ERROR.with(|last| *last.borrow()), POLL_TIMEOUT);
         // SAFETY: closes the pair this test opened.
@@ -323,15 +315,18 @@ mod tests {
             fn events(&self, _: c_int) -> i16 {
                 libc::POLLIN
             }
-            unsafe fn io(&self, _: *mut c_void, length: usize, _: c_int) -> isize {
+            fn io(&mut self, _: c_int) -> isize {
                 // The first call swaps in the readable descriptor and would block.
                 let (now, next) = FD.with(std::cell::Cell::get);
                 if now == next {
-                    return length.cast_signed();
+                    return self.0.left.cast_signed();
                 }
                 FD.with(|fd| fd.set((next, next)));
                 set_errno(libc::EAGAIN);
                 -1
+            }
+            fn advance(&mut self, moved: usize) -> bool {
+                self.0.advance(moved)
             }
             fn catch_error(&self, error: c_int) -> c_int {
                 self.0.catch_error(error)
@@ -354,12 +349,11 @@ mod tests {
         assert_eq!(unsafe { libc::write(ready[1], b"x".as_ptr().cast(), 1) }, 1);
         FD.with(|fd| fd.set((idle[0], ready[0])));
         let mut nobufs = false;
-        let hooks = Moving(hooks(idle[0], &mut nobufs, three));
-        let mut buffer = [0_u8; 4];
-        // SAFETY: local hooks and buffer.
-        let result = unsafe {
-            swr_v1_socket_sync(&hooks, SYNC_ONCE, buffer.as_mut_ptr().cast(), 4, 0, 1, 1000)
-        };
+        let mut hooks = Moving(SyncHooks {
+            left: 4,
+            ..hooks(idle[0], &mut nobufs, three)
+        });
+        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, 1, 1000);
         assert_eq!(result, 4, "the wait polled the swapped descriptor");
         // SAFETY: closes the pairs this test opened.
         unsafe {

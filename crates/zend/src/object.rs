@@ -4,9 +4,9 @@ use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
         IS_OBJECT, IS_OBJECT_EX, object_init_ex, object_properties_init, swr_zend_object_alloc,
-        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
-        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
-        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        swr_zend_objects_hold, swr_zend_try_facade_update, zend_class_entry, zend_long,
+        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
+        zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -14,6 +14,17 @@ use std::{
     marker::PhantomData,
     mem::offset_of,
 };
+
+unsafe extern "C" {
+    /// `sw_zend_read_property_ex` without its copy: null (`None`), or the slot
+    /// of the property `object`'s class declares as the `length` bytes at
+    /// `name`, which lives as long as the object.
+    fn swr_zend_property_slot<'a>(
+        object: *mut zend_object,
+        name: *const c_char,
+        length: usize,
+    ) -> Option<&'a Value>;
+}
 
 /// `data` followed by the object Zend sees; `std` must stay last, since Zend
 /// allocates the class's property slots after it.
@@ -374,10 +385,9 @@ impl<'a> Props<'a> {
     #[must_use]
     #[inline]
     pub fn slot(self, name: &CStr) -> Option<&'a Value> {
-        // SAFETY: a live object, per `new`; Zend reads `name` only.
-        let slot = unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) };
-        // SAFETY: null, or a slot of the object, live for `'a`.
-        unsafe { Value::from_ptr(slot) }
+        // SAFETY: a live object, per `new`, whose slots live for `'a`; Zend
+        // reads `name` only.
+        unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) }
     }
 
     /// The array [`Props::array_slot`] finds, lent to `edit` out of its

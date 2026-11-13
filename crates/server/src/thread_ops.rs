@@ -14,7 +14,7 @@ use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::Socket;
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE};
+use crate::callbacks::{ReceiveSlot, TaskSlot};
 use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
@@ -459,16 +459,15 @@ pub(crate) fn answer(
             unsafe { methods::send_to_connection(server, &send) };
             0
         }
-        OP_ON_FINISH => {
-            let slot = state.callbacks.slot(CB_FINISH)?;
-            // SAFETY: the slot's `int (Server *, EventData *)` callback; its result is discarded.
-            let _ = unsafe { slot.receive(serv, resp.cast_mut().cast()) };
-            0
-        }
-        OP_ON_PIPE_MESSAGE => {
-            let slot = state.callbacks.slot(CB_PIPE_MESSAGE)?;
-            // SAFETY: the slot's `void (Server *, EventData *)` callback over the message.
-            unsafe { slot.call(serv, resp.cast_mut().cast()) };
+        OP_ON_FINISH | OP_ON_PIPE_MESSAGE => {
+            // SAFETY: the event `OP_PIPE_READ` stored: the bus's `EventData`, its head
+            // and the payload it counts.
+            let event = unsafe { swoole_rs_process::task_file::Packed::from_raw(resp.cast()) };
+            if op == OP_ON_FINISH {
+                let _ = state.callbacks.task(TaskSlot::Finish, server, event);
+            } else {
+                state.callbacks.pipe_message(server, event);
+            }
             0
         }
 
@@ -492,8 +491,10 @@ pub(crate) fn answer(
 
         OP_INCOMING => {
             let conn = ctx.connection()?;
-            // SAFETY: the live server, this thread's reactor and a live connection.
-            sign(unsafe { methods::connection_incoming(server, reactor, conn) })
+            // SAFETY: this reactor thread's live reactor, as the context's pointer:
+            // the op runs on a context that has one.
+            let reactor = unsafe { Reactor::of(reactor) };
+            sign(methods::connection_incoming(server, reactor, conn))
         }
         OP_CLOSE => {
             // This thread's reactor and the connection's live socket.
@@ -528,7 +529,7 @@ pub(crate) fn answer(
         OP_PORT_LISTEN | OP_PORT_READ => {
             let port = state.tables_ref().ports().get(usize::try_from(arg).ok()?)?;
             if op == OP_PORT_LISTEN {
-                return Some(sign((crate::port_config::methods().listen)(port.raw())));
+                return Some(sign((crate::port_config::methods().listen)(port.config())));
             }
             add_read(server.port_socket_at(usize::try_from(arg).unwrap_or(usize::MAX)));
             0
@@ -548,7 +549,9 @@ pub(crate) fn answer(
             let sock = event_socket(ctx)?;
             let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
             let port_config = port_config(ctx)?;
-            let on_read = port_config.on_read;
+            let on_read = port_config
+                .on_read
+                .load(core::sync::atomic::Ordering::Relaxed);
             // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
             let on_read: unsafe extern "C-unwind" fn(
                 *mut c_void,
@@ -585,14 +588,14 @@ pub(crate) fn answer(
             result
         }
         OP_ON_RECEIVE | OP_ON_PACKET => {
-            let callback = if op == OP_ON_PACKET {
-                CB_PACKET
+            let slot = if op == OP_ON_PACKET {
+                ReceiveSlot::Packet
             } else {
-                CB_RECEIVE
+                ReceiveSlot::Receive
             };
-            let slot = state.callbacks.slot(callback)?;
-            // SAFETY: the slot's `int (Server *, RecvData *)` callback over the frame at arg.
-            u64::from(unsafe { slot.receive(serv, arg as *mut c_void) } == 0)
+            // SAFETY: the frame's live `RecvData`, which the op's maker lends at `arg`.
+            let data = unsafe { &*(arg as *const entry::RecvData) };
+            u64::from(state.callbacks.receive(slot, server, data) == 0)
         }
         OP_FACTORY_DISPATCH => u64::from(factory::dispatch(state, (&raw mut ctx.task).cast())),
         _ => return None,

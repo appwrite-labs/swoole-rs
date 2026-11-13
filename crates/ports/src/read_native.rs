@@ -427,7 +427,7 @@ impl Connection for Read<'_> {
         (
             session,
             String::from_utf8_lossy(self.port.host_bytes()).into_owned(),
-            i64::from(self.port.port),
+            i64::from(self.port.port.get()),
         )
     }
 }

@@ -1,7 +1,7 @@
 //! Raw zval reads and stores, and the empty string and array.
 use crate::sys::{
-    _zval_struct__bindgen_ty_1, HashTable, IS_LONG, zend_empty_array, zend_long, zend_object,
-    zend_string, zend_value, zval,
+    _zval_struct__bindgen_ty_1, HashTable, zend_empty_array, zend_object, zend_string, zend_value,
+    zval,
 };
 
 unsafe extern "C" {
@@ -47,15 +47,6 @@ pub unsafe fn set(target: *mut zval, value: zend_value, type_info: u32) {
     unsafe { (*target).value = value };
     // SAFETY: as above.
     unsafe { (*target).u1 = _zval_struct__bindgen_ty_1 { type_info } };
-}
-
-/// `ZVAL_LONG(target, value)`.
-/// # Safety
-/// `target` is writable and holds nothing that needs releasing.
-#[inline]
-pub unsafe fn set_long(target: *mut zval, value: zend_long) {
-    // SAFETY: per the caller.
-    unsafe { set(target, zend_value { lval: value }, IS_LONG) };
 }
 
 /// `ZSTR_EMPTY_ALLOC()`: the interned empty string, which needs no reference

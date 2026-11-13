@@ -20,7 +20,6 @@ use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_server::callbacks::{CB_USER_WORKER_START, Callback, Ctx};
 use swoole_rs_zend::host::{callable, function_call};
@@ -578,7 +577,7 @@ fn port_callback(server: view::Server<'_>, server_fd: u16, kind: c_int) -> Optio
     php_swoole_server_get_callback(server, c_int::from(server_fd), kind)
 }
 
-fn worker_id(worker: &WorkerRecord) -> i64 {
+fn worker_id(worker: Worker<'_>) -> i64 {
     i64::from(worker.id())
 }
 
@@ -600,24 +599,24 @@ lifecycle_slots! {
     on_after_reload => ON_AFTER_RELOAD;
 }
 
-extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
+extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     relay(on_lifecycle(server, ON_WORKER_START, worker_id(worker)));
 }
 
-extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
+extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     if swoole_rs_process::methods::worker_is_running() {
         relay(on_lifecycle(server, ON_WORKER_STOP, worker_id(worker)));
     }
 }
 
-extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: &WorkerRecord) {
+extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     relay(on_lifecycle(server, ON_WORKER_EXIT, worker_id(worker)));
 }
 
 extern "C" fn on_worker_error_slot(
     _: Ctx,
     server: view::Server<'_>,
-    worker: &WorkerRecord,
+    worker: Worker<'_>,
     exit: &ExitStatus,
 ) {
     let (pid, status) = (exit.pid(), exit.status());

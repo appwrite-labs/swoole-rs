@@ -13,7 +13,7 @@
 use std::ffi::{CStr, c_char};
 use std::slice;
 
-use swoole_rs_server::port_config::{self, PortMethods};
+use swoole_rs_server::port_config::PortMethods;
 
 pub mod framing_recv;
 pub mod http_routes;
@@ -110,8 +110,7 @@ const METHODS: PortMethods = PortMethods {
     create_socket: methods::create_socket,
     close_socket: methods::close_socket,
     get_protocols: methods::get_protocols,
-    // SAFETY: the server passes one of its live ports, whose settings it isn't touching.
-    init_protocol: |port| methods::init_protocol(unsafe { port_config::of(port) }),
+    init_protocol: methods::init_protocol,
     destroy_http_request: methods::destroy_http_request,
     tls_free: lifecycle::tls_free,
     dtls_create: lifecycle::dtls_create,

@@ -3,8 +3,9 @@
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
 use crate::socket_rw::interrupted;
-use crate::{Socket, SocketAddress, SocketFields, TlsIo};
+use crate::{Drain, Fill, Socket, SocketAddress, SocketFields, TlsIo};
 use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::sys::ReadSlot;
 
 /// `SW_OK`, `SW_ERR`, `SW_WAIT` and `SW_BACKLOG`.
 const OK: c_int = 0;
@@ -126,58 +127,54 @@ impl SocketFields {
     }
 }
 
-/// The record's fd, blocking flags and TLS call (when it holds an `SSL`).
-fn io_of(socket: Socket<'_>, tls: TlsIo) -> (c_int, bool, bool, Option<(TlsIo, *mut c_void)>) {
+/// The record's fd, its blocking flags and whether it holds an `SSL`.
+fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
     socket.read(|record| {
         (
             record.fd,
             record.output.nonblock != 0,
             record.dont_restart != 0,
-            (!record.ssl().is_null()).then_some((tls, socket.as_ptr().cast())),
+            !record.ssl().is_null(),
         )
     })
 }
 
-/// `Socket::recv`: recv(2), or `tls` reads until `length` bytes when the socket is
+/// `Socket::recv`: recv(2), or `tls` reads until `buffer` is full when the socket is
 /// nonblocking or `MSG_WAITALL` is set, retried on EINTR unless `dont_restart`. Counted
 /// into `total_recv_bytes` and, with a receive timer, `last_received_time`. A read that
-/// would block after `POLLHUP` reads as end of stream.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes; `tls` is valid for the socket.
-pub unsafe fn socket_record_recv(
+/// would block after `POLLHUP` reads as end of stream. `tls` runs only for a record
+/// that holds an `SSL`.
+pub fn record_recv<S: ReadSlot>(
     socket: Socket<'_>,
-    buffer: *mut c_void,
-    length: usize,
+    mut buffer: Fill<'_, S>,
     flags: c_int,
-    tls: TlsIo,
+    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> isize,
     now: SteadyMs,
 ) -> isize {
-    let (fd, nonblock, dont_restart, tls) = io_of(socket, tls);
+    let (fd, nonblock, dont_restart, secure) = io_of(socket);
     let total = loop {
-        let total = match tls {
-            Some((read, socket)) => {
-                let mut total: isize = 0;
-                while total.cast_unsigned() < length {
-                    // SAFETY: `total < length`, so the rest of the caller's buffer starts in bounds.
-                    let rest = unsafe { buffer.cast::<u8>().add(total.cast_unsigned()) };
-                    // SAFETY: the caller's TLS read for this socket, into the rest of its buffer.
-                    let read = unsafe { read(socket, rest.cast(), length - total.cast_unsigned()) };
-                    if read <= 0 {
-                        if total == 0 {
-                            total = read;
-                        }
-                        break;
+        let total = if secure {
+            let mut rest = buffer.reborrow();
+            let mut total: isize = 0;
+            while !rest.is_empty() {
+                let read = tls(socket, rest.reborrow());
+                if read <= 0 {
+                    if total == 0 {
+                        total = read;
                     }
-                    total += read;
-                    if !(nonblock || flags & libc::MSG_WAITALL != 0) {
-                        break;
-                    }
+                    break;
                 }
-                total
+                total += read;
+                // A full buffer ends the loop, as does a blocking read without `MSG_WAITALL`.
+                if !(nonblock || flags & libc::MSG_WAITALL != 0)
+                    || !rest.advance(read.cast_unsigned())
+                {
+                    break;
+                }
             }
-            // SAFETY: the caller lends `length` writable bytes.
-            None => unsafe { libc::recv(fd, buffer, length, flags) },
+            total
+        } else {
+            buffer.recv(fd, flags)
         };
         if !(total < 0 && interrupted() && !dont_restart) {
             break total;
@@ -202,25 +199,21 @@ pub unsafe fn socket_record_recv(
 }
 
 /// `Socket::send`: send(2) or one `tls` write, retried on EINTR unless `dont_restart`,
-/// counted into `total_send_bytes` and, with a send timer, `last_sent_time`.
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes; `tls` is valid for the socket.
-pub unsafe fn socket_record_send(
+/// counted into `total_send_bytes` and, with a send timer, `last_sent_time`. `tls` runs
+/// only for a record that holds an `SSL`.
+pub fn record_send(
     socket: Socket<'_>,
-    buffer: *const c_void,
-    length: usize,
+    data: Drain<'_>,
     flags: c_int,
-    tls: TlsIo,
+    tls: impl Fn(Socket<'_>, Drain<'_>) -> isize,
     now: SteadyMs,
 ) -> isize {
-    let (fd, _, dont_restart, tls) = io_of(socket, tls);
+    let (fd, _, dont_restart, secure) = io_of(socket);
     let sent = loop {
-        let sent = match tls {
-            // SAFETY: the caller's TLS write for this socket; it only reads the buffer.
-            Some((write, socket)) => unsafe { write(socket, buffer.cast_mut(), length) },
-            // SAFETY: the caller lends `length` readable bytes.
-            None => unsafe { libc::send(fd, buffer, length, flags) },
+        let sent = if secure {
+            tls(socket, data)
+        } else {
+            data.send(fd, flags)
         };
         if !(sent < 0 && interrupted() && !dont_restart) {
             break sent;
@@ -238,24 +231,42 @@ pub unsafe fn socket_record_send(
     sent
 }
 
-/// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
+/// [`record_send`] of the `length` bytes at `buffer`, with a TLS write C defines.
 ///
 /// # Safety
-/// `buffer` denotes `length` writable bytes; `tls` is valid for the socket.
-pub unsafe fn socket_record_peek(
+/// `buffer` denotes `length` readable bytes; `tls` is valid for the socket.
+pub unsafe fn socket_record_send(
     socket: Socket<'_>,
-    buffer: *mut c_void,
+    buffer: *const c_void,
     length: usize,
     flags: c_int,
     tls: TlsIo,
+    now: SteadyMs,
 ) -> isize {
-    let (fd, _, _, tls) = io_of(socket, tls);
+    // SAFETY: the caller lends `length` readable bytes.
+    let data = unsafe { Drain::from_raw(buffer, length) };
+    let tls = |socket: Socket<'_>, data: Drain<'_>| {
+        let (record, at) = (socket.as_ptr().cast(), data.as_ptr().cast_mut());
+        // SAFETY: the caller's TLS write for this socket; it only reads the bytes.
+        unsafe { tls(record, at, data.len()) }
+    };
+    record_send(socket, data, flags, tls, now)
+}
+
+/// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
+/// `tls` runs only for a record that holds an `SSL`.
+pub fn record_peek<S: ReadSlot>(
+    socket: Socket<'_>,
+    mut buffer: Fill<'_, S>,
+    flags: c_int,
+    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> isize,
+) -> isize {
+    let (fd, _, _, secure) = io_of(socket);
     loop {
-        let peeked = match tls {
-            // SAFETY: the caller's SSL_peek for this socket, into its buffer.
-            Some((peek, socket)) => unsafe { peek(socket, buffer, length) },
-            // SAFETY: the caller lends `length` writable bytes.
-            None => unsafe { libc::recv(fd, buffer, length, flags | libc::MSG_PEEK) },
+        let peeked = if secure {
+            tls(socket, buffer.reborrow())
+        } else {
+            buffer.recv(fd, flags | libc::MSG_PEEK)
         };
         if !(peeked < 0 && interrupted()) {
             return peeked;
@@ -284,6 +295,7 @@ pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
 mod tests {
     use super::*;
     use crate::SocketRecord;
+    use crate::lent::raw::{socket_record_peek, socket_record_recv};
 
     #[test]
     fn native_event_want_preserves_write_priority_and_default() {

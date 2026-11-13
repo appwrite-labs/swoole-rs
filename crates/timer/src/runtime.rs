@@ -53,8 +53,8 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
         it_interval: every,
         it_value: every,
     };
-    // SAFETY: `value` is a live itimerval; the old value is not wanted.
-    if unsafe { libc::setitimer(libc::ITIMER_REAL, &raw const value, std::ptr::null_mut()) } < 0 {
+    // The old value is not wanted.
+    if swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value) < 0 {
         -1
     } else {
         0

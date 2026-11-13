@@ -33,9 +33,7 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_process::workers::thread::{ThreadManager, worker_thread_start};
 
-use crate::callbacks::{
-    CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP, CB_USER_WORKER_START,
-};
+use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
 use crate::objects::{Bus, Reactor};
 use crate::port_config::methods;
 use crate::reactor_ops::sign;
@@ -361,7 +359,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_COUNT => ctx.server().ports().len() as u64,
         OP_PORT_DGRAM => u64::from(matches!(port()?.config().r#type, 2 | 4 | 6)),
-        OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.config())),
         OP_PORT_ADD => {
             let socket = ctx.server().port_socket_at(usize::try_from(arg).ok()?)?;
             Reactor::thread().add(socket, SW_EVENT_READ);
@@ -378,7 +376,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 
 /// The facts and effects on the context's worker and the thread manager.
 fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv, ctx.worker);
+    let serv = ctx.serv;
     // The task pool's hook for `op`, over the pool and the context's worker. The hooks
     // are copied out first: the pool's own code, every task worker thread and PHP code
     // a hook runs (`$server->stats()`) reach the record while one runs.
@@ -421,10 +419,7 @@ fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_USER_WORKER_START => {
-            if let Some(slot) = ctx.state().callbacks.slot(CB_USER_WORKER_START) {
-                // SAFETY: its `(Server *, Worker *)` slot, with the context's live worker.
-                unsafe { slot.call(serv.raw(), worker.cast()) };
-            }
+            ctx.state().callbacks.user_worker_start(serv, ctx.worker());
             0
         }
         OP_ON_WORKER_START | OP_POOL_MAIN_LOOP | OP_ON_WORKER_STOP => pool_hook(op),

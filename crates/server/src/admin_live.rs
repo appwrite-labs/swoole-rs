@@ -250,7 +250,7 @@ impl Facts for Live<'_> {
         let config = config.unwrap_or_else(|| {
             swoole_rs_corebase::fatal("an admin command on a connection without a port")
         });
-        let listener = live(config.socket).read(|s| s.info);
+        let listener = live(config.socket_ptr()).read(|s| s.info);
         let (received, sent) =
             live(conn.socket_ptr()).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
@@ -356,7 +356,7 @@ impl Facts for Live<'_> {
                 Port {
                     host: Json::utf8(host),
                     protocols: Json::utf8(protocols.to_bytes()),
-                    port: config.port.into(),
+                    port: config.port.get().into(),
                     backlog: config.backlog.get().into(),
                     socket_type: config.r#type.into(),
                     ssl: config.ssl.into(),

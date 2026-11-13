@@ -29,7 +29,7 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_reactor::Socket;
 
-use crate::callbacks::{CB_PIPE_MESSAGE, CB_TASK};
+use crate::callbacks::TaskSlot;
 use crate::commands::CommandHandler;
 use crate::event_worker_ops::{
     call_worker_stop_callback, swr_workers_signal_set, worker_signal_handler, worker_start_callback,
@@ -115,6 +115,11 @@ impl<'a> Context<'a> {
     fn task(&self) -> &DataHead {
         // SAFETY: the ops reading it run with a live task.
         unsafe { &*self.task }
+    }
+    /// The task as it was packed: its head and the payload the head counts.
+    fn packed_task(&self) -> swoole_rs_process::task_file::Packed<'_> {
+        // SAFETY: the ops reading it run with a live task, which its sender packed.
+        unsafe { swoole_rs_process::task_file::Packed::from_raw(self.task.cast()) }
     }
     /// Runs `f` over the packed result, which the ops editing it run after packing.
     fn edit_packed<R>(&self, f: impl FnOnce(&mut DataHead) -> R) -> R {
@@ -256,7 +261,6 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 /// The task being run: its header, its callbacks and the pipe it came over.
 #[inline(always)]
 fn task(ctx: &mut Context, op: u32) -> Option<u64> {
-    let serv = ctx.serv();
     Some(match op {
         LOG_UNKNOWN_COMMAND => {
             let id = ctx.task().server_fd;
@@ -276,16 +280,13 @@ fn task(ctx: &mut Context, op: u32) -> Option<u64> {
         OP_INFO_TYPE => u64::from(ctx.task().kind),
         OP_TASK_EXT_FLAGS => u64::from(ctx.task().ext_flags),
         OP_ON_PIPE_MESSAGE => {
-            if let Some(slot) = ctx.state().callbacks.slot(CB_PIPE_MESSAGE) {
-                // SAFETY: the slot takes the server and the task.
-                unsafe { slot.call(serv, ctx.task.cast_mut().cast()) };
-            }
+            let callbacks = &ctx.state().callbacks;
+            callbacks.pipe_message(ctx.server, ctx.packed_task());
             0
         }
         OP_ON_TASK => {
-            let slot = ctx.state().callbacks.slot(CB_TASK)?;
-            // SAFETY: `onTask` takes the server and the task and returns an int.
-            signed(unsafe { slot.receive(serv, ctx.task.cast_mut().cast()) })
+            let callbacks = &ctx.state().callbacks;
+            signed(callbacks.task(TaskSlot::Task, ctx.server, ctx.packed_task()))
         }
         OP_READ_TASK => {
             let fd = ctx.socket()?.fd();

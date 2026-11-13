@@ -2,7 +2,7 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, invoke::compiled_function};
+use crate::{CONTINUE, DISPATCH, Frame, Op, invoke::compiled_function};
 use std::{
     ffi::{CStr, CString, c_int, c_long},
     marker::PhantomData,
@@ -14,6 +14,7 @@ use swoole_rs_zend::{
     Call, Owned, UNDEF, Value, ZString,
     bailout::Bailout,
     handlers,
+    opcode::Handler,
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
@@ -544,47 +545,47 @@ pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
 }
 
 /// The `UNSET_DIM` user opcode handler: a typed list keeps its keys.
-/// # Safety
-/// Zend's user opcode handler contract.
-pub unsafe extern "C" fn swr_v1_phpstdext_unset(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: per Zend's contract.
-    let frame = unsafe { Frame::new(frame) };
-    // `get_array_on_opline`: op1's slot.
-    let Some(array) = frame.op().op1_container() else {
-        return DISPATCH;
-    };
-    match Typed::of(array) {
-        Some(typed) if typed.this().key == 0 => {
-            throw_error(c"The typed array list do not support random deletion of elements");
-            CONTINUE
+pub(crate) struct Unset;
+
+impl Handler for Unset {
+    fn run(frame: Frame<'_>) -> c_int {
+        // `get_array_on_opline`: op1's slot.
+        let Some(array) = Op::current(frame).op1_container() else {
+            return DISPATCH;
+        };
+        match Typed::of(array) {
+            Some(typed) if typed.this().key == 0 => {
+                throw_error(c"The typed array list do not support random deletion of elements");
+                CONTINUE
+            }
+            _ => DISPATCH,
         }
-        _ => DISPATCH,
     }
 }
 
 /// The `FE_RESET_RW` user opcode handler: no `foreach` by reference over a
 /// typed array.
-/// # Safety
-/// Zend's user opcode handler contract.
-pub unsafe extern "C" fn swr_v1_phpstdext_foreach_begin(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: per Zend's contract.
-    let frame = unsafe { Frame::new(frame) };
-    let op = frame.op();
-    if op.op1_container().and_then(Typed::of).is_none() {
-        return DISPATCH;
+pub(crate) struct ForeachBegin;
+
+impl Handler for ForeachBegin {
+    fn run(frame: Frame<'_>) -> c_int {
+        let op = Op::current(frame);
+        if op.op1_container().and_then(Typed::of).is_none() {
+            return DISPATCH;
+        }
+        throw_error(
+            c"The type array do not support using references for element value during iteration",
+        );
+        if let Some(result) = op.result() {
+            let mut undefined = UNDEF;
+            undefined.u2 = _zval_struct__bindgen_ty_2 {
+                fe_iter_idx: u32::MAX,
+            };
+            // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
+            unsafe { result.as_ptr().write(undefined) };
+        }
+        CONTINUE
     }
-    throw_error(
-        c"The type array do not support using references for element value during iteration",
-    );
-    if let Some(result) = op.result() {
-        let mut undefined = UNDEF;
-        undefined.u2 = _zval_struct__bindgen_ty_2 {
-            fe_iter_idx: u32::MAX,
-        };
-        // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
-        unsafe { result.as_ptr().write(undefined) };
-    }
-    CONTINUE
 }
 
 handlers! {

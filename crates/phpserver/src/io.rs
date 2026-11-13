@@ -138,7 +138,7 @@ fn listen(call: &Call) {
         // `serv->get_port(type, host, port)`, compared as C strings.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
         let listening = |config: &PortConfig| {
-            config.port == port && config.r#type == kind && config.host_bytes() == host
+            config.port.get() == port && config.r#type == kind && config.host_bytes() == host
         };
         serv.find_port(listening)
     } else {

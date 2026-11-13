@@ -14,7 +14,7 @@ use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_process::worker_record::Worker;
 
 // Slots, in `SWR_SERVER_CB_*` order. The first seven are also `OP_CALLBACK`'s
 // argument and the callback its logs name.
@@ -57,9 +57,9 @@ pub type TaskFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>) -> c_int;
 /// `void (Server *, EventData *)`.
 pub type MessageFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>);
 /// `void (Server *, Worker *)`, of a worker this thread or process runs.
-pub type WorkerFn = extern "C" fn(Ctx, Server<'_>, &WorkerRecord);
+pub type WorkerFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>);
 /// `void (Server *, Worker *, const ExitStatus &)`.
-pub type WorkerErrorFn = extern "C" fn(Ctx, Server<'_>, &WorkerRecord, &ExitStatus);
+pub type WorkerErrorFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>, &ExitStatus);
 /// `void (Server *, Worker *)`, of a user worker about to start.
 pub type UserWorkerFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>);
 /// `int (Server *, Connection *, SendData *)`.
@@ -172,93 +172,6 @@ impl CallbackSlot {
         self.invoke.store(invoke.cast_mut(), Relaxed);
     }
 
-    /// `serv->onX(serv, data)`, for a slot of a `(Server *, EventData *)` signature
-    /// whose result the caller ignores; nothing when the slot is empty.
-    ///
-    /// # Safety
-    /// The slot holds that signature, and `serv` and `data` are what it takes.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) unsafe fn call(&self, serv: *mut c_void, data: *mut c_void) {
-        type Invoke = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void);
-        let invoke = self.invoke.load(Relaxed);
-        // SAFETY: the slot holds null or an `R (*)(void *, Server *, EventData *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        if let Some(invoke) = invoke {
-            // SAFETY: per the caller, with the slot's own context.
-            unsafe { invoke(self.ctx.load(Relaxed), serv, data) };
-        }
-    }
-
-    /// `serv->onReceive(serv, data)` or `onFinish(serv, data)`, for a slot of an
-    /// `int (Server *, EventData *)` signature; -1 when the slot is empty. A
-    /// caller that discards the result (onFinish) still calls through the
-    /// matching int type, unlike [`CallbackSlot::call`].
-    ///
-    /// # Safety
-    /// The slot holds that signature, and `serv` and `data` are what it takes.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) unsafe fn receive(&self, serv: *mut c_void, data: *mut c_void) -> core::ffi::c_int {
-        type Invoke =
-            unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void) -> core::ffi::c_int;
-        let invoke = self.invoke.load(Relaxed);
-        // SAFETY: the slot holds null or an `int (*)(void *, Server *, RecvData *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        // SAFETY: per the caller, with the slot's own context.
-        invoke.map_or(-1, |invoke| unsafe {
-            invoke(self.ctx.load(Relaxed), serv, data)
-        })
-    }
-
-    /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
-    ///
-    /// # Safety
-    /// The slot is `dispatch_func`'s, and the pointers are what it takes.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) unsafe fn dispatch(
-        &self,
-        serv: *mut c_void,
-        conn: *mut c_void,
-        send: *mut c_void,
-    ) -> core::ffi::c_int {
-        type Invoke = unsafe extern "C-unwind" fn(
-            *mut c_void,
-            *mut c_void,
-            *mut c_void,
-            *mut c_void,
-        ) -> core::ffi::c_int;
-        let invoke = self.invoke.load(Relaxed);
-        // SAFETY: the slot holds null or an `int (*)(void *, Server *, Connection *, SendData *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        // SAFETY: per the caller, with the slot's own context.
-        invoke.map_or(0, |invoke| unsafe {
-            invoke(self.ctx.load(Relaxed), serv, conn, send)
-        })
-    }
-
-    /// `serv->onWorkerError(serv, worker, status)`, a slot of a
-    /// `void (Server *, Worker *, const ExitStatus &)` signature; nothing when
-    /// the slot is empty. Unlike [`CallbackSlot::dispatch`], it reads no return.
-    ///
-    /// # Safety
-    /// The slot holds that signature, and the pointers are what it takes.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub(crate) unsafe fn worker_error(
-        &self,
-        serv: *mut c_void,
-        worker: *mut c_void,
-        status: *mut c_void,
-    ) {
-        type Invoke =
-            unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void);
-        let invoke = self.invoke.load(Relaxed);
-        // SAFETY: the slot holds null or a `void (*)(void *, Server *, Worker *, ExitStatus *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        if let Some(invoke) = invoke {
-            // SAFETY: per the caller, with the slot's own context.
-            unsafe { invoke(self.ctx.load(Relaxed), serv, worker, status) };
-        }
-    }
-
     /// `serv->onX = nullptr`: empties the slot, then frees what it held.
     pub(crate) fn clear(&self) {
         self.invoke.store(core::ptr::null_mut(), Relaxed);
@@ -299,24 +212,191 @@ const SERVER_SLOTS: [u32; 7] = [
     CB_AFTER_RELOAD,
 ];
 
+/// The slots of a `void (Server *, DataInfo *)` signature ([`EventFn`]).
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum EventSlot {
+    Connect = CB_CONNECT,
+    Close = CB_CLOSE,
+    BufferFull = CB_BUFFER_FULL,
+    BufferEmpty = CB_BUFFER_EMPTY,
+}
+
+/// The slots of an `int (Server *, RecvData *)` signature ([`ReceiveFn`]).
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum ReceiveSlot {
+    Receive = CB_RECEIVE,
+    Packet = CB_PACKET,
+}
+
+/// The slots of an `int (Server *, EventData *)` signature ([`TaskFn`]).
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum TaskSlot {
+    Task = CB_TASK,
+    Finish = CB_FINISH,
+}
+
+/// The slots of a `void (Server *, Worker *)` signature over a worker this thread
+/// or process runs ([`WorkerFn`]).
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum WorkerSlot {
+    Start = CB_WORKER_START,
+    Stop = CB_WORKER_STOP,
+    Exit = CB_WORKER_EXIT,
+}
+
+/// The typed calls. A slot's index fixes its signature: native code assigns the
+/// slot its typed member, and [`ServerCallbacks::set`] a [`Callback`] of the slot's
+/// own fn type. Each call below names its slots by a type that admits no other, so
+/// the one transmute in it is to the signature those slots hold, and every argument
+/// is a live handle or a reference its caller lends for the call. The fn types are
+/// [`Callback`]'s but `C-unwind`, as a callback native code assigned may unwind.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ServerCallbacks {
     /// `serv->onX(serv)` for slot `index`, one of the `(Server *)` slots; nothing
     /// when the slot is empty or of another signature.
-    pub(crate) fn call_server(&self, index: u32, serv: crate::view::Server<'_>) {
-        type Invoke = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void);
+    pub(crate) fn call_server(&self, index: u32, serv: Server<'_>) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>);
         let Some(slot) = self.slot(index).filter(|_| SERVER_SLOTS.contains(&index)) else {
             return;
         };
         let invoke = slot.invoke.load(Relaxed);
-        // SAFETY: a `(Server *)` slot holds null or a `void (*)(void *, Server *)`: native
-        // code assigns its typed member, and `view::Server::set_callback`'s caller one of
-        // the slot's own signature.
+        // SAFETY: a `(Server *)` slot holds null or a `void (*)(void *, Server *)`.
         let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
         if let Some(invoke) = invoke {
-            // SAFETY: the slot's own context and a live server.
-            unsafe { invoke(slot.ctx.load(Relaxed), serv.raw()) };
+            invoke(slot.ctx.load(Relaxed), serv);
         }
+    }
+
+    /// `serv->onX(serv, info)` for an event slot; nothing when it is empty. Inlined,
+    /// so a constant slot folds to its address as the caller's own lookup did.
+    #[inline(always)]
+    pub(crate) fn event(&self, slot: EventSlot, serv: Server<'_>, info: &DataHead) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &DataHead);
+        let Some(slot) = self.slot(slot as u32) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: an event slot holds null or a `void (*)(void *, Server *, DataInfo *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, info);
+        }
+    }
+
+    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
+    /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
+    #[inline(always)]
+    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &RecvData) -> c_int;
+        let Some(slot) = self.slot(slot as u32) else {
+            return -1;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a receive slot holds null or an `int (*)(void *, Server *, RecvData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        invoke.map_or(-1, |invoke| invoke(slot.ctx.load(Relaxed), serv, data))
+    }
+
+    /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
+    /// empty. A caller that discards the result (onFinish) still calls through the
+    /// int type the slot holds.
+    pub(crate) fn task(&self, slot: TaskSlot, serv: Server<'_>, task: Packed<'_>) -> c_int {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Packed<'_>) -> c_int;
+        let Some(slot) = self.slot(slot as u32) else {
+            return -1;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a task slot holds null or an `int (*)(void *, Server *, EventData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        invoke.map_or(-1, |invoke| invoke(slot.ctx.load(Relaxed), serv, task))
+    }
+
+    /// `serv->onPipeMessage(serv, message)`; nothing when the slot is empty.
+    pub(crate) fn pipe_message(&self, serv: Server<'_>, message: Packed<'_>) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Packed<'_>);
+        let Some(slot) = self.slot(CB_PIPE_MESSAGE) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: onPipeMessage's slot holds null or a `void (*)(void *, Server *, EventData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, message);
+        }
+    }
+
+    /// `serv->onWorkerX(serv, worker)` for a worker slot; nothing when it is empty.
+    pub(crate) fn worker(&self, slot: WorkerSlot, serv: Server<'_>, worker: Worker<'_>) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>);
+        let Some(slot) = self.slot(slot as u32) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a worker slot holds null or a `void (*)(void *, Server *, Worker *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, worker);
+        }
+    }
+
+    /// `serv->onUserWorkerStart(serv, worker)`; nothing when the slot is empty.
+    pub(crate) fn user_worker_start(&self, serv: Server<'_>, worker: Worker<'_>) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>);
+        let Some(slot) = self.slot(CB_USER_WORKER_START) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: onUserWorkerStart's slot holds null or a `void (*)(void *, Server *, Worker *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, worker);
+        }
+    }
+
+    /// `serv->onWorkerError(serv, worker, status)`; nothing when the slot is empty.
+    pub(crate) fn worker_error(&self, serv: Server<'_>, worker: Worker<'_>, status: &ExitStatus) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, Worker<'_>, &ExitStatus);
+        let Some(slot) = self.slot(CB_WORKER_ERROR) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: onWorkerError's slot holds null or a
+        // `void (*)(void *, Server *, Worker *, const ExitStatus *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, worker, status);
+        }
+    }
+
+    /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
+    pub(crate) fn dispatch(
+        &self,
+        serv: Server<'_>,
+        conn: Option<&ConnectionRecord>,
+        send: Option<&RecvData>,
+    ) -> c_int {
+        type Invoke = extern "C-unwind" fn(
+            Ctx,
+            Server<'_>,
+            Option<&ConnectionRecord>,
+            Option<&RecvData>,
+        ) -> c_int;
+        let Some(slot) = self.slot(CB_DISPATCH_FUNC) else {
+            return 0;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: dispatch_func's slot holds null or an
+        // `int (*)(void *, Server *, Connection *, SendData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        invoke.map_or(0, |invoke| invoke(slot.ctx.load(Relaxed), serv, conn, send))
     }
 }
 

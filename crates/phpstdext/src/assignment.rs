@@ -7,6 +7,7 @@ use std::{borrow::Cow, ffi::c_int, ptr};
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
+    opcode::Handler,
     sys::{self as z, zend_execute_data, zend_op, zend_reference, zval},
 };
 
@@ -116,13 +117,7 @@ fn operand(data: Op<'_>) -> Result<Option<Cow<'_, Value>>, Bailout> {
 
 /// Whether the active function declares `strict_types`.
 fn strict(frame: Frame) -> bool {
-    // SAFETY: a live execution frame points at its active function.
-    let function = unsafe { (*frame.as_ptr()).func };
-    // Every zend_function variant begins with this common header.
-    let common = function.cast::<z::_zend_function__bindgen_ty_1>();
-    // SAFETY: the active function's live common header.
-    let flags = unsafe { (*common).fn_flags };
-    flags & z::ZEND_ACC_STRICT_TYPES != 0
+    frame.function().flags() & z::ZEND_ACC_STRICT_TYPES != 0
 }
 
 /// `ASSIGN_DIM` into `own`, the typed table the container holds unshared.
@@ -171,8 +166,8 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
         unsafe { z::swr_zval_copy(result.as_ptr(), slot) };
     }
     if u32::from(data.kind()) == z::IS_VAR {
-        // SAFETY: retain the variable value before the original FREE_OP decrements it.
-        unsafe { z::swr_zval_try_addref(value.as_ptr()) };
+        // Retain the variable value before the original FREE_OP decrements it.
+        value.add_ref();
     }
     // The assignment's original OP_DATA temporary/variable.
     data.free()
@@ -234,13 +229,11 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
     data.publish(op, target)
 }
 
+/// `ASSIGN_DIM` (or, for `operation`, `ASSIGN_DIM_OP`) at `frame`'s instruction.
 /// # Safety
-/// Zend's user opcode handler contract: `frame` is the live frame it passed, at
-/// an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
-unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_int, Bailout> {
-    // SAFETY: per the caller.
-    let frame = unsafe { Frame::new(frame) };
-    let op = frame.op();
+/// `frame` is at an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
+unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
+    let op = Op::current(frame);
     let Some(array) = op.op1_container() else {
         return Ok(DISPATCH);
     };
@@ -275,21 +268,24 @@ unsafe fn dispatch(frame: *mut zend_execute_data, operation: bool) -> Result<c_i
 }
 
 /// `ASSIGN_DIM`'s complete typed-array opcode handler.
-/// # Safety
-/// Zend supplies a live frame at its assignment instruction.
-pub unsafe extern "C" fn swr_v1_phpstdext_assign(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: Zend's user opcode callback contract; it installed this handler
-    // for ASSIGN_DIM.
-    finish(unsafe { dispatch(frame, false) })
-}
+pub(crate) struct Assign;
 /// `ASSIGN_DIM_OP`'s complete typed-array opcode handler.
-/// # Safety
-/// Zend supplies a live frame at its assignment operation instruction.
-pub unsafe extern "C" fn swr_v1_phpstdext_assign_op(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: Zend's user opcode callback contract; it installed this handler
-    // for ASSIGN_DIM_OP.
-    finish(unsafe { dispatch(frame, true) })
+pub(crate) struct AssignOp;
+
+impl Handler for Assign {
+    fn run(frame: Frame<'_>) -> c_int {
+        // SAFETY: installed for `ASSIGN_DIM` only (lib.rs).
+        finish(unsafe { dispatch(frame, false) })
+    }
 }
+
+impl Handler for AssignOp {
+    fn run(frame: Frame<'_>) -> c_int {
+        // SAFETY: installed for `ASSIGN_DIM_OP` only (lib.rs).
+        finish(unsafe { dispatch(frame, true) })
+    }
+}
+
 fn finish(result: Result<c_int, Bailout>) -> c_int {
     let code = match result {
         Ok(code) => code,

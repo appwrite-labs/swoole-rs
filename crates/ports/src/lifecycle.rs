@@ -9,6 +9,7 @@
 //! (`dtls_sessions`), each with a reference to its context.
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{MutexGuard, PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
@@ -160,9 +161,7 @@ pub fn ssl_init(config: &PortConfig) -> bool {
 
 /// `ListenPort::ssl_context_init()`: a new default context with upstream's flags
 /// and ciphers; DTLS on a datagram port.
-pub(crate) fn ssl_context_init(port: *mut c_void) -> bool {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
+pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
     let context = TlsContext::with_texts(&[
         (Text::Ciphers, SW_SSL_CIPHER_LIST.as_bytes()),
         (Text::EcdhCurve, SW_SSL_ECDH_CURVE.as_bytes()),
@@ -184,16 +183,15 @@ pub(crate) fn ssl_context_init(port: *mut c_void) -> bool {
 }
 
 /// `ListenPort::ssl_create(sock)`: the socket's server-side `SSL`, which names the port.
-pub(crate) fn ssl_create(port: *mut c_void, sock: *mut c_void) -> bool {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
+pub(crate) fn ssl_create(port: *mut c_void, sock: Option<Socket<'_>>) -> bool {
+    // SAFETY: the live port that accepted `sock`, which `PortMethods` takes; its
+    // context is only read.
+    let config: &PortConfig = unsafe { port_config::of(port) };
     let context = config
         .ssl_context
         .as_ref()
         .map_or(ptr::null(), TlsContext::as_ptr);
     let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
-    // SAFETY: the live socket `PortMethods` takes, which only this thread touches.
-    let sock = unsafe { Socket::from_ptr(sock.cast()) };
     // SAFETY: the port's live context.
     let create = |sock| unsafe { socket_ssl_create(sock, context, flags) };
     let Some(sock) = sock.filter(|&sock| create(sock) >= 0) else {
@@ -263,13 +261,8 @@ pub(crate) fn dtls_free(config: &PortConfig, fd: c_int) {
 
 /// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
 /// stored under the socket's fd; null when it fails to initialize.
-pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession {
-    // SAFETY: the live socket `PortMethods` takes.
-    let Some(sock) = (unsafe { Socket::from_ptr(sock) }) else {
-        return ptr::null_mut();
-    };
-    // SAFETY: a live DTLS port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
+pub(crate) fn dtls_create(port: view::Port<'_>, sock: Socket<'_>) -> *mut DtlsSession {
+    let config = port.config();
     let Some(context) = config.ssl_context.clone() else {
         return ptr::null_mut();
     };
@@ -305,7 +298,7 @@ fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
 /// `ListenPort::import(fd)`: adopts a listening socket; the fd stays the
 /// caller's when it isn't one. Upstream's port keeps pointing at the freed
 /// record on failure; this one never takes it.
-pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
+pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let origin = c"ListenPort::import";
     let mut socket = SocketRecord::with_fd(fd, 0);
     let Some(so_type) = get_option(fd, libc::SO_TYPE) else {
@@ -338,31 +331,32 @@ pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
     };
     socket.removed = 1;
     let info = socket.info;
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
-    config.socket = socket.into_raw().cast();
+    *config.socket.get_mut() = socket.into_raw().cast();
     config.r#type = kind;
     if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
-    config.port = swr_v1_clients_address_port(&info);
-    config.listening = true;
+    config.port.set(swr_v1_clients_address_port(&info));
+    config.listening.set(true);
     true
 }
 
 /// `ListenPort::close()`: drops the TLS context and DTLS map, frees the socket
 /// and unlinks a Unix socket's path.
-pub(crate) fn close(port: *mut c_void) {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
-    if config.ssl != 0 {
-        config.ssl_context = None;
-        dtls(config).clear();
+pub(crate) fn close(port: view::Port<'_>) {
+    if port.config().ssl != 0 {
+        // SAFETY: the server closes its ports as it shuts down, once nothing else
+        // reads their settings (`PortMethods::close`), and no borrow of them is
+        // held here: only the context is replaced.
+        unsafe { port.config_mut() }.ssl_context = None;
+        dtls(port.config()).clear();
     }
-    if !config.socket.is_null() {
+    let config = port.config();
+    // Taken first, so nothing finds the record once it is freed.
+    let socket = config.socket.swap(ptr::null_mut(), Relaxed);
+    if !socket.is_null() {
         // SAFETY: the port's live socket, which nothing uses after.
-        unsafe { socket_free(config.socket.cast()) };
-        config.socket = ptr::null_mut();
+        unsafe { socket_free(socket.cast()) };
     }
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();

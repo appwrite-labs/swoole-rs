@@ -51,6 +51,6 @@ reports 0. Exact vector-boundary offsets also select the correct suffix.
 
 `swoole::String` is defined in Rust (`crates/buffer/src/string.rs`): the C++ class
 (`native/buffer/swoole_string.h`) keeps its fields, which Rust mirrors with layout
-asserts on both sides, and Rust defines every method with a body under its
-upstream symbol. `String::split` stays a three-line C++ method that lends its
-`std::function` handler to Rust.
+asserts on both sides, and Rust defines each method the header declares under its
+upstream symbol. What no C++ calls (`split`, the searches, assignment, the
+byte-pointer constructor) has no symbol: Rust uses `CppString`'s methods and its `view()`.

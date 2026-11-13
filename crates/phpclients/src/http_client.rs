@@ -34,6 +34,17 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
+unsafe extern "C" {
+    /// `sw_zend_read_property_not_null_ex`: null (`None`) for a null property,
+    /// or the slot of the property `object`'s class declares as the `length`
+    /// bytes at `name`, which lives as long as the object.
+    fn swr_zend_property_not_null<'a>(
+        object: *mut z::zend_object,
+        name: *const std::ffi::c_char,
+        length: usize,
+    ) -> Option<&'a Value>;
+}
+
 /// `swHttpErrorStatusCode`.
 const CONNECT_FAILED: i64 = -1;
 const REQUEST_TIMEOUT: i64 = -2;
@@ -319,10 +330,9 @@ impl Client {
     /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.
     fn not_null(&self, name: &CStr) -> Option<&Value> {
         let (name, length) = (name.as_ptr(), name.count_bytes());
-        // SAFETY: the object outlives its client, and its class declares `name`.
-        let found = unsafe { z::swr_zend_property_not_null(self.object, name, length) };
-        // SAFETY: null, or the property's slot, which lives as long as the object.
-        unsafe { Value::from_ptr(found) }
+        // SAFETY: the object outlives its client, as its slots do, and its class
+        // declares `name`.
+        unsafe { swr_zend_property_not_null(self.object, name, length) }
     }
 
     /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,

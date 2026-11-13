@@ -20,7 +20,7 @@ pub(crate) const EVENT_READ: c_int = 1 << 9;
 
 /// A live `Reactor`, used by the thread that runs it.
 #[derive(Clone, Copy)]
-pub(crate) struct Reactor(pub(crate) *mut c_void);
+pub(crate) struct Reactor(*mut c_void);
 
 impl Reactor {
     /// # Safety

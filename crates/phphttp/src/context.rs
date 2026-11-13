@@ -18,8 +18,8 @@ use swoole_rs_zend::{
     Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zval},
-    value::set_long,
+    sys::{IS_LONG, swr_zend_efree, swr_zend_http_release_objects, zend_object, zend_value, zval},
+    value,
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
@@ -121,7 +121,7 @@ fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, offset: u32, fd: i64) {
     // SAFETY: the declared property's slot, `OBJ_PROP(std, offset)`.
     let property = unsafe { std.byte_add(offset as usize) }.cast::<zval>();
     // SAFETY: a fresh object's property, holding nothing to release.
-    unsafe { set_long(property, fd) };
+    unsafe { value::set(property, zend_value { lval: fd }, IS_LONG) };
 }
 
 /// `swoole_http_context_new`: a new context with its request and response

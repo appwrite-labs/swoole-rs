@@ -172,14 +172,18 @@ pub(crate) fn port_new(serv: *mut c_void) -> Box<PortConfig> {
 pub(crate) unsafe fn port_delete(port: *mut c_void) {
     // SAFETY: as the caller guarantees: the port is its settings' box, which nothing
     // else uses now.
-    let mut config = unsafe { Box::from_raw(port.cast::<PortConfig>()) };
+    port_drop(unsafe { Box::from_raw(port.cast::<PortConfig>()) });
+}
+
+/// [`port_delete`] of a port still in its box.
+pub(crate) fn port_drop(mut config: Box<PortConfig>) {
     (crate::port_config::methods().tls_free)(&mut config);
     // Upstream's `~ListenPort` leaves the length callable to the port's deref
     // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
     std::mem::forget(config.length_owner.replace(None));
     // SAFETY: the record of a port `destroy` never closed (a server never started),
     // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-    unsafe { swoole_rs_reactor::SocketRecord::free(config.socket.cast()) };
+    unsafe { swoole_rs_reactor::SocketRecord::free(config.socket_ptr().cast()) };
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.

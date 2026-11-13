@@ -26,10 +26,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_STOP_CALLBACK, OP_WORKER_TYPE,
 };
 
-use crate::callbacks::{
-    CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CONNECT, CB_WORKER_EXIT,
-    CB_WORKER_START, CB_WORKER_STOP, CallbackSlot,
-};
+use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_WORKER_EXIT, CallbackSlot, EventSlot, WorkerSlot};
 use crate::view;
 
 mod native;
@@ -49,7 +46,7 @@ struct Context<'a> {
     info: *mut DataHead,
     reactor: crate::reactor_handle::Reactor,
     conn: Option<crate::Connection<'a>>,
-    status: *const c_void,
+    status: Option<&'a swoole_rs_process::methods::ExitStatus>,
     socket: Option<swoole_rs_reactor::Socket<'a>>,
 }
 
@@ -150,17 +147,20 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 #[inline(always)]
 fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
     let callbacks = &ctx.state().callbacks;
-    let (index, data) = match op {
-        OP_ON_CONNECT => (CB_CONNECT, ctx.info.cast()),
-        OP_ON_BUFFER_FULL => (CB_BUFFER_FULL, ctx.info.cast()),
-        OP_ON_BUFFER_EMPTY => (CB_BUFFER_EMPTY, ctx.info.cast()),
-        OP_ON_WORKER_START => (CB_WORKER_START, ctx.worker.cast()),
-        OP_ON_WORKER_STOP => (CB_WORKER_STOP, ctx.worker.cast()),
+    let serv = ctx.server();
+    match op {
+        OP_ON_CONNECT => callbacks.event(EventSlot::Connect, serv, ctx.info()),
+        OP_ON_BUFFER_FULL => callbacks.event(EventSlot::BufferFull, serv, ctx.info()),
+        OP_ON_BUFFER_EMPTY => callbacks.event(EventSlot::BufferEmpty, serv, ctx.info()),
+        OP_ON_WORKER_START => callbacks.worker(WorkerSlot::Start, serv, ctx.worker()),
+        OP_ON_WORKER_STOP => callbacks.worker(WorkerSlot::Stop, serv, ctx.worker()),
         OP_ON_WORKER_EXIT => {
-            let current = swoole_rs_process::worker_globals::current_worker();
-            (CB_WORKER_EXIT, current.cast())
+            // This thread's worker, as `sw_worker()`; without one there is none to exit.
+            swoole_rs_process::worker_globals::with_current(|current| {
+                callbacks.worker(WorkerSlot::Exit, serv, *current);
+            });
         }
-        OP_ON_BEFORE_SHUTDOWN => (CB_BEFORE_SHUTDOWN, core::ptr::null_mut()),
+        OP_ON_BEFORE_SHUTDOWN => callbacks.call_server(CB_BEFORE_SHUTDOWN, serv),
         OP_HAS_ON_WORKER_EXIT => {
             let set = callbacks
                 .slot(CB_WORKER_EXIT)
@@ -168,12 +168,6 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
             return Some(u64::from(set));
         }
         _ => return None,
-    };
-    if op == OP_ON_BEFORE_SHUTDOWN {
-        callbacks.slot(index)?;
-        callbacks.call_server(index, ctx.server());
-    } else {
-        ctx.callback(index, data)?;
     }
     Some(0)
 }

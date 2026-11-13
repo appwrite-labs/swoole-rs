@@ -375,21 +375,16 @@ pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut Socke
 }
 
 /// `connect(addr, len)` through the ring under the connect timeout.
-///
-/// # Safety
-/// `addr` holds `length` bytes.
-pub(crate) unsafe fn swr_v1_hook_uring_connect(
+pub(crate) fn swr_v1_hook_uring_connect(
     ops: &UringSocketOps,
-    addr: *const libc::sockaddr,
-    length: libc::socklen_t,
+    peer: crate::lifecycle::Peer<'_>,
 ) -> bool {
     if !ops.available(EVENT_RDWR) {
         return false;
     }
     let (host, fd) = (ops.host(), ops.tls.fd);
-    // SAFETY: the caller's address.
-    let result = ops.bound(EVENT_RDWR, || unsafe {
-        uring::connect(host, fd, addr, length, ops.connect_timeout)
+    let result = ops.bound(EVENT_RDWR, || {
+        uring::connect(host, fd, peer, ops.connect_timeout)
     });
     if result < 0 {
         return false;

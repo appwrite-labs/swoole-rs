@@ -20,10 +20,10 @@ use std::{
 };
 use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
+    observer::{self, Observer},
     sys::{
         self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
-        swr_zend_tracer_lineno, swr_zend_try_write, zend_execute_data, zend_long,
-        zend_observer_fcall_handlers, zval,
+        swr_zend_tracer_lineno, swr_zend_try_write, zend_long,
     },
 };
 
@@ -521,15 +521,10 @@ struct Func<'a> {
     span: Option<&'a Cell<*mut c_void>>,
 }
 
-impl Func<'_> {
-    /// The function `frame` calls, unless it has none or no name.
-    /// # Safety
-    /// `frame` is a live frame, for the lifetime the result is used.
-    unsafe fn of(frame: *mut zend_execute_data) -> Option<Self> {
-        // SAFETY: per the caller.
-        let func = unsafe { (*frame).func };
-        // SAFETY: null or the function the live frame calls.
-        let function = unsafe { Function::from_ptr(func) }?;
+impl<'a> Func<'a> {
+    /// `function`, unless it has no name.
+    fn of(function: Function<'a>) -> Option<Self> {
+        let func = function.as_ptr();
         let span = if function.kind() == Function::INTERNAL {
             let internal = func.cast::<z::zend_internal_function>();
             let slot = internal
@@ -624,53 +619,45 @@ fn blocking_end(func: Func<'_>) {
 
 // --- observer ---------------------------------------------------------------
 
-unsafe extern "C" fn observer_begin(frame: *mut zend_execute_data) {
-    // SAFETY: Zend observes a live frame.
-    let Some(func) = (unsafe { Func::of(frame) }) else {
-        return;
-    };
-    if func.profiles() {
-        profiling_begin(func);
-    }
-    if func.detects_blocking() {
-        blocking_begin(func);
-    }
-}
-
-unsafe extern "C" fn observer_end(frame: *mut zend_execute_data, _: *mut zval) {
-    // SAFETY: Zend observes a live frame.
-    let Some(func) = (unsafe { Func::of(frame) }) else {
-        return;
-    };
-    if func.profiles() {
-        profiling_end();
-    }
-    if func.detects_blocking() {
-        blocking_end(func);
-    }
-}
-
 /// `tracer_observer`: observe a function's calls when, at its first call,
 /// profiling covers it (a user function) or blocking detection does (an
 /// internal one).
-unsafe extern "C" fn observer(frame: *mut zend_execute_data) -> zend_observer_fcall_handlers {
-    // SAFETY: Zend passes a live frame.
-    match unsafe { Func::of(frame) } {
-        Some(func) if func.profiles() || func.detects_blocking() => zend_observer_fcall_handlers {
-            begin: Some(observer_begin),
-            end: Some(observer_end),
-        },
-        _ => zend_observer_fcall_handlers {
-            begin: None,
-            end: None,
-        },
+struct Tracer;
+
+impl Observer for Tracer {
+    fn observes(function: Function<'_>) -> bool {
+        Func::of(function).is_some_and(|func| func.profiles() || func.detects_blocking())
+    }
+
+    fn begin(function: Function<'_>) {
+        let Some(func) = Func::of(function) else {
+            return;
+        };
+        if func.profiles() {
+            profiling_begin(func);
+        }
+        if func.detects_blocking() {
+            blocking_begin(func);
+        }
+    }
+
+    fn end(function: Function<'_>) {
+        let Some(func) = Func::of(function) else {
+            return;
+        };
+        if func.profiles() {
+            profiling_end();
+        }
+        if func.detects_blocking() {
+            blocking_end(func);
+        }
     }
 }
 
 /// `php_swoole_tracer_minit`: keep the switches and observe calls when
 /// profiling or blocking detection is on.
 pub fn tracer_minit(
-    _minit: &swoole_rs_zend::Minit,
+    minit: &swoole_rs_zend::Minit,
     blocking_threshold: zend_long,
     blocking_detection: bool,
     profile: bool,
@@ -683,8 +670,7 @@ pub fn tracer_minit(
         leak_detection,
     });
     if blocking_detection || profile {
-        // SAFETY: MINIT (the token), when Zend takes observers.
-        unsafe { z::zend_observer_fcall_register(Some(observer)) };
+        observer::register::<Tracer>(minit);
     }
 }
 

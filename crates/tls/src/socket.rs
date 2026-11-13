@@ -382,11 +382,27 @@ pub unsafe fn swr_v1_socket_ssl_new(
     } else if flags & SERVER != 0 {
         ssl.set_accept_state();
     }
-    if !ssl.set_ex_data(index, socket) {
+    if crate::handle::SSL_set_ex_data(ssl, index, socket) == 0 {
         return 3;
     }
     record.tls.state = 0;
     0
+}
+
+/// [`swr_v1_socket_ssl_new`] for `socket`'s record, which the new SSL carries at the
+/// connection's index: `error` holds the peeked error when `SSL_set_fd` failed.
+pub fn socket_ssl_new(
+    socket: swoole_rs_reactor::Socket<'_>,
+    context: Option<&crate::SslCtx>,
+    flags: c_int,
+    error: &mut c_ulong,
+) -> c_int {
+    let (this, index) = (socket.as_ptr().cast(), crate::swr_v1_tls_connection_index());
+    socket.edit(|record| {
+        // SAFETY: the SSL's ex data is the record that owns it, which a record
+        // outlives; OpenSSL calls nothing back while making the SSL.
+        unsafe { swr_v1_socket_ssl_new(record, context, flags, index, this, error) }
+    })
 }
 
 #[cfg(test)]

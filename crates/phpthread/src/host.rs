@@ -143,25 +143,11 @@ pub(crate) fn finish() {
 }
 
 /// Zend handlers under Zend's own names; each runs `body(&Call)`, then raises
-/// anything deferred.
+/// anything deferred ([`finish`]).
 macro_rules! handlers {
-    ($($name:ident => $body:path;)*) => {$(
-        /// A Zend method handler.
-        /// # Safety
-        /// Called by Zend with a live frame and return slot.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            frame: *mut swoole_rs_zend::sys::zend_execute_data,
-            value: *mut swoole_rs_zend::sys::zval,
-        ) {
-            {
-                // SAFETY: per Zend's handler contract.
-                let call = unsafe { swoole_rs_zend::Call::new(frame, value) };
-                $body(&call);
-            }
-            $crate::host::finish();
-        }
-    )*};
+    ($($name:ident => $body:path;)*) => {
+        swoole_rs_zend::handlers!(@then { $crate::host::finish(); } $($name => $body;)*);
+    };
 }
 pub(crate) use handlers;
 

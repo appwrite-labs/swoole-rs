@@ -290,13 +290,11 @@ fn http_get(socket_calls: bool) {
 
         let addr = resolve(TEST_HTTP_DOMAIN, 80);
 
-        let _connected = uring::connect(
-            &HOST,
-            fd,
+        let peer = crate::lifecycle::Peer::from_raw(
             (&raw const addr).cast(),
             socklen::<libc::sockaddr_in>(),
-            -1.0,
         );
+        let _connected = uring::connect(&HOST, fd, peer, -1.0);
 
         let req = http_get_request(TEST_HTTP_DOMAIN, "/");
         let rv = if socket_calls {
@@ -399,13 +397,11 @@ fn accept() {
                 let client_sock = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
                 assert!(client_sock > 0, "socket");
 
-                let retval = uring::connect(
-                    &HOST,
-                    client_sock,
+                let peer = crate::lifecycle::Peer::from_raw(
                     (&raw const actual_server_addr).cast(),
                     actual_server_addr_len,
-                    -1.0,
                 );
+                let retval = uring::connect(&HOST, client_sock, peer, -1.0);
                 assert_eq!(retval, 0, "connect");
 
                 let test_message = b"test_data";

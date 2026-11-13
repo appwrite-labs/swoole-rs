@@ -154,7 +154,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_CLOSE_SOCKET => {
             let port = port()?;
             if reuse_port(config) {
-                (methods().close_socket)(port.raw());
+                (methods().close_socket)(port.config());
             }
             0
         }
@@ -163,9 +163,9 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             if !reuse_port(config) {
                 return Some(0);
             }
-            sign((methods().create_socket)(port.raw()))
+            sign((methods().create_socket)(port.config()))
         }
-        OP_PORT_LISTEN => sign((methods().listen)(port()?.raw())),
+        OP_PORT_LISTEN => sign((methods().listen)(port()?.config())),
         OP_INIT_IPC_MAX_SIZE => {
             config.init_ipc_max_size();
             0
@@ -217,10 +217,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ADD_MASTER_TIMER => {
-            let tick = crate::server_methods::master_timer_tick;
-            // SAFETY: `tick` takes the server, which outlives the master's timer.
-            let node =
-                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv.raw()) };
+            let node = crate::server_methods::master_timer(serv);
             config.master_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
