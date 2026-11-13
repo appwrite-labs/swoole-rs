@@ -428,21 +428,17 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
 pub fn add_systemd_socket(serv: Server<'_>) -> c_int {
     use swoole_rs_corebase::get_env;
     let count = || swoole_rs_corebase::get_systemd_listen_fds();
-    import_sockets(
-        serv,
-        get_env(c"LISTEN_PID"),
-        count,
-        get_env(c"LISTEN_FDS_START"),
-    )
+    let start = || get_env(c"LISTEN_FDS_START");
+    import_sockets(serv, get_env(c"LISTEN_PID"), count, start)
 }
 
 /// [`add_systemd_socket`] over `LISTEN_PID`, the `LISTEN_FDS` count and
-/// `LISTEN_FDS_START`.
+/// `LISTEN_FDS_START`; each is read only once the ones before it pass, as upstream's.
 fn import_sockets(
     serv: Server<'_>,
     listen_pid: Option<c_int>,
     count: impl FnOnce() -> c_int,
-    start: Option<c_int>,
+    start: impl FnOnce() -> Option<c_int>,
 ) -> c_int {
     let origin = c"Server::add_systemd_socket";
     // Upstream compares an unset `LISTEN_PID` with an indeterminate value; treat it as foreign.
@@ -454,7 +450,7 @@ fn import_sockets(
     if count <= 0 {
         return 0;
     }
-    let start = match start {
+    let start = match start() {
         None => SYSTEMD_FDS_START,
         Some(start) if start < 0 => {
             swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_FDS_START"));
@@ -770,23 +766,23 @@ mod tests {
         let serv = live.server();
         let before = serv.ports().len();
         assert_eq!(
-            import_sockets(serv, None, || unreachable!(), None),
+            import_sockets(serv, None, || unreachable!(), || unreachable!()),
             0,
             "no LISTEN_PID"
         );
         assert_eq!(
-            import_sockets(serv, Some(1), || -1, None),
+            import_sockets(serv, Some(1), || -1, || unreachable!()),
             0,
             "no LISTEN_FDS"
         );
         assert_eq!(
-            import_sockets(serv, Some(1), || 3, Some(-1)),
+            import_sockets(serv, Some(1), || 3, || Some(-1)),
             0,
             "bad start"
         );
         assert_eq!(serv.ports().len(), before);
         assert_eq!(
-            import_sockets(serv, Some(1), || 3, None),
+            import_sockets(serv, Some(1), || 3, || None),
             2,
             "from fd 3; 5 refused"
         );
