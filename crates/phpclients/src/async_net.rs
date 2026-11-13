@@ -29,32 +29,42 @@ use swoole_rs_zend::{method_table, sys as z};
 
 static ASYNC: Class = Class::new();
 
-/// Callback slots (`CLIENT_CB_*` less one) and their property names.
-const CONNECT: usize = 0;
-const RECEIVE: usize = 1;
-const CLOSE: usize = 2;
-const ERROR: usize = 3;
-const BUFFER_FULL: usize = 4;
-const BUFFER_EMPTY: usize = 5;
-const SSL_READY: usize = 6;
-const NAMES: [&CStr; 7] = [
-    c"onConnect",
-    c"onReceive",
-    c"onClose",
-    c"onError",
-    c"onBufferFull",
-    c"onBufferEmpty",
-    c"onSSLReady",
-];
-/// The names `on()` accepts, by slot, matched as upstream's `strncasecmp`.
-const EVENTS: [&[u8]; 6] = [
-    b"connect",
-    b"receive",
-    b"close",
-    b"error",
-    b"bufferfull",
-    b"bufferempty",
-];
+/// A callback slot (`CLIENT_CB_*` less one): its index in `net::Data::callbacks`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Connect,
+    Receive,
+    Close,
+    Error,
+    BufferFull,
+    BufferEmpty,
+    SslReady,
+}
+
+impl Slot {
+    /// The names `on()` accepts, in the order upstream's `strncasecmp` chain tries them.
+    const EVENTS: [(Self, &[u8]); 6] = [
+        (Self::Connect, b"connect"),
+        (Self::Receive, b"receive"),
+        (Self::Close, b"close"),
+        (Self::Error, b"error"),
+        (Self::BufferFull, b"bufferfull"),
+        (Self::BufferEmpty, b"bufferempty"),
+    ];
+
+    /// The property that holds the slot's callback.
+    const fn name(self) -> &'static CStr {
+        match self {
+            Self::Connect => c"onConnect",
+            Self::Receive => c"onReceive",
+            Self::Close => c"onClose",
+            Self::Error => c"onError",
+            Self::BufferFull => c"onBufferFull",
+            Self::BufferEmpty => c"onBufferEmpty",
+            Self::SslReady => c"onSSLReady",
+        }
+    }
+}
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
 const DNS_RESOLVE_FAILED: c_int = 711;
@@ -109,8 +119,8 @@ pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
 
 /// A reference to the callback in `slot`, which keeps it through the call even
 /// if the call replaces it.
-fn callback(data: &net::Data, slot: usize) -> Option<Rc<Callable>> {
-    let cell = data.callbacks.get(slot)?;
+fn callback(data: &net::Data, slot: Slot) -> Option<Rc<Callable>> {
+    let cell = data.callbacks.get(slot as usize)?;
     let callable = cell.take();
     cell.set(callable.clone());
     callable
@@ -128,9 +138,9 @@ fn object_zval(object: Obj) -> zval {
 }
 
 /// `client_execute_callback`: run the slot's callback with the object.
-fn execute(object: Obj, slot: usize) -> Result<(), Bailout> {
+fn execute(object: Obj, slot: Slot) -> Result<(), Bailout> {
     let class = object.class_name().to_string_lossy();
-    let name = NAMES.get(slot).copied().unwrap_or(c"").to_string_lossy();
+    let name = slot.name().to_string_lossy();
     let Some(callable) = callback(object.data(), slot) else {
         warn(ErrorKind::Fatal, &format!("{class} has no {name} callback"));
         return Ok(());
@@ -143,7 +153,7 @@ fn execute(object: Obj, slot: usize) -> Result<(), Bailout> {
 
 /// `client_execute_callback_and_dtor`: the callback, then free the connection
 /// and drop the reference `connect()` took.
-fn execute_and_release(object: Obj, slot: usize) -> Result<(), Bailout> {
+fn execute_and_release(object: Obj, slot: Slot) -> Result<(), Bailout> {
     execute(object, slot)?;
     if let Some(conn) = object.data().conn() {
         net::release(object, conn)?;
@@ -177,12 +187,12 @@ fn event(
             if let Some(conn) = object.data().conn()
                 && conn.ssl_wait.replace(false)
             {
-                return execute(object, SSL_READY);
+                return execute(object, Slot::SslReady);
             }
-            execute(object, CONNECT)
+            execute(object, Slot::Connect)
         }
         ClientEvent::Receive => {
-            let callable = callback(object.data(), RECEIVE);
+            let callable = callback(object.data(), Slot::Receive);
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
             let payload = Owned::string(ZString::new(bytes));
@@ -199,15 +209,15 @@ fn event(
             }
             Ok(())
         }
-        ClientEvent::Close => execute_and_release(object, CLOSE),
+        ClientEvent::Close => execute_and_release(object, Slot::Close),
         ClientEvent::Error => {
             // The error code arrives as the length (`swoole_get_last_error()`).
             let error = i64::try_from(length).unwrap_or(0);
             object.props().long(c"errCode", error);
-            execute_and_release(object, ERROR)
+            execute_and_release(object, Slot::Error)
         }
-        ClientEvent::BufferFull => execute(object, BUFFER_FULL),
-        ClientEvent::BufferEmpty => execute(object, BUFFER_EMPTY),
+        ClientEvent::BufferFull => execute(object, Slot::BufferFull),
+        ClientEvent::BufferEmpty => execute(object, Slot::BufferEmpty),
     }
 }
 
@@ -308,8 +318,8 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     }
     let data = net::this(call);
-    let set = |slot: usize| callback(data, slot).is_some();
-    if !set(RECEIVE) {
+    let set = |slot| callback(data, slot).is_some();
+    if !set(Slot::Receive) {
         report(
             ErrorKind::Fatal,
             E_ERROR,
@@ -319,12 +329,9 @@ fn connect(call: &Call) {
     }
     let mut events = ClientEvent::Receive.bit();
     if fresh.is_stream() {
-        for (slot, name) in [
-            (CONNECT, "onConnect"),
-            (ERROR, "onError"),
-            (CLOSE, "onClose"),
-        ] {
+        for slot in [Slot::Connect, Slot::Error, Slot::Close] {
             if !set(slot) {
+                let name = slot.name().to_string_lossy();
                 report(
                     ErrorKind::Fatal,
                     E_ERROR,
@@ -334,17 +341,17 @@ fn connect(call: &Call) {
             }
         }
         events |= ClientEvent::Connect.bit() | ClientEvent::Close.bit() | ClientEvent::Error.bit();
-        if set(BUFFER_FULL) {
+        if set(Slot::BufferFull) {
             events |= ClientEvent::BufferFull.bit();
         }
-        if set(BUFFER_EMPTY) {
+        if set(Slot::BufferEmpty) {
             events |= ClientEvent::BufferEmpty.bit();
         }
     } else {
         for (slot, event) in [
-            (CONNECT, ClientEvent::Connect),
-            (CLOSE, ClientEvent::Close),
-            (ERROR, ClientEvent::Error),
+            (Slot::Connect, ClientEvent::Connect),
+            (Slot::Close, ClientEvent::Close),
+            (Slot::Error, ClientEvent::Error),
         ] {
             if set(slot) {
                 events |= event.bit();
@@ -431,8 +438,7 @@ fn on(call: &Call) {
     };
     net::this(call).listening.set(true);
     let name = name.split(|&b| b == 0).next().unwrap_or_default();
-    let found = event_slot(name).and_then(|slot| Some((slot, *NAMES.get(slot)?)));
-    let Some((slot, property)) = found else {
+    let Some(slot) = event_slot(name) else {
         let message = format!(
             "Unknown event callback type name '{}'",
             String::from_utf8_lossy(name)
@@ -441,7 +447,7 @@ fn on(call: &Call) {
         drop(callable);
         return call.set_bool(false);
     };
-    set_property(call, 2, property);
+    set_property(call, 2, slot.name());
     replace(object, slot, callable);
     call.set_bool(true);
 }
@@ -457,19 +463,22 @@ fn set_property(call: &Call, n: u32, name: &CStr) {
 
 /// The first event `name` names: upstream's `strncasecmp(event, name, len)`
 /// chain, so a case-insensitive prefix (even an empty one) matches.
-fn event_slot(name: &[u8]) -> Option<usize> {
-    EVENTS.iter().position(|event| {
+fn event_slot(name: &[u8]) -> Option<Slot> {
+    let matches = |event: &[u8]| {
         name.len() <= event.len()
             && name
                 .iter()
-                .zip(event.iter())
+                .zip(event)
                 .all(|(a, b)| a.to_ascii_lowercase() == *b)
-    })
+    };
+    Slot::EVENTS
+        .into_iter()
+        .find_map(|(slot, event)| matches(event).then_some(slot))
 }
 
 /// Put `callable` in `slot`, freeing what was there.
-fn replace(object: Obj, slot: usize, callable: Rc<Callable>) {
-    if let Some(entry) = object.data().callbacks.get(slot) {
+fn replace(object: Obj, slot: Slot, callable: Rc<Callable>) {
+    if let Some(entry) = object.data().callbacks.get(slot as usize) {
         drop(entry.replace(Some(callable)));
     }
 }
@@ -513,7 +522,9 @@ fn enable_ssl(call: &Call) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);
-    drop(net::this(call).callbacks[SSL_READY].take());
+    if let Some(cell) = net::this(call).callbacks.get(Slot::SslReady as usize) {
+        drop(cell.take());
+    }
     if bailout::pending() {
         return call.set_bool(false);
     }
@@ -523,8 +534,8 @@ fn enable_ssl(call: &Call) {
     let Some(Some(callable)) = created else {
         return call.set_bool(false);
     };
-    set_property(call, 1, c"onSSLReady");
-    replace(object, SSL_READY, callable);
+    set_property(call, 1, Slot::SslReady.name());
+    replace(object, Slot::SslReady, callable);
     conn.ssl_wait.set(true);
     if let Some(socket) = conn.cli.net() {
         socket.edit(|record| record.tls.state = SSL_STATE_WAIT_STREAM);
@@ -548,21 +559,29 @@ swoole_rs_zend::handlers! {
 mod tests {
     use super::*;
 
-    fn slot(name: &[u8]) -> Option<usize> {
-        event_slot(name)
-    }
-
     #[test]
     fn event_names_match_as_strncasecmp_prefixes() {
-        assert_eq!(slot(b"Connect"), Some(CONNECT), "case-insensitive");
-        assert_eq!(slot(b"bufferFull"), Some(BUFFER_FULL), "camel case");
         assert_eq!(
-            slot(b"buffer"),
-            Some(BUFFER_FULL),
+            event_slot(b"Connect"),
+            Some(Slot::Connect),
+            "case-insensitive"
+        );
+        assert_eq!(
+            event_slot(b"bufferFull"),
+            Some(Slot::BufferFull),
+            "camel case"
+        );
+        assert_eq!(
+            event_slot(b"buffer"),
+            Some(Slot::BufferFull),
             "a prefix matches the first event"
         );
-        assert_eq!(slot(b""), Some(CONNECT), "empty matches the first");
-        assert_eq!(slot(b"connected"), None, "longer than the name");
-        assert_eq!(slot(b"open"), None, "unknown");
+        assert_eq!(
+            event_slot(b""),
+            Some(Slot::Connect),
+            "empty matches the first"
+        );
+        assert_eq!(event_slot(b"connected"), None, "longer than the name");
+        assert_eq!(event_slot(b"open"), None, "unknown");
     }
 }
