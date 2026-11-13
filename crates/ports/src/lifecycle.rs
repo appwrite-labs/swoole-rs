@@ -242,20 +242,20 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
 /// The port's DTLS session on `fd`; null if none.
 pub(crate) fn dtls_session(config: &PortConfig, fd: c_int) -> *mut DtlsSession {
     let sessions = dtls(config);
-    let entry = sessions.iter().find(|entry| entry.0 == fd);
-    entry.map_or(ptr::null_mut(), |entry| entry.1)
+    let entry = usize::try_from(fd).ok().and_then(|fd| sessions.get(fd));
+    entry
+        .and_then(Option::as_ref)
+        .map_or(ptr::null_mut(), |entry| entry.0)
 }
 
 /// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
 /// Nothing uses the session afterwards.
 pub(crate) fn dtls_free(config: &PortConfig, fd: c_int) {
     // Out of the table first, its lock released.
-    let removed = {
-        let mut sessions = dtls(config);
-        let index = sessions.iter().position(|entry| entry.0 == fd);
-        index.map(|index| sessions.swap_remove(index))
-    };
-    if let Some((_, session, _context)) = removed {
+    let removed = usize::try_from(fd)
+        .ok()
+        .and_then(|fd| dtls(config).get_mut(fd).and_then(Option::take));
+    if let Some((session, _context)) = removed {
         // SAFETY: the session the port owned, released once before its context.
         unsafe { swr_v1_tls_dtls_free(session) };
     }
@@ -273,6 +273,9 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
     let Some(context) = config.ssl_context.clone() else {
         return ptr::null_mut();
     };
+    let Ok(fd) = usize::try_from(sock.fd()) else {
+        return ptr::null_mut();
+    };
     let session = swr_v1_tls_dtls_new(sock.as_ptr());
     // SAFETY: the fresh session over the caller's live socket, and the port's live context.
     if !unsafe { swr_v1_tls_dtls_init(session, context.as_ptr()) } {
@@ -280,11 +283,14 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
         unsafe { swr_v1_tls_dtls_free(session) };
         return ptr::null_mut();
     }
-    let fd = sock.fd();
     let mut sessions = dtls(config);
+    if sessions.len() <= fd {
+        sessions.resize_with(fd + 1, || None);
+    }
     // As the C++ map's assignment, the fd's earlier entry goes.
-    sessions.retain(|entry| entry.0 != fd);
-    sessions.push((fd, session, context));
+    if let Some(slot) = sessions.get_mut(fd) {
+        *slot = Some((session, context));
+    }
     drop(sessions);
     session
 }
@@ -382,12 +388,13 @@ mod tests {
             .write()
             .unwrap()
             .push((b"a".to_vec(), swoole_rs_tls::TlsContext::new()));
-        super::dtls(config).push((3, core::ptr::null_mut(), swoole_rs_tls::TlsContext::new()));
+        super::dtls(config).resize_with(4, || None);
+        super::dtls(config)[3] = Some((core::ptr::null_mut(), swoole_rs_tls::TlsContext::new()));
         assert_eq!(super::sni(config).len(), 1);
-        assert_eq!(super::dtls(config).len(), 1);
+        assert_eq!(super::dtls(config).iter().flatten().count(), 1);
         super::tls_free(config);
         assert_eq!(super::sni(config).len(), 0);
-        assert_eq!(super::dtls(config).len(), 0);
+        assert_eq!(super::dtls(config).iter().flatten().count(), 0);
         drop(unsafe { Box::from_raw(config) });
     }
 
