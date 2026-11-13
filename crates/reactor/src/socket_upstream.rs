@@ -8,14 +8,11 @@ use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, ResultCode, ReturnCode};
+use swoole_rs_corebase::constants::{EventType, ResultCode};
 use swoole_rs_corebase::log;
 
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
-const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
-const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
-const READY: c_int = ReturnCode::SW_READY as c_int;
 const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
@@ -63,18 +60,27 @@ pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, event
     }
 }
 
+/// What `Socket::connect_async` returns: `SW_READY`, `SW_WAIT` (in progress) or
+/// `SW_ERROR`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Connect {
+    Ready,
+    Wait,
+    Error,
+}
+
 /// `swReturnCode Socket::connect_async(const Address &sa)`.
-pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) -> c_int {
+pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) -> Connect {
     socket_set_fd_option(socket, 1, -1);
     match crate::fd_connect(socket.fd, address) {
-        Ok(()) => READY,
+        Ok(()) => Connect::Ready,
         Err(error) => {
             log::set_last_error(error.errno());
             set_errno(error.errno());
             if error == crate::IoError::InProgress {
-                WAIT
+                Connect::Wait
             } else {
-                ERROR
+                Connect::Error
             }
         }
     }
@@ -89,9 +95,9 @@ pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) 
 )]
 pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddress) -> c_int {
     match socket.edit(|record| socket_connect_async(record, address)) {
-        WAIT => {}
-        READY => return OK,
-        _ => return ERR,
+        Connect::Wait => {}
+        Connect::Ready => return OK,
+        Connect::Error => return ERR,
     }
     let timeout = socket.read(|record| record.timeouts.connect);
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
