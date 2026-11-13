@@ -421,6 +421,7 @@ dependencies = [
  "itoa",
  "libc",
  "swoole-rs-framing",
+ "swoole-rs-oracle",
 ]
 
 [[package]]

@@ -29,8 +29,9 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   family crate reads values through these with no `unsafe` of its own
   (`crates/phpredis/src/format.rs`, `crates/phpswoole/src/options.rs`); a raw
   pointer becomes a `&Value`, `&Array` or `&ZStr` once, at the boundary. A
-  family's MINIT is `minit!(name => body)`, whose `body(&Minit)` registers
-  constants, classes and function aliases safely; a callable that a C owner
+  family's MINIT is a `fn(&Minit) -> Result<(), Bailout>` that registers
+  constants, classes and function aliases safely, which `crates/phpswoole` runs
+  through `Families`; a callable that a C owner
   such as a timer holds runs through `Callable::callbacks::<impl Holder>()`.
   `crates/phptimer` uses no `unsafe` at all. Add wrappers as callers need them.
 - One `crates/php<family>` crate per family (`crates/phplocks`). It calls the
@@ -157,9 +158,8 @@ reactor or timer callback), bails out. So every error Rust raises goes through
 `shim_errors.c`, which runs it inside `zend_try`:
 
 - `zend::php_error(level, message)`: `php_error_docref`.
-- `zend::bailout::report*(reporter, ...)`: a C++ reporter (Swoole's
-  `php_swoole_error`/`_fatal_error`/`_sys_error` live in C++), one function per
-  argument shape.
+- `zend::host`'s calls: `sw_callable_warning`, for a callable that cannot be
+  called.
 - `Call`'s ZPP slow paths (null-to-scalar and float-to-int deprecations) and
   `Value::long`/`double`/`string` (`zval_get_*`: an object or
   array warns, `__toString` runs PHP).

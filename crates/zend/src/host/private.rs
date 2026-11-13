@@ -4,7 +4,7 @@ use crate::{
     sys::{self, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
 };
 use std::{
-    ffi::{c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
 };
 
@@ -61,33 +61,41 @@ pub(super) fn fatal_exception() {
     }
 }
 
-/// `zend::function::call(name, cache, argc, argv, retval)`: 0 when the call
-/// ran, -1 when it failed or bailed out (the bailout deferred).
+/// `sw_callable_warning(message)` inside `zend_try`, the bailout of a user
+/// error handler deferred. Nothing is reported while a bailout is pending.
+pub(super) fn callable_warning(message: &CStr) {
+    let reported = if bailout::pending() {
+        Err(bailout::Bailout)
+    } else {
+        // SAFETY: Swoole's C warning leaf, which records the error and raises
+        // the warning with the NUL-terminated message; the shim's setjmp sits
+        // between this frame and it.
+        bailout::trapped(unsafe {
+            sys::swr_zend_try_report(Some(sys::swr_zend_callable_warning), message.as_ptr())
+        })
+    };
+    bailout::defer(reported);
+}
+
+/// `zend::function::call(cache, argc, argv, retval)`: 0 when the call ran, -1
+/// when it failed or bailed out (the bailout deferred). An unresolved cache is
+/// reported as a bad function.
 /// # Safety
-/// A null or initialised cache, a live function-name zval (or null, which an
-/// unresolved cache reports as a bad function), `argc` live arguments, and a
-/// writable return slot or null.
+/// A null or initialised cache, `argc` live arguments, and a writable return
+/// slot or null.
 pub(super) unsafe fn direct_call(
-    name: *mut zval,
     cache: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
     retval: *mut zval,
-    report: unsafe extern "C" fn(*const c_char),
 ) -> c_int {
     let mut call = crate::EMPTY_FCI;
     // The call's result when the caller wants none; undefined otherwise.
     let temporary = Owned::default();
     // SAFETY: a non-null cache is initialized by the caller.
-    let uncached = cache.is_null() || unsafe { (*cache).function_handler }.is_null();
-    if uncached {
-        if name.is_null() {
-            // SAFETY: the native reporter executes entirely within Zend's C trap.
-            bailout::defer(unsafe { bailout::report(report, c"Bad function") });
-            return -1;
-        }
-        // SAFETY: a live function-name zval, borrowed through invocation.
-        call.function_name = unsafe { name.read() };
+    if cache.is_null() || unsafe { (*cache).function_handler }.is_null() {
+        callable_warning(c"Bad function");
+        return -1;
     }
     call.size = size_of::<zend_fcall_info>();
     call.retval = if retval.is_null() {
@@ -159,10 +167,6 @@ pub type Then = (sys::swr_zend_then, *mut c_void);
 /// # Safety
 /// A live resolved cache, argument span and optional return slot. `create` is the coroutine leaf,
 /// and `then` may be called.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "zend::function::call's arguments, its two leaves and the caller's work after it"
-)]
 pub unsafe fn function_call(
     cache: *mut zend_fcall_info_cache,
     argc: u32,
@@ -170,7 +174,6 @@ pub unsafe fn function_call(
     retval: *mut zval,
     coroutine: bool,
     create: Create,
-    report: unsafe extern "C" fn(*const c_char),
     (then, arg): Then,
 ) -> Result<bool, bailout::Bailout> {
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
@@ -203,7 +206,7 @@ pub unsafe fn function_call(
         result >= 0
     } else {
         // SAFETY: the caller lends a resolved cache and live arguments.
-        unsafe { direct_call(ptr::null_mut(), cache, argc, argv, retval, report) == 0 }
+        unsafe { direct_call(cache, argc, argv, retval) == 0 }
     };
     // `then` ran with no exception pending, as this check would have found it.
     if !ran && !bailout::pending() {
@@ -220,25 +223,23 @@ pub unsafe fn function_call(
 /// No [`Then`].
 pub const NO_THEN: Then = (None, ptr::null_mut());
 
-/// `zend::function::call(name, argc, argv)` into `retval`, a bailout left
-/// pending: the caller finishes or relays it.
-/// # Safety
-/// A borrowed binary function-name span, argument slots and writable owned return value.
-pub unsafe fn named_call_into(
-    name: *const c_char,
-    length: usize,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) {
+/// `zend::function::call(name, args)` into `retval`, an undefined slot of the
+/// caller's, a bailout left pending: the caller finishes or relays it. The
+/// arguments are lent as they are; Zend copies them into the call.
+pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
     if bailout::pending() {
         return;
     }
-    let function = Owned::default();
-    // SAFETY: Zend copies the complete binary function name into its request string.
-    unsafe { sys::swr_zval_stringl(function.as_ptr(), name, length) };
+    // ZVAL_STRINGL: the complete binary function name, in a request string.
+    let function = Owned::string(crate::ZString::new(name));
+    // Never more than the slice holds.
+    let argc = u32::try_from(args.len()).unwrap_or(0);
+    let argv = args.as_ptr().cast_mut().cast::<zval>();
+    let retval = retval.as_ptr();
     let mut result = -1;
-    // SAFETY: Zend's macro invocation is one leaf effect inside the C trap.
+    // SAFETY: a live name, `argc` live arguments (`Owned` is a transparent
+    // zval) and a writable result; Zend's macro invocation is one leaf effect
+    // inside the C trap.
     bailed(unsafe {
         sys::swr_zend_try_facade_user_call(function.as_ptr(), argc, argv, retval, &raw mut result)
     });
@@ -273,21 +274,9 @@ pub unsafe fn named_call_into(
 /// # Errors
 /// PHP bailed out; nothing is resumed while a Rust caller owns its state.
 pub fn named_call(name: &[u8], args: &[&crate::Value]) -> Result<(), bailout::Bailout> {
-    let mut args: Vec<crate::Owned> = args.iter().map(|arg| arg.copy()).collect();
-    #[expect(clippy::cast_possible_truncation, reason = "a handful of arguments")]
-    let argc = args.len() as u32;
+    let args: Vec<crate::Owned> = args.iter().map(|arg| arg.copy()).collect();
     let retval = Owned::default();
-    // SAFETY: the name's bytes, `argc` live arguments (`Owned` is a
-    // transparent zval) and a writable result.
-    unsafe {
-        named_call_into(
-            name.as_ptr().cast(),
-            name.len(),
-            argc,
-            args.as_mut_ptr().cast::<zval>(),
-            retval.as_ptr(),
-        );
-    };
+    named_call_into(name, &args, &retval);
     // The result this call owns.
     discard(retval);
     if bailout::relay_to_c(Ok(())) {

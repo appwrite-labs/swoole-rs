@@ -84,12 +84,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_client_async_minit => register);
-
 /// `php_swoole_client_async_minit`, after `Swoole\Client`'s: objects come from
 /// the parent's `create_object`, which Zend inherits.
-#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &ASYNC,
         c"Swoole\\Async\\Client",

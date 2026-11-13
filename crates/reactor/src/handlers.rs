@@ -112,7 +112,7 @@ impl Running<'_> {
     #[cfg(unix)]
     #[inline]
     pub(crate) fn has_deferred(self) -> bool {
-        self.with(|state| !state.fields.defer_tasks.is_null())
+        self.with(|state| state.fields.defer_tasks.is_some())
     }
 
     field!(

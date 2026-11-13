@@ -331,11 +331,10 @@ pub fn client() -> &'static Class {
     &CLIENT
 }
 
-swoole_rs_zend::minit!(php_swoole_client_minit => register);
-
 /// `php_swoole_client_minit`, after `Swoole\Exception` is registered.
-#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let methods = if built_with(Switch::Sockets) {
         &METHODS.0
     } else {

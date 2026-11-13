@@ -262,12 +262,8 @@ unsafe extern "C" fn raise() {
 }
 
 /// `php_swoole_process_pool_minit`: register `Swoole\Process\Pool`.
-/// # Safety
-/// Called once, at MINIT, after the Process MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module) };
+/// Runs after the Process MINIT.
+pub fn php_swoole_process_pool_minit(minit: &Minit) {
     // SAFETY: `zend_try` over a C body, in which the pool's Rust worker loops call
     // PHP and which they leave before re-raising, and Zend's bailout.
     unsafe { swoole_rs_process::pool::set_bailout(swoole_rs_zend::sys::swr_zend_try, raise) };

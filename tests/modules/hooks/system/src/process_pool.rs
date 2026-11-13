@@ -248,7 +248,6 @@ unsafe extern "C" {
 
     // The stream listener (crates/process).
     fn swr_v1_process_pool_ipc_listener(ipc: *const c_void) -> *mut c_void;
-    fn swr_v1_os_msg_queue_push(queue: *const c_void, node: *const c_void, length: usize) -> bool;
     #[link_name = "_Z22swoole_set_worker_typei"]
     fn swoole_set_worker_type(kind: c_int);
     #[link_name = "_Z24swoole_get_worker_symbolv"]
@@ -1740,10 +1739,9 @@ fn stream_protocol_msgqueue_ignores_package_size() {
             mtype += 1;
             message[..size_of::<c_long>()].copy_from_slice(&mtype.to_ne_bytes());
             message[size_of::<c_long>()..][..data.len()].copy_from_slice(data);
-            // SAFETY: the pool's queue and a node holding `data.len()` bytes.
-            let pushed = unsafe {
-                swr_v1_os_msg_queue_push((*pool).queue, message.as_ptr().cast(), data.len())
-            };
+            // SAFETY: the pool's queue, which `create` opened.
+            let queue = unsafe { &*(*pool).queue.cast::<swoole_rs_ossupport::QueueRecord>() };
+            let pushed = queue.push(&message[..size_of::<c_long>() + data.len()]);
             assert!(pushed, "limit {limit}");
         }
         main_loop(pool, get_worker(pool, 0));

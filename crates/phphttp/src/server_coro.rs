@@ -546,8 +546,9 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
-    // SAFETY: a live socket and the settings array.
-    if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings.as_ptr()) } {
+    // SAFETY: a bailout here skips this frame's copies of the settings and the
+    // callable, which are the request heap's.
+    if !unsafe { php_swoole_socket_set_protocol(socket, &settings) } {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());

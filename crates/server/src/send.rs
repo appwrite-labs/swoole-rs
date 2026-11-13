@@ -12,15 +12,14 @@ use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view::Server;
 use crate::{Connection, MODE_PROCESS, ServerState};
-use core::ffi::{CStr, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use swoole_rs_buffer::cpp::{
-    new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
-    swr_cpp_buffer_typed_close,
+    new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
 };
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Socket, socket_record_send, steady_ms};
+use swoole_rs_reactor::{Drain, Socket, record_send, steady_ms};
 
 /// `ServerEventType`.
 const SEND_FILE: u8 = 3;
@@ -113,9 +112,7 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
         return None;
     }
     let sent = loop {
-        let (at, len) = (data.as_ptr().cast(), data.len());
-        // SAFETY: `data` holds `len` bytes.
-        let sent = unsafe { socket_record_send(socket, at, len, 0, no_tls, steady_ms) };
+        let sent = record_send(socket, Drain::new(data), 0, |_, _| -1, steady_ms);
         if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             break sent;
         }
@@ -124,11 +121,6 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
         conn.set_last_send_time(microtime());
     }
     Some(i64::try_from(sent).unwrap_or(-1))
-}
-
-/// `send_now`'s TLS call, never made: it sends only on sockets without an SSL.
-extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
-    -1
 }
 
 /// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`, and 0 (upstream's
@@ -285,9 +277,9 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
                 conn.set_high_watermark(true);
             }
         }
-        let (at, len) = (data.as_ptr(), data.len().c_cast::<u32>());
-        // SAFETY: `data` holds `len` bytes.
-        sock.read(|s| out_buffer(s).map(|b| unsafe { swr_cpp_buffer_append(b, at, len) }));
+        // `Buffer::append`'s `uint32_t` size.
+        let size = data.len().c_cast::<u32>() as usize;
+        sock.read(|s| out_buffer(s).map(|b| b.append(data.get(..size).unwrap_or(data))));
         conn.set_send_queued_bytes(queued());
         let port = serv.port_by_server_fd(conn.server_fd());
         let high = port.map_or(u32::MAX, |port| port.config().buffer_high_watermark.get());
@@ -379,6 +371,7 @@ mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
+    use core::ffi::c_void;
     use std::io::Read;
 
     /// The live server with one accepted connection, session 1, and its client.

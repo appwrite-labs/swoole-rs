@@ -180,11 +180,8 @@ fn verify_ssl(
     let config = port.map(view::Port::config);
     let fields = config.and_then(PortConfig::ssl_fields);
     let verify_peer = fields.is_some_and(|f| f.verify_peer);
-    let peer = || {
-        let buffer = swoole_rs_corebase::thread_buffer();
-        // SAFETY: a TLS socket's live record and this thread's live buffer.
-        unsafe { tls::socket_ssl_get_peer_certificate_string(sock, buffer) }
-    };
+    let peer =
+        || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
     let verified = || {
         let allow_self_signed = fields.is_some_and(|f| f.allow_self_signed);
         tls::socket_ssl_verify(sock, allow_self_signed)

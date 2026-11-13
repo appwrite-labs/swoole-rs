@@ -148,14 +148,8 @@ unsafe extern "C-unwind" {
     fn socket_cork(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket6uncorkEv"]
     fn socket_uncork(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket4recvEPvmi"]
-    fn socket_recv(socket: *mut Record, buf: *mut c_void, n: usize, flags: c_int) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket4sendEPKvmi"]
-    fn socket_send(socket: *mut Record, buf: *const c_void, n: usize, flags: c_int) -> isize;
     #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
     fn socket_send_async(socket: *mut Record, data: *const c_void, n: usize) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket9recv_syncEPvmi"]
-    fn socket_recv_sync(socket: *mut Record, data: *mut c_void, n: usize, flags: c_int) -> isize;
     #[link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"]
     fn socket_sendfile_sync(
         socket: *mut Record,
@@ -167,8 +161,6 @@ unsafe extern "C-unwind" {
     fn socket_clean(socket: *const Record);
     #[link_name = "_ZN6swoole7network6Socket14check_livenessEv"]
     fn socket_check_liveness(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket9read_syncEPvm"]
-    fn socket_read_sync(socket: *mut Record, buf: *mut c_void, n: usize) -> isize;
     #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
     #[link_name = "_ZNK6swoole6Buffer6lengthEv"]
@@ -440,13 +432,11 @@ impl Socket {
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { socket_recv(self.0, buf.as_mut_ptr().cast(), buf.len(), flags) }
+        swoole_rs_tls::upstream::recv(self.handle(), buf, flags)
     }
 
     fn send(&self, buf: &[u8], flags: c_int) -> isize {
-        // SAFETY: `buf` is readable for its length.
-        unsafe { socket_send(self.0, buf.as_ptr().cast(), buf.len(), flags) }
+        swoole_rs_tls::upstream::send(self.handle(), buf, flags)
     }
 
     fn peek(&self, buf: &mut [u8], flags: c_int) -> isize {
@@ -454,8 +444,7 @@ impl Socket {
     }
 
     fn recv_sync(&self, buf: &mut [u8], flags: c_int) -> isize {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { socket_recv_sync(self.0, buf.as_mut_ptr().cast(), buf.len(), flags) }
+        swoole_rs_tls::upstream::recv_sync(self.handle(), buf, flags)
     }
 
     fn send_async(&self, buf: &[u8]) -> isize {
@@ -464,8 +453,7 @@ impl Socket {
     }
 
     fn read_sync(&self, buf: &mut [u8]) -> isize {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { socket_read_sync(self.0, buf.as_mut_ptr().cast(), buf.len()) }
+        swoole_rs_tls::upstream::read_sync(self.handle(), buf)
     }
 
     fn write_sync(&self, buf: &[u8]) -> isize {

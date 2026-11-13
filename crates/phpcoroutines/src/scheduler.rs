@@ -74,11 +74,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_coroutine_scheduler_minit => register);
-
 /// MINIT: `Swoole\Coroutine\Scheduler` (`Co\Scheduler`), final, not
 /// serializable, clone and unset denied.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_coroutine_scheduler_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Scheduler>(c"Swoole\\Coroutine\\Scheduler", &METHODS.0, ZEND_ACC_FINAL);
     if host::flag(host::SHORTNAME) {
         minit.alias(&SCHEDULER, c"Co\\Scheduler")?;

@@ -24,11 +24,12 @@ use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, strerror};
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Event, Running, Socket, SocketAddress, SocketFields, SocketRecord, type_is,
+    CLASS_DGRAM, Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
+    type_is,
 };
 use swoole_rs_tls::upstream::{
-    peek, recv, send, sendfile as socket_sendfile_fd, socket_readv, socket_recv, socket_send,
-    socket_ssl_peer_certificate_pem, socket_writev,
+    peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
+    socket_ssl_peer_certificate_pem,
 };
 
 /// `SW_EVENT_WRITE`.
@@ -411,7 +412,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv(&ops, buf);
         }
-        let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::read(buf), call)
     }
 
@@ -422,7 +423,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::send(&ops, ring::SEND, buf);
         }
-        let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
+        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::write(buf), call)
     }
 
@@ -432,7 +433,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv_all(&ops, buf);
         }
-        let call = call!(|s, at, len| socket_recv(s, at.cast(), len, 0));
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::read(buf), call)
     }
 
@@ -443,7 +444,7 @@ impl Co {
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::send_all(&ops, buf);
         }
-        let call = call!(|s, at, len| socket_send(s, at.cast(), len, 0));
+        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::write(buf), call)
     }
 
@@ -471,22 +472,19 @@ impl Co {
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
     /// for, or with `all` `readv_all` or `writev_all`.
     #[must_use]
-    pub fn vector(self, vector: &mut IoVector, all: bool) -> isize {
+    pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::swr_v1_hook_uring_vector(&ops, vector, all);
         }
-        let write = vector.write();
-        let event = if write { WRITE } else { READ };
-        let io = if write { socket_writev } else { socket_readv };
-        let at = vector.as_ptr();
-        // Over the live vector, which carries its own buffers.
-        let each = call!(|s, _, _| io(s, at));
+        let event = if vector.write() { WRITE } else { READ };
         if all {
-            let none = core::ptr::null_mut();
-            let call = || self.with_network(|s| each(s, none, 0)).unwrap_or(-1);
-            return vector_all(self, event, call, || vector.remaining());
+            let call =
+                |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).unwrap_or(-1);
+            return vector_all(self, event, vector, call, IoVector::remaining);
         }
+        // The vector carries its own buffers.
+        let each = |s: Socket<'_>, _: *mut u8, _: usize| vector.transfer(s);
         self.transfer(0, Buffer::none(event), each)
     }
 

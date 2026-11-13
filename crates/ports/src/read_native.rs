@@ -16,11 +16,11 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Event, Running, Socket};
+use swoole_rs_reactor::{Event, Fill, Running, Socket};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
-use swoole_rs_tls::upstream::{send, socket_recv};
+use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_task};
@@ -170,9 +170,9 @@ impl Connection for Read<'_> {
         let b = self.string();
         let (at, size) = (if whole { 0 } else { b.len() }, b.size());
         let start = b.as_mut_ptr().wrapping_add(at);
-        // SAFETY: the live socket and `size - at` writable bytes at `start`.
-        let received = unsafe { socket_recv(self.socket, start.cast(), size - at, 0) };
-        received as i64
+        // SAFETY: the `size - at` writable bytes at `start`, in the connection's buffer.
+        let free = unsafe { Fill::from_raw(start.cast(), size - at) };
+        recv_fill(self.socket, free, 0) as i64
     }
 
     fn catch_error(&mut self) -> u64 {
@@ -382,7 +382,7 @@ impl Connection for Read<'_> {
     #[inline]
     fn init_request(&mut self) {
         if self.conn().object.is_null() {
-            self.conn().object = swoole_rs_http_ffi::request_new().cast();
+            self.conn().object = Box::into_raw(swoole_rs_http_ffi::request_new()).cast();
         }
         self.request = self.conn().object.cast();
         if self.request().buffer.is_null() {

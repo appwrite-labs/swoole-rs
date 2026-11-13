@@ -168,13 +168,8 @@ mod native {
                 string.clear();
                 // SAFETY: the slot's bytes, readable by its constructor's contract and
                 // outside the String.
-                unsafe {
-                    swoole_rs_buffer::string::swr_string_append(
-                        string,
-                        slot.bytes(),
-                        slot.length(),
-                    );
-                };
+                let bytes = unsafe { core::slice::from_raw_parts(slot.bytes(), slot.length()) };
+                string.append(bytes);
                 slot.moved_to(string.as_mut_ptr());
             }
         });
@@ -284,17 +279,12 @@ mod native {
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        use swoole_rs_reactor::event_api::{swoole_event_add, swoole_event_set};
-        let record = socket.socket();
-        let events = events.cast_signed();
-        let result = if add {
-            // SAFETY: an open socket's record, on this thread's running reactor.
-            unsafe { swoole_event_add(record, events) }
-        } else {
-            // SAFETY: as above.
-            unsafe { swoole_event_set(record, events) }
-        };
-        result == 0
+        use swoole_rs_reactor::reactor_upstream::reactor_change;
+        let reactor = swoole_rs_corebase::thread_reactor();
+        // `Reactor::change`'s add (0) or set (1).
+        let op = u32::from(!add);
+        // SAFETY: an open socket's record, on this thread's running reactor.
+        unsafe { reactor_change(reactor, socket.socket(), op, events.cast_signed()) == 0 }
     }
 
     pub(super) fn remove(socket: Co, event: u32) {

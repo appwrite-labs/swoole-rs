@@ -238,9 +238,28 @@ impl<'a> Drain<'a> {
 /// The typed calls in the shape the tests' raw buffers and C-style TLS stubs have.
 #[cfg(test)]
 pub(crate) mod raw {
-    use super::Fill;
-    use crate::{Socket, SteadyMs, TlsIo, record_peek, record_recv};
+    use super::{Drain, Fill};
+    use crate::{Socket, SteadyMs, record_peek, record_recv, record_send};
     use std::ffi::{c_int, c_void};
+
+    /// A TLS call on `socket` in C's shape: what `ssl_send` or `ssl_recv` returns.
+    pub(crate) type TlsIo =
+        unsafe extern "C" fn(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize;
+
+    pub(crate) unsafe fn socket_record_send(
+        socket: Socket<'_>,
+        buffer: *const c_void,
+        length: usize,
+        flags: c_int,
+        tls: TlsIo,
+        now: SteadyMs,
+    ) -> isize {
+        let data = unsafe { Drain::from_raw(buffer, length) };
+        let tls = |socket: Socket<'_>, data: Drain<'_>| unsafe {
+            tls(socket.as_ptr().cast(), data.as_ptr().cast_mut(), data.len())
+        };
+        record_send(socket, data, flags, tls, now)
+    }
 
     /// `tls` over a typed buffer.
     pub(crate) fn fills(tls: TlsIo) -> impl Fn(Socket<'_>, Fill<'_>) -> isize {

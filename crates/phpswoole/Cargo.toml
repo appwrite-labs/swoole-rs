@@ -18,10 +18,9 @@ sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-sqlite/php"]
 oci = ["dep:swoole-rs-oci", "swoole-rs-oci/php"]
 # stdext's MINIT (crates/ffi's stdext, with --enable-swoole-stdext).
 stdext = ["dep:swoole-rs-phpstdext", "swoole-rs-phpstdext/php", "swoole-rs-phpstdext/active"]
-# The bundled C clients configure builds in (--with-swoole-ssh2, --enable-swoole-ftp):
-# their handlers, MINIT, MSHUTDOWN and MINFO.
+# The bundled C client configure builds in (--with-swoole-ssh2): its handlers, MINIT,
+# MSHUTDOWN and MINFO.
 ssh2 = []
-ftp = []
 # ext/sockets' Socket (--enable-sockets), which Thread containers and ports import.
 sockets = []
 

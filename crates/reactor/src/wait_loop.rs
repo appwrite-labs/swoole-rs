@@ -412,7 +412,7 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
     let (id, epfd, max_event_num, timeout) = ops.reactor.with(|state| {
         let fields = &state.fields;
         // `Reactor::get_timeout_msec()`.
-        let timeout = if fields.defer_tasks.is_null() {
+        let timeout = if fields.defer_tasks.is_none() {
             fields.timeout_msec
         } else {
             0
@@ -640,10 +640,9 @@ mod tests {
             (*state.fields).once = once;
         }
         PROBE.set((begin_stops, 0));
-        let mut task = crate::ReactorDeferred::default();
         if deferred {
-            // SAFETY: the state's own field; the stack queue outlives the wait and is detached after.
-            unsafe { (*state.fields).defer_tasks = &raw mut task };
+            // SAFETY: the state's own field; the queue is detached after the wait.
+            unsafe { (*state.fields).defer_tasks = Some(Box::default()) };
         }
         let ops = WaitOps {
             reactor: running(state.owner),
@@ -654,7 +653,7 @@ mod tests {
         let removed = socket.removed;
         unsafe {
             assert!((*state.fields).start);
-            (*state.fields).defer_tasks = std::ptr::null_mut();
+            (*state.fields).defer_tasks = None;
             crate::reactor_state::tests::free(state.owner);
             libc::close(fds[0]);
             libc::close(fds[1]);

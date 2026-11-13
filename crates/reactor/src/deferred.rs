@@ -81,22 +81,22 @@ pub struct ReactorDeferred {
     tasks: VecDeque<Task>,
 }
 
-/// Appends `task` to the queue in `slot`, creating it on first use: 0, or -2 when it
-/// cannot allocate (nothing is queued). `slot` is a reactor's `defer_tasks` or
-/// `destroy_callbacks`, which hold null or a queue from this module.
-fn push(slot: &mut *mut ReactorDeferred, task: Task) -> i32 {
-    if slot.is_null() {
+/// Appends `task` to the queue in `slot` (a reactor's `defer_tasks` or
+/// `destroy_callbacks`), creating it on first use: 0, or -2 when it cannot allocate
+/// (nothing is queued).
+fn push(slot: &mut Option<Box<ReactorDeferred>>, task: Task) -> i32 {
+    let queue = if let Some(queue) = slot {
+        queue
+    } else {
         let Some(owner) = swoole_rs_buffer::try_box(ReactorDeferred::default) else {
             return -2;
         };
-        *slot = Box::into_raw(owner);
-    }
-    // SAFETY: a live queue from this module, as above.
-    let tasks = unsafe { &mut (**slot).tasks };
-    if tasks.try_reserve(1).is_err() {
+        slot.insert(owner)
+    };
+    if queue.tasks.try_reserve(1).is_err() {
         return -2;
     }
-    tasks.push_back(task);
+    queue.tasks.push_back(task);
     0
 }
 
@@ -107,36 +107,25 @@ pub(crate) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
     }
 }
 
-/// Runs the queue's tasks in order, each popped before it is called, until it is empty;
-/// tasks a call appends run in this pass too. No borrow of the queue spans a call.
-///
-/// # Safety
-/// `owner` is null or a live queue from this module that no call frees.
-pub(crate) unsafe fn deferred_run(owner: *mut ReactorDeferred) {
-    if owner.is_null() {
-        return;
-    }
-    loop {
-        // SAFETY: as the caller promises; the borrow ends before the call.
-        let Some(task) = (unsafe { (*owner).tasks.pop_front() }) else {
-            return;
-        };
-        task.run();
+/// Frees the queue in `slot`, disposing of the tasks that never ran, and empties the
+/// slot. The slot owns its queue, so nothing runs it meanwhile.
+pub(crate) fn deferred_free(slot: &mut Option<Box<ReactorDeferred>>) {
+    if let Some(owner) = slot.take() {
+        owner.tasks.into_iter().for_each(Task::dispose);
     }
 }
 
-/// Frees the queue in `slot`, disposing of the tasks that never ran, and nulls the slot.
-///
-/// # Safety
-/// `slot` holds null or a queue from this module, which nothing runs.
-pub(crate) unsafe fn deferred_free(slot: &mut *mut ReactorDeferred) {
-    let owner = std::mem::replace(slot, ptr::null_mut());
-    if owner.is_null() {
-        return;
+/// Runs the reactor's `destroy_callbacks` in order, each popped before it is called,
+/// until there are none; callbacks a call adds run in this pass too. No borrow of the
+/// reactor spans a call.
+pub(crate) fn run_destroy(reactor: Running<'_>) {
+    let next = |state: &mut crate::ReactorState| {
+        let queue = state.fields.destroy_callbacks.as_mut()?;
+        queue.tasks.pop_front()
+    };
+    while let Some(task) = reactor.with(next) {
+        task.run();
     }
-    // SAFETY: the queue was this module's; the slot no longer names it.
-    let owner = unsafe { Box::from_raw(owner) };
-    owner.tasks.into_iter().for_each(Task::dispose);
 }
 
 /// `Reactor::defer(fn, data)` on the reactor whose fields these are; `dispose(data)`
@@ -152,7 +141,7 @@ pub unsafe fn defer(
 ) {
     let slot = fields
         .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
-        .cast::<*mut ReactorDeferred>();
+        .cast::<Option<Box<ReactorDeferred>>>();
     let task = Task::Native {
         call,
         data,
@@ -197,24 +186,30 @@ fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) 
 /// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
 /// over this frame, and the reactor's drop frees the queue instead.
 pub(crate) fn run_defer(reactor: Running<'_>) {
-    // The borrow ends before a task runs.
+    // The borrow ends before a task runs. The queue's address is taken where it stays:
+    // in the box `running_defer` now owns.
     let queue = reactor.with(|state| {
-        let queue = std::mem::replace(&mut state.fields.defer_tasks, ptr::null_mut());
-        if !queue.is_null() {
-            state.running_defer.push(queue);
-        }
-        queue
+        let queue = state.fields.defer_tasks.take()?;
+        state.running_defer.push(queue);
+        let queue = state.running_defer.last_mut()?;
+        Some(&raw mut **queue)
     });
-    if queue.is_null() {
+    let Some(queue) = queue else {
         return;
+    };
+    // Each task is popped before it is called, and no borrow of the queue spans a call.
+    loop {
+        // SAFETY: the detached queue, which only `running_defer` names: nothing frees
+        // it or borrows it there while this pass runs (a task defers onto the
+        // reactor's `defer_tasks`, another queue, and a nested pass pops only its own).
+        let Some(task) = (unsafe { (*queue).tasks.pop_front() }) else {
+            break;
+        };
+        task.run();
     }
-    // SAFETY: the detached queue is ours; a task may defer onto the reactor.
-    unsafe { deferred_run(queue) };
     // Every task ran, and a nested pass popped its own.
-    reactor.with(|state| state.running_defer.pop());
-    let mut queue = queue;
-    // SAFETY: as above; the reactor no longer names it.
-    unsafe { deferred_free(&mut queue) };
+    let mut queue = reactor.with(|state| state.running_defer.pop());
+    deferred_free(&mut queue);
 }
 
 #[cfg(test)]
@@ -241,7 +236,7 @@ mod tests {
         TRACE.with_borrow_mut(|trace| trace.push(data as usize));
         // SAFETY: the test's live fields; the running queue is detached.
         unsafe {
-            assert!((*FIELDS.get()).defer_tasks.is_null());
+            assert!((*FIELDS.get()).defer_tasks.is_none());
             defer(FIELDS.get(), record, token(4), None);
         }
     }
@@ -256,7 +251,7 @@ mod tests {
 
     /// `push` of the native task `call(data)`.
     fn push_native(
-        slot: &mut *mut ReactorDeferred,
+        slot: &mut Option<Box<ReactorDeferred>>,
         call: DeferCall,
         data: *mut c_void,
         dispose: Option<DeferDispose>,
@@ -277,22 +272,51 @@ mod tests {
         let fields = state.fields;
         FIELDS.set(fields);
         unsafe {
-            assert!((*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_none());
             defer(fields, record, token(1), None);
             defer(fields, record, token(2), None);
-            assert!(!(*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_some());
             run_defer(running(state.owner));
             assert_eq!(take(), [1, 2]);
-            assert!((*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_none());
             defer(fields, defer_again, token(3), None);
             run_defer(running(state.owner));
             assert_eq!(take(), [3]);
-            assert!(!(*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_some());
             run_defer(running(state.owner));
             assert_eq!(take(), [4]);
-            assert!((*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_none());
             run_defer(running(state.owner));
             assert_eq!(take(), []);
+            crate::reactor_state::tests::free(state.owner);
+        }
+    }
+
+    /// Defers `record(3)` and runs a pass of its own (a nested loop) from inside a task.
+    unsafe extern "C-unwind" fn nest(data: *mut c_void) {
+        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
+        // SAFETY: the test's live reactor, which no reference holds.
+        unsafe {
+            defer(FIELDS.get(), record, token(3), None);
+            run_defer(running((*FIELDS.get()).ptr.cast()));
+        }
+    }
+
+    /// A pass a task starts runs the queue deferred since and pops only its own; the
+    /// outer pass then goes on with its queue.
+    #[test]
+    fn a_nested_pass_leaves_the_outer_queue_running() {
+        let state = crate::reactor_state::tests::state(3, 1);
+        let fields = state.fields;
+        FIELDS.set(fields);
+        unsafe {
+            (*fields).ptr = state.owner.cast();
+            defer(fields, nest, token(1), None);
+            defer(fields, record, token(2), None);
+            run_defer(running(state.owner));
+            assert_eq!(take(), [1, 3, 2]);
+            assert!((*fields).defer_tasks.is_none());
+            assert!((*state.owner).running_defer.is_empty());
             crate::reactor_state::tests::free(state.owner);
         }
     }
@@ -317,7 +341,7 @@ mod tests {
             let owner = std::panic::AssertUnwindSafe(state.owner);
             assert!(std::panic::catch_unwind(move || run_defer(running(*owner))).is_err());
             assert_eq!(take(), [1, 2]);
-            assert!((*fields).defer_tasks.is_null());
+            assert!((*fields).defer_tasks.is_none());
             assert_eq!((*state.owner).running_defer.len(), 1);
             crate::reactor_state::tests::free(state.owner);
             assert_eq!(take(), [1003]);
@@ -330,21 +354,24 @@ mod tests {
     #[test]
     fn destroy_queue_runs_in_order_and_again_after_an_append() {
         for count in [0usize, 1, 17, 65] {
-            let mut queue = ptr::null_mut();
+            let state = crate::reactor_state::tests::state(3, 1);
+            let reactor = running(state.owner);
             unsafe {
+                let queue = &raw mut (*state.fields).destroy_callbacks;
                 for i in 0..count {
-                    assert_eq!(push_native(&mut queue, record, token(i), None), 0);
+                    assert_eq!(push_native(&mut *queue, record, token(i), None), 0);
                 }
                 assert_eq!(take(), []);
-                deferred_run(queue);
+                run_destroy(reactor);
                 assert_eq!(take(), (0..count).collect::<Vec<_>>());
-                deferred_run(queue);
+                run_destroy(reactor);
                 assert_eq!(take(), []);
-                push_native(&mut queue, record, token(99), None);
-                deferred_run(queue);
+                push_native(&mut *queue, record, token(99), None);
+                run_destroy(reactor);
                 assert_eq!(take(), [99]);
-                deferred_free(&mut queue);
-                assert!(queue.is_null());
+                deferred_free(&mut *queue);
+                assert!((*queue).is_none());
+                crate::reactor_state::tests::free(state.owner);
             }
         }
     }
@@ -374,15 +401,13 @@ mod tests {
     /// Freeing a queue disposes of each unrun task's data instead of calling it.
     #[test]
     fn free_disposes_unrun_tasks() {
-        let mut queue = ptr::null_mut();
-        unsafe {
-            push_native(&mut queue, record, token(99), Some(disposed));
-            push_native(&mut queue, record, token(7), None);
-            deferred_free(&mut queue);
-            assert_eq!(take(), [1099]);
-            assert!(queue.is_null());
-            deferred_free(&mut queue);
-        }
+        let mut queue = None;
+        push_native(&mut queue, record, token(99), Some(disposed));
+        push_native(&mut queue, record, token(7), None);
+        deferred_free(&mut queue);
+        assert_eq!(take(), [1099]);
+        assert!(queue.is_none());
+        deferred_free(&mut queue);
     }
 
     /// A Rust value, traced as 100 + its number when run and 2000 + it when disposed.
