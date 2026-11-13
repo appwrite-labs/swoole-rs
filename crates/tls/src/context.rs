@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 
-// SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them, or
+// libssl/libcrypto's own declarations; openssl-sys binds none of them, or
 // (`SSL_CTX_set0_tmp_dh_pkey`) only over OpenSSL 3 headers, which the fuzz image,
 // building crates/clients' parsers against OpenSSL 1.1, lacks.
 unsafe extern "C" {
@@ -48,7 +48,7 @@ unsafe extern "C" {
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
 }
 
-// SAFETY: libssl/libcrypto's declarations, typed so that a live context is a
+// libssl/libcrypto's declarations, typed so that a live context is a
 // reference and a NUL-terminated string a `CText`: each reads only its arguments
 // (copying what it keeps of a string), `SSL_CTX_new` returns its new context's one
 // reference, or null, and `SSL_load_client_CA_file` a new list, which
@@ -679,7 +679,7 @@ type CookieBuffer = [MaybeUninit<u8>; 255];
 type GenerateCookie = extern "C" fn(Ssl<'_>, &mut CookieBuffer, &mut MaybeUninit<c_uint>) -> c_int;
 type VerifyCookie = unsafe extern "C" fn(Ssl<'_>, *const c_uchar, c_uint) -> c_int;
 
-// SAFETY: libssl's declarations, with the callbacks retyped as what OpenSSL calls
+// libssl's declarations, with the callbacks retyped as what OpenSSL calls
 // them with: the live, non-null SSL that is listening or shaking hands and, for the
 // generator, its `DTLS1_COOKIE_LENGTH`-byte cookie buffer and length slot (neither
 // initialized), lent for the call. Storing a generator, which is a safe function of exactly those, is

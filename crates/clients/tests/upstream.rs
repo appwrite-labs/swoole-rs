@@ -161,7 +161,7 @@ fn verify_ip_matches_upstream() {
     for host in &ip_hosts() {
         let text = c_str(host);
         for family in [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX, -1] {
-            let (mut error, mut expected_scratch) = (0, [0 as c_char; 46]);
+            let (mut error, mut expected_scratch): (_, [c_char; 46]) = (0, [0; 46]);
             // SAFETY: `host` holds its bytes and the out parameters their sizes.
             let expected = unsafe {
                 upstream::verify_ip(
@@ -240,7 +240,7 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
             text.as_ptr().cast(),
             host.len(),
             port,
-            resolve_name.then_some(resolve as Resolve),
+            resolve_name.then_some::<Resolve>(resolve),
         )
     };
     trace.error = errno();
@@ -478,8 +478,8 @@ fn url_and_port_match_upstream() {
     let urls = urls();
     for url in &urls {
         for accept in [false, true] {
-            let (mut kind, mut port, mut host, mut host_length, mut logs) =
-                (0, 0, [0 as c_char; 64], 0, 0);
+            let mut host: [c_char; 64] = [0; 64];
+            let (mut kind, mut port, mut host_length, mut logs) = (0, 0, 0, 0);
             // SAFETY: `url` holds its bytes; `host` is longer than any URL here.
             let result = unsafe {
                 upstream::url(
@@ -585,7 +585,7 @@ fn hosts_lookup_matches_upstream() {
         for (file, names) in &hosts_files() {
             std::fs::write(&path, file).expect("hosts fixture");
             for name in names {
-                let mut address = [0 as c_char; 64];
+                let mut address: [c_char; 64] = [0; 64];
                 // SAFETY: a NUL-terminated path; `name` and `address` hold their bytes.
                 let length = unsafe {
                     upstream::hosts(
@@ -914,7 +914,7 @@ fn ip_text_matches_upstream() {
     let mut compare = |address: &mut [u8; 32]| {
         for (family, version) in [(libc::AF_INET, 4), (libc::AF_INET6, 6)] {
             let saved = *address;
-            let mut text = [0 as c_char; 64];
+            let mut text: [c_char; 64] = [0; 64];
             set_errno(17);
             // SAFETY: `address` holds 32 bytes and `text` 64.
             let length = unsafe {

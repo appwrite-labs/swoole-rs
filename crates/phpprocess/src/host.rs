@@ -229,6 +229,10 @@ impl Deferred for DeferredFree {
 
     /// A loop freed first leaks it, as upstream's defer does.
     fn dispose(self) {
+        #[expect(
+            clippy::mem_forget,
+            reason = "a loop freed first leaks it, as upstream's defer does"
+        )]
         std::mem::forget(self.0);
     }
 }

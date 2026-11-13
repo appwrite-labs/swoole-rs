@@ -159,7 +159,7 @@ fn create_request(call: &Call) {
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
 fn option(state: &mut State, name: &[u8], value: &Value) {
     let capabilities = CAPABILITIES.load(Relaxed);
-    let wanted = u32::from(capabilities & 8 != 0) | u32::from(capabilities & 1 != 0) << 1;
+    let wanted = u32::from(capabilities & 8 != 0) | (u32::from(capabilities & 1 != 0) << 1);
     let option = request_option(name, wanted);
     let truth = || u8::from(value.truthy());
     match option {

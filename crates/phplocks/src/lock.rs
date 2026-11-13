@@ -25,8 +25,8 @@ pub(crate) const LOCK_EX: i64 = 2;
 
 /// Bit `1 << type` for each lock type the build has: upstream's `HAVE_RWLOCK`
 /// (both platforms) and `HAVE_SPINLOCK` (Linux; macOS has no `pthread_spin_lock`).
-pub(crate) const KINDS: u32 = 1 << MUTEX
-    | 1 << RW_LOCK
+pub(crate) const KINDS: u32 = (1 << MUTEX)
+    | (1 << RW_LOCK)
     | if cfg!(target_os = "linux") {
         1 << SPIN_LOCK
     } else {

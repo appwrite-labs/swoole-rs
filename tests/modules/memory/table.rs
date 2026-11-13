@@ -361,7 +361,8 @@ fn exhaustion_keeps_the_root_locked_and_flags_untouched() {
 #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
 fn iteration_visits_every_row_once_including_chains() {
     let mut table = three_columns(64, 0.2);
-    for hash in [djb as Hash, collide] {
+    let hashes: [Hash; 2] = [djb, collide];
+    for hash in hashes {
         table.get_mut().set_hash(hash);
         let t = table.get();
         let keys: Vec<Vec<u8>> = (0..10).map(|i| format!("key{i}").into_bytes()).collect();

@@ -31,7 +31,7 @@ mod c {
         }
     }
 
-    // SAFETY: POSIX's prototypes, the same on every Unix this builds for. Each reads
+    // POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or writes the one object its
     // reference names. `calloc` and `strndup` return null or a fresh
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
@@ -650,7 +650,7 @@ pub fn kill(pid: pid_t, signo: c_int) -> c_int {
 /// `setitimer(2)`, discarding the previous timer.
 pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
     // SAFETY: `value` is a live itimerval, and a null old value is allowed.
-    unsafe { libc::setitimer(which as _, value, std::ptr::null_mut()) }
+    unsafe { libc::setitimer(which, value, std::ptr::null_mut()) }
 }
 
 /// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.

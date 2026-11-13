@@ -1120,7 +1120,6 @@ impl Client {
                 b"Sec-WebSocket-Key",
                 Some(key.get(..written).unwrap_or(&key)),
             );
-            // SAFETY: the client's WebSocket state.
             if features() & 1 != 0 && self.ws.as_ref().is_some_and(|ws| ws.compression()) {
                 headers.insert_bytes(
                     b"Sec-Websocket-Extensions",
@@ -1148,7 +1147,6 @@ impl Client {
         if !self.websocket.get() {
             swoole_rs_corebase::log::set_last_error(HANDSHAKE_FAILED);
             warn(true, c"websocket handshake failed, cannot push data");
-            // SAFETY: a plain read of Swoole's thread error.
             let last = swoole_rs_corebase::log::last_error();
             self.props().long(c"errCode", i64::from(last));
             self.props()
@@ -1175,7 +1173,6 @@ impl Client {
             1 if bailout::pending() => false,
             1 => {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
-                // SAFETY: a plain read of Swoole's thread error.
                 let last = swoole_rs_corebase::log::last_error();
                 self.props().long(c"errCode", i64::from(last));
                 self.props()

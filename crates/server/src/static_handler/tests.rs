@@ -304,8 +304,8 @@ impl Upstream {
     /// The state lines, and whether the MIME and content-type references are upstream's.
     fn snapshot(&self) -> (Vec<Vec<u8>>, bool) {
         let mut identity = 0;
-        // SAFETY: a live handle and collector.
         let lines = lines(|line, out| {
+            // SAFETY: a live handle and collector.
             identity = unsafe { oracle::swr_oracle_static_snapshot(self.0, line, out) }
         });
         (lines, identity != 0)

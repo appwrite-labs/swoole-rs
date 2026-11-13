@@ -46,11 +46,9 @@ pub(crate) fn install_handlers() {
     if event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) {
         return;
     }
+    let read: swoole_rs_reactor::Handler = on_event::<CURL_CSELECT_IN>;
     for (event, handler) in [
-        (
-            EVENT_READ,
-            on_event::<CURL_CSELECT_IN> as swoole_rs_reactor::Handler,
-        ),
+        (EVENT_READ, read),
         (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
         (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {

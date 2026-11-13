@@ -581,10 +581,10 @@ impl Socket {
 
     fn get_out_buffer_length(&self) -> u32 {
         let buffer = self.record().out_buffer;
-        // SAFETY: a live output buffer.
         if buffer.is_null() {
             0
         } else {
+            // SAFETY: a live output buffer.
             unsafe { buffer_length(buffer) }
         }
     }
@@ -602,7 +602,7 @@ impl Socket {
 
 /// `network::Socket sock{}`: a constructed record on the stack.
 fn stack_socket() -> Box<MaybeUninit<Record>> {
-    // SAFETY: every field is an integer, float, bool or pointer, valid zeroed.
+    // Every field is an integer, float, bool or pointer, valid zeroed.
     let mut record = Box::new(MaybeUninit::<Record>::zeroed());
     let defaults = swoole_rs_reactor::SOCKET_DEFAULTS.timeouts();
     let timeouts = [

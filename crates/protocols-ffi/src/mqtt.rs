@@ -61,8 +61,8 @@ mod tests {
             (4, 1, 0)
         );
         assert_eq!(
-            protocol.get_package_length.map(|f| f as usize),
-            Some(get_package_length as swoole_rs_corebase::net_types::GetPackageLength as usize)
+            protocol.get_package_length.map(|f| f as *const ()),
+            Some(get_package_length as *const ())
         );
         let measure = |bytes: &[u8]| {
             let mut pl = PacketLength::new(bytes);

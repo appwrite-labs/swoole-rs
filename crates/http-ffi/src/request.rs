@@ -373,9 +373,9 @@ impl HttpRequest {
             cursor: self.request_line_length as usize + 2,
             content_length: self.content_length,
             flags: u32::from(self.known_length)
-                | u32::from(self.keep_alive) << 1
-                | u32::from(self.chunked) << 2
-                | u32::from(self.header_parsed) << 4,
+                | (u32::from(self.keep_alive) << 1)
+                | (u32::from(self.chunked) << 2)
+                | (u32::from(self.header_parsed) << 4),
             number_errors: 0,
         };
         loop {

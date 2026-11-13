@@ -820,11 +820,9 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             reactor.set_close(Some(crate::reactor_entry::close_connection));
             let handle = o.handle()?;
             handle.set_error_handler(entry::on_close);
+            let read: swoole_rs_reactor::Handler = entry::on_pipe_read;
             for (event, handler) in [
-                (
-                    SW_EVENT_READ,
-                    entry::on_pipe_read as swoole_rs_reactor::Handler,
-                ),
+                (SW_EVENT_READ, read),
                 (SW_EVENT_WRITE, entry::on_pipe_write),
             ] {
                 handle.set_handler(FD_PIPE, event, handler);
@@ -982,12 +980,9 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SESSION_HANDLERS => {
             let reactor = o.handle()?;
+            let received: swoole_rs_reactor::Handler = entry::on_packet_received;
             for (fd_type, event, handler) in [
-                (
-                    FD_DGRAM_SERVER,
-                    SW_EVENT_READ,
-                    entry::on_packet_received as swoole_rs_reactor::Handler,
-                ),
+                (FD_DGRAM_SERVER, SW_EVENT_READ, received),
                 (FD_SESSION, SW_EVENT_WRITE, entry::on_write),
                 (FD_SESSION, SW_EVENT_READ, entry::on_read),
             ] {

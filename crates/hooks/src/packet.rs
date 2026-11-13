@@ -431,8 +431,8 @@ pub(crate) mod tests {
 
     #[test]
     fn length_protocol_reassembles_split_and_coalesced_packets() {
-        let first = [b"ab" as &[u8], &[0, 0, 0, 3], b"xyz"].concat();
-        let second = [b"cd" as &[u8], &[0, 0, 0, 1], b"q"].concat();
+        let first = [&b"ab"[..], &[0, 0, 0, 3], b"xyz"].concat();
+        let second = [&b"cd"[..], &[0, 0, 0, 1], b"q"].concat();
         let wire = [first.clone(), second.clone()].concat();
         let (results, _) = run(&[&wire[..4], &wire[4..12], &wire[12..]], 8, true, b"", 1024);
         assert_eq!(results, [9, 7, 0]);
@@ -440,7 +440,7 @@ pub(crate) mod tests {
 
     #[test]
     fn length_protocol_rejects_oversized_packets() {
-        let wire = [b"ab" as &[u8], &[0, 0, 4, 0]].concat();
+        let wire = [&b"ab"[..], &[0, 0, 4, 0]].concat();
         let (results, fake) = run(&[&wire], 64, true, b"", 1024);
         assert_eq!(results, [-1]);
         assert_eq!(fake.failures, [1]);
@@ -464,7 +464,7 @@ pub(crate) mod tests {
     #[test]
     fn partial_length_body_keeps_its_bytes_only_after_a_timeout() {
         // Upstream 0f96dc478: -1 after a timeout keeps the partial packet; 0 clears it.
-        let wire = [b"ab" as &[u8], &[0, 0, 0, 8], b"part"].concat();
+        let wire = [&b"ab"[..], &[0, 0, 0, 8], b"part"].concat();
         for (timed_out, expected, kept) in [(true, -1, 10), (false, 0, 0)] {
             let mut fake = Box::new(Fake {
                 storage: vec![0; 64],

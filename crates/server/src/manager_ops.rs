@@ -572,7 +572,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
         status.pid().cast_unsigned(),
         status.status().cast_unsigned(),
     );
-    let arg = u64::from(pid) | u64::from(status) << 32;
+    let arg = u64::from(pid) | (u64::from(status) << 32);
     let code = run_over(&mut Context::of(Some(serv)), RUN_RESTART_WORKER, arg);
     c_int::try_from(code).unwrap_or(-1)
 }

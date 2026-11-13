@@ -85,9 +85,9 @@ pub fn swr_v1_core_name_resolver_remove(
 ) -> *mut c_void {
     let mut list = resolvers();
     let found = (list.iter()).position(|r| same(r.private_data(), r.kind));
-    found.map_or(core::ptr::null_mut(), |index| {
-        list.remove(index).private_data()
-    })
+    let removed = found.map(|index| list.remove(index));
+    drop(list);
+    removed.map_or(core::ptr::null_mut(), Resolver::private_data)
 }
 
 /// `SwooleG = {}`'s effect on the list.

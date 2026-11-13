@@ -64,14 +64,14 @@ pub fn ipv4(text: &[u8], allow_zeroes: bool) -> Option<Ipv4Addr> {
             }
             digits = true;
         } else if byte == b'.' && digits && dots < 3 {
-            address = address << 8 | octet;
+            address = (address << 8) | octet;
             dots += 1;
             (octet, digits) = (0, false);
         } else {
             return None;
         }
     }
-    (digits && dots == 3).then(|| Ipv4Addr::from(address << 8 | octet))
+    (digits && dots == 3).then(|| Ipv4Addr::from((address << 8) | octet))
 }
 
 #[must_use]

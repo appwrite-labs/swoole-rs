@@ -73,10 +73,9 @@ fn hashes() {
         for byte in &mut bytes {
             *byte &= 127;
         }
-        for (signed, oracle) in [
-            (true, upstream::hash as unsafe extern "C" fn(_, _, _) -> _),
-            (false, upstream::hash_unsigned),
-        ] {
+        let oracles: [(_, unsafe extern "C" fn(_, _, _) -> _); 2] =
+            [(true, upstream::hash), (false, upstream::hash_unsigned)];
+        for (signed, oracle) in oracles {
             let want = unsafe { oracle(2, bytes.as_ptr(), size) };
             assert_eq!(swoole_hash(&bytes, 2, signed), want, "austin {bytes:?}");
         }

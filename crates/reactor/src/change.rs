@@ -519,7 +519,7 @@ mod tests {
             assert_eq!(interest(&mut socket, 0, SW_EVENT_READ), 0);
             assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
             assert_eq!(interest(&mut socket, 0, 1 << 11), 0);
-            assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE | 1 << 11);
+            assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE | (1 << 11));
             assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
             // remove_read_event keeps the write interest; remove_write_event then deletes it.
             assert_eq!(interest(&mut socket, 4, 0), 0);

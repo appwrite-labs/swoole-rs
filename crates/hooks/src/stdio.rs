@@ -38,6 +38,10 @@ pub fn on_pool<T: Send>(
 pub unsafe fn offloaded<T, F: FnMut() -> T>(offload: Option<Offload>, refused: T, call: F) -> T {
     /// A value the caller lets cross to the pool thread.
     struct Lent<T>(T);
+    #[expect(
+        clippy::non_send_fields_in_send_ty,
+        reason = "Lent exists to carry what offloaded's caller promises may cross threads"
+    )]
     // SAFETY: as the caller of `offloaded` promises.
     unsafe impl<T> Send for Lent<T> {}
     impl<F: FnMut() -> T, T> Lent<F> {
@@ -413,7 +417,7 @@ pub(crate) mod tests {
             let file = with(Here, || {
                 swoole_coroutine_fopen(name.as_ptr(), c"r".as_ptr())
             });
-            let mut buffer = [0 as c_char; 16];
+            let mut buffer: [c_char; 16] = [0; 16];
             assert!(
                 !with(Pool, || swoole_coroutine_fgets(
                     buffer.as_mut_ptr(),

@@ -221,6 +221,10 @@ unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int
         unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
         let status = Value::of(&mut status);
         // Upstream's extra reference, kept (never released) as it was.
+        #[expect(
+            clippy::mem_forget,
+            reason = "upstream keeps this extra reference forever"
+        )]
         std::mem::forget(status.copy());
         throw_exit(c"swoole exit", flags, status);
     }

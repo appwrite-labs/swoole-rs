@@ -90,7 +90,7 @@ pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) ->
 fn effect(op: u32) -> Option<u64> {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::log::{last_error, set_last_error};
-    // SAFETY: crates/reactor's and crates/timer's safe functions, under their
+    // crates/reactor's and crates/timer's safe functions, under their
     // upstream symbols and signatures. Declarations, since crates/reactor (and
     // through it crates/timer) depends on this crate.
     unsafe extern "C-unwind" {

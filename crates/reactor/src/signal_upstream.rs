@@ -31,7 +31,7 @@ const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
 
 use swoole_rs_process::signal::Callback as SignalHandler;
 
-// SAFETY: crates/tls's `Socket::free`, the same archive; declared, since crates/tls
+// crates/tls's `Socket::free`, the same archive; declared, since crates/tls
 // depends on this crate.
 #[cfg(target_os = "linux")]
 unsafe extern "C-unwind" {
@@ -46,13 +46,13 @@ fn current() -> Option<ReactorPrepared> {
 
 fn capabilities() -> u8 {
     u8::from(cfg!(target_os = "linux"))
-        | u8::from(cfg!(any(
+        | (u8::from(cfg!(any(
             target_os = "macos",
             target_os = "freebsd",
             target_os = "netbsd",
             target_os = "openbsd",
             target_os = "dragonfly"
-        ))) << 1
+        ))) << 1)
 }
 
 fn available() -> bool {
@@ -261,7 +261,7 @@ impl Handler {
 
     #[must_use]
     pub fn new(handler: extern "C" fn(c_int)) -> Self {
-        Self(handler as usize)
+        Self((handler as *const ()).expose_provenance())
     }
 
     /// # Safety

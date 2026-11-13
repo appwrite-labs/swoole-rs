@@ -280,6 +280,10 @@ pub(crate) static CLIENT: CustomClass<Data> = CustomClass::new();
 static EXCEPTION: Class = Class::new();
 /// A persistent connection the pool owns until a client takes it back.
 struct Pooled(Box<Conn>);
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the pool only moves a connection; whichever request takes it back owns it"
+)]
 // SAFETY: the pool only moves the connection, whose client is a raw pointer;
 // whichever request takes it back owns it, as with upstream's process-wide
 // `long_connections`.

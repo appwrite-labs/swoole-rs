@@ -2524,7 +2524,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             )]
             let head = |info: &mut swoole_rs_corebase::DataHead| {
                 info.kind = EVENT_COMMAND_REQUEST as u8;
-                info.fd = c.request_id as libc::c_long;
+                info.fd = c.request_id;
                 info.server_fd = c.command_id as u16;
             };
             if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {

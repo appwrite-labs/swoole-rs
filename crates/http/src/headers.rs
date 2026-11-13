@@ -68,10 +68,10 @@ pub fn header_info(
     let mut at = state.cursor;
     while at < end {
         // The next line start: just past a `\n` at `at - 1` or later (`at >= 2` here).
-        let Some(newline) = input
+        let newline = input
             .get(at - 1..end - 1)
-            .and_then(|line| memchr::memchr(b'\n', line))
-        else {
+            .and_then(|line| memchr::memchr(b'\n', line));
+        let Some(newline) = newline else {
             at = end;
             break;
         };

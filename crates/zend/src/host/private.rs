@@ -22,6 +22,10 @@ fn bailed(code: c_int) -> bool {
 /// destructor runs inside the C trap ([`Owned`]'s drop).
 fn discard(value: Owned) {
     if bailout::pending() {
+        #[expect(
+            clippy::mem_forget,
+            reason = "upstream never ran past a bailout to destroy it"
+        )]
         std::mem::forget(value);
     } else {
         drop(value);
@@ -295,6 +299,10 @@ pub unsafe fn named_call_into(
     });
     if bailout::pending() {
         // Upstream never ran past a bailout to release the name.
+        #[expect(
+            clippy::mem_forget,
+            reason = "upstream never ran past a bailout to release it"
+        )]
         std::mem::forget(function);
     } else {
         if result != 0 {

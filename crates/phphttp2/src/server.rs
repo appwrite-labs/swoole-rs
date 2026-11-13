@@ -469,7 +469,6 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             let kind = content_type
                 .as_ref()
                 .map_or(&b"text/html"[..], ZString::bytes);
-            // SAFETY: a live context.
             let accept = ctx.compressible(kind);
             set(ctx, Field::AcceptCompression, u32::from(accept));
         }
@@ -596,7 +595,6 @@ pub(crate) fn send_body(
         if send_n > window as usize {
             // The coroutine server receives frames serially and cannot be
             // suspended, so it has no flow control.
-            // SAFETY: plain reads of Swoole's state.
             let may_suspend =
                 get(ctx, Field::CoSocket) == 0 && swoole_rs_phpcoroutines::in_coroutine();
             match sw_rs_http2_window_action(send_n, window, u32::from(may_suspend)) {
@@ -1101,7 +1099,6 @@ fn headers_complete(stream: &Stream) -> bool {
     if get(ctx, Field::EnableCompression) != 0
         && let Some(value) = header(ctx, b"accept-encoding")
     {
-        // SAFETY: a live context.
         ctx.compression_method(value.bytes());
     }
     true
@@ -1305,7 +1302,6 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
     }
     match kind {
         HEADER_COOKIE => {
-            // SAFETY: the request's `$cookie`.
             ctx.cookie(value);
             false
         }
@@ -1334,13 +1330,11 @@ fn path(ctx: Ctx, value: &[u8]) {
         Some((path, query)) => {
             let query = query.get(1..).unwrap_or_default();
             add_string(ctx, Value::Server, b"query_string", query);
-            // SAFETY: the request's `$get`.
             ctx.treat_query(Value::Get, query);
             path
         }
         None => value,
     };
-    // SAFETY: a live context without a path.
     ctx.set_path(value);
     add_string(ctx, Value::Server, b"request_uri", path);
     ctx.insert(Value::Server, b"path_info", ZString::url_decode(path));

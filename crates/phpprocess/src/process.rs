@@ -355,7 +355,6 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    // SAFETY: C++'s reader of an ini flag.
     if !cli() {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
@@ -634,7 +633,6 @@ fn alarm(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: C++'s reader of an ini flag.
     if !cli() {
         fatal(E_ERROR, &message!("cannot use Swoole\\Process::alarm here"));
         call.set_bool(false);
@@ -651,9 +649,16 @@ fn alarm(call: &Call) {
     }
     // Zero is a disarmed timer.
     let usec = usec.max(0);
+    #[cfg_attr(
+        not(target_vendor = "apple"),
+        expect(
+            trivial_numeric_casts,
+            reason = "suseconds_t is i64 here, i32 on macOS"
+        )
+    )]
     let interval = libc::timeval {
-        tv_sec: (usec / 1_000_000) as _,
-        tv_usec: (usec % 1_000_000) as _,
+        tv_sec: usec / 1_000_000,
+        tv_usec: (usec % 1_000_000) as libc::suseconds_t,
     };
     let timer = libc::itimerval {
         it_interval: interval,
@@ -1045,6 +1050,10 @@ fn priority_who(call: &Call, which: i64, who: Option<i64>) -> Option<i64> {
     clippy::cast_sign_loss,
     reason = "upstream passes zend_long to setpriority's int and id_t parameters"
 )]
+#[expect(
+    clippy::as_underscore,
+    reason = "glibc types `which` as __priority_which_t, other libcs as int"
+)]
 fn set_priority(call: &Call) {
     let parsed = call
         .arity(2, 3)
@@ -1069,6 +1078,10 @@ fn set_priority(call: &Call) {
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "upstream passes zend_long to getpriority's int and id_t parameters"
+)]
+#[expect(
+    clippy::as_underscore,
+    reason = "glibc types `which` as __priority_which_t, other libcs as int"
 )]
 fn get_priority(call: &Call) {
     let parsed = call

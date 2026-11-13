@@ -540,8 +540,8 @@ mod tests {
         READ,
         WRITE,
         READ | WRITE,
-        READ | 1 << 11,
-        WRITE | 1 << 11,
+        READ | (1 << 11),
+        WRITE | (1 << 11),
         1 << 31,
         u32::MAX,
     ];
