@@ -3,7 +3,7 @@
 //! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
-use crate::connect::{Handshaking, ssl_handshake};
+use crate::connect::{HandshakeMode, Handshaking, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
@@ -202,12 +202,16 @@ impl Handshake {
 }
 
 impl Handshaking for Handshake {
-    fn mode(&self) -> c_int {
+    fn mode(&self) -> HandshakeMode {
         #[cfg(feature = "iouring")]
         if self.uring() {
-            return 2;
+            return HandshakeMode::SelfDriven;
         }
-        c_int::from(self.socket.ssl_is_server())
+        if self.socket.ssl_is_server() {
+            HandshakeMode::Server
+        } else {
+            HandshakeMode::Client
+        }
     }
 
     fn handshaked(&self) -> bool {

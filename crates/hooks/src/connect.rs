@@ -31,13 +31,22 @@ const HTTP_PROXY_BAD_RESPONSE: c_int = 7104;
 /// `SW_SOCK_TCP` and `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
-/// `Connecting::set_host` targets.
-const HOST_CONNECT: c_int = 0;
-const HOST_TLS: c_int = 1;
-const HOST_PROXY: c_int = 2;
-/// `Connecting::proxy`.
-const PROXY_SOCKS5: c_int = 1;
-const PROXY_HTTP: c_int = 2;
+/// What [`Connecting::set_host`] stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    /// The connect target.
+    Connect,
+    /// The TLS host name (no port).
+    Tls,
+    /// The proxy's target, which makes the proxy the connect target.
+    Proxy,
+}
+/// The socket's proxy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Proxy {
+    Socks5,
+    Http,
+}
 /// `set_err(-1)` is the argument-less `set_err()`: the last error, else errno.
 const LAST_ERROR: c_int = -1;
 /// `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`; `swReturnCode`'s `SW_WAIT`
@@ -61,8 +70,7 @@ pub trait Connecting {
     fn domain(&self) -> c_int;
     /// `AF_INET`/`AF_INET6` for an IPv4/IPv6 socket, else 0.
     fn family(&self) -> c_int;
-    /// 0 without a proxy, 1 SOCKS5, 2 HTTP.
-    fn proxy(&self) -> c_int;
+    fn proxy(&self) -> Option<Proxy>;
     /// Whether the HTTP proxy handshakes.
     fn http_handshake(&self) -> bool;
     /// Whether the socket has an SSL context.
@@ -79,10 +87,8 @@ pub trait Connecting {
     fn bad_host(&self) -> bool {
         self.last_error() == BAD_HOST_ADDR
     }
-    /// Stores `host` and `port` as the connect target ([`HOST_CONNECT`]), the TLS
-    /// host name ([`HOST_TLS`], no port) or the proxy's target ([`HOST_PROXY`]),
-    /// which makes the proxy the connect target.
-    fn set_host(&mut self, which: c_int, host: &[u8], port: c_int);
+    /// Stores `host` and `port` as `which`.
+    fn set_host(&mut self, which: Host, host: &[u8], port: c_int);
     /// The connect target's host.
     fn connect_host(&self) -> Vec<u8>;
     /// `reinit_sock(type)`.
@@ -98,9 +104,9 @@ pub trait Connecting {
     fn recv(&mut self, into: &mut [u8]) -> isize;
     /// Packs the SOCKS5 negotiation, moving the proxy to the handshake state.
     fn socks5_negotiate(&mut self) -> Vec<u8>;
-    /// `Socks5Proxy::handshake` of a reply (sending what it packs): -1 failed,
-    /// 0 continue, 1 ready.
-    fn socks5_step(&mut self, reply: &[u8]) -> c_int;
+    /// `Socks5Proxy::handshake` of a reply (sending what it packs): whether the
+    /// proxy is ready, or none when it failed.
+    fn socks5_step(&mut self, reply: &[u8]) -> Option<bool>;
     /// Packs the HTTP CONNECT request into the write buffer, and returns it.
     fn http_request(&mut self) -> Vec<u8>;
     /// Receives the HTTP proxy's response head (`recv_packet` under a "\r\n\r\n"
@@ -124,27 +130,29 @@ fn is_ip(family: c_int, host: &[u8]) -> bool {
     swoole_rs_clients::address::verify_ip(family, &text)
 }
 
-/// Outcomes of [`resolve`] besides 0 (assigned, or the second try fell through as
-/// upstream's does).
-const ASSIGN_FAILED: c_int = 1;
-const RESOLVE_FAILED: c_int = 2;
+/// Why [`resolve`] failed.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolveError {
+    /// An assignment failed other than with a bad host address.
+    Assign,
+    Lookup,
+}
 
-/// The address loop: up to two assignments with a lookup between them. Returns 0,
-/// or 1 when an assignment failed other than with a bad host address, or 2 when
-/// the lookup failed.
-fn resolve(ops: &mut impl Connecting) -> c_int {
+/// The address loop: up to two assignments with a lookup between them. A second
+/// bad host address falls through as upstream's does.
+fn resolve(ops: &mut impl Connecting) -> Result<(), ResolveError> {
     for _ in 0..2 {
         if ops.assign() {
             break;
         }
         if !ops.bad_host() {
-            return ASSIGN_FAILED;
+            return Err(ResolveError::Assign);
         }
         if !ops.lookup() {
-            return RESOLVE_FAILED;
+            return Err(ResolveError::Lookup);
         }
     }
-    0
+    Ok(())
 }
 
 /// `socks5_handshake`: the negotiation, then each reply until the proxy is ready.
@@ -160,9 +168,9 @@ fn socks5(ops: &mut impl Connecting) -> bool {
             return false;
         };
         match ops.socks5_step(reply.get(..received).unwrap_or_default()) {
-            1 => return true,
-            0 => {}
-            _ => return false,
+            Some(true) => return true,
+            Some(false) => {}
+            None => return false,
         }
     }
 }
@@ -193,12 +201,16 @@ fn connect_host(ops: &mut impl Connecting, host: &[u8], port: c_int) -> bool {
         return false;
     }
     let proxy = ops.proxy();
-    let proxied = proxy == PROXY_SOCKS5 || proxy == PROXY_HTTP;
+    let proxied = proxy.is_some();
     // A proxy replaces the host, so a TLS host name has to come from it now.
     if ops.ssl() && proxied && !is_ip(ops.domain(), host) {
-        ops.set_host(HOST_TLS, host, 0);
+        ops.set_host(Host::Tls, host, 0);
     }
-    ops.set_host(if proxied { HOST_PROXY } else { HOST_CONNECT }, host, port);
+    ops.set_host(
+        if proxied { Host::Proxy } else { Host::Connect },
+        host,
+        port,
+    );
     if proxied {
         let target = ops.connect_host();
         let family = ops.family();
@@ -213,7 +225,7 @@ fn connect_host(ops: &mut impl Connecting, host: &[u8], port: c_int) -> bool {
             return false;
         }
     }
-    if resolve(ops) != 0 {
+    if resolve(ops).is_err() {
         let error = ops.last_error();
         ops.set_err_text(error, None);
         return false;
@@ -221,11 +233,11 @@ fn connect_host(ops: &mut impl Connecting, host: &[u8], port: c_int) -> bool {
     if !ops.connect() {
         return false;
     }
-    if proxy == PROXY_SOCKS5 && !socks5(ops) {
+    if proxy == Some(Proxy::Socks5) && !socks5(ops) {
         ops.set_err(SOCKS5_HANDSHAKE_FAILED);
         return false;
     }
-    if proxy == PROXY_HTTP && ops.http_handshake() && !http(ops) {
+    if proxy == Some(Proxy::Http) && ops.http_handshake() && !http(ops) {
         ops.set_err(HTTP_PROXY_HANDSHAKE_FAILED);
         return false;
     }
@@ -304,11 +316,11 @@ impl Connecting for Live<'_> {
         }
     }
 
-    fn proxy(&self) -> c_int {
+    fn proxy(&self) -> Option<Proxy> {
         match (self.socks5, self.http) {
-            (Some(_), _) => PROXY_SOCKS5,
-            (None, Some(_)) => PROXY_HTTP,
-            (None, None) => 0,
+            (Some(_), _) => Some(Proxy::Socks5),
+            (None, Some(_)) => Some(Proxy::Http),
+            (None, None) => None,
         }
     }
 
@@ -347,9 +359,9 @@ impl Connecting for Live<'_> {
         log::last_error()
     }
 
-    fn set_host(&mut self, which: c_int, host: &[u8], port: c_int) {
+    fn set_host(&mut self, which: Host, host: &[u8], port: c_int) {
         let (mut host, mut port) = (host.to_vec(), port);
-        if which == HOST_PROXY
+        if which == Host::Proxy
             && let Some(proxy) = self.socks5.or(self.http)
         {
             // A failed copy (allocation) leaves the previous target.
@@ -358,7 +370,7 @@ impl Connecting for Live<'_> {
             port = proxy.fields().port;
             host = proxy.string(0).to_vec();
         }
-        if which == HOST_TLS {
+        if which == Host::Tls {
             self.set_slot(SSL_HOST_NAME, &host);
         } else {
             self.set_slot(CONNECT_HOST, &host);
@@ -389,7 +401,7 @@ impl Connecting for Live<'_> {
     fn lookup(&mut self) -> bool {
         if !self.resolved {
             self.resolved = true;
-            if self.ssl() && self.proxy() == 0 {
+            if self.ssl() && self.proxy().is_none() {
                 self.set_slot(SSL_HOST_NAME, &self.connect_host());
             }
         }
@@ -444,15 +456,13 @@ impl Connecting for Live<'_> {
         self.socks5_packet(length)
     }
 
-    fn socks5_step(&mut self, reply: &[u8]) -> c_int {
-        let Some(owner) = self.socks5 else {
-            return -1;
-        };
+    fn socks5_step(&mut self, reply: &[u8]) -> Option<bool> {
+        let owner = self.socks5?;
         let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply);
         if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != n) {
-            return -1;
+            return None;
         }
-        c_int::from(owner.fields().state == SOCKS5_READY)
+        Some(owner.fields().state == SOCKS5_READY)
     }
 
     fn http_request(&mut self) -> Vec<u8> {
@@ -586,14 +596,19 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
 }
 
 /// How [`Handshaking::step`] drives the handshake.
-const MODE_CLIENT: c_int = 0;
-const MODE_SERVER: c_int = 1;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeMode {
+    /// `ssl_connect` steps.
+    Client,
+    /// `ssl_accept` steps.
+    Server,
+    /// A step that completes or fails by itself (`io_uring`'s memory BIOs).
+    SelfDriven,
+}
 
 /// The socket's effects for `ssl_handshake`.
 pub trait Handshaking {
-    /// 0 client (`ssl_connect` steps), 1 server (`ssl_accept` steps), 2 a step
-    /// that completes or fails by itself (`io_uring`'s memory BIOs).
-    fn mode(&self) -> c_int;
+    fn mode(&self) -> HandshakeMode;
     fn handshaked(&self) -> bool;
     /// Whether the SSL context has its `SSL_CTX`, and whether it verifies the peer.
     fn context_ready(&self) -> bool;
@@ -606,8 +621,8 @@ pub trait Handshaking {
     fn context_create(&mut self) -> bool;
     fn create(&mut self) -> bool;
     /// One step: the client's `ssl_connect()` (-1 when it failed, else the SSL
-    /// state), the server's `ssl_accept()` return code, or for mode 2 1 done,
-    /// 0 again, -1 failed.
+    /// state), the server's `ssl_accept()` return code, or for a self-driven one
+    /// 1 done, 0 again, -1 failed.
     fn step(&mut self) -> c_int;
     /// Waits to read under the read timeout: a timer of its own when `fresh`,
     /// else one timer for the whole handshake.
@@ -618,7 +633,7 @@ pub trait Handshaking {
 
 fn steps(ops: &mut impl Handshaking) -> bool {
     match ops.mode() {
-        MODE_CLIENT => loop {
+        HandshakeMode::Client => loop {
             match ops.step() {
                 code if code < 0 => {
                     ops.set_err(LAST_ERROR);
@@ -633,7 +648,7 @@ fn steps(ops: &mut impl Handshaking) -> bool {
                 _ => {}
             }
         },
-        MODE_SERVER => {
+        HandshakeMode::Server => {
             let mut code = ops.step();
             while code == WAIT && ops.wait(false) {
                 code = ops.step();
@@ -643,7 +658,7 @@ fn steps(ops: &mut impl Handshaking) -> bool {
             }
             code == READY
         }
-        _ => loop {
+        HandshakeMode::SelfDriven => loop {
             match ops.step() {
                 1 => return true,
                 0 => {}
@@ -695,7 +710,7 @@ mod tests {
 
     /// A scripted socket: each effect logs its name and takes its scripted result.
     struct Mock {
-        proxy: c_int,
+        proxy: Option<Proxy>,
         ssl: bool,
         family: c_int,
         http_handshake: bool,
@@ -708,7 +723,7 @@ mod tests {
         fn family(&self) -> c_int {
             self.family
         }
-        fn proxy(&self) -> c_int {
+        fn proxy(&self) -> Option<Proxy> {
             self.proxy
         }
         fn http_handshake(&self) -> bool {
@@ -736,14 +751,14 @@ mod tests {
         fn bad_host(&self) -> bool {
             take("bad_host", 0) != 0
         }
-        fn set_host(&mut self, which: c_int, h: &[u8], port: c_int) {
+        fn set_host(&mut self, which: Host, h: &[u8], port: c_int) {
             log(format!(
-                "host {which} {} {port}",
+                "host {which:?} {} {port}",
                 String::from_utf8_lossy(h)
             ));
-            if which != HOST_TLS {
+            if which != Host::Tls {
                 HOST.with(|host| {
-                    *host.borrow_mut() = if which == HOST_PROXY {
+                    *host.borrow_mut() = if which == Host::Proxy {
                         b"::1".to_vec()
                     } else {
                         h.to_vec()
@@ -783,8 +798,12 @@ mod tests {
             let length = take("negotiate", 3);
             vec![5; usize::try_from(length).unwrap_or(0)]
         }
-        fn socks5_step(&mut self, _: &[u8]) -> c_int {
-            c_int::try_from(take("step", 1)).unwrap_or(-9)
+        fn socks5_step(&mut self, _: &[u8]) -> Option<bool> {
+            match take("step", 1) {
+                1 => Some(true),
+                0 => Some(false),
+                _ => None,
+            }
         }
         fn http_request(&mut self) -> Vec<u8> {
             take("request", 7);
@@ -805,7 +824,7 @@ mod tests {
         }
     }
 
-    fn connect_ops(proxy: c_int, ssl: bool, family: c_int) -> Mock {
+    fn connect_ops(proxy: Option<Proxy>, ssl: bool, family: c_int) -> Mock {
         Mock {
             proxy,
             ssl,
@@ -823,14 +842,18 @@ mod tests {
 
     /// resolve.rs's `assign_resolve_and_retry`, over the trait: the scripted assigns
     /// and lookups, and whether the last error is a bad host address.
-    fn resolved(assigns: &[bool], lookups: &[bool], bad: bool) -> (c_int, Vec<String>) {
+    fn resolved(
+        assigns: &[bool],
+        lookups: &[bool],
+        bad: bool,
+    ) -> (Result<(), ResolveError>, Vec<String>) {
         let mut script: Vec<(&'static str, isize)> = Vec::new();
         script.extend(assigns.iter().map(|&a| ("assign", isize::from(a))));
         script.extend(lookups.iter().map(|&l| ("lookup", isize::from(l))));
         script.extend(core::iter::repeat_n(("bad_host", isize::from(bad)), 2));
         LOG.with(|log| log.borrow_mut().clear());
         SCRIPT.with(|s| *s.borrow_mut() = script);
-        let code = resolve(&mut connect_ops(0, false, 0));
+        let code = resolve(&mut connect_ops(None, false, 0));
         let log = LOG.with(|log| log.borrow().clone());
         (code, log.into_iter().filter(|e| e != "bad_host").collect())
     }
@@ -840,27 +863,27 @@ mod tests {
         let names = |names: &[&str]| names.iter().map(|&n| n.to_owned()).collect::<Vec<_>>();
         assert_eq!(
             resolved(&[true], &[], false),
-            (0, names(&["assign"])),
+            (Ok(()), names(&["assign"])),
             "an address"
         );
         assert_eq!(
             resolved(&[false, true], &[true], true),
-            (0, names(&["assign", "lookup", "assign"])),
+            (Ok(()), names(&["assign", "lookup", "assign"])),
             "a name"
         );
         assert_eq!(
             resolved(&[false], &[], false),
-            (ASSIGN_FAILED, names(&["assign"])),
+            (Err(ResolveError::Assign), names(&["assign"])),
             "another error"
         );
         assert_eq!(
             resolved(&[false], &[false], true),
-            (RESOLVE_FAILED, names(&["assign", "lookup"]))
+            (Err(ResolveError::Lookup), names(&["assign", "lookup"]))
         );
         // A second bad host address resolves again and falls through, as upstream's loop does.
         assert_eq!(
             resolved(&[false, false], &[true, true], true),
-            (0, names(&["assign", "lookup", "assign", "lookup"]))
+            (Ok(()), names(&["assign", "lookup", "assign", "lookup"]))
         );
     }
 
@@ -873,14 +896,14 @@ mod tests {
 
     #[test]
     fn direct_connect() {
-        let mut ops = connect_ops(0, false, libc::AF_INET);
+        let mut ops = connect_ops(None, false, libc::AF_INET);
         assert_eq!(
             run(&mut ops, "example.com", &[]),
             (
                 true,
                 vec![
                     "available",
-                    "host 0 example.com 80",
+                    "host Connect example.com 80",
                     "assign",
                     "connect",
                     "client"
@@ -897,7 +920,7 @@ mod tests {
 
     #[test]
     fn resolve_failure_reports_the_last_error_text() {
-        let mut ops = connect_ops(0, false, libc::AF_INET);
+        let mut ops = connect_ops(None, false, libc::AF_INET);
         let (ok, log) = run(
             &mut ops,
             "x",
@@ -911,15 +934,15 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
-        let mut ops = connect_ops(PROXY_SOCKS5, true, libc::AF_INET);
+        let mut ops = connect_ops(Some(Proxy::Socks5), true, libc::AF_INET);
         let (ok, log) = run(&mut ops, "example.com", &[]);
         assert!(ok);
         assert_eq!(
             log[..5],
             [
                 "available",
-                "host 1 example.com 0",
-                "host 2 example.com 80",
+                "host Tls example.com 0",
+                "host Proxy example.com 80",
                 "reinit6",
                 "assign"
             ]
@@ -939,12 +962,12 @@ mod tests {
         // An IP host is no TLS host name; a failed reopen stops.
         let (ok, log) = run(&mut ops, "10.0.0.1", &[("reinit6", 0)]);
         assert!(!ok);
-        assert_eq!(log, ["available", "host 2 10.0.0.1 80", "reinit6"]);
+        assert_eq!(log, ["available", "host Proxy 10.0.0.1 80", "reinit6"]);
     }
 
     #[test]
     fn socks5_failures() {
-        let mut ops = connect_ops(PROXY_SOCKS5, false, 0);
+        let mut ops = connect_ops(Some(Proxy::Socks5), false, 0);
         let (ok, log) = run(&mut ops, "h", &[("recv", 2), ("step", 0), ("recv", 0)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 1], "err 7005");
@@ -956,7 +979,7 @@ mod tests {
 
     #[test]
     fn http_proxy() {
-        let mut ops = connect_ops(PROXY_HTTP, false, 0);
+        let mut ops = connect_ops(Some(Proxy::Http), false, 0);
         let (ok, log) = run(&mut ops, "h", &[]);
         assert!(ok);
         assert!(log.contains(&"done true".to_owned()));
@@ -973,7 +996,7 @@ mod tests {
         let (ok, log) = run(&mut ops, "h", &[("send", 3)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 2..], ["done false", "err 7103"]);
-        let mut quiet = connect_ops(PROXY_HTTP, false, 0);
+        let mut quiet = connect_ops(Some(Proxy::Http), false, 0);
         quiet.http_handshake = false;
         let (ok, log) = run(&mut quiet, "h", &[]);
         assert!(ok);
@@ -982,7 +1005,7 @@ mod tests {
 
     #[test]
     fn tls_failure_without_error_sets_handshake_failed() {
-        let mut ops = connect_ops(0, true, 0);
+        let mut ops = connect_ops(None, true, 0);
         let (ok, log) = run(&mut ops, "h", &[("handshake", 0)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 1], "err 1018");
@@ -993,14 +1016,14 @@ mod tests {
 
     /// A scripted handshake: each effect logs its name and takes its scripted result.
     struct Script {
-        mode: c_int,
+        mode: HandshakeMode,
         handshaked: bool,
         context_ready: bool,
         verify_peer: bool,
     }
 
     impl Handshaking for Script {
-        fn mode(&self) -> c_int {
+        fn mode(&self) -> HandshakeMode {
             self.mode
         }
         fn handshaked(&self) -> bool {
@@ -1035,7 +1058,7 @@ mod tests {
         }
     }
 
-    fn tls(mode: c_int, script: &[(&'static str, isize)]) -> (bool, Vec<String>) {
+    fn tls(mode: HandshakeMode, script: &[(&'static str, isize)]) -> (bool, Vec<String>) {
         LOG.with(|log| log.borrow_mut().clear());
         SCRIPT.with(|s| *s.borrow_mut() = script.to_vec());
         let mut ops = Script {
@@ -1051,7 +1074,7 @@ mod tests {
     #[test]
     fn client_handshake() {
         let (ok, log) = tls(
-            MODE_CLIENT,
+            HandshakeMode::Client,
             &[("tls_step", 2), ("tls_step", 0), ("tls_step", 1)],
         );
         assert!(ok);
@@ -1068,36 +1091,39 @@ mod tests {
                 "verify"
             ]
         );
-        let (ok, log) = tls(MODE_CLIENT, &[("tls_step", -1)]);
+        let (ok, log) = tls(HandshakeMode::Client, &[("tls_step", -1)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 1], "err -1");
-        let (ok, log) = tls(MODE_CLIENT, &[("tls_step", 2), ("wait_fresh", 0)]);
+        let (ok, log) = tls(HandshakeMode::Client, &[("tls_step", 2), ("wait_fresh", 0)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 1], "wait_fresh");
     }
 
     #[test]
     fn server_handshake() {
-        let (ok, log) = tls(MODE_SERVER, &[("tls_step", 2), ("tls_step", 5)]);
+        let (ok, log) = tls(HandshakeMode::Server, &[("tls_step", 2), ("tls_step", 5)]);
         assert!(ok);
         assert_eq!(log[3..], ["tls_step", "wait", "tls_step", "verify"]);
         // A failed wait is a bad client too.
-        let (ok, log) = tls(MODE_SERVER, &[("tls_step", 2), ("wait", 0)]);
+        let (ok, log) = tls(HandshakeMode::Server, &[("tls_step", 2), ("wait", 0)]);
         assert!(!ok);
         assert_eq!(log[log.len() - 1], "err 1015");
     }
 
     #[test]
     fn self_driven_handshake_and_preconditions() {
-        let (ok, log) = tls(2, &[("tls_step", 0), ("tls_step", 1), ("verify", 0)]);
+        let (ok, log) = tls(
+            HandshakeMode::SelfDriven,
+            &[("tls_step", 0), ("tls_step", 1), ("verify", 0)],
+        );
         assert!(!ok);
         assert_eq!(log[3..], ["tls_step", "tls_step", "verify"]);
-        let (ok, log) = tls(2, &[("create", 0)]);
+        let (ok, log) = tls(HandshakeMode::SelfDriven, &[("create", 0)]);
         assert!(!ok);
         assert_eq!(log, ["available", "context_create", "create"]);
         LOG.with(|log| log.borrow_mut().clear());
         let mut ops = Script {
-            mode: MODE_CLIENT,
+            mode: HandshakeMode::Client,
             handshaked: true,
             context_ready: true,
             verify_peer: false,
