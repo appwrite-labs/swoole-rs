@@ -23,8 +23,12 @@ set_error_handler(null);
 $master = getmypid();
 $marker = sys_get_temp_dir() . "/pool-worker-id-hook-$master";
 $pool = new Pool(1, SWOOLE_IPC_NONE, 0, true);
+// Only while the marker exists: the first worker must never start, and the restarted
+// one's start races the pool's shutdown, which its hook has already begun (#3597).
 $pool->on('workerStart', static function (Pool $pool) {
-    echo "  workerStart\n";
+    if (file_exists($GLOBALS['marker'])) {
+        echo "  workerStart\n";
+    }
 });
 s('start', fn() => $pool->start());
 echo "after\n";
