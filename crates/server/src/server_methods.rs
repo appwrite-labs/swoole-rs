@@ -10,11 +10,11 @@ use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 
 use crate::base_factory::{SEND_DATA, SendData};
-use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
+use crate::hybrid::hybrid;
 use crate::ops::{
     RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
-    RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN,
-    RUN_ST_CLEAR_TIMER, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN, RUN_ST_CLEAR_TIMER,
+    RUN_ST_SEND, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_SIGNAL, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
@@ -544,7 +544,11 @@ pub(crate) fn end_arg(session_id: c_long, flags: c_int) -> u64 {
 /// `serv->reactor_thread_barrier.wait()`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
-    run_on(serv, RUN_NATIVE_OP, crate::ops::OP_REACTOR_BARRIER.into());
+    run_on(
+        serv,
+        crate::ops::RUN_NATIVE_OP,
+        crate::ops::OP_REACTOR_BARRIER.into(),
+    );
 }
 
 /// `Server::get_package_max_length(conn)`, over the fd of one of `serv`'s connections.
@@ -565,11 +569,8 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
     reason = "callers ignore the result where upstream's do"
 )]
 pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.session_id = session_id;
-    ctx.number = CLOSE_ACTIVELY | if reset { CLOSE_RESET } else { 0 };
-    // SAFETY: the live server.
-    unsafe { run(RUN_NATIVE_OP, OP_FACTORY_END.into(), &mut ctx) != 0 }
+    let flags = CLOSE_ACTIVELY | if reset { CLOSE_RESET } else { 0 };
+    hybrid().factory_end(serv, session_id, flags)
 }
 
 /// `Server::notify(conn, event)`: the factory hears `event` for `conn`.
@@ -585,10 +586,7 @@ pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int)
         server_fd: conn.server_fd().c_cast::<u16>(),
         ..DataHead::default()
     };
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.object = (&raw mut head).cast();
-    // SAFETY: the live server; the head lives for the call.
-    unsafe { run(RUN_NATIVE_OP, OP_FACTORY_NOTIFY.into(), &mut ctx) != 0 }
+    hybrid().factory_notify(serv, &mut head)
 }
 
 /// `SW_SERVER_EVENT_PIPE_MESSAGE` (server.cc asserts it).
@@ -601,14 +599,7 @@ pub fn send_pipe_message(
     msg: &mut swoole_rs_process::task_file::TaskBuffer,
 ) -> bool {
     msg.set_kind(EVENT_PIPE_MESSAGE);
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.number = worker_id.cast_signed();
-    // `EventData::size()`: the head and its payload.
-    ctx.length = 40 + msg.head().len;
-    ctx.object = msg.as_mut_ptr();
-    // SAFETY: the live server, and the packed message, which lives for the call and
-    // holds the payload its head counts.
-    unsafe { run(RUN_NATIVE_OP, OP_PIPE_TO_WORKER.into(), &mut ctx) != 0 }
+    hybrid().pipe_to_worker(serv, worker_id, msg)
 }
 
 /// Runs a command `operation` over the host of a `Server` method whose context lends
@@ -685,8 +676,6 @@ mod tests {
     /// offset and the `SendfileTask::length` in the buffer, if any.
     type Sent = (u32, u64, usize, usize, usize, u32, c_long, i64, usize);
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
-    /// The worker or flags and the `DataHead` of each native op that takes one.
-    static HEADS: Mutex<Vec<(c_int, DataHead)>> = Mutex::new(Vec::new());
     /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
     static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
@@ -726,22 +715,6 @@ mod tests {
                 ctx.offset,
                 task_length,
             ));
-        if op == RUN_NATIVE_OP {
-            let head = ctx.object.cast::<DataHead>();
-            let number = ctx.number;
-            let push = |head: DataHead| {
-                HEADS
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((number, head));
-            };
-            match u32::try_from(arg).unwrap_or(0) {
-                // SAFETY: these lend a head.
-                OP_FACTORY_NOTIFY | OP_PIPE_TO_WORKER => push(unsafe { *head }),
-                _ => push(DataHead::default()),
-            }
-            return 1;
-        }
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.object = ptr::without_provenance_mut(0x70);
         match op {
@@ -913,56 +886,39 @@ mod tests {
         }
     }
 
-    fn head() -> (c_int, DataHead) {
-        *HEADS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last()
-            .unwrap_or(&(0, DataHead::default()))
-    }
+    fn close_notify_and_pipe_messages() {
+        use crate::hybrid::tests::{Call, calls};
+        calls();
+        let serv = server();
+        assert!(close(serv, 21, true), "close result");
+        close(serv, 21, false);
+        let active = CLOSE_ACTIVELY;
+        assert_eq!(
+            calls(),
+            [Call::End(21, active | CLOSE_RESET), Call::End(21, active)],
+            "close ends the session actively, reset or not"
+        );
 
-    unsafe fn close_notify_and_pipe_messages() {
-        unsafe {
-            assert!(close(server(), 21, true), "close result");
-            let (op, arg, _, _, _, _, session, ..) = sent();
-            assert!(
-                op == RUN_NATIVE_OP && arg == u64::from(OP_FACTORY_END) && session == 21,
-                "close ends the session"
-            );
-            assert_eq!(head().0, CLOSE_ACTIVELY | CLOSE_RESET, "reset flags");
-            close(server(), 21, false);
-            assert_eq!(head().0, CLOSE_ACTIVELY, "active flags");
+        // SAFETY: a zeroed record is a valid connection.
+        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
+        conn.fd = 22;
+        conn.reactor_id = 3;
+        conn.server_fd = 0x1_0005;
+        assert!(notify(serv, (&mut conn).into(), 0x104), "notify result");
+        assert_eq!(
+            calls(),
+            [Call::Notify(22, 3, 4, 5)],
+            "notify head keeps the low bits"
+        );
 
-            // SAFETY: a zeroed record is a valid connection.
-            let mut conn: ConnectionRecord = core::mem::zeroed();
-            conn.fd = 22;
-            conn.reactor_id = 3;
-            conn.server_fd = 0x1_0005;
-            assert!(notify(server(), (&mut conn).into(), 0x104), "notify result");
-            assert_eq!(sent().1, u64::from(OP_FACTORY_NOTIFY), "notify op");
-            let (_, h) = head();
-            assert!(
-                h.fd == 22 && h.reactor_id == 3 && h.kind == 4 && h.server_fd == 5,
-                "notify head keeps the low bits"
-            );
-
-            let mut message = swoole_rs_process::task_file::TaskBuffer::default();
-            assert!(message.pack(b"abc"), "packs inline");
-            assert!(send_pipe_message(server(), 2, &mut message), "pipe result");
-            let (op, arg, _, _, data, length, ..) = sent();
-            assert!(
-                op == RUN_NATIVE_OP
-                    && arg == u64::from(OP_PIPE_TO_WORKER)
-                    && length == 43
-                    && data == 0,
-                "the packed message goes to the worker with its size"
-            );
-            let (worker, h) = head();
-            assert!(
-                worker == 2 && h.kind == EVENT_PIPE_MESSAGE,
-                "worker and pipe type"
-            );
-        }
+        let mut message = swoole_rs_process::task_file::TaskBuffer::default();
+        assert!(message.pack(b"abc"), "packs inline");
+        assert!(send_pipe_message(serv, 2, &mut message), "pipe result");
+        assert_eq!(
+            calls(),
+            [Call::Pipe(2, EVENT_PIPE_MESSAGE, 43)],
+            "the packed message goes to the worker as a pipe message, with its size"
+        );
     }
 
     #[test]

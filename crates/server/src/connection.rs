@@ -107,7 +107,6 @@ fn accept_failed(serv: view::Server<'_>, errno: c_int) -> bool {
 }
 
 /// `serv->send_to_reactor_thread()` of the connection's `SW_SERVER_EVENT_INCOMING`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> isize {
     /// `SW_SERVER_EVENT_INCOMING`.
     const EVENT_INCOMING: u8 = 15;
@@ -118,13 +117,7 @@ fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> isize {
         server_fd: u16::try_from(conn.server_fd()).unwrap_or(u16::MAX),
         ..swoole_rs_corebase::DataHead::default()
     };
-    crate::event_worker_ops::send_to_reactor_thread(serv, &head)
-}
-
-/// Without the event workers, the reactor threads take the connection.
-#[cfg(not(all(feature = "upstream-symbols", not(test))))]
-fn to_reactor_thread(_: view::Server<'_>, _: Connection<'_>) -> isize {
-    0
+    crate::hybrid::hybrid().to_reactor_thread(serv, &head)
 }
 
 /// `Server::add_connection(port, sock, server_fd)`: the next free session slot after

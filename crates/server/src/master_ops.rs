@@ -23,6 +23,7 @@ use crate::callbacks::CallbackSlot;
 use crate::callbacks::{
     CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK,
 };
+use crate::hybrid::hybrid;
 use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
@@ -306,10 +307,6 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     || crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0,
             )
         }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_FACTORY_END => {
-            u64::from(crate::factory::end(o.state, o.ctx.session_id, o.ctx.number))
-        }
         _ => return None,
     })
 }
@@ -458,7 +455,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let factory = if mode() == MODE_BASE {
                 crate::server_methods::create_base_factory(o.server())
             } else {
-                let factory = thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
+                let factory = hybrid().thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
                 core::ptr::with_exposed_provenance_mut(usize::try_from(factory).unwrap_or(0))
             };
             config().factory_ = factory;
@@ -1150,34 +1147,6 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// Thread mode's `Server` method `operation` over the live server alone; the
-/// builds without thread mode's ops have no server to run it over.
-fn thread_mode(serv: crate::view::Server<'_>, operation: u32) -> i64 {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    return crate::thread_mode_ops::run_server(serv, operation);
-    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    {
-        let _ = (serv, operation);
-        swoole_rs_corebase::fatal("no native server ops without upstream-symbols")
-    }
-}
-
-/// `serv->stop_async_worker(sw_worker())` over base mode's single worker, which
-/// this process runs; the builds without the event worker's ops have none.
-fn stop_single_worker(serv: crate::view::Server<'_>) {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    {
-        swoole_rs_process::worker_globals::with_current(|worker| {
-            crate::event_worker_ops::stop_async_worker(serv, *worker);
-        });
-    }
-    #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    {
-        let _ = serv;
-        swoole_rs_corebase::fatal("no native server ops without upstream-symbols")
-    }
-}
-
 /// The ops that call a `Server` method crates/server or crates/process defines,
 /// or else `None`. `ProcessPool`'s methods and the process factory are
 /// [`factory_ops`]', which only the hybrid builds: their runners link the C++
@@ -1194,16 +1163,16 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.server(),
         )),
         OP_LC_START_THREAD => {
-            let started = thread_mode(o.server(), RUN_START_WORKER_THREADS);
+            let started = hybrid().thread_mode(o.server(), RUN_START_WORKER_THREADS);
             sign(started.c_cast::<c_int>())
         }
         OP_STOP_WORKER_THREADS => {
-            thread_mode(o.server(), RUN_STOP_WORKER_THREADS);
+            hybrid().thread_mode(o.server(), RUN_STOP_WORKER_THREADS);
             0
         }
         OP_STOP_SINGLE_WORKER => {
             o.server().event_pool_ref().set_running(false);
-            stop_single_worker(o.server());
+            hybrid().stop_single_worker(o.server());
             0
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -1219,7 +1188,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_DESTROY_FACTORY if arg == MODE_THREAD => {
-            thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
+            hybrid().thread_mode(o.server(), RUN_DESTROY_THREAD_FACTORY);
             0
         }
         op => return effects(o, op, arg),
@@ -1888,13 +1857,11 @@ fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
 fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::factory_ops as process;
     use crate::ops::{
-        OP_FACTORY_NOTIFY, OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY, OP_PIPE_TO_WORKER,
-        OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN, OP_TASK_POOL_SETUP,
+        OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
+        OP_TASK_POOL_SETUP,
     };
     use swoole_rs_process::methods as pool;
     use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
-    /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
-    const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
     // crates/process' `ProcessPool::listen(socket_file, backlog)`.
     use swoole_rs_process::methods::listen_unix as pool_listen;
     let serv = o.ctx.serv;
@@ -1947,22 +1914,6 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_NEW_BASE_FACTORY => {
             o.ctx.object = crate::factory::new(serv, None);
             0
-        }
-        OP_FACTORY_NOTIFY => u64::from(crate::factory::notify(o.state, o.ctx.object)),
-        OP_PIPE_TO_WORKER => {
-            let worker = o
-                .server()
-                .worker(u16::try_from(o.ctx.number).unwrap_or(u16::MAX));
-            // SAFETY: a live worker and the message `send_pipe_message` lends.
-            let sent = unsafe {
-                swoole_rs_process::methods::send_pipe_message(
-                    worker,
-                    o.ctx.object.cast(),
-                    o.ctx.length as usize,
-                    PIPE_MASTER_NONBLOCK,
-                )
-            };
-            u64::from(sent > 0)
         }
         op => return objects(o, op, arg),
     })

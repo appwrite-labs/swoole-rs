@@ -39,6 +39,7 @@ pub mod factory;
 pub mod factory_ops;
 #[cfg(test)]
 mod fixture;
+mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
 mod layout;

@@ -176,3 +176,53 @@ pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool
         ),
     }
 }
+
+/// The hybrid's side of [`crate::hybrid`].
+pub(crate) struct Linked;
+
+impl crate::hybrid::Hybrid for Linked {
+    fn factory_end(&self, serv: crate::view::Server<'_>, session_id: c_long, flags: c_int) -> bool {
+        end(serv.state(), session_id, flags)
+    }
+
+    fn factory_notify(&self, serv: crate::view::Server<'_>, head: &mut DataHead) -> bool {
+        notify(serv.state(), ptr::from_mut(head).cast())
+    }
+
+    fn pipe_to_worker(
+        &self,
+        serv: crate::view::Server<'_>,
+        worker_id: u32,
+        message: &swoole_rs_process::task_file::TaskBuffer,
+    ) -> bool {
+        /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
+        const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
+        let worker = serv.worker(u16::try_from(worker_id).unwrap_or(u16::MAX));
+        let bytes = message.bytes();
+        // SAFETY: one of the server's workers, and the message's bytes, which live
+        // for the call.
+        let sent = unsafe {
+            swoole_rs_process::methods::send_pipe_message(
+                worker,
+                bytes.as_ptr(),
+                bytes.len(),
+                PIPE_MASTER_NONBLOCK,
+            )
+        };
+        sent > 0
+    }
+
+    fn thread_mode(&self, serv: crate::view::Server<'_>, operation: u32) -> i64 {
+        crate::thread_mode_ops::run_server(serv, operation)
+    }
+
+    fn stop_single_worker(&self, serv: crate::view::Server<'_>) {
+        swoole_rs_process::worker_globals::with_current(|worker| {
+            crate::event_worker_ops::stop_async_worker(serv, *worker);
+        });
+    }
+
+    fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
+        crate::event_worker_ops::send_to_reactor_thread(serv, head)
+    }
+}
