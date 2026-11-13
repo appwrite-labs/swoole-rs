@@ -33,7 +33,7 @@ use swoole_rs_server::view;
 use swoole_rs_http_ffi::request_free;
 use swoole_rs_server::ConnectionRecord;
 
-use crate::read::{ON_READ_EOF, ON_READ_HTTP, ON_READ_LENGTH, ON_READ_RAW, ON_READ_REDIS};
+use crate::read::Readable;
 
 /// The listening socket's options `ListenPort::listen` sets where the platform
 /// defines them: (level, option, its name, the value) for each enabled one.
@@ -487,17 +487,17 @@ macro_rules! readable_callbacks {
         /// As [`on_read`].
         unsafe extern "C" fn $name(reactor: Running<'_>, port: view::Port<'_>, event: &mut Event) -> c_int {
             // SAFETY: the caller's contract.
-            unsafe { on_read(reactor, port, event, $kind) }
+            unsafe { on_read(reactor, port, event, Readable::$kind) }
         }
     )*};
 }
 
 readable_callbacks! {
-    fn readable_callback_raw = ON_READ_RAW;
-    fn readable_callback_length = ON_READ_LENGTH;
-    fn readable_callback_http = ON_READ_HTTP;
-    fn readable_callback_redis = ON_READ_REDIS;
-    fn readable_callback_eof = ON_READ_EOF;
+    fn readable_callback_raw = Raw;
+    fn readable_callback_length = Length;
+    fn readable_callback_http = Http;
+    fn readable_callback_redis = Redis;
+    fn readable_callback_eof = Eof;
 }
 
 #[cfg(test)]
@@ -543,9 +543,9 @@ mod tests {
         _: Running<'_>,
         _: view::Port<'_>,
         _: &mut Event,
-        kind: u32,
+        kind: Readable,
     ) -> c_int {
-        c_int::try_from(kind).unwrap_or_default()
+        kind as c_int
     }
 
     /// Stub callbacks, each body distinct so that no two share an address.

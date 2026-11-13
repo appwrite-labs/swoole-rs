@@ -26,7 +26,7 @@ fn server(request: &[u8], max: u64, uploads: u64) -> Fake {
 fn serve(f: &mut Fake) {
     loop {
         let left = f.incoming.len();
-        run(ON_READ_HTTP, f);
+        run(Readable::Http, f);
         if f.incoming.is_empty() || f.incoming.len() == left {
             return;
         }

@@ -9,11 +9,14 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
 
 /// Which readable callback runs.
-pub const ON_READ_RAW: u32 = 0;
-pub const ON_READ_LENGTH: u32 = 1;
-pub const ON_READ_EOF: u32 = 2;
-pub const ON_READ_REDIS: u32 = 3;
-pub const ON_READ_HTTP: u32 = 4;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readable {
+    Raw,
+    Length,
+    Eof,
+    Redis,
+    Http,
+}
 
 /// A canned response [`Connection::send`] sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,14 +167,13 @@ fn set_offset(n: &mut impl Connection, value: u64) {
 
 /// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
 #[inline(always)]
-pub(crate) fn readable(kind: u32, n: &mut impl Connection) -> i32 {
+pub(crate) fn readable(kind: Readable, n: &mut impl Connection) -> i32 {
     match kind {
-        ON_READ_RAW => raw(n),
-        ON_READ_LENGTH => framed(n, Framing::Length, true),
-        ON_READ_EOF => eof(n),
-        ON_READ_REDIS => framed(n, Framing::Redis, false),
-        ON_READ_HTTP => http(n),
-        _ => SW_ERR,
+        Readable::Raw => raw(n),
+        Readable::Length => framed(n, Framing::Length, true),
+        Readable::Eof => eof(n),
+        Readable::Redis => framed(n, Framing::Redis, false),
+        Readable::Http => http(n),
     }
 }
 
@@ -906,7 +908,7 @@ pub(crate) mod tests {
             .collect()
     }
 
-    fn run(kind: u32, fake: &mut Fake) -> i32 {
+    fn run(kind: Readable, fake: &mut Fake) -> i32 {
         log::swr_v1_core_set_log_host(record);
         fake.point();
         readable(kind, fake)
@@ -917,7 +919,7 @@ pub(crate) mod tests {
     #[test]
     fn get_is_dispatched_and_the_request_released() {
         let mut f = fake(&[GET]);
-        assert_eq!(run(ON_READ_HTTP, &mut f), SW_OK, "status");
+        assert_eq!(run(Readable::Http, &mut f), SW_OK, "status");
         assert_eq!(f.dispatched, [GET.to_vec()], "one dispatch of the header");
         assert!(
             !f.request && f.buf.length == 0,
@@ -929,7 +931,7 @@ pub(crate) mod tests {
         );
         let mut f = fake(&[GET]);
         f.static_handler = false;
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             !f.effects.contains(&Effect::Static) && f.dispatched.len() == 1,
             "no static handler: dispatched without asking"
@@ -939,7 +941,7 @@ pub(crate) mod tests {
     #[test]
     fn pipelined_requests_are_parsed_in_turn() {
         let mut f = fake(&[&[GET, GET].concat()]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.dispatched, [GET.to_vec(), GET.to_vec()], "two dispatches");
     }
 
@@ -947,13 +949,13 @@ pub(crate) mod tests {
     fn a_body_is_awaited_then_dispatched_whole() {
         let head = b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\n";
         let mut f = fake(&[head, b"ab"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             f.dispatched.is_empty() && f.incoming.is_empty(),
             "waits for the body"
         );
         f.incoming.insert(0, b"cd".to_vec());
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(
             f.dispatched,
             [[&head[..], b"abcd"].concat()],
@@ -982,7 +984,7 @@ pub(crate) mod tests {
         let upload = |body: &[u8]| {
             let mut f = fake(&[&[&head[..], body].concat()]);
             (f.bytes, f.max, f.uploads) = (vec![0; 512], 200, 1024);
-            run(ON_READ_HTTP, &mut f);
+            run(Readable::Http, &mut f);
             f
         };
         let f = upload(&part(b""));
@@ -995,7 +997,7 @@ pub(crate) mod tests {
         assert_eq!(f.sent, [Reply::BadRequest], "400");
 
         let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 4\r\n\r\nabcd"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             f.dispatched.len() == 1 && !f.effects.contains(&Effect::Upload),
             "a plain body is not flagged"
@@ -1007,12 +1009,12 @@ pub(crate) mod tests {
         let post = b"POST /a HTTP/1.1\r\nContent-Length: 2\r\n\r\nab";
         let chunked = b"POST /b HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nc\r\n0\r\n\r\n";
         let mut f = fake(&[&[&post[..], GET].concat()]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.dispatched, [post.to_vec(), GET.to_vec()], "both, whole");
         let mut f = fake(&[&[&chunked[..], GET].concat()]);
         f.buf.size = 128;
         f.bytes.resize(128, 0);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(
             f.dispatched,
             [chunked.to_vec(), GET.to_vec()],
@@ -1027,7 +1029,7 @@ pub(crate) mod tests {
         f.buf.size = 128;
         f.bytes.resize(128, 0);
         for _ in 0..3 {
-            run(ON_READ_HTTP, &mut f);
+            run(Readable::Http, &mut f);
         }
         assert_eq!(
             f.sent,
@@ -1041,7 +1043,7 @@ pub(crate) mod tests {
         f.buf.size = 128;
         f.bytes.resize(128, 0);
         for _ in 0..3 {
-            run(ON_READ_HTTP, &mut f);
+            run(Readable::Http, &mut f);
         }
         assert_eq!(
             f.sent,
@@ -1054,7 +1056,7 @@ pub(crate) mod tests {
     #[test]
     fn bad_transfer_codings_and_chunks_are_rejected() {
         let mut f = fake(&[b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.sent, [Reply::BadRequest], "400");
         assert_eq!(
             logged(),
@@ -1068,7 +1070,7 @@ pub(crate) mod tests {
         );
 
         let mut f = fake(&[b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n801\r\n"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(
             f.sent,
             [Reply::TooLarge],
@@ -1081,7 +1083,7 @@ pub(crate) mod tests {
             &[b'1'; 1000],
         ]);
         for _ in 0..4 {
-            run(ON_READ_HTTP, &mut f);
+            run(Readable::Http, &mut f);
         }
         assert_eq!(
             f.sent,
@@ -1104,7 +1106,7 @@ pub(crate) mod tests {
     #[test]
     fn oversize_unknown_and_closed_requests_close() {
         let mut f = fake(&[b"POST / HTTP/1.1\r\nContent-Length: 2000\r\n\r\n"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.sent, [Reply::TooLarge], "413");
         assert!(f.effects.ends_with(&[Effect::Close]), "closed");
         assert_eq!(
@@ -1120,7 +1122,7 @@ pub(crate) mod tests {
         );
 
         let mut f = fake(&[b"BREW / HTTP/1.1\r\n\r\n"]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.sent, [Reply::BadRequest], "400 for an unknown method");
         assert!(f.effects.ends_with(&[Effect::Close]), "closed");
         assert_eq!(
@@ -1134,7 +1136,7 @@ pub(crate) mod tests {
         );
 
         let mut f = fake(&[b""]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             f.sent.is_empty() && f.effects.ends_with(&[Effect::Close]),
             "peer close"
@@ -1145,18 +1147,18 @@ pub(crate) mod tests {
     fn http2_preface_switches_to_frames() {
         let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
         let mut f = fake(&[preface]);
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(f.sent, [Reply::BadRequest], "refused without http2");
         let mut f = fake(&[preface]);
         f.http2 = true;
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             f.effects.contains(&Effect::StartHttp2) && f.buf.length == 0,
             "preface consumed"
         );
         let mut f = fake(&[&[&preface[..], b"frame"].concat()]);
         f.http2 = true;
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert!(
             f.effects.ends_with(&[
                 Effect::SkipRecv,
@@ -1171,7 +1173,7 @@ pub(crate) mod tests {
     fn upgraded_connections_read_frames() {
         let mut f = fake(&[]);
         f.upgrade.websocket = true;
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(
             f.effects,
             [
@@ -1183,7 +1185,7 @@ pub(crate) mod tests {
         );
         let mut f = fake(&[]);
         f.upgrade.http2_stream = true;
-        run(ON_READ_HTTP, &mut f);
+        run(Readable::Http, &mut f);
         assert_eq!(
             f.effects,
             [Effect::Receive(Framing::Length), Effect::Release],
@@ -1194,26 +1196,25 @@ pub(crate) mod tests {
     #[test]
     fn raw_and_framed_ports() {
         let mut f = fake(&[b"ping"]);
-        assert_eq!(run(ON_READ_RAW, &mut f), 0, "dispatch_task's status");
+        assert_eq!(run(Readable::Raw, &mut f), 0, "dispatch_task's status");
         assert_eq!(
             (f.dispatched.len(), f.buf.length, f.buf.offset),
             (1, 4, 4),
             "whole read dispatched"
         );
         let mut f = fake(&[]);
-        run(ON_READ_REDIS, &mut f);
+        run(Readable::Redis, &mut f);
         assert_eq!(
             f.effects,
             [Effect::Receive(Framing::Redis)],
             "redis keeps its buffer"
         );
-        run(ON_READ_EOF, &mut f);
+        run(Readable::Eof, &mut f);
         assert_eq!(
             f.effects[1..],
             [Effect::Receive(Framing::Eof), Effect::Release],
             "eof releases its buffer"
         );
-        assert_eq!(run(99, &mut f), SW_ERR, "unknown kind");
     }
 
     /// Upstream's HTTP server core tests, ported (`tests/modules/http/README.md`).
