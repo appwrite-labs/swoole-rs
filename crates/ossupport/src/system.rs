@@ -7,6 +7,7 @@
 use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
 use swoole_rs_corebase::log;
+#[cfg(target_vendor = "apple")]
 use swoole_rs_corebase::sys::Text;
 
 // libc's own declarations, each a call over plain values that reads and writes no

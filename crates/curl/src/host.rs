@@ -124,9 +124,9 @@ pub(crate) fn timer_available() -> bool {
 
 /// A one-shot timer of `ms` that reaches `multi`, which deletes it, unless it
 /// fired, before it is freed: its id, or none.
-pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<c_long> {
+pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
     let multi = ptr::from_ref(multi);
-    swoole_rs_timer::add_fn_id(ms, false, move || {
+    swoole_rs_timer::add_fn_held(ms, false, move || {
         // SAFETY: the multi deletes its timer before it is freed.
         let multi = unsafe { &*multi };
         multi.timer.set(None);
@@ -135,7 +135,7 @@ pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<c_long> {
 }
 
 /// `swoole_timer_del` of the timer [`timer_add`] returned, by its id.
-pub(crate) use swoole_rs_timer::timer_cancel as timer_del;
+pub(crate) use swoole_rs_timer::cancel_held as timer_del;
 
 /// `Coroutine::get_current()`.
 pub(crate) fn current() -> *mut c_void {

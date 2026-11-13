@@ -198,12 +198,12 @@ pub(super) fn add_fn_sec_id(
     timeout: f64,
     _: bool,
     _: impl Fn() + Copy + 'static,
-) -> Option<core::ffi::c_long> {
+) -> Option<swoole_rs_timer::Held> {
     log(format!("timer {timeout}"));
-    Some(1)
+    Some(swoole_rs_timer::Held::detached(1))
 }
 /// crates/timer's `del_id`: logs, deletes nothing.
-pub(super) fn del_id(_: core::ffi::c_long) {
+pub(super) fn del_id(_: swoole_rs_timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.

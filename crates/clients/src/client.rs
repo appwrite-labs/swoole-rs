@@ -315,7 +315,7 @@ pub struct Client {
     server_host: RefCell<CString>,
     server_port: Cell<c_int>,
     /// The id of the pending connect timer.
-    timer: Cell<Option<core::ffi::c_long>>,
+    timer: Cell<Option<swoole_rs_timer::Held>>,
     high_watermark: Cell<u32>,
     low_watermark: Cell<u32>,
     listener: Cell<Option<Listener>>,

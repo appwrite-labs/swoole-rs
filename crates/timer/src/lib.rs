@@ -25,10 +25,10 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
 pub use wrapper::{
-    add_fn, add_fn_id, add_fn_sec, add_fn_sec_id, del_id, php, swoole_timer_create,
-    swoole_timer_del, swoole_timer_delay, swoole_timer_free, swoole_timer_get_next_msec,
-    swoole_timer_is_available, swoole_timer_select, swr_v1_timer_add_plain,
-    swr_v1_timer_add_plain_sec, thread_timer_count, timer_cancel,
+    Held, add_fn, add_fn_held, add_fn_id, add_fn_sec, add_fn_sec_id, cancel_held, del_id, php,
+    swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
+    swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
+    swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec, thread_timer_count, timer_cancel,
 };
 
 const OK: i32 = 0;

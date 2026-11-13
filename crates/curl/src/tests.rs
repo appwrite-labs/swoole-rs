@@ -71,11 +71,11 @@ pub(crate) mod host {
         true
     }
     #[expect(clippy::unnecessary_wraps, reason = "the host's signature")]
-    pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> Option<c_long> {
+    pub(crate) fn timer_add(ms: c_long, _multi: &Multi) -> Option<swoole_rs_timer::Held> {
         log(format!("timer {ms}"));
-        Some(1)
+        Some(swoole_rs_timer::Held::detached(1))
     }
-    pub(crate) fn timer_del(_timer: c_long) {
+    pub(crate) fn timer_del(_timer: swoole_rs_timer::Held) {
         log("timer del".into());
     }
     pub(crate) fn current() -> *mut c_void {

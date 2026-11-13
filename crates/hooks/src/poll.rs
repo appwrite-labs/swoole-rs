@@ -52,7 +52,7 @@ pub struct Registered(NonNull<Task<'static>>);
 
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
-pub struct Timer(core::ffi::c_long);
+pub struct Timer(swoole_rs_timer::Held);
 
 /// A wait's registered sockets: [`Sockets::clean`] unregisters each.
 trait Sockets {
@@ -389,7 +389,7 @@ mod tests {
         Some(Socket(fd))
     }
     /// The fake timer's id.
-    const FAKE_TIMER: core::ffi::c_long = 7;
+    const FAKE_TIMER: swoole_rs_timer::Held = swoole_rs_timer::Held::detached(7);
     #[expect(
         clippy::unnecessary_wraps,
         reason = "the fake has PollOps::timer_add's type"
