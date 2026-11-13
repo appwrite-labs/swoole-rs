@@ -11,7 +11,7 @@ use swoole_rs_bus::{BusPacket, MessageBus};
 use crate::pool_native::read_bus;
 use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
 
-pub(crate) use crate::view::worker_pipe;
+pub(crate) use crate::view::{set_nonblock, worker_pipe};
 
 /// `f` over `serv->get_worker_pipe_*_in_message_bus(worker)`: in thread mode, the
 /// thread bus's own end of the worker's `pipe`; `None` without one.
@@ -47,12 +47,6 @@ pub(crate) fn timer_detached() -> bool {
 /// `SwooleTG.timer->reinit(manually_trigger)`, when this thread has a timer.
 pub(crate) fn timer_reinit(manually_trigger: bool) {
     thread_timer(|timer| swoole_rs_timer::owner_reinit(timer, manually_trigger));
-}
-
-/// `sock->set_nonblock()`.
-pub(crate) fn set_nonblock(sock: Socket<'_>) {
-    let set = swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-    let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
 // Only the upstream-symbol operations, which the unit tests don't link, use these.

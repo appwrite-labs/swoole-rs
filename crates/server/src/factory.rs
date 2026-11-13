@@ -48,7 +48,6 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
                 (crate::port_config::methods().init_protocol)(port.config());
             }
         }
-        Step::StartBase => return crate::reactor_process_ops::start_reactor_processes(serv),
         Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
         Step::TimerReinit => {
             if crate::objects::timer_detached() {
@@ -102,6 +101,52 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
             // SAFETY: `delete factory_`, which the caller then forgets.
             unsafe { delete(state.config_ref().factory_) };
         }
+        Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
+            let Some(port) = state.tables_ref().ports().get(index) else {
+                return -1;
+            };
+            let methods = crate::port_config::methods();
+            match step {
+                Step::Listen(_) => return (methods.listen)(port.config()),
+                Step::CreatePortSocket(_) => return (methods.create_socket)(port.config()),
+                _ => (methods.close_socket)(port.config()),
+            }
+        }
+        Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
+        Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
+        Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
+        Step::StartManager => return crate::manager_ops::start_manager_process(serv),
+        Step::EventInit => return swoole_rs_reactor::swoole_event_init(0),
+        Step::WorkerSignalInit => crate::event_worker_ops::worker_signal_init(serv),
+        Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
+        Step::WorkerStart(id) | Step::WorkerStop(id) => {
+            let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
+                return -1;
+            };
+            if step == Step::WorkerStart(id) {
+                crate::event_worker_ops::worker_start_callback(serv, worker);
+            } else {
+                crate::event_worker_ops::call_worker_stop_callback(serv, worker);
+            }
+        }
+        Step::HeartbeatTimer => {
+            let config = state.config_ref();
+            let msec = core::ffi::c_long::from(config.heartbeat_check_interval.get()) * 1000;
+            // `ReactorProcess_onTimeout` on the reactor arming it, which outlives its
+            // timers.
+            let reactor = crate::reactor_handle::Reactor::thread();
+            let node = swoole_rs_timer::add_fn(msec, true, move || {
+                crate::reactor_process::with_server(reactor, |serv| {
+                    crate::reactor_process::heartbeat(serv, reactor);
+                    0
+                });
+            });
+            config
+                .heartbeat_timer
+                .store(node, core::sync::atomic::Ordering::Relaxed);
+            return ok(!node.is_null());
+        }
+        Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait(),
     }
     0
 }

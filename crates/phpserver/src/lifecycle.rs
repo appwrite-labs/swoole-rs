@@ -557,8 +557,7 @@ fn kept() -> std::sync::MutexGuard<'static, Vec<(SharedServer, bool)>> {
 /// runs stays to the exit, as upstream's.
 pub extern "C" fn php_swoole_server_mshutdown() {
     for (share, orphan) in std::mem::take(&mut *kept()) {
-        let delete =
-            orphan || swoole_rs_server::reactor_process_ops::release_abandoned(share.view());
+        let delete = orphan || swoole_rs_server::reactor_process::release_abandoned(share.view());
         if !delete {
             #[expect(
                 clippy::mem_forget,

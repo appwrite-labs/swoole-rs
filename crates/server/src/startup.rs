@@ -77,7 +77,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> c_int {
     hybrid().step(serv, Step::InitProtocols);
     state.write_pid();
     let started = match u64::from(config.mode_) {
-        MODE_BASE => hybrid().step(serv, Step::StartBase),
+        MODE_BASE => crate::reactor_process::start_reactor_processes(serv),
         MODE_PROCESS => hybrid().step(serv, Step::StartProcess),
         MODE_THREAD => {
             // Before the worker threads start, which read it in onWorkerStart.
@@ -598,10 +598,19 @@ mod tests {
     fn start_runs_the_factory_protocols_then_the_mode() {
         let live = LiveServer::new();
         on(&live, CB_RECEIVE);
+        let base = [
+            CreateEventPool,
+            CreatePipeBuffers,
+            StartManager,
+            DestroyEventPool,
+        ];
         for (mode, run) in [
-            (MODE_BASE, Call::Step(StartBase)),
-            (MODE_PROCESS, Call::Step(StartProcess)),
-            (MODE_THREAD, Call::ThreadMode(RUN_START_WORKER_THREADS)),
+            (MODE_BASE, steps(&base)),
+            (MODE_PROCESS, steps(&[StartProcess])),
+            (
+                MODE_THREAD,
+                vec![Call::ThreadMode(RUN_START_WORKER_THREADS)],
+            ),
         ] {
             set_mode(&live, mode);
             live.counters().start.store(0, SeqCst);
@@ -611,7 +620,7 @@ mod tests {
             assert_eq!(start(live.server()), OK, "mode {mode}");
             assert_eq!(
                 calls(),
-                [Call::Step(FactoryStart), Call::Step(InitProtocols), run],
+                [steps(&[FactoryStart, InitProtocols]), run].concat(),
                 "mode {mode}"
             );
             assert!(live.state().running(), "running");

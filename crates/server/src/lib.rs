@@ -57,8 +57,7 @@ pub mod reactor_entry;
 mod reactor_handle;
 mod reactor_io;
 mod reactor_ops;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod reactor_process_ops;
+pub mod reactor_process;
 mod reactor_thread;
 mod records;
 mod send;
