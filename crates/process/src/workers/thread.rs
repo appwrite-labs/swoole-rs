@@ -14,7 +14,7 @@ use swoole_rs_corebase::CCast;
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
 
-use super::event_worker::EVENT_WORKER;
+use super::EVENT_WORKER;
 use super::log::{
     LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER, LOG_RELOADING,
     LOG_THREAD_UNSUPPORTED,

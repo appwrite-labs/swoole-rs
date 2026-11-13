@@ -387,7 +387,7 @@ impl TaskServer for Server {
     }
 
     fn kill_worker(self, worker_id: c_int) -> bool {
-        swoole_rs_server::event_worker_ops::kill_worker(self.view(), worker_id)
+        swoole_rs_server::event_worker::native::kill_worker(self.view(), worker_id)
     }
 
     fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {

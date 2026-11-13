@@ -4,7 +4,6 @@
 //! crates/server keeps the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
-mod event_worker;
 mod log;
 mod manager;
 pub mod ops;
@@ -17,6 +16,8 @@ pub(crate) const SW_ERR: i64 = -1;
 pub(crate) const MODE_BASE: u64 = 1;
 pub(crate) const MODE_PROCESS: u64 = 2;
 pub(crate) const MODE_THREAD: u64 = 3;
+/// `SW_EVENT_WORKER`.
+pub(crate) const EVENT_WORKER: u64 = crate::worker_record::WorkerType::Event as u64;
 
 /// What Rust asks of the native objects it runs over.
 pub(crate) trait Host {
@@ -63,12 +64,6 @@ impl<A: Answer + ?Sized> Host for Over<'_, A> {
 /// Runs `operation` with `arg` over `context`.
 pub fn run_over(context: &mut dyn Answer, operation: u32, arg: u64) -> i64 {
     run(&mut Over(context), operation, arg)
-}
-
-/// Runs an event-worker `operation` with `arg` over `context`, compiled for its
-/// type: each step's op is a constant, so an inlined answer folds to its arm.
-pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
-    event_worker::run(&mut Over(context), operation, arg)
 }
 
 /// The `OP_*` facts and effects over thread- and process-wide state (the event
@@ -138,22 +133,6 @@ fn effect(op: u32) -> Option<u64> {
             swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
             0
         }
-        ops::OP_HAS_CURRENT_WORKER => u64::from(!crate::worker_globals::current_worker().is_null()),
-        ops::OP_EXIT_TIME => crate::worker_globals::with_globals(|globals| {
-            globals
-                .exit_time
-                .load(core::sync::atomic::Ordering::Relaxed)
-        })
-        .cast_unsigned(),
-        ops::OP_WORKER_STOPPED => {
-            crate::worker_globals::worker_global_stopped();
-            0
-        }
-        ops::OP_CLEAR_LAST_ERROR => {
-            set_last_error(0);
-            swoole_rs_error::swoole_clear_last_error_msg();
-            0
-        }
         ops::OP_SET_NOT_SUPPORTED => {
             set_last_error(NOT_SUPPORT);
             0
@@ -183,25 +162,12 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_CREATE_THREAD_FACTORY
         | ops::RUN_DESTROY_THREAD_FACTORY
         | ops::RUN_THREAD_ID => thread::run(h, operation, arg),
-        _ => event_worker::run(h, operation, arg),
-    }
-}
-
-/// `Server::foreach_connection`: each valid connection from `min_fd` to `max_fd`
-/// (both read afresh each step), selected in turn as the context's connection.
-pub(crate) fn for_each_connection<H: Host>(h: &mut H, mut each: impl FnMut(&mut H)) {
-    let mut fd = h.signed(ops::OP_MINFD);
-    while fd <= h.signed(ops::OP_MAXFD) {
-        if h.op(ops::OP_CONN_AT, fd.cast_unsigned()) != 0 {
-            each(h);
-        }
-        fd += 1;
+        _ => SW_ERR,
     }
 }
 
 /// `signal_init`'s handler kinds for `OP_SIGNAL_SET`.
 pub(crate) const HANDLER_NONE: u64 = 0;
-pub(crate) const HANDLER_IGNORE: u64 = 1;
 pub(crate) const HANDLER_OWN: u64 = 2;
 /// `OP_SIGNAL_SET`'s stand-in for SIGRTMIN, which only native code can name.
 pub(crate) const SIGNAL_RTMIN: i32 = -1;

@@ -8,7 +8,7 @@ use crate::worker_record::WorkerType;
 use core::cell::{Cell, RefCell};
 use core::ffi::c_int;
 
-use super::event_worker::EVENT_WORKER;
+use super::EVENT_WORKER;
 use super::log::{
     LOG_FORK_EVENT_WORKER, LOG_FORK_MANAGER, LOG_FORK_USER_WORKER, LOG_KILL_TIMEOUT,
     LOG_NO_TASK_RELOAD, LOG_RELOAD_SINGLE_PROCESS, LOG_RELOADING, LOG_START_TASK_POOL,

@@ -468,7 +468,13 @@ fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             }))
         }
         OP_SIGNAL_SET => {
-            crate::event_worker_ops::swr_workers_signal_set(arg, signal_handler);
+            // The signal number (-1 for SIGRTMIN) in the low word, the handler above.
+            let signo = u32::try_from(arg & 0xffff_ffff).unwrap_or_default();
+            crate::event_worker::native::swr_workers_signal_set(
+                signo.cast_signed(),
+                arg >> 32,
+                signal_handler,
+            );
             0
         }
         OP_MANAGER_BARRIER => {

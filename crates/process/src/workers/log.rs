@@ -5,13 +5,6 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::{error_log, info, sys_error, sys_warning, warning};
 
 // The numbers native code never sees: tests tell the logs apart by them.
-pub(super) const LOG_DISCARD: u32 = 19;
-pub(super) const LOG_BAD_EVENT: u32 = 31;
-pub(super) const LOG_UNPROCESSED: u32 = 47;
-pub(super) const LOG_KILL_NO_ID: u32 = 51;
-pub(super) const LOG_KILL_BAD_ID: u32 = 54;
-pub(super) const LOG_PUSH_STOP: u32 = 72;
-pub(super) const LOG_EXIT_TIMEOUT: u32 = 85;
 pub(super) const LOG_INVALID_WORKER: u32 = 123;
 pub(super) const LOG_UNKNOWN_MESSAGE: u32 = 214;
 pub(super) const LOG_FORK_MANAGER: u32 = 221;
@@ -34,55 +27,13 @@ pub(super) const LOG_THREAD_UNSUPPORTED: u32 = 406;
 const WARNING: i32 = 4;
 const ERROR: i32 = 5;
 /// `SW_ERROR_*`.
-const INVALID_PARAMS: i32 = 505;
 const OPERATION_NOT_SUPPORT: i32 = 507;
-const WRONG_OPERATION: i32 = 509;
-const SESSION_DISCARD_TIMEOUT_DATA: i32 = 1007;
 const SERVER_WORKER_EXIT_TIMEOUT: i32 = 9101;
-const SERVER_WORKER_UNPROCESSED_DATA: i32 = 9103;
 
 /// Logs `op` with its values `a` and `b`, as upstream's C++ formatted them.
 pub(super) fn emit(op: u32, a: i64, b: i64) {
     let which = if a != 0 { "all" } else { "task" };
     match op {
-        LOG_DISCARD => error_log(
-            WARNING,
-            SESSION_DISCARD_TIMEOUT_DATA,
-            c"Worker_discard_data",
-            format_args!("[2] ignore data[{a} bytes] received from session#{b}"),
-        ),
-        LOG_BAD_EVENT => warning(
-            c"Server::worker_accept_event",
-            format_args!("[Worker] error event[type={a}]"),
-        ),
-        LOG_UNPROCESSED => error_log(
-            WARNING,
-            SERVER_WORKER_UNPROCESSED_DATA,
-            c"Server::call_worker_stop_callback",
-            format_args!("unprocessed data in the worker process buffer"),
-        ),
-        LOG_KILL_NO_ID => error_log(
-            WARNING,
-            WRONG_OPERATION,
-            c"Server::kill_worker",
-            format_args!("kill worker in non worker process requires specifying an id"),
-        ),
-        LOG_KILL_BAD_ID => error_log(
-            WARNING,
-            INVALID_PARAMS,
-            c"Server::kill_worker",
-            format_args!("the worker_id[{}] is invalid", a.c_cast::<i32>()),
-        ),
-        LOG_PUSH_STOP => sys_warning(
-            c"Server::stop_async_worker",
-            format_args!("failed to push WORKER_STOP message"),
-        ),
-        LOG_EXIT_TIMEOUT => error_log(
-            WARNING,
-            SERVER_WORKER_EXIT_TIMEOUT,
-            c"Worker_reactor_try_to_exit",
-            format_args!("worker exit timeout, forced termination"),
-        ),
         LOG_INVALID_WORKER => warning(
             c"ReactorProcess_onPipeRead",
             format_args!("invalid worker_id={a}"),

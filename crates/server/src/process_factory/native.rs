@@ -164,7 +164,7 @@ pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     if u64::from(serv.config().mode_) == crate::MODE_BASE {
         _ = serv.event_pool_ref().call_main_loop(worker);
     } else {
-        _ = crate::event_worker_ops::start_event_worker(serv, worker);
+        _ = crate::event_worker::native::start_event_worker(serv, worker);
     }
     // exit(3), as upstream.
     std::process::exit(0)
@@ -206,7 +206,7 @@ pub(crate) fn check_exit_status(
 ) {
     if let Some(worker) = worker.filter(|_| status.status() != 0) {
         worker_report_error(worker, status);
-        crate::event_worker_ops::call_worker_error_callback(serv, worker, status);
+        crate::event_worker::native::call_worker_error_callback(serv, worker, status);
     }
 }
 

@@ -122,7 +122,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
         }
         EVENT_SHUTDOWN => {
             if let Some(worker) = serv.worker_record(reactor.handle().id()) {
-                crate::event_worker_ops::stop_async_worker(serv, worker);
+                crate::event_worker::native::stop_async_worker(serv, worker);
             }
         }
         EVENT_SEND_FILE => {

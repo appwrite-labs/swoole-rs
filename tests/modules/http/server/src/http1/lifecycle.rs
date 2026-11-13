@@ -13,7 +13,7 @@ use swoole_rs_clients::client::{
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::callbacks as cb;
-use swoole_rs_server::{event_worker_ops, manager_ops, task_worker, worker_methods};
+use swoole_rs_server::{event_worker, manager_ops, task_worker, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -1011,7 +1011,7 @@ fn current_worker() -> *mut WorkerRecord {
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
-    event_worker_ops::kill_worker(serv.view(), worker_id)
+    event_worker::native::kill_worker(serv.view(), worker_id)
 }
 
 /// `test_kill_worker`'s `Options`.
@@ -1054,7 +1054,7 @@ unsafe extern "C" fn kill_on_receive(
 
 unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
     server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
-    event_worker_ops::drain_worker_pipe(Server(serv).view());
+    event_worker::native::drain_worker_pipe(Server(serv).view());
 }
 
 unsafe extern "C" fn kill_self_on_worker_stop(
@@ -1742,9 +1742,9 @@ unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
     let serv = Server(serv).view();
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(current_worker()) };
-    event_worker_ops::clean_worker_connections(serv, worker);
+    event_worker::native::clean_worker_connections(serv, worker);
     client_run(Op::Shutdown(SHUT_RDWR));
-    event_worker_ops::stop_async_worker(serv, worker);
+    event_worker::native::stop_async_worker(serv, worker);
 }
 
 unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {

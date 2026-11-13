@@ -19,7 +19,7 @@ use swoole_rs_process::worker_record::{
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::callbacks::TaskSlot;
-use crate::event_worker_ops::{
+use crate::event_worker::native::{
     call_worker_stop_callback, stop_async_worker, swr_workers_signal_set, worker_signal_handler,
     worker_start_callback,
 };
@@ -46,9 +46,6 @@ const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const POLL_TIMEOUT: c_int = 6002;
 const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
-/// `signal_init`'s handlers for `swr_workers_signal_set`: none, or the worker's own.
-const HANDLER_NONE: u64 = 0;
-const HANDLER_OWN: u64 = 2;
 /// `sizeof(EventData)`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -204,19 +201,9 @@ fn signal_init(serv: view::Server<'_>) {
     if u64::from(serv.config().mode_) == crate::MODE_THREAD {
         return;
     }
-    let handlers = [
-        (libc::SIGHUP, HANDLER_NONE),
-        (libc::SIGPIPE, HANDLER_NONE),
-        (libc::SIGUSR1, HANDLER_NONE),
-        (libc::SIGUSR2, HANDLER_NONE),
-        (libc::SIGTERM, HANDLER_OWN),
-        (libc::SIGWINCH, HANDLER_OWN),
-        // SIGRTMIN, which `swr_workers_signal_set` names.
-        (-1, HANDLER_OWN),
-    ];
-    for (signo, handler) in handlers {
-        let arg = u64::from(signo.cast_unsigned()) | (handler << 32);
-        swr_workers_signal_set(arg, worker_signal_handler);
+    let none = crate::event_worker::HANDLER_NONE;
+    for (signo, handler) in crate::event_worker::signals(none) {
+        swr_workers_signal_set(signo, handler, worker_signal_handler);
     }
 }
 

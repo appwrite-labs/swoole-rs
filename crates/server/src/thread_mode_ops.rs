@@ -192,7 +192,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let worker = ctx.worker();
             let status = ctx.manager()?.thread(worker.id().into()).exit_status() << 8;
             let status = ExitStatus::new(worker.pid(), status);
-            crate::event_worker_ops::call_worker_error_callback(ctx.server(), worker, &status);
+            crate::event_worker::native::call_worker_error_callback(ctx.server(), worker, &status);
             0
         }
         OP_SPAWN_THREAD => {
@@ -392,7 +392,7 @@ fn worker(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_KILL_WORKER => {
             let id = c_int::try_from(arg.cast_signed()).ok()?;
-            _ = crate::event_worker_ops::kill_worker(ctx.server(), id);
+            _ = crate::event_worker::native::kill_worker(ctx.server(), id);
             0
         }
         OP_TERMINATE_MANAGER_THREAD => {

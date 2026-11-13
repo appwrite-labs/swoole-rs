@@ -19,7 +19,7 @@ use swoole_rs_corebase::{
     log,
 };
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
-use swoole_rs_server::{SharedServer, event_worker_ops, server_methods, view};
+use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     Owned, Value, ZString, bailout,
@@ -201,7 +201,7 @@ pub extern "C" fn php_swoole_server_rshutdown() {
         return;
     };
     let serv = share.view();
-    event_worker_ops::drain_worker_pipe(serv);
+    event_worker::native::drain_worker_pipe(serv);
     let kind = crate::server::worker_type();
     if !serv.is_started() || !worker_is_running() || kind == Some(crate::server::WorkerType::User) {
         return;
@@ -209,7 +209,7 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     worker_globals::with_current(|worker| {
         worker_record::swr_v1_worker_shutdown(*worker);
         if kind == Some(crate::server::WorkerType::Event) {
-            event_worker_ops::clean_worker_connections(serv, *worker);
+            event_worker::native::clean_worker_connections(serv, *worker);
         }
     });
     if let Some(error) = swoole_rs_zend::fatal_error() {

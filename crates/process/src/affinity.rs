@@ -1,7 +1,7 @@
 //! `Worker_set_cpu_affinity`: a worker's CPU pinning when `open_cpu_affinity` is set.
 //! The process's allowed CPUs, filtered by `cpu_affinity_ignore`'s remainder, the
 //! `worker_id % count`-th of them, and the pin itself (the calling thread in thread
-//! mode, the process otherwise). `crates/server/src/event_worker_ops.rs` logs the warnings.
+//! mode, the process otherwise). `crates/server/src/event_worker/native.rs` logs the warnings.
 
 /// What pinning a worker did.
 #[repr(C)]

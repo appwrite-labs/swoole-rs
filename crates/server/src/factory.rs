@@ -110,16 +110,16 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
         Step::StartManager => return crate::manager_ops::start_manager_process(serv),
         Step::EventInit => return swoole_rs_reactor::swoole_event_init(0),
-        Step::WorkerSignalInit => crate::event_worker_ops::worker_signal_init(serv),
+        Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
         Step::WorkerStart(id) | Step::WorkerStop(id) => {
             let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
                 return -1;
             };
             if step == Step::WorkerStart(id) {
-                crate::event_worker_ops::worker_start_callback(serv, worker);
+                crate::event_worker::native::worker_start_callback(serv, worker);
             } else {
-                crate::event_worker_ops::call_worker_stop_callback(serv, worker);
+                crate::event_worker::native::call_worker_stop_callback(serv, worker);
             }
         }
         Step::HeartbeatTimer => {
@@ -328,7 +328,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn accept_event(&self, serv: crate::view::Server<'_>, head: &mut DataHead) {
-        crate::event_worker_ops::accept_event(serv, head);
+        crate::event_worker::native::accept_event(serv, head);
     }
 
     fn forward(&self, serv: crate::view::Server<'_>, send: &SendData) -> bool {
@@ -435,7 +435,7 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {
         swoole_rs_process::worker_globals::with_current(|worker| {
-            crate::event_worker_ops::stop_async_worker(serv, *worker);
+            crate::event_worker::native::stop_async_worker(serv, *worker);
         });
     }
 
@@ -503,6 +503,6 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
-        crate::event_worker_ops::send_to_reactor_thread(serv, head)
+        crate::event_worker::native::send_to_reactor_thread(serv, head)
     }
 }
