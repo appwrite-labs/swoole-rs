@@ -11,9 +11,7 @@ use swoole_rs_corebase::CCast;
 
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
-use crate::ops::{
-    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_SC_SEND, RUN_SENDFILE, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
-};
+use crate::ops::{RUN_ADD_PORT, RUN_BASE_CREATE, RUN_SC_SEND, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS};
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
     RUN_STORE_LISTEN_SOCKET,
@@ -32,13 +30,8 @@ pub struct NativeContext<'a> {
     pub(crate) conn: Option<crate::Connection<'a>>,
     pub(crate) send: *mut c_void,
     pub(crate) data: *const c_void,
-    /// The bytes the operations that read a slice take: `sendwait`'s data, `sendfile`'s
-    /// name, each up to its first NUL.
-    pub(crate) bytes: &'a [u8],
     pub(crate) length: u32,
     pub(crate) session_id: c_long,
-    pub(crate) buffer: Option<&'a mut SendfileBuffer>,
-    pub(crate) offset: i64,
     pub(crate) socket_type: c_int,
     pub(crate) host: Option<&'a CStr>,
     pub(crate) number: c_int,
@@ -55,11 +48,8 @@ impl NativeContext<'_> {
             conn: None,
             send: ptr::null_mut(),
             data: ptr::null(),
-            bytes: &[],
             length: 0,
             session_id: 0,
-            buffer: None,
-            offset: 0,
             socket_type: 0,
             host: None,
             number: 0,
@@ -360,16 +350,6 @@ pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
 }
 
-/// `text` up to its first NUL, as the C string at its start reads: one `memchr` for
-/// the usual text without one.
-fn until_nul(text: &[u8]) -> &[u8] {
-    if text.contains(&0) {
-        text.split(|byte| *byte == 0).next().unwrap_or_default()
-    } else {
-        text
-    }
-}
-
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
     clippy::must_use_candidate,
@@ -455,39 +435,7 @@ pub unsafe fn send_to_connection(serv: view::Server<'_>, send: &SendData) -> c_i
     c_int::narrow(unsafe { run(RUN_SC_SEND, header.info.kind.into(), &mut ctx) })
 }
 
-const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
-
-/// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
-#[repr(C, align(8))]
-pub(crate) struct SendfileBuffer(pub(crate) [u8; IPC_BUFFER_SIZE]);
-
-/// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the name's
-/// length narrowed to `uint32_t`, as upstream's callers do. The task copies the name up to
-/// its first NUL (`swoole_strlcpy`), so that much of it is lent.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
-pub fn sendfile(
-    serv: view::Server<'_>,
-    session_id: c_long,
-    file: &[u8],
-    offset: libc::off_t,
-    length: usize,
-) -> bool {
-    let l_file = file.len().c_cast::<u32>();
-    let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
-    // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
-    buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.session_id = session_id;
-    ctx.bytes = until_nul(file);
-    ctx.length = l_file;
-    ctx.buffer = Some(&mut buffer);
-    ctx.offset = offset;
-    // SAFETY: the live server.
-    unsafe { run(RUN_SENDFILE, session_id.cast_unsigned(), &mut ctx) != 0 }
-}
+pub use crate::dispatch::sendfile;
 
 /// `Server::create_base_factory()`: the new `BaseFactory`, or null.
 #[must_use]
@@ -637,12 +585,9 @@ mod tests {
     /// The last call the fake runner saw: op, arg and the context's fields.
     type Seen = (u32, u64, usize, usize, usize, usize, c_int, usize);
     static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
-    /// The send fields of each call: op, arg, serv, send, data, length, session,
-    /// offset and the `SendfileTask::length` in the buffer, if any.
-    type Sent = (u32, u64, usize, usize, usize, u32, c_long, i64, usize);
+    /// The send fields of each call: op, arg, serv, send, data, length and session.
+    type Sent = (u32, u64, usize, usize, usize, u32, c_long);
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
-    /// The name the last sendfile lent, read as the task's `swoole_strlcpy` reads it.
-    static SENDFILE_NAME: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
     pub(super) unsafe fn fake(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
         SEEN.lock()
@@ -657,16 +602,6 @@ mod tests {
                 ctx.number,
                 ctx.host.map_or(0, |host| host.as_ptr().addr()),
             ));
-        if op == RUN_SENDFILE {
-            // sendfile lends the name as far as the task copies it.
-            *SENDFILE_NAME
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = ctx.bytes.to_vec();
-        }
-        // sendfile's buffer starts with a `SendfileTask`, its length at 8.
-        let task_length = ctx.buffer.as_ref().map_or(0, |buffer| {
-            usize::from_ne_bytes(buffer.0[8..16].try_into().unwrap_or_default())
-        });
         SENT.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((
@@ -677,8 +612,6 @@ mod tests {
                 ctx.data.addr(),
                 ctx.length,
                 ctx.session_id,
-                ctx.offset,
-                task_length,
             ));
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.object = ptr::without_provenance_mut(0x70);
@@ -713,7 +646,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last()
-            .unwrap_or(&(0, 0, 0, 0, 0, 0, 0, 0, 0))
+            .unwrap_or(&(0, 0, 0, 0, 0, 0, 0))
     }
 
     #[test]
@@ -745,38 +678,10 @@ mod tests {
             assert!(send(server(), 9, &bytes), "send's 1 is true");
             assert_eq!(
                 sent(),
-                (
-                    RUN_ST_SEND,
-                    sent().3 as u64,
-                    sv,
-                    sent().3,
-                    at_bytes,
-                    4,
-                    9,
-                    0,
-                    0
-                ),
+                (RUN_ST_SEND, sent().3 as u64, sv, sent().3, at_bytes, 4, 9),
                 "send context, with its SendData lent"
             );
             assert_ne!(sent().3, 0, "a SendData is lent");
-            assert!(
-                !sendfile(server(), 12, &b"fx"[..1], 3, 99),
-                "sendfile result"
-            );
-            assert_eq!(
-                *SENDFILE_NAME
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                b"f",
-                "the name ends at its length, not past it"
-            );
-            let (op, arg, _, _, _, length, session, offset, task_length) = sent();
-            assert!(
-                op == RUN_SENDFILE && arg == 12 && length == 1 && session == 12,
-                "sendfile context"
-            );
-            assert_eq!((offset, task_length), (3, 99), "offset and task length");
-
             let mut task = SendData {
                 info: DataHead {
                     fd: 13,
@@ -790,7 +695,7 @@ mod tests {
             assert_eq!(send_to_connection(server(), &task), -1, "SW_ERR");
             assert_eq!(
                 sent(),
-                (RUN_SC_SEND, 2, sv, task_at.addr(), 0x80, 5, 13, 0, 0),
+                (RUN_SC_SEND, 2, sv, task_at.addr(), 0x80, 5, 13),
                 "send_to_connection reads the SendData"
             );
 

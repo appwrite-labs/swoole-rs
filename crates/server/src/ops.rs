@@ -36,8 +36,6 @@ pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
 pub const RUN_HEARTBEAT_THREAD: u32 = 32;
 
 // Dispatch, sends and ports (`src/server/master.cc`).
-/// `Server::sendfile(arg)`: context file name, offset and length.
-pub const RUN_SENDFILE: u32 = 40;
 /// `Server::add_port`: context type, host and port; 1 with the port in the context.
 pub const RUN_ADD_PORT: u32 = 41;
 pub const RUN_SYSTEMD_SOCKETS: u32 = 42;
@@ -390,12 +388,6 @@ pub const EVENT_SHUTDOWN_SIGNAL: u32 = 19;
 // Dispatch, sends and ports.
 /// `Server::state_`, a `state::ServerState`.
 pub const OP_STATE: u32 = 402;
-pub const OP_IS_MASTER: u32 = 421;
-/// The longest sendfile name; copies the name into the task, returning its address.
-pub const OP_SENDFILE_NAME_MAX: u32 = 422;
-pub const OP_SENDFILE_NAME: u32 = 423;
-/// Finishes the sendfile task of arg bytes; whether the factory took it.
-pub const OP_SENDFILE_FINISH: u32 = 424;
 pub const OP_IS_CREATED: u32 = 425;
 pub const OP_PORT_TYPE: u32 = 426;
 pub const OP_PORT_NUMBER: u32 = 427;
@@ -415,20 +407,11 @@ pub const OP_PORT_PUSH: u32 = 435;
 /// `LISTEN_PID`, `LISTEN_FDS_START`: the value, or `i64::MIN` when unset.
 pub const OP_ENV_LISTEN_PID: u32 = 436;
 pub const OP_ENV_FDS_START: u32 = 437;
-/// The sendfile name's length and the offset, an `off_t`.
-pub const OP_SENDFILE_NAME_LEN: u32 = 438;
-pub const OP_SENDFILE_OFFSET: u32 = 441;
 /// `swoole_get_systemd_listen_fds()`.
 pub const OP_SYSTEMD_FDS: u32 = 439;
 /// A new port importing fd arg, non-blocking and close-on-exec; whether it imported.
 pub const OP_PORT_IMPORT: u32 = 440;
 
-pub const LOG_INVALID_SESSION: u32 = 450;
-pub const LOG_SEND_IN_MASTER: u32 = 451;
-pub const LOG_SENDFILE_NAME: u32 = 452;
-pub const LOG_STAT: u32 = 453;
-pub const LOG_NOT_REGULAR: u32 = 454;
-pub const LOG_FILE_EMPTY: u32 = 455;
 pub const LOG_PORT_CREATED: u32 = 457;
 pub const LOG_TOO_MANY_PORTS: u32 = 458;
 pub const LOG_INVALID_PORT: u32 = 459;

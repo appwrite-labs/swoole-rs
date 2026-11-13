@@ -2,19 +2,16 @@
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_DISPATCH_FUNC, CallbackSlot};
 use crate::ops::{
-    LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_INVALID_SESSION,
-    LOG_LISTEN_PID, LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME,
-    LOG_STAT, LOG_TOO_MANY_PORTS, OP_DGRAM_PORT, OP_ENV_FDS_START, OP_ENV_LISTEN_PID,
-    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PORT_COUNT,
-    OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE,
-    OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
-    OP_SENDFILE_OFFSET, OP_STREAM_PORT, OP_SYSTEMD_FDS,
+    LOG_FDS_START, LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_LISTEN_PID, LOG_PORT_CREATED,
+    LOG_TOO_MANY_PORTS, OP_DGRAM_PORT, OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_HOST_MAXSIZE,
+    OP_HOST_SIZE, OP_IS_CREATED, OP_NEW_PORT_TYPE, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW,
+    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_STREAM_PORT, OP_SYSTEMD_FDS,
 };
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
 use crate::view::Server;
 use crate::{Host, MODE_PROCESS};
-use core::ffi::{c_char, c_int, c_long};
+use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_utilities::misc::swoole_hash_php;
@@ -231,37 +228,102 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
 /// `SW_LOG_TRACE`.
 const SW_LOG_TRACE: c_int = 1;
 
-/// `Server::sendfile`: validate the session and file, then hand the task to the factory.
-pub(crate) fn sendfile<H: Host>(h: &mut H, session: i64) -> crate::Effect<bool> {
-    if session <= 0 {
-        h.get(LOG_INVALID_SESSION)?;
-        return Ok(false);
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
+/// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
+const SENDFILE_TASK_SIZE: usize = 16;
+/// `SW_SERVER_EVENT_SEND_FILE`.
+const EVENT_SEND_FILE: u8 = 3;
+/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
+const SW_LOG_WARNING: c_int = 4;
+const SW_LOG_ERROR: c_int = 5;
+
+/// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
+#[repr(C, align(8))]
+struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
+
+fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
+    swoole_rs_corebase::log::error_log(level, code as c_int, c"Server::sendfile", m);
+}
+
+/// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the
+/// name's length narrowed to `uint32_t`, as upstream's callers do: checks the session
+/// and the file, then hands the `SendfileTask` to the factory. The task copies the name
+/// up to its first NUL (`swoole_strlcpy`).
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub fn sendfile(
+    serv: Server<'_>,
+    session_id: c_long,
+    file: &[u8],
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    use swoole_rs_error::ErrorCode as E;
+    if session_id <= 0 {
+        let m = format_args!("invalid fd[{session_id}]");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SESSION_INVALID_ID, m);
+        return false;
     }
-    if h.is(OP_IS_MASTER)? {
-        h.get(LOG_SEND_IN_MASTER)?;
-        return Ok(false);
+    let master = swoole_rs_process::worker_record::WorkerType::Master;
+    if swoole_rs_process::methods::worker_type() == Some(master) {
+        let m = format_args!("can't send data to the connections in master process");
+        sendfile_error(SW_LOG_ERROR, E::SW_ERROR_SERVER_SEND_IN_MASTER, m);
+        return false;
     }
-    if h.get(OP_SENDFILE_NAME_LEN)? > h.get(OP_SENDFILE_NAME_MAX)? {
-        h.get(LOG_SENDFILE_NAME)?;
-        return Ok(false);
+    let l_file = file.len().c_cast::<u32>();
+    let name = file.split(|&byte| byte == 0).next().unwrap_or_default();
+    let max = IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1;
+    if l_file as usize > max {
+        // `%.8s`: at most 8 bytes of the name.
+        let head = String::from_utf8_lossy(name.get(..8).unwrap_or(name));
+        let m = format_args!(
+            "sendfile name[{head}...] length {l_file} is exceed the max name len {max}"
+        );
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_NAME_TOO_LONG, m);
+        return false;
     }
-    let address = usize::try_from(h.get(OP_SENDFILE_NAME)?).unwrap_or(0);
-    let name = core::ptr::with_exposed_provenance::<c_char>(address);
+    let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
+    let (task, field) = buffer.0.split_at_mut(SENDFILE_TASK_SIZE);
+    let (head, tail) = task.split_at_mut(8);
+    head.copy_from_slice(&offset.to_ne_bytes());
+    tail.copy_from_slice(&length.to_ne_bytes());
+    // `swoole_strlcpy(req->filename, file, ...)`: the name, cut to leave room for its
+    // NUL, which the zeroed buffer already holds. One copy: a loop over the bytes costs
+    // the static handler about 800 instructions a file.
+    let (copied, _) = name.split_at(name.len().min(field.len() - 1));
+    let (target, _) = field.split_at_mut(copied.len());
+    target.copy_from_slice(copied);
+    let path = CStr::from_bytes_until_nul(field).unwrap_or_default();
     let mut st: libc::stat = swoole_rs_corebase::sys::zeroed();
-    // SAFETY: `name` is the NUL-terminated copy native code just made; `st` is valid.
-    if unsafe { libc::stat(name, &raw mut st) } < 0 {
-        h.get(LOG_STAT)?;
-        return Ok(false);
+    // SAFETY: a NUL-terminated path and a writable `stat`.
+    if unsafe { libc::stat(path.as_ptr(), &raw mut st) } < 0 {
+        let m = format_args!("stat({}) failed", path.to_string_lossy());
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
+        return false;
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFREG {
-        h.get(LOG_NOT_REGULAR)?;
-        return Ok(false);
+        let path = path.to_string_lossy();
+        let m = format_args!("the path[{path}] given is not a regular file");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE, m);
+        return false;
     }
-    if st.st_size <= h.signed(OP_SENDFILE_OFFSET)? {
-        h.get(LOG_FILE_EMPTY)?;
-        return Ok(false);
+    if st.st_size <= offset {
+        let m = format_args!("file[offset={offset}] is empty");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
+        return false;
     }
-    h.is(OP_SENDFILE_FINISH)
+    let mut send = SendData {
+        info: swoole_rs_corebase::DataHead {
+            fd: session_id,
+            kind: EVENT_SEND_FILE,
+            len: SENDFILE_TASK_SIZE.c_cast::<u32>() + l_file + 1,
+            ..Default::default()
+        },
+        data: buffer.0.as_ptr().cast(),
+    };
+    crate::hybrid::hybrid().factory_finish(serv, &mut send)
 }
 
 /// `Server::add_port`: validate, create the listen socket, and register the port.
@@ -337,9 +399,8 @@ pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
 
 /// The dispatch and port operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use crate::ops::{RUN_ADD_PORT, RUN_SENDFILE, RUN_SYSTEMD_SOCKETS};
+    use crate::ops::{RUN_ADD_PORT, RUN_SYSTEMD_SOCKETS};
     Ok(match operation {
-        RUN_SENDFILE => i64::from(sendfile(h, arg.cast_signed())?),
         RUN_ADD_PORT => add_port(h)?,
         RUN_SYSTEMD_SOCKETS => systemd_sockets(h)?,
         _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
@@ -538,36 +599,31 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn sendfile_checks() {
-        let file = |name: &core::ffi::CStr, offset: u64| {
-            let address = u64::try_from(name.as_ptr().expose_provenance()).unwrap();
-            Script::with(&[
-                (OP_SENDFILE_NAME_MAX, 100),
-                (OP_SENDFILE_NAME, address),
-                (OP_SENDFILE_OFFSET, offset),
-                (OP_SENDFILE_FINISH, 1),
-            ])
-        };
-        let mut s = Script::with(&[]);
-        assert!(!sendfile(&mut s, 0).unwrap(), "invalid session");
-        let mut s = Script::with(&[(OP_IS_MASTER, 1)]);
-        assert!(!sendfile(&mut s, 1).unwrap(), "master");
-        let mut s = Script::with(&[(OP_SENDFILE_NAME_MAX, 4), (OP_SENDFILE_NAME_LEN, 5)]);
-        assert!(!sendfile(&mut s, 1).unwrap(), "name too long");
-
+        use crate::hybrid::tests::{Call, calls};
+        let live = LiveServer::new();
+        let serv = live.server();
+        calls();
+        assert!(!sendfile(serv, 0, b"Cargo.toml", 0, 1), "invalid session");
+        let long = vec![b'a'; IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE];
+        assert!(!sendfile(serv, 1, &long, 0, 1), "name too long");
+        assert!(!sendfile(serv, 1, b"no-such-file", 0, 1), "missing");
+        assert!(!sendfile(serv, 1, b"src", 0, 1), "directory");
         assert!(
-            sendfile(&mut file(c"Cargo.toml", 0), 1).unwrap(),
-            "regular file"
+            !sendfile(serv, 1, b"Cargo.toml", 1 << 40, 1),
+            "offset past the end"
         );
-        let mut s = file(c"Cargo.toml", 1 << 40);
-        assert!(!sendfile(&mut s, 1).unwrap(), "offset past the end");
-        assert_eq!(s.called(LOG_FILE_EMPTY), 1, "warned");
-        let mut s = file(c"src", 0);
-        assert!(!sendfile(&mut s, 1).unwrap(), "directory");
-        assert_eq!(s.called(LOG_NOT_REGULAR), 1, "warned");
-        let mut s = file(c"no-such-file", 0);
-        assert!(!sendfile(&mut s, 1).unwrap(), "missing");
-        assert_eq!(s.called(LOG_STAT), 1, "warned");
+        assert_eq!(calls(), [], "none reached the factory");
+        let given = b"Cargo.toml\0junk";
+        assert!(sendfile(serv, 12, given, 3, 99), "regular file");
+        // The head, `l_file` (the whole given length) and the NUL.
+        let len = 16 + 15 + 1;
+        assert_eq!(
+            calls(),
+            [Call::Finish(12, EVENT_SEND_FILE, len, 3, 99, *b"Cargo.to")],
+            "the task: its offset and length, then the name up to its NUL"
+        );
     }
 
     #[test]
