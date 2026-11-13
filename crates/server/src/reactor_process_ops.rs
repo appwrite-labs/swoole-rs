@@ -196,7 +196,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .worker_num(),
         ),
         OP_INIT_REACTOR => {
-            crate::reactor_entry::init_reactor(serv, ctx.reactor_handle());
+            crate::reactor_thread::init_reactor(serv, ctx.reactor_handle());
             0
         }
         OP_SET_MASTER_PID => {
@@ -294,7 +294,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CLOSE_EVENT_SOCKET => {
             // The running reactor and the event's session socket.
             let socket = ctx.event().socket();
-            let closed = crate::reactor_entry::close_socket(server, reactor(ctx), socket);
+            let closed = crate::conn_io::close_connection(server, reactor(ctx), socket);
             return Some(sign(closed));
         }
         OP_HEARTBEAT_NOW => {
@@ -324,7 +324,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_CLOSE_FORCE => u64::from(conn.close_force()),
         OP_CLOSE_CONNECTION => {
             // The running reactor and the connection's session socket.
-            crate::reactor_entry::close_socket(server, reactor(ctx), conn.socket());
+            crate::conn_io::close_connection(server, reactor(ctx), conn.socket());
             0
         }
         OP_SET_CLOSE_FORCE => {

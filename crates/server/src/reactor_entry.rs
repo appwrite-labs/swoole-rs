@@ -11,9 +11,9 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ};
+use crate::ops::RUN_PACKET_RECEIVED;
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
+use crate::reactor_ops::{ReactorContext, ThreadRecord, facts};
 use crate::view;
 
 /// `swoole::RecvData`.
@@ -83,14 +83,13 @@ pub(crate) fn run(op: u32, arg: u64, ctx: &mut ReactorContext<'_>) -> i64 {
     crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg))
 }
 
-/// `operation` over `ctx` with the `which` facts, outside [`run`]'s match.
+/// `operation` over `ctx` with the read's facts, outside [`run`]'s match.
 fn run_with<'s, 'c>(
-    which: Facts,
     ctx: &'s mut ReactorContext<'c>,
     operation: impl FnOnce(&mut crate::Native<'s, 'c>, u64) -> crate::Effect<i64>,
 ) -> c_int {
     let state = ctx.serv.state();
-    let facts = facts(&mut *ctx, state, which);
+    let facts = facts(&mut *ctx, state);
     int(crate::run_reactor_with(ctx, state, |h| operation(h, facts)))
 }
 
@@ -107,24 +106,17 @@ pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     unsafe { view::Server::from_raw(reactor.handle().object()) }
 }
 
-/// A context over the server reactor at `reactor` and its server.
-///
-/// # Safety
-/// `reactor` is a live server `Reactor`, used on its own thread, whose `ptr` is the
-/// live `Server` for `'a`.
-#[inline]
-pub(crate) unsafe fn reactor_context<'a>(reactor: *mut c_void) -> ReactorContext<'a> {
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
-    // SAFETY: per the caller.
-    ReactorContext::new(unsafe { server(reactor) }, Some(reactor))
+/// A handler's server (`reactor->ptr`) and reactor.
+fn handler<'a>(reactor: Running<'_>) -> (view::Server<'a>, Reactor) {
+    let reactor = Reactor::running(reactor);
+    // SAFETY: the handlers below are registered only on server reactors.
+    (unsafe { server(reactor) }, reactor)
 }
 
 /// A context over the reactor, `reactor->ptr` (a reactor thread's server) and the event.
 fn context<'a>(reactor: Running<'_>, event: &'a mut Event) -> ReactorContext<'a> {
-    let reactor = Reactor::running(reactor);
-    // SAFETY: the handlers below are registered only on server reactors.
-    let mut ctx = ReactorContext::new(unsafe { server(reactor) }, Some(reactor));
+    let (serv, reactor) = handler(reactor);
+    let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.event = Some(event);
     ctx
 }
@@ -153,23 +145,13 @@ pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) ->
 
 /// `ReactorThread_onClose`: the peer closed.
 pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = event_context(reactor, event);
-    run_with(Facts::PeerClose, &mut ctx, crate::conn_io::peer_close)
-}
-
-/// `ReactorThread_onPipeRead`: a worker's message.
-pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = context(reactor, event);
-    let id = usize::from(reactor.id());
-    ctx.thread = thread(ctx.serv.state(), id);
-    int(run(RUN_PIPE_READ, 0, &mut ctx))
+    let (serv, reactor) = handler(reactor);
+    crate::conn_io::peer_close(serv, reactor, event)
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let reactor = Reactor::running(reactor);
-    // SAFETY: the handler is registered only on server reactors.
-    let serv = unsafe { server(reactor) };
+    let (serv, reactor) = handler(reactor);
     crate::reactor_io::pipe_write(serv, reactor, event)
 }
 
@@ -178,13 +160,13 @@ pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let fd = c_long::from(event.fd());
     let mut ctx = event_context(reactor, event);
     ctx.conn = ctx.serv.state().connection_ptr(fd, Lookup::ByFd);
-    run_with(Facts::Read, &mut ctx, crate::conn_io::read)
+    run_with(&mut ctx, crate::conn_io::read)
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
 pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let mut ctx = event_context(reactor, event);
-    run_with(Facts::Write, &mut ctx, crate::conn_io::write)
+    let (serv, reactor) = handler(reactor);
+    crate::conn_io::write(serv, reactor, event)
 }
 
 /// `static int Server::close_connection(Reactor *, Socket *)`.
@@ -196,22 +178,12 @@ pub unsafe extern "C-unwind" fn close_connection(
     socket: *mut SocketRecord,
 ) -> c_int {
     // SAFETY: per the caller.
-    let mut ctx = unsafe { reactor_context(reactor) };
+    let reactor = unsafe { Reactor::of(reactor) };
     // SAFETY: per the caller.
-    ctx.sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
-    run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
-}
-
-/// [`close_connection`] for the callers that hold the handles: `serv`'s reactor
-/// `reactor` closes `sock`, a session socket of it.
-pub(crate) fn close_socket(
-    serv: view::Server<'_>,
-    reactor: Reactor,
-    sock: Option<swoole_rs_reactor::Socket<'_>>,
-) -> c_int {
-    let mut ctx = ReactorContext::new(serv, Some(reactor));
-    ctx.sock = sock;
-    run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
+    let serv = unsafe { server(reactor) };
+    // SAFETY: per the caller.
+    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
+    crate::conn_io::close_connection(serv, reactor, sock)
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and
@@ -220,35 +192,7 @@ pub(crate) fn close_socket(
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = thread(serv.state(), id);
-    run(crate::ops::RUN_THREAD_SHUTDOWN, 0, &mut ctx);
-}
-
-/// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
-#[cfg_attr(
-    test,
-    expect(dead_code, reason = "its callers are the hybrid's, outside tests")
-)]
-pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
-    run(
-        crate::ops::RUN_INIT_REACTOR,
-        0,
-        &mut ReactorContext::new(serv, Some(reactor)),
-    );
-}
-
-/// `int Server::start_reactor_threads()`, in the server's master.
-#[must_use]
-pub fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
-    let mut ctx = ReactorContext::new(serv, None);
-    int(run(crate::ops::RUN_START_REACTOR_THREADS, 0, &mut ctx))
-}
-
-/// `static void Server::reactor_thread_main_loop(Server *, int)`, on the reactor
-/// thread `reactor_id`.
-pub fn reactor_thread_main_loop(serv: view::Server<'_>, reactor_id: c_int) {
-    let mut ctx = ReactorContext::new(serv, None);
-    let id = i64::from(reactor_id).cast_unsigned();
-    run(crate::ops::RUN_REACTOR_THREAD_MAIN, id, &mut ctx);
+    crate::thread_ops::shutdown(&ctx);
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
@@ -288,7 +232,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let len = rdata.info.len;
     // The slot is read only before the dispatch, as upstream does: base and thread mode
     // run the callback inline, and a close there hands the slot to the accept that reuses
-    // the fd (`OP_CC_FINISH`'s Release of `closed`), which no later read is ordered before.
+    // the fd (`close_connection`'s Release of `closed`), which no later read is ordered before.
     // Only the atomic count of queued bytes, which is shared by reference, is kept past it.
     let (port, reactor_id, mut task, queued) = {
         // SAFETY: the live connection slot, which lives as long as the server; its
@@ -348,10 +292,4 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         gs.dispatch_count.fetch_add(1, SeqCst);
     }
     0
-}
-
-/// `void Server::join_reactor_thread()`, in the server's master.
-pub fn join_reactor_thread(serv: view::Server<'_>) {
-    let mut ctx = ReactorContext::new(serv, None);
-    run(crate::ops::RUN_JOIN_REACTOR_THREADS, 0, &mut ctx);
 }

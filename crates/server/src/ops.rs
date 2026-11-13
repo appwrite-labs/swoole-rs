@@ -18,22 +18,8 @@ pub const RUN_DESTROY: u32 = 19;
 pub const RUN_RT_READ: u32 = 20;
 /// `ReactorThread_onPacketReceived`: context event.
 pub const RUN_PACKET_RECEIVED: u32 = 21;
-pub const RUN_THREAD_SHUTDOWN: u32 = 22;
-/// `ReactorThread_onPipeRead`: context event.
-pub const RUN_PIPE_READ: u32 = 24;
-pub const RUN_INIT_REACTOR: u32 = 25;
-/// `Server::heartbeat_check` in a reactor thread.
-pub const RUN_HEARTBEAT_CHECK: u32 = 26;
-pub const RUN_START_REACTOR_THREADS: u32 = 27;
-/// `Server::reactor_thread_main_loop` for thread arg.
-pub const RUN_REACTOR_THREAD_MAIN: u32 = 28;
-/// `ReactorThread_resume_data_receiving`: context socket and connection.
-pub const RUN_RESUME_RECEIVING: u32 = 29;
 /// `Server::dispatch_task`: context socket, connection and received data.
 pub const RUN_DISPATCH_TASK: u32 = 30;
-pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
-/// The heartbeat thread's loop.
-pub const RUN_HEARTBEAT_THREAD: u32 = 32;
 
 // `BaseFactory` (`src/server/base.cc`, `crates/server/src/base_factory.rs`).
 /// `Server::create_base_factory`: 1 with the factory in the context.
@@ -47,8 +33,6 @@ pub const RUN_BASE_FINISH: u32 = 46;
 pub const RUN_BASE_DISPATCH: u32 = 47;
 /// One native op, arg the op: the operands are in the context (`server_methods.rs`).
 pub const RUN_NATIVE_OP: u32 = 48;
-/// A reactor thread's reactor is destroyed: close the connections it owns.
-pub const RUN_CLOSE_REACTOR_CONNECTIONS: u32 = 49;
 
 // Server facts.
 pub const OP_MODE: u32 = 0;
@@ -103,8 +87,6 @@ pub const OP_UNLOCK: u32 = 71;
 pub const OP_NOTIFY_CONNECT: u32 = 76;
 /// `conn->closed || conn->close_force`.
 pub const OP_CONN_CLOSING: u32 = 81;
-/// `close_force = 1` and the reactor's close event.
-pub const OP_FORCE_CLOSE: u32 = 83;
 /// `conn->last_recv_time`, a `double`.
 pub const OP_CONN_LAST_RECV: u32 = 84;
 
@@ -272,88 +254,25 @@ pub const OP_REACTOR_ID: u32 = 266;
 pub const OP_REACTOR_NUM: u32 = 267;
 /// `reactor->del(port->socket)` for port arg.
 pub const OP_PORT_DEL: u32 = 268;
-pub const OP_HEARTBEAT_TIMER_CLEAR: u32 = 269;
-/// Closes the reactor's connections when it is destroyed.
-pub const OP_DESTROY_CALLBACK: u32 = 270;
-/// `stop_async_worker(get_worker(reactor->id))`.
-pub const OP_STOP_THREAD_WORKER: u32 = 271;
 pub const OP_WORKER_NUM: u32 = 272;
-/// Stops reading worker arg's master pipe.
-pub const OP_WORKER_PIPE_UNREAD: u32 = 273;
 /// Selects the connection at fd arg when valid.
 pub const OP_CONN_AT: u32 = 274;
 pub const OP_CONN_FD: u32 = 275;
 pub const OP_CONN_REACTOR: u32 = 276;
-pub const OP_CONN_SESSION: u32 = 277;
-/// Neither the peer closed nor the socket left the reactor.
-pub const OP_CONN_READING: u32 = 278;
 pub const OP_CONN_UNREAD: u32 = 279;
-pub const OP_WAIT_EXIT: u32 = 280;
 /// Selects the connection of session arg (`get_connection_verify_no_ssl`).
 pub const OP_SESSION_CONN: u32 = 281;
-pub const OP_CONN_FORCE: u32 = 282;
-/// `conn->ssl && !conn->ssl_ready`.
-pub const OP_CONN_HANDSHAKING: u32 = 283;
-/// `Server::close_connection(reactor, conn->socket)`.
-pub const OP_CLOSE: u32 = 284;
-/// Reads the pipe into the thread's message bus; the `ssize_t`.
-pub const OP_PIPE_READ: u32 = 285;
-pub const OP_PIPE_TYPE: u32 = 286;
-pub const OP_PIPE_FD: u32 = 287;
-pub const OP_PIPE_POP: u32 = 288;
-/// `connection_incoming`; `reactor->close` of the connection.
-pub const OP_INCOMING: u32 = 289;
-pub const OP_REACTOR_CLOSE: u32 = 290;
 pub const OP_COMMAND_REQUEST: u32 = 291;
 pub const OP_COMMAND_RESPONSE: u32 = 292;
-/// `swoole_kill(getpid(), SIGTERM)`.
-pub const OP_KILL_SELF: u32 = 293;
 pub const OP_ON_FINISH: u32 = 294;
 pub const OP_ON_PIPE_MESSAGE: u32 = 295;
-/// `factory_->end(arg, CLOSE_ACTIVELY)`.
-pub const OP_CLOSE_FORWARD: u32 = 296;
-/// `send_to_connection` of the pipe's packet.
-pub const OP_PIPE_SEND: u32 = 297;
-/// The thread buffer grows for 64K datagrams, then the session handlers.
-pub const OP_DGRAM_BUFFER: u32 = 298;
-pub const OP_SESSION_HANDLERS: u32 = 299;
-/// `microtime()`, a `double`.
-pub const OP_MICROTIME: u32 = 300;
 /// `is_healthy_connection(arg as double)` of the connection.
 pub const OP_CONN_HEALTHY: u32 = 301;
-/// `swoole_event_init(0)`; the context reactor becomes `sw_reactor()`.
-pub const OP_EVENT_INIT: u32 = 302;
 /// Port arg listens; then reads.
 pub const OP_PORT_LISTEN: u32 = 303;
-pub const OP_PORT_READ: u32 = 304;
-pub const OP_STORE_LISTEN_SOCKET: u32 = 305;
-/// `get_thread(0)->init(serv, reactor, 0)`.
-pub const OP_THREAD0_INIT: u32 = 306;
-/// The master reactor's and thread's id become `reactor_num`.
-pub const OP_MASTER_REACTOR_ID: u32 = 307;
-/// The entry a reactor thread runs: `void (*)(void *serv, uint64_t id)`.
-pub const OP_REACTOR_THREAD_ENTRY: u32 = 308;
-pub const OP_HEARTBEAT_TIMER: u32 = 309;
-/// The entry the heartbeat thread runs, as `OP_REACTOR_THREAD_ENTRY`'s.
-pub const OP_HEARTBEAT_ENTRY: u32 = 310;
-pub const OP_START_MASTER_THREAD: u32 = 311;
-/// The context thread is reactor thread arg: its id and the thread's message bus.
-pub const OP_THREAD_ENTER: u32 = 312;
-pub const OP_WORKER_START: u32 = 313;
-pub const OP_WORKER_STOP: u32 = 314;
-/// `swoole_set_thread_id(arg)`, `THREAD_REACTOR`.
-pub const OP_REACTOR_THREAD_TYPE: u32 = 315;
-/// `thread->init(serv, reactor, id)`.
-pub const OP_THREAD_INIT: u32 = 316;
-pub const OP_THREAD_CLEAN: u32 = 317;
-/// `recv_queued_bytes > max_queued_bytes`.
-pub const OP_QUEUE_FULL: u32 = 318;
-pub const OP_WAITING_TIME: u32 = 319;
 pub const OP_SET_WAITING_TIME: u32 = 320;
 /// Arms the resume timer after the waiting time; whether it was armed.
 pub const OP_RESUME_TIMER: u32 = 321;
-/// The reactor reads the socket again and the timer is cleared.
-pub const OP_RESUME_READ: u32 = 322;
 /// `reactor->remove_read_event(socket)`.
 pub const OP_RD_UNREAD: u32 = 324;
 /// `recv_queued_bytes` -= arg.
@@ -361,14 +280,8 @@ pub const OP_QUEUE_SUB: u32 = 325;
 pub const OP_FACTORY_DISPATCH: u32 = 326;
 /// The `Server *` the thread entries take.
 pub const OP_SERVER: u32 = 328;
-/// Tells reactor thread arg to shut down.
-pub const OP_THREAD_NOTIFY: u32 = 329;
-/// Asks the connection's reactor thread to force-close session arg.
-pub const OP_SEND_CLOSE_FORCE: u32 = 330;
 
 pub const LOG_RECVFROM: u32 = 350;
-/// arg the session.
-pub const LOG_NO_SESSION: u32 = 351;
 
 // `ServerEventType` values on the reactor pipe.
 pub const EVENT_CLOSE_FORCE: u32 = 6;
@@ -421,82 +334,13 @@ pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
 
-// A connection's read, write and close paths (`crates/server/src/conn_io.rs`); the
-// context holds the reactor, event, socket, connection and port.
-/// `ReactorThread_onWrite`: arg the write facts.
-pub const RUN_RT_WRITE: u32 = 211;
-/// `reactor->remove_write_event(event socket)`.
-pub const OP_RT_REMOVE_WRITE: u32 = 912;
-/// `ReactorThread_onClose`: arg the peer-close facts.
-pub const RUN_PEER_CLOSE: u32 = 212;
-/// `Server::close_connection`: context reactor and socket.
-pub const RUN_CLOSE_CONNECTION: u32 = 213;
+// A connection's read (`crates/server/src/conn_io.rs`); the context holds the reactor, event, socket, connection and port.
 /// Feeds a DTLS port's session the datagram; 1 when its handshake failed.
 pub const OP_RD_DTLS: u32 = 940;
 /// `serv->abort_connection(reactor, port, socket)`.
 pub const OP_RD_ABORT: u32 = 941;
-/// `ReactorThread_onWrite`'s facts (and context port and connection), for a read.
-pub const OP_RD_WRITE_FACTS: u32 = 942;
-/// Notifies the close and clears `close_notify`.
-pub const OP_WR_NOTIFY_CLOSE: u32 = 943;
-/// 0 when the output buffer is empty, else 1 + its front chunk's type.
-pub const OP_WR_FRONT: u32 = 944;
-/// `reactor->close(reactor, socket)`.
-pub const OP_WR_CLOSE: u32 = 945;
-pub const OP_WR_SENDFILE: u32 = 946;
-pub const OP_WR_SEND: u32 = 947;
-/// `send_queued_bytes` = the output buffer's length.
-pub const OP_WR_QUEUED: u32 = 948;
-/// `CLOSE_WAIT` and `SEND_WAIT`.
-pub const OP_WR_WAIT: u32 = 949;
-/// `close_errno = errno`, then the close event's result.
-pub const OP_WR_CLOSE_ERRNO: u32 = 950;
-/// The flushed connection's `OVERFLOW_DRAINED`, `LOW_WATERMARK`, `SEND_TIMER`,
-/// `OUT_EMPTY`, `PEER_CLOSED` and `REMOVED`.
-pub const OP_WR_STATE: u32 = 951;
-pub const OP_WR_CLEAR_OVERFLOW: u32 = 952;
-/// Clears `high_watermark` and notifies the buffer is empty.
-pub const OP_WR_BUFFER_EMPTY: u32 = 953;
-pub const OP_WR_TIMER_DEL: u32 = 954;
-/// Delays the send timer by the port's idle time.
-pub const OP_WR_TIMER_DELAY: u32 = 955;
-/// `reactor->set(socket, SW_EVENT_READ)`.
-pub const OP_WR_READ_ONLY: u32 = 956;
-/// `peer_closed = arg`, `close_notified = 1`, then the factory's close notification.
-pub const OP_PC_NOTIFY: u32 = 957;
-/// `Server::close_connection`'s facts, the fd above bit 32 (and context connection and port).
-pub const OP_CC_FACTS: u32 = 958;
-pub const OP_CC_TIMER_DEL: u32 = 959;
-/// `socket->ssl_shutdown()`.
-pub const OP_CC_SSL_SHUTDOWN: u32 = 960;
-/// TLS wants to read or write.
-pub const OP_CC_SSL_WANT: u32 = 961;
-/// Queues a close chunk and sets `close_queued`.
-pub const OP_CC_QUEUE_CLOSE: u32 = 962;
-/// Watches the socket for writes, adding it when arg (it is removed); the result.
-pub const OP_CC_WATCH_WRITE: u32 = 963;
-pub const OP_CC_WEBSOCKET_FREE: u32 = 964;
-/// Close counts and connection numbers, per reactor when arg (base mode); traced.
-pub const OP_CC_COUNT: u32 = 965;
-/// `ssl_quiet_shutdown = peer_closed`, then `ssl_close()`.
-pub const OP_CC_SSL_CLOSE: u32 = 966;
-pub const OP_CC_DTLS_FREE: u32 = 967;
-pub const OP_CC_RECV_FREE: u32 = 968;
-/// The port speaks HTTP and the connection holds a request.
-pub const OP_CC_HTTP_OBJECT: u32 = 969;
-pub const OP_CC_HTTP_DESTROY: u32 = 970;
-/// The port speaks Redis and the connection holds an object.
-pub const OP_CC_REDIS_OBJECT: u32 = 971;
-pub const OP_CC_REDIS_FREE: u32 = 972;
-/// Sets `SO_LINGER` to reset; 1 when it failed.
-pub const OP_CC_LINGER: u32 = 973;
-/// The session's fd = 0.
-pub const OP_CC_SESSION_CLEAR: u32 = 974;
-/// The connection at fd arg is valid.
-pub const OP_CC_VALID: u32 = 975;
-/// Marks the connection closed, then `Reactor::_close`'s result.
-pub const OP_CC_FINISH: u32 = 976;
-pub const LOG_CC_LINGER: u32 = 990;
+/// `ReactorThread_onWrite` over the read's event.
+pub const OP_RD_WRITE: u32 = 942;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `gs->concurrency`: subtract arg; read; set 0.

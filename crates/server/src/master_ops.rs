@@ -786,7 +786,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         // The master starts its reactor threads.
-        OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),
+        OP_LC_START_PROCESS => sign(crate::thread_ops::start_reactor_threads(o.server())),
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let node = crate::server_methods::master_timer(o.server());
@@ -835,9 +835,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_SHUTDOWN;
-    use crate::ops::{
-        OP_FORCE_CLOSE, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE,
-    };
+    use crate::ops::{OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE};
     /// `SW_SERVER_EVENT_CONNECT`.
     const EVENT_CONNECT: c_int = 5;
     Some(match op {
@@ -846,19 +844,12 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.conn(),
             EVENT_CONNECT,
         )),
-        OP_FORCE_CLOSE => {
-            let conn = o.conn();
-            conn.set_close_force(true);
-            let mut event = conn.event(0, 0);
-            o.reactor().trigger_close(&mut event);
-            0
-        }
         OP_ON_SHUTDOWN => {
             o.state.callbacks.call_server(CB_SHUTDOWN, o.server());
             0
         }
         OP_JOIN_REACTOR_THREADS => {
-            crate::reactor_entry::join_reactor_thread(o.server());
+            crate::reactor_thread::join_reactor_threads(o.server());
             0
         }
         OP_PORT_CLOSE => {
