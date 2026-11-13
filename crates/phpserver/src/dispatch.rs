@@ -848,7 +848,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
         ));
     }
     // The callback may have changed it.
-    if conn.http2_stream() != 0
+    if conn.http2_stream()
         && let Some(families) = swoole_rs_phpswoole::families()
     {
         (families.http.http2_on_close)(conn.session_id());

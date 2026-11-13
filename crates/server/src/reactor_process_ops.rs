@@ -314,7 +314,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_CLOSE_QUEUED => u64::from(conn.close_queued()),
         OP_SET_PEER_CLOSED => {
             // the client has closed the connection and the connection is no longer available.
-            conn.set_peer_closed(1);
+            conn.set_peer_closed(true);
             0
         }
         OP_NOTIFY_CLOSE => u64::from(crate::server_methods::notify(server, conn, EVENT_CLOSE)),
@@ -330,7 +330,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SET_CLOSE_FORCE => {
-            conn.set_close_force(1);
+            conn.set_close_force(true);
             0
         }
         _ => return None,

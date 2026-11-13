@@ -109,9 +109,19 @@ impl<'a> Function<'a> {
     #[must_use]
     #[inline]
     pub fn opcodes(self) -> Option<*mut zend_op> {
+        self.instructions().map(|(first, _)| first)
+    }
+
+    /// `function->op_array.opcodes` and `.last`: user code's first opline and how
+    /// many follow it; None for an internal function.
+    #[must_use]
+    #[inline]
+    pub fn instructions(self) -> Option<(*mut zend_op, u32)> {
         let op_array = self.op_array()?;
-        // SAFETY: a live user function is its op array.
-        Some(unsafe { (*op_array).opcodes })
+        // SAFETY: a live user function is its op array, which no Zend code
+        // writes while this reads its two fields.
+        let op_array = unsafe { &*op_array };
+        Some((op_array.opcodes, op_array.last))
     }
 }
 

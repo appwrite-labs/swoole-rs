@@ -69,7 +69,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
     let state = state?;
     let conn = state.connection(send.info.fd, Lookup::VerifiedTls)?;
     let socket = conn.socket()?;
-    if conn.overflow() != 0
+    if conn.overflow()
         || socket.read(|record| {
             !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
         })

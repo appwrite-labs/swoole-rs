@@ -366,11 +366,11 @@ mod tests {
     use super::*;
 
     /// Pinned `http.cc`'s branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
-    fn pinned(websocket_status: u8, http2_stream: u8) -> u32 {
+    fn pinned(websocket_status: u8, http2_stream: bool) -> u32 {
         // `conn->websocket_status >= websocket::STATUS_HANDSHAKE`, then `conn->http2_stream`.
         if websocket_status >= 2 {
             1
-        } else if http2_stream != 0 {
+        } else if http2_stream {
             2
         } else {
             0
@@ -378,12 +378,13 @@ mod tests {
     }
 
     /// The retired dispatch gate's route cases: every WebSocket status against
-    /// HTTP/2 off, on and 255, through each of the three routes.
+    /// HTTP/2 off and on, through each of the three routes. (The gate also tried 255,
+    /// which the field, now a `bool`, can't hold.)
     #[test]
     fn routes_match_the_pinned_branches() {
         let mut cases = 0;
         for websocket_status in 0..=u8::MAX {
-            for http2_stream in [0, 1, 255] {
+            for http2_stream in [false, true] {
                 // SAFETY: the record is plain integers, pointers and atomics.
                 let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
                 conn.websocket_status = websocket_status;
@@ -420,7 +421,7 @@ mod tests {
                 cases += 3;
             }
         }
-        assert_eq!(cases, 256 * 3 * 3);
+        assert_eq!(cases, 256 * 2 * 3);
         assert_eq!(WEBSOCKET_FRAME_HEADER_SIZE, 14);
     }
 }

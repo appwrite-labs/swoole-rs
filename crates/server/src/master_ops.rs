@@ -475,7 +475,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.set_worker_id(-1);
             conn.set_socket_type(o.port().r#type);
             conn.set_socket(o.ctx.sock);
-            conn.set_ssl(u8::from(ssl));
+            conn.set_ssl(ssl);
             conn.info().kind = conn.socket_type();
             #[expect(
                 clippy::cast_possible_truncation,
@@ -1287,7 +1287,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LAST_SENT => o.read_conn_socket(|s| s.last_sent_time.to_bits()),
         OP_CONN_PROTECT => u64::from(o.conn().protect()),
         OP_CONN_CLOSING => {
-            u64::from(o.conn().closed().load(Relaxed) != 0 || o.conn().close_force() != 0)
+            u64::from(o.conn().closed().load(Relaxed) != 0 || o.conn().close_force())
         }
         OP_CONN_UID => u64::from(o.conn().uid()),
         OP_CONN_WORKER => sign(o.conn().worker_id()),
@@ -1298,11 +1298,11 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_SC_OVERFLOW => {
-            o.conn().set_overflow(1);
+            o.conn().set_overflow(true);
             0
         }
         OP_SC_HIGH_WATERMARK => {
-            o.conn().set_high_watermark(1);
+            o.conn().set_high_watermark(true);
             0
         }
         OP_FD_CONN | OP_VERIFY_CONN => {
@@ -1639,7 +1639,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_QUEUE_CLOSE => {
             swr_cpp_buffer_typed_close(out());
-            o.conn().set_close_queued(1);
+            o.conn().set_close_queued(true);
             0
         }
         op => return sockets(o, op, arg),
@@ -1703,13 +1703,13 @@ fn send_flags(o: &Objects<'_>) -> u64 {
             .is_some_and(CallbackSlot::is_set)
     };
     [
-        (conn.overflow() != 0, send::OVERFLOW),
-        (conn.close_reset() != 0, send::CLOSE_RESET),
-        (conn.close_force() != 0, send::CLOSE_FORCE),
-        (conn.peer_closed() != 0, send::PEER_CLOSED),
+        (conn.overflow(), send::OVERFLOW),
+        (conn.close_reset(), send::CLOSE_RESET),
+        (conn.close_force(), send::CLOSE_FORCE),
+        (conn.peer_closed(), send::PEER_CLOSED),
         (conn.closed().load(Relaxed) != 0, send::CLOSED),
-        (conn.close_queued() != 0, send::CLOSE_QUEUED),
-        (conn.high_watermark() != 0, send::HIGH_WATERMARK),
+        (conn.close_queued(), send::CLOSE_QUEUED),
+        (conn.high_watermark(), send::HIGH_WATERMARK),
         (removed, send::REMOVED),
         (
             cfg!(feature = "halfclose") && notified,
@@ -2014,7 +2014,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FORCE_CLOSE => {
             let conn = o.conn();
-            conn.set_close_force(1);
+            conn.set_close_force(true);
             let mut event = conn.event(0, 0);
             o.reactor().trigger_close(&mut event);
             0
@@ -2196,7 +2196,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SC_NOTIFY_FULL => {
             crate::server_methods::notify(o.server(), o.conn(), EVENT_BUFFER_FULL);
-            o.conn().set_high_watermark(1);
+            o.conn().set_high_watermark(true);
             0
         }
         OP_ACCEPT_EVENT => {
@@ -2899,7 +2899,7 @@ mod tests {
                 Some(1)
             );
             answer(&raw mut ctx, None, &*state, OP_SC_QUEUE_CLOSE, 0);
-            assert_eq!(conn.close_queued, 1);
+            assert!(conn.close_queued);
             let buffer = sock.output.out_buffer.cast::<CppBuffer>();
             assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
             swoole_rs_buffer::cpp::delete_buffer(buffer);
