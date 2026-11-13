@@ -71,9 +71,7 @@ pub(crate) unsafe fn send_now(state: Option<&ServerState>, send: &SendData) -> O
     let socket = conn.socket()?;
     if conn.overflow() != 0
         || socket.read(|record| {
-            record.direct_send == 0
-                || !record.ssl().is_null()
-                || !record.output.out_buffer.is_null()
+            !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
         })
     {
         return None;

@@ -766,7 +766,7 @@ impl Bus {
         // `make_socket`: a new record, which the bus frees on drop.
         let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
         socket.output.buffer_size = u32::MAX;
-        if socket.output.nonblock == 0 {
+        if !socket.output.nonblock {
             swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
         }
         if let Some(slot) = pipe_sockets.get_mut(index) {

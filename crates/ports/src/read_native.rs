@@ -125,7 +125,7 @@ impl Read<'_> {
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
     fn removed(&self) -> bool {
-        self.socket.read(|s| s.removed) != 0
+        self.socket.read(|s| s.removed)
     }
 
     fn config(&self) -> &ServerConfig {
@@ -334,7 +334,7 @@ impl Connection for Read<'_> {
     }
 
     fn skip_recv(&mut self) {
-        self.socket.edit(|s| s.skip_recv = 1);
+        self.socket.edit(|s| s.skip_recv = true);
     }
 
     #[inline]

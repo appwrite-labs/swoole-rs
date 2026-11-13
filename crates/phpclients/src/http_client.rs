@@ -999,7 +999,7 @@ impl Client {
             }
             if socket
                 .net()
-                .is_some_and(|net| net.read(|record| record.output.close_wait != 0))
+                .is_some_and(|net| net.read(|record| record.output.close_wait))
             {
                 break;
             }
@@ -1229,7 +1229,7 @@ impl Client {
         };
         if self.in_callback.get() {
             if let Some(net) = socket.net() {
-                net.edit(|record| record.output.close_wait = 1);
+                net.edit(|record| record.output.close_wait = true);
             }
             return true;
         }

@@ -274,7 +274,7 @@ impl<'a> Socket<'a> {
     /// may reach other sockets.
     #[must_use]
     pub fn wait_event(self, timeout_ms: c_int, events: c_int) -> c_int {
-        let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart != 0));
+        let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
         crate::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
     }
 }

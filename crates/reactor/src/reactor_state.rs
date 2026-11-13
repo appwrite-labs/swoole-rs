@@ -593,7 +593,7 @@ impl ReactorState {
                         return result;
                     }
                     record.events = events;
-                    record.removed = 0;
+                    record.removed = false;
                 }
                 1 => {
                     record.events = events;
@@ -601,7 +601,7 @@ impl ReactorState {
                 }
                 _ => {
                     record.events = 0;
-                    record.removed = 1;
+                    record.removed = true;
                     self.registry.remove(record.fd);
                 }
             }
@@ -659,7 +659,7 @@ pub(crate) mod tests {
             let mut socket = SocketRecord::with_fd(123, 0);
             assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
             assert_eq!(socket.events, 512);
-            assert_eq!(socket.removed, 0);
+            assert!(!socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 1
@@ -668,7 +668,7 @@ pub(crate) mod tests {
             assert_eq!(socket.events, 1024);
             record(state.owner, &raw mut socket, 2, 0);
             assert_eq!(socket.events, 0);
-            assert_eq!(socket.removed, 1);
+            assert!(socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 0

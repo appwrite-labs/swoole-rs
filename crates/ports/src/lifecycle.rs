@@ -329,7 +329,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     } else {
         FD_STREAM_SERVER
     };
-    socket.removed = 1;
+    socket.removed = true;
     let info = socket.info;
     *config.socket.get_mut() = socket.into_raw().cast();
     config.r#type = kind;

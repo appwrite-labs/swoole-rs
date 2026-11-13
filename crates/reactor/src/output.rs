@@ -49,10 +49,10 @@ impl OutputResult {
     /// other fields, such as the hooks' `kernel_nobufs`, usable.
     pub const fn publish(&self, output: &mut crate::SocketOutput) {
         if self.close_wait {
-            output.close_wait = 1;
+            output.close_wait = true;
         }
         if self.send_wait {
-            output.send_wait = 1;
+            output.send_wait = true;
         }
     }
 }
@@ -348,7 +348,7 @@ mod tests {
                 (sent.status, sent.result.code, sent.result.offset),
                 (0, -1, 2)
             );
-            assert_eq!((*socket).fields.output.send_wait, 1);
+            assert!((*socket).fields.output.send_wait);
             assert_eq!(queue.front().unwrap().offset, 2);
             reset(-1, libc::EPIPE, false);
             let closed = handle_send_owned(handle, &mut queue, &hooks);
@@ -358,7 +358,7 @@ mod tests {
                     closed.result.code,
                     (*socket).fields.output.close_wait
                 ),
-                (0, -1, 1)
+                (0, -1, true)
             );
             assert_eq!(queue.front().unwrap().offset, 2);
             reset(3, 0, false);
