@@ -495,10 +495,7 @@ impl ServerData {
         };
         if owns_shared() {
             // Freed on the one thread that owns the config's slots.
-            let dispatch = server
-                .config()
-                .private_data_3
-                .swap(ptr::null_mut(), Ordering::Relaxed);
+            let dispatch = server.config().private_data_3.replace(None);
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
         let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);

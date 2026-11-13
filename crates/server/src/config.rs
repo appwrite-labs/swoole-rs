@@ -146,8 +146,13 @@ impl<T> Shared<T> {
 /// it, so neither sees a value the other frees. A thin box: native code's mirror
 /// holds a `void *` here.
 #[repr(transparent)]
-#[derive(Default)]
 pub struct Published<T>(Box<std::sync::Mutex<Option<std::sync::Arc<T>>>>);
+
+impl<T> Default for Published<T> {
+    fn default() -> Self {
+        Self(Box::default())
+    }
+}
 
 impl<T> Published<T> {
     #[must_use]
@@ -155,10 +160,16 @@ impl<T> Published<T> {
         self.slot().clone()
     }
 
+    /// Publishes `value`, or none, and hands back the one it replaces, for the
+    /// caller to drop once the lock is released.
+    #[must_use]
+    pub fn replace(&self, value: Option<T>) -> Option<std::sync::Arc<T>> {
+        core::mem::replace(&mut *self.slot(), value.map(std::sync::Arc::new))
+    }
+
     /// Publishes `value`; the one it replaces drops once the lock is released.
     pub fn set(&self, value: T) {
-        let previous = self.slot().replace(std::sync::Arc::new(value));
-        drop(previous);
+        drop(self.replace(Some(value)));
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<T>>> {
@@ -230,8 +241,8 @@ pub struct ServerConfig {
     pub ipc_max_size: AtomicU32,
     pub private_data_1: *mut c_void,
     pub private_data_2: *mut c_void,
-    /// The `dispatch_func` callable, swapped by the thread configuring the server.
-    pub private_data_3: AtomicPtr<c_void>,
+    /// The `dispatch_func` callable's owner, which phpserver sets and downcasts.
+    pub private_data_3: Published<Box<dyn core::any::Any>>,
     pub private_data_4: *mut c_void,
     pub factory_: *mut c_void,
     pub manager_: *mut c_void,
@@ -314,7 +325,7 @@ impl Default for ServerConfig {
             }),
             private_data_1: core::ptr::null_mut(),
             private_data_2: core::ptr::null_mut(),
-            private_data_3: AtomicPtr::default(),
+            private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: core::ptr::null_mut(),
             manager_: core::ptr::null_mut(),
