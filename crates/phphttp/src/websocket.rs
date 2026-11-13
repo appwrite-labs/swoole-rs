@@ -27,7 +27,7 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
     DecodedFrame, Delivery, INVALID_CONTROL, control_invalid, encode_close_into, encode_into,
-    encoded_size, message_policy, pack_policy,
+    encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
@@ -164,14 +164,6 @@ fn set_status(server: view::Server<'_>, fd: zend_long, status: WebSocketStatus) 
     if let Some(conn) = server.by_session(fd) {
         conn.set_websocket_status(status);
     }
-}
-
-/// `Server::send`; with `wait`, waiting in a coroutine while the buffer is full.
-fn send(server: view::Server<'_>, fd: zend_long, data: &[u8], wait: bool) -> bool {
-    if wait {
-        return context::server_send(server, fd, data);
-    }
-    server_methods::send(server, fd, data)
 }
 
 /// `Server::close(fd, reset)`.
@@ -414,6 +406,22 @@ fn warning(func: &CStr, message: &str) {
 
 /// `FrameObject::pack`: the frame on the wire as a new string, or `None`.
 fn pack(frame: &FrameObject) -> Option<Frame> {
+    packed(frame, |payload, flags| whole(frame, payload, flags))
+}
+
+/// `frame` around its packed `payload`, in one piece.
+fn whole(frame: &FrameObject, payload: &[u8], flags: u8) -> Option<Frame> {
+    if frame.opcode == OPCODE_CLOSE {
+        close_frame(i32::from(frame.code), payload, flags)
+    } else {
+        encode(payload, frame.opcode, flags)
+    }
+}
+
+/// What `FrameObject::pack` puts on the wire, to `emit`: the payload, deflated when
+/// the flags ask and zlib can, and the flags that leaves. `None` for a frame that
+/// cannot be packed.
+fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> Option<T> {
     if frame.opcode > OPCODE_PONG {
         host::fatal("the maximum value of opcode is 10");
         return None;
@@ -441,12 +449,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
         flags &= !FLAG_RSV1;
         None
     };
-    let payload = compressed.as_deref().unwrap_or(data);
-    if frame.opcode == OPCODE_CLOSE {
-        close_frame(i32::from(frame.code), payload, flags)
-    } else {
-        encode(payload, frame.opcode, flags)
-    }
+    emit(compressed.as_deref().unwrap_or(data), flags)
 }
 
 /// `websocket::message_compress(.., Z_DEFAULT_COMPRESSION)`, warning as it did.
@@ -758,8 +761,9 @@ fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<C
     })
 }
 
-/// `swoole_websocket_server_push`: a packed frame to a WebSocket connection.
-fn push_frame(server: view::Server<'_>, fd: zend_long, frame: &[u8]) -> bool {
+/// `swoole_websocket_server_push`: a packed frame to a WebSocket connection, as its
+/// `head` and the `payload` that follows it (all of it in `head`, for a small one).
+fn push_frame(server: view::Server<'_>, fd: zend_long, head: &[u8], payload: &[u8]) -> bool {
     if fd <= 0 {
         host::fatal(&format!("fd[{fd}] is invalid"));
         return false;
@@ -771,7 +775,7 @@ fn push_frame(server: view::Server<'_>, fd: zend_long, frame: &[u8]) -> bool {
         ));
         return false;
     }
-    send(server, fd, frame, true)
+    context::server_send_parts(server, fd, head, payload)
 }
 
 fn push(call: &Call) {
@@ -794,11 +798,23 @@ fn push(call: &Call) {
             frame.flags |= FLAG_COMPRESS;
         }
         frame.flags &= !FLAG_MASK;
-        let Some(packed) = pack(&frame) else {
+        let sent = packed(&frame, |payload, flags| {
+            // A large data frame's payload is sent from where it is, behind its header.
+            if payload.len() > INLINE
+                && frame.opcode < OPCODE_CLOSE
+                && flags & FLAG_ENCODE_HEADER_ONLY == 0
+            {
+                let (head, length) = header(payload.len() as u64, frame.opcode, flags);
+                let head = head.get(..length).unwrap_or_default();
+                return Some(push_frame(server, fd, head, payload));
+            }
+            let frame = whole(&frame, payload, flags)?;
+            Some(push_frame(server, fd, frame.bytes(), &[]))
+        });
+        if sent.is_none() {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
-            return None;
-        };
-        Some(push_frame(server, fd, packed.bytes()))
+        }
+        sent
     };
     call.set_bool(run().unwrap_or(false));
 }
@@ -811,7 +827,7 @@ fn disconnect(call: &Call) {
         let code = call.long(2, CLOSE_NORMAL).ok()?;
         let reason = call.string(3, b"").ok()?;
         let frame = close_frame(code.c_cast::<i32>(), reason, 0)?;
-        if !push_frame(server, fd, frame.bytes()) {
+        if !push_frame(server, fd, frame.bytes(), &[]) {
             return Some(false);
         }
         connection(server, fd, false)?;
@@ -833,7 +849,7 @@ fn ping(call: &Call) {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
             return None;
         };
-        Some(push_frame(server, fd, packed.bytes()))
+        Some(push_frame(server, fd, packed.bytes(), &[]))
     };
     call.set_bool(run().unwrap_or(false));
 }
@@ -905,7 +921,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         if delivery == Delivery::Pong
             && let Some(pong) = encode(data.bytes().unwrap_or_default(), OPCODE_PONG, FLAG_FIN)
         {
-            send(server, fd, pong.bytes(), false);
+            server_methods::send(server, fd, pong.bytes());
         }
         return Ok(OK);
     }

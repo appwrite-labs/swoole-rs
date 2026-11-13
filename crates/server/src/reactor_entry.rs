@@ -233,6 +233,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)
     } else {
+        if mode == crate::Mode::Base {
+            // The reader's word that the payload is its whole receive buffer, which
+            // only a worker in the reader's own thread may act on.
+            task.info.flags = rdata.info.flags & crate::base_factory::POP_PTR;
+        }
         crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
     };
     if !dispatched {

@@ -221,6 +221,21 @@ pub(crate) fn server_send(server: view::Server<'_>, fd: i64, data: &[u8]) -> boo
     })
 }
 
+/// [`server_send`] of `head` then `body`: one write that copies neither where the
+/// server writes straight to the socket, else the two joined.
+pub(crate) fn server_send_parts(
+    server: view::Server<'_>,
+    fd: i64,
+    head: &[u8],
+    body: &[u8],
+) -> bool {
+    if body.is_empty() {
+        return server_send(server, fd, head);
+    }
+    server_methods::send_parts(server, fd, head, body)
+        .unwrap_or_else(|| server_send(server, fd, &[head, body].concat()))
+}
+
 /// `ctx->sendfile`.
 pub(crate) fn sendfile(mut ctx: Ctx, file: &ZStr, offset: i64, length: usize) -> bool {
     let state = ctx.state();

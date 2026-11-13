@@ -204,7 +204,7 @@ pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
 
 pub use crate::dispatch::{add_port, add_systemd_socket};
 
-pub use crate::send::{send, send_event_to_connection, send_to_connection};
+pub use crate::send::{send, send_event_to_connection, send_parts, send_to_connection};
 
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
