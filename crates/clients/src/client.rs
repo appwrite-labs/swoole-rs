@@ -322,6 +322,9 @@ pub struct Client {
     /// `Socks5Proxy` reads the slot.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
+    /// The owner of the callable `protocol.private_data_1` names, when the
+    /// client has a `package_length_func`.
+    length_owner: Cell<Option<Rc<dyn std::any::Any>>>,
 }
 
 /// A client's proxies.
@@ -337,6 +340,16 @@ impl Client {
             Proxy::Socks5 => &self.socks5,
             Proxy::Http => &self.http_proxy,
         }
+    }
+
+    /// The owner of the client's `package_length_func`, which `owner` replaces.
+    /// The caller drops the previous one: its destructor may reach the client.
+    #[must_use]
+    pub fn replace_length_owner(
+        &self,
+        owner: Option<Rc<dyn std::any::Any>>,
+    ) -> Option<Rc<dyn std::any::Any>> {
+        self.length_owner.replace(owner)
     }
 
     /// A copy of the public record.
@@ -828,6 +841,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         tls: OnceCell::new(),
         socks5: Cell::new(None),
         http_proxy: Cell::new(None),
+        length_owner: Cell::new(None),
     });
     client.set(ASYNC, is_async);
     let fields = client.record.get_mut();
