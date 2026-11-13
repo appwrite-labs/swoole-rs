@@ -238,6 +238,10 @@ impl GlobalMemory {
     ///
     /// # Panics
     /// Upstream's assertion: pages are at least `SW_MIN_PAGE_SIZE`.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "upstream's assertion on a caller's page size, not a runtime error"
+    )]
     pub fn new(pagesize: u32, shared: bool) -> Result<Self, i32> {
         // assert(pagesize >= SW_MIN_PAGE_SIZE);
         assert!(

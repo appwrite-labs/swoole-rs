@@ -295,7 +295,7 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_bail(
         (s.hooks.bailout, s.hooks.bailout_data) = if inside {
             (callback, data)
         } else {
-            (Some(bailed_out as Routine), ptr::null_mut())
+            (Some::<Routine>(bailed_out), ptr::null_mut())
         };
     });
     ops::bailout(Sched::this());

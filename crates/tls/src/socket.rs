@@ -681,7 +681,7 @@ mod shutdown_tests {
     use std::os::raw::{c_int, c_long};
     use std::ptr;
 
-    // SAFETY: libssl/libcrypto's own declarations; openssl-sys binds none of them.
+    // libssl/libcrypto's own declarations; openssl-sys binds none of them.
     unsafe extern "C" {
         fn BIO_new_bio_pair(
             left: *mut *mut BIO,

@@ -176,6 +176,10 @@ pub(crate) unsafe fn port_delete(port: *mut c_void) {
     (crate::port_config::methods().tls_free)(&mut config);
     // Upstream's `~ListenPort` leaves the length callable to the port's deref
     // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
+    #[expect(
+        clippy::mem_forget,
+        reason = "a port kept past this owns the callable to the exit"
+    )]
     std::mem::forget(config.length_owner.replace(None));
     // SAFETY: the record of a port `destroy` never closed (a server never started),
     // which nothing else holds. Its descriptor stays open to the exit, as upstream's.

@@ -1161,7 +1161,7 @@ mod tests {
         swoole_rs_corebase::log::set_last_error(0);
         swr_v1_hook_co_socket_created(
             socket.co(),
-            OPENED | NODELAY_FAILED | 3 << FD_WARNINGS_SHIFT,
+            OPENED | NODELAY_FAILED | (3 << FD_WARNINGS_SHIFT),
         );
         assert_eq!(swoole_rs_corebase::log::last_error(), 0);
     }

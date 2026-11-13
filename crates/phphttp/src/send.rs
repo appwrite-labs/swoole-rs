@@ -227,7 +227,6 @@ pub(crate) fn send_file(
             return Ok(false);
         }
     }
-    // SAFETY: a live context and the checked range of a regular file.
     if length > 0 && !context::sendfile(ctx, file, offset, length) {
         close(ctx);
         return Ok(false);

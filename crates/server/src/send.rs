@@ -334,14 +334,14 @@ mod tests {
     #[test]
     fn direct_send_retries_interrupts_and_buffers_the_rest() {
         let mut s =
-            found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[u64::MAX, 10]);
+            found(OUT_EMPTY | DIRECT_SEND | (10 << 32), &[]).queue(OP_SC_SEND, &[u64::MAX, 10]);
         s.facts.insert(OP_ERRNO, libc::EINTR.cast_unsigned().into());
         assert_eq!(send_to_connection(&mut s, SEND_DATA, None).unwrap(), SW_OK);
         assert_eq!(s.called(OP_SC_SEND), 2);
         assert_eq!(s.called(OP_SC_TOUCH_SEND), 1);
         assert_eq!(s.called(OP_SC_APPEND), 0);
 
-        let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]).queue(OP_SC_SEND, &[4]);
+        let mut s = found(OUT_EMPTY | DIRECT_SEND | (10 << 32), &[]).queue(OP_SC_SEND, &[4]);
         send_to_connection(&mut s, SEND_DATA, None).unwrap();
         assert_eq!(s.args(OP_SC_ADVANCE), vec![4]);
         assert_eq!(s.called(OP_SC_ENSURE_BUFFER), 1);
@@ -355,13 +355,13 @@ mod tests {
 
     #[test]
     fn a_send_made_first_is_not_repeated() {
-        let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]);
+        let mut s = found(OUT_EMPTY | DIRECT_SEND | (10 << 32), &[]);
         send_to_connection(&mut s, SEND_DATA, Some(4)).unwrap();
         assert_eq!(s.called(OP_SC_SEND), 0);
         assert_eq!(s.args(OP_SC_ADVANCE), vec![4]);
         assert_eq!(s.called(OP_SC_APPEND), 1);
 
-        let mut s = found(OUT_EMPTY | DIRECT_SEND | 10 << 32, &[]);
+        let mut s = found(OUT_EMPTY | DIRECT_SEND | (10 << 32), &[]);
         send_to_connection(&mut s, SEND_DATA, Some(-1)).unwrap();
         assert_eq!(s.called(OP_SC_SEND), 0, "would block: the rest is buffered");
         assert_eq!(s.called(OP_SC_ADVANCE), 0);

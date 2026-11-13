@@ -35,6 +35,15 @@ debug-assertions = true
 unreachable_pub = "deny"
 # `cargo fuzz` builds with --cfg fuzzing.
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(tsan)"] }
+# #3555: lifetimes, casts and macros rustc leaves at allow.
+unused_lifetimes = "deny"
+single_use_lifetimes = "deny"
+redundant_lifetimes = "deny"
+unit_bindings = "deny"
+meta_variable_misuse = "deny"
+unused_macro_rules = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
 
 [workspace.lints.clippy]
 # Pedantic is denied whole (#156), including the cast lints that guard the FFI
@@ -69,3 +78,24 @@ unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
 indexing_slicing = "deny"
+# #3555: restriction and nursery lints with few or no hits.
+as_pointer_underscore = "deny"
+as_underscore = "deny"
+transmute_undefined_repr = "deny"
+default_union_representation = "deny"
+rc_mutex = "deny"
+mutex_integer = "deny"
+debug_assert_with_mut_call = "deny"
+unwrap_in_result = "deny"
+get_unwrap = "deny"
+lossy_float_literal = "deny"
+empty_drop = "deny"
+float_cmp_const = "deny"
+mixed_read_write_in_expression = "deny"
+panic_in_result_fn = "deny"
+non_send_fields_in_send_ty = "deny"
+unused_result_ok = "deny"
+fn_to_numeric_cast_any = "deny"
+mem_forget = "deny"
+precedence_bits = "deny"
+unnecessary_safety_comment = "deny"

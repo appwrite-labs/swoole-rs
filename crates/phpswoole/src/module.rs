@@ -395,7 +395,7 @@ pub fn codecs() -> u32 {
         .iter()
         .enumerate()
         .filter(|(_, capability)| crate::built_with(**capability))
-        .fold(0, |features, (bit, _)| features | 1 << bit)
+        .fold(0, |features, (bit, _)| features | (1 << bit))
 }
 
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its

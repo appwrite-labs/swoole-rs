@@ -620,8 +620,8 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         // Miri gives each use of a fn item its own address, as codegen may.
         if !cfg!(miri) {
             assert_eq!(
-                (*fields).protocol.on_package.map(|f| f as usize),
-                Some(on_package as swoole_rs_corebase::net_types::OnPackage as usize)
+                (*fields).protocol.on_package.map(|f| f as *const ()),
+                Some(on_package as *const ())
             );
         }
         // Read first: the handle borrows the whole record, which would end a reference

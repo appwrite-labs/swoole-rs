@@ -66,10 +66,10 @@ pub enum ResponseArray {
 pub struct Server {
     /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
     /// connection, with the session's connection.
-    pub on_receive: for<'a> fn(view::Server<'a>, Connection<'_>, &RecvData) -> c_int,
+    pub on_receive: fn(view::Server<'_>, Connection<'_>, &RecvData) -> c_int,
     /// The static file handler for the live server: true once it answered,
     /// or the bailout its work left pending.
-    pub static_file: for<'a> fn(view::Server<'a>, Ctx) -> Result<bool, Bailout>,
+    pub static_file: fn(view::Server<'_>, Ctx) -> Result<bool, Bailout>,
     /// `Response::end`: the stream's last frames.
     pub respond: fn(Ctx, &[u8]) -> bool,
     /// `Response::write`: a DATA frame.

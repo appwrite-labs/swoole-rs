@@ -125,10 +125,8 @@ extern "C-unwind" fn cleanup(_: *mut c_void) {
 fn install() {
     let read = EventType::SW_EVENT_READ as i32;
     let write = EventType::SW_EVENT_WRITE as i32;
-    for (event, handler) in [
-        (read, readable as swoole_rs_reactor::Handler),
-        (write, writable),
-    ] {
+    let readable: swoole_rs_reactor::Handler = readable;
+    for (event, handler) in [(read, readable), (write, writable)] {
         event_api::swoole_event_set_handler(FD, event, Some(handler));
     }
     // `cleanup` runs once, when the reactor goes.
@@ -259,7 +257,7 @@ unsafe extern "C" fn host(
         }
     }
     let coroutine = query.coroutine.get();
-    // SAFETY: a nonnull identity is the query's original live coroutine.
+    // A nonnull identity is the query's original live coroutine.
     if !coroutine.is_null() && co::suspending(coroutine) {
         let retired = query.retired.clone();
         let task = Completion {

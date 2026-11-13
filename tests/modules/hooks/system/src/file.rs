@@ -132,7 +132,7 @@ fn error() {
 /// `make_tmpfile` with `task_tmpfile` there is crates/process's
 /// `task_file::tests::make_tmpfile_in_a_missing_directory`.
 fn tmp_file() {
-    let mut buf = [0 as c_char; 128];
+    let mut buf: [c_char; 128] = [0; 128];
     for (slot, &byte) in buf.iter_mut().zip(b"/tmp/not-exists-dir/test.XXXXXX") {
         *slot = byte as c_char;
     }

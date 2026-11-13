@@ -735,9 +735,7 @@ fn heartbeat(call: &Call) {
     call.set_array();
     let now = microtime();
     // `foreach_connection`: `max_fd` is read afresh for each fd.
-    // SAFETY: a live server.
     let mut fd = serv.counters().min_fd();
-    // SAFETY: as above.
     while fd <= serv.counters().max_fd() {
         if let Some(conn) = serv.iterated(fd) {
             let session_id = conn.session_id();

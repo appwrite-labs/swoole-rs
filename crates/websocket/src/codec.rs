@@ -232,7 +232,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     let mut result = Decision {
         offset: wire - frame.payload_length,
         length: frame.payload_length,
-        ext_flags: u16::from(frame.opcode) << 8 | u16::from(frame.flags),
+        ext_flags: (u16::from(frame.opcode) << 8) | u16::from(frame.flags),
         ..Decision::default()
     };
     // Keep upstream's wire-size limits and unusual control offsets verbatim.

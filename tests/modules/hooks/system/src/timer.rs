@@ -179,8 +179,8 @@ fn sys() {
         }
     });
 
-    // SAFETY: SwooleTG.timer is set; the signal-driven timer's select loop, as upstream's.
     while swoole_rs_timer::php::stats().is_some_and(|(count, _)| count > 0) {
+        // SAFETY: SwooleTG.timer is set; the signal-driven timer's select loop, as upstream's.
         unsafe {
             sleep(10);
             swoole_signal_dispatch();

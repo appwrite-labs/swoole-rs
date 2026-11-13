@@ -56,10 +56,11 @@ const _: () = assert!(
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
-    for (opcode, handler) in [
+    type Handler = unsafe extern "C" fn(*mut zend_execute_data) -> c_int;
+    let handlers: [(_, Handler); _] = [
         (
             swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL,
-            swr_v1_phpstdext_method_call as unsafe extern "C" fn(*mut zend_execute_data) -> c_int,
+            swr_v1_phpstdext_method_call,
         ),
         (
             swoole_rs_zend::sys::ZEND_ASSIGN_DIM,
@@ -74,7 +75,8 @@ pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
             swoole_rs_zend::sys::ZEND_FE_RESET_RW,
             swr_v1_phpstdext_foreach_begin,
         ),
-    ] {
+    ];
+    for (opcode, handler) in handlers {
         // SAFETY: each callback obeys Zend's user opcode ABI and lives for the process.
         unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, Some(handler)) };
     }

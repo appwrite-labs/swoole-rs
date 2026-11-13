@@ -550,6 +550,10 @@ pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
         unsafe { curl_multi_cleanup(this.handle) };
         // As upstream's `delete multi`, the sockets curl didn't remove stay:
         // a reactor socket may still carry one's address.
+        #[expect(
+            clippy::mem_forget,
+            reason = "a reactor socket may still carry one's address"
+        )]
         std::mem::forget(this.sockets.take());
     }
     // SAFETY: per the caller.

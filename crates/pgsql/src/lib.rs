@@ -53,7 +53,7 @@ const CO_TIMEDOUT: c_int = 10018;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Conn(*mut PGconn);
 
-// SAFETY: libpq's own declarations, with the connection typed as the handle it is
+// libpq's own declarations, with the connection typed as the handle it is
 // (`Conn` has a `PGconn *`'s layout). The `safe` ones take only a live connection
 // and plain values, read or drive that connection alone, and return raw pointers
 // the caller dereferences or frees in its own unsafe block. `Conn` is neither

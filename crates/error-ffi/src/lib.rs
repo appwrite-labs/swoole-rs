@@ -192,6 +192,10 @@ pub unsafe extern "C" fn swr_v1_error_ignore_global(code: i32) -> i32 {
 pub extern "C" fn swoole_ignore_error(code: i32) {
     // SAFETY: the extension serializes ignored-error writes, as upstream required.
     if unsafe { swr_v1_error_ignore_global(code) } != 0 {
+        #[expect(
+            clippy::unused_result_ok,
+            reason = "the process aborts next, stderr or not"
+        )]
         std::io::Write::write_all(
             &mut std::io::stderr(),
             b"swoole_ignore_error: out of memory\n",

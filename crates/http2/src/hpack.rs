@@ -169,7 +169,7 @@ fn huffman_encode(text: &[u8], out: &mut Vec<u8>) {
     for &byte in text {
         let symbol = usize::from(byte);
         let length = u32::from(HUFFMAN_LENGTHS.get(symbol).copied().unwrap_or(0));
-        bits = bits << length | u64::from(HUFFMAN.codes.get(symbol).copied().unwrap_or(0));
+        bits = (bits << length) | u64::from(HUFFMAN.codes.get(symbol).copied().unwrap_or(0));
         pending += length;
         while pending >= 8 {
             pending -= 8;
@@ -195,7 +195,7 @@ impl Bits {
     fn decode(&mut self, input: &[u8], out: &mut Vec<u8>) -> Result<(), Error> {
         for &byte in input {
             for shift in (0..8).rev() {
-                self.code = self.code << 1 | u32::from(byte >> shift & 1);
+                self.code = (self.code << 1) | u32::from((byte >> shift) & 1);
                 self.length += 1;
                 let first = HUFFMAN.first.get(self.length).copied().ok_or(Error)?;
                 let count = HUFFMAN.count.get(self.length).copied().ok_or(Error)?;
@@ -364,7 +364,7 @@ impl Step<'_> {
     /// `nghttp2_hd_inflate_hd`'s flags: `FINAL` (1) and `EMIT` (2).
     #[must_use]
     pub fn flags(&self) -> u32 {
-        u32::from(self.done) | u32::from(self.header.is_some()) << 1
+        u32::from(self.done) | (u32::from(self.header.is_some()) << 1)
     }
 }
 

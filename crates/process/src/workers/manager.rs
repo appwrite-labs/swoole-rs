@@ -546,7 +546,10 @@ mod tests {
             assert_eq!(before, [-7, 0, 10]);
             drop(Box::from_raw(registry));
         }
-        assert_eq!(user_worker_pids(&mut Script::default()), [] as [i32; 0]);
+        assert_eq!(
+            user_worker_pids(&mut Script::default()),
+            Vec::<c_int>::new()
+        );
     }
 
     #[test]

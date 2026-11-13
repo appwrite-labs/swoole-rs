@@ -165,6 +165,10 @@ impl Callable {
         };
         if bailout::pending() {
             // Upstream never ran past a bailout to destroy its temporary.
+            #[expect(
+                clippy::mem_forget,
+                reason = "upstream never ran past a bailout to destroy it"
+            )]
             std::mem::forget(temporary);
         } else {
             // Upstream destroys its temporary return value after the call.

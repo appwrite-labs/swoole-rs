@@ -54,7 +54,7 @@ impl Custom for PhpThread {
 impl Drop for PhpThread {
     /// The object's free: join the thread.
     fn drop(&mut self) {
-        self.thread.join().ok();
+        self.thread.join().unwrap_or_default();
     }
 }
 
