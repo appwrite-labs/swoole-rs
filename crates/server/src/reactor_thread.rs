@@ -1,6 +1,7 @@
 //! Reactor threads: the datagram path and dispatch to workers, the worker pipe
 //! protocol, heartbeats and the threads' lifecycle.
 use core::ffi::{c_int, c_long, c_void};
+use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::{DataHead, log, microtime};
@@ -23,8 +24,7 @@ const FD_DGRAM_SERVER: c_int = 2;
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
-/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_OK` and `SW_ERR`.
-const RECV_DGRAM: u8 = 1;
+/// `SW_OK` and `SW_ERR`.
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
@@ -61,7 +61,7 @@ fn receive_packets(
         info: DataHead {
             server_fd: crate::base_factory::low16(fd),
             reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
-            kind: RECV_DGRAM,
+            kind: swoole_rs_corebase::ServerEvent::RecvDgram.code(),
             time: microtime(),
             ..DataHead::default()
         },
@@ -209,17 +209,17 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
             // SAFETY: null or the thread's notify pipe, which it keeps until the server
             // joins it, after this notice.
             let pipe = unsafe { Socket::from_ptr(notify) };
-            send_event(pipe, 0, crate::ops::EVENT_SHUTDOWN);
+            send_event(pipe, 0, ServerEvent::Shutdown);
         }
         joining.join().unwrap_or_default();
     }
 }
 
 /// `socket->send_sync(&head, sizeof(head))` of a bare event.
-pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
+pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent) {
     let head = DataHead {
         fd,
-        kind: u8::try_from(kind).unwrap_or(u8::MAX),
+        kind: kind.code(),
         ..DataHead::default()
     };
     let data = (&raw const head).cast();
@@ -283,8 +283,16 @@ mod tests {
         let sender = c_long::from(u32::from_ne_bytes([127, 0, 0, 1]).cast_signed());
         let head = u32::try_from(size_of::<DgramPacket>()).unwrap();
         let each = [
-            Call::Dispatch(sender, RECV_DGRAM, head + 3),
-            Call::Dispatch(sender, RECV_DGRAM, head + 5),
+            Call::Dispatch(
+                sender,
+                swoole_rs_corebase::ServerEvent::RecvDgram.code(),
+                head + 3,
+            ),
+            Call::Dispatch(
+                sender,
+                swoole_rs_corebase::ServerEvent::RecvDgram.code(),
+                head + 5,
+            ),
         ];
         assert_eq!(received(2), each, "each datagram, through the factory");
 
@@ -292,7 +300,14 @@ mod tests {
         // SAFETY: the fixture's state, on this thread only.
         unsafe { (*live.state().config()).mode_ = Mode::Base };
         client.send(b"two").unwrap();
-        assert_eq!(received(1), [Call::BasePass(sender, RECV_DGRAM, head + 3)]);
+        assert_eq!(
+            received(1),
+            [Call::BasePass(
+                sender,
+                swoole_rs_corebase::ServerEvent::RecvDgram.code(),
+                head + 3
+            )]
+        );
 
         let no_port = receive_packets(serv, reactor, -1, at, size);
         assert_eq!(no_port, SW_ERR, "no port");

@@ -3,6 +3,7 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
@@ -29,9 +30,8 @@ const REGISTRY_USER: c_int = 2;
 const MESSAGE_BOX_SIZE: usize = 65536;
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
-/// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`; `SW_SERVER_EVENT_COMMAND_REQUEST`.
+/// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
 const WORKER_MESSAGE_STOP: u8 = 1;
-const EVENT_COMMAND_REQUEST: u8 = 17;
 /// `sizeof(EventData)`.
 const EVENT_DATA_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
 
@@ -483,7 +483,7 @@ unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_v
     let task = unsafe { &*msg.cast::<EventData>() };
     // SAFETY: an `EventData` starts with its head, which its alignment allows.
     let info = unsafe { &*msg.cast::<DataHead>() };
-    if info.kind != EVENT_COMMAND_REQUEST {
+    if info.event() != Some(ServerEvent::CommandRequest) {
         let m = format_args!("unknown worker message type[{}]", info.kind);
         log::warning(c"Server::read_worker_message", m);
         return;

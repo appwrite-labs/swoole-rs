@@ -5,6 +5,7 @@ use crate::Mode;
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::{AtomicU32, Ordering};
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_locks::SharedMutex;
@@ -29,10 +30,6 @@ use crate::view;
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `SW_SERVER_EVENT_*`.
-const EVENT_FINISH: u8 = 9;
-const EVENT_SHUTDOWN: u8 = 16;
-const EVENT_COMMAND_REQUEST: u8 = 17;
 /// `swoole::TaskFlag` bits.
 const TASK_NONBLOCK: u16 = 1 << 2;
 const TASK_WAITALL: u16 = 1 << 4;
@@ -117,19 +114,19 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
     LATEST_TASK.set(Some(head));
     worker.set_status(WorkerStatus::busy(true));
     let callbacks = &serv.state().callbacks;
-    let ret = match head.kind {
-        super::EVENT_PIPE_MESSAGE => {
+    let ret = match head.event() {
+        Some(ServerEvent::PipeMessage) => {
             callbacks.pipe_message(serv, task);
             OK
         }
-        EVENT_SHUTDOWN => {
+        Some(ServerEvent::Shutdown) => {
             swr_v1_worker_shutdown(worker);
             if swoole_rs_reactor::event_api::swoole_event_is_available() {
                 stop_async_worker(serv, worker);
             }
             return OK;
         }
-        EVENT_COMMAND_REQUEST => command(serv, worker, task),
+        Some(ServerEvent::CommandRequest) => command(serv, worker, task),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
             // Only server tasks count as requests, not pipe messages or commands.
@@ -295,7 +292,7 @@ pub fn finish(
     let flags = flags.c_cast::<u16>();
     let reply = |buf: &mut TaskBuffer, flags| {
         buf.add_flags(flags);
-        buf.set_kind(EVENT_FINISH);
+        buf.set_kind(ServerEvent::Finish.code());
         buf.set_fd(task.fd);
     };
     let mut buf = TaskBuffer::default();

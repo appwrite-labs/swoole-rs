@@ -5,6 +5,7 @@ use crate::Mode;
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
@@ -29,17 +30,6 @@ use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
-/// `SW_SERVER_EVENT_*`.
-const EVENT_RECV_DATA: u8 = 0;
-const EVENT_RECV_DGRAM: u8 = 1;
-const EVENT_CLOSE: u8 = 4;
-const EVENT_CONNECT: u8 = 5;
-const EVENT_BUFFER_FULL: u8 = 13;
-const EVENT_BUFFER_EMPTY: u8 = 14;
-const EVENT_FINISH: u8 = 9;
-const EVENT_PIPE_MESSAGE: u8 = 10;
-const EVENT_SHUTDOWN: u8 = 16;
-const EVENT_COMMAND_REQUEST: u8 = 17;
 /// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const PRIORITY_TRY_EXIT: c_int = 4;
 const PRIORITY_WORKER_CALLBACK: c_int = 6;
@@ -114,8 +104,8 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
     let (state, config) = (serv.state(), serv.config());
     let callbacks = &state.callbacks;
     worker.set_status(WorkerStatus::Busy);
-    match info.kind {
-        EVENT_RECV_DATA => {
+    match info.event() {
+        Some(ServerEvent::RecvData) => {
             let closed = received(serv, info);
             let (notify, timeout) = (
                 config.disable_notify.get(),
@@ -133,22 +123,22 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
                 run_task(serv, worker, info, ReceiveSlot::Receive);
             }
         }
-        EVENT_RECV_DGRAM => run_task(serv, worker, info, ReceiveSlot::Packet),
-        EVENT_CLOSE => {
+        Some(ServerEvent::RecvDgram) => run_task(serv, worker, info, ReceiveSlot::Packet),
+        Some(ServerEvent::Close) => {
             free_client_cert(serv, info);
             _ = crate::factory::end(state, info.fd, 0);
         }
-        EVENT_CONNECT => {
+        Some(ServerEvent::Connect) => {
             if info.len > 0 {
                 store_client_cert(serv, info);
             }
             callbacks.event(EventSlot::Connect, serv, info);
         }
-        EVENT_BUFFER_FULL => callbacks.event(EventSlot::BufferFull, serv, info),
-        EVENT_BUFFER_EMPTY => callbacks.event(EventSlot::BufferEmpty, serv, info),
-        EVENT_FINISH => _ = callbacks.task(TaskSlot::Finish, serv, event_data(serv)),
-        EVENT_PIPE_MESSAGE => callbacks.pipe_message(serv, event_data(serv)),
-        EVENT_COMMAND_REQUEST => {
+        Some(ServerEvent::BufferFull) => callbacks.event(EventSlot::BufferFull, serv, info),
+        Some(ServerEvent::BufferEmpty) => callbacks.event(EventSlot::BufferEmpty, serv, info),
+        Some(ServerEvent::Finish) => _ = callbacks.task(TaskSlot::Finish, serv, event_data(serv)),
+        Some(ServerEvent::PipeMessage) => callbacks.pipe_message(serv, event_data(serv)),
+        Some(ServerEvent::CommandRequest) => {
             // The server's live command pipe, a `UnixSocket`.
             if let Some(pipe) = config.command_pipe() {
                 let id = u16::try_from(worker.id()).unwrap_or(0);
@@ -156,10 +146,10 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
                 crate::commands::call_command_handler(serv, bus, id, pipe.worker_end());
             }
         }
-        EVENT_SHUTDOWN => stop_async_worker(serv, worker),
-        kind => log::warning(
+        Some(ServerEvent::Shutdown) => stop_async_worker(serv, worker),
+        _ => log::warning(
             c"Server::worker_accept_event",
-            format_args!("[Worker] error event[type={kind}]"),
+            format_args!("[Worker] error event[type={}]", info.kind),
         ),
     }
     worker.set_status(WorkerStatus::Idle);
@@ -342,7 +332,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         return false;
     };
     let head = DataHead {
-        kind: EVENT_SHUTDOWN,
+        kind: ServerEvent::Shutdown.code(),
         ..DataHead::default()
     };
     let data = (&raw const head).cast();

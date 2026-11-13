@@ -45,7 +45,6 @@ pub mod manager;
 mod master_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod objects;
-pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod pool_native;
 pub mod port_config;
