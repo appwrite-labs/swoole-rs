@@ -189,6 +189,19 @@ impl crate::hybrid::Hybrid for Linked {
         notify(serv.state(), ptr::from_mut(head).cast())
     }
 
+    fn factory_dispatch(&self, serv: crate::view::Server<'_>, send: &mut SendData) -> bool {
+        dispatch(serv.state(), ptr::from_mut(send).cast())
+    }
+
+    fn dtls_read(
+        &self,
+        port: &crate::port_config::PortConfig,
+        sock: swoole_rs_reactor::Socket<'_>,
+        fd: c_int,
+    ) -> bool {
+        crate::dtls::on_read(port, sock, fd)
+    }
+
     fn pipe_to_worker(
         &self,
         serv: crate::view::Server<'_>,

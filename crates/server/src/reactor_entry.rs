@@ -3,8 +3,7 @@
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
 //! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
 //! they make is Rust's.
-use crate::records::Lookup;
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::DataHead;
@@ -13,7 +12,7 @@ use swoole_rs_reactor::{Event, Running, SocketRecord};
 
 use crate::ops::RUN_PACKET_RECEIVED;
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{ReactorContext, ThreadRecord, facts};
+use crate::reactor_ops::{ReactorContext, ThreadRecord};
 use crate::view;
 
 /// `swoole::RecvData`.
@@ -83,16 +82,6 @@ pub(crate) fn run(op: u32, arg: u64, ctx: &mut ReactorContext<'_>) -> i64 {
     crate::run_reactor_with(ctx, state, |h| crate::run(h, op, arg))
 }
 
-/// `operation` over `ctx` with the read's facts, outside [`run`]'s match.
-fn run_with<'s, 'c>(
-    ctx: &'s mut ReactorContext<'c>,
-    operation: impl FnOnce(&mut crate::Native<'s, 'c>, u64) -> crate::Effect<i64>,
-) -> c_int {
-    let state = ctx.serv.state();
-    let facts = facts(&mut *ctx, state);
-    int(crate::run_reactor_with(ctx, state, |h| operation(h, facts)))
-}
-
 pub(crate) fn int(value: i64) -> c_int {
     value.c_cast::<c_int>()
 }
@@ -157,10 +146,8 @@ pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_in
 
 /// `ReactorThread_onRead`: a connection is readable.
 pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let fd = c_long::from(event.fd());
-    let mut ctx = event_context(reactor, event);
-    ctx.conn = ctx.serv.state().connection_ptr(fd, Lookup::ByFd);
-    run_with(&mut ctx, crate::conn_io::read)
+    let (serv, reactor) = handler(reactor);
+    crate::conn_io::read(serv, reactor, event)
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.

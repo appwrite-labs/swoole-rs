@@ -218,24 +218,6 @@ pub const FIELD_TASK_IPC_MODE: u32 = 6;
 pub const FIELD_CPU_NUM: u32 = 7;
 
 // Reactor threads. Ops 0-144 keep their meaning where master.cc's reactor-thread ops answer them.
-/// `swReturnCode` of `socket->ssl_accept()`.
-pub const OP_SSL_ACCEPT: u32 = 250;
-/// Runs the port's `onRead` (stamping and counting the bytes); its result in the low 32
-/// bits, with `conn_io`'s `ACTIVE`, `READ_NOTIFIED` and `QUEUE_OVER`.
-pub const OP_RD_PORT_READ: u32 = 251;
-/// `conn->ssl_ready = 1`.
-pub const OP_SSL_READY: u32 = 252;
-/// The port has a client certificate file; verifies peers; allows self-signed.
-pub const OP_CLIENT_CERT: u32 = 253;
-pub const OP_VERIFY_PEER: u32 = 254;
-/// `ssl_get_peer_certificate` into the thread buffer; `ssl_verify`.
-pub const OP_PEER_CERT: u32 = 255;
-pub const OP_SSL_VERIFY: u32 = 256;
-/// Fills the context's task with `SW_SERVER_EVENT_CONNECT` and the peer
-/// certificate, for `OP_FACTORY_DISPATCH`.
-pub const OP_CERT_TASK: u32 = 257;
-/// `reactor->del(socket)`.
-pub const OP_REACTOR_DEL: u32 = 258;
 /// Fills the datagram task header.
 pub const OP_PACKET_INIT: u32 = 259;
 /// `recvfrom` into the packet; the `ssize_t`.
@@ -270,11 +252,6 @@ pub const OP_ON_PIPE_MESSAGE: u32 = 295;
 pub const OP_CONN_HEALTHY: u32 = 301;
 /// Port arg listens; then reads.
 pub const OP_PORT_LISTEN: u32 = 303;
-pub const OP_SET_WAITING_TIME: u32 = 320;
-/// Arms the resume timer after the waiting time; whether it was armed.
-pub const OP_RESUME_TIMER: u32 = 321;
-/// `reactor->remove_read_event(socket)`.
-pub const OP_RD_UNREAD: u32 = 324;
 /// `recv_queued_bytes` -= arg.
 pub const OP_QUEUE_SUB: u32 = 325;
 pub const OP_FACTORY_DISPATCH: u32 = 326;
@@ -333,14 +310,6 @@ pub const OP_ON_PACKET: u32 = 516;
 pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
-
-// A connection's read (`crates/server/src/conn_io.rs`); the context holds the reactor, event, socket, connection and port.
-/// Feeds a DTLS port's session the datagram; 1 when its handshake failed.
-pub const OP_RD_DTLS: u32 = 940;
-/// `serv->abort_connection(reactor, port, socket)`.
-pub const OP_RD_ABORT: u32 = 941;
-/// `ReactorThread_onWrite` over the read's event.
-pub const OP_RD_WRITE: u32 = 942;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
 /// `gs->concurrency`: subtract arg; read; set 0.

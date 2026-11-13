@@ -7,7 +7,6 @@ use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
-use core::sync::atomic::Ordering::SeqCst;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
@@ -22,12 +21,10 @@ use crate::callbacks::{ReceiveSlot, TaskSlot};
 use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
-use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
+use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE};
 use crate::ops::{OP_PACKET_INIT, OP_PACKET_TASK, OP_RECVFROM};
-use crate::ops::{OP_RD_ABORT, OP_RESUME_TIMER};
 use crate::reactor_entry::{self as entry, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, sign};
-use crate::records::ConnectionRecord;
 use crate::{ServerState, factory, server_methods as methods, view};
 use swoole_rs_buffer::string::with_thread_buffer;
 
@@ -40,8 +37,6 @@ const FD_PIPE: c_int = 3;
 const EVENT_RECV_DGRAM: u8 = 1;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-/// The longest resume back-off, in milliseconds.
-const MAX_WAITING_TIME: u16 = 1024;
 
 /// `DgramPacket`: the datagram follows it.
 #[repr(C)]
@@ -60,16 +55,6 @@ fn bus_of(ctx: &ReactorContext<'_>) -> Option<*mut c_void> {
 /// The context's event's fd.
 fn event_fd(ctx: &ReactorContext<'_>) -> Option<c_int> {
     ctx.event.as_deref().map(swoole_rs_reactor::Event::fd)
-}
-
-/// The context's port settings.
-fn port_config<'a>(ctx: &ReactorContext<'a>) -> Option<&'a crate::port_config::PortConfig> {
-    ctx.port.map(view::Port::config)
-}
-
-/// The context event's socket.
-fn event_socket<'c>(ctx: &'c ReactorContext<'_>) -> Option<Socket<'c>> {
-    ctx.event.as_deref()?.socket()
 }
 
 /// `thread->message_bus.get_pipe_socket(sock)`.
@@ -191,9 +176,7 @@ pub(crate) fn answer(
     op: u32,
     arg: u64,
 ) -> Option<u64> {
-    let (server, handle) = (ctx.serv, ctx.reactor);
-    let reactor = handle.map_or(ptr::null_mut(), Reactor::ptr);
-    let config = || state.config_ref();
+    let server = ctx.serv;
     Some(match op {
         OP_PACKET_INIT => {
             let fd = event_fd(ctx)?;
@@ -254,58 +237,6 @@ pub(crate) fn answer(
             ctx.task.info.len = u32::try_from(len).unwrap_or(u32::MAX);
             ctx.task.data = ctx.pkt.cast();
             (&raw mut ctx.task).expose_provenance() as u64
-        }
-        OP_RESUME_TIMER => u64::from(resume_timer(server, ctx.connection()?, ctx.sock?)),
-        OP_RD_ABORT => {
-            crate::connection::abort(server, handle?, ctx.port, ctx.sock?);
-            0
-        }
-        OP_RD_PORT_READ => {
-            let event = ptr::from_mut(ctx.event.as_deref_mut()?);
-            let port = ctx.port?.raw();
-            ctx.connection()?
-                .set_last_recv_time(swoole_rs_corebase::microtime());
-            // The event's socket, which the read may close.
-            let sock = event_socket(ctx)?;
-            let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
-            let port_config = port_config(ctx)?;
-            let on_read = port_config
-                .on_read
-                .load(core::sync::atomic::Ordering::Relaxed);
-            // SAFETY: `init_protocol` set `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-            let on_read: unsafe extern "C-unwind" fn(
-                *mut c_void,
-                *mut c_void,
-                *mut c_void,
-            ) -> c_int = unsafe { core::mem::transmute(on_read) };
-            // SAFETY: this thread's reactor, the port and its event.
-            let retval = unsafe { on_read(reactor, port, event.cast()) };
-            // Upstream reads the socket after the read too.
-            let (total_recv_bytes, notified) =
-                sock.read(|s| (s.total_recv_bytes, s.close_notified));
-            let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
-            if received.cast_signed() > 0 {
-                let received = received as u64;
-                if let Some(gs) = port_config.counters() {
-                    gs.total_recv_bytes.fetch_add(received, SeqCst);
-                }
-                if let Some(gs) = crate::shared::server_counters(state) {
-                    gs.total_recv_bytes.fetch_add(received, SeqCst);
-                }
-            }
-            let mut result = u64::from(retval.cast_unsigned());
-            let conn = ctx.connection()?;
-            if conn.is_active() {
-                let max = config().max_queued_bytes.get();
-                let flag = |set: bool, bit: u64| if set { bit } else { 0 };
-                result |= crate::conn_io::ACTIVE
-                    | flag(notified, crate::conn_io::READ_NOTIFIED)
-                    | flag(
-                        max != 0 && conn.recv_queued_bytes().load(SeqCst) > max,
-                        crate::conn_io::QUEUE_OVER,
-                    );
-            }
-            result
         }
         OP_ON_RECEIVE | OP_ON_PACKET => {
             let slot = if op == OP_ON_PACKET {
@@ -461,47 +392,6 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         call_worker_stop_callback(serv, worker);
     }
     record.message_bus().free_buffer();
-}
-
-/// `ReactorThread_resume_data_receiving`, the timer of a paused session socket,
-/// whose object is its connection: back off (doubling up to 1024ms) while the
-/// workers still hold too many bytes, then read again.
-fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'_>) {
-    let mut ctx = ReactorContext::new(serv, None);
-    ctx.conn = socket.read(|s| s.object.cast::<ConnectionRecord>());
-    let Some(conn) = ctx.connection() else {
-        return;
-    };
-    let config = serv.state().config_ref();
-    if conn.recv_queued_bytes().load(SeqCst) > config.max_queued_bytes.get() {
-        let waiting = conn.waiting_time();
-        if waiting != MAX_WAITING_TIME {
-            conn.set_waiting_time(waiting.saturating_mul(2));
-        }
-        if resume_timer(serv, conn, socket) {
-            return;
-        }
-    }
-    // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, 2, 0);
-    conn.set_timer(ptr::null_mut());
-}
-
-/// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
-fn resume_timer(serv: view::Server<'_>, conn: Connection<'_>, socket: Socket<'_>) -> bool {
-    let msec = c_long::from(conn.waiting_time());
-    let (raw, sock) = (serv.raw(), socket.as_ptr());
-    let timer = swoole_rs_timer::add_fn(msec, false, move || {
-        // SAFETY: the server whose reactor armed the timer, which outlives the
-        // timers of its sockets.
-        let serv = unsafe { view::Server::from_raw(raw) };
-        // SAFETY: the paused session socket, which deletes this timer before it goes.
-        if let Some(sock) = unsafe { Socket::from_ptr(sock) } {
-            resume_data_receiving(serv, sock);
-        }
-    });
-    conn.set_timer(timer);
-    !timer.is_null()
 }
 
 /// The heartbeat thread: every interval, ask reactor threads to force-close
