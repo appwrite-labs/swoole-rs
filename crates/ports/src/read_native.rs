@@ -13,7 +13,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, log};
-use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
+use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Event, Running, Socket};
@@ -155,7 +155,7 @@ impl Read<'_> {
 
     /// One receive of `mode` through the port's protocol, its packages handled by `K`.
     #[inline(always)]
-    fn framed<K: Packages>(&self, mode: u32) -> i64 {
+    fn framed<K: Packages>(&self, mode: Mode) -> i64 {
         let protocol = self.port.protocol.as_ptr().cast_const();
         // SAFETY: the port's protocol, the live socket and the current buffer.
         i64::from(unsafe {
@@ -235,9 +235,9 @@ impl Connection for Read<'_> {
     #[inline(always)]
     fn receive(&mut self, framing: Framing) -> i64 {
         match framing {
-            Framing::Length if self.frames => self.framed::<Frames>(MODE_LENGTH),
-            Framing::Length => self.framed::<Callbacks>(MODE_LENGTH),
-            Framing::Eof => self.framed::<Callbacks>(MODE_EOF),
+            Framing::Length if self.frames => self.framed::<Frames>(Mode::Length),
+            Framing::Length => self.framed::<Callbacks>(Mode::Length),
+            Framing::Eof => self.framed::<Callbacks>(Mode::Eof),
             Framing::Redis => {
                 let (port, socket, buffer) = (self.port, self.socket, self.buffer);
                 let conn = self.conn();
