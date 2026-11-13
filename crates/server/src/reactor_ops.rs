@@ -345,7 +345,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[inline(always)]
 fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{OP_BASE_PASS, OP_DTLS_ACCEPT, OP_EVENT_WAIT};
+    use crate::ops::{OP_DTLS_ACCEPT, OP_EVENT_WAIT};
     use swoole_rs_reactor::event_api::swoole_event_wait;
     Some(match op {
         OP_DTLS_ACCEPT => {
@@ -357,12 +357,6 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             sign(unsafe {
                 crate::dtls::on_packet(serv, single_thread, reactor, close, port, pkt, arg)
             })
-        }
-        OP_BASE_PASS => {
-            // SAFETY: the `SendData` (the context's task) the dispatch lends at arg.
-            let send = unsafe { &*(arg as *const SendData) };
-            crate::master_ops::base_pass(o.server(), send);
-            0
         }
         OP_EVENT_WAIT => sign(swoole_event_wait()),
         op => return crate::thread_ops::answer(o.ctx, o.state, op, arg),

@@ -88,6 +88,22 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// Base mode's message bus takes `send`, then this worker accepts the event.
+    fn base_pass(&self, _serv: Server<'_>, _send: &crate::base_factory::SendData) {
+        missing()
+    }
+
+    /// `worker_accept_event(head)` in this process.
+    fn accept_event(&self, _serv: Server<'_>, _head: &mut DataHead) {
+        missing()
+    }
+
+    /// The message bus writes `send` to the pipe of the worker that owns its session:
+    /// whether it went.
+    fn forward(&self, _serv: Server<'_>, _send: &crate::base_factory::SendData) -> bool {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -147,6 +163,12 @@ pub(crate) mod tests {
         Dispatch(c_long, u8, u32),
         /// The session's fd.
         DtlsRead(c_int),
+        /// The send's fd, kind and length.
+        BasePass(c_long, u8, u32),
+        /// The head's fd, kind and listening fd.
+        AcceptEvent(c_long, u8, u16),
+        /// The send's session, kind and reactor.
+        Forward(c_long, u8, i16),
     }
 
     thread_local! {
@@ -221,6 +243,22 @@ pub(crate) mod tests {
             send: &mut crate::base_factory::SendData,
         ) -> bool {
             hear(Call::Dispatch(send.info.fd, send.info.kind, send.info.len))
+        }
+
+        fn base_pass(&self, _: Server<'_>, send: &crate::base_factory::SendData) {
+            hear(Call::BasePass(send.info.fd, send.info.kind, send.info.len));
+        }
+
+        fn accept_event(&self, _: Server<'_>, head: &mut DataHead) {
+            hear(Call::AcceptEvent(head.fd, head.kind, head.server_fd));
+        }
+
+        fn forward(&self, _: Server<'_>, send: &crate::base_factory::SendData) -> bool {
+            hear(Call::Forward(
+                send.info.fd,
+                send.info.kind,
+                send.info.reactor_id,
+            ))
         }
 
         /// A failed handshake.

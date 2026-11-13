@@ -15,8 +15,6 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_process::workers::thread::ThreadManager;
 
-use crate::ops::{RUN_BASE_DISPATCH, RUN_BASE_END, RUN_BASE_FINISH, RUN_BASE_NOTIFY};
-use crate::server_methods::{end_arg, on_base};
 use crate::state::ServerState;
 use crate::{MODE_PROCESS, MODE_THREAD};
 
@@ -83,15 +81,12 @@ fn process(factory: *mut c_void, op: u32, send: *mut SendData, arg: u64) -> bool
     run(serv, op, None, send, None, arg) != 0
 }
 
-/// `BaseFactory`'s member `op` over `factory` with `arg`, lending `send`.
-fn base(factory: *mut c_void, op: u32, send: *mut c_void, arg: u64) -> bool {
-    // SAFETY: the server's live factory, and the record the op takes.
-    unsafe { on_base(factory, send, op, arg) }
-}
-
-/// A pointer member argument, as the op's `uint64_t`.
-fn addr(p: *mut c_void) -> u64 {
-    p.expose_provenance() as u64
+/// The server of base or thread mode's `factory`.
+fn base(factory: *mut c_void) -> crate::view::Server<'static> {
+    // SAFETY: the server's live factory, whose server outlives it.
+    let serv = unsafe { (*factory.cast::<Factory>()).server };
+    // SAFETY: as above.
+    unsafe { crate::view::Server::from_raw(serv) }
 }
 
 /// `factory_->start()`.
@@ -124,7 +119,11 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
 pub(crate) fn dispatch(state: &ServerState, task: *mut c_void) -> bool {
     match of(state) {
         (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_DISPATCH, task.cast(), 0),
-        (factory, _) => base(factory, RUN_BASE_DISPATCH, task, addr(task)),
+        (factory, _) => {
+            // SAFETY: the live task the caller lends, which nothing else borrows.
+            let task = unsafe { &mut *task.cast::<SendData>() };
+            crate::base_factory::dispatch(base(factory), task, false)
+        }
     }
 }
 
@@ -132,7 +131,11 @@ pub(crate) fn dispatch(state: &ServerState, task: *mut c_void) -> bool {
 pub(crate) fn finish(state: &ServerState, data: *mut c_void) -> bool {
     match of(state) {
         (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_FINISH, data.cast(), 0),
-        (factory, _) => base(factory, RUN_BASE_FINISH, data, addr(data)),
+        (factory, _) => {
+            // SAFETY: the live send the caller lends.
+            let send = unsafe { &*data.cast::<SendData>() };
+            crate::base_factory::finish(base(factory), send)
+        }
     }
 }
 
@@ -148,7 +151,11 @@ pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
             };
             process(factory, RUN_PROCESS_DISPATCH, &raw mut task, 0)
         }
-        (factory, _) => base(factory, RUN_BASE_NOTIFY, ptr::null_mut(), addr(info)),
+        (factory, _) => {
+            // SAFETY: the live event the caller lends, which nothing else borrows.
+            let head = unsafe { &mut *info.cast::<DataHead>() };
+            crate::base_factory::notify(base(factory), head)
+        }
     }
 }
 
@@ -168,12 +175,7 @@ pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool
             let flags = u64::from(flags.cast_unsigned());
             process(factory, RUN_PROCESS_END, &raw mut close, flags)
         }
-        (factory, _) => base(
-            factory,
-            RUN_BASE_END,
-            ptr::null_mut(),
-            end_arg(session_id, flags),
-        ),
+        (factory, _) => crate::base_factory::end(base(factory), session_id, flags),
     }
 }
 
@@ -191,6 +193,18 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn factory_dispatch(&self, serv: crate::view::Server<'_>, send: &mut SendData) -> bool {
         dispatch(serv.state(), ptr::from_mut(send).cast())
+    }
+
+    fn base_pass(&self, serv: crate::view::Server<'_>, send: &SendData) {
+        crate::master_ops::base_pass(serv, send);
+    }
+
+    fn accept_event(&self, serv: crate::view::Server<'_>, head: &mut DataHead) {
+        crate::event_worker_ops::accept_event(serv, head);
+    }
+
+    fn forward(&self, serv: crate::view::Server<'_>, send: &SendData) -> bool {
+        crate::master_ops::forward(serv, send)
     }
 
     fn dtls_read(

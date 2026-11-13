@@ -17,11 +17,11 @@ use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::base_factory::SendData;
-use crate::callbacks::{ReceiveSlot, TaskSlot};
+use crate::callbacks::TaskSlot;
 use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
-use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE};
+use crate::ops::OP_FACTORY_DISPATCH;
 use crate::ops::{OP_PACKET_INIT, OP_PACKET_TASK, OP_RECVFROM};
 use crate::reactor_entry::{self as entry, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, sign};
@@ -176,7 +176,6 @@ pub(crate) fn answer(
     op: u32,
     arg: u64,
 ) -> Option<u64> {
-    let server = ctx.serv;
     Some(match op {
         OP_PACKET_INIT => {
             let fd = event_fd(ctx)?;
@@ -238,17 +237,14 @@ pub(crate) fn answer(
             ctx.task.data = ctx.pkt.cast();
             (&raw mut ctx.task).expose_provenance() as u64
         }
-        OP_ON_RECEIVE | OP_ON_PACKET => {
-            let slot = if op == OP_ON_PACKET {
-                ReceiveSlot::Packet
+        OP_FACTORY_DISPATCH => {
+            u64::from(if u64::from(state.config_ref().mode_) == crate::MODE_BASE {
+                // Base mode hands it to this process's worker as it does a connection's data.
+                crate::base_factory::dispatch(ctx.serv, &mut ctx.task, true)
             } else {
-                ReceiveSlot::Receive
-            };
-            // SAFETY: the frame's live `RecvData`, which the op's maker lends at `arg`.
-            let data = unsafe { &*(arg as *const entry::RecvData) };
-            u64::from(state.callbacks.receive(slot, server, data) == 0)
+                factory::dispatch(state, (&raw mut ctx.task).cast())
+            })
         }
-        OP_FACTORY_DISPATCH => u64::from(factory::dispatch(state, (&raw mut ctx.task).cast())),
         _ => return None,
     })
 }

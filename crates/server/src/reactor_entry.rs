@@ -252,13 +252,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     let dispatched = if mode == crate::MODE_PROCESS {
         crate::factory::dispatch(state, (&raw mut task).cast())
     } else {
-        let mut ctx = ReactorContext::new(server, None);
-        ctx.sock = Some(socket);
-        ctx.conn = conn;
-        let task = &raw mut task;
-        let base = mode == crate::MODE_BASE;
-        let run = |h: &mut _| crate::base_factory::dispatch(h, task, base).map(i64::from);
-        crate::run_reactor_with(&mut ctx, state, run) == 1
+        crate::base_factory::dispatch(server, &mut task, mode == crate::MODE_BASE)
     };
     if !dispatched {
         if len > 0 {

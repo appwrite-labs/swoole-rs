@@ -1,8 +1,8 @@
 //! Reactor threads: the datagram path and dispatch to workers, the worker pipe
 //! protocol, heartbeats and the threads' lifecycle.
 use crate::ops::{
-    LOG_RECVFROM, OP_DTLS_ACCEPT, OP_ERRNO, OP_FACTORY_DISPATCH, OP_MODE, OP_PACKET_INIT,
-    OP_PACKET_TASK, OP_PORT_DTLS, OP_RECVFROM,
+    LOG_RECVFROM, OP_DTLS_ACCEPT, OP_ERRNO, OP_FACTORY_DISPATCH, OP_PACKET_INIT, OP_PACKET_TASK,
+    OP_PORT_DTLS, OP_RECVFROM,
 };
 use core::ffi::{c_int, c_long};
 
@@ -13,7 +13,7 @@ use swoole_rs_reactor::Socket;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{Connection, Lookup};
-use crate::{Host, MODE_BASE, SW_ERR, SW_OK, ServerState, view};
+use crate::{Host, SW_ERR, SW_OK, ServerState, view};
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
@@ -42,15 +42,8 @@ pub(crate) fn packet_received<H: Host>(h: &mut H) -> crate::Effect<i64> {
         if h.is(OP_PORT_DTLS)? {
             return Ok(h.op(OP_DTLS_ACCEPT, length)?.cast_signed());
         }
-        let task = h.op(OP_PACKET_TASK, length)?;
-        // Base mode hands it to this process's worker as it does a connection's data.
-        let dispatched = if h.get(OP_MODE)? == MODE_BASE {
-            let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
-            crate::base_factory::dispatch(h, task, true)?
-        } else {
-            h.get(OP_FACTORY_DISPATCH)? != 0
-        };
-        if !dispatched {
+        h.op(OP_PACKET_TASK, length)?;
+        if h.get(OP_FACTORY_DISPATCH)? == 0 {
             return Ok(SW_ERR);
         }
     }
@@ -181,10 +174,11 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
 }
 
 /// The reactor-thread operations of `crate::run`.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
+pub(crate) fn run<H: Host>(h: &mut H, operation: u32) -> crate::Effect<i64> {
     Ok(match operation {
         crate::ops::RUN_PACKET_RECEIVED => packet_received(h)?,
-        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
+        crate::ops::RUN_BASE_CREATE => crate::base_factory::create(h)?,
+        _ => crate::SW_ERR,
     })
 }
 
@@ -210,25 +204,6 @@ mod tests {
 
         let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 0), (OP_RECVFROM, 3)]);
         assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "dispatch failed");
-
-        // Base mode dispatches the task itself; with no worker here, through the bus.
-        let mut task = crate::base_factory::SendData {
-            info: swoole_rs_corebase::DataHead {
-                kind: 1, // SW_SERVER_EVENT_RECV_DGRAM
-                ..swoole_rs_corebase::DataHead::default()
-            },
-            data: core::ptr::null(),
-        };
-        let address = (&raw mut task).expose_provenance() as u64;
-        let mut s = Script::with(&[
-            (OP_ERRNO, libc::EAGAIN.cast_unsigned().into()),
-            (OP_MODE, MODE_BASE),
-            (OP_PACKET_TASK, address),
-        ])
-        .queue(OP_RECVFROM, &[5, u64::MAX]);
-        assert_eq!(packet_received(&mut s).unwrap(), SW_OK);
-        assert_eq!(s.called(OP_FACTORY_DISPATCH), 0, "not the factory");
-        assert_eq!(s.called(crate::ops::OP_BASE_PASS), 1, "the worker's bus");
     }
 
     /// The live server with session 1 accepted. The reactor records the fds its

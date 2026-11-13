@@ -491,9 +491,6 @@ mod tests {
                 _ => answer,
             })
         }
-        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
-            self.script.state()
-        }
     }
 
     fn server(facts: &[(u32, u64)], fields: [(u32, u64); 3]) -> Fields {

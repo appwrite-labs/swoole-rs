@@ -1,5 +1,5 @@
 //! Captured native effects must cut every operation trace at the exact failing call.
-use crate::{Effect, Host, NativeFault, ServerState, ops::*, run, script::Script};
+use crate::{Effect, Host, NativeFault, ops::*, run, script::Script};
 
 struct Failing {
     script: Script,
@@ -13,9 +13,6 @@ impl Host for Failing {
         } else {
             self.script.op(op, arg)
         }
-    }
-    fn state(&mut self) -> Effect<&ServerState> {
-        self.script.state()
     }
 }
 
