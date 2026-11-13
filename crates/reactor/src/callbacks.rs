@@ -90,6 +90,7 @@ impl Callbacks {
             .is_some()
     }
 
+    #[cfg(test)]
     fn has_exit(&self, key: c_int) -> bool {
         exit_slot(key)
             .and_then(|slot| self.exit.get(slot))
@@ -196,19 +197,8 @@ pub extern "C" fn swr_v1_reactor_set_end(
 
 /// `Reactor::set_exit_condition(id, condition)`, or `remove_exit_condition(id)` without
 /// one: whether one was set before.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_set_exit(
-    owner: &mut ReactorState,
-    id: c_int,
-    condition: Option<ExitFn>,
-) -> bool {
+fn swr_v1_reactor_set_exit(owner: &mut ReactorState, id: c_int, condition: Option<ExitFn>) -> bool {
     owner.callbacks.set_exit(id, condition.map(Exit::Call))
-}
-
-/// `Reactor::isset_exit_condition(id)`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_isset_exit(owner: &ReactorState, id: c_int) -> bool {
-    owner.callbacks.has_exit(id)
 }
 
 /// `sw_reactor()->set_end_callback(id, callback)`.
@@ -364,7 +354,7 @@ mod tests {
             assert!(if_exit(running(owner)));
             execute_end(running(owner), false);
             assert!(!(*owner).fields.timed_out);
-            assert!(!swr_v1_reactor_isset_exit(&*owner, 1));
+            assert!(!callbacks().has_exit(1));
             assert!(!callbacks().set_exit(1, None));
             swr_v1_reactor_set_end(&mut *owner, 1, None);
             assert_eq!(take(), []);
@@ -430,16 +420,16 @@ mod tests {
     /// first false, and see additions and removals made during the walk.
     #[test]
     fn exit_conditions_share_the_count_and_stop_at_a_refusal() {
-        with_state(|owner| unsafe {
+        with_state(|owner| {
             set_exit(3, exit3);
             set_exit(1, exit1);
             set_exit(2, exit2);
-            assert!(swr_v1_reactor_isset_exit(&*owner, 2));
+            assert!(callbacks().has_exit(2));
             assert!(!if_exit(running(owner)));
             assert_eq!(take(), [1, 2]);
             assert!(callbacks().set_exit(2, None));
             assert!(!callbacks().set_exit(2, None));
-            assert!(!swr_v1_reactor_isset_exit(&*owner, 2));
+            assert!(!callbacks().has_exit(2));
             assert!(if_exit(running(owner)));
             assert_eq!(take(), [1, 3]);
         });

@@ -1,7 +1,6 @@
 //! Upstream's `core-tests/src/network/address.cpp`, one Rust function per TEST with the
-//! same inputs and expected values. `network::Address` is inline in the hybrid header
-//! over the `swr_v1_clients_address_*` and `swr_v1_clients_url` exports; `Address`
-//! here makes the same calls over the same record.
+//! same inputs and expected values. `Address` here calls the `swr_v1_clients_address_*`
+//! and `swr_v1_clients_url` exports over upstream's record.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
@@ -35,7 +34,7 @@ const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
 type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
 
-/// `swr_v1_clients_url_plan`.
+/// crates/clients' `UrlAssign`, which `swr_v1_clients_url` returns.
 #[repr(C)]
 struct UrlPlan {
     outcome: c_int,
