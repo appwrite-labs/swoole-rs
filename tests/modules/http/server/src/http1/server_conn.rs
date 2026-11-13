@@ -1181,7 +1181,7 @@ const SOCKET_RECV_TIMER: usize = 152;
 const SIGKILL: c_int = 9;
 const EAGAIN: c_int = 11;
 
-/// `Session` (native/include/swoole_rs_server_records.h).
+/// `Session` (crates/server/src/records.rs's `SessionRecord`).
 #[repr(C)]
 struct Session {
     id: c_long,

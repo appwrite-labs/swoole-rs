@@ -964,16 +964,12 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_RD_DTLS => {
             let (sock, fd) = (o.sock()?, o.event()?.fd());
-            // SAFETY: the context's live DTLS port; nothing else borrows its settings.
-            let port = unsafe { o.ctx.port?.config_mut() };
-            u64::from(crate::dtls::on_read(port, sock, fd))
+            u64::from(crate::dtls::on_read(o.ctx.port?.config(), sock, fd))
         }
         OP_CC_DTLS_FREE => {
             // `Server::close_connection`'s `delete` of the socket's DTLS session.
             let fd = o.sock()?.fd();
-            // SAFETY: the closing socket's live port; nothing else borrows its settings.
-            let port = unsafe { o.ctx.port?.config_mut() };
-            (crate::port_config::methods().dtls_free)(port, fd);
+            (crate::port_config::methods().dtls_free)(o.ctx.port?.config(), fd);
             0
         }
         OP_WR_TIMER_DELAY => {

@@ -15,6 +15,7 @@ use std::{
     ffi::{CStr, c_int},
     mem::MaybeUninit,
     ptr, slice,
+    sync::Arc,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
 use swoole_rs_phpruntime::co;
@@ -197,11 +198,10 @@ fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
 }
 
 /// The `websocket_subprotocol` of the port listening on `server_fd`.
-fn port_protocol(server: view::Server<'_>, server_fd: c_int) -> &[u8] {
+fn port_protocol(server: view::Server<'_>, server_fd: c_int) -> Option<Arc<Vec<u8>>> {
     server
         .port_of_server_fd(server_fd)
-        .and_then(|port| port.websocket_protocol.as_deref())
-        .map_or(&[], Vec::as_slice)
+        .and_then(|port| port.websocket_protocol.cloned())
 }
 
 /// A boolean setting's value, when set and not null.
@@ -1000,9 +1000,10 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             return Ok(false);
         };
         set_status(server, fd, STATUS_ACTIVE);
-        let protocol = port_protocol(server, conn.server_fd);
-        if !protocol.is_empty() {
-            set_header(context, b"Sec-WebSocket-Protocol", protocol)?;
+        if let Some(protocol) = port_protocol(server, conn.server_fd)
+            && !protocol.is_empty()
+        {
+            set_header(context, b"Sec-WebSocket-Protocol", &protocol)?;
         }
         let state = context.state();
         let mut args = [

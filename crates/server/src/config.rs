@@ -121,13 +121,14 @@ impl<T> Shared<T> {
     }
 
     /// `f` over a copy, which then replaces the value.
-    pub fn update(&self, f: impl FnOnce(&mut T))
+    pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R
     where
         T: Copy,
     {
         let mut value = self.get();
-        f(&mut value);
+        let result = f(&mut value);
         self.set(value);
+        result
     }
 
     pub fn get_mut(&mut self) -> &mut T {
@@ -137,6 +138,16 @@ impl<T> Shared<T> {
     /// The value's address, which native code reads and writes by reference.
     pub const fn as_ptr(&self) -> *mut T {
         self.0.get()
+    }
+}
+
+impl<U> Shared<Option<std::sync::Arc<U>>> {
+    /// Another reference to the value, which a later write leaves alone.
+    #[must_use]
+    pub fn cloned(&self) -> Option<std::sync::Arc<U>> {
+        // SAFETY: no reference into the cell escapes a call, so none is live, and
+        // `Arc::clone` runs no code that could reach the cell.
+        unsafe { (*self.0.get()).clone() }
     }
 }
 
