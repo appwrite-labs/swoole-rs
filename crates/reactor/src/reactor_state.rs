@@ -4,6 +4,7 @@
 //! The `Reactor` object: its public fields and backend resources share one Rust
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
+use crate::wait_loop::BackendKind;
 use crate::{PollSnapshot, Socket, SocketRecord, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::mem::MaybeUninit;
@@ -460,11 +461,10 @@ pub extern "C-unwind" fn swoole_event_free() -> c_int {
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
     0
 }
-#[repr(C)]
-pub struct ReactorBackendView {
-    pub events: *mut c_void,
-    pub sockets: *mut *mut c_void,
-    pub backend: u32,
+pub(crate) struct ReactorBackendView {
+    pub(crate) events: *mut c_void,
+    pub(crate) sockets: *mut *mut c_void,
+    pub(crate) backend: BackendKind,
 }
 impl ReactorState {
     /// The backend's arrays, which stay owned until the state is freed.
@@ -472,7 +472,7 @@ impl ReactorState {
         let mut view = ReactorBackendView {
             events: ptr::null_mut(),
             sockets: ptr::null_mut(),
-            backend: 0,
+            backend: BackendKind::Poll,
         };
         match &mut self.backend {
             Backend::None => (),
@@ -483,7 +483,7 @@ impl ReactorState {
             #[cfg(target_os = "linux")]
             Backend::Epoll(array) => {
                 view.events = array.as_mut_ptr().cast();
-                view.backend = 1;
+                view.backend = BackendKind::Epoll;
             }
             #[cfg(any(
                 target_os = "macos",
@@ -494,7 +494,7 @@ impl ReactorState {
             ))]
             Backend::Kqueue(array, _) => {
                 view.events = array.as_mut_ptr().cast();
-                view.backend = 2;
+                view.backend = BackendKind::Kqueue;
             }
         }
         view
