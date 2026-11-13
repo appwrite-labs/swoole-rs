@@ -1066,10 +1066,10 @@ pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
 /// without setting the last error.
 ///
 /// # Safety
-/// `context` is a live `SSLContext` (its Rust owner).
+/// No field of `context` (an `SSLContext`'s Rust owner) is written meanwhile.
 pub unsafe fn socket_ssl_create(
     socket: Socket<'_>,
-    context: *const crate::OwnedTlsContext,
+    context: &crate::OwnedTlsContext,
     flags: c_int,
 ) -> c_int {
     // SAFETY: as the caller promises.
@@ -1135,22 +1135,19 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
         }
         // `delete in_buffer; delete out_buffer`.
         drop(buffers);
-        if let Some((_, reactor)) = swoole_rs_reactor::socket_upstream::event_reactor() {
+        if swoole_rs_reactor::socket_upstream::event_reactor().is_some() {
             if record.read(|record| record.fd != -1 && !record.removed) {
                 // `swoole_event_del(this)` on the thread's reactor, which logs a failure.
                 _ = swoole_rs_reactor::event_api::event_del(record);
             }
             // SAFETY: `swoole_event_defer(socket_free_defer, this)`; a reactor freed
             // before it runs closes the socket all the same.
-            unsafe {
-                swoole_rs_reactor::defer(
-                    reactor.fields,
-                    socket_free_defer,
-                    socket.cast(),
-                    Some(socket_free_defer),
-                );
+            let deferred = unsafe {
+                swoole_rs_reactor::defer(socket_free_defer, socket.cast(), Some(socket_free_defer))
+            };
+            if deferred {
+                return;
             }
-            return;
         }
     }
     // SAFETY: as the caller promises.
@@ -1319,7 +1316,7 @@ mod tests {
             socket.tls.state = 2;
             socket.tls.want_read = true;
             let created =
-                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), owner.owner, 2);
+                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), &*owner.owner, 2);
             assert_eq!(created, 0);
             assert!(!socket.ssl().is_null());
             assert_eq!(
@@ -1347,7 +1344,7 @@ mod tests {
             let owner = crate::swr_v1_tls_owner_new();
             (*owner.fields).context = Some(crate::SslContext::tls());
             assert_eq!(
-                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), owner.owner, 2),
+                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), &*owner.owner, 2),
                 0
             );
             let session = socket_ssl_session(handle).unwrap();

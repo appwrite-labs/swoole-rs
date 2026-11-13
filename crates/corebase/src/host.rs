@@ -14,9 +14,18 @@ unsafe extern "C" {
     fn exit(status: c_int) -> !;
 }
 
+/// `backtrace`'s frame count: the one value, the length of the array it fills.
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+#[repr(i32)]
+#[derive(Clone, Copy)]
+enum Frames {
+    All = 16,
+}
+
 #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
 unsafe extern "C" {
-    fn backtrace(frames: *mut *mut c_void, size: c_int) -> c_int;
+    /// Fills at most `size` entries of `frames`, which `Frames` fixes at its length.
+    safe fn backtrace(frames: &mut [*mut c_void; Frames::All as usize], size: Frames) -> c_int;
     fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
 }
 
@@ -131,8 +140,7 @@ pub extern "C" fn swoole_print_backtrace() {
     #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
     {
         let mut frames = [ptr::null_mut::<c_void>(); 16];
-        // SAFETY: `frames` holds the 16 entries backtrace(3) may write.
-        let count = unsafe { backtrace(frames.as_mut_ptr(), 16) };
+        let count = backtrace(&mut frames, Frames::All);
         // SAFETY: the first `count` frames were just filled.
         let symbols = unsafe { backtrace_symbols(frames.as_ptr(), count) };
         if symbols.is_null() {

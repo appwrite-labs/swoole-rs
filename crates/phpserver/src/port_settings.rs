@@ -321,8 +321,8 @@ fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
 }
 
 /// The TLS options of an SSL port, then its SNI contexts and `ssl_init()`.
-pub(crate) fn tls(s: &impl Source, owner: *const OwnedTlsContext, dgram: bool) -> Step {
-    // SAFETY: the port's live context, which nothing else reaches during set().
+pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step {
+    // SAFETY: the port's context, which nothing else reaches during set().
     let owner = unsafe { tls::Lent::new(owner) };
     files(s, &owner)?;
     let set = |value| owner.set_value(value);
@@ -478,7 +478,7 @@ impl Source for Zend<'_> {
             };
             // SAFETY: the fresh duplicate, which nothing else reaches until `sni_add`
             // takes it.
-            files(&item, &unsafe { tls::Lent::new(context.as_ptr()) })?;
+            files(&item, &unsafe { tls::Lent::new(&context) })?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));

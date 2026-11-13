@@ -74,12 +74,12 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 #[must_use]
 pub fn context_dup(config: &PortConfig) -> TlsContext {
     let copy = TlsContext::new();
-    let source = config
-        .ssl_context
-        .as_ref()
-        .map_or(ptr::null(), TlsContext::as_ptr);
-    // SAFETY: two live owners, the copy fresh; no native view caches either's strings.
-    if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(copy.as_ptr(), source) }.status != 0 {
+    // Without a context of the port's, the fresh one's defaults.
+    let Some(source) = config.ssl_context.as_ref() else {
+        return copy;
+    };
+    // SAFETY: the copy is fresh; no native view caches either's strings.
+    if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(&copy, source) }.status != 0 {
         swoole_rs_corebase::fatal("copying a port's TLS context failed");
     }
     copy
@@ -184,14 +184,16 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
 
 /// `ListenPort::ssl_create(sock)`: the socket's server-side `SSL`, which names the port.
 pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool {
-    let context = config
-        .ssl_context
-        .as_ref()
-        .map_or(ptr::null(), TlsContext::as_ptr);
+    let context = config.ssl_context.as_ref();
     let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
-    // SAFETY: the port's live context.
-    let create = |sock| unsafe { socket_ssl_create(sock, context, flags) };
-    let Some(sock) = sock.filter(|&sock| create(sock) >= 0) else {
+    let create = |sock| {
+        context.is_some_and(|context| {
+            // SAFETY: nothing writes the port's context while a connection's session is
+            // made.
+            unsafe { socket_ssl_create(sock, context, flags) >= 0 }
+        })
+    };
+    let Some(sock) = sock.filter(|&sock| create(sock)) else {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     };
@@ -269,7 +271,7 @@ pub(crate) fn dtls_create(port: view::Port<'_>, sock: Socket<'_>) -> *mut DtlsSe
     };
     let session = swr_v1_tls_dtls_new(sock.as_ptr());
     // SAFETY: the fresh session over the caller's live socket, and the port's live context.
-    if !unsafe { swr_v1_tls_dtls_init(session, context.as_ptr()) } {
+    if !unsafe { swr_v1_tls_dtls_init(session, &context) } {
         // SAFETY: the session made above, which nothing else holds.
         unsafe { swr_v1_tls_dtls_free(session) };
         return ptr::null_mut();

@@ -1,14 +1,12 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`, independent of native `SSLContext` lifetime.
-use crate::handle::CText;
+use crate::handle::{BioMethod, CText};
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 use core::mem::MaybeUninit;
-use core::ptr;
-use openssl_sys::{BIO_METHOD, BIO_meth_free, SSL_set_bio};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Mutex, PoisonError};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{Fill, Socket, SocketRecord};
@@ -202,39 +200,30 @@ type Read = unsafe extern "C" fn(&DtlsBio, *mut c_char, c_int) -> c_int;
 type Control = unsafe extern "C" fn(&DtlsBio, c_int, c_long, *mut c_void) -> c_long;
 type Hook = extern "C" fn(&DtlsBio) -> c_int;
 
-/// A method table `BIO_meth_new` just made, which no BIO uses yet. It is zero-sized,
-/// so a reference to it claims none of the bytes OpenSSL changes behind it.
-#[repr(C)]
-struct NewTable {
-    _opaque: [u8; 0],
-    _not_send: PhantomData<(*mut u8, PhantomPinned)>,
-}
-
 // libcrypto's declarations, typed so that a live BIO is a reference: the
 // `safe` ones read or write only the BIO's own flags and shutdown fields (data and
 // init stay unsafe: a method reads data as the session once init is set), and
 // OpenSSL calls each method of a table with the live BIO it is reading or writing.
 // `BIO_meth_new` copies the name and returns a table nothing else holds (null on
-// failure), and the `safe` setters store a hook into the table their caller holds
-// exclusively: storing one runs nothing. The create and destroy hooks suit any BIO; the
-// write, read and control hooks are `unsafe` to call, and only a BIO runs them, which
-// only the unsafe `BIO_new` makes of a table, so its caller answers for them.
+// failure), which this side never frees, and the `safe` setters store a hook into the
+// table their caller holds exclusively: storing one runs nothing. The create and destroy
+// hooks suit any BIO. OpenSSL calls the write, read and control hooks with the BIO and
+// the bytes it lends them, and each takes a BIO without data as none of a session's.
 unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
-    safe fn BIO_meth_new(kind: c_int, name: CText<'_>) -> Option<&'static mut NewTable>;
-    safe fn BIO_meth_set_create(table: &mut NewTable, create: Option<Hook>) -> c_int;
-    safe fn BIO_meth_set_destroy(table: &mut NewTable, destroy: Option<Hook>) -> c_int;
-    safe fn BIO_meth_set_write(table: &mut NewTable, write: Option<Write>) -> c_int;
-    safe fn BIO_meth_set_read(table: &mut NewTable, read: Option<Read>) -> c_int;
-    safe fn BIO_meth_set_ctrl(table: &mut NewTable, control: Option<Control>) -> c_int;
+    safe fn BIO_meth_new(kind: c_int, name: CText<'_>) -> Option<&'static mut BioMethod>;
+    safe fn BIO_meth_set_create(table: &mut BioMethod, create: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_write(table: &mut BioMethod, write: Option<Write>) -> c_int;
+    safe fn BIO_meth_set_read(table: &mut BioMethod, read: Option<Read>) -> c_int;
+    safe fn BIO_meth_set_ctrl(table: &mut BioMethod, control: Option<Control>) -> c_int;
     safe fn BIO_get_shutdown(bio: &DtlsBio) -> c_int;
     safe fn BIO_set_shutdown(bio: &DtlsBio, shutdown: c_int);
     safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_clear_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_get_data(bio: &DtlsBio) -> *mut c_void;
-    fn BIO_set_init(bio: &DtlsBio, init: c_int);
-    fn BIO_set_data(bio: &DtlsBio, data: *mut c_void);
-    fn BIO_new(table: *const BIO_METHOD) -> Option<&'static DtlsBio>;
+    fn BIO_set_init(bio: crate::Bio<'_>, init: c_int);
+    fn BIO_set_data(bio: crate::Bio<'_>, data: *mut c_void);
 }
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
@@ -363,33 +352,26 @@ extern "C" fn bio_destroy(_bio: &DtlsBio) -> c_int {
     1
 }
 
-static METHODS: AtomicPtr<BIO_METHOD> = AtomicPtr::new(ptr::null_mut());
+/// The process's one table, once made; a thread making it holds the lock, so no other
+/// makes a second one.
+static METHODS: Mutex<Option<&'static BioMethod>> = Mutex::new(None);
 
-/// `dtls::BIO_get_methods`: the process's one table, made on first use.
-fn methods() -> *mut BIO_METHOD {
-    let current = METHODS.load(Ordering::Acquire);
-    if !current.is_null() {
-        return current;
+/// `dtls::BIO_get_methods`: the process's one table, made on first use; none when
+/// OpenSSL can't make it, which a later call tries again.
+fn methods() -> Option<&'static BioMethod> {
+    let mut made = METHODS.lock().unwrap_or_else(PoisonError::into_inner);
+    if made.is_none() {
+        let index = BIO_get_new_index();
+        let name = c"swoole_dtls_bio".into();
+        let table = BIO_meth_new(index | BIO_TYPE_SOURCE_SINK, name)?;
+        BIO_meth_set_create(table, Some(bio_create));
+        BIO_meth_set_destroy(table, Some(bio_destroy));
+        BIO_meth_set_write(table, Some(bio_write));
+        BIO_meth_set_read(table, Some(bio_read));
+        BIO_meth_set_ctrl(table, Some(bio_ctrl));
+        *made = Some(table);
     }
-    let index = BIO_get_new_index();
-    let name = c"swoole_dtls_bio".into();
-    let Some(table) = BIO_meth_new(index | BIO_TYPE_SOURCE_SINK, name) else {
-        return ptr::null_mut();
-    };
-    BIO_meth_set_create(table, Some(bio_create));
-    BIO_meth_set_destroy(table, Some(bio_destroy));
-    BIO_meth_set_write(table, Some(bio_write));
-    BIO_meth_set_read(table, Some(bio_read));
-    BIO_meth_set_ctrl(table, Some(bio_ctrl));
-    let table: *mut BIO_METHOD = ptr::from_mut(table).cast();
-    match METHODS.compare_exchange(ptr::null_mut(), table, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => table,
-        Err(winner) => {
-            // SAFETY: the losing table, which no BIO uses.
-            unsafe { BIO_meth_free(table) };
-            winner
-        }
-    }
+    *made
 }
 
 /// `bool dtls::Session::init()`: the socket's server SSL, over a BIO that writes
@@ -397,10 +379,10 @@ fn methods() -> *mut BIO_METHOD {
 ///
 /// # Safety
 /// `owner` is live, its socket null or a live record that stays one until the session
-/// is freed, and `context` the session's live `SSLContext`.
+/// is freed, and no field of `context` (the session's `SSLContext`) is written meanwhile.
 pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     owner: *mut DtlsSession,
-    context: *const crate::OwnedTlsContext,
+    context: &crate::OwnedTlsContext,
 ) -> bool {
     // SAFETY: as the caller promises.
     let session = unsafe { &*owner };
@@ -420,25 +402,20 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     }
     let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
     swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
-    let ssl = socket.edit(|record| {
-        record.dtls = true;
-        record.ssl()
-    });
-    let table = methods();
-    if table.is_null() {
-        return false;
-    }
-    // SAFETY: a BIO of the live table above; OpenSSL returns null on failure.
-    let Some(bio) = (unsafe { BIO_new(table) }) else {
+    socket.edit(|record| record.dtls = true);
+    let Some(ssl) = crate::Ssl::of(socket) else {
         return false;
     };
-    // SAFETY: the session outlives its SSL, which owns the BIO.
-    unsafe { BIO_set_data(bio, owner.cast()) };
+    let Some(bio) = methods().and_then(|table| crate::handle::BIO_new(table)) else {
+        return false;
+    };
+    // SAFETY: the session outlives its SSL, which takes the BIO below.
+    unsafe { BIO_set_data(bio.bio(), owner.cast()) };
     // SAFETY: the fresh BIO, whose data is now the session its methods read.
-    unsafe { BIO_set_init(bio, 1) };
-    let bio = ptr::from_ref(bio).cast_mut().cast();
-    // SAFETY: the SSL ssl_create made takes the BIO for both directions.
-    unsafe { SSL_set_bio(ssl.cast(), bio, bio) };
+    unsafe { BIO_set_init(bio.bio(), 1) };
+    // SAFETY: the SSL ssl_create just made takes the BIO for both directions and frees
+    // the descriptor BIOs `SSL_set_fd` gave it, which no handle borrows.
+    _ = unsafe { ssl.set_bio(bio, None) };
     true
 }
 
@@ -478,6 +455,7 @@ pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr;
     use openssl_sys::BIO;
     struct Owner(*mut DtlsSession);
     impl Owner {
@@ -515,14 +493,13 @@ mod tests {
             fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
         }
         let owner = Owner::new(ptr::null_mut());
-        let table = methods();
-        assert!(!table.is_null());
-        assert_eq!(methods(), table);
+        let table = methods().unwrap();
+        assert!(ptr::eq(methods().unwrap(), table));
         unsafe {
-            let lent = BIO_new(table).unwrap();
-            BIO_set_data(lent, owner.handle().cast());
-            BIO_set_init(lent, 1);
-            let bio: *mut BIO = ptr::from_ref(lent).cast_mut().cast();
+            let lent = crate::handle::BIO_new(table).unwrap();
+            BIO_set_data(lent.bio(), owner.handle().cast());
+            BIO_set_init(lent.bio(), 1);
+            let bio: *mut BIO = lent.bio().as_ptr();
             let mut bytes = [0u8; 8];
             assert_eq!(openssl_sys::BIO_read(bio, bytes.as_mut_ptr().cast(), 8), -1);
             assert_ne!(BIO_test_flags(bio, BIO_FLAGS_SHOULD_RETRY), 0);
@@ -533,7 +510,7 @@ mod tests {
             assert_eq!(openssl_sys::BIO_read(bio, bytes.as_mut_ptr().cast(), 8), 3);
             assert_eq!(&bytes[..3], b"abc");
             assert_eq!(BIO_test_flags(bio, BIO_FLAGS_SHOULD_RETRY), 0);
-            openssl_sys::BIO_free_all(bio);
+            drop(lent);
         }
     }
 

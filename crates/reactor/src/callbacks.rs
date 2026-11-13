@@ -271,10 +271,8 @@ pub fn swr_v1_event_remove_exit_condition(id: ExitCondition) {
     unsafe(export_name = "_Z18swoole_event_deferPFvPvES_")
 )]
 pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
-    if let Some(reactor) = crate::event_api::current_prepared() {
-        // SAFETY: the thread's live reactor; the loop runs `call(data)` as its caller set.
-        unsafe { crate::deferred::defer(reactor.fields, call, data, None) };
-    }
+    // SAFETY: the loop runs `call(data)` as its caller set; nothing without a reactor.
+    _ = unsafe { crate::deferred::defer(call, data, None) };
 }
 
 /// `bool Reactor::if_exit()`.
@@ -501,7 +499,12 @@ mod tests {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(running(owner)));
-            crate::deferred::defer(fields, record, std::ptr::without_provenance_mut(4), None);
+            crate::deferred::tests::defer(
+                fields,
+                record,
+                std::ptr::without_provenance_mut(4),
+                None,
+            );
             assert!(!if_exit(running(owner)));
             (*fields).idle_task.callback = Some(record);
             (*fields).idle_task.data = std::ptr::without_provenance_mut(6);

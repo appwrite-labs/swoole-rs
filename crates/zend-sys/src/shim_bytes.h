@@ -2,7 +2,8 @@
  * which it makes ABI-compatible with one), so Rust can declare them over the
  * borrow, safely. Each reads the range's `iov_len` bytes, touches no PHP state but
  * Zend's allocator, and runs no PHP code. The `swr_bytes_` prefix keeps them out of
- * bindgen's allowlist: crates/zend and crates/phpstdext declare them, typed. */
+ * bindgen's allowlist: crates/zend, crates/phpstdext and crates/phphttp declare them,
+ * typed. */
 #ifndef SWOOLE_RS_ZEND_SHIM_BYTES_H
 #define SWOOLE_RS_ZEND_SHIM_BYTES_H
 

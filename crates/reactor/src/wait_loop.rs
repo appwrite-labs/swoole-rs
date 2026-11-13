@@ -534,8 +534,8 @@ fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
             ops.reactor
                 .with(|state| state.record(socket, crate::ChangeOp::Del, 0));
         } else {
-            // poll and kqueue run `Reactor::del`.
-            crate::reactor_upstream::reactor_del(ops.reactor, socket);
+            // poll and kqueue run `Reactor::del`, which logs a failure.
+            _ = crate::reactor_upstream::reactor_del(ops.reactor, socket);
         }
     }
 }

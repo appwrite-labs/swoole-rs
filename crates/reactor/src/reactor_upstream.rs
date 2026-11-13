@@ -25,10 +25,13 @@ fn changed(result: c_int) -> c_int {
     result
 }
 
-/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`.
+/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`: -1 for a null
+/// socket.
 ///
 /// # Safety
-/// As [`crate::swr_v1_reactor_change`], on a live `Reactor`.
+/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
+/// `socket` null or a live record distinct from it that stays live while it is
+/// registered.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor6changeEPNS_7network6SocketEji")
@@ -39,9 +42,14 @@ pub unsafe extern "C" fn reactor_change(
     op: u32,
     events: c_int,
 ) -> c_int {
-    let owner = reactor.cast::<crate::ReactorState>().cast_mut();
+    // SAFETY: as the caller promises: live while it is registered, which is all a
+    // registered socket's `'static` claims.
+    let Some(socket) = (unsafe { crate::Socket::from_ptr(socket) }) else {
+        return -1;
+    };
     // SAFETY: as the caller promises.
-    changed(unsafe { crate::swr_v1_reactor_change(owner, socket, op, events, swr_v1_reactor_log) })
+    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
+    change(reactor, socket, crate::ChangeOp::from_code(op), events)
 }
 
 /// `Reactor::add` or `set` of a socket that is never freed while registered.
@@ -55,17 +63,9 @@ pub fn change(
     op: crate::ChangeOp,
     events: c_int,
 ) -> c_int {
-    // SAFETY: the handle's live state, which no reference borrows (its contract), and
-    // a record that is live for as long as it stays registered; the log reads neither.
-    changed(unsafe {
-        crate::swr_v1_reactor_change(
-            reactor.state(),
-            socket.as_ptr(),
-            op.code(),
-            events,
-            swr_v1_reactor_log,
-        )
-    })
+    let request = crate::change::Request::new(socket, op);
+    // The log reaches no reactor.
+    changed(reactor.with(|state| crate::change::apply(state, request, events, swr_v1_reactor_log)))
 }
 
 /// `Reactor::interest` of a socket that is never freed while registered, as [`change`] takes one: the change's result, or 0
@@ -83,24 +83,17 @@ pub fn interest(
 
 /// `int Reactor::del(Socket *socket)` of any live socket: a removal leaves the
 /// record's address neither in the registry nor with the kernel.
+#[must_use]
 pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_int {
-    // SAFETY: the handle's live state, which no reference borrows (its contract), and
-    // a live record; del registers nothing, and the log reads neither.
-    unsafe {
-        crate::swr_v1_reactor_change(
-            reactor.state(),
-            socket.as_ptr(),
-            crate::ChangeOp::Del.code(),
-            0,
-            swr_v1_reactor_log,
-        )
-    }
+    let request = crate::change::Request::Del(socket);
+    // The log reaches no reactor.
+    reactor.with(|state| crate::change::apply(state, request, 0, swr_v1_reactor_log))
 }
 
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
 ///
 /// # Safety
-/// As [`crate::swr_v1_reactor_change`], on a live `Reactor`.
+/// As [`reactor_change`].
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")

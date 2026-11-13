@@ -1,4 +1,5 @@
 //! Always-available libc resolver providers shared by native and async DNS requests.
+use crate::sys::Text;
 use std::ffi::{CStr, c_char, c_int};
 
 /// `SW_DNS_LOOKUP_RANDOM`, masked out of `gethostbyname`'s flags.
@@ -109,19 +110,21 @@ pub(crate) fn resolve_addresses(
     results: &mut [libc::sockaddr_in6],
     mut unknown: impl FnMut(c_int) -> bool,
 ) -> Resolved {
-    let mut request: libc::addrinfo = crate::sys::zeroed();
-    (request.ai_family, request.ai_socktype, request.ai_protocol) = hints;
-    let service = service.map_or(std::ptr::null(), CStr::as_ptr);
-    let mut list = std::ptr::null_mut();
-    // SAFETY: terminated strings; `list` receives the resolver's list.
-    let error =
-        unsafe { libc::getaddrinfo(host.as_ptr(), service, &raw const request, &raw mut list) };
+    let mut list = None;
+    let error = getaddrinfo(
+        host.into(),
+        service.map(Text::from),
+        &Hints::new(hints),
+        &mut list,
+    );
     if error != 0 {
         return Resolved { error, count: 0 };
     }
     let mut count = 0;
     let mut diagnostic_failed = false;
-    let mut entry = list;
+    let mut entry = list
+        .as_ref()
+        .map_or(std::ptr::null_mut(), |list| list.0.as_ptr());
     for slot in results.iter_mut() {
         // SAFETY: `entry` walks the resolver's list until null.
         let Some(item) = (unsafe { entry.as_ref() }) else {
@@ -144,8 +147,9 @@ pub(crate) fn resolve_addresses(
         count += 1;
         entry = item.ai_next;
     }
-    // SAFETY: `list` came from getaddrinfo.
-    unsafe { libc::freeaddrinfo(list) };
+    if let Some(list) = list {
+        freeaddrinfo(list);
+    }
     Resolved {
         error: if diagnostic_failed {
             DIAGNOSTIC_FAILED
@@ -163,23 +167,65 @@ pub fn gethostbyname(flags: c_int, name: &CStr) -> Option<[c_char; 46]> {
     lookup(flags, name).map(|(binary, _)| binary)
 }
 
-// libc's.
+/// `inet_ntop`'s output size: the one value, the length of the text array it fills
+/// (`INET6_ADDRSTRLEN`).
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum TextRoom {
+    Address = 46,
+}
+
+/// `getaddrinfo`'s hints: an `addrinfo` whose pointers are null, as POSIX requires of
+/// every hint but the family, socket type, protocol and flags. Only [`Hints::new`]
+/// makes one.
+#[repr(transparent)]
+struct Hints(libc::addrinfo);
+
+impl Hints {
+    /// The family, socket type and protocol, flags zero.
+    fn new((family, socktype, protocol): (c_int, c_int, c_int)) -> Self {
+        let mut request: libc::addrinfo = crate::sys::zeroed();
+        (request.ai_family, request.ai_socktype, request.ai_protocol) =
+            (family, socktype, protocol);
+        Self(request)
+    }
+}
+
+/// The head of a list `getaddrinfo` stored, not yet freed. Only `getaddrinfo` makes one
+/// (nothing here constructs it) and only `freeaddrinfo` takes it, by value, so each
+/// list is freed at most once.
+#[repr(transparent)]
+struct AddressList(std::ptr::NonNull<libc::addrinfo>);
+
+// libc's. Each reads its integers and `Text`s, writes the one object a reference names
+// and reads or writes no other caller memory, so they are declared `safe`.
 unsafe extern "C" {
-    fn inet_ntop(
+    /// Writes the text of `source`'s address (4 bytes for `AF_INET`, 16 for
+    /// `AF_INET6`; another family reads nothing and fails) into at most `capacity`
+    /// bytes of `output`, which `TextRoom` fixes at its length: `output`, or null.
+    safe fn inet_ntop(
         family: c_int,
-        source: *const core::ffi::c_void,
-        output: *mut c_char,
-        capacity: libc::socklen_t,
+        source: &[c_char; 16],
+        output: &mut [c_char; TextRoom::Address as usize],
+        capacity: TextRoom,
     ) -> *const c_char;
+    /// Resolves `host` and `service` (none for none) under `hints`, storing a new
+    /// list (none for an empty one) when it returns 0.
+    safe fn getaddrinfo(
+        host: Text<'_>,
+        service: Option<Text<'_>>,
+        hints: &Hints,
+        list: &mut Option<AddressList>,
+    ) -> c_int;
+    /// Frees a list `getaddrinfo` stored, which the handle's move hands over.
+    safe fn freeaddrinfo(list: AddressList);
 }
 
 /// `inet_ntop(family, binary)`'s text, or none for another family or a failure.
 #[must_use]
 pub fn ntop(family: c_int, binary: &[c_char; 16]) -> Option<[c_char; 46]> {
     let mut text: [c_char; 46] = [0; 46];
-    // SAFETY: room for an address of either family (4 or 16 bytes) and for its text;
-    // another family reads nothing.
-    let result = unsafe { inet_ntop(family, binary.as_ptr().cast(), text.as_mut_ptr(), 46) };
+    let result = inet_ntop(family, binary, &mut text, TextRoom::Address);
     (!result.is_null()).then_some(text)
 }
 

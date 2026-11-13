@@ -21,10 +21,6 @@ zval *swr_zend_http_property_array(zend_object *object, uint32_t offset, uint32_
     return property;
 }
 
-char *swr_zend_http_estrndup(const char *text, size_t length) {
-    return estrndup(text, length);
-}
-
 zend_string *swr_zend_http_intern(const char *text, size_t length) {
     return zend_string_init_interned(text, length, 1);
 }

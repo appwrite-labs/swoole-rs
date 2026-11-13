@@ -687,9 +687,8 @@ impl Handle {
         } else {
             &target
         };
-        let (at, size) = (shared.as_mut_ptr(), shared.size());
-        // SAFETY: the buffer's `size` bytes, which `shared` borrows.
-        let output = unsafe { core::slice::from_raw_parts_mut(at, size) };
+        // The whole allocation, zeroed so every byte lent is initialized.
+        let output = shared.zeroed(shared.size()).unwrap_or_default();
         let length = swoole_rs_http_ffi::proxy_connect(proxy, host, output);
         output.get(..length).unwrap_or_default()
     }
@@ -1212,11 +1211,9 @@ fn ssl_handshake(this: Handle) -> c_int {
     if this.tls_state() == SSL_STATE_READY {
         return ERR;
     }
-    let tls = this
-        .get()
-        .tls
-        .get()
-        .map_or(core::ptr::null(), TlsContext::as_ptr);
+    // A reference of this call's own, which keeps the context live throughout.
+    let tls = this.get().tls.get().cloned();
+    let tls = tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context"));
     let missing = this.edit_tls(|fields, record| {
         let missing = fields.context.is_none();
         if missing {
@@ -1224,14 +1221,14 @@ fn ssl_handshake(this: Handle) -> c_int {
         }
         missing
     });
-    // SAFETY: the client's live context.
-    if missing && !unsafe { ssl_context_create(tls) } {
+    // SAFETY: the client's context, which only this client configures, and only here.
+    if missing && !unsafe { ssl_context_create(&tls) } {
         return ERR;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = true);
-        // SAFETY: the live socket and context.
-        if unsafe { socket_ssl_create(this.socket(), tls, SSL_CLIENT) } < 0 {
+        // SAFETY: the live socket; nothing writes the context's fields meanwhile.
+        if unsafe { socket_ssl_create(this.socket(), &tls, SSL_CLIENT) } < 0 {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return ERR;
         }

@@ -580,7 +580,7 @@ impl Tls {
     /// can't be read.
     fn set_path(&self, which: swoole_rs_tls::Text, file: &str) -> bool {
         // SAFETY: the live owner, which only the case's thread configures.
-        let owner = unsafe { swoole_rs_tls::Lent::new(self.0.owner.cast()) };
+        let owner = unsafe { swoole_rs_tls::Lent::new(&*self.0.owner.cast()) };
         owner.set_text(which, file.as_bytes())
     }
 

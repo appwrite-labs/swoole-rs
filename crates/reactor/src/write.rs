@@ -3,11 +3,10 @@
 //! one `SocketOutput` block. Native code performs the four effects that need its
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
-use crate::Socket;
+use crate::{Drain, Socket};
 use std::ffi::{c_int, c_void};
-use swoole_rs_buffer::cpp::{
-    CppBuffer, swr_cpp_buffer_append_iovec, swr_cpp_buffer_count, swr_cpp_buffer_length,
-};
+use std::io::IoSlice;
+use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
 use swoole_rs_corebase::CCast;
 
 /// `SwReturnCode::SW_WAIT`.
@@ -41,14 +40,23 @@ impl SocketOutput {
     }
 }
 
-/// What to append when the data can't all go out now: `length` bytes at `data`, or
-/// `count` iovecs at `iov` (`_writev`).
-#[repr(C)]
-pub struct WritePayload {
-    pub data: *const u8,
-    pub iov: *const libc::iovec,
-    pub count: usize,
-    pub length: usize,
+/// What a write sends, and appends when it can't all go out now: bytes (`_write`), or
+/// vectors (`_writev`).
+#[derive(Clone, Copy)]
+pub enum WritePayload<'a> {
+    Bytes(Drain<'a>),
+    Vectors(&'a [IoSlice<'a>]),
+}
+
+impl WritePayload<'_> {
+    /// The bytes it holds.
+    #[must_use]
+    pub fn length(self) -> usize {
+        match self {
+            Self::Bytes(data) => data.len(),
+            Self::Vectors(vectors) => vectors.iter().map(|vector| vector.len()).sum(),
+        }
+    }
 }
 
 /// The write's effects (`crates/tls`'s `reactor_write.rs`); `send` preserves the
@@ -77,18 +85,15 @@ pub enum WriteError {
 /// `Reactor::write_func`: send what the kernel takes now and queue the rest, or
 /// queue it all behind earlier output.
 ///
-/// # Safety
-/// `payload` is valid for the call.
-///
 /// # Errors
 /// The [`WriteError`] to report.
-pub unsafe fn swr_v1_reactor_write(
+pub fn swr_v1_reactor_write(
     socket: Socket<'_>,
     default_buffer_size: u32,
-    payload: &WritePayload,
+    payload: WritePayload<'_>,
     ops: &impl WriteEffects,
 ) -> Result<isize, WriteError> {
-    let length = payload.length;
+    let length = payload.length();
     // Making the socket nonblocking leaves the queue as it is.
     let (mut buffer_size, nonblock, ssl_send, held) = socket.read(|record| {
         let output = &record.output;
@@ -140,24 +145,17 @@ pub unsafe fn swr_v1_reactor_write(
         }
         ops.watch_writable();
     }
-    let offset = libc::off_t::try_from(sent.max(0)).unwrap_or(libc::off_t::MAX);
-    // `_write`'s bytes as one iovec, so both kinds append past `offset` alike.
-    let bytes = libc::iovec {
-        iov_base: payload.data.cast_mut().cast(),
-        iov_len: length,
-    };
-    let (iov, count) = if payload.iov.is_null() {
-        (&raw const bytes, 1)
-    } else {
-        (payload.iov, payload.count)
-    };
+    let offset = u64::try_from(sent.max(0)).unwrap_or(u64::MAX);
     socket.read(|record| {
         let Some(buffer) = record.output.buffer() else {
             // `new Buffer` threw, which nothing catches.
             swoole_rs_corebase::fatal("a socket's output buffer can't be created");
         };
-        // SAFETY: `iov` holds `count` iovecs over the payload; `offset` bytes were sent.
-        unsafe { swr_cpp_buffer_append_iovec(buffer, iov, count, offset) };
+        // The bytes past the `offset` sent.
+        match payload {
+            WritePayload::Bytes(data) => buffer.append_from(&[data.bytes()], offset),
+            WritePayload::Vectors(vectors) => buffer.append_from(vectors, offset),
+        }
     });
     Ok(isize::try_from(length).unwrap_or(isize::MAX))
 }
@@ -230,13 +228,8 @@ mod tests {
                 ..Native::default()
             }
         });
-        let payload = WritePayload {
-            data: data.as_ptr(),
-            iov: std::ptr::null(),
-            count: 0,
-            length: data.len(),
-        };
-        let result = unsafe { swr_v1_reactor_write(socket, 64, &payload, &Ops) };
+        let payload = WritePayload::Bytes(Drain::new(data));
+        let result = swr_v1_reactor_write(socket, 64, payload, &Ops);
         let held = record
             .output
             .buffer()

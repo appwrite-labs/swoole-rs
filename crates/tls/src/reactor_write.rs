@@ -4,12 +4,15 @@
 //! `_writable_callback` and `drain_write_buffer`), defined under their upstream
 //! symbols over the Rust socket methods. `swoole_rs_reactor`'s
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
-use crate::upstream::{send_drain, socket_free, socket_handle_send, socket_handle_sendfile};
+use crate::upstream::{
+    send_drain, socket_free, socket_handle_send, socket_handle_sendfile, writev,
+};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
+use std::io::IoSlice;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
+use swoole_rs_reactor::reactor_upstream::{interest, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
     Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, SocketRecord,
@@ -21,12 +24,11 @@ const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
-/// One write: the reactor, the socket and the payload. Only [`write`], whose caller
-/// promises a live reactor, builds one, so it stays live while it does.
+/// One write: the reactor, the socket, never freed while registered, and the payload.
 struct Write<'a> {
-    reactor: *mut c_void,
-    socket: Socket<'a>,
-    payload: &'a WritePayload,
+    reactor: Running<'a>,
+    socket: Socket<'static>,
+    payload: WritePayload<'a>,
 }
 
 /// One flush or drain: the reactor, the socket and its event, which the close
@@ -44,18 +46,12 @@ impl WriteEffects for Write<'_> {
     }
 
     fn send(&self) -> isize {
-        let payload = self.payload;
-        let socket = self.socket;
-        if !payload.data.is_null() {
-            // SAFETY: the payload's bytes, which its maker keeps readable for the write.
-            let data = unsafe { Drain::from_raw(payload.data.cast(), payload.length) };
+        match self.payload {
             // `socket->send(buf, n, 0)`.
-            return send_drain(socket, data, 0);
+            WritePayload::Bytes(data) => send_drain(self.socket, data, 0),
+            // `socket->writev(iov, iovcnt)`.
+            WritePayload::Vectors(vectors) => writev(self.socket.fd(), vectors),
         }
-        let fd = socket.fd();
-        let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);
-        // SAFETY: `socket->writev(iov, iovcnt)` over the payload's vector.
-        unsafe { libc::writev(fd, payload.iov, count) }
     }
 
     fn create_buffer(&self) {
@@ -67,33 +63,21 @@ impl WriteEffects for Write<'_> {
 
     fn watch_writable(&self) {
         if self.socket.read(|record| record.events) & SW_EVENT_WRITE == 0 {
-            // SAFETY: `reactor->add_write_event(socket)` on the live reactor.
-            unsafe {
-                reactor_interest(
-                    self.reactor,
-                    self.socket.as_ptr(),
-                    Interest::AddWrite.code(),
-                    0,
-                )
-            };
+            // `reactor->add_write_event(socket)`, which logs a failure.
+            _ = interest(self.reactor, self.socket, Interest::AddWrite, 0);
         }
     }
 }
 
 /// `Reactor::write_func`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` and `payload` valid.
-unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload) -> isize {
+fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_>) -> isize {
     let ops = Write {
         reactor,
         socket,
         payload,
     };
     let default_size = SOCKET_DEFAULTS.buffer_size();
-    // SAFETY: as the caller promises.
-    let result =
-        unsafe { swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops) };
+    let result = swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
         Ok(value) => return value,
@@ -122,39 +106,36 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor` and `data` holds `length` bytes.
+/// `reactor` is a live `Reactor`, `socket` stays live while it is registered, and
+/// `data` holds `length` bytes.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")
 )]
+#[must_use]
 pub unsafe extern "C-unwind" fn reactor_write(
-    reactor: *mut c_void,
-    socket: Socket<'_>,
+    reactor: Running<'_>,
+    socket: Socket<'static>,
     data: *const c_void,
     length: usize,
 ) -> isize {
-    let payload = WritePayload {
-        data: data.cast(),
-        iov: std::ptr::null(),
-        count: 0,
-        length,
-    };
     // SAFETY: as the caller promises.
-    unsafe { write(reactor, socket, &payload) }
+    let data = unsafe { Drain::from_raw(data, length) };
+    write(reactor, socket, WritePayload::Bytes(data))
 }
 
 /// `ssize_t Reactor::_writev(Reactor *, Socket *, const iovec *iov, size_t iovcnt)`:
 /// not over TLS.
 ///
 /// # Safety
-/// `reactor` is a live `Reactor` and `iov` holds `count` entries.
+/// As [`reactor_write`], with `iov` holding `count` entries.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")
 )]
 pub unsafe extern "C-unwind" fn reactor_writev(
-    reactor: *mut c_void,
-    socket: Socket<'_>,
+    reactor: Running<'_>,
+    socket: Socket<'static>,
     iov: *const libc::iovec,
     count: usize,
 ) -> isize {
@@ -167,23 +148,14 @@ pub unsafe extern "C-unwind" fn reactor_writev(
         );
         return -1;
     }
-    let length = if count == 0 {
-        0
+    let vectors = if count == 0 {
+        &[]
     } else {
-        // SAFETY: as the caller promises.
-        unsafe { std::slice::from_raw_parts(iov, count) }
-            .iter()
-            .map(|entry| entry.iov_len)
-            .sum()
+        // SAFETY: as the caller promises: `count` iovecs over readable bytes, which an
+        // `IoSlice` is laid out as.
+        unsafe { std::slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), count) }
     };
-    let payload = WritePayload {
-        data: std::ptr::null(),
-        iov,
-        count,
-        length,
-    };
-    // SAFETY: as the caller promises.
-    unsafe { write(reactor, socket, &payload) }
+    write(reactor, socket, WritePayload::Vectors(vectors))
 }
 
 impl FlushEffects for Flush<'_> {

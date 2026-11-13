@@ -214,16 +214,12 @@ pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
     core::ptr::without_provenance_mut(8)
 }
 // crates/tls's TLS operations, over its own context.
-pub(super) unsafe fn ssl_context_create(owner: *const OwnedTlsContext) -> bool {
+pub(super) unsafe fn ssl_context_create(owner: &OwnedTlsContext) -> bool {
     log("ssl create");
     // SAFETY: the client's live owner.
     unsafe { swoole_rs_tls::ssl_context_create(owner) }
 }
-pub(super) unsafe fn socket_ssl_create(
-    _: Socket<'_>,
-    _: *const OwnedTlsContext,
-    flags: c_int,
-) -> c_int {
+pub(super) unsafe fn socket_ssl_create(_: Socket<'_>, _: &OwnedTlsContext, flags: c_int) -> c_int {
     log(format!("ssl session {flags}"));
     OK
 }

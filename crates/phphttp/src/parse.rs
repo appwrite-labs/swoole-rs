@@ -7,7 +7,7 @@ use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, IoSlice, Write};
 use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
@@ -20,8 +20,7 @@ use swoole_rs_httpbindings::{
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::{
-    swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
-    swr_zend_http_upload, zval,
+    swr_zend_http_max_input_vars, swr_zend_http_treat_data, swr_zend_http_upload, zval,
 };
 use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
@@ -349,9 +348,15 @@ fn stringl(bytes: &[u8]) -> Owned {
     Owned::string(ZString::new(bytes))
 }
 
+unsafe extern "C" {
+    /// `estrndup`: it reads the lent bytes (an `IoSlice` is an iovec) and returns
+    /// an emalloc'd NUL-terminated copy.
+    safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> *mut c_char;
+}
+
+/// The bytes, copied into request memory.
 pub(crate) fn estrndup(bytes: &[u8]) -> *mut c_char {
-    // SAFETY: the bytes, copied into request memory.
-    unsafe { swr_zend_http_estrndup(bytes.as_ptr().cast(), bytes.len()) }
+    swr_bytes_estrndup(IoSlice::new(bytes))
 }
 
 /// The request's path: `on_url`'s (or the HTTP/2 `:path`'s) copy up to its
