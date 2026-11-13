@@ -24,8 +24,16 @@ enum {
     SW_LOG_NONE,
 };
 
-// Logger::set_rotation's daily value (log_rotation in crates/utilities/src/lib.rs).
-enum { SW_LOG_ROTATION_DAILY = 2 };
+// Logger::set_rotation's values (log_rotation in crates/utilities/src/lib.rs); upstream's
+// TEST(log, rotation), which the utilities-logger-originals gate builds unchanged, names
+// all but the first.
+enum {
+    SW_LOG_ROTATION_SINGLE = 0,
+    SW_LOG_ROTATION_MONTHLY,
+    SW_LOG_ROTATION_DAILY,
+    SW_LOG_ROTATION_HOURLY,
+    SW_LOG_ROTATION_EVERY_MINUTE,
+};
 
 namespace swoole {
 // The state and operations are Rust's (crates/utilities/src/logger.rs).
