@@ -65,7 +65,7 @@ mod c {
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
     // `sigset_t` is plain bits the set calls read or write whole, and a signal number
     // outside the set is an error they return. `fork` takes nothing and touches no
-    // memory of the caller's; it stays inside the crate, whose three callers each say
+    // memory of the caller's; it stays inside the crate, whose callers each say
     // what their child goes on to do.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
