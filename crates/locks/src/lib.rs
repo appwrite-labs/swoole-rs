@@ -194,7 +194,7 @@ fn deadline(millis: i32) -> timespec {
     });
     now.tv_sec += (millis / 1000) as time_t;
     now.tv_nsec += c_long::from(millis % 1000) * 1_000_000;
-    now.tv_sec += (now.tv_nsec / 1_000_000_000) as time_t;
+    now.tv_sec += now.tv_nsec / 1_000_000_000;
     now.tv_nsec %= 1_000_000_000;
     now
 }

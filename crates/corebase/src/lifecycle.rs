@@ -461,8 +461,8 @@ mod tests {
             let pid = swoole_fork(0);
             if pid == 0 {
                 let wrong = i32::from(blocked(libc::SIGUSR1))
-                    | i32::from(!blocked(libc::SIGUSR2)) << 1
-                    | i32::from(blocked(libc::SIGTERM)) << 2;
+                    | (i32::from(!blocked(libc::SIGUSR2)) << 1)
+                    | (i32::from(blocked(libc::SIGTERM)) << 2);
                 unsafe { libc::_exit(wrong) };
             }
             let status = wait(pid);

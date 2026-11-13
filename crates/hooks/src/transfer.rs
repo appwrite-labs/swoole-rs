@@ -532,7 +532,10 @@ mod tests {
             assert_eq!(got, result);
             assert_eq!(take(), [format!("recvfrom:true:{size}")]);
             let info = unsafe { socket.0.record() }.info;
-            assert_eq!(unsafe { info.addr.un.sun_path[0] }, i8::from(!cleared) as _);
+            assert_eq!(
+                unsafe { info.addr.un.sun_path[0] },
+                libc::c_char::from(!cleared)
+            );
         }
         install();
         let mut socket = TestSocket::new();

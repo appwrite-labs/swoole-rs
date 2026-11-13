@@ -316,7 +316,7 @@ mod tests {
             },
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
-        // SAFETY: the counter stands in for the socket; the iovecs are local.
+        // The counter stands in for the socket; the iovecs are local.
         let counter = (&raw mut left).cast();
         let read = unsafe {
             swr_v1_socket_iov_owned(

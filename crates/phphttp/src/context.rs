@@ -66,13 +66,13 @@ impl Ctx {
     pub(crate) fn flags(mut self) -> u32 {
         let state = self.state();
         u32::from(state.end)
-            | u32::from(state.detached) << 1
-            | u32::from(state.completed) << 2
-            | u32::from(state.http2) << 3
-            | u32::from(state.send_chunked) << 4
-            | u32::from(co_socket(state)) << 5
-            | u32::from(state.upgrade) << 6
-            | u32::from(state.websocket) << 7
+            | (u32::from(state.detached) << 1)
+            | (u32::from(state.completed) << 2)
+            | (u32::from(state.http2) << 3)
+            | (u32::from(state.send_chunked) << 4)
+            | (u32::from(co_socket(state)) << 5)
+            | (u32::from(state.upgrade) << 6)
+            | (u32::from(state.websocket) << 7)
     }
 }
 

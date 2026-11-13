@@ -427,7 +427,7 @@ fn throw(message: &Message, code: i64) {
 /// Swap the plain-files wrapper (0) or the stdio ops (1).
 #[cfg(not(test))]
 fn stream_ops(stdio: u8, hook: u8) {
-    // SAFETY: `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
+    // `thirdparty/php/streams/plain_wrapper.c`'s swap, which keeps
     // PHP's originals; it has no preconditions.
     unsafe extern "C" {
         safe fn php_swoole_runtime_stream_ops(stdio: u8, hook: u8);

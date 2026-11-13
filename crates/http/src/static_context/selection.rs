@@ -215,7 +215,8 @@ mod tests {
         assert_eq!(owner.directory(&effects), 1);
         assert_eq!(*effects.lists.borrow(), 2);
         owner.index = b"existing".to_vec();
-        assert!(owner.try_serve_index_file(&[] as &[Vec<u8>], false, &effects));
+        let none: &[Vec<u8>] = &[];
+        assert!(owner.try_serve_index_file(none, false, &effects));
         assert_eq!(owner.index, b"existing");
     }
 

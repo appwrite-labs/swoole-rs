@@ -612,8 +612,8 @@ mod tests {
             [b"foo".to_vec(), b"foo/".to_vec(), b"foo//bar".to_vec()]
         );
         assert_eq!(prefixes(b"a\0/b"), [b"a".to_vec()]);
-        assert_eq!(prefixes(b"a\0/b/"), [] as [std::vec::Vec<u8>; 0]);
-        assert_eq!(prefixes(b"/"), [] as [std::vec::Vec<u8>; 0]);
+        assert_eq!(prefixes(b"a\0/b/"), Vec::<Vec<u8>>::new());
+        assert_eq!(prefixes(b"/"), Vec::<Vec<u8>>::new());
     }
 
     /// Upstream `TEST(base, mkdir_recursive)`: a PATH_MAX-byte random path is refused.

@@ -576,7 +576,7 @@ mod tests {
 
     /// A length function's address, 0 for none.
     fn address(f: Option<GetPackageLength>) -> usize {
-        f.map_or(0, |f| f as usize)
+        f.map_or(0, |f| (f as *const ()).addr())
     }
 
     #[test]
@@ -996,7 +996,7 @@ mod tests {
         let edges = [0u32, 1, 255, 65535, 65536, 65537, 0x8000_0000, 0xffff_ffff];
         let mut port = Fresh::new();
         let config = port.config();
-        let sentinel = length::<17> as GetPackageLength as usize;
+        let sentinel = (length::<17> as *const ()).addr();
         config.protocol.get_mut().get_package_length = Some(length::<17>);
         for kind in 0..=255u8 {
             for offset in edges {
@@ -1079,8 +1079,8 @@ mod tests {
         const UNTYPED: u8 = 128;
         let c = &CALLBACKS;
         let task = Some(c.dispatch_task);
-        let package = |f: Option<OnPackage>| f.map_or(0, |f| f as usize);
-        let size = |f: Option<GetPackageLengthSize>| f.map_or(0, |f| f as usize);
+        let package = |f: Option<OnPackage>| f.map_or(0, |f| (f as *const ()).addr());
+        let size = |f: Option<GetPackageLengthSize>| f.map_or(0, |f| (f as *const ()).addr());
         let mqtt: GetPackageLength = swoole_rs_protocols_ffi::get_package_length;
         // Settings; reader; package, length and length-size callbacks; length size, offsets.
         #[rustfmt::skip]

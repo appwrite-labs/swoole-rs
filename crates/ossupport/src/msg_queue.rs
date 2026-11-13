@@ -5,7 +5,7 @@
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
 use swoole_rs_corebase::log;
 
-// SAFETY: the XSI message queue calls, declared here because libc omits them on
+// the XSI message queue calls, declared here because libc omits them on
 // Darwin, with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
 // a live, writable `msqid_ds`, the largest record a command reads or fills
 // (`IPC_STAT` fills it, `IPC_SET` reads it, `IPC_RMID` takes none); the kernel

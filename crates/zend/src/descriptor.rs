@@ -21,10 +21,10 @@ unsafe extern "C" {
     /// `zend_read_property_ex` of an object zval under its own class, inside
     /// `zend_try` (nonzero for a bailout): `found` is null (`None`) or the
     /// initialized zval the read lends, which lives until PHP code runs.
-    fn swr_zend_event_property<'a>(
+    fn swr_zend_event_property(
         object: &Value,
         name: &ZStr,
-        found: &mut Option<&'a Value>,
+        found: &mut Option<&Value>,
     ) -> std::ffi::c_int;
 }
 

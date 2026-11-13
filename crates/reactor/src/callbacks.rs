@@ -353,7 +353,6 @@ mod tests {
         push(1);
         set_end(2, end2);
         set_end(0, end0);
-        // SAFETY: the test's live state.
         callbacks().set_end(3, None);
     }
 

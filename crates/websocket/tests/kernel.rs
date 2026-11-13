@@ -81,7 +81,7 @@ fn header_boundaries_and_flags_roundtrip_without_payload() {
                 if size > 2 {
                     let decoded = wire[3..=size]
                         .iter()
-                        .fold(0, |acc, &b| acc << 8 | u64::from(b));
+                        .fold(0, |acc, &b| (acc << 8) | u64::from(b));
                     assert_eq!(decoded, length);
                 }
                 let full_header = size + if flags & 32 != 0 { 4 } else { 0 };

@@ -89,9 +89,9 @@ fn contains(content: &[u8], needle: &str) -> bool {
 
 /// Also removes the process's directory once it is empty.
 fn unlink(file: &Path) {
-    std::fs::remove_file(file).ok();
+    std::fs::remove_file(file).unwrap_or_default();
     if let Some(dir) = file.parent() {
-        std::fs::remove_dir(dir).ok();
+        std::fs::remove_dir(dir).unwrap_or_default();
     }
 }
 

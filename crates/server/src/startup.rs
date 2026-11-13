@@ -482,9 +482,9 @@ mod tests {
         fn op(&mut self, op: u32, arg: u64) -> crate::Effect<u64> {
             let answer = self.script.op(op, arg)?;
             Ok(match op {
-                OP_FIELD => self.fields[usize::try_from(arg).unwrap()],
+                OP_FIELD => self.fields[usize::try_from(arg).unwrap_or(usize::MAX)],
                 OP_SET_FIELD => {
-                    self.fields[usize::try_from(arg & 0xff).unwrap()] = arg >> 8;
+                    self.fields[usize::try_from(arg & 0xff).unwrap_or(usize::MAX)] = arg >> 8;
                     0
                 }
                 _ => answer,

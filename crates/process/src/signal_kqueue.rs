@@ -19,7 +19,7 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: usize, failed: &mut b
     };
     let mut origin = 0;
     let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
-    event.ident = signo.cast_unsigned() as _;
+    event.ident = signo.cast_unsigned() as usize;
     event.filter = libc::EVFILT_SIGNAL;
     if handler == 0 {
         if slot.activated.load(Relaxed) {
@@ -43,7 +43,7 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: usize, failed: &mut b
         slot.activated.store(true, Relaxed);
         event.flags = libc::EV_ADD;
         // The table slot (`swoole::Signal *`), which the reactor dispatches.
-        event.udata = std::ptr::from_ref(slot) as _;
+        event.udata = std::ptr::from_ref(slot).cast_mut().cast();
     }
     let n = swoole_rs_corebase::sys::kevent_change(kq, &event);
     *failed = n < 0 && handler != 0;

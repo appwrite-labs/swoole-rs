@@ -218,6 +218,10 @@ mod tests {
         }
         host.event("done".into())
     }
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "a test driver: a failed assert fails the test"
+    )]
     fn cursor(host: &mut Host, compression: bool) -> Result<(), Stop> {
         let (mut cursor, mut found, mut key) = (SettingsCursor::default(), 0, "");
         loop {
@@ -253,7 +257,7 @@ mod tests {
             fail,
         };
         // A refusal or an exit ends the trace; the trace is the outcome.
-        driver(&mut host, case.0).ok();
+        driver(&mut host, case.0).unwrap_or_default();
         host.trace
     }
 

@@ -28,7 +28,7 @@ use swoole_rs_reactor::{
     swr_v1_socket_iov_owned, swr_v1_socket_sync, type_is, what_event_want,
 };
 
-// SAFETY: libcrypto's own declaration: it reads only the code, and answers one of its
+// libcrypto's own declaration: it reads only the code, and answers one of its
 // static strings.
 unsafe extern "C" {
     safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
@@ -1272,7 +1272,7 @@ pub fn socket_sendfile_async(
         let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
         socket.edit(|record| record.output.out_buffer = buffer.cast());
     }
-    let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
+    let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
     let status = with_queue(socket, |queue| {
         // SAFETY: the queue now owns the request, which only `dispose` frees.
         queue.map_or(-1, |queue| unsafe {
@@ -1483,7 +1483,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     let text = host.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);
     let error = assign(storage, length, kind, text, port, |family| {
-        // SAFETY: the platform's, which reads the NUL-terminated source and writes at
+        // the platform's, which reads the NUL-terminated source and writes at
         // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
         unsafe extern "C" {
             safe fn inet_pton(
@@ -1608,7 +1608,7 @@ mod tests {
         assert!(ssl_get_peer_certificate(handle).is_none());
         assert!(!socket_ssl_check_host(handle, c"localhost"));
         let socket = &raw const socket;
-        let mut pem = [0 as c_char; 64];
+        let mut pem: [c_char; 64] = [0; 64];
         let n = unsafe {
             socket_ssl_get_peer_certificate_pem(
                 Socket::from_ptr(socket.cast_mut()).unwrap(),
@@ -1778,7 +1778,7 @@ mod tests {
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let socket = &raw mut left;
         let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
-        let dispose = Some(SocketFileRequest::dispose as unsafe extern "C" fn(*mut c_void));
+        let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
         let queued = unsafe { (*queue).push(1, request.cast(), dispose) };
         assert_eq!(queued, 0);
         assert!(

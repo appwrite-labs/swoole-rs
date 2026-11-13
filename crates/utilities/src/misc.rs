@@ -116,14 +116,12 @@ mod tests {
     #[test]
     fn the_hashes_are_the_utility_hashes() {
         let key = b"swoole";
-        for (algorithm, hash) in [
-            (
-                0,
-                swoole_hash_php as unsafe extern "C" fn(*const c_char, usize) -> u64,
-            ),
+        let hashes: [(_, unsafe extern "C" fn(*const c_char, usize) -> u64); 3] = [
+            (0, swoole_hash_php),
             (1, swoole_hash_jenkins),
             (2, swoole_hash_austin),
-        ] {
+        ];
+        for (algorithm, hash) in hashes {
             assert_eq!(
                 unsafe { hash(key.as_ptr().cast(), key.len()) },
                 swoole_hash(key, algorithm, SIGNED_CHAR)

@@ -227,6 +227,10 @@ impl Handler for Exit {
             unsafe { swr_zend_exit_status(frame.as_ptr(), &raw mut status) };
             let status = Value::of(&mut status);
             // Upstream's extra reference, kept (never released) as it was.
+            #[expect(
+                clippy::mem_forget,
+                reason = "upstream keeps this extra reference forever"
+            )]
             std::mem::forget(status.copy());
             throw_exit(c"swoole exit", flags, status);
         }

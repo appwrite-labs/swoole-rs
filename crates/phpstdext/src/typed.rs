@@ -4,7 +4,7 @@
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
 use crate::{CONTINUE, DISPATCH, Frame, Op, invoke::compiled_function};
 use std::{
-    ffi::{CStr, CString, c_int, c_long},
+    ffi::{CStr, CString, c_int},
     marker::PhantomData,
     mem::offset_of,
     ptr, slice,
@@ -429,7 +429,7 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
     if key.kind == IS_LONG {
         if key.index > i64::from(typed.count()) {
             // `%ld` of the key.
-            let index = (key.index as c_long).to_string();
+            let index = key.index.to_string();
             throw_error(&message(&[
                 b"Incorrect array key `",
                 index.as_bytes(),
@@ -737,12 +737,12 @@ static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 /// At MINIT.
 pub(crate) unsafe fn install() {
     type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
-    let [push, unshift, splice] = [
-        (c"array_push", zif_swoole_array_push as Handler),
+    let handlers: [(_, Handler); 3] = [
+        (c"array_push", zif_swoole_array_push),
         (c"array_unshift", zif_swoole_array_unshift),
         (c"array_splice", zif_swoole_array_splice),
-    ]
-    .map(|(name, handler)| {
+    ];
+    let [push, unshift, splice] = handlers.map(|(name, handler)| {
         // `internal_function` starts the `zend_function` union.
         let slot = compiled_function(name)
             .wrapping_byte_add(offset_of!(zend_internal_function, handler))

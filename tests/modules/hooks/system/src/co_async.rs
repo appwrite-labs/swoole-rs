@@ -65,12 +65,12 @@ fn gethostbyname() {
         let mut ip = String::new();
 
         let retval = co_async_fn(|| {
-            let mut buf = [0 as c_char; 128];
+            let mut buf: [c_char; 128] = [0; 128];
             // SAFETY: a NUL-terminated name and room for an IPv4 address.
             if unsafe { swr_v1_clients_gethostbyname(AF_INET, domain.as_ptr(), buf.as_mut_ptr()) }
                 == SW_OK
             {
-                let mut addr = [0 as c_char; 128];
+                let mut addr: [c_char; 128] = [0; 128];
                 // SAFETY: an IPv4 address and a 128-byte buffer.
                 unsafe { inet_ntop(AF_INET, buf.as_ptr().cast(), addr.as_mut_ptr(), 128) };
                 // SAFETY: inet_ntop wrote a NUL-terminated address.

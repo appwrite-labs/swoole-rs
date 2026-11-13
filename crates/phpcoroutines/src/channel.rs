@@ -49,6 +49,10 @@ impl<T> Channel<T> {
         let queue = self.0.take();
         let copy = queue.clone();
         // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
+        #[expect(
+            clippy::mem_forget,
+            reason = "the slot is still empty, so there is nothing to release"
+        )]
         mem::forget(self.0.replace(queue));
         copy
     }

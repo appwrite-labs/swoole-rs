@@ -18,8 +18,8 @@ struct Set(u128, u128);
 impl Set {
     fn range(self, low: u8, high: u8) -> Self {
         (low..=high).fold(self, |set, byte| match byte.checked_sub(128) {
-            None => Self(set.0 | 1 << byte, set.1),
-            Some(high) => Self(set.0, set.1 | 1 << high),
+            None => Self(set.0 | (1 << byte), set.1),
+            Some(high) => Self(set.0, set.1 | (1 << high)),
         })
     }
     fn byte(self, byte: u8) -> Self {
@@ -36,8 +36,8 @@ impl Set {
     }
     fn has(self, byte: u8) -> bool {
         match byte.checked_sub(128) {
-            None => self.0 >> byte & 1 != 0,
-            Some(high) => self.1 >> high & 1 != 0,
+            None => (self.0 >> byte) & 1 != 0,
+            Some(high) => (self.1 >> high) & 1 != 0,
         }
     }
     fn digit() -> Self {

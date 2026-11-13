@@ -633,7 +633,7 @@ mod tests {
 
     #[test]
     fn start_and_join_threads() {
-        let entry = (record as unsafe extern "C" fn(_, _)) as usize as u64;
+        let entry = (record as *const ()).expose_provenance() as u64;
         let mut s = Script::with(&[
             (OP_PORT_COUNT, 2),
             (OP_REACTOR_NUM, 3),

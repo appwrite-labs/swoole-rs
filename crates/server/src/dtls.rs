@@ -18,7 +18,7 @@ use crate::ops::EVENT_INCOMING;
 use crate::port_config;
 use crate::records::ConnectionRecord;
 
-// SAFETY: libcrypto's.
+// libcrypto's.
 unsafe extern "C" {
     fn OPENSSL_die(assertion: *const c_char, file: *const c_char, line: c_int) -> !;
 }

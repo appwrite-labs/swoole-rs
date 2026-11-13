@@ -607,7 +607,7 @@ unsafe fn print_all_subject_entries(name: *const c_void, out: &mut String) {
     unsafe {
         for i in 0..X509_NAME_entry_count(name) {
             let entry = X509_NAME_get_entry(name, i);
-            let mut obj_txt = [0 as c_char; 80];
+            let mut obj_txt: [c_char; 80] = [0; 80];
             OBJ_obj2txt(
                 obj_txt.as_mut_ptr(),
                 80,

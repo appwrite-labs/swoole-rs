@@ -442,7 +442,7 @@ mod tests {
             self.workers
         }
         fn pipe_socket(&mut self, task: bool, index: u64, master: bool) -> Socket {
-            let arg = index << 2 | u64::from(task) << 1 | u64::from(master);
+            let arg = (index << 2) | (u64::from(task) << 1) | u64::from(master);
             self.log.push(("pipe_socket", arg));
             Socket {
                 fd: i64::try_from(arg).unwrap_or(0),

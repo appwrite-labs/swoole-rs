@@ -69,8 +69,7 @@ pub extern "C" fn swoole_isset_hook(kind: c_int) -> bool {
 
 /// `swoole_clean`'s release of every hook list.
 pub fn clear() {
-    let mut table = table();
-    table.iter_mut().for_each(Vec::clear);
+    table().iter_mut().for_each(Vec::clear);
     SET.store(0, Ordering::Release);
 }
 

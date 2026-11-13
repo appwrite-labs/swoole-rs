@@ -68,6 +68,10 @@ struct Table {
     children: HashMap<Box<[u8]>, *mut zend_class_entry>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the callables are only touched under the table's mutex, by their one record"
+)]
 // SAFETY: the pointers are Zend's function and class entries, which live for the
 // request, and each callable's only owner is its record (the `Rc` is never cloned,
 // so its count is touched only as the record is made and dropped); the mutex
@@ -83,7 +87,7 @@ fn table() -> MutexGuard<'static, Table> {
 }
 
 fn same(a: zif_handler, b: zif_handler) -> bool {
-    a.map(|f| f as usize) == b.map(|f| f as usize)
+    a.map(|f| f as *const ()) == b.map(|f| f as *const ())
 }
 
 /// `ZSTR_VAL`/`ZSTR_LEN` of a live string.

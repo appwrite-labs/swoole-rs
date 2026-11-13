@@ -386,6 +386,10 @@ impl Deferred for Retired {
 
     fn dispose(self) {
         if self.0.running.get() != 0 {
+            #[expect(
+                clippy::mem_forget,
+                reason = "its task is still running and no reactor is left to retire it later"
+            )]
             std::mem::forget(self);
         }
     }
@@ -429,7 +433,7 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
     let replaced = std::mem::replace(
         task,
         crate::ReactorTask {
-            callback: data.map(|_| cycle_task as crate::DeferCall),
+            callback: data.map(|_| -> crate::DeferCall { cycle_task }),
             data: data.map_or(std::ptr::null_mut(), <*mut Slot>::cast),
         },
     );

@@ -34,7 +34,7 @@ const FAILURE: c_int = -1;
 #[derive(Clone, Copy)]
 pub struct Dbh(*mut c_void);
 
-// SAFETY: crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
+// crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
 // (`Dbh` has a `void *`'s layout): it only reads the live handle's `driver_data`.
 unsafe extern "C" {
     safe fn swr_zend_pdo_driver_data(dbh: Dbh) -> *const Conn;

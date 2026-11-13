@@ -181,7 +181,7 @@ pub fn set_framing(framing: Framing) {
     FRAMING.get_or_init(|| framing);
 }
 
-// SAFETY: crates/protocols-ffi's definitions (the SOCKS5 codec) and OpenSSL's, which
+// crates/protocols-ffi's definitions (the SOCKS5 codec) and OpenSSL's, which
 // the hybrid links (the unit tests define doubles). crates/protocols-ffi sits above
 // this one, so it reaches them by symbol.
 unsafe extern "C" {
@@ -263,7 +263,7 @@ const _: () = assert!(
     "crates/hooks' AsyncEvent layout moved"
 );
 
-// SAFETY: crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
+// crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
 // above this crate. Its `dispatch` is a safe fn over this layout: only this module
 // builds an event, whose request is null or live.
 #[cfg(not(test))]

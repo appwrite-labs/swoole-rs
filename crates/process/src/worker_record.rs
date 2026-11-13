@@ -493,7 +493,7 @@ mod tests {
             _: &crate::process_pool::RecvData,
         ) {
         }
-        let mut fds = [7 as c_int, 9];
+        let mut fds: [c_int; 2] = [7, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         workers[1].id = u32::MAX;
         workers[1].pid = 41;

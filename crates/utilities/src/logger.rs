@@ -698,7 +698,7 @@ pub(crate) mod tests {
 
     fn path(name: &str) -> (CString, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("swr-logger-{}-{name}", std::process::id()));
-        std::fs::remove_file(&dir).ok();
+        std::fs::remove_file(&dir).unwrap_or_default();
         (CString::new(dir.to_str().unwrap()).unwrap(), dir)
     }
 
@@ -744,7 +744,7 @@ pub(crate) mod tests {
             format!(" #{}.3]\tWARNING\thello\n", std::process::id()),
             "line"
         );
-        std::fs::remove_file(file_path).ok();
+        std::fs::remove_file(file_path).unwrap_or_default();
         assert!(host().is_empty(), "no diagnostics");
     }
 
@@ -854,7 +854,7 @@ pub(crate) mod tests {
             );
             swr_v1_logger_close(&*logger);
             swr_v1_logger_free(logger);
-            std::fs::remove_file(expected).ok();
+            std::fs::remove_file(expected).unwrap_or_default();
         }
         assert!(host().is_empty(), "no diagnostics");
     }
@@ -898,7 +898,7 @@ pub(crate) mod tests {
             .collect();
         expected.sort_unstable();
         assert_eq!(seen, expected, "every record once, whole");
-        std::fs::remove_file(file_path).ok();
+        std::fs::remove_file(file_path).unwrap_or_default();
     }
 
     #[test]

@@ -98,7 +98,7 @@ pub(crate) fn init(state: &ServerState) -> bool {
         return false;
     };
     // A table already there stays; this one drops.
-    state.local_addrs.set(addrs).ok();
+    state.local_addrs.set(addrs).unwrap_or_default();
     true
 }
 

@@ -15,7 +15,7 @@ use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_tls::CText;
 
-// SAFETY: libc's own declarations. `inet_pton` reads the NUL-terminated source and
+// libc's own declarations. `inet_pton` reads the NUL-terminated source and
 // writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
 unsafe extern "C" {
     fn inet_ntop(

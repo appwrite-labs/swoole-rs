@@ -122,7 +122,7 @@ method_table! {
 /// `Swoole\Http\Request`'s; the parser learns the codecs built in (`codecs`:
 /// 1 zlib, 8 `SW_HAVE_COMPRESSION`).
 pub fn response_minit(args: &MinitArgs) {
-    let codecs = args.codecs | u32::from(args.compression) << 3;
+    let codecs = args.codecs | (u32::from(args.compression) << 3);
     let minit = &args.minit;
     minit.register_object::<Data>(c"Swoole\\Http\\Response", &METHODS.0, 0);
     minit.property_long(&RESPONSE, c"fd", 0, ZEND_ACC_PUBLIC);

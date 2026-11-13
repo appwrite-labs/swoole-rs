@@ -4,7 +4,7 @@
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
 //! table, `SIGNALS`.
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Mutex, PoisonError};
 
 /// `SW_SIGNO_MAX`.
@@ -72,8 +72,8 @@ static TRIGGERED: [AtomicBool; SIGNO_MAX] = [const { AtomicBool::new(false) }; S
 /// `SwooleG.signal_dispatch`: some signal is waiting for `swr_v1_signal_dispatch`.
 static PENDING: AtomicBool = AtomicBool::new(false);
 /// `swoole_signal_callback` and `sw_reactor() != nullptr`, for the simple handler.
-static CALLBACK: AtomicUsize = AtomicUsize::new(0);
-static HAS_REACTOR: AtomicUsize = AtomicUsize::new(0);
+static CALLBACK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// `swoole_signal_callback`: runs the registered handler, or warns.
 pub type Callback = unsafe extern "C" fn(c_int);
@@ -153,8 +153,8 @@ pub fn signal_set(
     callback: Callback,
     has_reactor: HasReactor,
 ) -> usize {
-    CALLBACK.store(callback as usize, Relaxed);
-    HAS_REACTOR.store(has_reactor as usize, Relaxed);
+    CALLBACK.store(callback as *mut (), Relaxed);
+    HAS_REACTOR.store(has_reactor as *mut (), Relaxed);
     if let Some(slot) = slot(signo) {
         if handler == 0 && slot.activated.load(Relaxed) {
             slot.reset();
@@ -166,14 +166,14 @@ pub fn signal_set(
         slot.activated.store(true, Relaxed);
         slot.signo.store(u16::try_from(signo).unwrap_or(0), Relaxed);
         let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
-        let previous = install(signo, async_handler as usize, false, true);
+        let previous = install(signo, address(async_handler), false, true);
         if first {
             save_origin(signo, previous);
         }
         return previous.map_or(0, |previous| previous.sa_sigaction);
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
-    set_action(signo, async_handler as usize, false, true)
+    set_action(signo, address(async_handler), false, true)
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -186,9 +186,14 @@ extern "C" fn deferred(signo: c_int) {
 
 /// The `Callback` `signal_set` stored last; none before the first.
 fn callback() -> Option<Callback> {
-    // SAFETY: the slot holds 0 or a `Callback` `signal_set` stored, and a null
+    // SAFETY: the slot holds null or a `Callback` `signal_set` stored, and a null
     // `Option` of a function pointer is `None`.
-    unsafe { std::mem::transmute::<usize, Option<Callback>>(CALLBACK.load(Relaxed)) }
+    unsafe { std::mem::transmute::<*mut (), Option<Callback>>(CALLBACK.load(Relaxed)) }
+}
+
+/// A handler's address, as `sigaction`'s `sa_sigaction` holds it.
+fn address(handler: extern "C" fn(c_int)) -> usize {
+    (handler as *const ()).expose_provenance()
 }
 
 /// `signal_handler_simple`: deferred under a reactor, otherwise the callback runs in
@@ -196,7 +201,8 @@ fn callback() -> Option<Callback> {
 extern "C" fn immediate(signo: c_int) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
     // SAFETY: `signal_set` stored a `HasReactor` before installing this handler.
-    let has_reactor: HasReactor = unsafe { std::mem::transmute(HAS_REACTOR.load(Relaxed)) };
+    let has_reactor =
+        unsafe { std::mem::transmute::<*mut (), HasReactor>(HAS_REACTOR.load(Relaxed)) };
     if has_reactor() {
         deferred(signo);
         return;

@@ -393,7 +393,7 @@ mod kqueue_signal {
                     ),
                 );
             }
-            Some(handler) if handler as usize != libc::SIG_IGN => {
+            Some(handler) if (handler as *const ()).addr() != libc::SIG_IGN => {
                 // SAFETY: the signal's registered handler (the type's invariant).
                 unsafe { handler(signo) };
             }
@@ -689,8 +689,9 @@ mod tests {
         }
         // SAFETY: `SIG_IGN` is the address 1, which is never called.
         let ignore: unsafe extern "C" fn(c_int) = unsafe { std::mem::transmute(libc::SIG_IGN) };
+        let handler: unsafe extern "C" fn(c_int) = handler;
         for (handler, activated, seen) in [
-            (Some(handler as unsafe extern "C" fn(c_int)), false, 0),
+            (Some(handler), false, 0),
             (None, true, 0),
             (Some(ignore), true, 0),
             (Some(handler), true, libc::SIGUSR1),

@@ -59,6 +59,11 @@ pub struct OwnedTlsContext {
     context_password: UnsafeCell<Option<Arc<StringSlot>>>,
     warn: Warn,
 }
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the UnsafeCell fields are OpenSSL configuration whose callers serialize \
+              across threads; safe Rust only clones or drops the Arc"
+)]
 // SAFETY: shared ownership exposes only unsafe, externally synchronized field
 // and configuration APIs. Safe Rust can only retain or drop an Arc.
 unsafe impl Send for OwnedTlsContext {}

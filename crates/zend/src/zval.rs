@@ -321,6 +321,10 @@ impl Value {
     /// The method bailed out, or a bailout is pending.
     /// # Panics
     /// More than two arguments: `zend_call_method` takes at most two.
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "more than two arguments is a caller bug, not a bailout"
+    )]
     pub fn call_method(
         &self,
         scope: Option<&crate::Class>,
@@ -364,6 +368,10 @@ impl Value {
         match called {
             Ok(()) => Ok(result),
             Err(bailout) => {
+                #[expect(
+                    clippy::mem_forget,
+                    reason = "upstream never ran past a bailout to destroy it"
+                )]
                 std::mem::forget(result);
                 Err(bailout)
             }
@@ -750,6 +758,10 @@ impl Drop for HeldArray {
             unsafe { (*array.as_ptr()).gc.refcount -= 1 };
         }
         // Nothing is left for `Owned`'s drop to release.
+        #[expect(
+            clippy::mem_forget,
+            reason = "the reference was given up above; nothing is left to release"
+        )]
         std::mem::forget(std::mem::take(&mut self.0));
     }
 }
@@ -1240,6 +1252,7 @@ impl ArrayMut {
         // SAFETY: a live array; it copies the zval in when it inserts it.
         let added = unsafe { zend_hash_next_index_insert(array, value.as_ptr()) };
         if !added.is_null() {
+            #[expect(clippy::mem_forget, reason = "the array owns the zval it copied in")]
             std::mem::forget(value);
         }
     }
@@ -1263,6 +1276,7 @@ impl ArrayMut {
         // SAFETY: a live table; it copies the zval in when it adds it.
         let added = unsafe { zend_hash_index_add(array, index, value.as_ptr()) };
         if !added.is_null() {
+            #[expect(clippy::mem_forget, reason = "the array owns the zval it copied in")]
             std::mem::forget(value);
         }
     }

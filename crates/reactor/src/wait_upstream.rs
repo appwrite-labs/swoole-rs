@@ -9,7 +9,7 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// SAFETY: crates/timer's, a safe function there. A declaration, since crates/timer
+// crates/timer's, a safe function there. A declaration, since crates/timer
 // depends on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_Z19swoole_timer_selectv"]
@@ -170,7 +170,7 @@ pub extern "C" fn system_waitpid_safe(
     const OK: c_int = 0;
     const LOCK_DEFAULT_SECOND: f64 = 0.001;
     const LOCK_MAX_SECOND: f64 = 0.1;
-    // SAFETY: crates/hooks's, a safe function there; declared, since crates/hooks
+    // crates/hooks's, a safe function there; declared, since crates/hooks
     // depends on this crate.
     unsafe extern "C-unwind" {
         #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
