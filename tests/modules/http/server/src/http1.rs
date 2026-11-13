@@ -332,6 +332,7 @@ struct PortConfig {
     on_read: Native,
     ssl_context: Native,
     tls: Native,
+    length_owner: Native,
 }
 
 /// The offsets `detail::check_server_layouts` checks for record 4, in its order.
@@ -376,6 +377,7 @@ const PORT_OFFSETS: &[usize] = &[
     offset_of!(PortConfig, on_read),
     offset_of!(PortConfig, ssl_context),
     offset_of!(PortConfig, tls),
+    offset_of!(PortConfig, length_owner),
 ];
 
 /// `swr_v1_server_callback`.

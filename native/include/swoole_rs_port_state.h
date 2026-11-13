@@ -45,7 +45,8 @@ typedef int (*PortReadFn)(Reactor *, ListenPort *, Event *); }
     X(swoole::Protocol, protocol) \
     X(swoole::PortReadFn, onRead) \
     X(swoole::SSLContext *, ssl_context) \
-    X(void *, tls)
+    X(void *, tls) \
+    X(void *, length_owner)
 struct swr_v1_port_config {
 #define SWR_PORT_FIELD(type,name) type name;
  SWR_PORT_CONFIG_FIELDS(SWR_PORT_FIELD)

@@ -110,7 +110,14 @@ pub struct PortConfig {
     /// `ListenPort`'s destructor releases it with the context. A thin box, as
     /// native code's mirror holds a `void *` here.
     pub tls: Option<Box<Box<dyn core::any::Any>>>,
+    /// The owner of the callable `protocol.private_data_1` names, when the port
+    /// has a `package_length_func`. A thin box: native code's mirror holds a
+    /// `void *` here.
+    pub length_owner: Option<LengthOwner>,
 }
+
+/// A `package_length_func`'s owner, whose callable the port's protocol names.
+pub type LengthOwner = Box<Box<dyn core::any::Any>>;
 
 impl PortConfig {
     /// The host's bytes, embedded NULs included; the slot keeps a NUL after them.
@@ -246,6 +253,7 @@ impl PortConfig {
             on_read: core::ptr::null_mut(),
             ssl_context: None,
             tls: None,
+            length_owner: None,
         })
     }
 }
