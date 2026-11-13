@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_server::{ConnectionRecord, StaticCollection, server_methods, view};
+use swoole_rs_server::{ConnectionRecord, ServerText, StaticCollection, server_methods, view};
 
 use crate::client::{Client, USER_AGENT};
 
@@ -61,10 +61,10 @@ const SW_HTTP_RFC1123_DATE_UTC: &CStr = c"%a, %d %b %Y %T UTC";
 const SW_HTTP_RFC850_DATE: &CStr = c"%A, %d-%b-%y %T GMT";
 const SW_HTTP_ASCTIME_DATE: &CStr = c"%a %b %e %T %Y";
 
-// Server's text members (SWR_SERVER_TEXT_*).
-const TEXT_CHROOT: usize = 0;
-const TEXT_USER: usize = 1;
-const TEXT_GROUP: usize = 2;
+// Server's text members.
+const TEXT_CHROOT: ServerText = ServerText::Chroot;
+const TEXT_USER: ServerText = ServerText::User;
+const TEXT_GROUP: ServerText = ServerText::Group;
 
 // The static-handler sets.
 const LOCATIONS: StaticCollection = StaticCollection::Locations;
@@ -682,8 +682,8 @@ impl Server {
     }
 
     /// `serv.user_ = value` and the other text members.
-    fn set_text(self, index: usize, value: &str) {
-        self.view().set_text(index, value.as_bytes());
+    fn set_text(self, kind: ServerText, value: &str) {
+        self.view().set_text(kind, value.as_bytes());
     }
 
     /// `set_document_root(path)`.

@@ -3,7 +3,7 @@
 //! listing or the file's ranges, sent to the connection.
 use crate::static_handler::{Effects, StaticHandler, page_404};
 use swoole_rs_corebase::CCast;
-use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask};
+use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
 pub trait Handler {
@@ -133,12 +133,8 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         software: SOFTWARE,
         page: &[],
         content_length: 0,
-        range_offset: 0,
-        range_length: 0,
-        filesize: 0,
-        variant: 0,
+        head: StaticHead::NotFound,
         keep_alive: false,
-        range_kind: 0,
     };
     if handler.status() == NOT_FOUND {
         let status = swoole_rs_http::status_message(NOT_FOUND);
@@ -155,7 +151,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     header.modified = &modified;
     let since = exchange.header(b"If-Modified-Since");
     if !since.is_empty() && handler.is_modified(&since) {
-        header.variant = 1;
+        header.head = StaticHead::NotModified;
         header.keep_alive = exchange.keep_alive();
         exchange.send(SEND_DATA, &encode(&header));
         return true;
@@ -167,7 +163,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     // No index file in the directory: with http_autoindex, list the directory.
     if handler.lists_directory() {
         let body = handler.index_page();
-        header.variant = 2;
+        header.head = StaticHead::Autoindex;
         header.keep_alive = exchange.keep_alive();
         header.content_length = signed(body.len());
         exchange.send(SEND_DATA, &encode(&header));
@@ -181,7 +177,6 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     let tasks = handler.tasks();
     let status = handler.status();
     let message = swoole_rs_http::status_message(status);
-    header.variant = 3;
     header.status = &message;
     header.keep_alive = exchange.keep_alive();
     let head = exchange.head();
@@ -196,16 +191,15 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         handler.content_type()
     };
     header.content_type = &content_type;
-    if let [task] = tasks.as_slice() {
-        if status == PARTIAL_CONTENT {
-            header.range_kind = 1;
-            header.range_offset = task.offset;
-            header.range_length = task.length;
-            header.filesize = handler.filesize();
-        } else {
-            header.range_kind = 2;
-        }
-    }
+    header.head = StaticHead::File(match tasks.as_slice() {
+        [task] if status == PARTIAL_CONTENT => StaticRange::Content {
+            offset: task.offset,
+            length: task.length,
+            filesize: handler.filesize(),
+        },
+        [_] => StaticRange::Accept,
+        _ => StaticRange::None,
+    });
     let head_bytes = encode(&header);
     // tcp_nopush for the header and body.
     exchange.cork();

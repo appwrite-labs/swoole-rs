@@ -12,10 +12,7 @@ use crate::{
 };
 use libc::{c_char, c_int};
 use std::{ffi::CStr, rc::Rc};
-use swoole_rs_clients::client::{
-    self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
-    SSL_STATE_WAIT_STREAM,
-};
+use swoole_rs_clients::client::{self as state, ClientEvent, Op, SSL_STATE_WAIT_STREAM};
 use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_async;
@@ -169,9 +166,14 @@ fn unhold(object: Obj) {
     unsafe { (*object.as_ptr()).gc.refcount -= 1 };
 }
 
-fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result<(), Bailout> {
+fn event(
+    object: Obj,
+    kind: ClientEvent,
+    data: *const c_char,
+    length: usize,
+) -> Result<(), Bailout> {
     match kind {
-        ON_CONNECT => {
+        ClientEvent::Connect => {
             if let Some(conn) = object.data().conn()
                 && conn.ssl_wait.replace(false)
             {
@@ -179,7 +181,7 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
             }
             execute(object, CONNECT)
         }
-        ON_RECEIVE => {
+        ClientEvent::Receive => {
             let callable = callback(object.data(), RECEIVE);
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
@@ -197,16 +199,15 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
             }
             Ok(())
         }
-        ON_CLOSE => execute_and_release(object, CLOSE),
-        ON_ERROR => {
+        ClientEvent::Close => execute_and_release(object, CLOSE),
+        ClientEvent::Error => {
             // The error code arrives as the length (`swoole_get_last_error()`).
             let error = i64::try_from(length).unwrap_or(0);
             object.props().long(c"errCode", error);
             execute_and_release(object, ERROR)
         }
-        ON_BUFFER_FULL => execute(object, BUFFER_FULL),
-        ON_BUFFER_EMPTY => execute(object, BUFFER_EMPTY),
-        _ => swoole_rs_corebase::fatal("an unknown async client event"),
+        ClientEvent::BufferFull => execute(object, BUFFER_FULL),
+        ClientEvent::BufferEmpty => execute(object, BUFFER_EMPTY),
     }
 }
 
@@ -232,7 +233,7 @@ fn destruct(call: &Call) {
     let Some(conn) = net::this(call).conn() else {
         return;
     };
-    if !conn.flag(state::CLOSED) && bailed(conn.cli.run(Op::Close)).is_none() {
+    if !conn.flag(state::Flag::Closed) && bailed(conn.cli.run(Op::Close)).is_none() {
         return;
     }
     // A close callback may have freed it already.
@@ -316,8 +317,7 @@ fn connect(call: &Call) {
         );
         return call.set_bool(false);
     }
-    let bit = |event: c_int| 1u32 << event;
-    let mut events = bit(ON_RECEIVE);
+    let mut events = ClientEvent::Receive.bit();
     if fresh.is_stream() {
         for (slot, name) in [
             (CONNECT, "onConnect"),
@@ -333,17 +333,21 @@ fn connect(call: &Call) {
                 return call.set_bool(false);
             }
         }
-        events |= bit(ON_CONNECT) | bit(ON_CLOSE) | bit(ON_ERROR);
+        events |= ClientEvent::Connect.bit() | ClientEvent::Close.bit() | ClientEvent::Error.bit();
         if set(BUFFER_FULL) {
-            events |= bit(ON_BUFFER_FULL);
+            events |= ClientEvent::BufferFull.bit();
         }
         if set(BUFFER_EMPTY) {
-            events |= bit(ON_BUFFER_EMPTY);
+            events |= ClientEvent::BufferEmpty.bit();
         }
     } else {
-        for (slot, event) in [(CONNECT, ON_CONNECT), (CLOSE, ON_CLOSE), (ERROR, ON_ERROR)] {
+        for (slot, event) in [
+            (CONNECT, ClientEvent::Connect),
+            (CLOSE, ClientEvent::Close),
+            (ERROR, ClientEvent::Error),
+        ] {
             if set(slot) {
-                events |= bit(event);
+                events |= event.bit();
             }
         }
     }
@@ -393,7 +397,7 @@ fn connect(call: &Call) {
     }
     // The object's connection, if an error callback did not free it.
     if let Some(remaining) = net::this(call).conn()
-        && events & bit(ON_ERROR) == 0
+        && events & ClientEvent::Error.bit() == 0
         && bailed(net::release(object, remaining)).is_some()
     {
         unhold(object);

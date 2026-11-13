@@ -46,9 +46,9 @@ enum Handshake {
 
 /// `swReturnCode` values.
 const SW_CONTINUE: c_int = 1;
-const SW_WAIT: c_int = 2;
-const SW_ERROR: c_int = 4;
-const SW_READY: c_int = 5;
+const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
+const SW_ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
+const SW_READY: c_int = swoole_rs_corebase::constants::ReturnCode::SW_READY as c_int;
 /// `SW_SERVER_EVENT_CONNECT`.
 const EVENT_CONNECT: u8 = 5;
 /// The longest resume back-off, in milliseconds.
@@ -305,12 +305,12 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'_>) {
 const BUILT_PREQUEUE: bool = cfg!(feature = "halfclose");
 
 /// `SW_OK` and `SW_ERR` as the reactor's handlers return them.
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
-const SSL_READY: u32 = 1;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
+const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
 /// `SW_SERVER_EVENT_CLOSE` and `_BUFFER_EMPTY`.
 const EVENT_CLOSE: u8 = 4;
 const EVENT_BUFFER_EMPTY: c_int = 14;

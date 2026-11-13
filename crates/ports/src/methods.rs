@@ -25,8 +25,8 @@ pub(crate) use tests::socket_free;
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
 pub(crate) const FD_DGRAM_SERVER: c_int = 2;
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-const SOCK_NONBLOCK: c_int = 1 << 2;
-const SOCK_CLOEXEC: c_int = 1 << 3;
+const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
+const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_server::view;
 

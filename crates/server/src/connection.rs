@@ -15,15 +15,15 @@ use crate::{Connection, MODE_BASE, view};
 const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
 /// `SW_SERVER_EVENT_CONNECT`.
 const EVENT_CONNECT: c_int = 5;
 /// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
+const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)

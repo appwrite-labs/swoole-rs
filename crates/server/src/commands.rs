@@ -10,21 +10,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::command::{
-    CommandInput, LOG_INVALID_TASK_WORKER, LOG_INVALID_THREAD, LOG_INVALID_WORKER, LOG_NOT_MASTER,
-    LOG_NOT_WORKER_0, LOG_TOO_LARGE, LOG_UNKNOWN, LOG_UNSUPPORTED_MODE, LOG_UNSUPPORTED_TYPE,
-    TO_MASTER, route,
-};
+use swoole_rs_process::command::{CommandInput, Rejected, Rejection, Target, route};
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use {
     crate::ops::{EVENT_COMMAND_REQUEST, EVENT_COMMAND_RESPONSE},
     swoole_rs_corebase::{CCast, DataHead},
-    swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER},
     swoole_rs_reactor::Socket,
 };
 
-const SW_LOG_NOTICE: c_int = 3;
-const SW_LOG_ERROR: c_int = 5;
+const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `Server::Command::Handler`: answers `message` to the server by appending its
@@ -183,7 +178,7 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         info.fd = c.request_id;
         info.server_fd = c.command_id.c_cast::<u16>();
     };
-    if c.action == TO_MANAGER {
+    if c.target == Target::Manager {
         // As much of the message as an `EventData` holds.
         let (data, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
         let mut info = DataHead {
@@ -194,7 +189,7 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         let pool = serv.event_pool_ref();
         return swoole_rs_process::methods::push_event(pool, &info, data) >= 0;
     }
-    if c.action == TO_TASK_WORKER {
+    if c.target == Target::TaskWorker {
         let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
         if !buf.pack(c.message) {
             return false;
@@ -218,7 +213,7 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
     };
     head(&mut info);
     // The worker's pipe: its worker end to a reactor thread, else its master end.
-    let to_worker = c.action != TO_REACTOR_THREAD;
+    let to_worker = c.target != Target::ReactorThread;
     let Some(pipe) = serv.worker_pipe(process_id, to_worker) else {
         return false;
     };
@@ -291,8 +286,7 @@ pub(crate) struct SendCommand<'a> {
 
 /// A command request for another process.
 pub(crate) struct CommandSend<'a> {
-    /// `CommandRoute::action`.
-    pub(crate) action: i32,
+    pub(crate) target: Target,
     pub(crate) process_id: u32,
     pub(crate) command_id: i32,
     pub(crate) request_id: i64,
@@ -327,18 +321,29 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
         length: send.message.len(),
         manager_capacity: IPC_BUFFER_SIZE,
     };
-    let route = route(&input);
-    log_route(route.log, route.process_id, send);
-    let Some((command_id, _)) = found.filter(|_| route.request) else {
-        return false;
-    };
-    let request_id = {
+    let take_request = || {
         let mut commands = commands(state);
         let id = commands.next_request;
         commands.next_request = id.wrapping_add(1);
         id
     };
-    if route.action == TO_MASTER {
+    let route = match route(&input) {
+        Ok(route) => route,
+        Err(rejected) => {
+            log_rejected(rejected, send);
+            // Upstream takes a request id before its later checks.
+            if rejected.reason.took_request() {
+                take_request();
+            }
+            return false;
+        }
+    };
+    // A route means the name was found.
+    let Some((command_id, _)) = found else {
+        return false;
+    };
+    let request_id = take_request();
+    if route.target == Target::Master {
         let mut reply = Vec::<u8>::new();
         let handler = commands(state).handlers.get(&command_id).cloned();
         match handler {
@@ -358,64 +363,63 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
         .callbacks
         .insert(request_id, send.callback.clone());
     let message = CommandSend {
-        action: route.action,
+        target: route.target,
         process_id: route.process_id,
         command_id,
         request_id,
         message: send.message,
     };
-    let sent =
-        route.action != swoole_rs_process::command::FAIL && hybrid().command_send(serv, &message);
+    let sent = hybrid().command_send(serv, &message);
     if !sent {
         commands(state).callbacks.remove(&request_id);
     }
     sent
 }
 
-fn log_route(log: i32, process_id: u32, send: &SendCommand<'_>) {
+fn log_rejected(Rejected { reason, process_id }: Rejected, send: &SendCommand<'_>) {
     let origin = c"Server::command";
     let notice = |code, m| error(SW_LOG_NOTICE, code, origin, m);
-    match log {
-        LOG_UNKNOWN => notice(
+    match reason {
+        Rejection::NotStarted => {}
+        Rejection::Unknown => notice(
             E::SW_ERROR_SERVER_INVALID_COMMAND,
             format_args!("Unknown command[{}]", String::from_utf8_lossy(send.name)),
         ),
-        LOG_NOT_MASTER => notice(
+        Rejection::NotMaster => notice(
             E::SW_ERROR_INVALID_PARAMS,
             format_args!("command() can only be used in master process"),
         ),
-        LOG_NOT_WORKER_0 => notice(
+        Rejection::NotWorker0 => notice(
             E::SW_ERROR_INVALID_PARAMS,
             format_args!("command() can only be used in worker process 0"),
         ),
-        LOG_UNSUPPORTED_TYPE => notice(
+        Rejection::UnsupportedType => notice(
             E::SW_ERROR_OPERATION_NOT_SUPPORT,
             format_args!("unsupported [process_type]"),
         ),
-        LOG_UNSUPPORTED_MODE => notice(
+        Rejection::UnsupportedMode => notice(
             E::SW_ERROR_OPERATION_NOT_SUPPORT,
             format_args!("unsupported [server_mode]"),
         ),
-        LOG_INVALID_THREAD => notice(
+        Rejection::InvalidThread => notice(
             E::SW_ERROR_INVALID_PARAMS,
             format_args!("invalid thread_id[{process_id}]"),
         ),
-        LOG_INVALID_WORKER => notice(
+        Rejection::InvalidWorker => notice(
             E::SW_ERROR_INVALID_PARAMS,
             format_args!("invalid worker_id[{process_id}]"),
         ),
-        LOG_INVALID_TASK_WORKER => notice(
+        Rejection::InvalidTaskWorker => notice(
             E::SW_ERROR_INVALID_PARAMS,
             format_args!("invalid task_worker_id[{process_id}]"),
         ),
-        LOG_TOO_LARGE => notice(
+        Rejection::TooLarge => notice(
             E::SW_ERROR_DATA_LENGTH_TOO_LARGE,
             format_args!(
                 "message is too large, maximum length is {IPC_BUFFER_SIZE}, the given length is {}",
                 send.message.len()
             ),
         ),
-        _ => {}
     }
 }
 
@@ -533,7 +537,6 @@ mod tests {
 
     const MASTER: i32 = swoole_rs_process::command::MASTER;
     const EVENT_WORKER: i32 = swoole_rs_process::command::EVENT_WORKER;
-    const TO_EVENT_WORKER: i32 = swoole_rs_process::command::TO_EVENT_WORKER;
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
@@ -575,7 +578,10 @@ mod tests {
         );
         to_worker.process_id = 1;
         assert!(command(&to_worker));
-        assert_eq!(calls(), [Call::CommandSend(TO_EVENT_WORKER, 1, 1, 2, 4)]);
+        assert_eq!(
+            calls(),
+            [Call::CommandSend(Target::EventWorker, 1, 1, 2, 4)]
+        );
         let waiting = commands(live.state())
             .callbacks
             .keys()

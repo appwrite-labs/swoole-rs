@@ -91,7 +91,7 @@ pub use layout::server_record_layout;
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-pub use state::ServerState;
+pub use state::{ServerState, ServerText};
 #[cfg(test)]
 pub(crate) use state::{free_state as swr_v1_server_state_free, swr_v1_server_state_new};
 
@@ -102,8 +102,8 @@ pub use server_object::{SharedServer, swr_v1_server_delete, swr_v1_server_new};
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
 
-pub(crate) const SW_OK: i64 = 0;
-pub(crate) const SW_ERR: i64 = -1;
+pub(crate) const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
+pub(crate) const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
 
 /// `Server::Mode`; native asserts each.
 pub(crate) const MODE_BASE: u64 = 1;

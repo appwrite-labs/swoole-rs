@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`'s `SW_WAIT` (from `catch_error`).
-const WAIT: c_int = 2;
-/// `SW_ERROR_SOCKET_POLL_TIMEOUT`.
-const POLL_TIMEOUT: c_int = 6002;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `send`: everything, retrying short writes.
 pub const SYNC_SEND: c_int = 0;
@@ -109,15 +107,9 @@ pub fn swr_v1_socket_sync(
             }
         }
         let events = hooks.events(event);
-        let waited = crate::fd_wait(hooks.fd(), events, timeout_ms, hooks.dont_restart());
-        let failed = match waited.status {
-            1 => Some((POLL_TIMEOUT, libc::EAGAIN)),
-            2 => Some((waited.error, waited.error)),
-            _ => None,
-        };
-        if let Some((last, error)) = failed {
-            hooks.set_last_error(last);
-            set_errno(error);
+        if let Err(error) = crate::fd_wait(hooks.fd(), events, timeout_ms, hooks.dont_restart()) {
+            hooks.set_last_error(error.last_error());
+            set_errno(error.errno());
             return -1;
         }
         if timeout_ms > 0 {
@@ -285,7 +277,10 @@ mod tests {
         };
         let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, 1, 20);
         assert_eq!((result, errno()), (-1, libc::EAGAIN));
-        assert_eq!(LAST_ERROR.with(|last| *last.borrow()), POLL_TIMEOUT);
+        assert_eq!(
+            LAST_ERROR.with(|last| *last.borrow()),
+            crate::socket_io::POLL_TIMEOUT
+        );
         // SAFETY: closes the pair this test opened.
         unsafe {
             libc::close(fds[0]);

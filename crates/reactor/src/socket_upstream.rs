@@ -8,18 +8,15 @@ use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{EventType, ResultCode, ReturnCode};
 use swoole_rs_corebase::log;
 
-/// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
-const WAIT: c_int = 2;
-const ERROR: c_int = 4;
-const READY: c_int = 5;
-/// `SW_ERROR_SOCKET_POLL_TIMEOUT`.
-const POLL_TIMEOUT: c_int = 6002;
-/// `SW_EVENT_WRITE`.
-const EVENT_WRITE: c_int = 1 << 10;
+const OK: c_int = ResultCode::SW_OK as c_int;
+const ERR: c_int = ResultCode::SW_ERR as c_int;
+const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const READY: c_int = ReturnCode::SW_READY as c_int;
+const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -56,16 +53,11 @@ pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, event
         timeout_ms,
         dont_restart,
     );
-    match result.status {
-        0 => OK,
-        1 => {
-            log::set_last_error(POLL_TIMEOUT);
-            set_errno(libc::EAGAIN);
-            ERR
-        }
-        _ => {
-            log::set_last_error(result.error);
-            set_errno(result.error);
+    match result {
+        Ok(()) => OK,
+        Err(error) => {
+            log::set_last_error(error.last_error());
+            set_errno(error.errno());
             ERR
         }
     }
@@ -74,13 +66,16 @@ pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, event
 /// `swReturnCode Socket::connect_async(const Address &sa)`.
 pub fn socket_connect_async(socket: &mut SocketFields, address: &SocketAddress) -> c_int {
     socket_set_fd_option(socket, 1, -1);
-    let result = crate::fd_connect(socket.fd, address);
-    match result.status {
-        0 => READY,
-        status => {
-            log::set_last_error(result.error);
-            set_errno(result.error);
-            if status == 1 { WAIT } else { ERROR }
+    match crate::fd_connect(socket.fd, address) {
+        Ok(()) => READY,
+        Err(error) => {
+            log::set_last_error(error.errno());
+            set_errno(error.errno());
+            if error == crate::IoError::InProgress {
+                WAIT
+            } else {
+                ERROR
+            }
         }
     }
 }
@@ -109,9 +104,8 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }
-    let pending = crate::fd_pending_error(socket.fd());
-    if pending.status != 0 {
-        log::set_last_error(pending.error);
+    if let Err(error) = crate::fd_pending_error(socket.fd()) {
+        log::set_last_error(error);
         return ERR;
     }
     socket.edit(|record| socket_set_fd_option(record, 0, -1));
@@ -126,7 +120,9 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
 )]
 pub extern "C" fn socket_has_timedout(_socket: *const SocketRecord) -> bool {
     let error = errno();
-    error == libc::EAGAIN || error == libc::ETIMEDOUT || log::last_error() == POLL_TIMEOUT
+    error == libc::EAGAIN
+        || error == libc::ETIMEDOUT
+        || log::last_error() == crate::socket_io::POLL_TIMEOUT
 }
 
 /// `bool Socket::set_fd_option(int nonblock, int cloexec)`, warning as
@@ -336,7 +332,7 @@ mod tests {
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let socket = SocketRecord::with_fd(fds[0], 0);
         assert_eq!(socket_wait_event(&socket, 0, 0), ERR);
-        assert_eq!(log::last_error(), POLL_TIMEOUT);
+        assert_eq!(log::last_error(), crate::socket_io::POLL_TIMEOUT);
         assert!(socket_has_timedout(ptr::null()));
         unsafe {
             libc::close(fds[0]);

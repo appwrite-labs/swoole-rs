@@ -15,9 +15,9 @@ use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
-const EVENT_ERROR: c_int = 1 << 11;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
+const EVENT_ERROR: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
 /// `SW_ERROR_CO_OUT_OF_COROUTINE` and `SW_ERROR_CO_HAS_BEEN_BOUND`.
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;

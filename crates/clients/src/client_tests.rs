@@ -14,7 +14,7 @@ struct Mock {
     ssl_connect_ready: bool,
     socket_error: c_int,
     /// The callback that releases the client's socket object (as a PHP close would).
-    releases: Option<c_int>,
+    releases: Option<ClientEvent>,
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
@@ -70,16 +70,16 @@ pub(super) mod ops {
         }
         true
     }
-    pub(in super::super) fn connect(_: Handle, mode: c_int) -> c_int {
-        log(format!("connect {mode}"));
+    pub(in super::super) fn connect(_: Handle, mode: ConnectMode) -> c_int {
+        log(format!("connect {mode:?}"));
         let ret = mock(|m| m.connect.pop()).unwrap_or(0);
         if ret < 0 {
             set_errno(libc::EINPROGRESS);
         }
         ret
     }
-    pub(in super::super) fn event(_: Handle, op: c_int, events: c_int) -> c_int {
-        log(format!("event {op} {events}"));
+    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> c_int {
+        log(format!("event {op:?} {events}"));
         OK
     }
     pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> c_int {
@@ -182,8 +182,8 @@ fn io(name: &str, length: usize) -> isize {
     log(format!("{name} {length}"));
     mock(|m| m.io.pop()).unwrap_or(length.cast_signed())
 }
-fn listener(event: c_int, _: *const c_char, length: usize) {
-    log(format!("call {event} {length}"));
+fn listener(event: ClientEvent, _: *const c_char, length: usize) {
+    log(format!("call {event:?} {length}"));
     if mock(|m| m.releases) == Some(event) {
         sock().object = core::ptr::null_mut();
     }
@@ -309,7 +309,7 @@ fn writable(client: *mut Client) -> c_int {
     on_write(Handle(client), reactor, &mut event)
 }
 
-fn flag(client: *mut Client, name: u32) -> bool {
+fn flag(client: *mut Client, name: Flag) -> bool {
     // SAFETY: a live state.
     unsafe { &*client }.flag(name)
 }
@@ -324,10 +324,10 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
     log::set_last_error(0);
     let client = new_client(1, true);
     assert_eq!(taken(), ["make 1 17 12"]);
-    assert!(flag(client, ASYNC) && flag(client, STREAM));
+    assert!(flag(client, Flag::Async) && flag(client, Flag::Stream));
     assert_eq!(sock().chunk_size, SEND_BUFFER_SIZE);
     free(client);
-    assert_eq!(taken(), ["event 2 0", "free"]);
+    assert_eq!(taken(), ["event Del 0", "free"]);
     let client = new_client(2, false);
     assert_eq!(taken(), ["make 2 18 8"]);
     free(client);
@@ -348,16 +348,16 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
         .edit_record(|record| record.protocol.get_package_length = Some(twice));
     assert_eq!(Handle(client).run(Op::PackageLength(b"abc")), 6);
     free(client);
-    assert_eq!(taken(), ["event 2 0", "free"]);
+    assert_eq!(taken(), ["event Del 0", "free"]);
 }
 
 #[test]
 fn async_close_detaches_then_runs_on_close_once() {
     let client = client(1, true, true);
-    Handle(client).set(ACTIVE, true);
+    Handle(client).set(Flag::Active, true);
     assert_eq!(close(Handle(client)), ERR, "close(-1) fails");
-    assert_eq!(taken(), ["event 2 0", "call 3 0"]);
-    assert!(flag(client, CLOSED) && !flag(client, ACTIVE));
+    assert_eq!(taken(), ["event Del 0", "call Close 0"]);
+    assert!(flag(client, Flag::Closed) && !flag(client, Flag::Active));
     assert_eq!(close(Handle(client)), ERR);
     assert_eq!(taken(), Vec::<String>::new());
     free(client);
@@ -366,8 +366,8 @@ fn async_close_detaches_then_runs_on_close_once() {
 #[test]
 fn close_returns_zero_when_on_close_released_the_client() {
     let client = client(1, true, true);
-    Handle(client).set(ACTIVE, true);
-    mock(|m| m.releases = Some(ON_CLOSE));
+    Handle(client).set(Flag::Active, true);
+    mock(|m| m.releases = Some(ClientEvent::Close));
     assert_eq!(close(Handle(client)), OK);
     assert_eq!(sock().fd, -1);
     free(client);
@@ -381,10 +381,10 @@ fn shutdown_records_each_direction_once() {
     assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
     assert_eq!(shutdown(libc::SHUT_RD), ERR);
-    assert!(!flag(client, SHUTDOWN_READ));
-    Handle(client).set(SHUTDOWN_WRITE, true);
+    assert!(!flag(client, Flag::ShutdownRead));
+    Handle(client).set(Flag::ShutdownWrite, true);
     assert_eq!(shutdown(libc::SHUT_WR), ERR);
-    Handle(client).set(CLOSED, true);
+    Handle(client).set(Flag::Closed, true);
     assert_eq!(shutdown(libc::SHUT_RDWR), ERR);
     free(client);
 }
@@ -407,15 +407,15 @@ fn async_connect_in_progress_adds_a_timer_and_write_interest() {
         taken(),
         [
             "assign example.test:80 false",
-            "connect 2",
+            "connect Raw",
             "timer 2.5",
-            "event 0 1024"
+            "event Add 1024"
         ]
     );
     free(client);
     assert_eq!(
         taken(),
-        ["event 2 0", "timer del", "free"],
+        ["event Del 0", "timer del", "free"],
         "inactive: no onClose"
     );
 }
@@ -424,13 +424,13 @@ fn async_connect_in_progress_adds_a_timer_and_write_interest() {
 fn async_connect_waits_for_dns_then_connects_the_resolved_address() {
     let client = client(1, true, true);
     assert_eq!(connect(client, c"dns.test", 1.0, 0), OK);
-    assert!(flag(client, WAIT_DNS));
+    assert!(flag(client, Flag::WaitDns));
     assert_eq!(taken(), ["assign dns.test:80 false", "dns dns.test 2"]);
     resolved(Handle(client), 0, c"192.0.2.1");
-    assert!(!flag(client, WAIT_DNS));
+    assert!(!flag(client, Flag::WaitDns));
     assert_eq!(
         taken(),
-        ["assign 192.0.2.1:80 false", "connect 2", "event 0 1024"]
+        ["assign 192.0.2.1:80 false", "connect Raw", "event Add 1024"]
     );
     free(client);
 }
@@ -442,10 +442,10 @@ fn failed_resolution_closes_and_reports_once() {
     taken();
     resolved(Handle(client), 1, c"");
     assert_eq!(log::last_error(), ERROR_DNSLOOKUP_RESOLVE_FAILED);
-    assert!(flag(client, ONERROR_CALLED) && flag(client, CLOSED));
+    assert!(flag(client, Flag::OnerrorCalled) && flag(client, Flag::Closed));
     assert_eq!(
         taken(),
-        [format!("call 4 {ERROR_DNSLOOKUP_RESOLVE_FAILED}")],
+        [format!("call Error {ERROR_DNSLOOKUP_RESOLVE_FAILED}")],
         "removed: no reactor delete; the error is the length"
     );
     free(client);
@@ -458,7 +458,7 @@ fn sync_nonblocking_connect_reports_ready_and_wait() {
     assert_eq!(connect(client, c"example.test", -1.0, 1), OK);
     mock(|m| m.connect = vec![SW_WAIT]);
     assert_eq!(connect(client, c"example.test", -1.0, 1), ERR);
-    assert!(flag(client, ASYNC_CONNECT));
+    assert!(flag(client, Flag::AsyncConnect));
     free(client);
 }
 
@@ -473,13 +473,13 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         [
             "kernel 3",
             "assign proxy.test:1080 true",
-            "connect 1",
+            "connect Sync",
             "send_sync 3",
             "recv_sync 64",
             "socks5 64",
         ]
     );
-    assert!(flag(client, ACTIVE));
+    assert!(flag(client, Flag::Active));
     assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_READY);
     let proxy = Handle(client).proxy(Proxy::Socks5).unwrap();
     assert_eq!(&*proxy.string(3), b"example.test");
@@ -501,7 +501,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 8);
     assert_eq!(send(Handle(client), b"data", 0), 4);
-    assert_eq!(taken(), ["write 4", "call 5 0"]);
+    assert_eq!(taken(), ["write 4", "call BufferFull 0"]);
     // Already high: no second call.
     send(Handle(client), b"data", 0);
     assert_eq!(taken(), ["write 4"]);
@@ -518,9 +518,9 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     unsafe { &*client }.set_watermark(true, 100);
     let result = writable(client);
     assert_eq!(result, 3);
-    assert_eq!(taken(), ["event 1 512", "write 3"]);
+    assert_eq!(taken(), ["event Set 512", "write 3"]);
     assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_HANDSHAKE);
-    assert!(flag(client, ACTIVE));
+    assert!(flag(client, Flag::Active));
     free(client);
 }
 
@@ -533,8 +533,8 @@ fn writable_after_a_failed_connect_reports_the_error() {
     assert_eq!(
         taken(),
         [
-            "event 2 0".to_owned(),
-            format!("call 4 {}", libc::ECONNREFUSED)
+            "event Del 0".to_owned(),
+            format!("call Error {}", libc::ECONNREFUSED)
         ]
     );
     free(client);
@@ -551,14 +551,14 @@ fn tls_connect_waits_for_the_stream_then_connects() {
     taken();
     mock(|m| m.ssl_connect_ready = true);
     writable(client);
-    assert_eq!(taken(), ["ssl session 2", "ssl connect", "call 1 0"]);
+    assert_eq!(taken(), ["ssl session 2", "ssl connect", "call Connect 0"]);
     free(client);
 }
 
 #[test]
 fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     let client = client(1, true, true);
-    Handle(client).set(ACTIVE, true);
+    Handle(client).set(Flag::Active, true);
     set_proxy(client, true);
     assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
     on_timeout(Handle(client));
@@ -566,8 +566,8 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     assert_eq!(
         taken(),
         [
-            "event 2 0".to_owned(),
-            format!("call 4 {}", libc::ETIMEDOUT)
+            "event Del 0".to_owned(),
+            format!("call Error {}", libc::ETIMEDOUT)
         ]
     );
     free(client);
@@ -576,14 +576,14 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
 #[test]
 fn stream_read_delivers_data_and_closes_at_eof() {
     let client = client(1, true, true);
-    Handle(client).set(ACTIVE, true);
+    Handle(client).set(Flag::Active, true);
     Handle(client).input_init();
     mock(|m| m.io = vec![5]);
     assert_eq!(on_read(Handle(client)), OK);
-    assert_eq!(taken(), ["recv 65536", "call 2 5"]);
+    assert_eq!(taken(), ["recv 65536", "call Receive 5"]);
     mock(|m| m.io = vec![0]);
     on_read(Handle(client));
-    assert_eq!(taken(), ["recv 65536", "event 2 0", "call 3 0"]);
+    assert_eq!(taken(), ["recv 65536", "event Del 0", "call Close 0"]);
     free(client);
 }
 
@@ -684,7 +684,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         },
         OK
     );
-    assert_eq!(taken(), ["call 2 4"]);
+    assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
     assert_eq!(
         unsafe {
@@ -731,4 +731,18 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
         ]
     );
     free(client);
+}
+
+#[test]
+fn proxy_states_are_the_native_ones() {
+    let header = include_str!("../../../native/protocols/swoole_proxy.h");
+    for (name, value) in [
+        ("SW_SOCKS5_STATE_WAIT", SOCKS5_WAIT),
+        ("SW_SOCKS5_STATE_HANDSHAKE", SOCKS5_HANDSHAKE),
+        ("SW_SOCKS5_STATE_READY", SOCKS5_READY),
+        ("SW_HTTP_PROXY_STATE_WAIT", HTTP_PROXY_WAIT),
+        ("SW_HTTP_PROXY_STATE_READY", HTTP_PROXY_READY),
+    ] {
+        assert!(header.contains(&format!("{name} = {value},")), "{name}");
+    }
 }

@@ -179,7 +179,7 @@ impl StaticEffects for Scripted {
         out[count] = 0;
     }
     fn modified_range(&self, if_range: &[u8], mtime: i64) -> bool {
-        swoole_rs_http::conditional(if_range, 1, mtime, 0, self)
+        swoole_rs_http::conditional(if_range, swoole_rs_http::Conditional::Range, mtime, 0, self)
     }
     fn overflow(&self) {
         set_errno(libc::EOVERFLOW);
@@ -343,7 +343,7 @@ impl Server {
             config: Box::into_raw(Box::new(server_config)),
         }));
         // SAFETY: the state boxed above, live with the server.
-        unsafe { &*state }.set_text(crate::state::TEXT_DOCUMENT_ROOT, b"/root");
+        unsafe { &*state }.set_text(crate::ServerText::DocumentRoot, b"/root");
         if config.location {
             server.strings(Locations, Op::Insert(b"/"));
         }

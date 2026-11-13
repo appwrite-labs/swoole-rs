@@ -30,8 +30,8 @@ const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
 /// `SW_MESSAGE_BOX_SIZE`; `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const MESSAGE_BOX_SIZE: usize = 65536;
-const WARNING: c_int = 4;
-const ERROR: c_int = 5;
+const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 /// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`; `SW_SERVER_EVENT_COMMAND_REQUEST`.
 const WORKER_MESSAGE_STOP: u8 = 1;
 const EVENT_COMMAND_REQUEST: u8 = 17;
@@ -185,7 +185,7 @@ fn wait(serv: view::Server<'_>) {
         swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, true));
         if config.reload_async.get()
             && swoole_rs_ossupport::swr_v1_os_is_root_user()
-            && !state.text(1).is_empty()
+            && !state.text(crate::ServerText::User).is_empty()
         {
             state.set_isolation();
         }

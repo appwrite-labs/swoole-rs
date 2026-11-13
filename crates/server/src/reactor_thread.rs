@@ -16,16 +16,16 @@ use crate::{MODE_BASE, ServerState, view};
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
-const SW_LOG_TRACE: c_int = 1;
+const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const FD_SESSION: c_int = 0;
 const FD_DGRAM_SERVER: c_int = 2;
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_OK` and `SW_ERR`.
 const RECV_DGRAM: u8 = 1;
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;

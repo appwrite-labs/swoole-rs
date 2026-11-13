@@ -18,7 +18,7 @@ use swoole_rs_reactor::event_api::{
 use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
 
 /// `SW_EVENT_READ`, `Reactor::EXIT_CONDITION_IOURING` and `Reactor::PRIORITY_IOURING_SUBMIT`
-const EVENT_READ: c_int = 1 << 9;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const EXIT_CONDITION_IOURING: c_int = 9;
 const PRIORITY_IOURING_SUBMIT: c_int = 7;
 

@@ -8,7 +8,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{ServerText, server_methods, view};
 use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -251,9 +251,9 @@ impl<'a> Settings<'a> {
         Ok(each(string.bytes()))
     }
 
-    /// `serv-><text> = value` (`view::set_text`'s `index`).
-    fn text(&self, index: usize, value: &[u8]) {
-        self.server().set_text(index, value);
+    /// `serv-><text> = value`.
+    fn text(&self, kind: ServerText, value: &[u8]) {
+        self.server().set_text(kind, value);
     }
 
     /// `insert(value)` into a static handler collection.
@@ -371,11 +371,11 @@ fn options(s: &Settings, this: ServerObject<'_>) -> Result<bool, Stop> {
     swoole_rs_phpcoroutines::set_coroutine_option(vht);
     checked()?;
     swoole_rs_phpswoole::php_swoole_set_aio_option(vht);
-    s.string_option(c"chroot", |v| s.text(0, v))?;
-    s.string_option(c"user", |v| s.text(1, v))?;
-    s.string_option(c"group", |v| s.text(2, v))?;
+    s.string_option(c"chroot", |v| s.text(ServerText::Chroot, v))?;
+    s.string_option(c"user", |v| s.text(ServerText::User, v))?;
+    s.string_option(c"group", |v| s.text(ServerText::Group, v))?;
     s.flag(c"daemonize", f::DAEMONIZE);
-    s.string_option(c"pid_file", |v| s.text(3, v))?;
+    s.string_option(c"pid_file", |v| s.text(ServerText::PidFile, v))?;
     if let Some(value) = s.get(c"reactor_num") {
         let v = Settings::long(value)?.clamp(0, i64::from(u16::MAX));
         s.set(f::REACTOR_NUM, if v == 0 { s.fact(f::CPU_NUM) } else { v });

@@ -4,7 +4,7 @@
 use core::ffi::c_int;
 
 /// `SW_EVENT_READ`.
-const EVENT_READ: c_int = 1 << 9;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 
 /// Connection setup's native effects.
 pub trait Setup {

@@ -27,9 +27,9 @@ use swoole_rs_server::ConnectionRecord;
 const LOG_WARNING: c_int = 4;
 const LOG_ERROR: c_int = 5;
 /// `catch_read_error`'s `SW_CLOSE` and `SW_ERROR`.
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const SW_ERR: isize = -1;
+const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
+const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
 
 /// `swoole::RecvData`.
 #[repr(C)]

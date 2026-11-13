@@ -78,10 +78,10 @@ pub const FLAG_SKIP: u32 = 8;
 pub const FLAG_DYNAMIC: u32 = 16;
 pub const FLAG_PAUSED: u32 = 32;
 
-const SW_OK: i32 = 0;
-const SW_ERR: i32 = -1;
+pub const SW_OK: i32 = 0;
+pub const SW_ERR: i32 = -1;
 const SW_CONTINUE: i32 = 1;
-const SW_CLOSE: i32 = 3;
+pub const SW_CLOSE: i32 = 3;
 const BUFFER_SIZE_STD: usize = 8192;
 
 /// The head of `swoole::String`, without its bytes ([`Effects::data`]).

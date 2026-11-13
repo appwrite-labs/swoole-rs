@@ -7,9 +7,7 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{
-    Client, Handle, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op, listen, swr_v1_clients_new,
-};
+use swoole_rs_clients::client::{Client, ClientEvent, Handle, Op, listen, swr_v1_clients_new};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::callbacks as cb;
@@ -36,8 +34,6 @@ const SW_SERVER_EVENT_SHUTDOWN: u8 = 16;
 const SW_SERVER_EVENT_CLOSE: u8 = 4;
 const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
 const SW_ERROR_SERVER_INVALID_COMMAND: c_int = 9012;
-// Server's text members (SWR_SERVER_TEXT_*), after http1.rs's.
-const TEXT_PID_FILE: usize = 3;
 
 unsafe extern "C" {
     fn mmap(
@@ -1479,7 +1475,7 @@ unsafe extern "C" fn base_on_start(_: *mut c_void, _: *mut c_void) {
 fn test_base() {
     let serv = Server::new(MODE_BASE);
     serv.config().worker_num = 1;
-    serv.set_text(TEXT_PID_FILE, PID_FILE);
+    serv.set_text(swoole_rs_server::ServerText::PidFile, PID_FILE);
 
     counter_init();
     set_log_warning();
@@ -1712,16 +1708,16 @@ fn client_run(op: Op<'_>) -> i64 {
 }
 
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
-fn clean_client_event(event: c_int, _: *const c_char, error: usize) {
+fn clean_client_event(event: ClientEvent, _: *const c_char, error: usize) {
     match event {
-        ON_CONNECT => {
+        ClientEvent::Connect => {
             client_run(Op::Send {
                 data: TEST_STR.as_bytes(),
                 flags: 0,
             });
         }
-        ON_ERROR => eprintln!("WARNING: connect failed, error={error}"),
-        ON_RECEIVE => {
+        ClientEvent::Error => eprintln!("WARNING: connect failed, error={error}"),
+        ClientEvent::Receive => {
             counter_incr(3, 1);
         }
         _ => {}
@@ -1729,9 +1725,14 @@ fn clean_client_event(event: c_int, _: *const c_char, error: usize) {
 }
 
 unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
-    let events = [ON_CONNECT, ON_ERROR, ON_CLOSE, ON_RECEIVE]
-        .iter()
-        .fold(0, |events, kind| events | 1 << kind);
+    let events = [
+        ClientEvent::Connect,
+        ClientEvent::Error,
+        ClientEvent::Close,
+        ClientEvent::Receive,
+    ]
+    .iter()
+    .fold(0, |events, kind| events | kind.bit());
     // SAFETY: the live client.
     let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
     listen(client, events, std::rc::Rc::new(clean_client_event));

@@ -3,7 +3,7 @@
 //! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
-use crate::connect::{Handshaking, ssl_handshake};
+use crate::connect::{HandshakeMode, Handshaking, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
@@ -16,11 +16,11 @@ use swoole_rs_tls::{
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
-const READ: u32 = 1 << 9;
-const RDWR: u32 = READ | (1 << 10);
+const READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
+const RDWR: u32 = READ | swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 /// `SW_ERROR_SSL_VERIFY_FAILED`, `SW_ERROR_SSL_CREATE_CONTEXT_FAILED` and
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
-const SSL_VERIFY_FAILED: c_int = 1014;
+const SSL_VERIFY_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const SSL_CREATE_CONTEXT_FAILED: c_int = 1019;
 const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 
@@ -202,12 +202,16 @@ impl Handshake {
 }
 
 impl Handshaking for Handshake {
-    fn mode(&self) -> c_int {
+    fn mode(&self) -> HandshakeMode {
         #[cfg(feature = "iouring")]
         if self.uring() {
-            return 2;
+            return HandshakeMode::SelfDriven;
         }
-        c_int::from(self.socket.ssl_is_server())
+        if self.socket.ssl_is_server() {
+            HandshakeMode::Server
+        } else {
+            HandshakeMode::Client
+        }
     }
 
     fn handshaked(&self) -> bool {

@@ -27,9 +27,9 @@ pub struct ServerState {
     /// `upload_tmp_dir`, the HTTP server's directory for uploaded files
     /// (`None`: `/tmp`), as `set()` gave it.
     upload_tmp_dir: std::sync::Mutex<Option<Box<[u8]>>>,
-    /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in `TEXT_*`
-    /// order. Readers share the value; a write replaces it.
-    texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; TEXT_COUNT],
+    /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in
+    /// [`ServerText`] order. Readers share the value; a write replaces it.
+    texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; 5],
     /// `Server::lock_`, the connection list's fd range lock: whether it is held,
     /// and how many threads wait for it.
     locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
@@ -59,10 +59,15 @@ pub struct ServerState {
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
 pub(crate) type ThreadEntry = fn(crate::view::Server<'_>, u64);
 
-/// `ServerState::texts`' slots (`SWR_SERVER_TEXT_*`).
-pub(crate) const TEXT_PID_FILE: usize = 3;
-pub(crate) const TEXT_DOCUMENT_ROOT: usize = 4;
-const TEXT_COUNT: usize = 5;
+/// The server's text members, `ServerState::texts`' slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerText {
+    Chroot,
+    User,
+    Group,
+    PidFile,
+    DocumentRoot,
+}
 
 impl Default for ServerState {
     fn default() -> Self {
@@ -162,24 +167,31 @@ impl ServerState {
             .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
     }
 
-    /// Text member `index` (`TEXT_*`), empty past the last.
-    pub(crate) fn text(&self, index: usize) -> std::sync::Arc<[u8]> {
-        self.texts
-            .get(index)
-            .map_or_else(Default::default, |text| std::sync::Arc::clone(&lock(text)))
+    fn slot(&self, kind: ServerText) -> &std::sync::Mutex<std::sync::Arc<[u8]>> {
+        let [chroot, user, group, pid_file, document_root] = &self.texts;
+        match kind {
+            ServerText::Chroot => chroot,
+            ServerText::User => user,
+            ServerText::Group => group,
+            ServerText::PidFile => pid_file,
+            ServerText::DocumentRoot => document_root,
+        }
     }
 
-    /// Sets text member `index` (`TEXT_*`); none past the last.
-    pub(crate) fn set_text(&self, index: usize, value: &[u8]) {
-        if let Some(text) = self.texts.get(index) {
-            *lock(text) = value.into();
-        }
+    /// Text member `kind`.
+    pub(crate) fn text(&self, kind: ServerText) -> std::sync::Arc<[u8]> {
+        std::sync::Arc::clone(&lock(self.slot(kind)))
+    }
+
+    /// Sets text member `kind`.
+    pub(crate) fn set_text(&self, kind: ServerText, value: &[u8]) {
+        *lock(self.slot(kind)) = value.into();
     }
 
     /// `Server::set_document_root(path)`: the path's real path, if it exists.
     pub(crate) fn set_document_root(&self, path: &[u8]) -> bool {
         /// `SW_LOG_WARNING`.
-        const LOG_WARNING: c_int = 4;
+        const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
         use std::os::unix::ffi::OsStrExt;
         let origin = c"Server::set_document_root";
         if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
@@ -203,7 +215,7 @@ impl ServerState {
             swoole_rs_corebase::log::error_log(LOG_WARNING, code, origin, m);
             return false;
         };
-        self.set_text(TEXT_DOCUMENT_ROOT, real.as_os_str().as_bytes());
+        self.set_text(ServerText::DocumentRoot, real.as_os_str().as_bytes());
         true
     }
 
@@ -211,8 +223,9 @@ impl ServerState {
     /// configured group and user, then chroots.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn set_isolation(&self) {
-        let text = |index| CString::new(&*self.text(index)).unwrap_or_default();
-        let (root, user, group) = (text(0), text(1), text(2));
+        let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
+        let root = text(ServerText::Chroot);
+        let (user, group) = (text(ServerText::User), text(ServerText::Group));
         swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
 
@@ -365,7 +378,7 @@ impl ServerState {
 
     /// The master's pid in the pid file, when there is one.
     pub(crate) fn write_pid(&self) {
-        let file = self.text(TEXT_PID_FILE);
+        let file = self.text(ServerText::PidFile);
         if !file.is_empty() {
             let pid = std::process::id().cast_signed().to_string();
             swoole_rs_ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
@@ -374,7 +387,7 @@ impl ServerState {
 
     /// The pid file removed, when there is one.
     pub(crate) fn unlink_pid(&self) {
-        let file = self.text(TEXT_PID_FILE);
+        let file = self.text(ServerText::PidFile);
         if !file.is_empty() {
             swoole_rs_corebase::sys::unlink(&c_path(&file));
         }
@@ -469,7 +482,7 @@ pub(crate) mod tests {
         assert!(state.set_document_root(dotted.to_str().unwrap().as_bytes()));
         let real = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(
-            &*state.text(TEXT_DOCUMENT_ROOT),
+            &*state.text(ServerText::DocumentRoot),
             real.to_str().unwrap().as_bytes(),
             "the real path"
         );
@@ -480,7 +493,7 @@ pub(crate) mod tests {
         let long = vec![b'a'; usize::try_from(libc::PATH_MAX).unwrap() + 1];
         assert!(!state.set_document_root(&long), "too long");
         assert_eq!(
-            &*state.text(TEXT_DOCUMENT_ROOT),
+            &*state.text(ServerText::DocumentRoot),
             real.to_str().unwrap().as_bytes(),
             "failures keep the root"
         );
@@ -507,10 +520,9 @@ pub(crate) mod tests {
     #[test]
     fn texts_and_the_lock_are_answered_without_native() {
         let state = ServerState::new();
-        state.set_text(TEXT_DOCUMENT_ROOT, b"/srv/www");
-        assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
-        assert_eq!(&*state.text(TEXT_PID_FILE), b"");
-        assert!(state.text(TEXT_COUNT).is_empty());
+        state.set_text(ServerText::DocumentRoot, b"/srv/www");
+        assert_eq!(&*state.text(ServerText::DocumentRoot), b"/srv/www");
+        assert_eq!(&*state.text(ServerText::PidFile), b"");
 
         let state = std::sync::Arc::new(state);
         state.lock();
@@ -553,7 +565,7 @@ pub(crate) mod tests {
         state.unlink_pid();
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
-        state.set_text(TEXT_PID_FILE, bytes);
+        state.set_text(ServerText::PidFile, bytes);
         state.write_pid();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

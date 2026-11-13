@@ -168,7 +168,7 @@ pub extern "C" fn system_waitpid_safe(
     options: c_int,
 ) -> libc::pid_t {
     /// `SW_OK`, `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
-    const OK: c_int = 0;
+    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     const LOCK_DEFAULT_SECOND: f64 = 0.001;
     const LOCK_MAX_SECOND: f64 = 0.1;
     // crates/hooks's, a safe function there; declared, since crates/hooks

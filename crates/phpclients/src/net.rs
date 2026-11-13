@@ -117,11 +117,11 @@ impl Conn {
         self.released.get()
     }
 
-    pub(crate) fn flag(&self, name: u32) -> bool {
+    pub(crate) fn flag(&self, name: state::Flag) -> bool {
         self.cli.get().flag(name)
     }
 
-    pub(crate) fn set_flag(&self, name: u32, value: bool) {
+    pub(crate) fn set_flag(&self, name: state::Flag, value: bool) {
         self.cli.get().set(name, value);
     }
 
@@ -495,11 +495,11 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
     if let Some(conn) = conn(call)
         && conn.has_socket()
     {
-        if conn.flag(state::ACTIVE) {
+        if conn.flag(state::Flag::Active) {
             return Some(conn);
         }
-        if conn.flag(state::ASYNC_CONNECT) {
-            conn.set_flag(state::ASYNC_CONNECT, false);
+        if conn.flag(state::Flag::AsyncConnect) {
+            conn.set_flag(state::Flag::AsyncConnect, false);
             let mut error: c_int = -1;
             if swoole_rs_corebase::sys::getsockopt_int(
                 conn.fd(),
@@ -509,7 +509,7 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
             ) == 0
                 && error == 0
             {
-                conn.set_flag(state::ACTIVE, true);
+                conn.set_flag(state::Flag::Active, true);
                 return Some(conn);
             }
             bailed(release(object, conn))?;
@@ -715,10 +715,10 @@ fn connect(call: &Call) {
         return call.set_bool(false);
     };
     this(call).set_conn(Some(conn.clone()));
-    if conn.keep && conn.flag(state::ACTIVE) {
+    if conn.keep && conn.flag(state::Flag::Active) {
         object.props().bool(c"reuse", true);
         return call.set_bool(true);
-    } else if conn.flag(state::ACTIVE) {
+    } else if conn.flag(state::Flag::Active) {
         warn(
             ErrorKind::Fatal,
             "connection to the server has already been established",
@@ -749,7 +749,7 @@ fn connect(call: &Call) {
     }
     if result < 0 {
         set_err_code(object, last_error());
-        if conn.flag(state::ASYNC_CONNECT) {
+        if conn.flag(state::Flag::AsyncConnect) {
             return call.set_bool(true);
         }
         let error = last_error();
@@ -817,7 +817,7 @@ fn sendto(call: &Call) {
         let Some(conn) = connection(object, host, port) else {
             return call.set_bool(false);
         };
-        conn.set_flag(state::ACTIVE, true);
+        conn.set_flag(state::Flag::Active, true);
         this(call).set_conn(Some(conn));
     }
     let Some(conn) = conn(call) else {
@@ -879,7 +879,7 @@ fn sendfile(call: &Call) {
 /// Run an IO `op`: a sync client raises no callbacks, so only an async one
 /// needs the `zend_try` frame.
 fn io(cli: Cli, op: Op<'_>) -> Result<i64, Bailout> {
-    if cli.get().flag(state::ASYNC) {
+    if cli.get().flag(state::Flag::Async) {
         cli.run(op)
     } else {
         Ok(cli.run_plain(op))
@@ -1141,7 +1141,7 @@ pub(crate) fn is_connected(call: &Call) {
     if !conn.has_socket() {
         return call.set_bool(false);
     }
-    call.set_bool(conn.flag(state::ACTIVE));
+    call.set_bool(conn.flag(state::Flag::Active));
 }
 
 /// `getsockname(): array|false`.
@@ -1220,7 +1220,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    if conn.flag(state::CLOSED) {
+    if conn.flag(state::Flag::Closed) {
         warn(ErrorKind::Error, "client socket is closed");
         return call.set_bool(false);
     }
@@ -1229,8 +1229,8 @@ fn close(call: &Call) {
     if force
         || Rc::strong_count(&conn) > 2
         || !conn.keep
-        || conn.flag(state::SHUTDOWN_READ)
-        || conn.flag(state::SHUTDOWN_WRITE)
+        || conn.flag(state::Flag::ShutdownRead)
+        || conn.flag(state::Flag::ShutdownWrite)
         || !conn.alive()
     {
         let Some(result) = bailed(conn.cli.run(Op::Close)) else {

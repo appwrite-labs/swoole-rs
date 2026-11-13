@@ -217,7 +217,7 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
 }
 
 /// `SW_LOG_TRACE`.
-const SW_LOG_TRACE: c_int = 1;
+const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 /// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
@@ -225,8 +225,8 @@ const SENDFILE_TASK_SIZE: usize = 16;
 /// `SW_SERVER_EVENT_SEND_FILE`.
 const EVENT_SEND_FILE: u8 = 3;
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = 4;
-const SW_LOG_ERROR: c_int = 5;
+const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]

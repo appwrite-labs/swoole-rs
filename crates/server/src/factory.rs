@@ -18,7 +18,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
     use swoole_rs_reactor::signal_upstream::{self, Handler};
     /// `SW_FD_PIPE` and `SW_EVENT_READ`.
     const SW_FD_PIPE: c_int = 3;
-    const SW_EVENT_READ: c_int = 1 << 9;
+    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
     let ok = |done: bool| if done { 0 } else { -1 };
     let state = serv.state();
     match step {

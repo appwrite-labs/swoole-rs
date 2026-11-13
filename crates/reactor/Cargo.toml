@@ -12,6 +12,7 @@ upstream-symbols = ["swoole-rs-coroutine/upstream-symbols"]
 [dependencies]
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-error = { path = "../error" }
 swoole-rs-coroutine = { path = "../coroutine" }
 swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-process = { path = "../process" }

@@ -7,10 +7,10 @@ use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
-const WAIT: c_int = 2;
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const ERR: c_int = -1;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
+const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait OutputEffects {
@@ -30,8 +30,9 @@ fn classify(hooks: &impl OutputEffects) -> c_int {
 }
 
 /// What the caller applies after `handle_send`/`handle_sendfile`: pop the front
-/// chunk, store `offset` into it, set `close_wait`/`send_wait`, and warn (1 the data
-/// send failed, 2 the sendfile of `requested` bytes failed). `code` is returned.
+/// chunk, store `offset` into it, set `close_wait`/`send_wait`, and warn that the
+/// send failed (the sendfile of `requested` bytes, for `handle_sendfile`). `code` is
+/// returned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputResult {
     pub code: c_int,
@@ -40,7 +41,7 @@ pub struct OutputResult {
     pub offset: u32,
     pub close_wait: bool,
     pub send_wait: bool,
-    pub warn: c_int,
+    pub warn: bool,
     pub requested: usize,
 }
 
@@ -71,7 +72,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
     let sent = hooks.send(rest);
     if sent < 0 {
         match classify(hooks) {
-            ERROR => result.warn = 1,
+            ERROR => result.warn = true,
             CLOSE => (result.close_wait, result.code) = (true, ERR),
             WAIT => (result.send_wait, result.code) = (true, ERR),
             _ => {}
@@ -126,7 +127,7 @@ pub fn sendfile_sent(
         match classify(hooks) {
             ERROR => {
                 return OutputResult {
-                    warn: 2,
+                    warn: true,
                     requested,
                     pop: true,
                     ..result
@@ -220,7 +221,7 @@ mod tests {
     use super::*;
     use std::os::raw::c_void;
 
-    const OK: c_int = 0;
+    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -422,7 +423,7 @@ mod tests {
         assert_eq!(
             run(-1, libc::EINVAL, 10, 0),
             OutputResult {
-                warn: 1,
+                warn: true,
                 ..Default::default()
             }
         );
@@ -476,7 +477,7 @@ mod tests {
             failed,
             OutputResult {
                 pop: true,
-                warn: 2,
+                warn: true,
                 requested: 10,
                 ..Default::default()
             }

@@ -17,18 +17,20 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{EventType, ReturnCode, SocketFlag};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
-    SyncEffects, handle_send_owned, record_peek, record_recv, record_send, sendfile_chunk,
-    ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync,
-    type_is, what_event_want,
+    SslSendfileWarning, SyncEffects, handle_send_owned, record_peek, record_recv, record_send,
+    sendfile_chunk, ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
+    swr_v1_socket_sync, type_is, what_event_want,
 };
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
@@ -37,25 +39,23 @@ unsafe extern "C" {
     safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
 }
 
-/// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY`, `SW_ERROR_INVALID_PARAMS`,
-/// `SW_ERROR_SSL_VERIFY_FAILED` and `SW_ERROR_SSL_BAD_PROTOCOL`.
-const LOG_NOTICE: c_int = 3;
+/// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = 702;
 const INVALID_PARAMS: c_int = 505;
 /// `SW_SOCKET_CORK_MIN_SIZE` and the typed queue's `SWR_BUFFER_EMPTY`.
 const CORK_MIN_SIZE: usize = 65536;
-/// `SW_FD_STREAM_SERVER` and `SW_SOCK_CLOEXEC`.
+/// `SW_FD_STREAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
-const SOCK_CLOEXEC: c_int = 1 << 3;
+const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const BUFFER_EMPTY: i32 = 1;
-const VERIFY_FAILED: c_int = 1014;
-const BAD_PROTOCOL: c_int = 1016;
-/// `swReturnCode`'s `SW_CLOSE` and `SW_ERROR`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
+const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
+const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
+const CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -698,10 +698,12 @@ fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: u
     if nobufs {
         socket.edit(|record| record.kernel_nobufs = true);
     }
-    if result.warn == 1 {
-        log::sys_warning(c"Socket::ssl_sendfile", format_args!("write() failed"));
-    } else if result.warn == 2 {
-        log::sys_warning(c"Socket::ssl_sendfile", format_args!("pread() failed"));
+    if let Some(warning) = result.warn {
+        let call = match warning {
+            SslSendfileWarning::Write => "write",
+            SslSendfileWarning::Pread => "pread",
+        };
+        log::sys_warning(c"Socket::ssl_sendfile", format_args!("{call}() failed"));
     }
     result.value
 }
@@ -886,7 +888,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
         )
     });
     buffer_check(output.status);
-    if output.result.warn == 1 {
+    if output.result.warn {
         let fd = record.fd();
         log::sys_warning(
             c"Socket::handle_send",
@@ -924,7 +926,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     }
     let result = request.sent(&hooks, rv, requested);
     socket.edit(|record| result.publish(&mut record.output));
-    if result.warn == 2 {
+    if result.warn {
         let at = request.fields().begin;
         let name = String::from_utf8_lossy(request.path());
         log::sys_warning(

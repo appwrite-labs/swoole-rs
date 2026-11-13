@@ -13,13 +13,13 @@ use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event}
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
     Drain, Event, FlushEffects, Running, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects,
-    WritePayload,
+    WriteError, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `Reactor::interest` kinds.
 const ADD_WRITE: u32 = 3;
 const REMOVE_WRITE: u32 = 5;
@@ -91,16 +91,15 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
     let result =
         unsafe { swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops) };
     let origin = c"Reactor::write_func";
-    match result.outcome {
-        0 => return result.value,
-        1 => log::error_log(
+    match result {
+        Ok(value) => return value,
+        Err(WriteError::TooLarge) => log::error_log(
             log::LOG_WARNING,
             SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,
             origin,
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
         ),
-        2 => {
-            let queued = result.value;
+        Err(WriteError::Overflow(queued)) => {
             let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
             log::error_log(
                 log::LOG_WARNING,
@@ -109,7 +108,9 @@ unsafe fn write(reactor: *mut c_void, socket: Socket<'_>, payload: &WritePayload
                 format_args!("socket#{fd} output buffer overflow: ({queued}/{size})"),
             );
         }
-        _ => log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
+        Err(WriteError::Send) => {
+            log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+        }
     }
     -1
 }

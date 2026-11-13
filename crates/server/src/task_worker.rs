@@ -21,7 +21,7 @@ const TASK_IPC_PREEMPTIVE: u8 = 3;
 /// `SW_SERVER_EVENT_PIPE_MESSAGE`.
 const EVENT_PIPE_MESSAGE: u8 = 10;
 /// `SW_LOG_WARNING`, `SW_ERROR_WRONG_OPERATION`.
-const SW_LOG_WARNING: i32 = 4;
+const SW_LOG_WARNING: i32 = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as i32;
 const WRONG_OPERATION: i32 = 509;
 
 /// Whether task workers over IPC `mode` may run coroutines: a coroutine task worker

@@ -214,14 +214,14 @@ pub fn http_chunked(bytes: &[u8]) {
     let Some((&[kind, step], body)) = bytes.split_first_chunk::<2>() else {
         return;
     };
-    let (kind, head): (u8, &[u8]) = if kind & 1 == 0 {
+    let (kind, head): (llhttp::Kind, &[u8]) = if kind & 1 == 0 {
         (
-            llhttp::REQUEST,
+            llhttp::Kind::Request,
             b"POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n",
         )
     } else {
         (
-            llhttp::RESPONSE,
+            llhttp::Kind::Response,
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
         )
     };

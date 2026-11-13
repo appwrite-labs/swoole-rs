@@ -58,48 +58,76 @@ use tests::{
 };
 
 /// The flags [`Client::flag`] reads.
-pub const ACTIVE: u32 = 0;
-pub const CLOSED: u32 = 1;
-pub const ASYNC: u32 = 2;
-pub const SHUTDOWN_READ: u32 = 3;
-pub const SHUTDOWN_WRITE: u32 = 4;
-pub const ASYNC_CONNECT: u32 = 5;
-pub const WAIT_DNS: u32 = 6;
-pub const ONERROR_CALLED: u32 = 7;
-pub const OPEN_SSL: u32 = 8;
-const DNS_COMPLETED: u32 = 9;
-const HOST_PRESET: u32 = 10;
-const HIGH_WATERMARK: u32 = 11;
-/// `enable_dtls()` ran: send and receive as a stream client does.
-const DTLS: u32 = 12;
-const STREAM: u32 = 13;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Flag {
+    Active,
+    Closed,
+    Async,
+    ShutdownRead,
+    ShutdownWrite,
+    AsyncConnect,
+    WaitDns,
+    OnerrorCalled,
+    OpenSsl,
+    DnsCompleted,
+    HostPreset,
+    HighWatermark,
+    /// `enable_dtls()` ran: send and receive as a stream client does.
+    Dtls,
+    Stream,
+}
 
-/// The events a [`Listener`] hears: bit `1 << event` of
-/// [`listen`]'s mask is set for each it wants.
-pub const ON_CONNECT: c_int = 1;
-pub const ON_RECEIVE: c_int = 2;
-pub const ON_CLOSE: c_int = 3;
-pub const ON_ERROR: c_int = 4;
-pub const ON_BUFFER_FULL: c_int = 5;
-pub const ON_BUFFER_EMPTY: c_int = 6;
+impl Flag {
+    const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
+
+/// The events a [`Listener`] hears; [`listen`]'s mask holds [`ClientEvent::bit`] of
+/// each it wants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ClientEvent {
+    Connect = 1,
+    Receive,
+    Close,
+    Error,
+    BufferFull,
+    BufferEmpty,
+}
+
+impl ClientEvent {
+    /// The event's bit in [`listen`]'s mask.
+    #[must_use]
+    pub const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+}
 
 /// The client's callbacks: `listener(event, data, length)`, with `data`
-/// holding the `length` received bytes for [`ON_RECEIVE`] (lent for the call:
-/// the listener may free the client, and with it the buffer), and the last
-/// error as `length` for [`ON_ERROR`].
-pub type Listener = Rc<dyn Fn(c_int, *const c_char, usize)>;
+/// holding the `length` received bytes for [`ClientEvent::Receive`] (lent for the
+/// call: the listener may free the client, and with it the buffer), and the last
+/// error as `length` for [`ClientEvent::Error`].
+pub type Listener = Rc<dyn Fn(ClientEvent, *const c_char, usize)>;
 
 /// The socket's connect modes: `connect_async` (returns `SW_READY`, `SW_WAIT` or
 /// `SW_ERROR`), `connect_sync`, and `connect(2)`.
-const CONNECT_ASYNC: c_int = 0;
-const CONNECT_SYNC: c_int = 1;
-const CONNECT_RAW: c_int = 2;
+#[derive(Clone, Copy, Debug)]
+enum ConnectMode {
+    Async,
+    Sync,
+    Raw,
+}
 
 /// The reactor's `swoole_event_*` operations on the socket.
-const EVENT_ADD: c_int = 0;
-const EVENT_SET: c_int = 1;
-const EVENT_DEL: c_int = 2;
-const EVENT_ADD_OR_UPDATE: c_int = 3;
+#[derive(Clone, Copy, Debug)]
+enum EventOp {
+    Add,
+    Set,
+    Del,
+    AddOrUpdate,
+}
 
 /// Swoole's constants this file uses.
 const OK: c_int = ResultCode::SW_OK as c_int;
@@ -128,12 +156,12 @@ pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// The proxy states of `native/protocols/swoole_proxy.h`, which asserts them.
-const SOCKS5_WAIT: c_int = 0;
-const SOCKS5_HANDSHAKE: c_int = 1;
-const SOCKS5_READY: c_int = 4;
-const HTTP_PROXY_WAIT: c_int = 0;
-const HTTP_PROXY_READY: c_int = 2;
+/// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
+pub const SOCKS5_WAIT: c_int = 0;
+pub const SOCKS5_HANDSHAKE: c_int = 1;
+pub const SOCKS5_READY: c_int = 4;
+pub const HTTP_PROXY_WAIT: c_int = 0;
+pub const HTTP_PROXY_READY: c_int = 2;
 const ERROR_OPERATION_NOT_SUPPORT: c_int = ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
 const ERROR_BAD_HOST_ADDR: c_int = ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
@@ -311,7 +339,7 @@ pub struct Client {
     high_watermark: Cell<u32>,
     low_watermark: Cell<u32>,
     listener: Cell<Option<Listener>>,
-    /// `1 << event` for each event the listener hears.
+    /// [`ClientEvent::bit`] for each event the listener hears.
     events: Cell<u32>,
     /// The `SSLContext`, none while TLS is off.
     tls: OnceCell<TlsContext>,
@@ -377,13 +405,13 @@ impl Client {
         result
     }
 
-    /// One of the flags above; false for any other.
-    pub fn flag(&self, name: u32) -> bool {
-        self.flags.get() & (1 << name) != 0
+    #[must_use]
+    pub fn flag(&self, name: Flag) -> bool {
+        self.flags.get() & name.bit() != 0
     }
 
-    pub fn set(&self, name: u32, value: bool) {
-        let bit = 1 << name;
+    pub fn set(&self, name: Flag, value: bool) {
+        let bit = name.bit();
         self.flags.set(if value {
             self.flags.get() | bit
         } else {
@@ -412,11 +440,11 @@ impl Handle {
         unsafe { &*self.0 }
     }
 
-    fn flag(self, name: u32) -> bool {
+    fn flag(self, name: Flag) -> bool {
         self.get().flag(name)
     }
 
-    fn set(self, name: u32, value: bool) {
+    fn set(self, name: Flag, value: bool) {
         self.get().set(name, value);
     }
 
@@ -456,19 +484,19 @@ impl Handle {
         self.socket().edit(|socket| socket.removed = true);
     }
 
-    fn has(self, event: c_int) -> bool {
-        self.get().events.get() & (1 << event) != 0
+    fn has(self, event: ClientEvent) -> bool {
+        self.get().events.get() & event.bit() != 0
     }
 
     /// Runs the user callback for `event`, if the listener hears it. The client
     /// may be gone afterwards: the call holds its own reference to the listener.
-    fn call(self, event: c_int, data: *const c_char, length: usize) {
+    fn call(self, event: ClientEvent, data: *const c_char, length: usize) {
         let held = self.get().listener.take();
         self.get().listener.set(held.clone());
         let Some(listener) = held.filter(|_| self.has(event)) else {
             return;
         };
-        let length = if event == ON_ERROR {
+        let length = if event == ClientEvent::Error {
             log::last_error().unsigned_abs() as usize
         } else {
             length
@@ -477,7 +505,7 @@ impl Handle {
         listener(event, data, length);
     }
 
-    fn event(self, op: c_int, events: c_int) -> c_int {
+    fn event(self, op: EventOp, events: c_int) -> c_int {
         ops::event(self, op, events)
     }
 
@@ -680,7 +708,7 @@ impl Handle {
     /// `execute_onConnect`.
     fn on_connect(self) {
         self.timer_clear();
-        self.call(ON_CONNECT, core::ptr::null(), 0);
+        self.call(ClientEvent::Connect, core::ptr::null(), 0);
     }
 }
 
@@ -713,7 +741,7 @@ unsafe extern "C-unwind" fn on_package(
     // SAFETY: per the caller, the package.
     let package = unsafe { &*package.cast::<RecvData>() };
     Handle(socket.read(|socket| socket.object).cast()).call(
-        ON_RECEIVE,
+        ClientEvent::Receive,
         package.data,
         package.info.len as usize,
     );
@@ -761,7 +789,7 @@ pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
 }
 
 /// `Client::onConnect` and the rest: `listener(event, ...)` for each event in
-/// `events` (`1 << ON_*`).
+/// `events` ([`ClientEvent::bit`]s).
 pub fn listen(client: &Client, events: u32, listener: Listener) {
     drop(client.listener.replace(Some(listener)));
     client.events.set(events);
@@ -831,7 +859,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         http_proxy: Cell::new(None),
         length_owner: Cell::new(None),
     });
-    client.set(ASYNC, is_async);
+    client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
     fields.socket = record.as_ptr();
     fields.remote_addr.kind = kind;
@@ -843,7 +871,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         record.chunk_size = SEND_BUFFER_SIZE;
         record.socket_type
     });
-    client.set(STREAM, is_stream(socket_type));
+    client.set(Flag::Stream, is_stream(socket_type));
     let mut kind_out = 0;
     swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
     let client = Box::into_raw(client);
@@ -929,7 +957,7 @@ impl Handle {
             Op::Wakeup => wakeup(self).into(),
             Op::SslHandshake => ssl_handshake(self).into(),
             Op::SslVerify(allow_self_signed) => ssl_verify(self, allow_self_signed).into(),
-            Op::SslWait => self.event(EVENT_SET, EVENT_WRITE).into(),
+            Op::SslWait => self.event(EventOp::Set, EVENT_WRITE).into(),
         }
     }
 
@@ -962,13 +990,13 @@ impl Handle {
     /// # Safety
     /// Neither this handle nor a copy of it is used afterwards.
     pub unsafe fn free(self) {
-        if !self.flag(CLOSED) {
+        if !self.flag(Flag::Closed) {
             close(self);
         }
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
-        if self.flag(ASYNC) {
+        if self.flag(Flag::Async) {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
@@ -1036,12 +1064,12 @@ fn package_length(this: Handle, data: &[u8]) -> isize {
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
 /// released the client, else `close(2)`'s result.
 fn close(this: Handle) -> c_int {
-    if this.socket_ptr().is_null() || this.flag(CLOSED) {
+    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
         return ERR;
     }
-    this.set(CLOSED, true);
+    this.set(Flag::Closed, true);
     let saved = this.socket();
-    if this.flag(OPEN_SSL)
+    if this.flag(Flag::OpenSsl)
         && this.get().tls.get().is_some()
         && !saved.read(|socket| socket.ssl().is_null())
     {
@@ -1056,18 +1084,18 @@ fn close(this: Handle) -> c_int {
             swoole_rs_corebase::sys::unlink(path);
         }
     }
-    if this.flag(ASYNC) {
+    if this.flag(Flag::Async) {
         if !saved.read(|socket| socket.removed) {
-            this.event(EVENT_DEL, 0);
+            this.event(EventOp::Del, 0);
         }
         this.timer_clear();
-        if this.flag(ACTIVE) {
-            this.set(ACTIVE, false);
+        if this.flag(Flag::Active) {
+            this.set(Flag::Active, false);
             // onClose may destroy the client: only the saved socket is read after it.
-            this.call(ON_CLOSE, core::ptr::null(), 0);
+            this.call(ClientEvent::Close, core::ptr::null(), 0);
         }
     } else {
-        this.set(ACTIVE, false);
+        this.set(Flag::Active, false);
     }
     // The saved record's free is deferred past this call.
     let Some(fd) = saved
@@ -1081,21 +1109,21 @@ fn close(this: Handle) -> c_int {
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
 fn shutdown(this: Handle, how: c_int) -> c_int {
-    if this.socket_ptr().is_null() || this.flag(CLOSED) {
+    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
         return ERR;
     }
     let fd = this.socket().fd();
     let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
-        libc::SHUT_RD if this.flag(SHUTDOWN_READ) || call(how) != 0 => ERR,
-        libc::SHUT_WR if this.flag(SHUTDOWN_WRITE) || call(how) < 0 => ERR,
+        libc::SHUT_RD if this.flag(Flag::ShutdownRead) || call(how) != 0 => ERR,
+        libc::SHUT_WR if this.flag(Flag::ShutdownWrite) || call(how) < 0 => ERR,
         libc::SHUT_RDWR if call(how) < 0 => ERR,
         libc::SHUT_RD | libc::SHUT_RDWR => {
-            this.set(SHUTDOWN_READ, true);
+            this.set(Flag::ShutdownRead, true);
             OK
         }
         libc::SHUT_WR => {
-            this.set(SHUTDOWN_WRITE, true);
+            this.set(Flag::ShutdownWrite, true);
             OK
         }
         _ => {
@@ -1108,18 +1136,18 @@ fn shutdown(this: Handle, how: c_int) -> c_int {
 /// `Client::sleep()`: stop reading (keeping write interest).
 fn sleep(this: Handle) -> c_int {
     if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
-        this.event(EVENT_SET, EVENT_WRITE)
+        this.event(EventOp::Set, EVENT_WRITE)
     } else {
-        this.event(EVENT_DEL, 0)
+        this.event(EventOp::Del, 0)
     }
 }
 
 /// `Client::wakeup()`: read again.
 fn wakeup(this: Handle) -> c_int {
     if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
-        this.event(EVENT_SET, EVENT_READ | EVENT_WRITE)
+        this.event(EventOp::Set, EVENT_READ | EVENT_WRITE)
     } else {
-        this.event(EVENT_ADD, EVENT_READ)
+        this.event(EventOp::Add, EVENT_READ)
     }
 }
 
@@ -1130,7 +1158,7 @@ fn enable_ssl(this: Handle) -> Option<NonNull<OwnedTlsContext>> {
     if this.get().tls.set(TlsContext::new()).is_err() {
         return None;
     }
-    this.set(OPEN_SSL, true);
+    this.set(Flag::OpenSsl, true);
     if is_dgram(this.socket_type()) {
         enable_dtls(this);
     }
@@ -1176,7 +1204,7 @@ fn enable_dtls(this: Handle) {
         socket.dtls = true;
         socket.chunk_size = SSL_BUFFER_SIZE;
     });
-    this.set(DTLS, true);
+    this.set(Flag::Dtls, true);
 }
 
 /// `Client::ssl_handshake()`.
@@ -1245,7 +1273,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
     let (mut host, mut port) = (host, port);
     // The last proxy's host, NUL-terminated, which `host` borrows.
     let mut proxy_host;
-    if !this.flag(HOST_PRESET) {
+    if !this.flag(Flag::HostPreset) {
         for which in [Proxy::Socks5, Proxy::Http] {
             let Some(proxy) = this.proxy(which) else {
                 continue;
@@ -1259,12 +1287,12 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
         }
         host.clone_into(&mut this.get().server_host.borrow_mut());
         this.get().server_port.set(port);
-        this.set(HOST_PRESET, true);
+        this.set(Flag::HostPreset, true);
     }
-    let resolve = !this.flag(ASYNC);
+    let resolve = !this.flag(Flag::Async);
     if !ops::assign(this, host, port, resolve) {
-        if !this.flag(DNS_COMPLETED) && log::last_error() == ERROR_BAD_HOST_ADDR {
-            this.set(WAIT_DNS, true);
+        if !this.flag(Flag::DnsCompleted) && log::last_error() == ERROR_BAD_HOST_ADDR {
+            this.set(Flag::WaitDns, true);
         } else {
             return ERR;
         }
@@ -1325,9 +1353,9 @@ extern "C" fn resolve_completed(event: &AsyncEvent) {
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
 fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> c_int {
-    if !this.flag(STREAM) {
+    if !this.flag(Flag::Stream) {
         udp_connect(this, host, port, timeout, flags)
-    } else if this.flag(ASYNC) {
+    } else if this.flag(Flag::Async) {
         tcp_connect_async(this, host, port, timeout)
     } else {
         tcp_connect_sync(this, host, port, timeout, flags != 0)
@@ -1344,20 +1372,20 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         return ERR;
     }
     if nonblock {
-        let rc = ops::connect(this, CONNECT_ASYNC);
+        let rc = ops::connect(this, ConnectMode::Async);
         if rc == SW_READY {
             return OK;
         }
         if rc == SW_WAIT {
-            this.set(ASYNC_CONNECT, true);
+            this.set(Flag::AsyncConnect, true);
         }
         return ERR;
     }
-    let ret = ops::connect(this, CONNECT_SYNC);
+    let ret = ops::connect(this, ConnectMode::Sync);
     if ret < 0 {
         return ret;
     }
-    this.set(ACTIVE, true);
+    this.set(Flag::Active, true);
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
     if this.proxy_state(Proxy::Socks5) >= 0 {
@@ -1394,7 +1422,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
     {
         return ERR;
     }
-    if this.flag(OPEN_SSL) && ssl_handshake(this) < 0 {
+    if this.flag(Flag::OpenSsl) && ssl_handshake(this) < 0 {
         return ERR;
     }
     ret
@@ -1402,9 +1430,14 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
 
 /// `Client_tcp_connect_async`: a nonblocking connect finished by the write handler.
 fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_int {
-    if ![ON_CONNECT, ON_ERROR, ON_CLOSE, ON_RECEIVE]
-        .into_iter()
-        .all(|which| this.has(which))
+    if ![
+        ClientEvent::Connect,
+        ClientEvent::Error,
+        ClientEvent::Close,
+        ClientEvent::Receive,
+    ]
+    .into_iter()
+    .all(|which| this.has(which))
     {
         log::warning(
             c"Client_tcp_connect_async",
@@ -1414,7 +1447,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
     }
     this.set_timeout(timeout);
     this.input_init();
-    if this.has(ON_BUFFER_FULL) && this.get().high_watermark.get() == 0 {
+    if this.has(ClientEvent::BufferFull) && this.get().high_watermark.get() == 0 {
         let mark = (f64::from(this.socket().read(|socket| socket.output.buffer_size)) * 0.8)
             .c_cast::<u32>();
         this.get().high_watermark.set(mark);
@@ -1422,11 +1455,11 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
     if inet_addr(this, host, port) < 0 {
         return ERR;
     }
-    if this.flag(WAIT_DNS) {
+    if this.flag(Flag::WaitDns) {
         return dns_lookup(this);
     }
     let ret = loop {
-        let ret = ops::connect(this, CONNECT_RAW);
+        let ret = ops::connect(this, ConnectMode::Raw);
         let error = errno();
         if ret < 0 && error == libc::EINTR {
             continue;
@@ -1442,23 +1475,23 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
                     return ERR;
                 }
             }
-            return this.event(EVENT_ADD, EVENT_WRITE);
+            return this.event(EventOp::Add, EVENT_WRITE);
         }
         break ret;
     };
-    this.set(ACTIVE, false);
+    this.set(Flag::Active, false);
     this.mark_removed();
     close(this);
-    if this.has(ON_ERROR) {
-        this.set(ONERROR_CALLED, true);
-        this.call(ON_ERROR, core::ptr::null(), 0);
+    if this.has(ClientEvent::Error) {
+        this.set(Flag::OnerrorCalled, true);
+        this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
     ret
 }
 
 /// `Client_udp_connect`.
 fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect: c_int) -> c_int {
-    let is_async = this.flag(ASYNC);
+    let is_async = this.flag(Flag::Async);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
         ops::kernel_timeout(this, timeout);
@@ -1467,16 +1500,16 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     if inet_addr(this, host, port) < 0 {
         return ERR;
     }
-    if is_async && !this.has(ON_RECEIVE) {
+    if is_async && !this.has(ClientEvent::Receive) {
         log::warning(
             c"Client_udp_connect",
             format_args!("`onReceive` callback have not set"),
         );
         return ERR;
     }
-    if this.flag(WAIT_DNS) && is_async {
+    if this.flag(Flag::WaitDns) && is_async {
         // Without onError a failed lookup would go unreported.
-        if !this.has(ON_ERROR) {
+        if !this.has(ClientEvent::Error) {
             log::warning(
                 c"Client_udp_connect",
                 format_args!("`onError` callback have not set"),
@@ -1485,7 +1518,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         }
         return dns_lookup(this);
     }
-    this.set(ACTIVE, true);
+    this.set(Flag::Active, true);
     let fd = this.socket().fd();
     let default_size = SOCKET_DEFAULTS.buffer_size();
     swr_v1_socket_buffer_size(fd, true, true, default_size);
@@ -1496,30 +1529,30 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         return ERR;
     }
     let mut udp_connect = udp_connect;
-    if this.flag(OPEN_SSL) {
+    if this.flag(Flag::OpenSsl) {
         udp_connect = 1;
         enable_dtls(this);
     }
     if udp_connect == 1 {
-        if ops::connect(this, CONNECT_RAW) != 0 {
-            this.set(ACTIVE, false);
+        if ops::connect(this, ConnectMode::Raw) != 0 {
+            this.set(Flag::Active, false);
             this.mark_removed();
             close(this);
-            if is_async && this.has(ON_ERROR) {
-                this.set(ONERROR_CALLED, true);
-                this.call(ON_ERROR, core::ptr::null(), 0);
+            if is_async && this.has(ClientEvent::Error) {
+                this.set(Flag::OnerrorCalled, true);
+                this.call(ClientEvent::Error, core::ptr::null(), 0);
             }
             return ERR;
         }
         fd_clean(fd);
     }
-    if is_async && this.has(ON_CONNECT) {
-        if this.event(EVENT_ADD, EVENT_READ) < 0 {
+    if is_async && this.has(ClientEvent::Connect) {
+        if this.event(EventOp::Add, EVENT_READ) < 0 {
             return ERR;
         }
         this.on_connect();
     }
-    if this.flag(OPEN_SSL) && ssl_handshake(this) < 0 {
+    if this.flag(Flag::OpenSsl) && ssl_handshake(this) < 0 {
         return ERR;
     }
     OK
@@ -1557,10 +1590,7 @@ fn bind_unix(this: Handle) -> c_int {
 /// with recording doubles.
 #[cfg(not(test))]
 mod ops {
-    use super::{
-        CONNECT_ASYNC, CONNECT_SYNC, EVENT_ADD, EVENT_DEL, EVENT_SET, Handle, SocketRecord,
-        address_of,
-    };
+    use super::{ConnectMode, EventOp, Handle, SocketRecord, address_of};
     use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
@@ -1593,31 +1623,31 @@ mod ops {
         true
     }
 
-    /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
-    pub(super) fn connect(this: Handle, mode: c_int) -> c_int {
+    /// Connects the socket to `server_addr`, by `mode`; errno is the call's.
+    pub(super) fn connect(this: Handle, mode: ConnectMode) -> c_int {
         let socket = this.socket();
         let address = &this.record().server_addr;
         match mode {
-            CONNECT_ASYNC => {
+            ConnectMode::Async => {
                 socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
             }
-            CONNECT_SYNC => socket_upstream::connect_sync(socket, address),
-            _ => address.connect(socket.fd()),
+            ConnectMode::Sync => socket_upstream::connect_sync(socket, address),
+            ConnectMode::Raw => address.connect(socket.fd()),
         }
     }
 
-    /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket; -1 without a socket
+    /// The reactor's `swoole_event_*` on the socket; -1 without a socket
     /// or a reactor. The client's socket stays live while it is registered: `close`
     /// deletes it from the reactor before the record is freed.
-    pub(super) fn event(this: Handle, op: c_int, events: c_int) -> c_int {
+    pub(super) fn event(this: Handle, op: EventOp, events: c_int) -> c_int {
         let Some(socket) = this.get().socket() else {
             return -1;
         };
         match op {
-            EVENT_ADD => event_api::event_add(socket, events),
-            EVENT_SET => event_api::event_set(socket, events),
-            EVENT_DEL => event_api::event_del(socket),
-            _ => event_api::add_or_update(socket, events),
+            EventOp::Add => event_api::event_add(socket, events),
+            EventOp::Set => event_api::event_set(socket, events),
+            EventOp::Del => event_api::event_del(socket),
+            EventOp::AddOrUpdate => event_api::add_or_update(socket, events),
         }
     }
 
@@ -1661,7 +1691,7 @@ fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> c_int {
         );
         return ERR;
     }
-    let Some(address) = address_of(this.socket_type(), host, port, !this.flag(ASYNC)) else {
+    let Some(address) = address_of(this.socket_type(), host, port, !this.flag(Flag::Async)) else {
         return ERR;
     };
     let fd = this.socket().fd();
@@ -1674,9 +1704,9 @@ fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> c_int {
 
 /// `Client::send(data, length, flags)`.
 fn send(this: Handle, data: &[u8], flags: c_int) -> isize {
-    if this.flag(DTLS) || this.flag(STREAM) && !this.flag(ASYNC) {
+    if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
         net::send_sync(this.socket(), data, flags)
-    } else if this.flag(STREAM) {
+    } else if this.flag(Flag::Stream) {
         send_async(this, data)
     } else {
         let n = this.sendto(data);
@@ -1697,24 +1727,24 @@ fn send_async(this: Handle, data: &[u8]) -> isize {
             return ERR as isize;
         }
         n = -1;
-        this.set(HIGH_WATERMARK, true);
+        this.set(Flag::HighWatermark, true);
     }
-    if this.has(ON_BUFFER_FULL)
-        && !this.flag(HIGH_WATERMARK)
+    if this.has(ClientEvent::BufferFull)
+        && !this.flag(Flag::HighWatermark)
         && this.queued() >= this.get().high_watermark.get()
     {
-        this.set(HIGH_WATERMARK, true);
-        this.call(ON_BUFFER_FULL, core::ptr::null(), 0);
+        this.set(Flag::HighWatermark, true);
+        this.call(ClientEvent::BufferFull, core::ptr::null(), 0);
     }
     n
 }
 
 /// `Client::sendfile(file, offset, length)`.
 fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
-    if !this.flag(STREAM) {
+    if !this.flag(Flag::Stream) {
         return ERR;
     }
-    let is_async = this.flag(ASYNC);
+    let is_async = this.flag(Flag::Async);
     let socket = this.socket();
     let sent = if is_async {
         socket_sendfile_async(socket, file, offset, length)
@@ -1725,7 +1755,7 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
         log::set_last_error(errno());
         return ERR;
     }
-    if is_async && this.event(EVENT_ADD_OR_UPDATE, EVENT_WRITE) == ERR {
+    if is_async && this.event(EventOp::AddOrUpdate, EVENT_WRITE) == ERR {
         return ERR;
     }
     OK
@@ -1733,14 +1763,14 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
 
 /// `Client::recv(data, length, flags)`.
 fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    if this.flag(STREAM) || this.flag(DTLS) {
+    if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
         let n = net::recv_sync(this.socket(), buffer, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n == -1 && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
         }
         n
-    } else if this.flag(ASYNC) {
+    } else if this.flag(Flag::Async) {
         this.recvfrom_sync(buffer, flags)
     } else {
         this.recvfrom(buffer, flags)
@@ -1749,10 +1779,10 @@ fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
 
 /// A handshake in the read or write handler failed: close and report.
 fn connect_failed(this: Handle) -> c_int {
-    this.set(ACTIVE, false);
+    this.set(Flag::Active, false);
     close(this);
-    if this.has(ON_ERROR) {
-        this.call(ON_ERROR, core::ptr::null(), 0);
+    if this.has(ClientEvent::Error) {
+        this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
     OK
 }
@@ -1761,7 +1791,7 @@ fn connect_failed(this: Handle) -> c_int {
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> c_int {
     let Tail { str: buf, size } = this.input_tail();
-    let do_ssl_handshake = this.flag(OPEN_SSL);
+    let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http >= 0 && http != HTTP_PROXY_READY {
         let accepted = this.edit_input(|input, socket| {
@@ -1807,7 +1837,7 @@ fn on_read(this: Handle) -> c_int {
             return OK;
         }
     }
-    if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
+    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
         if ssl_handshake(this) < 0 {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return connect_failed(this);
@@ -1833,7 +1863,7 @@ fn on_read(this: Handle) -> c_int {
         let n = framed(protocol, socket.as_ptr(), this.input());
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
-        if n < 0 && !released && !this.flag(CLOSED) {
+        if n < 0 && !released && !this.flag(Flag::Closed) {
             close(this);
         }
         return OK;
@@ -1857,7 +1887,7 @@ fn on_read(this: Handle) -> c_int {
     if n == 0 {
         return close(this);
     }
-    this.call(ON_RECEIVE, buf, n.cast_unsigned());
+    this.call(ClientEvent::Receive, buf, n.cast_unsigned());
     OK
 }
 
@@ -1869,7 +1899,7 @@ fn on_datagram(this: Handle) -> c_int {
     )]
     let mut buffer = [0_u8; BUFFER_SIZE_UDP];
     // Upstream's datagram receive, even once DTLS made `recv` a stream one.
-    let n = if this.flag(ASYNC) {
+    let n = if this.flag(Flag::Async) {
         this.recvfrom_sync(&mut buffer, 0)
     } else {
         this.recvfrom(&mut buffer, 0)
@@ -1877,15 +1907,19 @@ fn on_datagram(this: Handle) -> c_int {
     if n < 0 {
         return ERR;
     }
-    this.call(ON_RECEIVE, buffer.as_ptr().cast(), n.cast_unsigned());
+    this.call(
+        ClientEvent::Receive,
+        buffer.as_ptr().cast(),
+        n.cast_unsigned(),
+    );
     OK
 }
 
 /// `Client_onWrite`: drain queued output, or finish an async connect, on a live
 /// async stream client; `reactor` and `event` are the handler's.
 fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
-    if this.flag(ACTIVE) {
-        if this.flag(OPEN_SSL) && this.tls_state() == SSL_STATE_WAIT_STREAM {
+    if this.flag(Flag::Active) {
+        if this.flag(Flag::OpenSsl) && this.tls_state() == SSL_STATE_WAIT_STREAM {
             if ssl_handshake(this) < 0 {
                 log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
                 return write_failed(this);
@@ -1895,19 +1929,19 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
                 return OK;
             }
             if this.socket().read(|socket| socket.tls.want_read) {
-                this.event(EVENT_SET, EVENT_READ);
+                this.event(EventOp::Set, EVENT_READ);
             }
             return OK;
         }
         if writable_callback(reactor, event) < 0 {
             return ERR;
         }
-        if this.has(ON_BUFFER_EMPTY)
-            && this.flag(HIGH_WATERMARK)
+        if this.has(ClientEvent::BufferEmpty)
+            && this.flag(Flag::HighWatermark)
             && this.queued() <= this.get().low_watermark.get()
         {
-            this.set(HIGH_WATERMARK, false);
-            this.call(ON_BUFFER_EMPTY, core::ptr::null(), 0);
+            this.set(Flag::HighWatermark, false);
+            this.call(ClientEvent::BufferEmpty, core::ptr::null(), 0);
         }
         return OK;
     }
@@ -1922,8 +1956,8 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if error != 0 {
         return write_failed(this);
     }
-    this.event(EVENT_SET, EVENT_READ);
-    this.set(ACTIVE, true);
+    this.event(EventOp::Set, EVENT_READ);
+    this.set(Flag::Active, true);
     if this.proxy_state(Proxy::Socks5) == SOCKS5_WAIT {
         let length = this.socks5_negotiate();
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
@@ -1935,7 +1969,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
         let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
         return send(this, &request, 0).c_cast::<c_int>();
     }
-    if this.flag(OPEN_SSL) {
+    if this.flag(Flag::OpenSsl) {
         if ssl_handshake(this) < 0 {
             log::set_last_error(ERROR_SSL_HANDSHAKE_FAILED);
             return write_failed(this);
@@ -1950,15 +1984,15 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
 
 /// The write handler's failure: unlike the read handler's, `onError` is required.
 fn write_failed(this: Handle) -> c_int {
-    this.set(ACTIVE, false);
+    this.set(Flag::Active, false);
     close(this);
-    this.call(ON_ERROR, core::ptr::null(), 0);
+    this.call(ClientEvent::Error, core::ptr::null(), 0);
     OK
 }
 
 /// `Client_onError`, as [`on_write`].
 fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
-    if this.flag(ACTIVE) {
+    if this.flag(Flag::Active) {
         return close(this);
     }
     on_write(this, reactor, event);
@@ -1969,30 +2003,30 @@ fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
 fn on_timeout(this: Handle) {
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(None);
-    if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
-        this.set(ACTIVE, false);
+    if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
+        this.set(Flag::Active, false);
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     let http = this.proxy_state(Proxy::Http);
     if socks5 >= 0 && socks5 != SOCKS5_READY || http >= 0 && http != HTTP_PROXY_READY {
-        this.set(ACTIVE, false);
+        this.set(Flag::Active, false);
     }
     close(this);
-    if this.has(ON_ERROR) {
-        this.call(ON_ERROR, core::ptr::null(), 0);
+    if this.has(ClientEvent::Error) {
+        this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
 }
 
 /// Connects to the resolved `address`, or reports the failure through `onError`.
 /// `this` is a live async client waiting for DNS.
 fn resolved(this: Handle, error: c_int, address: &CStr) {
-    this.set(WAIT_DNS, false);
-    this.set(DNS_COMPLETED, true);
+    this.set(Flag::WaitDns, false);
+    this.set(Flag::DnsCompleted, true);
     if error == 0 {
         // The application can't see connect's result here, so onError reports it.
         let timeout = this.socket().read(|socket| socket.timeouts.connect);
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
-        if connect(this, address, port, timeout, flags) != ERR || this.flag(ONERROR_CALLED) {
+        if connect(this, address, port, timeout, flags) != ERR || this.flag(Flag::OnerrorCalled) {
             return;
         }
     } else {
@@ -2000,9 +2034,9 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
     }
     this.mark_removed();
     close(this);
-    if this.has(ON_ERROR) {
-        this.set(ONERROR_CALLED, true);
-        this.call(ON_ERROR, core::ptr::null(), 0);
+    if this.has(ClientEvent::Error) {
+        this.set(Flag::OnerrorCalled, true);
+        this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
 }
 

@@ -11,7 +11,7 @@ use swoole_rs_buffer::cpp::{
 use swoole_rs_corebase::CCast;
 
 /// `SwReturnCode::SW_WAIT`.
-const SW_WAIT: c_int = 2;
+const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]
@@ -63,21 +63,15 @@ pub trait WriteEffects {
     fn watch_writable(&self);
 }
 
-/// `value` is the result when `outcome` is 0. Otherwise native code reports and
-/// returns `SW_ERR`: 1 packet larger than the buffer size, 2 output buffer overflow
-/// with `value` bytes queued (both warnings), 3 send failed (last error from errno).
+/// Why a write failed; the caller reports it and returns `SW_ERR`.
 #[derive(Debug, PartialEq, Eq)]
-pub struct WriteResult {
-    pub value: isize,
-    pub outcome: i32,
-}
-
-fn done(value: isize) -> WriteResult {
-    WriteResult { value, outcome: 0 }
-}
-
-fn failed(outcome: i32) -> WriteResult {
-    WriteResult { value: -1, outcome }
+pub enum WriteError {
+    /// The packet is larger than the buffer size (a warning).
+    TooLarge,
+    /// The output buffer would overflow, with this many bytes queued (a warning).
+    Overflow(isize),
+    /// The send failed: the last error comes from errno.
+    Send,
 }
 
 /// `Reactor::write_func`: send what the kernel takes now and queue the rest, or
@@ -85,12 +79,15 @@ fn failed(outcome: i32) -> WriteResult {
 ///
 /// # Safety
 /// `payload` is valid for the call.
+///
+/// # Errors
+/// The [`WriteError`] to report.
 pub unsafe fn swr_v1_reactor_write(
     socket: Socket<'_>,
     default_buffer_size: u32,
     payload: &WritePayload,
     ops: &impl WriteEffects,
-) -> WriteResult {
+) -> Result<isize, WriteError> {
     let length = payload.length;
     // Making the socket nonblocking leaves the queue as it is.
     let (mut buffer_size, nonblock, ssl_send, held) = socket.read(|record| {
@@ -110,15 +107,14 @@ pub unsafe fn swr_v1_reactor_write(
     }
     // Upstream compares `(uint32_t) _len`.
     if length.c_cast::<u32>() > buffer_size {
-        return failed(1);
+        return Err(WriteError::TooLarge);
     }
     let mut sent = 0isize;
     if let Some(held) = held {
         if u64::from(held) + length as u64 > u64::from(buffer_size) {
-            return WriteResult {
-                value: isize::try_from(held).unwrap_or(isize::MAX),
-                outcome: 2,
-            };
+            return Err(WriteError::Overflow(
+                isize::try_from(held).unwrap_or(isize::MAX),
+            ));
         }
     } else {
         if !ssl_send {
@@ -126,7 +122,7 @@ pub unsafe fn swr_v1_reactor_write(
                 sent = ops.send();
                 if sent > 0 {
                     if usize::try_from(sent).is_ok_and(|sent| sent == length) {
-                        return done(sent);
+                        return Ok(sent);
                     }
                     break;
                 }
@@ -135,7 +131,7 @@ pub unsafe fn swr_v1_reactor_write(
                     break;
                 }
                 if errno != libc::EINTR {
-                    return failed(3);
+                    return Err(WriteError::Send);
                 }
             }
         }
@@ -163,7 +159,7 @@ pub unsafe fn swr_v1_reactor_write(
         // SAFETY: `iov` holds `count` iovecs over the payload; `offset` bytes were sent.
         unsafe { swr_cpp_buffer_append_iovec(buffer, iov, count, offset) };
     });
-    done(isize::try_from(length).unwrap_or(isize::MAX))
+    Ok(isize::try_from(length).unwrap_or(isize::MAX))
 }
 
 #[cfg(test)]
@@ -218,7 +214,7 @@ mod tests {
         data: &[u8],
         sends: Vec<isize>,
         errno: c_int,
-    ) -> (WriteResult, Vec<&'static str>, u32) {
+    ) -> (Result<isize, WriteError>, Vec<&'static str>, u32) {
         let had_buffer = output.out_buffer.is_some();
         let mut record = SocketRecord::new();
         record.output = SocketOutput {
@@ -278,7 +274,7 @@ mod tests {
         let (r, trace, held) = run(&mut s, b"hello", vec![5], 0);
         assert_eq!(
             (r, trace, held, s.buffer_size),
-            (done(5), vec!["nonblock", "send"], 0, 64)
+            (Ok(5), vec!["nonblock", "send"], 0, 64)
         );
 
         // Partial send: the rest is queued in a new buffer, with write interest.
@@ -289,7 +285,7 @@ mod tests {
         let (r, trace, held) = run(&mut s, b"hello", vec![2], 0);
         assert_eq!(
             (r, trace, held),
-            (done(5), vec!["send", "create", "watch"], 3)
+            (Ok(5), vec!["send", "create", "watch"], 3)
         );
 
         // EINTR retries; EAGAIN waits and queues everything.
@@ -298,7 +294,7 @@ mod tests {
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"hey", vec![-1, 3], libc::EINTR);
-        assert_eq!((r, trace, held), (done(3), vec!["send", "send"], 0));
+        assert_eq!((r, trace, held), (Ok(3), vec!["send", "send"], 0));
         let mut s = SocketOutput {
             nonblock: true,
             ..socket()
@@ -306,7 +302,7 @@ mod tests {
         let (r, trace, held) = run(&mut s, b"hey", vec![-1], libc::EAGAIN);
         assert_eq!(
             (r, trace, held),
-            (done(3), vec!["send", "create", "watch"], 3)
+            (Ok(3), vec!["send", "create", "watch"], 3)
         );
 
         // Other errors fail with the last error; TLS skips the direct send.
@@ -314,14 +310,17 @@ mod tests {
             nonblock: true,
             ..socket()
         };
-        assert_eq!(run(&mut s, b"x", vec![-1], libc::EPIPE).0, failed(3));
+        assert_eq!(
+            run(&mut s, b"x", vec![-1], libc::EPIPE).0,
+            Err(WriteError::Send)
+        );
         let mut s = SocketOutput {
             nonblock: true,
             ssl_send: true,
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"tls", vec![], 0);
-        assert_eq!((r, trace, held), (done(3), vec!["create", "watch"], 3));
+        assert_eq!((r, trace, held), (Ok(3), vec!["create", "watch"], 3));
 
         // Too large for the buffer size; queued output that would overflow.
         let mut s = SocketOutput {
@@ -329,7 +328,7 @@ mod tests {
             buffer_size: 2,
             ..socket()
         };
-        assert_eq!(run(&mut s, b"abc", vec![], 0).0, failed(1));
+        assert_eq!(run(&mut s, b"abc", vec![], 0).0, Err(WriteError::TooLarge));
         let held_buffer = new_buffer(0);
         held_buffer.append(b"12345");
         let mut s = SocketOutput {
@@ -338,11 +337,10 @@ mod tests {
             out_buffer: Some(held_buffer),
             ..socket()
         };
-        let overflow = WriteResult {
-            value: 5,
-            outcome: 2,
-        };
-        assert_eq!(run(&mut s, b"ab", vec![], 0).0, overflow);
+        assert_eq!(
+            run(&mut s, b"ab", vec![], 0).0,
+            Err(WriteError::Overflow(5))
+        );
         // Behind queued output, it's appended without a send.
         let mut s = SocketOutput {
             nonblock: true,
@@ -351,6 +349,6 @@ mod tests {
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"ab", vec![], 0);
-        assert_eq!((r, trace, held), (done(2), vec![], 7));
+        assert_eq!((r, trace, held), (Ok(2), vec![], 7));
     }
 }

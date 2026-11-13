@@ -200,10 +200,9 @@ impl<'a> Server<'a> {
         self.state().set_upload_tmp_dir(dir);
     }
 
-    /// `serv-><text> = value` for text member `index`: 0 `chroot_`, 1 `user_`,
-    /// 2 `group_`, 3 `pid_file` (`SWR_SERVER_TEXT_*`).
-    pub fn set_text(self, index: usize, value: &[u8]) {
-        self.state().set_text(index, value);
+    /// `serv-><text> = value` for text member `kind`.
+    pub fn set_text(self, kind: crate::ServerText, value: &[u8]) {
+        self.state().set_text(kind, value);
     }
 
     /// `insert(value)` into a static handler collection.
@@ -237,7 +236,7 @@ impl<'a> Server<'a> {
     /// `document_root`.
     #[must_use]
     pub fn document_root(self) -> std::sync::Arc<[u8]> {
-        self.state().text(crate::state::TEXT_DOCUMENT_ROOT)
+        self.state().text(crate::ServerText::DocumentRoot)
     }
 
     /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.

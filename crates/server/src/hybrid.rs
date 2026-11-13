@@ -283,8 +283,8 @@ pub(crate) mod tests {
         Thread0Shutdown,
         BeforeShutdown,
         Reload(bool),
-        /// The action, process, command, request and message length.
-        CommandSend(i32, u32, i32, i64, usize),
+        /// The target, process, command, request and message length.
+        CommandSend(swoole_rs_process::command::Target, u32, i32, i64, usize),
         /// The head's session, reactor and kind.
         ToReactorThread(c_long, i16, u8),
         /// The send's session, kind and length, and its task's offset, length and the
@@ -478,9 +478,9 @@ pub(crate) mod tests {
         }
 
         fn command_send(&self, _: Server<'_>, c: &CommandSend<'_>) -> bool {
-            let (action, process, command) = (c.action, c.process_id, c.command_id);
+            let (target, process, command) = (c.target, c.process_id, c.command_id);
             hear(Call::CommandSend(
-                action,
+                target,
                 process,
                 command,
                 c.request_id,

@@ -9,8 +9,8 @@ use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
 use swoole_rs_http2::{
-    FileCompletion, FrameAction, Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan, Media,
-    Respond, WindowAction,
+    FileCompletion, FrameAction, HeaderKind, HeaderRole, Http2HeaderPlan, Http2RespondFacts,
+    Http2WindowPlan, Media, Respond, WindowAction,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
     sw_rs_http2_data_rejected, sw_rs_http2_decode_frame, sw_rs_http2_file_complete,
@@ -40,16 +40,6 @@ const FLAG_END_STREAM: u32 = 0x1;
 const FLAG_END_HEADERS: u32 = 0x4;
 const FLAG_PADDED: u32 = 0x8;
 const FLAG_PRIORITY: u32 = 0x20;
-/// `SwRsHttp2HeaderRole` and `SwRsHttp2HeaderKind`.
-const REQUEST_HEADERS: u32 = 0;
-const SERVER_HEADERS: u32 = 2;
-const HEADER_METHOD: u32 = 1;
-const HEADER_PATH: u32 = 2;
-const HEADER_AUTHORITY: u32 = 3;
-const HEADER_CONTENT_TYPE: u32 = 4;
-const HEADER_COOKIE: u32 = 5;
-const HEADER_CONTENT_LENGTH: u32 = 6;
-const HEADER_ACCEPT_ENCODING: u32 = 7;
 /// `HTTP_HEADER_SERVER`, `_DATE` and `_CONTENT_TYPE`.
 const MISSING_SERVER: u32 = 2;
 const MISSING_DATE: u32 = 16;
@@ -67,8 +57,8 @@ const NO_PAYLOAD: c_int = 550;
 const STREAM_NOT_FOUND: c_int = 3003;
 const STREAM_IGNORE: c_int = 3004;
 const LOG_WARNING: c_int = 4;
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
@@ -413,7 +403,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
             if has_crlf(text) {
                 return Some(());
             }
-            let plan = header_plan(SERVER_HEADERS, key, can_capture);
+            let plan = header_plan(HeaderRole::Server, key, can_capture);
             if plan.suppress {
                 return Some(());
             }
@@ -480,7 +470,7 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
 }
 
 /// `rust_header_plan`: the header name folded as `std::tolower` does.
-fn header_plan(role: u32, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
+fn header_plan(role: HeaderRole, name: &[u8], can_capture: bool) -> Http2HeaderPlan {
     let (folded, length) = fold(name);
     sw_rs_http2_header_plan(
         role,
@@ -1256,22 +1246,22 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
 /// here and judged once the block is complete).
 fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
     let ctx = stream.ctx;
-    let kind = header_plan(REQUEST_HEADERS, name, false).kind;
+    let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
-            HEADER_METHOD => add_string(ctx, Value::Server, b"request_method", value),
-            HEADER_PATH => path(ctx, value),
-            HEADER_AUTHORITY => add_string(ctx, Value::Header, b"host", value),
+            HeaderKind::Method => add_string(ctx, Value::Server, b"request_method", value),
+            HeaderKind::Path => path(ctx, value),
+            HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
         return true;
     }
     match kind {
-        HEADER_COOKIE => {
+        HeaderKind::Cookie => {
             ctx.cookie(value);
             false
         }
-        HEADER_CONTENT_LENGTH => {
+        HeaderKind::ContentLength => {
             if !content_length_valid(session, value) {
                 stream.bad_length.set(true);
             }
@@ -1280,7 +1270,7 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             false
         }
         _ => {
-            if matches!(kind, HEADER_CONTENT_TYPE | HEADER_ACCEPT_ENCODING) {
+            if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
             }
             add_string(ctx, Value::Header, name, value);

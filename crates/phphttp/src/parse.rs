@@ -59,8 +59,8 @@ const PARSE_COOKIE: c_int = 2;
 const PARSE_STRING: c_int = 3;
 /// `SW_LOG_TRACE`, `SW_LOG_NOTICE`, `SW_ERROR_SESSION_CLOSED` and
 /// `SW_ERROR_SERVER_INVALID_REQUEST` (asserted in ext-src).
-const LOG_TRACE: c_int = 1;
-const LOG_NOTICE: c_int = 3;
+const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SESSION_CLOSED: c_int = 1004;
 const SERVER_INVALID_REQUEST: c_int = 9010;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
@@ -405,7 +405,7 @@ fn add_upload(state: &mut State, path: &[u8]) {
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
 pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
-    ctx.state().parser = Parser::new(llhttp::REQUEST);
+    ctx.state().parser = Parser::new(llhttp::Kind::Request);
 }
 
 /// `swoole_http_parse_cookie`.

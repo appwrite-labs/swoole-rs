@@ -1,5 +1,5 @@
 //! Upstream `StaticHandler::try_serve_index_file` and `make_index_page`.
-use super::{HttpStaticContext, INDEX, StaticEffects};
+use super::{HttpStaticContext, StaticEffects, StaticText::Index};
 use crate::index_page::{HttpIndexPage, index_page};
 use crate::static_path::{DIRECTORY, FILE, static_index_path};
 
@@ -34,7 +34,7 @@ impl HttpStaticContext {
         }
         match found {
             Some(name) => {
-                if self.publish(INDEX, name) < 0 {
+                if self.publish(Index, name) < 0 {
                     return false;
                 }
             }
@@ -138,7 +138,10 @@ mod tests {
     /// A context on the `/root/files` directory.
     fn directory(effects: &Listing) -> HttpStaticContext {
         let mut owner = HttpStaticContext::new(b"/files", 4096).unwrap();
-        assert_eq!(owner.publish(super::super::FILENAME, b"/root/files"), 0);
+        assert_eq!(
+            owner.publish(super::super::StaticText::Filename, b"/root/files"),
+            0
+        );
         assert_eq!(owner.stat(effects), 1);
         owner
     }
@@ -158,7 +161,7 @@ mod tests {
         assert!(owner.try_serve_index_file(&files(&[b"missing", b"z"]), false, &effects));
         assert_eq!(owner.index, b"z");
         assert_eq!(
-            owner.text(super::super::FILENAME).unwrap(),
+            owner.text(super::super::StaticText::Filename),
             b"/root/files/z"
         );
     }

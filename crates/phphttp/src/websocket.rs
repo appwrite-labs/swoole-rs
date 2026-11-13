@@ -124,8 +124,8 @@ const SESSION_NOT_EXIST: c_int = 1005;
 const WEBSOCKET_UNCONNECTED: c_int = 8503;
 const WEBSOCKET_PACK_FAILED: c_int = 8505;
 const WEBSOCKET_INCOMPLETE_PACKET: c_int = 8507;
-const LOG_TRACE: c_int = 1;
-const LOG_WARNING: c_int = 4;
+const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
+const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 /// The callbacks the handshake and frames call (`SW_SERVER_CB_*`).
 const ON_BEFORE_HANDSHAKE_RESPONSE: c_int = 6;
@@ -133,8 +133,8 @@ const ON_OPEN: c_int = 7;
 const ON_MESSAGE: c_int = 8;
 
 /// `SW_OK`/`SW_ERR`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.

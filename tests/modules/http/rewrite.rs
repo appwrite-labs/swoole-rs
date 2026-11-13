@@ -7,7 +7,7 @@
 #![cfg(target_os = "linux")]
 use std::ffi::{c_char, c_uint, c_void};
 
-use swoole_rs_http::{HttpStaticContext, RewriteRules};
+use swoole_rs_http::{HttpStaticContext, RewriteRules, StaticText};
 use swoole_rs_oracle::http_rewrite as reference;
 use swoole_rs_oracle::http_static_context::swr_oracle_mt19937;
 
@@ -57,8 +57,8 @@ fn compare(url: &[u8], rules: &[Rule]) -> Result<(), String> {
     }
     let mut context = HttpStaticContext::new(url, 4096).ok_or("no static context")?;
     let now = context.rewrite(&candidate);
-    let now_url = context.text(0).ok_or("no URL text")?;
-    let now_original = context.text(1).ok_or("no original URL text")?;
+    let now_url = context.text(StaticText::Url);
+    let now_original = context.text(StaticText::Original);
     if (old != 0) == now
         && old_url == now_url
         && old_original == now_original

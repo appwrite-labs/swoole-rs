@@ -296,8 +296,8 @@ pub unsafe fn swr_v1_reactor_change(
     state.record(socket, op, events)
 }
 
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// What a `Reactor` interest helper asks of [`swr_v1_reactor_change`], as upstream decides
 /// from the socket's events: `add_event` (kind 0) and `del_event` (1) of `event`, then
@@ -331,8 +331,8 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    const SW_EVENT_READ: c_int = 1 << 9;
-    const SW_EVENT_WRITE: c_int = 1 << 10;
+    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+    const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
     thread_local! {
         static LOGGED: RefCell<Vec<(String, c_int, String)>> = const { RefCell::new(Vec::new()) };

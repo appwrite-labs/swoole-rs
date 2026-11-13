@@ -26,8 +26,8 @@ unsafe extern "C" {
 
 /// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK`, `SW_SOCK_CLOEXEC`, `SW_SOCK_UDP` and `SW_SOCK_UDP6`.
 const FD_SESSION: c_int = 0;
-const SOCK_NONBLOCK: c_int = 1 << 2;
-const SOCK_CLOEXEC: c_int = 1 << 3;
+const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
+const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const SOCK_UDP: c_int = 2;
 const SOCK_UDP6: c_int = 4;
 

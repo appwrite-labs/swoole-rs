@@ -4,6 +4,7 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
+use swoole_rs_corebase::constants::EventType;
 
 use crate::Event;
 
@@ -167,10 +168,10 @@ impl Drop for Borrowing {
 }
 
 const FD_TYPES: usize = swoole_rs_corebase::constants::SW_MAX_FDTYPE as usize;
-const SW_EVENT_DEAULT: c_int = 1 << 8;
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
-const SW_EVENT_ERROR: c_int = 1 << 11;
+const SW_EVENT_DEAULT: c_int = EventType::SW_EVENT_DEAULT as c_int;
+const SW_EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
+const SW_EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
 
 /// Table indexes, also the wait loop's handler kinds.
 pub(crate) const READ: usize = 0;

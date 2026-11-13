@@ -13,6 +13,7 @@ halfclose = []
 
 [dependencies]
 swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-error = { path = "../error" }
 swoole-rs-reactor = { path = "../reactor" }
 swoole-rs-ossupport = { path = "../ossupport" }
 swoole-rs-buffer = { path = "../buffer" }

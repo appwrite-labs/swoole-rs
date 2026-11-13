@@ -22,7 +22,7 @@ use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
-const LOG_WARNING: c_int = 4;
+const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const CONFLICT_HEADER: c_int = 7105;
 /// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.
 const CODECS: u32 = 7;

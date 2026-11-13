@@ -471,7 +471,11 @@ fn run_c(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>
 
 fn run_r(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>, Vec<String>) {
     let mut r = R {
-        parser: RParser::new(kind),
+        parser: RParser::new(if kind == 1 {
+            llhttp::Kind::Request
+        } else {
+            llhttp::Kind::Response
+        }),
         log: Log {
             script: script.to_vec(),
             ..Log::default()
@@ -497,7 +501,12 @@ fn run_r(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>
             };
             out.push(format!(
                 "r={res} pos={pos} reason={reason:?} m={} v={}.{} f={:#x} s={} u={} cl={} fin={} ka={} eof={}",
-                p.method, p.http_major, p.http_minor, p.flags, p.status_code, p.upgrade, p.content_length, p.finish,
+                p.method, p.http_major, p.http_minor, p.flags, p.status_code, p.upgrade, p.content_length,
+                match p.finish {
+                    llhttp::Finish::Safe => 0,
+                    llhttp::Finish::SafeWithCb => 1,
+                    llhttp::Finish::Unsafe => 2,
+                },
                 i32::from(p.should_keep_alive()), i32::from(p.needs_eof())
             ));
             match res {
