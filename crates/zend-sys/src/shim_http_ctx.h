@@ -4,11 +4,11 @@
 
 #include "shim.h"
 
-/* The slot offset of the property `ce` declares as the NUL-terminated `name`
- * (0 if it has none). */
+/* The slot offset of the untyped instance property `ce` declares as the
+ * NUL-terminated `name` (0 if it has none). */
 uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name);
-/* array_init_size on the property slot at `offset` of `object`. */
-zval *swr_zend_http_property_array(zend_object *object, uint32_t offset, uint32_t size);
+/* array_init_size on `target`, which is not released first. */
+void swr_zend_array_init_size(zval *target, uint32_t size);
 /* estrndup. */
 char *swr_zend_http_estrndup(const char *text, size_t length);
 /* zend_string_init_interned, persistent: for keys interned at MINIT. */

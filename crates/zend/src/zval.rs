@@ -1037,6 +1037,59 @@ impl Interned {
     }
 }
 
+/// A zval a record keeps across calls at its own address, which Rust never
+/// releases: the record hands the reference [`Kept::put`] gave it to Zend
+/// (`zval_ptr_dtor` through [`Kept::as_ptr`]), or another holder keeps what
+/// [`Kept::keep`] copied. All zeroes (`IS_UNDEF`) is an empty one.
+#[repr(transparent)]
+pub struct Kept(std::mem::ManuallyDrop<Owned>);
+
+impl Kept {
+    /// The zval; None while empty.
+    #[must_use]
+    #[inline]
+    pub fn get(&self) -> Option<&Value> {
+        (self.0.kind() != IS_UNDEF).then_some(&self.0)
+    }
+
+    /// The array it holds, to add to; None for anything else.
+    #[inline]
+    pub fn array_mut(&mut self) -> Option<&mut ArrayMut> {
+        self.0.array_mut().map(|array| &mut **array)
+    }
+
+    /// Hold `value` and its reference, in place of what it held, which is
+    /// not released.
+    #[inline]
+    pub fn put(&mut self, value: Owned) {
+        self.0 = std::mem::ManuallyDrop::new(value);
+    }
+
+    /// `ZVAL_COPY_VALUE`: hold `value`'s bits without a reference of their
+    /// own, in place of what it held, which is not released.
+    /// # Safety
+    /// What `value` holds lives until the copy is replaced or cleared.
+    #[inline]
+    pub unsafe fn keep(&mut self, value: &Value) {
+        self.put(Owned(Value(UnsafeCell::new(value.copy_value()))));
+    }
+
+    /// Empty it, releasing nothing.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.put(Owned::default());
+    }
+
+    /// The zval, for Zend to read or release; null while empty. Once Zend
+    /// releases it, clear it before it is read again, unless another holder
+    /// keeps what it holds.
+    #[must_use]
+    #[inline]
+    pub fn as_ptr(&self) -> *mut zval {
+        self.get().map_or(ptr::null_mut(), Value::as_ptr)
+    }
+}
+
 impl Clone for ZString {
     /// `zend_string_copy`.
     #[inline]

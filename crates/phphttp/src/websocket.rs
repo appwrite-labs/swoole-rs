@@ -3,7 +3,6 @@
 //! push family, the handshake and the `onOpen`/`onMessage` dispatch, over the
 //! server's Rust-owned connections and ports (crates/server), and
 //! `Coroutine\Http\Client`'s WebSocket state.
-use crate::server::new_zval;
 use crate::{
     context::{self, Ctx},
     host::{self, CO_SOCKET},
@@ -16,7 +15,7 @@ use std::{
     mem::MaybeUninit,
     ptr,
     sync::Arc,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_phpruntime::co;
@@ -30,11 +29,12 @@ use swoole_rs_websocket::{
     encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
-    Array, Call, Class, Minit, Owned, Value, ZStr, ZString, bailout, handlers, method_table,
+    Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
+    method_table,
     string::{self},
     sys::{
-        _zval_struct__bindgen_ty_1, IS_FALSE, IS_LONG, IS_NULL, IS_TRUE, ZEND_ACC_NOT_SERIALIZABLE,
-        ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zend_object, zend_value, zval, zval_ptr_dtor,
+        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval,
+        zval_ptr_dtor,
     },
 };
 
@@ -43,7 +43,7 @@ static FRAME: Class = Class::new();
 static CLOSE_FRAME: Class = Class::new();
 /// Frame's declared `fd`, `data`, `opcode`, `flags` and `finish`, as byte offsets
 /// into a `Frame` or `CloseFrame` (which keeps its parent's slots), set in MINIT.
-static SLOTS: [AtomicU32; 5] = [const { AtomicU32::new(0) }; 5];
+static SLOTS: [Declared; 5] = [const { Declared::new() }; 5];
 const SLOT_NAMES: [&CStr; 5] = [c"fd", c"data", c"opcode", c"flags", c"finish"];
 const FD: usize = 0;
 const DATA: usize = 1;
@@ -52,22 +52,12 @@ const FLAGS: usize = 3;
 const FINISH: usize = 4;
 
 /// Store `value` in the `which` declared property of a Frame just created, as
-/// `zend_update_property` does once it has found the slot by name: Frame's
-/// properties are untyped and it has no write handler. The default it replaces
-/// (a number, null or the interned "") needs no release.
-fn set(frame: *mut zend_object, which: usize, value: zval) {
-    let offset = SLOTS.get(which).map_or(0, |slot| slot.load(Relaxed));
-    let slot = frame.wrapping_byte_add(offset as usize).cast::<zval>();
-    // SAFETY: every caller's fresh Frame, whose declared slot this is.
-    unsafe { slot.write(value) };
-}
-
-/// A long (`IS_LONG`), `true` or `false` zval.
-fn scalar(type_info: u32, lval: zend_long) -> zval {
-    let mut value = new_zval();
-    value.value = zend_value { lval };
-    value.u1 = _zval_struct__bindgen_ty_1 { type_info };
-    value
+/// `zend_update_property` does once it has found the slot by name: Frame has
+/// no write handler, and the default it replaces needs no release.
+fn set(frame: &Value, which: usize, value: Owned) {
+    if let Some(slot) = SLOTS.get(which) {
+        slot.init(frame, value);
+    }
 }
 
 /// `SW_HAVE_ZLIB`.
@@ -252,7 +242,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     }
     minit.property_null(&FRAME, c"finish", ZEND_ACC_PUBLIC);
     for (slot, name) in SLOTS.iter().zip(SLOT_NAMES) {
-        slot.store(crate::parse::property_offset(&FRAME, name), Relaxed);
+        slot.resolve(&FRAME, name);
     }
     let frame = minit.parent(&FRAME);
     minit.register_child(
@@ -602,9 +592,9 @@ fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
     let close = opcode == zend_long::from(OPCODE_CLOSE);
     let class = if close { &CLOSE_FRAME } else { &FRAME };
     let frame = class.create_object();
-    let Some(object) = frame.object() else {
+    if frame.object().is_none() {
         return frame;
-    };
+    }
     if close {
         // A close payload is a string.
         if let [high, low, reason @ ..] = payload.bytes().unwrap_or_default()
@@ -619,19 +609,14 @@ fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
         }
     } else {
         // The Frame takes its own reference.
-        set(object, DATA, payload.copy().into_zval());
+        set(&frame, DATA, payload.copy());
     }
     if flags & FLAG_RSV1 != 0 {
         flags |= FLAG_COMPRESS;
     }
-    set(object, OPCODE, scalar(IS_LONG, opcode));
-    set(object, FLAGS, scalar(IS_LONG, i64::from(flags)));
-    let finish = if flags & FLAG_FIN != 0 {
-        IS_TRUE
-    } else {
-        IS_FALSE
-    };
-    set(object, FINISH, scalar(finish, 0));
+    set(&frame, OPCODE, Owned::long(opcode));
+    set(&frame, FLAGS, Owned::long(i64::from(flags)));
+    set(&frame, FINISH, Owned::bool(flags & FLAG_FIN != 0));
     frame
 }
 
@@ -933,9 +918,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         data = plain;
     }
     let frame = construct(zend_long::from(opcode), &data, flags);
-    if let Some(object) = frame.object() {
-        set(object, FD, scalar(IS_LONG, fd));
-    }
+    set(&frame, FD, Owned::long(fd));
     let mut args = [zserv(), frame.into_zval()];
     if let Err(bailout) = dispatch(server, server_fd, PortCallback::Message, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
@@ -1011,8 +994,8 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
         let state = context.state();
         let mut args = [
             zserv(),
-            state.request.zobject.value,
-            state.response.zobject.value,
+            state.request.zobject.copy_value(),
+            state.response.zobject.copy_value(),
         ];
         dispatch(
             server,
@@ -1047,7 +1030,7 @@ fn on_open(server: view::Server<'_>, mut context: Ctx) -> Result<(), bailout::Ba
         closed(c"swoole_websocket_onOpen", fd);
         return Ok(());
     };
-    let mut args = [zserv(), context.state().request.zobject.value];
+    let mut args = [zserv(), context.state().request.zobject.copy_value()];
     dispatch(server, conn.server_fd, PortCallback::Open, &mut args, fd)
 }
 
@@ -1125,7 +1108,7 @@ pub(crate) fn accept(mut context: Ctx) {
             .get()
     };
     let mut accepted = false;
-    if offered && !state.request.zobject.ptr.is_null() {
+    if offered && state.request.zobject.get().is_some() {
         let text = state
             .request
             .zheader
@@ -1313,10 +1296,7 @@ fn reply(settings: u32, socket: co::Co, opcode: u8, payload: &[u8]) {
 fn deliver(socket: co::Co, opcode: u8, payload: &Value, flags: u8) -> Owned {
     // The frame takes its own reference to the payload.
     let frame = construct(zend_long::from(opcode), payload, flags);
-    if let Some(object) = frame.object() {
-        let fd = socket.sock_fd();
-        set(object, FD, scalar(IS_LONG, zend_long::from(fd)));
-    }
+    set(&frame, FD, Owned::long(zend_long::from(socket.sock_fd())));
     frame
 }
 

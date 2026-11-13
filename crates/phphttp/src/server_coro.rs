@@ -805,7 +805,10 @@ fn shutdown(call: &Call) {
 /// handler arguments (released by the caller).
 fn objects(mut context: Ctx) -> [zval; 2] {
     let state = context.state();
-    [state.request.zobject.value, state.response.zobject.value]
+    [
+        state.request.zobject.copy_value(),
+        state.response.zobject.copy_value(),
+    ]
 }
 
 /// One connection's state across its requests.
