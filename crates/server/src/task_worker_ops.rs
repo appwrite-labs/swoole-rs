@@ -446,10 +446,7 @@ fn result(ctx: &mut Context, op: u32) -> Option<u64> {
         }
         OP_NOTIFY_RESULT => {
             let flag = 1u64.to_ne_bytes();
-            let write = swoole_rs_tls::socket_pair::write;
-            let pipe = notify_pipe();
-            // SAFETY: a local of that size.
-            let written = unsafe { write(pipe, flag.as_ptr().cast(), flag.len()) };
+            let written = swoole_rs_tls::socket_pair::write_from(notify_pipe(), &flag);
             signed(written as i64)
         }
         OP_NOTIFY_WOULD_BLOCK => {

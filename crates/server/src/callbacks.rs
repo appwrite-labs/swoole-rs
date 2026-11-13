@@ -330,9 +330,12 @@ impl Drop for ServerCallbacks {
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ServerState {
-    /// The first of the slots, which `Server`'s callbacks pointer heads.
-    pub(crate) fn callbacks_ptr(&self) -> *mut c_void {
-        self.callbacks.0.as_ptr().cast_mut().cast()
+    /// The first of the slots of the state at `state`, which `Server`'s callbacks
+    /// pointer heads: an address within the state, read through no reference.
+    pub(crate) fn callbacks_ptr(state: *mut ServerState) -> *mut c_void {
+        state
+            .wrapping_byte_add(core::mem::offset_of!(ServerState, callbacks))
+            .cast()
     }
 }
 

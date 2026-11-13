@@ -242,10 +242,13 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
     // SAFETY: the server's `count` (`worker_num`) event worker records, which live
     // as long as the server and so its event pool.
     unsafe { record.set_workers(workers.event_workers) };
-    // SAFETY: as above.
-    let workers = unsafe { core::slice::from_raw_parts_mut(record.workers(), count) };
-    for (id, worker) in (0u32..).zip(workers) {
-        worker.place(pool.cast(), id, SW_WORKER);
+    // `create` set the pool's `worker_num` to `count`, so these are the server's records.
+    for (id, index) in (0u32..).zip(0..count) {
+        if let Some(worker) = record.worker(index) {
+            worker.set_pool(pool.cast());
+            worker.set_id(id);
+            worker.set_kind(SW_WORKER);
+        }
     }
     0
 }

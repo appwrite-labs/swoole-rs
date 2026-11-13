@@ -25,6 +25,12 @@ mod c {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     type Resource = c_int;
 
+    /// `getpriority`'s `which`: glibc declares an unsigned enum, the others an `int`.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    type Which = libc::__priority_which_t;
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    type Which = c_int;
+
     /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
     /// `const char *` it is.
     #[repr(transparent)]
@@ -71,6 +77,8 @@ mod c {
         pub(crate) safe fn if_nametoindex(name: Text<'_>) -> c_uint;
         pub(crate) safe fn sysconf(name: c_int) -> c_long;
         pub(crate) safe fn kill(pid: pid_t, signo: c_int) -> c_int;
+        pub(crate) safe fn getpriority(which: Which, who: libc::id_t) -> c_int;
+        pub(crate) safe fn setpriority(which: Which, who: libc::id_t, priority: c_int) -> c_int;
         pub(crate) safe fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int)
         -> pid_t;
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
@@ -652,6 +660,21 @@ pub fn sysconf(name: c_int) -> libc::c_long {
 pub fn kill(pid: pid_t, signo: c_int) -> c_int {
     // The signal is the caller's intent.
     c::kill(pid, signo)
+}
+
+/// `getpriority(2)`: -1 is a priority too, so the caller clears errno first.
+#[must_use]
+pub fn getpriority(which: c_int, who: libc::id_t) -> c_int {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let which = which.cast_unsigned();
+    c::getpriority(which, who)
+}
+
+/// `setpriority(2)`.
+pub fn setpriority(which: c_int, who: libc::id_t, priority: c_int) -> c_int {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    let which = which.cast_unsigned();
+    c::setpriority(which, who, priority)
 }
 
 /// `setitimer(2)`, discarding the previous timer.

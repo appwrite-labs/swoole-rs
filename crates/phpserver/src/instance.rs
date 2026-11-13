@@ -115,27 +115,17 @@ pub fn php_swoole_server_get_callback(
     port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))
 }
 
-/// The zend string whose bytes start at `data`, cut to `length`.
-/// # Safety
-/// `data` is `ZSTR_VAL` of a live, unshared string of at least `length` bytes,
-/// whose only reference the caller hands over.
-unsafe fn adopt(data: *mut u8, length: usize) -> Owned {
-    // SAFETY: per the caller.
-    let text = unsafe { ZBuf::from_raw(string::from_val(data), length) };
-    Owned::string(text.into_zstring())
-}
-
 /// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
 /// packet or the connection's receive buffer when it holds them.
 #[must_use]
 pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned {
     let (flags, length) = (req.info().flags, req.info().len as usize);
     if length == 0 {
-        Owned::string(ZString::empty())
-    } else if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
-        // SAFETY: an OBJ_PTR payload is the bus's packet, a zend string, which
-        // the bus hands over next.
-        let data = unsafe { adopt(req.data().cast_mut().cast(), length) };
+        return Owned::string(ZString::empty());
+    }
+    let data: *mut u8 = if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
+        // An OBJ_PTR payload is the bus's packet, a zend string, which the bus hands over.
+        let data = req.data().cast_mut().cast();
         serv.move_worker_packet();
         data
     } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
@@ -146,12 +136,15 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned
     {
         let size = serv.config().recv_buffer_size;
         // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
-        let data = unsafe { &mut *buffer.cast::<CppString>() }.pop(size);
-        // SAFETY: `pop` hands over its zend-allocated block of the payload.
-        unsafe { adopt(data, length) }
+        unsafe { &mut *buffer.cast::<CppString>() }.pop(size)
     } else {
-        Owned::string(ZString::new(req.payload()))
-    }
+        return Owned::string(ZString::new(req.payload()));
+    };
+    // SAFETY: `ZSTR_VAL` of a live, unshared zend string of at least `length` bytes,
+    // whose only reference is handed over: the packet the bus just gave up, or
+    // `pop`'s zend-allocated block of the payload.
+    let text = unsafe { ZBuf::from_raw(string::from_val(data), length) };
+    Owned::string(text.into_zstring())
 }
 
 /// `php_swoole_create_dir`: whether `path`, up to its first NUL as C reads it,

@@ -137,6 +137,20 @@ impl PoolCall {
         self.length
     }
 
+    /// The [`PoolCall::length`] bytes at [`PoolCall::data`] as they are now; none
+    /// without a buffer. A hook that fills its buffer writes through `data`, with no
+    /// borrow of this live.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        if self.data.is_null() {
+            return &[];
+        }
+        // SAFETY: only this crate makes and fills a call: `data` is a buffer of at
+        // least `length` initialized bytes (a zeroed receive buffer, or the bytes a
+        // send lends) that outlives the hook, and so this borrow of its call.
+        unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
+    }
+
     #[must_use]
     pub fn flags(&self) -> c_int {
         self.flags
@@ -920,7 +934,7 @@ pub(crate) fn idle(worker: Record<'_>) -> bool {
 ///
 /// # Safety
 /// The pool is live; `pipe` is the chosen pipe end (unused with a queue); `data`
-/// holds `length` bytes, at most `sizeof(EventData)` with a queue.
+/// holds `length` initialized bytes, at most `sizeof(EventData)` with a queue.
 #[expect(
     clippy::too_many_arguments,
     reason = "the flat list of the former C export; `send_pipe_message` and `pool_dispatch` call it"

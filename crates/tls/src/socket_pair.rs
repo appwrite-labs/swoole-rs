@@ -213,14 +213,20 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> isize {
 )]
 #[must_use]
 pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length: usize) -> isize {
-    let [Some(socket), _] = ends(this) else {
-        return -1;
-    };
     let data: &[u8] = if buffer.is_null() {
         &[]
     } else {
         // SAFETY: as the caller promises, lent until this returns.
         unsafe { std::slice::from_raw_parts(buffer.cast(), length) }
+    };
+    write_from(this, data)
+}
+
+/// [`write`] of `data`: the bytes written, or -1.
+#[must_use]
+pub fn write_from(this: &SocketPair, data: &[u8]) -> isize {
+    let [Some(socket), _] = ends(this) else {
+        return -1;
     };
     if this.blocking {
         write_sync(socket, data)
