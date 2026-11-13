@@ -2,8 +2,8 @@
 """Watch this repository's CI. GitHub merges pull requests itself: `gh pr merge --auto --squash`
 puts a PR in main's merge queue once its PR tier passes.
 
-  ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main); a run
-                             replaced by a newer push to main follows the newer run
+  ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main, which runs
+                             hourly); a run replaced by a newer one on main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
   ci.py next                 the claimable issues in claim order (exit 2 when there are none),
                              without those whose title says they need workflow scope when gh's
@@ -13,7 +13,7 @@ puts a PR in main's merge queue once its PR tier passes.
                              re-run it), and PRs the merge queue dropped (fix what their run
                              broke, then queue them again), oldest first (exit 2 when there are none);
                              first, a merge-tier run on main that a job waiting for a runner holds
-                             open (cancel it: every later push to main waits behind it)
+                             open (cancel it: every later hourly run waits behind it)
   ci.py phpt-baseline [--variant NAME] [--php VERSION] [--saved DIR]
                              `RUN SHA` of main's newest merge-tier run whose upstream PHPT reports
                              still stand for upstream at HEAD, so it needn't run (exit 2: none)
@@ -161,11 +161,14 @@ def conflicting(sha):
 
 def wait(workflow, sha, deadline, poll):
     """Wait for the run on sha to finish, reporting each job as its state changes. A run
-    replaced by a newer push to main follows the newer run, which also covers sha."""
-    seen, appear_by = {}, time.monotonic() + 300
+    replaced by a newer run on main follows the newer run, which also covers sha. The merge tier
+    runs on main hourly, so its run may take up to an hour to appear."""
+    seen, appear_by = {}, time.monotonic() + (4500 if workflow == 'merge.yml' else 300)
     while True:
         result = status(workflow, sha)
-        newer = result['state'] == 'cancelled' and successor(workflow, sha)
+        # An hourly run on main may start after a later merge, so sha may never get one of its own.
+        newer = (result['state'] == 'cancelled' or (result['state'] == 'none' and workflow == 'merge.yml')) \
+            and successor(workflow, sha)
         if newer:
             say(f'{workflow} {sha[:7]}: replaced by the run on {newer[:7]}, which contains it')
             sha, seen = newer, {}
@@ -439,7 +442,7 @@ def phpt_baseline(kind='phpt', php=None):
     artifact, report, jobs, count, paths = BASELINES[kind]
     rows = [json.loads(line) for line in gh('api', f'repos/{{owner}}/{{repo}}/actions/artifacts?name={artifact}&per_page=100',
                                             '--jq', '.artifacts[] | .workflow_run + {expired}').splitlines()]
-    # Only the merge tier runs on a push to main; a fork's pull request can name its branch main.
+    # Only the merge tier runs on main; a fork's pull request can name its branch main.
     runs = dict.fromkeys((row['id'], row['head_sha']) for row in rows if not row['expired']
                          and row['head_branch'] == 'main' and row['head_repository_id'] == row['repository_id'])
     for run, sha in runs:
@@ -533,13 +536,13 @@ STALL_MINUTES = 45
 
 def stalled_main():
     """A merge-tier run on main that a job waiting for a runner keeps unfinished (#3553). It holds
-    main's concurrency group, so each later push to main queues a `pending` run the next push
+    main's hourly concurrency group, so each later hourly run queues a `pending` run the next one
     replaces, and no merge-tier run on main completes. A job's timeout-minutes only counts once a
     runner takes it. Only the newest unfinished run older than a pending one holds the group: GitHub
     leaves an abandoned run unfinished too, and it blocks nothing."""
-    # By status: the pushes behind a stalled run each leave a cancelled one, which would bury it in
+    # By status: the hourly runs behind a stalled run each leave a cancelled one, which would bury it in
     # a plain window of the newest runs (34 in five hours on 2026-11-12).
-    runs = {status: json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--event', 'push',
+    runs = {status: json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--branch', 'main', '--event', 'schedule',
                                   '--status', status, '--limit', '5', '--json', 'databaseId,status,createdAt,url'))
             for status in ('pending', 'queued', 'in_progress')}
     # GitHub fails a job that has waited a day for a runner, so an unfinished run older than that is

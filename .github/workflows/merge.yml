@@ -1,14 +1,21 @@
 name: Merge
 on:
-  # No push trigger: the merge queue already ran this tier on each group before it landed.
+  # Hourly on main rather than on every push: the queue already ran this tier on each group,
+  # so main's run only keeps its status, baseline, caches and badges current.
   # Weekly, and on a dispatch, upstream's PHPT shards run even when nothing they depend on
   # changed, so drift that no commit explains still gets caught (phpt-build's baseline).
   schedule:
+    - cron: '37 * * * *'
     - cron: '17 5 * * 0'
   workflow_dispatch:
   # main's merge queue: each group of queued PRs is tested on top of main before it lands,
   # and the `required` job below decides whether it does.
   merge_group:
+# Latest wins: one hourly run at a time; GitHub keeps only the newest pending, so the next
+# run always covers main's head. Never cancel-in-progress, or no run finishes. The weekly,
+# dispatched and merge-queue runs each have a group of their own.
+concurrency:
+  group: merge-${{ github.event.schedule == '37 * * * *' && 'hourly' || github.run_id }}
 # Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
 # like `gate.py | tee` report success when gate.py fails.
 defaults:
@@ -129,7 +136,7 @@ jobs:
           engines: upstream cargo
       # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
       # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
-      - if: github.event_name == 'merge_group'
+      - if: github.event_name == 'merge_group' || github.event.schedule == '37 * * * *'
         uses: actions/cache/restore@v6
         with:
           path: baseline-cache
@@ -137,7 +144,7 @@ jobs:
           restore-keys: phpt-baseline-
       - name: Find PHPT baseline
         id: baseline
-        if: github.event_name == 'merge_group'
+        if: github.event_name == 'merge_group' || github.event.schedule == '37 * * * *'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
