@@ -39,7 +39,7 @@ const CANDIDATE: Engine = Engine {
 mod request {
     use std::cell::Cell;
     use std::ffi::{CStr, c_char, c_void};
-    use swoole_rs_http_ffi::{HttpRequest as Request, HttpString};
+    use swoole_rs_http_ffi::{HttpRequest as Request, HttpString, NativeOp};
     use swoole_rs_http::ChunkState;
 
     thread_local! {
@@ -48,11 +48,10 @@ mod request {
     }
 
     /// The request's effects (crates/http's `effects`), for the one framing has.
-    unsafe extern "C" fn native(op: u32, _: *mut c_void, _: *const u8, n: u64, _: u64) -> u64 {
-        const NUMBER_ERRORS: u32 = 12;
+    unsafe extern "C" fn native(op: NativeOp, _: *mut c_void, _: *const u8, n: u64, _: u64) -> u64 {
         // glibc's strtoull leaves errno alone without digits; Darwin's sets EINVAL.
         const NO_DIGITS: u32 = if cfg!(target_os = "macos") { 22 } else { 0 };
-        if op == NUMBER_ERRORS {
+        if op == NativeOp::NumberErrors {
             if n & 1 != 0 {
                 ERRNO.set(34);
             }
