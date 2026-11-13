@@ -1223,7 +1223,7 @@ impl ArrayMut {
     }
 
     /// `add_assoc_zval_ex`: the array takes over `value`. A key already there
-    /// releases its value (as [`release`] does), which can run `__destruct`.
+    /// releases its value (as [`Owned`]'s drop does), which can run `__destruct`.
     #[inline]
     pub fn insert(&mut self, key: &[u8], value: Owned) {
         if let Some(array) = self.separate() {
@@ -1258,7 +1258,7 @@ impl ArrayMut {
     }
 
     /// `zend_hash_update`: the array takes over `value` under `key`, releasing
-    /// what was there (as [`release`] does), and references the key itself.
+    /// what was there (as [`Owned`]'s drop does), and references the key itself.
     #[inline]
     pub fn update(&mut self, key: &ZStr, value: Owned) {
         self.update_at(key.as_ptr(), 0, value);
@@ -1439,25 +1439,15 @@ impl From<ZString> for Owned {
 }
 
 impl Drop for Owned {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: the zval this owns, destroyed once.
-        unsafe { self.0.release() };
-    }
-}
-
-impl Value {
     /// `zval_ptr_dtor`. An object, or an array or reference that may hold one, can
     /// run PHP code there (`__destruct` on the last reference, or the cycle
     /// collector a possible root starts), and so can a resource (a user stream's
     /// `stream_close`), so these are released inside `zend_try` and a bailout is
     /// deferred. A string runs none, and types below it are scalars, never counted.
-    /// # Safety
-    /// The caller gives the value up.
     #[inline]
-    pub(crate) unsafe fn release(&self) {
+    fn drop(&mut self) {
         if self.kind() == IS_STRING {
-            // SAFETY: a live value, as the caller promises.
+            // SAFETY: the zval this owns, destroyed once.
             unsafe { zval_ptr_dtor(self.as_ptr()) };
         } else if self.kind() > IS_STRING {
             // SAFETY: as above.

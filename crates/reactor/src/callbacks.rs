@@ -157,8 +157,7 @@ fn malloc_trim(last: &mut libc::time_t) {
     // `duration_since`, at the end of every wait.
     let now = swoole_rs_corebase::time_now();
     if *last < now - libc::time_t::from(SW_MALLOC_TRIM_INTERVAL) {
-        // SAFETY: glibc's heap trim, with no preconditions.
-        unsafe { libc::malloc_trim(usize::try_from(SW_MALLOC_TRIM_PAD).unwrap_or(0)) };
+        swoole_rs_corebase::sys::malloc_trim(usize::try_from(SW_MALLOC_TRIM_PAD).unwrap_or(0));
         *last = now;
     }
 }

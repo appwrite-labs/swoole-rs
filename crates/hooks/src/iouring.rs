@@ -27,8 +27,18 @@ const PRIORITY_IOURING_SUBMIT: c_int = 7;
 /// its fd's record on `reactor`.
 struct Iouring {
     engine: Option<Rc<Uring>>,
-    socket: *mut SocketRecord,
+    /// The ring fd's record, which this instance owns until `destroyed` frees it.
+    socket: Option<Socket<'static>>,
+    /// The thread's reactor, which outlives the instance: its destroy callback takes it.
     reactor: *mut c_void,
+}
+
+impl Iouring {
+    /// `reactor->change(socket, op, events)` of the ring fd's record.
+    fn change(&self, socket: Socket<'static>, op: u32, events: c_int) -> c_int {
+        // SAFETY: the instance's live record and its live reactor.
+        unsafe { reactor_change(self.reactor, socket.as_ptr(), op, events) }
+    }
 }
 
 thread_local! {
@@ -96,7 +106,7 @@ fn create(reactor: *mut c_void) -> Iouring {
     let opened = uring::open(config, &HOST);
     let mut iouring = Iouring {
         engine: opened.uring,
-        socket: ptr::null_mut(),
+        socket: None,
         reactor,
     };
     let origin = c"Iouring::Iouring";
@@ -137,13 +147,13 @@ fn create(reactor: *mut c_void) -> Iouring {
     let Some(engine) = &iouring.engine else {
         return iouring;
     };
-    let socket = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int).into_raw();
-    iouring.socket = socket;
+    let record = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int);
+    let socket = Socket::new(Box::leak(Box::new(record)));
+    iouring.socket = Some(socket);
     swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_IOURING, idle);
     swoole_rs_reactor::event_api::on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_IOURING_SUBMIT, submit);
-    // SAFETY: the record and its live reactor.
-    if unsafe { reactor_change(reactor, socket, 0, EVENT_READ) } < 0 {
+    if iouring.change(socket, 0, EVENT_READ) < 0 {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),
@@ -172,17 +182,16 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let Some(iouring) = INSTANCE.take() else {
         return;
     };
-    let socket = iouring.socket;
-    // SAFETY: the record `create` registered on the closing reactor.
-    if let Some(record) = unsafe { Socket::from_ptr(socket) } {
+    let socket = iouring.socket.map_or(ptr::null_mut(), |record| {
         if record.read(|record| record.removed) == 0 {
-            // SAFETY: as above.
-            unsafe { reactor_change(iouring.reactor, socket, 2, 0) };
+            iouring.change(record, 2, 0);
         }
         // The engine closes the fd.
         record.edit(|record| record.fd = -1);
-    }
-    // SAFETY: as above; nothing uses it afterwards.
+        record.as_ptr()
+    });
+    // SAFETY: null or the record `create` leaked, whose only handle went with the
+    // instance; nothing uses it afterwards.
     unsafe { swoole_rs_tls::upstream::socket_free(socket) };
     // The engine goes with it, with nothing in flight as the loop has ended.
 }

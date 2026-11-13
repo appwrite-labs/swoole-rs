@@ -113,9 +113,10 @@ enum SslCtrl {
 
 /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
 /// `const char *` it is: what a declaration takes or returns in place of the raw pointer.
+/// Safe code makes one only from a `&CStr`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub(crate) struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+pub struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
 
 impl<'a> From<&'a CStr> for CText<'a> {
     fn from(text: &'a CStr) -> Self {

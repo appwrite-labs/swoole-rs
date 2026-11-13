@@ -1,7 +1,7 @@
 //! The base-mode reactor process's facts and effects
 //! (`crates/process/src/workers/reactor_process.rs`'s `OP_*`) over the server,
 //! port, worker and connection records Rust lays out.
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::destroy as pool_destroy;
@@ -21,7 +21,7 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_ENTER, OP_WORKER_ID, OP_WORKER_SIGNAL_INIT, OP_WORKER_START_CALLBACK,
     OP_WORKER_STOP_CALLBACK,
 };
-use swoole_rs_reactor::{Event, SocketRecord};
+use swoole_rs_reactor::Event;
 
 use crate::callbacks::CB_START;
 use crate::port_config::methods;
@@ -234,8 +234,8 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The context's reactor, or the thread's.
-fn reactor(ctx: &Context<'_>) -> *mut c_void {
-    ctx.reactor.unwrap_or_else(Reactor::thread).ptr()
+fn reactor(ctx: &Context<'_>) -> Reactor {
+    ctx.reactor.unwrap_or_else(Reactor::thread)
 }
 
 /// The effects on the context's worker.
@@ -249,10 +249,11 @@ fn worker(ctx: &Context<'_>, op: u32) -> Option<u64> {
         }
         OP_WORKER_SIGNAL_INIT => crate::event_worker_ops::worker_signal_init(ctx.server()),
         OP_RESET_CONNECTION_NUM => {
+            // The live server's counters' slot for this worker.
             let id = ctx.worker().id() as usize;
-            // SAFETY: the live server's counters' slot for each worker.
-            let slot = unsafe { &*ctx.counters().cells().wrapping_add(id) };
-            slot.store(0, Ordering::Relaxed);
+            if let Some(slot) = ctx.server().worker_connections(id) {
+                slot.store(0, Ordering::Relaxed);
+            }
         }
         OP_HAS_PIPE_WORKER => return Some(u64::from(!ctx.worker().pipe_worker().is_null())),
         OP_WORKER_ID => return Some(u64::from(ctx.worker().id())),
@@ -296,13 +297,9 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             return Some(u64::from(socket.read(|s| s.removed)));
         }
         OP_CLOSE_EVENT_SOCKET => {
-            // SAFETY: the running reactor and the event's session socket.
-            let closed = unsafe {
-                crate::reactor_entry::close_connection(
-                    reactor(ctx),
-                    ctx.event().socket_ptr().cast(),
-                )
-            };
+            // The running reactor and the event's session socket.
+            let socket = ctx.event().socket();
+            let closed = crate::reactor_entry::close_socket(server, reactor(ctx), socket);
             return Some(sign(closed));
         }
         OP_HEARTBEAT_NOW => {
@@ -312,7 +309,6 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         _ => {}
     }
     let conn = ctx.conn()?;
-    let socket = conn.socket_ptr().cast::<SocketRecord>();
     Some(match op {
         OP_CLOSE_SESSION => {
             crate::server_methods::close(server, conn.session_id(), true);
@@ -332,8 +328,8 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CONN_CLOSE_FORCE => u64::from(conn.close_force()),
         OP_CLOSE_CONNECTION => {
-            // SAFETY: the running reactor and the connection's session socket.
-            unsafe { crate::reactor_entry::close_connection(reactor(ctx), socket) };
+            // The running reactor and the connection's session socket.
+            crate::reactor_entry::close_socket(server, reactor(ctx), conn.socket());
             0
         }
         OP_SET_CLOSE_FORCE => {

@@ -96,9 +96,7 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
     if code == CO_HAS_BEEN_BOUND {
-        let scheduler = swoole_rs_coroutine::scheduler();
-        // SAFETY: this thread's scheduler, live for the thread.
-        let cid = unsafe { (*scheduler).socket_bound_cid };
+        let cid = swoole_rs_coroutine::socket_bound_cid();
         let rule = "-------------------------------------------------------------------";
         // Upstream's fprintf: nothing to do when stderr fails.
         write!(

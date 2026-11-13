@@ -230,14 +230,7 @@ impl Socket {
         buf: &mut [u8],
         peer: &mut sockaddr_storage,
     ) -> (isize, socklen_t) {
-        #[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-        let mut size = size_of::<sockaddr_storage>() as socklen_t;
-        // SAFETY: the address holds `size` bytes.
-        let received = unsafe {
-            self.co()
-                .recvfrom(buf, (&raw mut *peer).cast(), &raw mut size)
-        };
-        (received, size)
+        self.co().recvfrom_into(buf, peer)
     }
 
     pub(crate) fn close(&self) -> Result<bool, Bailout> {
@@ -452,8 +445,7 @@ pub fn strerror(code: i32) -> Cow<'static, CStr> {
 /// # Errors
 /// The fatal error bailed out.
 pub fn coroutine_check() -> Result<(), Bailout> {
-    // SAFETY: called while PHP runs; the body holds nothing.
-    unsafe { bailout::trap_with(swoole_rs_phpswoole::coroutine_check) }
+    swoole_rs_zend::contain(swoole_rs_phpswoole::coroutine_check)
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.

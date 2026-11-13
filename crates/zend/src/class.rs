@@ -1,6 +1,6 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::{
-    ZStr,
+    Minit, Parent, ZStr,
     sys::{
         HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_http_property_offset,
         swr_zend_register_class, zend_class_entry, zend_function_entry, zend_hash_find, zend_long,
@@ -90,6 +90,21 @@ impl<'a> ClassEntry<'a> {
     }
 }
 
+/// What lays out a [`CustomClass`](crate::CustomClass)'s objects: `T`'s class
+/// and the create, free and destructor handlers that go with it. Only
+/// [`Layout::of`] makes one, so a class's objects never get another type's.
+#[derive(Clone, Copy)]
+pub(crate) struct Layout(
+    &'static Class,
+    fn(&mut zend_class_entry, &mut zend_object_handlers),
+);
+
+impl Layout {
+    pub(crate) fn of<T: crate::Custom>() -> Self {
+        Self(T::class(), crate::object::install_custom::<T>)
+    }
+}
+
 /// A class entry and the object handlers its objects share: process-global,
 /// written once at MINIT and read-only afterwards.
 pub struct Class {
@@ -122,27 +137,51 @@ impl Class {
         }
     }
 
-    /// Register `name` with `methods`, extending `parent` (null for none), then
-    /// let `configure` adjust the entry and a copy of the standard handlers
-    /// (Swoole's `SW_INIT_CLASS_ENTRY` followed by its `SW_SET_CLASS_*` macros).
-    /// # Safety
-    /// Called at MINIT. `methods` is null or a static, `PHP_FE_END`-terminated
-    /// table, such as one built from a stub's generated arginfo; `parent` is
-    /// null or a registered class. A [`CustomClass`](crate::CustomClass)
-    /// registers only through [`Minit::register_object`](crate::Minit::register_object).
-    pub(crate) unsafe fn register_child(
+    /// Register `name` with `methods` (none when empty), extending `parent`,
+    /// then let `configure` adjust the entry and a copy of the standard
+    /// handlers (Swoole's `SW_INIT_CLASS_ENTRY` followed by its
+    /// `SW_SET_CLASS_*` macros), and `layout` install its own.
+    /// # Panics
+    /// `methods` is neither empty nor `PHP_FE_END`-terminated, or `layout` is
+    /// not this class's: a [`CustomClass`](crate::CustomClass) registers with
+    /// its own, any other class with none.
+    pub(crate) fn register_child(
         &self,
+        _minit: &Minit,
         name: &CStr,
-        methods: *const zend_function_entry,
-        parent: *mut zend_class_entry,
+        methods: &'static [zend_function_entry],
+        parent: Option<Parent>,
+        layout: Option<Layout>,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        // SAFETY: MINIT, with a NUL-terminated name and the caller's static table.
+        match &layout {
+            None => assert!(
+                !self.custom,
+                "a CustomClass registers through register_object"
+            ),
+            Some(layout) => assert!(ptr::eq(self, layout.0), "a CustomClass's own layout"),
+        }
+        let methods = if methods.is_empty() {
+            ptr::null()
+        } else {
+            assert!(
+                methods.last().is_some_and(|end| end.fname.is_null()),
+                "a method table ends with PHP_FE_END"
+            );
+            methods.as_ptr()
+        };
+        let parent = parent.map_or(ptr::null_mut(), Parent::entry);
+        // SAFETY: MINIT (the token), with a NUL-terminated name, a static,
+        // terminated table or none, and a registered parent or none.
         let entry =
             unsafe { swr_zend_register_class(name.as_ptr(), name.count_bytes(), methods, parent) };
         let mut handlers = std_object_handlers;
         // SAFETY: Zend returned the registered entry, which nothing else uses yet.
-        configure(unsafe { &mut *entry }, &mut handlers);
+        let registered = unsafe { &mut *entry };
+        configure(registered, &mut handlers);
+        if let Some(Layout(_, install)) = layout {
+            install(registered, &mut handlers);
+        }
         if self.handlers.load(Ordering::Acquire).is_null() {
             self.handlers
                 .store(Box::leak(Box::new(handlers)), Ordering::Release);

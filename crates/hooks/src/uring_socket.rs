@@ -9,16 +9,15 @@
 //! take these paths for it.
 use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::Co;
-use crate::hooked::{bytes, slots_mut};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
-use crate::vector::IoVector;
-use core::ffi::{CStr, c_char, c_int, c_ulong, c_void};
+use crate::vector::{IoVector, Lent};
+use core::ffi::{CStr, c_char, c_int, c_ulong};
 use openssl_sys::BIO;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{SocketFields, SocketRecord};
 use swoole_rs_tls::{Bio, OwnedBio, Ssl};
 
 const EVENT_READ: u32 = 1 << 9;
@@ -123,8 +122,6 @@ pub const RECV: c_int = 2;
 pub const SEND: c_int = 3;
 pub const RECVMSG: c_int = 4;
 pub const SENDMSG: c_int = 5;
-pub const RECVFROM: c_int = 6;
-pub const SENDTO: c_int = 7;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -168,72 +165,51 @@ impl UringSocketOps {
         result
     }
 
-    /// One scalar operation over raw buffers: `op` is [`RECVMSG`] or [`SENDMSG`]
-    /// (`extra` the msghdr, with `flags`), [`RECVFROM`] (`buf`/`n` the buffer,
-    /// `extra`/`extra_length` the address) or [`SENDTO`] (to that address, without a
-    /// second availability check).
+    /// `recvmsg` ([`RECVMSG`]) or `sendmsg` ([`SENDMSG`]) of `message` with `flags`.
     ///
     /// # Safety
-    /// The buffers are valid as for the system call, and `buf` is not null.
-    pub(crate) unsafe fn io(
+    /// `message` is valid as for the system call.
+    pub(crate) unsafe fn message(
         &self,
         op: c_int,
-        buf: *mut c_void,
-        n: usize,
-        extra: *mut c_void,
-        extra_length: *mut libc::socklen_t,
+        message: *mut libc::msghdr,
         flags: c_int,
     ) -> isize {
         let (host, tls) = (self.host(), self.tls);
         let (fd, rt, wt) = (tls.fd, tls.read_timeout, tls.write_timeout);
-        let event = if matches!(op, RECVMSG | RECVFROM) {
+        let event = if op == RECVMSG {
             EVENT_READ
         } else {
             EVENT_WRITE
         };
-        // sendto checked availability before resolving the host.
-        self.transfer(event, op == SENDTO, || match op {
+        self.transfer(event, false, || match op {
             // SAFETY: the caller's msghdr.
-            RECVMSG => unsafe { uring::recvmsg(host, fd, extra.cast(), flags, rt) },
+            RECVMSG => unsafe { uring::recvmsg(host, fd, message, flags, rt) },
             // SAFETY: as above.
-            SENDMSG => unsafe { uring::sendmsg(host, fd, extra.cast(), flags, wt) },
-            SENDTO => {
-                // SAFETY: the caller's address length.
-                let length = unsafe { *extra_length };
-                // SAFETY: the caller's buffer and address.
-                unsafe { uring::sendto(host, fd, buf, n, 0, extra.cast(), length, wt) }
-            }
-            // SAFETY: the caller's buffer and address.
-            _ => unsafe { uring::recvfrom(host, fd, buf, n, extra.cast(), extra_length, rt) },
+            _ => unsafe { uring::sendmsg(host, fd, message, flags, wt) },
         })
     }
 
-    /// `readv`/`writev`. The transfer borrows the remaining iovecs, so the vector
-    /// advances here, once per transfer, after that borrow ends.
+    /// `readv`/`writev`. The transfer borrows the vector, so it advances here, once
+    /// per transfer, after that borrow ends.
     fn vector(&self, vector: &mut IoVector) -> isize {
         let write = vector.write();
         let event = if write { EVENT_WRITE } else { EVENT_READ };
-        let (host, fd) = (self.host(), self.tls.fd);
+        let (host, tls) = (self.host(), self.tls);
+        let timeout = if write {
+            tls.write_timeout
+        } else {
+            tls.read_timeout
+        };
         self.transfer(event, false, || {
             loop {
-                let iovecs = vector.iovecs();
-                let (iov, count) = (iovecs.as_ptr(), c_int::try_from(iovecs.len()).unwrap_or(0));
                 let result = if self.ssl() {
-                    tls_vector(iovecs, |at, n| {
-                        if write {
-                            // SAFETY: part of an iovec's buffer.
-                            self.tls.send(unsafe { bytes(at, n) })
-                        } else {
-                            // SAFETY: part of an iovec's buffer.
-                            self.tls.recv(unsafe { slots_mut(at, n) })
-                        }
+                    vector.transfer_each(|buffer| match buffer {
+                        Lent::Write(bytes) => tls.send(bytes),
+                        Lent::Read(slots) => tls.recv(slots),
                     })
-                } else if write {
-                    // SAFETY: the vector's remaining iovecs.
-                    unsafe { uring::writev(host, fd, iov, count, self.tls.write_timeout) }
                 } else {
-                    // SAFETY: the vector's remaining iovecs.
-                    unsafe { uring::readv(host, fd, iov, count, self.tls.read_timeout) }
+                    uring::vector(host, tls.fd, vector, timeout)
                 };
                 vector.update(result);
                 if !(result < 0 && errno() == libc::EINTR) {
@@ -242,26 +218,6 @@ impl UringSocketOps {
             }
         })
     }
-}
-
-/// `ssl_readv`/`ssl_writev`: `io` over `iovecs` in order while it moves data,
-/// resuming a short transfer where it stopped. The bytes moved, or the failing
-/// result when none moved; the caller advances its vector by that, once.
-fn tls_vector(iovecs: &[libc::iovec], mut io: impl FnMut(*mut c_void, usize) -> isize) -> isize {
-    let mut total = 0isize;
-    let mut result = 0isize;
-    'iovecs: for iov in iovecs {
-        let mut done = 0usize;
-        while done < iov.iov_len {
-            result = io(iov.iov_base.wrapping_byte_add(done), iov.iov_len - done);
-            if result <= 0 {
-                break 'iovecs;
-            }
-            total += result;
-            done += result.unsigned_abs();
-        }
-    }
-    if total > 0 { total } else { result }
 }
 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
@@ -280,6 +236,52 @@ pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
             return tls.recv(buf);
         }
         uring::recv(host, tls.fd, buf, 0, tls.read_timeout)
+    })
+}
+
+/// `recvfrom` into `buf` and the caller's `peer`: a peek through the ring, then the
+/// datagram itself without blocking. The result and the length of the peer's address.
+pub(crate) fn recvfrom_into(
+    ops: &UringSocketOps,
+    buf: &mut [impl ReadSlot],
+    peer: &mut libc::sockaddr_storage,
+) -> (isize, libc::socklen_t) {
+    let (host, tls) = (ops.host(), ops.tls);
+    let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
+    let received = ops.transfer(EVENT_READ, false, || {
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout);
+        if peeked <= 0 {
+            return peeked;
+        }
+        let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
+        let (addr, flags) = (core::ptr::from_mut(peer).cast(), libc::MSG_DONTWAIT);
+        // SAFETY: `buf`'s writable bytes, and the borrowed storage with its own size.
+        unsafe { libc::recvfrom(tls.fd, at, n, flags, addr, &raw mut size) }
+    });
+    (received, size)
+}
+
+/// `recvfrom` into `buf`, the sender into the socket's own peer address: a peek
+/// through the ring, then the datagram itself without blocking.
+pub(crate) fn recvfrom_peer(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+    let (host, tls) = (ops.host(), ops.tls);
+    ops.transfer(EVENT_READ, false, || {
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout);
+        if peeked <= 0 {
+            return peeked;
+        }
+        let receive =
+            |record: &mut SocketFields| record.info.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT);
+        ops.socket.net(receive).unwrap_or(-1)
+    })
+}
+
+/// `sendto` of `buf` to `address`. The caller checked availability, before resolving
+/// the host.
+pub(crate) fn sendto(ops: &UringSocketOps, buf: &[u8], address: &SocketAddress) -> isize {
+    let (host, tls) = (ops.host(), ops.tls);
+    ops.transfer(EVENT_WRITE, true, || {
+        uring::sendto(host, tls.fd, buf, address, tls.write_timeout)
     })
 }
 
@@ -363,12 +365,8 @@ pub(crate) fn swr_v1_hook_uring_vector(
 pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut SocketAddress) -> c_int {
     let (host, tls) = (ops.host(), ops.tls);
     let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
-    let room = libc::socklen_t::try_from(size_of_val(&address.addr)).unwrap_or(0);
-    address.len = address.len.min(room);
-    let (addr, length) = ((&raw mut address.addr).cast(), &raw mut address.len);
-    // SAFETY: the address's storage, of at least its length, and that length.
-    let fd = ops.bound(EVENT_READ, || unsafe {
-        uring::accept(host, tls.fd, addr, length, flags, tls.read_timeout)
+    let fd = ops.bound(EVENT_READ, || {
+        uring::accept(host, tls.fd, address, flags, tls.read_timeout)
     });
     if fd < 0 {
         (ops.set_err)(ops.socket, errno());
@@ -636,8 +634,11 @@ mod tests {
         let mut calls = Vec::new();
         let mut transfer = |vector: &mut IoVector, results: &[isize]| {
             let mut results = results.iter().copied();
-            let result = tls_vector(vector.iovecs(), |at, n| {
-                calls.push((at.cast::<u8>().addr() - base.addr(), n));
+            let result = vector.transfer_each(|lent| {
+                let Lent::Read(slots) = lent else {
+                    panic!("a vector to read into");
+                };
+                calls.push((slots.as_ptr().addr() - base.addr(), slots.len()));
                 results.next().unwrap()
             });
             vector.update(result);
@@ -651,7 +652,9 @@ mod tests {
         assert_eq!((moved, made), (2, vec![(6, 2)]));
         assert!(vector.iovecs().is_empty());
         // Nothing moved: the failure itself.
-        assert_eq!(tls_vector(&source, |_, _| -1), -1);
+        // SAFETY: as above.
+        let mut fresh = unsafe { IoVector::new(source.as_ptr(), 2, false) }.unwrap();
+        assert_eq!(fresh.transfer_each(|_| -1), -1);
     }
 
     /// `of` hands out a stored BIO only while it is still the live session's: not
@@ -772,20 +775,12 @@ mod tests {
                 },
                 sin_zero: [0; 8],
             };
-            let mut target_length =
-                libc::socklen_t::try_from(core::mem::size_of_val(&target)).unwrap();
-            let mut message = *b"ping";
-            // SAFETY: a local table, buffer and address.
-            let sent = unsafe {
-                to.io(
-                    SENDTO,
-                    message.as_mut_ptr().cast(),
-                    4,
-                    (&raw const target).cast_mut().cast(),
-                    &raw mut target_length,
-                    0,
-                )
+            let mut to_address = SocketAddress {
+                len: libc::socklen_t::try_from(core::mem::size_of_val(&target)).unwrap(),
+                ..SocketAddress::default()
             };
+            to_address.addr.inet_v4 = target;
+            let sent = sendto(&to, b"ping", &to_address);
             assert_eq!(sent, 4);
             let mut received = [0u8; 4];
             assert_eq!(receiver.recv(&mut received).unwrap(), 4);

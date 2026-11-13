@@ -213,16 +213,17 @@ pub(crate) struct SendCommand<'a> {
     pub callback: CommandCallback,
 }
 
-/// `swr_v1_server_command_send`: what `OP_ST_CMD_SEND` writes to the target process.
+/// What `OP_ST_CMD_SEND` writes to the target process. Only this crate makes and
+/// reads one, by reference (no native code does); `repr(C)` as its reader is the
+/// hybrid's alone.
 #[repr(C)]
-pub(crate) struct CommandSend {
+pub(crate) struct CommandSend<'a> {
     /// `CommandRoute::action`.
     pub(crate) action: i32,
     pub(crate) process_id: u32,
     pub(crate) command_id: i32,
     pub(crate) request_id: i64,
-    pub(crate) message: *const u8,
-    pub(crate) length: usize,
+    pub(crate) message: &'a [u8],
 }
 
 /// `Server::command`: sends `message` to command `name` in the given process, whose
@@ -286,8 +287,7 @@ pub(crate) fn command<H: Host>(h: &mut H, send: &SendCommand<'_>) -> crate::Effe
         process_id: route.process_id,
         command_id,
         request_id,
-        message: send.message.as_ptr(),
-        length: send.message.len(),
+        message: send.message,
     };
     let sent = route.action != swoole_rs_process::command::FAIL
         && h.op(

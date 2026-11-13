@@ -399,10 +399,11 @@ fn child(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SPAWN_EVENT_WORKER => spawn(RUN_SPAWN_EVENT_WORKER, ctx.worker_at(arg)),
         OP_SPAWN_USER_WORKER => {
             // The manager spawns the pending workers by index, below their count.
-            let &worker = ctx.registry().pending().get(index(arg))?;
-            // SAFETY: a user worker `add_worker` added, which outlives the server.
-            let worker = unsafe { Worker::from_raw(worker.cast()) };
-            spawn(RUN_SPAWN_USER_WORKER, worker)
+            let at = index(arg);
+            if at >= ctx.registry().pending_count() {
+                return None;
+            }
+            spawn(RUN_SPAWN_USER_WORKER, ctx.server().pending_worker(at))
         }
         OP_WORKER_BY_PID => {
             let worker = worker_methods::get_worker_by_pid(ctx.server(), pid_of(arg));

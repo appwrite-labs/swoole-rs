@@ -12,7 +12,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use swoole_rs_cares_sys as sdk;
+use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
@@ -75,12 +75,6 @@ struct Completion {
     retired: Arc<AtomicBool>,
     coroutine: *mut c_void,
     resume: unsafe extern "C-unwind" fn(*mut c_void),
-}
-fn metadata() -> &'static sdk::Metadata {
-    // SAFETY: the SDK shim returns its immutable process-lifetime constant table.
-    let metadata = unsafe { sdk::swrs_cares_metadata() };
-    // SAFETY: this immutable static table has the exact shared SDK adapter layout.
-    unsafe { &*metadata }
 }
 /// The query behind a c-ares userdata or wrapper object.
 /// # Safety
@@ -384,10 +378,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         // SAFETY: keep query storage alive until all synchronous destruction callbacks return.
         unsafe { sdk::ares_destroy(channel) };
     } else {
-        // SAFETY: c-ares' static description of the status.
-        let reason = unsafe { sdk::ares_strerror(status) };
-        // SAFETY: NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(reason) }.to_string_lossy();
+        // SAFETY: c-ares' static description of the status, NUL-terminated.
+        let reason = unsafe { CStr::from_ptr(sdk::ares_strerror(status)) }.to_string_lossy();
         log::warning(
             ORIGIN,
             format_args!("ares_init_options() failed, Error: {reason}[{status}]"),

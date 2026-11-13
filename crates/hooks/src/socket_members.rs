@@ -401,17 +401,7 @@ impl Co {
         let to = (&raw mut address.addr).cast::<libc::sockaddr>();
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
-            // SAFETY: the live view, the caller's buffer and the local address.
-            return unsafe {
-                ops.io(
-                    ring::SENDTO,
-                    buf.as_ptr().cast_mut().cast(),
-                    buf.len(),
-                    to.cast(),
-                    &raw mut address.len,
-                    0,
-                )
-            };
+            return ring::sendto(&ops, buf, &address);
         }
         let length = address.len;
         let call = call!(|s, at, len| libc::sendto(s.fd(), at.cast(), len, 0, to, length));
@@ -583,34 +573,39 @@ impl Co {
         false
     }
 
-    /// `Socket::recvfrom(buf, n, addr, addrlen)`, retrying `EINTR` at once.
-    ///
-    /// # Safety
-    /// `addr` and `addrlen` are as recvfrom(2) takes them.
-    pub unsafe fn recvfrom(
+    /// `Socket::recvfrom(buf, n, addr, addrlen)` into `buf` and the caller's `peer`,
+    /// retrying `EINTR` at once: the bytes received and the length of the peer's address.
+    pub fn recvfrom_into(
         self,
         buf: &mut [impl swoole_rs_corebase::sys::ReadSlot],
-        addr: *mut libc::sockaddr,
-        addrlen: *mut libc::socklen_t,
-    ) -> isize {
-        uring!(self, |ops| ops.io(
-            ring::RECVFROM,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            addr.cast(),
-            addrlen,
-            0
-        ));
+        peer: &mut libc::sockaddr_storage,
+    ) -> (isize, libc::socklen_t) {
+        #[cfg(feature = "iouring")]
+        if let Some(ops) = crate::uring_socket::of(self) {
+            return ring::recvfrom_into(&ops, buf, peer);
+        }
+        let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
+        let (addr, addrlen) = (core::ptr::from_mut(peer).cast(), &raw mut size);
         let fd = self.sock_fd();
+        // The borrowed storage and the size of it above, both live across the transfer.
         let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
-        self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
+        let received = self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call);
+        (received, size)
     }
 
-    /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address.
+    /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
+    /// `EINTR` at once.
     pub fn recvfrom_peer(self, buf: &mut [u8]) -> isize {
         let receive = |addr, addrlen| {
-            // SAFETY: the record's peer address.
-            unsafe { self.recvfrom(buf, addr, addrlen) }
+            #[cfg(feature = "iouring")]
+            if let Some(ops) = crate::uring_socket::of(self) {
+                // The ring's path fills the same record's peer address itself.
+                return ring::recvfrom_peer(&ops, buf);
+            }
+            let fd = self.sock_fd();
+            // The record's peer address and its length, as `recvfrom_peer` lends them.
+            let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
+            self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
         };
         crate::transfer::recvfrom_peer(self, receive)
     }
@@ -620,14 +615,7 @@ impl Co {
     /// # Safety
     /// `msg` is as recvmsg(2) takes it.
     pub unsafe fn recvmsg(self, msg: *mut libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ops.io(
-            ring::RECVMSG,
-            core::ptr::null_mut(),
-            0,
-            msg.cast(),
-            core::ptr::null_mut(),
-            flags
-        ));
+        uring!(self, |ops| ops.message(ring::RECVMSG, msg, flags));
         let fd = self.sock_fd();
         let call = call!(|_, _, _| libc::recvmsg(fd, msg, flags));
         self.transfer(0, Buffer::none(READ), call)
@@ -639,12 +627,9 @@ impl Co {
     /// `msg` is as sendmsg(2) takes it.
     #[must_use]
     pub unsafe fn sendmsg(self, msg: *const libc::msghdr, flags: c_int) -> isize {
-        uring!(self, |ops| ops.io(
+        uring!(self, |ops| ops.message(
             ring::SENDMSG,
-            core::ptr::null_mut(),
-            0,
-            msg.cast_mut().cast(),
-            core::ptr::null_mut(),
+            msg.cast_mut(),
             flags
         ));
         let fd = self.sock_fd();

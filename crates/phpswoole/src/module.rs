@@ -24,8 +24,7 @@ use swoole_rs_zend::{
         swr_zend_module_globals, swr_zend_module_globals_init, swr_zend_print_stack_trace,
         swr_zend_register_shutdown_function, swr_zend_runtime_call_handler,
         swr_zend_signals_uncheck, swr_zend_stream_constant_no_close, swr_zend_temporary_directory,
-        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_execute_data,
-        zend_internal_function, zval,
+        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zend_internal_function, zval,
     },
 };
 
@@ -629,17 +628,13 @@ pub fn php_swoole_register_shutdown_function(function: &CStr) {
     unsafe { swr_zend_register_shutdown_function(function.as_ptr()) };
 }
 
+swoole_rs_zend::handlers! {
+    zif_swoole_set_process_name => set_process_name;
+}
+
 /// `swoole_set_process_name(name)`: `cli_set_process_title`, which only the
 /// CLI SAPI has.
-/// # Safety
-/// Called by Zend with a live frame and return slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zif_swoole_set_process_name(
-    frame: *mut zend_execute_data,
-    value: *mut zval,
-) {
-    // SAFETY: Zend's frame and return slot.
-    let call = unsafe { Call::new(frame, value) };
+fn set_process_name(call: &Call) {
     let function = call.php().function_table().find(b"cli_set_process_title");
     if let Some(function) = function.and_then(Value::pointer) {
         // SAFETY: a function table's values point at its live functions; this
@@ -647,7 +642,8 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
         let handler = unsafe { (*function.cast::<zend_internal_function>()).handler };
         // SAFETY: its handler, with this call's frame and return slot; the
         // shim traps a bailout.
-        if unsafe { swr_zend_runtime_call_handler(handler, frame, value) } != 0 {
+        if unsafe { swr_zend_runtime_call_handler(handler, call.frame(), call.return_value()) } != 0
+        {
             Bailout.defer();
         }
     } else {
@@ -658,7 +654,6 @@ pub unsafe extern "C" fn zif_swoole_set_process_name(
         ));
         call.set_bool(false);
     }
-    bailout::finish();
 }
 
 #[cfg(test)]
