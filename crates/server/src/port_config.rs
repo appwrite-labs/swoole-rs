@@ -128,8 +128,10 @@ pub struct TlsState {
     pub dtls: Mutex<DtlsSessions>,
 }
 
-/// A port's DTLS sessions, a few at most: each fd, its session and the port's context.
-pub type DtlsSessions = Vec<(c_int, *mut DtlsSession, TlsContext)>;
+/// A port's DTLS sessions, one per peer, indexed by its fd: the session and the
+/// port's context. A flat table, as the connection table is, so `on_read`'s lookup
+/// per datagram stays constant-time.
+pub type DtlsSessions = Vec<Option<(*mut DtlsSession, TlsContext)>>;
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
 pub type LengthOwner = Box<Box<dyn core::any::Any>>;
