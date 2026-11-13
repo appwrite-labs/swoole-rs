@@ -77,7 +77,7 @@ impl Raw for Table {
 
     unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize) {
         // A number takes its 8 bytes whatever the length; a null string is empty.
-        let length = if column.kind == TYPE_STRING {
+        let length = if column.kind == ColumnType::String {
             length
         } else {
             8
@@ -219,7 +219,7 @@ fn columns_keep_every_declaration_and_find_the_first() {
     let integer = t.column(b"integer").unwrap();
     assert_eq!(
         (integer.kind, integer.width, integer.index),
-        (TYPE_INT, 8, 0)
+        (ColumnType::Int, 8, 0)
     );
     let binary = t.column(b"binary").unwrap();
     assert_eq!((binary.width, binary.index), (16, 8));
