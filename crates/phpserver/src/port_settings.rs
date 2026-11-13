@@ -7,7 +7,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_corebase::net_types::GetPackageLength;
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
-use swoole_rs_server::port_config::PortConfig;
+use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
 
@@ -28,10 +28,11 @@ pub(crate) trait Source {
     fn bytes(&self, key: &CStr) -> Result<Option<Vec<u8>>, Stop>;
     /// `php_swoole_fatal_error(level, message)`; `set()` stops after it.
     fn fatal(&self, level: c_int, message: &CStr) -> Stop;
-    /// `sw_callable_create` of the setting, when it is callable.
-    fn callable(&self, key: &CStr) -> Result<Option<*mut c_void>, Stop>;
-    /// `sw_callable_free`.
-    fn release(&self, callable: *mut c_void);
+    /// `sw_callable_create` of the setting, when it is callable: the pointer
+    /// the protocol names, and its owner.
+    fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop>;
+    /// `sw_callable_free` of the owner a new one replaced.
+    fn release(&self, owner: LengthOwner);
     /// `serv->single_thread = true`.
     fn single_thread(&self);
     /// `php_swoole_server_length_func`, the `Protocol::LengthFunc` that runs the callable.
@@ -242,13 +243,14 @@ fn framing(s: &impl Source) -> Step {
         let error = c"'package_body_offset' value is too large";
         offset(s, v, |c| &mut c.protocol.package_body_offset, error)?;
     }
-    if let Some(callable) = s.callable(c"package_length_func")? {
+    if let Some((callable, owner)) = s.callable(c"package_length_func")? {
         let length_func = s.length_func();
         let previous = s.config(|c| {
             c.protocol.get_package_length = Some(length_func);
-            std::mem::replace(&mut c.protocol.private_data_1, callable)
+            c.protocol.private_data_1 = callable;
+            c.length_owner.replace(owner)
         });
-        if !previous.is_null() {
+        if let Some(previous) = previous {
             s.release(previous);
         }
         s.config(|c| {
@@ -403,7 +405,7 @@ impl Source for Zend<'_> {
         Stop
     }
 
-    fn callable(&self, key: &CStr) -> Result<Option<*mut c_void>, Stop> {
+    fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop> {
         let Some(value) = self.settings.get(key) else {
             return Ok(None);
         };
@@ -413,16 +415,22 @@ impl Source for Zend<'_> {
             drop(callable);
             return Err(Stop);
         }
-        // The slot's reference now, which `release` (or the port's release) drops.
-        Ok(callable.map(|callable| std::rc::Rc::into_raw(callable).cast_mut().cast()))
+        // The port's owner now, which `release` (or the port's release) drops.
+        Ok(callable.map(|callable| {
+            let named = std::rc::Rc::as_ptr(&callable).cast_mut().cast();
+            let owner: Box<dyn std::any::Any> = Box::new(callable);
+            (named, Box::new(owner))
+        }))
     }
 
-    fn release(&self, callable: *mut c_void) {
-        // A thread-mode worker replaced the master's slot, which other threads'
-        // reactors, or this thread's running length function, may still be
+    fn release(&self, owner: LengthOwner) {
+        // A thread-mode worker replaced the master's owner, whose callable other
+        // threads' reactors, or this thread's running length function, may still be
         // calling: the master owns it, so it leaks, as the port's release does.
         if crate::lifecycle::owns_shared() {
-            crate::port::free_callable(callable);
+            drop(owner);
+        } else {
+            std::mem::forget(owner);
         }
     }
 
@@ -576,15 +584,16 @@ mod tests {
                 .push(format!("fatal{level}:{}", message.to_str().unwrap()));
             Stop
         }
-        fn callable(&self, key: &CStr) -> Result<Option<*mut c_void>, Stop> {
-            Ok(self
-                .get(key, "callable")
-                .map(|v| std::ptr::without_provenance_mut(usize::try_from(v.number).unwrap())))
+        fn callable(&self, key: &CStr) -> Result<Option<(*mut c_void, LengthOwner)>, Stop> {
+            Ok(self.get(key, "callable").map(|v| {
+                let n = usize::try_from(v.number).unwrap();
+                let owner: Box<dyn std::any::Any> = Box::new(n);
+                (std::ptr::without_provenance_mut(n), Box::new(owner))
+            }))
         }
-        fn release(&self, callable: *mut c_void) {
-            self.trace
-                .borrow_mut()
-                .push(format!("release:{}", callable.addr()));
+        fn release(&self, owner: LengthOwner) {
+            let n = owner.downcast_ref::<usize>().unwrap();
+            self.trace.borrow_mut().push(format!("release:{n}"));
         }
         fn single_thread(&self) {
             self.trace.borrow_mut().push("single_thread".into());
@@ -905,7 +914,8 @@ mod tests {
     #[test]
     fn package_length_func_replaces_the_framing() {
         let mut c = port();
-        c.protocol.private_data_1 = std::ptr::without_provenance_mut(7);
+        let previous: Box<dyn std::any::Any> = Box::new(7_usize);
+        c.length_owner = Some(Box::new(previous));
         let table = Table::default().with("package_length_func", fixture(9));
         assert!(apply(&table, &mut c).is_ok());
         assert_eq!(c.protocol.private_data_1.addr(), 9);

@@ -184,6 +184,7 @@ const RECORD_4_OFFSETS: &[usize] = &[
     offset_of!(crate::port_config::PortConfig, on_read),
     offset_of!(crate::port_config::PortConfig, ssl_context),
     offset_of!(crate::port_config::PortConfig, tls),
+    offset_of!(crate::port_config::PortConfig, length_owner),
 ];
 
 const RECORD_5_OFFSETS: &[usize] = &[
