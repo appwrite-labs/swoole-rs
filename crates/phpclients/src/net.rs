@@ -15,7 +15,7 @@ use std::{
 use swoole_rs_clients::{
     client::{self as state, Op},
     pool::Pool,
-    swr_v1_clients_port,
+    valid_port,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
@@ -560,7 +560,7 @@ pub(crate) fn settings(object: Obj<'_>) -> Option<&Array> {
 fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, false)?;
     let int_port = port.c_cast::<i32>();
-    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && swr_v1_clients_port(int_port, 0) == 0 {
+    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && !valid_port(int_port, false) {
         warn(ErrorKind::Fatal, "The port is invalid");
         set_last_error(INVALID_PARAMS);
         return None;
