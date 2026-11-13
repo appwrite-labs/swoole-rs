@@ -3,6 +3,7 @@
 //! runs as its steps; the reads from the server's message bus are in `native`.
 use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::{Event, Running};
 
@@ -16,11 +17,10 @@ pub(crate) mod native;
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`, `SW_SERVER_EVENT_CLOSE`,
+/// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER`,
 /// `Server::TASK_IPC_UNIXSOCK` and `SW_SSL_STATE_READY`.
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
-const EVENT_CLOSE: c_int = 4;
 const TASK_IPC_UNIXSOCK: u8 = 1;
 const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
 
@@ -223,7 +223,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     }
     // The client closed the connection: it is no longer usable.
     conn.set_peer_closed(true);
-    if crate::server_methods::notify(serv, conn, EVENT_CLOSE) {
+    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
         OK
     } else {
         ERR

@@ -71,13 +71,6 @@ impl<'a> ReactorContext<'a> {
     }
 }
 
-/// `Server::is_stream_event`.
-pub(crate) fn stream_event(kind: u8) -> bool {
-    // RECV_DATA, SEND_DATA, SEND_FILE, CLOSE, CONNECT, PAUSE_RECV, RESUME_RECV,
-    // BUFFER_FULL and BUFFER_EMPTY.
-    matches!(kind, 0 | 2..=5 | 11..=14)
-}
-
 pub(crate) use swoole_rs_ossupport::pthread_self;
 
 /// A socket's output buffer, or `None` without one.
