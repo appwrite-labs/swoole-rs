@@ -514,8 +514,7 @@ pub unsafe extern "C" fn swr_v1_logger_set_date_format(
 }
 
 /// `Logger::redirect_stdout_and_stderr`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_redirect(logger: &Logger, enable: bool) -> bool {
+pub fn swr_v1_logger_redirect(logger: &Logger, enable: bool) -> bool {
     logger.with(|state, effects| {
         if enable {
             state.redirect(effects)
