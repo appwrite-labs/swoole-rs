@@ -236,7 +236,7 @@ unsafe extern "C-unwind" {
     static swr_v1_socket_type_classes: [u8; 16];
 }
 
-/// `swr_v1_socket_host_type_plan`.
+/// crates/reactor's `HostType`, which `swr_v1_socket_host_type` returns.
 #[repr(C)]
 struct HostTypePlan {
     socket_type: c_int,

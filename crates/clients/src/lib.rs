@@ -177,8 +177,8 @@ pub unsafe extern "C" fn swr_v1_clients_url(data: *const u8, length: usize) -> U
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_port(port: i32, for_connect: u8) -> u8 {
+#[must_use]
+pub fn swr_v1_clients_port(port: i32, for_connect: u8) -> u8 {
     u8::from((0..=65535).contains(&port) && (port != 0 || for_connect == 0))
 }
 

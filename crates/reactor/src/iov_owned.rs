@@ -145,27 +145,9 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_prepare(
 }
 
 /// Observe the cursor. No reference to the owner escapes the call.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
+#[must_use]
+pub fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
     owner.fields.state
-}
-
-/// Sum the unchanged original descriptors.
-/// # Safety
-/// `owner`'s original descriptors are readable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: &ReactorIov) -> usize {
-    let fields = &owner.fields;
-    // SAFETY: creation copied `count` (never negative) descriptors to `original`, live until destroy.
-    owned_length(unsafe { span(fields.original, fields.count) })
-}
-
-/// Advance owned descriptors and counters together; nothing for a null cursor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_iov_advance(owner: Option<&mut ReactorIov>, n: isize) {
-    if let Some(owner) = owner {
-        owner.advance(n);
-    }
 }
 
 /// `Socket::readv`/`writev` through an owned `IOVector`: readv(2)/writev(2) over the
@@ -235,7 +217,8 @@ pub(crate) unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [li
 }
 
 /// Sum the descriptors' lengths with C `size_t` wrapping semantics.
-pub(crate) fn owned_length(descriptors: &[libc::iovec]) -> usize {
+#[cfg(test)]
+fn owned_length(descriptors: &[libc::iovec]) -> usize {
     descriptors
         .iter()
         .fold(0usize, |total, iov| total.wrapping_add(iov.iov_len))
@@ -285,6 +268,9 @@ mod tests {
                 })
                 .collect();
             unsafe {
+                let length = |owner: &ReactorIov| {
+                    owned_length(span(owner.fields.original, owner.fields.count))
+                };
                 let owner = owned_new(&source).map(Box::into_raw);
                 assert!(owner.is_ok_and(|owner| !owner.is_null()));
                 let owner = owner.unwrap();
@@ -292,14 +278,14 @@ mod tests {
                 assert_eq!(initial.remain_count, count.c_cast::<i32>());
                 assert_eq!(initial.index, 0);
                 assert_eq!(initial.offset_bytes, 0);
-                assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
+                assert_eq!(length(&*owner), count);
                 if count > 0 {
-                    swr_v1_reactor_iov_advance(owner.as_mut(), 1);
+                    (*owner).advance(1);
                     let next = swr_v1_reactor_iov_view(&*owner);
                     assert_eq!(next.remain_count, count.c_cast::<i32>() - 1);
                     assert_eq!(next.index, 1);
                     assert_eq!(next.offset_bytes, 0);
-                    assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
+                    assert_eq!(length(&*owner), count);
                     assert_eq!(source[0].iov_len, 1);
                     assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
                 }

@@ -267,8 +267,7 @@ pub extern "C" fn swr_v1_reactor_handlers_get(
 }
 
 /// The write (`kind` 1) or error (`kind` 2) default handler.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_handlers_set_default(
+pub fn swr_v1_reactor_handlers_set_default(
     handlers: &mut Handlers,
     kind: u32,
     handler: Option<Handler>,
