@@ -195,6 +195,93 @@ pub struct DataHead {
     pub time: f64,
 }
 
+/// `swoole::ServerEventType`: what a [`DataHead`] carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ServerEvent {
+    RecvData = 0,
+    RecvDgram = 1,
+    SendData = 2,
+    SendFile = 3,
+    Close = 4,
+    Connect = 5,
+    CloseForce = 6,
+    CloseForward = 7,
+    Task = 8,
+    Finish = 9,
+    PipeMessage = 10,
+    PauseRecv = 11,
+    ResumeRecv = 12,
+    BufferFull = 13,
+    BufferEmpty = 14,
+    Incoming = 15,
+    Shutdown = 16,
+    CommandRequest = 17,
+    CommandResponse = 18,
+    ShutdownSignal = 19,
+}
+
+impl ServerEvent {
+    /// The event of a `DataHead::type` byte.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            0 => Self::RecvData,
+            1 => Self::RecvDgram,
+            2 => Self::SendData,
+            3 => Self::SendFile,
+            4 => Self::Close,
+            5 => Self::Connect,
+            6 => Self::CloseForce,
+            7 => Self::CloseForward,
+            8 => Self::Task,
+            9 => Self::Finish,
+            10 => Self::PipeMessage,
+            11 => Self::PauseRecv,
+            12 => Self::ResumeRecv,
+            13 => Self::BufferFull,
+            14 => Self::BufferEmpty,
+            15 => Self::Incoming,
+            16 => Self::Shutdown,
+            17 => Self::CommandRequest,
+            18 => Self::CommandResponse,
+            19 => Self::ShutdownSignal,
+            _ => return None,
+        })
+    }
+
+    /// The `DataHead::type` byte.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// `Server::is_stream_event`: the event belongs to a stream connection's session.
+    #[must_use]
+    pub const fn is_stream(self) -> bool {
+        matches!(
+            self,
+            Self::RecvData
+                | Self::SendData
+                | Self::SendFile
+                | Self::Close
+                | Self::Connect
+                | Self::PauseRecv
+                | Self::ResumeRecv
+                | Self::BufferFull
+                | Self::BufferEmpty
+        )
+    }
+}
+
+impl DataHead {
+    /// The event this head carries, if `kind` names one.
+    #[must_use]
+    pub const fn event(&self) -> Option<ServerEvent> {
+        ServerEvent::from_code(self.kind)
+    }
+}
+
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
 /// result: at most `buffer.len() - 1` bytes written, always NUL-terminated.
 pub fn datahead_dump(h: &DataHead, buffer: &mut [u8]) -> usize {

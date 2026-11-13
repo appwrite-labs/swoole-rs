@@ -6,7 +6,7 @@ use std::{
     ffi::{CStr, c_int},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_locks::Lock;
+use swoole_rs_locks::{Kind, Lock};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
@@ -16,22 +16,9 @@ use swoole_rs_zend::{
     sys::ZEND_ACC_PUBLIC,
 };
 
-/// `swoole::Lock::Type`.
-pub(crate) const RW_LOCK: i64 = 1;
-pub(crate) const MUTEX: i64 = 3;
-pub(crate) const SPIN_LOCK: i64 = 5;
 /// `LOCK_EX` from `<sys/file.h>` (Linux and macOS).
 pub(crate) const LOCK_EX: i64 = 2;
 
-/// Bit `1 << type` for each lock type the build has: upstream's `HAVE_RWLOCK`
-/// (both platforms) and `HAVE_SPINLOCK` (Linux; macOS has no `pthread_spin_lock`).
-pub(crate) const KINDS: u32 = (1 << MUTEX)
-    | (1 << RW_LOCK)
-    | if cfg!(target_os = "linux") {
-        1 << SPIN_LOCK
-    } else {
-        0
-    };
 /// The timed-lock capabilities `Lock::lock` takes: `HAVE_MUTEX_TIMEDLOCK` (1)
 /// and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.
 pub(crate) const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
@@ -77,15 +64,14 @@ method_table! {
     ];
 }
 
-/// The lock types the build has, under their class and global constant names.
-fn types() -> impl Iterator<Item = (&'static CStr, &'static CStr, i64)> {
-    [
-        (c"MUTEX", c"SWOOLE_MUTEX", MUTEX),
-        (c"RWLOCK", c"SWOOLE_RWLOCK", RW_LOCK),
-        (c"SPINLOCK", c"SWOOLE_SPINLOCK", SPIN_LOCK),
-    ]
-    .into_iter()
-    .filter(|(_, _, kind)| KINDS & (1 << kind) != 0)
+/// A lock type's class constant name and its global one.
+pub(crate) const fn names(kind: Kind) -> (&'static CStr, &'static CStr) {
+    match kind {
+        Kind::Mutex => (c"MUTEX", c"SWOOLE_MUTEX"),
+        Kind::RwLock => (c"RWLOCK", c"SWOOLE_RWLOCK"),
+        #[cfg(target_os = "linux")]
+        Kind::Spin => (c"SPINLOCK", c"SWOOLE_SPINLOCK"),
+    }
 }
 
 /// `php_swoole_lock_minit`: register the class and its constants.
@@ -93,12 +79,12 @@ fn types() -> impl Iterator<Item = (&'static CStr, &'static CStr, i64)> {
 /// A registration bailed out.
 pub fn lock_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Held>(c"Swoole\\Lock", &METHODS.0, 0);
-    for (name, _, kind) in types() {
-        minit.class_constant_long(&LOCK, name, kind);
+    for &kind in Kind::ALL {
+        minit.class_constant_long(&LOCK, names(kind).0, kind.code());
     }
     minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
-    for (_, name, kind) in types() {
-        minit.long_constant(name, kind);
+    for &kind in Kind::ALL {
+        minit.long_constant(names(kind).1, kind.code());
     }
     Ok(())
 }
@@ -106,7 +92,7 @@ pub fn lock_minit(minit: &Minit) -> Result<(), Bailout> {
 /// A shared lock of `kind` in the pool, as `new Mutex(true)` (and its `RWLock`
 /// and `SpinLock` twins) makes one. Upstream throws a C++ exception, which
 /// terminates the process, when the pool or the lock's init fails.
-fn new_lock(kind: i32) -> Lock {
+fn new_lock(kind: Kind) -> Lock {
     pool::words(Lock::words(kind))
         .and_then(|storage| Lock::shared(kind, storage))
         .unwrap_or_else(|| swoole_rs_corebase::fatal("a shared lock can't be made"))
@@ -122,14 +108,16 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(kind) = call.arity(0, 1).and_then(|()| call.long(1, MUTEX)) else {
+    let Ok(code) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, Kind::Mutex.code()))
+    else {
         call.set_bool(false);
         return;
     };
-    let supported = (0..32).contains(&kind) && KINDS & (1 << kind) != 0;
-    let Some(kind) = i32::try_from(kind).ok().filter(|_| supported) else {
+    let Some(kind) = Kind::from_code(code) else {
         // Upstream passes the format unformatted, with the type as the code.
-        swoole_rs_phpswoole::exception().throw(c"lock type[%d] is not support", kind);
+        swoole_rs_phpswoole::exception().throw(c"lock type[%d] is not support", code);
         call.set_bool(false);
         return;
     };

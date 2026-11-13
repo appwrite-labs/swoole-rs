@@ -95,7 +95,7 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
 /// (after a warning) when that fails.
 pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
     if slot.is_null() {
-        // Zeroed, which every field of a RespRequest takes.
+        // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
         let fresh = sw_calloc(1, size_of::<RespRequest>()).cast::<RespRequest>();
         if fresh.is_null() {
             log::warning(
@@ -112,7 +112,7 @@ pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
 /// A fresh request state, its padding zeroed too, as upstream's `memset` and native
 /// code comparing whole states expect.
 fn zero(request: &mut RespRequest) {
-    // SAFETY: an exclusive RespRequest, whose fields all take zero.
+    // SAFETY: an exclusive RespRequest, whose fields all take zero (`RespState::TotalLine`).
     unsafe { core::ptr::from_mut(request).write_bytes(0, 1) };
 }
 

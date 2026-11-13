@@ -57,13 +57,6 @@ impl DtlsSession {
     }
 }
 
-#[repr(C)]
-pub struct DtlsReadView {
-    pub length: u16,
-    pub empty: bool,
-    pub peek: bool,
-}
-
 /// `new dtls::Session(socket, ctx)` before `init`: an empty queue over `socket`.
 #[must_use]
 pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
@@ -122,48 +115,31 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
     0
 }
 
-/// The front datagram's length, whether the queue is empty, and `peek_mode`.
-pub fn swr_v1_tls_dtls_view(owner: &DtlsSession) -> DtlsReadView {
-    let queue = owner.queue.borrow();
-    let peek = owner.peek.get();
-    let length = queue.front().map_or(0, Datagram::length);
-    DtlsReadView {
-        length,
-        empty: queue.is_empty(),
-        peek,
-    }
-}
-
-/// The front datagram, as much of it as `requested` bytes hold, copied into `buffer`
-/// and popped unless peeking; a retry when the queue is empty. `requested` is the
-/// length the BIO was asked for, which `buffer` holds when it is not negative.
+/// The front datagram's length, as much of it as `requested` bytes hold, copied into
+/// `buffer` and popped unless peeking; `None`, a retry, when the queue is empty.
+/// `requested` is the length the BIO was asked for, which `buffer` holds when it is
+/// not negative; a negative one is returned as it is, copying nothing.
 pub fn swr_v1_tls_dtls_read(
     owner: &DtlsSession,
     buffer: &mut [MaybeUninit<u8>],
     requested: c_int,
-) -> crate::ReadPlan {
-    let peek = owner.peek.get();
+) -> Option<c_int> {
     let mut queue = owner.queue.borrow_mut();
-    let Some(front) = queue.front() else {
-        return crate::ReadPlan {
-            length: -1,
-            consume: 0,
-            retry: 1,
-        };
-    };
+    let front = queue.front()?;
     // No more than `buffer` holds, so a datagram is never popped uncopied.
-    let requested = requested.min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
-    let plan = crate::read_plan(0, front.length(), requested, u8::from(peek));
-    if let Ok(length) = usize::try_from(plan.length) {
-        if let (Some(out), Some(source)) = (buffer.get_mut(..length), front.payload().get(..length))
+    let length = c_int::from(front.length())
+        .min(requested)
+        .min(c_int::try_from(buffer.len()).unwrap_or(c_int::MAX));
+    if let Ok(copied) = usize::try_from(length) {
+        if let (Some(out), Some(source)) = (buffer.get_mut(..copied), front.payload().get(..copied))
         {
             out.copy_from_slice(source);
         }
-        if plan.consume != 0 {
+        if !owner.peek.get() {
             queue.pop_front();
         }
     }
-    plan
+    Some(length)
 }
 
 /// The queued datagrams' total length.
@@ -173,30 +149,27 @@ pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
     })
 }
 
-/// Native decodes its actual OpenSSL macro values into the existing stable tags.
-/// Shutdown and diagnostic effects are returned to native, outside this Rust frame,
-/// and the peer command's address is [`peer`], which the BIO's control copies out.
-pub fn swr_v1_tls_dtls_control(
+/// The answer to `command` for a BIO whose shutdown flag is `shutdown`, setting the
+/// session's peek mode to `value` for [`Command::SetPeek`].
+fn swr_v1_tls_dtls_control(
     owner: &DtlsSession,
-    tag: u32,
-    observed: c_long,
+    command: Command,
+    shutdown: c_long,
     value: c_long,
-) -> crate::ControlPlan {
-    let observed = match tag {
-        0 => c_long::from(owner.queue.borrow().is_empty()),
-        2 => swr_v1_tls_dtls_length(owner).c_cast::<c_long>(),
-        _ => observed,
-    };
-    if tag == 8 {
-        owner.peek.set(value != 0);
+) -> c_long {
+    match command {
+        Command::Eof => c_long::from(owner.queue.borrow().is_empty()),
+        Command::GetClose => shutdown,
+        Command::Pending => swr_v1_tls_dtls_length(owner).c_cast::<c_long>(),
+        Command::SetClose | Command::Ignore => 0,
+        Command::Accept | Command::GetPeer => 1,
+        Command::Mtu => 1500,
+        Command::MtuOverhead => 96,
+        Command::SetPeek => {
+            owner.peek.set(value != 0);
+            1
+        }
     }
-    if tag == 8 || tag == 5 {
-        return crate::ControlPlan {
-            result: 1,
-            effect: 0,
-        };
-    }
-    crate::control_plan(tag, observed)
 }
 
 /// The peer the session's socket names, which `BIO_CTRL_DGRAM_GET_PEER` answers with;
@@ -206,13 +179,13 @@ fn peer(owner: &DtlsSession) -> Option<swoole_rs_reactor::AddressStorage> {
     Some(socket.read(|record| record.info.addr))
 }
 
-/// `listen`'s action for `DTLSv1_listen`'s result, marking the session listened.
-pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> u32 {
-    let action = crate::listen_plan(result);
-    if action == 2 {
+/// Whether `DTLSv1_listen`'s `result` succeeded, marking the session listened unless
+/// it is still pending (zero).
+pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> bool {
+    if result > 0 {
         owner.listened.set(true);
     }
-    action
+    result >= 0
 }
 
 /// A BIO of the table `methods` makes, which OpenSSL lends each callback for the
@@ -272,20 +245,47 @@ const BIO_FLAGS_RWS: c_int = 0x07;
 const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
 const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 
-/// OpenSSL 3's `BIO_CTRL_*` command as `swr_v1_tls_dtls_control`'s tag.
-fn control_tag(command: c_int) -> u32 {
-    match command {
-        2 => 0,                         // EOF
-        8 => 1,                         // GET_CLOSE
-        10 => 2,                        // PENDING
-        9 => 3,                         // SET_CLOSE
-        11 | 32 | 44 => 4,              // FLUSH, DGRAM_SET_CONNECTED, DGRAM_SET_PEER
-        46 => 5,                        // DGRAM_GET_PEER
-        40 | 47 => 6,                   // DGRAM_QUERY_MTU, DGRAM_GET_FALLBACK_MTU
-        49 => 7,                        // DGRAM_GET_MTU_OVERHEAD
-        71 => 8,                        // DGRAM_SET_PEEK_MODE
-        6 | 7 | 13 | 45 | 73 | 76 => 9, // PUSH, POP, WPENDING, DGRAM_SET_NEXT_TIMEOUT, GET_KTLS_*
-        _ => u32::MAX,
+/// The OpenSSL 3 `BIO_CTRL_*` commands the BIO answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    /// `EOF`: whether the queue is empty.
+    Eof,
+    /// `GET_CLOSE`: the BIO's shutdown flag.
+    GetClose,
+    /// `PENDING`: the queued bytes.
+    Pending,
+    /// `SET_CLOSE`: sets the BIO's shutdown flag.
+    SetClose,
+    /// `FLUSH`, `DGRAM_SET_CONNECTED`, `DGRAM_SET_PEER`: accepted.
+    Accept,
+    /// `DGRAM_GET_PEER`: copies out the session's peer.
+    GetPeer,
+    /// `DGRAM_QUERY_MTU`, `DGRAM_GET_FALLBACK_MTU`.
+    Mtu,
+    /// `DGRAM_GET_MTU_OVERHEAD`.
+    MtuOverhead,
+    /// `DGRAM_SET_PEEK_MODE`.
+    SetPeek,
+    /// `PUSH`, `POP`, `WPENDING`, `DGRAM_SET_NEXT_TIMEOUT`, `GET_KTLS_*`: ignored.
+    Ignore,
+}
+
+impl Command {
+    /// `command`'s control, or `None` for one the BIO does not know.
+    const fn of(command: c_int) -> Option<Self> {
+        Some(match command {
+            2 => Self::Eof,
+            8 => Self::GetClose,
+            10 => Self::Pending,
+            9 => Self::SetClose,
+            11 | 32 | 44 => Self::Accept,
+            46 => Self::GetPeer,
+            40 | 47 => Self::Mtu,
+            49 => Self::MtuOverhead,
+            71 => Self::SetPeek,
+            6 | 7 | 13 | 45 | 73 | 76 => Self::Ignore,
+            _ => return None,
+        })
     }
 }
 
@@ -319,11 +319,10 @@ unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -
     // SAFETY: OpenSSL lends `length` writable bytes.
     let mut buffer = unsafe { Fill::from_raw(data.cast(), usize::try_from(length).unwrap_or(0)) };
     let buffer = buffer.slots();
-    let plan = swr_v1_tls_dtls_read(session, buffer, length);
-    if plan.retry != 0 {
+    swr_v1_tls_dtls_read(session, buffer, length).unwrap_or_else(|| {
         BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);
-    }
-    plan.length
+        -1
+    })
 }
 
 /// `dtls::BIO_ctrl`.
@@ -333,17 +332,17 @@ unsafe extern "C" fn bio_ctrl(
     value: c_long,
     pointer: *mut c_void,
 ) -> c_long {
-    let tag = control_tag(command);
-    let observed = if tag == 1 {
-        c_long::from(BIO_get_shutdown(bio))
-    } else {
-        0
-    };
     let Some(session) = session_of(bio) else {
         return 0;
     };
-    let plan = swr_v1_tls_dtls_control(session, tag, observed, value);
-    if tag == 5
+    let Some(known) = Command::of(command) else {
+        log::warning(c"dtls::BIO_ctrl", format_args!("unknown cmd: {command}"));
+        return 0;
+    };
+    if known == Command::SetClose {
+        BIO_set_shutdown(bio, value.c_cast::<c_int>());
+    }
+    if known == Command::GetPeer
         && !pointer.is_null()
         && let Some(address) = peer(session)
     {
@@ -352,12 +351,8 @@ unsafe extern "C" fn bio_ctrl(
         // address union.
         unsafe { out.write_unaligned(address) };
     }
-    match plan.effect {
-        1 => BIO_set_shutdown(bio, value.c_cast::<c_int>()),
-        4 => log::warning(c"dtls::BIO_ctrl", format_args!("unknown cmd: {command}")),
-        _ => {}
-    }
-    plan.result
+    let shutdown = c_long::from(BIO_get_shutdown(bio));
+    swr_v1_tls_dtls_control(session, known, shutdown, value)
 }
 
 extern "C" fn bio_create(_bio: &DtlsBio) -> c_int {
@@ -465,7 +460,7 @@ pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
         return false;
     };
     let result = ssl.dtls_listen();
-    if swr_v1_tls_dtls_listen(owner, result) != 0 {
+    if swr_v1_tls_dtls_listen(owner, result) {
         return true;
     }
     let reason = crate::swr_v1_socket_ssl_peek_reason();
@@ -498,7 +493,7 @@ mod tests {
         fn append(&self, bytes: &[u8]) {
             assert_eq!(swr_v1_tls_dtls_append(self.session(), bytes), 0);
         }
-        fn read(&self, count: usize) -> (crate::ReadPlan, Vec<u8>) {
+        fn read(&self, count: usize) -> (Option<c_int>, Vec<u8>) {
             let mut bytes = vec![0x55; count];
             let lent = unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast(), count) };
             let result = swr_v1_tls_dtls_read(self.session(), lent, count.try_into().unwrap());
@@ -549,23 +544,22 @@ mod tests {
         owner.append(b"xyz");
         assert_eq!(owner.length(), 9);
         owner.session().peek.set(true);
-        let (plan, bytes) = owner.read(2);
-        assert_eq!((plan.length, plan.consume, plan.retry), (2, 0, 0));
+        let (length, bytes) = owner.read(2);
+        assert_eq!(length, Some(2));
         assert_eq!(bytes, b"ab");
         assert_eq!(owner.length(), 9);
         owner.session().peek.set(false);
         assert_eq!(owner.read(2).1, b"ab");
         assert_eq!(owner.length(), 3);
-        let (plan, bytes) = owner.read(10);
-        assert_eq!(plan.length, 3);
+        let (length, bytes) = owner.read(10);
+        assert_eq!(length, Some(3));
         assert_eq!(&bytes[..3], b"xyz");
         assert_eq!(owner.length(), 0);
-        let (plan, _) = owner.read(1);
-        assert_eq!((plan.length, plan.retry), (-1, 1));
+        assert_eq!(owner.read(1).0, None);
         owner.append(b"");
-        assert!(!swr_v1_tls_dtls_view(unsafe { &*owner.handle() }).empty);
-        assert_eq!(owner.read(0).0.consume, 1);
-        assert!(swr_v1_tls_dtls_view(unsafe { &*owner.handle() }).empty);
+        assert!(!owner.session().queue.borrow().is_empty());
+        assert_eq!(owner.read(0).0, Some(0));
+        assert!(owner.session().queue.borrow().is_empty());
     }
 
     #[test]
@@ -578,22 +572,33 @@ mod tests {
         swoole_rs_corebase::sys::close(read);
         swoole_rs_corebase::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");
-        assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 0) }, 1);
+        assert!(!unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), -1) });
+        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 0) });
         assert!(!owner.session().listened());
-        assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 1) }, 2);
+        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 1) });
         assert!(owner.session().listened());
-        unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 8, 0, -7) };
+        let control = |control, shutdown| unsafe {
+            swr_v1_tls_dtls_control(&*owner.handle(), control, shutdown, -7)
+        };
+        assert_eq!(control(Command::SetPeek, 0), 1);
         assert!(owner.session().peek.get());
         owner.append(b"abc");
-        assert_eq!(
-            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 2, 0, 0) }.result,
-            3
-        );
+        assert_eq!(control(Command::Pending, 0), 3);
         owner.session().peek.set(false);
         assert_eq!(owner.read(3).1, b"abc");
-        assert_eq!(
-            unsafe { swr_v1_tls_dtls_control(&*owner.handle(), 0, 0, 0) }.result,
-            1
-        );
+        assert_eq!(control(Command::Eof, 0), 1);
+        for (each, answer) in [
+            (Command::GetClose, 5),
+            (Command::SetClose, 0),
+            (Command::Ignore, 0),
+            (Command::Accept, 1),
+            (Command::GetPeer, 1),
+            (Command::Mtu, 1500),
+            (Command::MtuOverhead, 96),
+        ] {
+            assert_eq!(control(each, 5), answer);
+        }
+        assert_eq!(Command::of(71), Some(Command::SetPeek));
+        assert_eq!(Command::of(c_int::MAX), None);
     }
 }

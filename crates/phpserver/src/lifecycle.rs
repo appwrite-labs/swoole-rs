@@ -253,8 +253,7 @@ fn fact(serv: view::Server<'_>, id: u32) -> bool {
 /// The Server fact `id`: from its records, or C++ for what only it knows.
 fn number(serv: view::Server<'_>, id: u32) -> i64 {
     let c = serv.config();
-    // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
-    let hash_dispatch = matches!(c.dispatch_mode.get(), 2 | 4 | 8);
+    let hash_dispatch = c.hash_dispatch();
     match id {
         fact::MODE => c.mode_ as i64,
         fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),

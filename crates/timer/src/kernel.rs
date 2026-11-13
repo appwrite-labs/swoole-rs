@@ -58,7 +58,7 @@ impl Queue {
         let (status, v) = self.q.borrow_mut().add(now, delay, repeat, n.token());
         assert_eq!(status, OK);
         assert!(v.id > 0 && v.token == n.token() && v.deadline == now + delay);
-        assert!(v.removed == 0 && v.reserved == 0);
+        assert!(!v.removed);
         assert!(v.interval == if repeat { delay } else { 0 } && v.exec_count == 0);
         assert!(self.owned.borrow_mut().insert(v.id, v.token).is_none());
         v
@@ -102,7 +102,7 @@ impl Queue {
                 break;
             }
             if status == CLOSING {
-                assert!(self.stats().closing != 0 && v.id == 0 && v.token.is_null());
+                assert!(self.stats().closing && v.id == 0 && v.token.is_null());
                 break;
             }
             assert!(status == OK && self.stats().active_id == v.id);
@@ -172,10 +172,10 @@ fn active_cancel() {
     q.prime(0);
     q.select(1, |v| {
         let (status, out) = q.q.borrow_mut().remove(v.id);
-        assert!(status == DEFERRED && out.removed != 0);
+        assert!(status == DEFERRED && out.removed);
         assert_eq!(q.q.borrow_mut().remove(v.id).0, NOT_FOUND);
         let (status, out) = q.q.borrow().get(v.id);
-        assert!(status == OK && out.removed != 0 && out.token == a.token());
+        assert!(status == OK && out.removed && out.token == a.token());
         assert!(q.stats().count == 1 && a.drops.get() == 0 && n.id == v.id);
     });
     q.golden(&["call:A", "drop:A"]);
@@ -355,7 +355,7 @@ fn limits() {
     assert_eq!(q.q.borrow_mut().add(9, 1, false, a.token()).0, INVALID);
     assert_eq!(q.stats().count, 1);
     assert_eq!(q.q.borrow_mut().begin(9), INVALID);
-    assert_eq!(q.stats().selecting, 0);
+    assert!(!q.stats().selecting);
     assert_eq!(q.q.borrow_mut().update(av.id, -1).0, INVALID);
     let (status, v) = q.q.borrow().get(av.id);
     assert!(status == OK && v.deadline == 11);
@@ -388,7 +388,7 @@ fn teardown() {
         assert_eq!(q.q.borrow_mut().drain(), (DEFERRED, TimerView::default()));
         assert_eq!(q.q.borrow_mut().add(2, 1, false, c.token()).0, CLOSING);
         assert_eq!(q.q.borrow_mut().update(v.id, 3).0, CLOSING);
-        assert!(q.stats().count == 1 && a.drops.get() == 0 && q.stats().closing != 0);
+        assert!(q.stats().count == 1 && a.drops.get() == 0 && q.stats().closing);
     });
     q.golden(&["call:A", "drop:B", "drop:A"]);
 }

@@ -214,7 +214,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
                 server_fd: crate::base_factory::low16(c.server_fd),
                 reactor_id: c.reactor_id.into(),
                 ext_flags: rdata.info.ext_flags,
-                kind: 0, // SW_SERVER_EVENT_RECV_DATA
+                kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
                 time: c.last_recv_time,
                 fd: c.fd.into(),
                 len,

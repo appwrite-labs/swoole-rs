@@ -3,8 +3,20 @@ use super::{Buffer, EMPTY, Entry, INVALID, NOMEM, OK, c_void};
 
 type Dispose = Option<unsafe extern "C" fn(*mut c_void)>;
 
+/// `BufferChunk::Type`: what a queued entry holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Kind {
+    #[default]
+    Data = 0,
+    /// A native sendfile request.
+    Sendfile = 1,
+    /// A payload-free CLOSE marker.
+    Close = 2,
+}
+
 pub(super) struct Token {
-    kind: u32,
+    kind: Kind,
     value: *mut c_void,
     dispose: Dispose,
 }
@@ -19,7 +31,7 @@ pub(super) struct Cursor {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Front {
-    pub kind: u32,
+    pub kind: Kind,
     pub length: u32,
     pub offset: u32,
     pub data: *mut u8,
@@ -52,16 +64,17 @@ impl Detached {
 }
 
 impl Buffer {
-    /// Transfer a native sendfile token (kind 1), or enqueue a payload-free CLOSE marker
-    /// (kind 2, with or without a token). Custody transfers on OK only.
+    /// Transfer a native sendfile token, or enqueue a payload-free CLOSE marker (with or
+    /// without a token); a data entry has no token, so is `INVALID`. Custody transfers on
+    /// OK only.
     /// # Safety
     /// `value` is unique to this queue, and `dispose(value)` is sound once and doesn't
     /// unwind; Rust stores the function address and only [`Detached::dispose`] calls it.
-    pub unsafe fn push(&mut self, kind: u32, value: *mut c_void, dispose: Dispose) -> i32 {
+    pub unsafe fn push(&mut self, kind: Kind, value: *mut c_void, dispose: Dispose) -> i32 {
         if !match kind {
-            1 => !value.is_null() && dispose.is_some(),
-            2 => value.is_null() == dispose.is_none(),
-            _ => false,
+            Kind::Sendfile => !value.is_null() && dispose.is_some(),
+            Kind::Close => value.is_null() == dispose.is_none(),
+            Kind::Data => false,
         } {
             return INVALID;
         }
@@ -75,7 +88,7 @@ impl Buffer {
     /// Enqueue a payload-free CLOSE marker.
     pub fn push_close(&mut self) -> i32 {
         self.push_token(Token {
-            kind: 2,
+            kind: Kind::Close,
             value: std::ptr::null_mut(),
             dispose: None,
         })
@@ -181,11 +194,14 @@ mod tests {
         assert_eq!(mem::offset_of!(Front, generation), 32);
         let mut queue = Buffer::create(3).unwrap();
         assert_eq!(queue.append(b"abcdefg"), OK);
-        assert_eq!(unsafe { queue.push(2, ptr::null_mut(), None) }, OK);
+        assert_eq!(
+            unsafe { queue.push(Kind::Close, ptr::null_mut(), None) },
+            OK
+        );
         let mut total = 7;
         for bytes in [b"abc".as_slice(), b"def".as_slice(), b"g".as_slice()] {
             let view = queue.front().unwrap();
-            assert_eq!(view.kind, 0);
+            assert_eq!(view.kind, Kind::Data);
             assert_eq!(view.offset, 0);
             assert_eq!(
                 unsafe { slice::from_raw_parts(view.data, view.length as usize) },
@@ -203,7 +219,7 @@ mod tests {
             total -= u32::try_from(bytes.len()).unwrap();
             assert_eq!(queue.length, total);
         }
-        assert_eq!(queue.front().unwrap().kind, 2);
+        assert_eq!(queue.front().unwrap().kind, Kind::Close);
         assert_eq!(queue.front_data(), b"");
         queue.pop().unwrap();
         assert_eq!(queue.front().err(), Some(EMPTY));
@@ -211,9 +227,12 @@ mod tests {
         let token = ptr::from_mut(&mut native_payload).cast();
         // One reified pointer: each cast of `never_called` may get its own address.
         let dispose: unsafe extern "C" fn(*mut c_void) = never_called;
-        assert_eq!(unsafe { queue.push(1, token, Some(dispose)) }, OK);
+        assert_eq!(
+            unsafe { queue.push(Kind::Sendfile, token, Some(dispose)) },
+            OK
+        );
         let view = queue.front().unwrap();
-        assert_eq!((view.kind, view.token), (1, token));
+        assert_eq!((view.kind, view.token), (Kind::Sendfile, token));
         let detached = queue.pop().unwrap();
         assert_eq!(detached.token, token);
         assert!(std::ptr::fn_addr_eq(detached.dispose.unwrap(), dispose));

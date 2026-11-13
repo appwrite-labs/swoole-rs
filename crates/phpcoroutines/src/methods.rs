@@ -434,7 +434,7 @@ fn stats(call: &Call) {
     for (key, value) in values {
         call.add_assoc_long(key, value);
     }
-    if stats.iouring != 0 {
+    if stats.iouring {
         call.add_assoc_long(c"iouring_task_num", stats.iouring_task_num);
         call.add_assoc_long(c"iouring_sq_usage_percent", stats.iouring_sq_usage_percent);
         call.add_assoc_long(c"iouring_waiting_task_num", stats.iouring_waiting_task_num);

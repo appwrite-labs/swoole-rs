@@ -15,6 +15,7 @@ use std::{
     sync::{Arc, OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_phpcoroutines::create_coroutine;
@@ -985,9 +986,6 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
     }
 }
 
-/// `SW_SERVER_EVENT_CLOSE`.
-const EVENT_CLOSE: u8 = 4;
-
 /// The `dispatch_func` setting: `callable`, which the config's slot holds until
 /// `release_dispatch_func`, picks the worker of each event from now on, in the
 /// reactor's one thread; the previous one is released.
@@ -1066,7 +1064,7 @@ extern "C" fn on_dispatch(
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info().fd),
     };
-    let kind = send.map_or(EVENT_CLOSE, |send| send.info().kind);
+    let kind = send.map_or(ServerEvent::Close.code(), |send| send.info().kind);
     let mut args = [
         zserv,
         long_zval(session),

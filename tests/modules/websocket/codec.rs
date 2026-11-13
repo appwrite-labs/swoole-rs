@@ -258,8 +258,8 @@ fn decision_policy() {
             fragment_length: 65535,
             package_max_length: 65536,
             fragment_flags: 0x021c,
-            has_fragment: 1,
-            closing: 0,
+            has_fragment: true,
+            closing: false,
         };
         check(
             0,
@@ -331,7 +331,7 @@ fn decision_policy() {
             Reject,
             Error::CloseTooBig,
         );
-        active.closing = 1;
+        active.closing = true;
         check(8, flags, header, 0, active, ServerClose, Error::None);
         check(15, flags, header, 0, active, Unknown, Error::None);
     }

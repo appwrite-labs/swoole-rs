@@ -913,7 +913,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     let Some(Ok(front)) = front else {
         swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
     };
-    if front.kind != SENDFILE_TOKEN {
+    if front.kind != swoole_rs_buffer::EntryKind::Sendfile {
         swoole_rs_corebase::fatal("sendfile's queued entry is not a file");
     }
     // SAFETY: a sendfile token: only `socket_sendfile_async` queues one, as a request
@@ -944,9 +944,6 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     result.code
 }
 
-/// The queue's token kind for a [`SocketFileRequest`].
-const SENDFILE_TOKEN: u32 = 1;
-
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
 /// the checked request queued behind the output, which is created on first use.
 #[must_use]
@@ -968,7 +965,11 @@ pub fn socket_sendfile_async(
     let status = with_queue(socket, |queue| {
         // SAFETY: the queue now owns the request, which only `dispose` frees.
         queue.map_or(-1, |queue| unsafe {
-            queue.push(SENDFILE_TOKEN, request.cast(), dispose)
+            queue.push(
+                swoole_rs_buffer::EntryKind::Sendfile,
+                request.cast(),
+                dispose,
+            )
         })
     });
     if status != 0 {
@@ -1448,7 +1449,13 @@ mod tests {
         let socket = &raw mut left;
         let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
         let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
-        let queued = unsafe { (*queue).push(1, request.cast(), dispose) };
+        let queued = unsafe {
+            (*queue).push(
+                swoole_rs_buffer::EntryKind::Sendfile,
+                request.cast(),
+                dispose,
+            )
+        };
         assert_eq!(queued, 0);
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
