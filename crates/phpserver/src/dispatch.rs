@@ -7,11 +7,11 @@ use crate::callable::Callable;
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
-    ffi::{CStr, c_int, c_void},
+    any::Any,
+    ffi::{CStr, c_int},
     mem::ManuallyDrop,
     ptr,
-    rc::Rc,
-    sync::{OnceLock, atomic::Ordering::Relaxed},
+    sync::{Arc, OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
@@ -1000,22 +1000,21 @@ pub(crate) fn set_dispatch_func(
     callable: Callable,
 ) -> Result<(), Bailout> {
     let config = server.config();
-    let handle = Rc::into_raw(callable).cast_mut().cast();
-    let previous = config.private_data_3.swap(handle, Relaxed);
+    let owner: Box<dyn Any> = Box::new(callable);
+    let previous = config.private_data_3.replace(Some(owner));
     server.set_callback(Callback::DispatchFunc(on_dispatch));
     config.single_thread.set(true);
     release_dispatch_func(previous)
 }
 
-/// Free the `dispatch_func` callable `set_dispatch_func` stored, if any.
+/// Drop a `dispatch_func` callable the config's slot gave back, if any.
 /// # Errors
 /// A destructor bailed out.
-pub(crate) fn release_dispatch_func(handle: *mut c_void) -> Result<(), Bailout> {
-    if handle.is_null() {
+pub(crate) fn release_dispatch_func(owner: Option<Arc<Box<dyn Any>>>) -> Result<(), Bailout> {
+    if owner.is_none() {
         return Ok(());
     }
-    // SAFETY: the slot's reference `set_dispatch_func` gave up, taken back once.
-    drop(unsafe { Rc::from_raw(handle.cast_const().cast::<callable::Callable>()) });
+    drop(owner);
     bailout::outcome(())
 }
 
@@ -1054,10 +1053,15 @@ extern "C" fn on_dispatch(
     send: Option<&RecvData>,
 ) -> c_int {
     let config = server.config();
-    let handle = config.private_data_3.load(Relaxed);
-    // SAFETY: the slot's live reference (`set_dispatch_func`), which a started
-    // server's `set()` can't replace during the call.
-    let dispatch = unsafe { &*handle.cast_const().cast::<callable::Callable>() };
+    // Its own reference for the call: the `Rc` inside is only read, so a thread-mode
+    // worker leaves the master's count alone.
+    let owner = config.private_data_3.get();
+    let Some(dispatch) = owner
+        .as_deref()
+        .and_then(|owner| owner.downcast_ref::<Callable>())
+    else {
+        return -1;
+    };
     let cache = dispatch.cache_ptr();
     // Its live object, copied without a reference as upstream.
     let zserv = zserv();
@@ -1108,6 +1112,7 @@ extern "C" fn on_dispatch(
     if argc == 4 {
         dtor(&mut args[3]);
     }
+    drop(owner);
     bailout::finish();
     c_int::try_from(worker_id).unwrap_or(-1)
 }
