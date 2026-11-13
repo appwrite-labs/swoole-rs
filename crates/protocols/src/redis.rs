@@ -277,10 +277,24 @@ pub fn resp_format(kind: u8, value: &[u8], integer: i64, output: Option<&mut [u8
     size
 }
 
+/// `swRedis_receive_state`: what the parser reads next. Zero is the first state, so a
+/// zeroed request starts a message.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum RespState {
+    /// The `*N` line count.
+    #[default]
+    TotalLine = 0,
+    /// A `$N` length or an `:N` integer.
+    Length = 1,
+    /// A bulk string's bytes.
+    String = 2,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RespRequest {
-    pub state: u8,
+    pub state: RespState,
     pub lines_total: i32,
     pub lines_received: i32,
     pub bytes_total: i32,
@@ -360,14 +374,14 @@ pub fn resp_receive_range(
         let Some(&first) = rest.first() else {
             return (RespAction::Malformed, set_offset);
         };
-        if request.state == 0 && first == b'*' {
+        if request.state == RespState::TotalLine && first == b'*' {
             let Some(value) = number(rest, range) else {
                 return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
             request.lines_total = value.value;
-            request.state = 1;
-        } else if request.state <= 1 && first == b'$' {
+            request.state = RespState::Length;
+        } else if request.state <= RespState::Length && first == b'$' {
             let Some(value) = number(rest, range) else {
                 return (RespAction::Malformed, set_offset);
             };
@@ -385,13 +399,13 @@ pub fn resp_receive_range(
                 return (RespAction::TooBig, set_offset);
             }
             request.bytes_total = value.value;
-            request.state = 2;
-        } else if request.state <= 1 && first == b':' {
+            request.state = RespState::String;
+        } else if request.state <= RespState::Length && first == b':' {
             let Some(value) = number(rest, range) else {
                 return (RespAction::Malformed, set_offset);
             };
             position += value.consumed;
-        } else if request.state <= 2 {
+        } else {
             let Some(remaining) = request.bytes_total.checked_sub(request.bytes_received) else {
                 return (RespAction::Malformed, set_offset);
             };
@@ -419,13 +433,11 @@ pub fn resp_receive_range(
                 return (RespAction::Malformed, set_offset);
             };
             request.lines_received = lines;
-            request.state = 1;
+            request.state = RespState::Length;
             set_offset = true;
             if request.lines_received == request.lines_total {
                 return (RespAction::Dispatch, set_offset);
             }
-        } else {
-            return (RespAction::Malformed, set_offset);
         }
         if position >= bytes.len() {
             return (RespAction::Malformed, set_offset);
@@ -589,7 +601,7 @@ mod tests {
             resp_receive(b"*1\r\n$10\r\nabc\r\n", 64, 64, &mut request),
             (RespAction::Wait, false)
         );
-        assert_eq!(request.state, 2);
+        assert_eq!(request.state, RespState::String);
         assert_eq!(request.bytes_received, 5);
         assert_eq!(
             resp_receive(b"abcd", 4, 4, &mut RespRequest::default()),
