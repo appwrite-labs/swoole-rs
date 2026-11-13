@@ -66,7 +66,7 @@ const TEXT_CHROOT: usize = 0;
 const TEXT_USER: usize = 1;
 const TEXT_GROUP: usize = 2;
 
-// The static-handler sets (`detail::ServerStrings` kinds) and their insert operation.
+// The static-handler sets (`crates/server/src/static_config.rs` kinds) and their insert operation.
 const LOCATIONS: u32 = 0;
 const INDEX_FILES: u32 = 1;
 const COMPRESSION_TYPES: u32 = 2;
