@@ -16,7 +16,8 @@ workspace = true
 # Define the upstream C++ symbols of the methods `crates/server/src/server_methods.rs` holds;
 # only the hybrid's archive, whose upstream sources no longer define them, turns it on.
 upstream-symbols = ["swoole-rs-tls/upstream-symbols", "swoole-rs-corebase/upstream-symbols",
-                    "swoole-rs-ossupport/upstream-symbols", "swoole-rs-process/upstream-symbols"]
+                    "swoole-rs-ossupport/upstream-symbols", "swoole-rs-process/upstream-symbols",
+                    "swoole-rs-bus/upstream-symbols"]
 # `--fix-halfclose` (M15, native/halfclose): drain queued output before close and keep a
 # synchronous worker's response after a clean FIN.
 halfclose = []

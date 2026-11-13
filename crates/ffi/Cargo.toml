@@ -40,7 +40,6 @@ swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }
 swoole-rs-error-ffi = { path = "../error-ffi", features = ["upstream-symbols"] }
-swoole-rs-bus = { path = "../bus", features = ["upstream-symbols"] }
 swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
 swoole-rs-memory = { path = "../memory", features = ["upstream-symbols"] }
 swoole-rs-http = { path = "../http" }
