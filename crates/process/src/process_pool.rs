@@ -893,6 +893,7 @@ getters!(
     reload_task: *mut ReloadTask,
     ;
     ptr: *mut c_void,
+    started: bool,
     protocol_type: c_int,
     max_request: u32,
     max_request_grace: u32,
@@ -933,6 +934,11 @@ setters!(
     pub(crate) reload_task / set_reload_task: *mut ReloadTask,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
+    is_async / set_is_async: bool,
+    on_start / set_on_start: Option<PoolFn>,
+    on_shutdown / set_on_shutdown: Option<PoolFn>,
+    on_message / set_on_message: Option<MessageFn>,
+    on_worker_exit / set_on_worker_exit: Option<WorkerFn>,
     warning_time / set_warning_time: i64,
     schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
     ptr / set_ptr: *mut c_void,

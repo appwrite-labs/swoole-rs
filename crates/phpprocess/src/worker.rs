@@ -39,9 +39,11 @@ pub(crate) struct WorkerView {
     pub redirect_stderr: bool,
 }
 
-pub(crate) fn record<'a>(worker: *mut c_void) -> &'a mut WorkerRecord {
-    // SAFETY: every caller passes a live worker this process owns or copied.
-    unsafe { &mut *worker.cast::<WorkerRecord>() }
+/// `f` over the worker's record, borrowed for the call only.
+pub(crate) fn with<R>(worker: *mut c_void, f: impl FnOnce(&mut WorkerRecord) -> R) -> R {
+    // SAFETY: every caller passes a live worker this process owns or copied, and
+    // no `f` reaches a worker's record again.
+    f(unsafe { &mut *worker.cast::<WorkerRecord>() })
 }
 
 /// `new Worker()`.
@@ -72,16 +74,18 @@ pub(crate) unsafe fn free(worker: *mut c_void) {
 
 /// Redirect stdin, stdout and stderr to the pipe in the child.
 pub(crate) fn redirect(worker: *mut c_void) {
-    let worker = record(worker);
-    worker.redirect_stdin = true;
-    worker.redirect_stdout = true;
-    worker.redirect_stderr = true;
+    with(worker, |worker| {
+        worker.redirect_stdin = true;
+        worker.redirect_stdout = true;
+        worker.redirect_stderr = true;
+    });
 }
 
 pub(crate) fn set_id(worker: *mut c_void, id: u32) {
-    let record = record(worker);
-    record.set_id(id);
-    record.shared = false;
+    with(worker, |record| {
+        record.set_id(id);
+        record.shared = false;
+    });
 }
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
@@ -93,24 +97,25 @@ pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
         return -1;
     }
     let pair = Box::into_raw(built);
-    let record = record(worker);
-    record.pipe_master = master.cast();
-    record.pipe_worker = end.cast();
-    record.pipe_object = pair.cast();
-    record.pipe_current = master.cast();
+    with(worker, |record| {
+        record.pipe_master = master.cast();
+        record.pipe_worker = end.cast();
+        record.pipe_object = pair.cast();
+        record.pipe_current = master.cast();
+    });
     pipe(worker).map_or(-1, Socket::fd)
 }
 
 /// The worker's current pipe end, while it has one.
 fn pipe<'a>(worker: *mut c_void) -> Option<Socket<'a>> {
+    let current = with(worker, |record| record.pipe_current);
     // SAFETY: a worker's current pipe end is null or a live socket of its pair.
-    unsafe { Socket::from_ptr(record(worker).pipe_current.cast()) }
+    unsafe { Socket::from_ptr(current.cast()) }
 }
 
 pub(crate) fn view(worker: *mut c_void) -> WorkerView {
     let pipe = pipe(worker).map_or(-1, Socket::fd);
-    let record = record(worker);
-    WorkerView {
+    with(worker, |record| WorkerView {
         id: record.id(),
         pid: record.pid(),
         pipe,
@@ -118,17 +123,17 @@ pub(crate) fn view(worker: *mut c_void) -> WorkerView {
         redirect_stdin: record.redirect_stdin,
         redirect_stdout: record.redirect_stdout,
         redirect_stderr: record.redirect_stderr,
-    }
+    })
 }
 
 /// `swoole_fork(0)`, recording the child's pid in the parent.
 pub(crate) fn fork(worker: *mut c_void) -> c_int {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
-        record(worker).set_pid(pid);
+        with(worker, |record| record.set_pid(pid));
     }
     if pid >= 0 {
-        record(worker).child_process = u8::from(pid == 0);
+        with(worker, |record| record.child_process = u8::from(pid == 0));
     }
     pid
 }
@@ -136,10 +141,12 @@ pub(crate) fn fork(worker: *mut c_void) -> c_int {
 /// In the child: the worker end becomes the pipe and the worker this process's.
 pub(crate) fn child_enter(worker: *mut c_void) {
     let pid = swoole_rs_process::os::getpid();
-    let process = record(worker);
-    process.pipe_current = process.pipe_worker;
-    process.set_pid(pid);
-    swoole_set_worker_id(process.id());
+    let id = with(worker, |process| {
+        process.pipe_current = process.pipe_worker;
+        process.set_pid(pid);
+        process.id()
+    });
+    swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
     swoole_rs_process::worker_globals::set_current_worker(worker.cast());
 }
@@ -176,8 +183,7 @@ pub(crate) fn pipe_write(worker: *mut c_void, data: &[u8], blocking: bool) -> is
 /// then free the pair); -1 when the worker owns no pipe object.
 pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
     let fd = pipe(worker).map_or(-1, Socket::fd);
-    let worker = record(worker);
-    let pair = worker.pipe_object.cast::<SocketPair>();
+    let pair = with(worker, |record| record.pipe_object).cast::<SocketPair>();
     if pair.is_null() {
         return -1;
     }
@@ -194,8 +200,10 @@ pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
     if ret >= 0 && which == 0 {
         // SAFETY: the worker's pair, deleted once; upstream deletes it even when shared.
         unsafe { delete_pair(pair) };
-        worker.pipe_object = std::ptr::null_mut();
-        worker.pipe_current = std::ptr::null_mut();
+        with(worker, |record| {
+            record.pipe_object = std::ptr::null_mut();
+            record.pipe_current = std::ptr::null_mut();
+        });
     }
     ret
 }

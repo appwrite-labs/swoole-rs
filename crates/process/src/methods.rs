@@ -297,7 +297,7 @@ unsafe extern "C-unwind" {
 #[must_use]
 pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> c_int {
     // 5 is SW_SOCK_UNIX_STREAM.
-    listen_socket(pool.record(), 5, file, 0, backlog)
+    listen_socket(pool, 5, file, 0, backlog)
 }
 
 /// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
@@ -305,14 +305,14 @@ pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> c_int {
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn listen_socket(
-    pool: &PoolRecord,
+    pool: PoolRef<'_>,
     kind: c_int,
     host: &CStr,
     port: c_int,
     backlog: c_int,
 ) -> c_int {
     // SAFETY: `make_server_socket` returns a native socket or null.
-    unsafe { listen(pool, kind, host, port, backlog, make_server_socket) }
+    unsafe { listen(pool.record(), kind, host, port, backlog, make_server_socket) }
 }
 
 /// Both `listen`s, over `make`: only an `SW_IPC_SOCKET` pool has a stream
@@ -359,8 +359,9 @@ pub unsafe fn listen<T>(
 
 /// `ProcessPool::response(data, length)`: append to the stream connection's reply.
 #[must_use]
-pub fn response(pool: &PoolRecord, data: &[u8]) -> c_int {
+pub fn response(pool: PoolRef<'_>, data: &[u8]) -> c_int {
     if pool
+        .record()
         .with_ipc(|ipc| swr_v1_process_pool_ipc_respond(ipc, data))
         .unwrap_or(false)
     {
@@ -378,7 +379,7 @@ pub fn response(pool: &PoolRecord, data: &[u8]) -> c_int {
 /// False for a `worker_id` the pool has no worker for, or a pool without pipes.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
+pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     use swoole_rs_corebase::DataHead;
     // SAFETY: crates/bus' write and crates/tls's; declared, since both depend on
     // this crate.
@@ -392,6 +393,7 @@ pub fn send_message(pool: &PoolRecord, worker_id: u32, message: &[u8]) -> bool {
         #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
         fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
     }
+    let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
     // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
@@ -778,7 +780,11 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
-        assert_eq!(response(&pool, b"ok"), -1, "no connection");
+        assert_eq!(
+            response(PoolRef::from(&mut pool), b"ok"),
+            -1,
+            "no connection"
+        );
         assert_eq!(
             swoole_rs_corebase::log::last_error(),
             505,
