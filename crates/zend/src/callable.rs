@@ -9,7 +9,7 @@ use crate::{
         zend_value, zval,
     },
 };
-use std::{ffi::c_void, ptr};
+use std::{ffi::c_void, mem::MaybeUninit, ptr};
 
 /// An emalloc'd `swr_zend_callable`, laid out as Swoole's `zend::Function`, so
 /// C++ can call it as one, that holds its arguments, object and closure
@@ -133,19 +133,26 @@ impl Parsed {
             // SAFETY: Zend's allocator, for the arguments.
             let params =
                 unsafe { swr_zend_emalloc((count + lead) * size_of::<zval>()) }.cast::<zval>();
-            for index in 0..count {
+            // SAFETY: the allocation above, which `emalloc` never returns null
+            // for and aligns for a zval: `count + lead` unwritten zvals that
+            // only this reaches until they are written below.
+            let slots = unsafe {
+                std::slice::from_raw_parts_mut(params.cast::<MaybeUninit<zval>>(), count + lead)
+            };
+            let mut slots = slots.iter_mut();
+            // `ZVAL_LONG(params, value)`, in the slot `lead` counted.
+            if let Some(value) = first
+                && let Some(slot) = slots.next()
+            {
+                slot.write(long(value));
+            }
+            for (index, slot) in slots.enumerate() {
                 // `index` is below the frame's argument count.
                 let source = callable.fci.params.wrapping_add(index);
                 // SAFETY: a live argument, which the frame holds for this call.
                 let value = unsafe { &*source.cast::<crate::Value>() };
                 // `ZVAL_COPY` takes a reference.
-                let copy = value.copy().into_zval();
-                // SAFETY: `params` has room for `count + lead` zvals.
-                unsafe { params.wrapping_add(index + lead).write(copy) };
-            }
-            if let Some(value) = first {
-                // SAFETY: as above; `ZVAL_LONG(params, value)`.
-                unsafe { params.write(long(value)) };
+                slot.write(value.copy().into_zval());
             }
             callable.fci.params = params;
             #[expect(

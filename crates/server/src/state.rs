@@ -330,18 +330,13 @@ impl ServerState {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(dir.into());
     }
 
-    /// `upload_tmp_dir`'s bytes, valid until the next `set_upload_tmp_dir`.
-    pub(crate) fn upload_tmp_dir(&self) -> &[u8] {
+    /// `upload_tmp_dir.c_str()`: the directory up to its first NUL, copied under its lock.
+    pub(crate) fn upload_tmp_dir(&self) -> CString {
         let dir = self
             .upload_tmp_dir
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(dir) = dir.as_deref() else {
-            return b"/tmp";
-        };
-        // SAFETY: the boxed bytes stay put until `set_upload_tmp_dir` replaces
-        // them, which only `set()` does, before any request reads them.
-        unsafe { core::slice::from_raw_parts(dir.as_ptr(), dir.len()) }
+        c_path(dir.as_deref().unwrap_or(b"/tmp"))
     }
 
     /// The round before this call; it wraps as `sw_atomic_fetch_add` does.
@@ -409,7 +404,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_server_state_new() -> *mut ServerState {
     let (config, tables) = fresh_records();
-    boxed(config, tables)
+    Box::into_raw(boxed(config, tables))
 }
 
 /// A new server's records, before a state owns them: the defaults and an empty
@@ -422,12 +417,12 @@ pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::S
     (config, crate::records::ServerTables::default())
 }
 
-/// The state of a server with these records, freed by `swr_v1_server_state_free`.
+/// The state of a server with these records.
 pub(crate) fn boxed(
     config: crate::config::ServerConfig,
     tables: crate::records::ServerTables,
-) -> *mut ServerState {
-    Box::into_raw(Box::new(ServerState::with(config, tables)))
+) -> Box<ServerState> {
+    Box::new(ServerState::with(config, tables))
 }
 
 /// # Safety
@@ -617,24 +612,10 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
-        RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER, RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT,
-        RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
+        RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS,
+        RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
-        RUN_ST_ADD_COMMAND => {
-            let add = core::ptr::with_exposed_provenance::<crate::commands::AddCommand>(
-                usize::try_from(arg).unwrap_or(0),
-            );
-            // SAFETY: `swr_v1_server_add_command` lends its arguments for the call.
-            i64::from(crate::commands::add_command(h, unsafe { &*add })?)
-        }
-        RUN_ST_COMMAND => {
-            let send = core::ptr::with_exposed_provenance::<crate::commands::SendCommand>(
-                usize::try_from(arg).unwrap_or(0),
-            );
-            // SAFETY: `swr_v1_server_command` lends its arguments for the call.
-            i64::from(crate::commands::command(h, unsafe { &*send })?)
-        }
         RUN_ST_DOCUMENT_ROOT => {
             let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
             let len = usize::try_from(arg).unwrap_or(0);

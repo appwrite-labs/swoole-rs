@@ -236,9 +236,7 @@ impl<'a> Server<'a> {
     /// `upload_tmp_dir.c_str()`: the directory up to its first NUL.
     #[must_use]
     pub fn upload_tmp_dir(self) -> CString {
-        let dir = self.state().upload_tmp_dir();
-        let dir = dir.split(|&byte| byte == 0).next().unwrap_or_default();
-        CString::new(dir).unwrap_or_default()
+        self.state().upload_tmp_dir()
     }
 
     /// `http_compression_types` lists `kind`; `None` asks whether it lists any.

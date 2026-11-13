@@ -2,21 +2,24 @@
 //! and every operation over it. Native code keeps the struct's fields, because
 //! upstream's own `ListenPort` reads them whenever the ports module is off, but each
 //! method is a call into this module, and its `FormData` is a Rust [`HttpForm`]. Its
-//! effects go through the request's [`HttpNative`] call, `effects` outside tests:
-//! `swoole::String` allocation, stdio,
-//! `swoole_tmpfile` and logs. Trace logs are compiled out, as in upstream's builds
-//! without `--enable-trace-log`.
+//! effects (`swoole::String` allocation, the upload's file and `swoole_tmpfile`) are
+//! direct calls, or ops of the [`HttpNative`] host a test installed. Its logs go to
+//! corebase's log host. Trace logs are compiled out, as in upstream's builds without
+//! `--enable-trace-log`.
 use core::ffi::{c_int, c_void};
 use core::ptr;
-use swoole_rs_buffer::string::{
-    CppString, delete_string, new_sized_string, new_string, swr_string_append,
-};
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
     CHUNK_SIZE, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
 };
-use swoole_rs_ossupport::swoole_tmpfile;
+use swoole_rs_ossupport::create_tmpfile;
 
 const SW_OK: i32 = 0;
 const SW_ERR: i32 = -1;
@@ -44,11 +47,17 @@ impl HttpString {
     }
 }
 
-/// `op(op, a, b, n, m)`: one native effect (`SWR_HTTP_NATIVE_*`).
+/// `op(op, a, b, n, m)`: one effect (`SWR_HTTP_NATIVE_*`) of a test's host.
 pub type HttpNative = unsafe extern "C" fn(u32, *mut c_void, *const u8, u64, u64) -> u64;
 
+/// One effect of a test's host.
+fn op(native: HttpNative, op: u32, a: *mut c_void, b: *const u8, n: u64) -> u64 {
+    // SAFETY: the host runs one effect over its arguments.
+    unsafe { native(op, a, b, n, 0) }
+}
+
 // HttpNative effects. Each reads only its arguments.
-/// `new String(n)` when `b` is null, else `new String(b, n)`.
+/// `new String(n)`.
 const STRING_NEW: u32 = 0;
 const STRING_FREE: u32 = 1;
 /// `a->append(b, n)`.
@@ -64,15 +73,6 @@ const FCLOSE: u32 = 10;
 const UNLINK: u32 = 11;
 /// The errno `strtoull` leaves: bit 1 `ERANGE`, bit 2 its no-digits value.
 const NUMBER_ERRORS: u32 = 12;
-/// Upstream's logs: `fopen(a) failed`, `failed to write upload file`, the parser's
-/// error reason (`b`, `n` bytes) and `n/m bytes processed`.
-const LOG_FOPEN: u32 = 14;
-const LOG_WRITE: u32 = 15;
-const LOG_PARSE_REASON: u32 = 16;
-const LOG_PARSE_PARTIAL: u32 = 17;
-/// A client sent the reserved `Swoole-Upload-File` header.
-const LOG_RESERVED: u32 = 18;
-
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const NOTICE: c_int = 3;
 const WARNING: c_int = 4;
@@ -97,102 +97,56 @@ fn no_digits_errno() -> c_int {
     })
 }
 
-/// The request's effects outside tests: each `op` is a direct call. Effects with no
-/// result answer 0.
-///
-/// # Safety
-/// The arguments are what the `op`'s constant documents, each live for the call.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "lengths and descriptors native code carried as u64"
-)]
-unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u64) -> u64 {
-    let length = n as usize;
-    let file = a.cast::<libc::FILE>();
-    match op {
-        STRING_NEW if b.is_null() => {
-            return new_sized_string(length, None) as u64;
-        }
-        // SAFETY: `b`, not null, holds `n` bytes.
-        STRING_NEW => return new_string(unsafe { std::slice::from_raw_parts(b, length) }) as u64,
-        // SAFETY: a string from `STRING_NEW`, not used again.
-        STRING_FREE => unsafe { delete_string(a.cast()) },
-        STRING_APPEND => {
-            // SAFETY: a live `swoole::String`.
-            let string = unsafe { &mut *a.cast::<CppString>() };
-            // SAFETY: `n` readable bytes at `b`.
-            unsafe { swr_string_append(string, b, length) };
-        }
-        // SAFETY: a writable, NUL-terminated `XXXXXX` template.
-        TMPFILE => return i64::from(unsafe { swoole_tmpfile(a.cast()) }).cast_unsigned(),
-        // SAFETY: a descriptor and a NUL-terminated mode.
-        FDOPEN => return unsafe { libc::fdopen(n as c_int, c"wb+".as_ptr()) as u64 },
-        // SAFETY: a live stream and `n` bytes at `b`.
-        FWRITE => return unsafe { libc::fwrite(b.cast(), 1, length, file) as u64 },
-        FFLUSH => {
-            // SAFETY: a live stream.
-            unsafe { libc::fflush(file) };
-        }
-        FCLOSE => {
-            // SAFETY: a live stream, not used again.
-            unsafe { libc::fclose(file) };
-        }
-        UNLINK => {
-            // SAFETY: a NUL-terminated path.
-            unsafe { libc::unlink(a.cast()) };
-        }
-        NUMBER_ERRORS => {
-            if n & 1 != 0 {
-                set_errno(libc::ERANGE);
-            }
-            if n & 2 != 0 && no_digits_errno() != 0 {
-                set_errno(no_digits_errno());
+/// An upload's open file: buffered, as the `FILE` upstream wrote was, or a test
+/// host's stream.
+enum Upload {
+    File(BufWriter<File>),
+    Host(HttpNative, *mut c_void),
+}
+
+impl Upload {
+    /// `fwrite`: whether all of `data` was written.
+    fn write(&mut self, data: &[u8]) -> bool {
+        match self {
+            Self::File(file) => file.write_all(data).is_ok(),
+            Self::Host(native, fp) => {
+                let length = data.len() as u64;
+                op(*native, FWRITE, *fp, data.as_ptr(), length) == length
             }
         }
-        LOG_FOPEN => {
-            // SAFETY: the upload's NUL-terminated name.
-            let name = unsafe { core::ffi::CStr::from_ptr(a.cast()) }.to_string_lossy();
-            log::sys_warning(
-                c"http_server::multipart_on_header_value",
-                format_args!("fopen({name}) failed"),
-            );
-        }
-        LOG_WRITE => log::sys_warning(
-            c"http_server::multipart_on_data",
-            format_args!("failed to write upload file"),
-        ),
-        LOG_PARSE_REASON => {
-            // SAFETY: the reason's `n` bytes at `b`.
-            let text = unsafe { crate::bytes(b, length) }.unwrap_or_default();
-            // Upstream formats it into 256 bytes, its NUL included.
-            let text = text.get(..255).unwrap_or(text);
-            log::error_log(
-                NOTICE,
-                INVALID_REQUEST,
-                c"Request::parse_multipart_data",
-                format_args!(
-                    "parse multipart body failed, reason: {}",
-                    String::from_utf8_lossy(text)
-                ),
-            );
-        }
-        LOG_RESERVED => log::error_log(
-            WARNING,
-            INVALID_REQUEST,
-            c"http_server::multipart_on_header_value",
-            format_args!(
-                "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
-            ),
-        ),
-        LOG_PARSE_PARTIAL => log::error_log(
-            NOTICE,
-            INVALID_REQUEST,
-            c"Request::parse_multipart_data",
-            format_args!("parse multipart body failed, {n}/{m} bytes processed"),
-        ),
-        _ => swoole_rs_corebase::fatal("an unknown multipart parse result"),
     }
-    0
+
+    /// `fclose`, which writes what is buffered, after `fflush` when `flush`.
+    fn close(self, flush: bool) {
+        // Dropping a `File` flushes and closes it.
+        if let Self::Host(native, fp) = self {
+            if flush {
+                op(native, FFLUSH, fp, ptr::null(), 0);
+            }
+            op(native, FCLOSE, fp, ptr::null(), 0);
+        }
+    }
+
+    /// `fclose` and `unlink` of its NUL-terminated `name`.
+    fn discard(self, name: &[u8]) {
+        match self {
+            Self::File(file) => {
+                drop(file);
+                let name = name.split(|&byte| byte == 0).next().unwrap_or_default();
+                _ = std::fs::remove_file(OsStr::from_bytes(name));
+            }
+            Self::Host(native, fp) => {
+                op(native, FCLOSE, fp, ptr::null(), 0);
+                op(
+                    native,
+                    UNLINK,
+                    name.as_ptr().cast_mut().cast(),
+                    ptr::null(),
+                    0,
+                );
+            }
+        }
+    }
 }
 
 /// The multipart parser's `MPPE_ERROR` callback result.
@@ -200,7 +154,7 @@ const MPPE_ERROR: c_int = -1;
 /// `SW_HTTP_UPLOAD_FILE`.
 const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 /// `SW_BUFFER_SIZE_BIG`.
-const BUFFER_SIZE_BIG: u64 = 65536;
+const BUFFER_SIZE_BIG: usize = 65536;
 
 /// A multipart body being streamed: upstream's `FormData`.
 pub struct HttpForm {
@@ -208,8 +162,8 @@ pub struct HttpForm {
     boundary: *const u8,
     boundary_length: u32,
     parser: Option<MultipartParser>,
-    /// The current upload's stream, null between uploads.
-    fp: *mut c_void,
+    /// The current upload's file, none between uploads.
+    fp: Option<Upload>,
     /// The receive buffer, cut back to the header, that the body is rewritten into.
     saved: *mut HttpString,
     /// The current upload's file name, NUL-terminated.
@@ -262,7 +216,8 @@ pub struct HttpRequest {
     pub content_length: u64,
     pub form: Option<Box<HttpForm>>,
     pub buffer: *mut HttpString,
-    pub native: HttpNative,
+    /// A test's host; none outside tests, where each effect is a direct call.
+    pub native: Option<HttpNative>,
     /// The current chunk's size, where its line or data starts (0 until the body
     /// is first scanned), and how far its size line has been scanned.
     pub chunk_length: usize,
@@ -273,7 +228,7 @@ pub struct HttpRequest {
 impl HttpRequest {
     /// `HttpRequest()`: what native code's constructor makes.
     #[must_use]
-    pub fn new(native: HttpNative) -> Self {
+    pub fn new(native: Option<HttpNative>) -> Self {
         Self {
             method: 0,
             version: 0,
@@ -300,11 +255,6 @@ impl HttpRequest {
             chunk_offset: 0,
             chunk_scan_offset: 0,
         }
-    }
-
-    fn op(&self, op: u32, a: *mut c_void, b: *const u8, n: u64, m: u64) -> u64 {
-        // SAFETY: the native call runs one effect over its arguments.
-        unsafe { (self.native)(op, a, b, n, m) }
     }
 
     /// The buffer being parsed.
@@ -388,13 +338,7 @@ impl HttpRequest {
             self.chunked = state.flags & 4 != 0;
             self.header_parsed = state.flags & 16 != 0;
             if state.number_errors != 0 {
-                self.op(
-                    NUMBER_ERRORS,
-                    ptr::null_mut(),
-                    ptr::null(),
-                    state.number_errors.into(),
-                    0,
-                );
+                self.number_errors(state.number_errors.into());
             }
             if status < 0 {
                 self.excepted = true;
@@ -407,7 +351,7 @@ impl HttpRequest {
                 boundary: input.as_ptr().wrapping_add(boundary.offset),
                 boundary_length: u32::try_from(boundary.length).unwrap_or(u32::MAX),
                 parser: None,
-                fp: ptr::null_mut(),
+                fp: None,
                 saved: ptr::null_mut(),
                 upload: Vec::new(),
                 template: Vec::new(),
@@ -470,8 +414,49 @@ impl HttpRequest {
         (found == 1).then_some(value)
     }
 
-    fn append(&self, string: *mut HttpString, data: *const u8, length: usize) {
-        self.op(STRING_APPEND, string.cast(), data, length as u64, 0);
+    /// Leaves the errno `strtoull` would: bit 1 of `errors` `ERANGE`, bit 2 its
+    /// no-digits value.
+    fn number_errors(&self, errors: u64) {
+        if let Some(native) = self.native {
+            op(native, NUMBER_ERRORS, ptr::null_mut(), ptr::null(), errors);
+            return;
+        }
+        if errors & 1 != 0 {
+            set_errno(libc::ERANGE);
+        }
+        if errors & 2 != 0 && no_digits_errno() != 0 {
+            set_errno(no_digits_errno());
+        }
+    }
+
+    /// `append(data)` on the form's saved buffer when `saved`, else on the request's.
+    fn append(&mut self, saved: bool, data: &[u8]) {
+        let string = if saved {
+            form_of(self).saved
+        } else {
+            self.buffer
+        };
+        if let Some(native) = self.native {
+            op(
+                native,
+                STRING_APPEND,
+                string.cast(),
+                data.as_ptr(),
+                data.len() as u64,
+            );
+            return;
+        }
+        // SAFETY: null, or a live `swoole::String` nothing else borrows: the buffer
+        // native code gave the request or `init_multipart_parser` made, or the receive
+        // buffer it saved. `data` is never the contents of the one appended to.
+        if let Some(string) = unsafe { string.cast::<CppString>().as_mut() } {
+            string.append(data);
+        }
+    }
+
+    /// `append(data)` on the form's saved buffer.
+    fn save(&mut self, data: &[u8]) {
+        self.append(true, data);
     }
 
     /// `Request::init_multipart_parser`: a parser over the form's boundary, the body moved
@@ -493,15 +478,24 @@ impl HttpRequest {
             return false;
         };
         form.parser = Some(parser);
-        let body =
-            r.op(STRING_NEW, ptr::null_mut(), ptr::null(), BUFFER_SIZE_BIG, 0) as *mut HttpString;
+        let size = BUFFER_SIZE_BIG;
+        let body: *mut HttpString = match r.native {
+            None => new_sized_string(size, None).cast(),
+            Some(native) => op(
+                native,
+                STRING_NEW,
+                ptr::null_mut(),
+                ptr::null(),
+                size as u64,
+            ) as _,
+        };
         let header = r.header_length as usize;
         let (buffer, input) = r.input();
-        let rest = input.get(r.header_length as usize..).unwrap_or_default();
-        r.append(body, rest.as_ptr(), rest.len());
-        buffer.length = header;
+        let rest = input.get(header..).unwrap_or_default();
         let saved = r.buffer;
         r.buffer = body;
+        r.append(false, rest);
+        buffer.length = header;
         let mut template = tmp_dir.to_vec();
         template.extend_from_slice(b"/swoole.upfile.XXXXXX");
         let Some(form) = r.form.as_deref_mut() else {
@@ -517,34 +511,39 @@ impl HttpRequest {
     /// an unfinished upload closed and unlinked, the parser and form gone.
     pub fn destroy_multipart_parser(&mut self) {
         let r = self;
-        let Some(form) = r.form.take() else {
+        let Some(mut form) = r.form.take() else {
             return;
         };
-        r.op(STRING_FREE, r.buffer.cast(), ptr::null(), 0, 0);
+        // A form `init_multipart_parser` never ran on has no body buffer.
+        if form.saved.is_null() {
+            return;
+        }
+        match r.native {
+            // SAFETY: the body buffer `init_multipart_parser` made with
+            // `new_sized_string` when it saved the receive buffer; nothing uses it after.
+            None => unsafe { delete_string(r.buffer.cast()) },
+            Some(native) => {
+                op(native, STRING_FREE, r.buffer.cast(), ptr::null(), 0);
+            }
+        }
         r.buffer = form.saved;
-        if !form.fp.is_null() {
-            r.op(FCLOSE, form.fp, ptr::null(), 0, 0);
-            r.op(
-                UNLINK,
-                form.upload.as_ptr().cast_mut().cast(),
-                ptr::null(),
-                0,
-                0,
-            );
+        if let Some(fp) = form.fp.take() {
+            fp.discard(&form.upload);
         }
     }
 
-    /// `Request::parse_multipart_data`: feeds `buffer` to the parser, whose callbacks
-    /// rewrite the body into the saved buffer. False rejects the request.
-    pub fn parse_multipart_data(&mut self, buffer: &mut HttpString) -> bool {
+    /// `Request::parse_multipart_data(buffer_)`: feeds the request's buffer, the body
+    /// since `init_multipart_parser`, to the parser, whose callbacks rewrite it into the
+    /// saved buffer. False rejects the request.
+    pub fn parse_multipart_data(&mut self) -> bool {
         let r = self;
         r.excepted = false;
         let Some(mut parser) = r.form.as_deref_mut().and_then(|form| form.parser.take()) else {
             return false;
         };
+        // The callbacks append to the saved buffer, never to this one.
+        let (buffer, data) = r.input();
         let length = buffer.length;
-        // SAFETY: the buffer holds `length` bytes, which the callbacks only append past.
-        let data = unsafe { buffer.bytes() };
         let processed = parser.execute(r, data) as i64;
         let reason = parser.error_message();
         if let Some(form) = r.form.as_deref_mut() {
@@ -552,12 +551,16 @@ impl HttpRequest {
         }
         match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
             outcome if outcome < 0 => {
-                r.op(
-                    LOG_PARSE_REASON,
-                    ptr::null_mut(),
-                    reason.as_ptr(),
-                    reason.len() as u64,
-                    0,
+                // Upstream formats it into 256 bytes, its NUL included.
+                let reason = reason.get(..255).unwrap_or(&reason);
+                log::error_log(
+                    NOTICE,
+                    INVALID_REQUEST,
+                    c"Request::parse_multipart_data",
+                    format_args!(
+                        "parse multipart body failed, reason: {}",
+                        String::from_utf8_lossy(reason)
+                    ),
                 );
                 false
             }
@@ -567,12 +570,14 @@ impl HttpRequest {
                 true
             }
             outcome => {
-                r.op(
-                    LOG_PARSE_PARTIAL,
-                    ptr::null_mut(),
-                    ptr::null(),
-                    processed.cast_unsigned(),
-                    length as u64,
+                log::error_log(
+                    NOTICE,
+                    INVALID_REQUEST,
+                    c"Request::parse_multipart_data",
+                    format_args!(
+                        "parse multipart body failed, {}/{length} bytes processed",
+                        processed.cast_unsigned()
+                    ),
                 );
                 outcome != 0
             }
@@ -603,16 +608,23 @@ impl Parts for HttpRequest {
     fn on_header_value(&mut self, data: &[u8]) -> c_int {
         let form = form_of(self);
         // The value callback means the name is complete.
-        let (saved, name) = (form.saved, core::mem::take(&mut form.header_name));
+        let name = core::mem::take(&mut form.header_name);
         // Only the reactor may write this header; a client never names a part header so.
         if case_equal(&name, UPLOAD_FILE) {
-            self.op(LOG_RESERVED, ptr::null_mut(), ptr::null(), 0, 0);
+            log::error_log(
+                WARNING,
+                INVALID_REQUEST,
+                c"http_server::multipart_on_header_value",
+                format_args!(
+                    "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
+                ),
+            );
             return MPPE_ERROR;
         }
-        self.append(saved, name.as_ptr(), name.len());
-        self.append(saved, b": ".as_ptr(), 2);
-        self.append(saved, data.as_ptr(), data.len());
-        self.append(saved, b"\r\n".as_ptr(), 2);
+        self.save(&name);
+        self.save(b": ");
+        self.save(data);
+        self.save(b"\r\n");
         if !case_equal(&name, b"content-disposition") {
             return 0;
         }
@@ -622,24 +634,34 @@ impl Parts for HttpRequest {
         if swoole_rs_http::multipart_filename(&mut value) != 1 {
             return 0;
         }
+        let native = self.native;
         let form = form_of(self);
         form.upload.clone_from(&form.template);
         form.upload.push(0);
-        // `swoole_tmpfile` fills in the template's `XXXXXX`.
-        let name = form.upload.as_mut_ptr();
         form.upload_size = 0;
-        let fd = self.op(TMPFILE, name.cast(), ptr::null(), 0, 0);
+        // `swoole_tmpfile` fills in the template's `XXXXXX`.
+        let Some(native) = native else {
+            let fd = create_tmpfile(&mut form.upload);
+            if fd < 0 {
+                self.excepted = true;
+                return 0;
+            }
+            // SAFETY: the descriptor `swoole_tmpfile` just opened, which nothing else owns.
+            let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+            form.fp = Some(Upload::File(BufWriter::new(file)));
+            return 0;
+        };
+        let name = form.upload.as_mut_ptr();
+        let fd = op(native, TMPFILE, name.cast(), ptr::null(), 0);
         // `swoole_tmpfile`'s `int`, sign-extended.
         if fd.cast_signed() < 0 {
             self.excepted = true;
             return 0;
         }
-        let fp = self.op(FDOPEN, ptr::null_mut(), ptr::null(), fd, 0) as *mut c_void;
-        if fp.is_null() {
-            self.op(LOG_FOPEN, name.cast(), ptr::null(), 0, 0);
-            return 0;
+        let fp = op(native, FDOPEN, ptr::null_mut(), ptr::null(), fd) as *mut c_void;
+        if !fp.is_null() {
+            form.fp = Some(Upload::Host(native, fp));
         }
-        form_of(self).fp = fp;
         0
     }
 
@@ -647,26 +669,28 @@ impl Parts for HttpRequest {
         let max_length = u64::from(self.max_length);
         let length = data.len();
         let form = form_of(self);
-        let (saved, fp) = (form.saved, form.fp);
-        if fp.is_null() {
+        let Some(fp) = form.fp.as_mut() else {
             if (form.saved_length() as u64).wrapping_add(length as u64) > max_length {
                 (self.excepted, self.unavailable) = (true, true);
                 return MPPE_PAUSED;
             }
-            self.append(saved, data.as_ptr(), length);
+            self.save(data);
             return 0;
-        }
+        };
         form.upload_size = form.upload_size.wrapping_add(length);
         if form.upload_size > form.upload_max {
             (self.excepted, self.too_large) = (true, true);
             return MPPE_PAUSED;
         }
-        let written = self.op(FWRITE, fp, data.as_ptr(), length as u64, 0);
-        if written != length as u64 {
-            self.op(FCLOSE, fp, ptr::null(), 0, 0);
-            form_of(self).fp = ptr::null_mut();
+        if !fp.write(data) {
+            if let Some(fp) = form.fp.take() {
+                fp.close(false);
+            }
             (self.excepted, self.unavailable) = (true, true);
-            self.op(LOG_WRITE, ptr::null_mut(), ptr::null(), 0, 0);
+            log::sys_warning(
+                c"http_server::multipart_on_data",
+                format_args!("failed to write upload file"),
+            );
             return MPPE_PAUSED;
         }
         0
@@ -675,59 +699,39 @@ impl Parts for HttpRequest {
     fn on_headers_complete(&mut self) -> c_int {
         let form = form_of(self);
         form.header_name.clear();
-        let (saved, fp) = (form.saved, form.fp);
-        if !fp.is_null() {
-            self.append(
-                saved,
-                b"Swoole-Upload-File: ".as_ptr(),
-                UPLOAD_FILE.len() + 2,
-            );
-            let form = form_of(self);
+        if form.fp.is_some() {
+            let upload = core::mem::take(&mut form.upload);
+            self.save(b"Swoole-Upload-File: ");
             // The name up to its NUL: `swoole_tmpfile` wrote no other.
-            let name = form
-                .upload
-                .split(|&byte| byte == 0)
-                .next()
-                .unwrap_or_default();
-            let (name, length) = (name.as_ptr(), name.len());
-            self.append(saved, name, length);
+            self.save(upload.split(|&byte| byte == 0).next().unwrap_or_default());
+            form_of(self).upload = upload;
         }
         self.multipart_header_parsed = true;
-        self.append(saved, b"\r\n".as_ptr(), 2);
+        self.save(b"\r\n");
         0
     }
 
     fn on_part_data_end(&mut self) -> c_int {
         self.multipart_header_parsed = false;
         let form = form_of(self);
-        let (saved, fp) = (form.saved, form.fp);
-        if !fp.is_null() {
-            self.append(
-                saved,
-                b"\r\nSwoole-Upload-File".as_ptr(),
-                UPLOAD_FILE.len() + 2,
-            );
-            self.op(FFLUSH, fp, ptr::null(), 0, 0);
-            self.op(FCLOSE, fp, ptr::null(), 0, 0);
-            form_of(self).fp = ptr::null_mut();
+        if let Some(fp) = form.fp.take() {
+            self.save(b"\r\nSwoole-Upload-File");
+            fp.close(true);
         }
-        self.append(saved, b"\r\n".as_ptr(), 2);
+        self.save(b"\r\n");
         0
     }
 
     fn on_part_data_begin(&mut self, boundary: &[u8]) -> c_int {
-        let form = form_of(self);
-        form.header_name.clear();
-        let saved = form.saved;
-        self.append(saved, boundary.as_ptr(), boundary.len());
-        self.append(saved, b"\r\n".as_ptr(), 2);
+        form_of(self).header_name.clear();
+        self.save(boundary);
+        self.save(b"\r\n");
         0
     }
 
     fn on_body_end(&mut self, boundary: &[u8]) -> c_int {
-        let saved = form_of(self).saved;
-        self.append(saved, boundary.as_ptr(), boundary.len());
-        self.append(saved, b"--".as_ptr(), 2);
+        self.save(boundary);
+        self.save(b"--");
         let length = form_of(self).saved_length();
         self.content_length = (length as u64).wrapping_sub(u64::from(self.header_length));
         self.tried_to_dispatch = true;
@@ -735,9 +739,17 @@ impl Parts for HttpRequest {
     }
 }
 
+/// A request with no host, which is all zero bytes. Not inlined: built in place it
+/// lets the compiler ask the allocator for zeroed memory, and glibc's `calloc`
+/// skips its per-thread cache, at several hundred instructions a request.
+#[inline(never)]
+fn blank() -> HttpRequest {
+    HttpRequest::new(None)
+}
+
 #[must_use]
 pub fn request_new() -> *mut HttpRequest {
-    Box::into_raw(Box::new(HttpRequest::new(effects)))
+    Box::into_raw(Box::new(blank()))
 }
 
 /// `delete request` of one [`request_new`] made: the destructor, then the memory.
@@ -879,7 +891,7 @@ mod tests {
     }
 
     fn request(input: &mut Input) -> HttpRequest {
-        let mut request = HttpRequest::new(native);
+        let mut request = HttpRequest::new(Some(native));
         request.buffer = &raw mut input.buffer;
         request
     }
@@ -1281,6 +1293,38 @@ mod tests {
         assert_eq!(effects(), [STRING_FREE], "body freed");
     }
 
+    /// The effects outside tests: `swoole::String`s and a file on disk.
+    #[test]
+    fn without_a_host_an_upload_goes_to_a_file() {
+        let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\n\r\n";
+        let receive = swoole_rs_buffer::string::new_string(head);
+        let mut r = HttpRequest::new(None);
+        r.buffer = receive.cast();
+        assert_eq!((r.get_protocol(), r.get_header_length()), (SW_OK, SW_OK));
+        r.parse_header_info();
+        r.max_length = 1 << 20;
+        let dir = std::env::temp_dir();
+        assert!(r.init_multipart_parser(dir.as_os_str().as_bytes(), 100));
+        r.append(false, b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nfile\r\n--b--\r\n");
+        assert!(r.parse_multipart_data(), "parsed");
+        r.destroy_multipart_parser();
+        assert_eq!(r.buffer, receive.cast(), "the receive buffer is back");
+        let forwarded = unsafe { &*receive }.view().to_vec();
+        let marker = b"Swoole-Upload-File: ";
+        let at = forwarded
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .unwrap();
+        let name = forwarded[at + marker.len()..]
+            .split(|&b| b == b'\r')
+            .next()
+            .unwrap();
+        let name = OsStr::from_bytes(name);
+        assert_eq!(std::fs::read(name).unwrap(), b"file", "the upload");
+        std::fs::remove_file(name).unwrap();
+        unsafe { delete_string(receive) };
+    }
+
     #[test]
     fn oversize_parts_and_uploads_are_rejected() {
         let (_, mut r) =
@@ -1302,7 +1346,7 @@ mod tests {
         );
         (r.excepted, r.unavailable) = (false, false);
         if let Some(form) = r.form.as_deref_mut() {
-            form.fp = ptr::without_provenance_mut(0x1000);
+            form.fp = Some(Upload::Host(native, ptr::without_provenance_mut(0x1000)));
         }
         assert_eq!(r.on_part_data(b"abcd"), 1, "rejected");
         assert!(
@@ -1329,7 +1373,7 @@ mod tests {
                 boundary: boundary.as_ptr(),
                 boundary_length: u32::try_from(boundary.len()).unwrap(),
                 parser: None,
-                fp: ptr::null_mut(),
+                fp: None,
                 saved: ptr::null_mut(),
                 upload: Vec::new(),
                 template: Vec::new(),
@@ -1343,11 +1387,8 @@ mod tests {
 
         /// Like the reactor, the parse buffer is cleared after every read and refilled from its start.
         fn feed(&mut self, data: &[u8]) -> bool {
-            self.request
-                .append(self.request.buffer, data.as_ptr(), data.len());
-            let buffer = self.request.buffer;
-            // SAFETY: the fixture's live input buffer, which only the request reaches.
-            self.request.parse_multipart_data(unsafe { &mut *buffer })
+            self.request.append(false, data);
+            self.request.parse_multipart_data()
         }
 
         fn forwarded(&self) -> String {

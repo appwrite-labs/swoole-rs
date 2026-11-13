@@ -92,6 +92,61 @@ pub struct PoolRecord {
 }
 
 impl PoolRecord {
+    /// A pool before `create`, as C's `ProcessPool pool = {}`: every field zero,
+    /// null or `None`.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            running: false,
+            reload_init: false,
+            read_message: false,
+            started: false,
+            schedule_by_sysvmsg: false,
+            is_async: false,
+            ipc_mode: 0,
+            protocol_type: 0,
+            master_pid: 0,
+            max_wait_time: 0,
+            reload_count: 0,
+            reload_last_time: 0,
+            kind: 0,
+            start_id: 0,
+            use_msgqueue: 0,
+            use_socket: 0,
+            max_packet_size: 0,
+            msgqueue_key: 0,
+            worker_num: 0,
+            max_request: 0,
+            max_request_grace: 0,
+            scheduler_warning: 0,
+            warning_time: 0,
+            on_start: None,
+            on_shutdown: None,
+            on_before_reload: None,
+            on_after_reload: None,
+            on_task: None,
+            on_worker_start: None,
+            on_message: None,
+            on_worker_exit: None,
+            on_worker_stop: None,
+            on_worker_error: None,
+            on_worker_message: None,
+            on_worker_not_found: None,
+            main_loop: None,
+            round_id: AtomicU32::new(0),
+            workers: ptr::null_mut(),
+            pipes: ptr::null_mut(),
+            registry: ptr::null_mut(),
+            queue: ptr::null_mut(),
+            ipc: ptr::null_mut(),
+            message_box: ptr::null_mut(),
+            message_bus: ptr::null_mut(),
+            reload_task: ptr::null_mut(),
+            ptr: ptr::null_mut(),
+            kill_timer: None,
+        }
+    }
+
     /// The pool's worker count: how many records `workers` holds.
     #[must_use]
     pub fn worker_num(&self) -> u32 {
@@ -283,9 +338,22 @@ impl<'a> PoolRef<'a> {
     /// or `None` for a pool without one or a failed stat.
     #[must_use]
     pub fn queue_stat(self) -> Option<(usize, usize)> {
+        self.with_queue(swoole_rs_ossupport::QueueRecord::stat)?
+    }
+
+    /// The pool's message queue's id (`msgget`'s), 0 without one.
+    #[must_use]
+    pub fn queue_id(self) -> c_int {
+        self.with_queue(swoole_rs_ossupport::QueueRecord::id)
+            .unwrap_or(0)
+    }
+
+    /// `f` over the pool's message queue; `None` without one.
+    fn with_queue<R>(self, f: impl FnOnce(&swoole_rs_ossupport::QueueRecord) -> R) -> Option<R> {
         let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
         // SAFETY: null, or the pool's boxed queue, which `destroy` frees with the pool.
-        unsafe { queue.as_ref() }?.stat()
+        // Only this type's queue reads borrow it, and none of them reaches `destroy`.
+        unsafe { queue.as_ref() }.map(f)
     }
 
     /// The pool's worker at `index`, or `None` past `worker_num`.
@@ -1754,22 +1822,25 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
     std::ffi::c_char::from_ne_bytes([symbol])
 }
 
-/// One `ProcessPool` operation (`RUN_*`) on `pool` (and `worker`, for those over
-/// one): the C++ method's return value, or [`RAISE`].
-///
-/// # Safety
-/// `worker` is null or one of the pool's workers.
-pub unsafe fn pool_run_op(
+/// `ProcessPool::run_with_*_protocol` and `run_async` ([`RUN_MAIN`] with `protocol`):
+/// `worker`'s loop in `pool`. The loop's return value, or [`RAISE`]; -1 when `worker`
+/// is none of the pool's ([`PoolRef::worker_of`]).
+#[must_use]
+pub fn pool_run_main(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
-    worker: *mut WorkerRecord,
-    operation: u32,
-    arg: u64,
+    worker: Worker<'_>,
+    protocol: u64,
 ) -> i64 {
-    with(native, pool, |p| p.run(worker, operation, arg))
+    match pool.worker_of(worker.raw()) {
+        Some(worker) => run_op(native, pool, Some(worker), RUN_MAIN, protocol),
+        None => SW_ERR,
+    }
 }
 
-/// [`pool_run_op`] over `worker`, one of the pool's ([`PoolRef::worker_of`]), or none.
+/// One `ProcessPool` operation (`RUN_*`) on `pool` and, for those over one, `worker`,
+/// one of the pool's ([`PoolRef::worker_of`]): the C++ method's return value, or
+/// [`RAISE`].
 pub(crate) fn run_op(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,

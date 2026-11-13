@@ -36,7 +36,7 @@ mod zval;
 pub use access::{key_ptr, set_key};
 pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
-pub use class::{Class, ClassEntry, class_name, unset_property_deny};
+pub use class::{Class, ClassEntry, unset_property_deny};
 pub use descriptor::{
     FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
     restore_shutdown, with_unlimited_stack,
@@ -47,7 +47,7 @@ pub use error::{
 pub use function::{Function, create_object_deny};
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, object_zval,
-    property, property_not_null, time, zeroed,
+    time, zeroed,
 };
 pub use local::{EnvLock, Php};
 pub use minit::{Minit, Parent};
@@ -70,7 +70,14 @@ pub use zval::{
 #[macro_export]
 macro_rules! handlers {
     // Hot handlers whose bodies raise (`bailout::finish`) any bailout they defer.
-    (leaf: $($name:ident => $body:path;)*) => {$(
+    (leaf: $($name:ident => $body:path;)*) => {
+        $crate::handlers!(@then {} $($name => $body;)*);
+    };
+    ($($name:ident => $body:path;)*) => {
+        $crate::handlers!(@then { $crate::bailout::finish(); } $($name => $body;)*);
+    };
+    // Each handler, ending with `$then`.
+    (@then $then:block $($name:ident => $body:path;)*) => {$(
         /// A Zend handler.
         /// # Safety
         /// Called by Zend with a live frame and return slot.
@@ -81,20 +88,7 @@ macro_rules! handlers {
         ) {
             // SAFETY: per Zend's handler contract.
             $body(&unsafe { $crate::Call::new(frame, value) });
-        }
-    )*};
-    ($($name:ident => $body:path;)*) => {$(
-        /// A Zend handler.
-        /// # Safety
-        /// Called by Zend with a live frame and return slot.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            frame: *mut $crate::sys::zend_execute_data,
-            value: *mut $crate::sys::zval,
-        ) {
-            // SAFETY: per Zend's handler contract.
-            $body(&unsafe { $crate::Call::new(frame, value) });
-            $crate::bailout::finish();
+            $then
         }
     )*};
 }

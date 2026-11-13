@@ -50,14 +50,15 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
     config.mode_ = u8::try_from(mode).unwrap_or_default();
     tables.message_bus = crate::pool_native::new_bus(&counters.pipe_packet_msg_id);
-    let state = crate::state::boxed(config, tables);
-    // SAFETY: the fresh state; it lives until `swr_v1_server_delete` frees it.
-    let fresh = unsafe { &*state };
+    let fresh = crate::state::boxed(config, tables);
+    let (config, tables) = (fresh.config(), fresh.tables());
+    // The state lives until `swr_v1_server_delete` frees it.
+    let state = Box::into_raw(fresh);
     let object = Box::new(ServerObject {
         state,
-        config: fresh.config(),
-        tables: fresh.tables(),
-        callbacks: fresh.callbacks_ptr(),
+        config,
+        tables,
+        callbacks: ServerState::callbacks_ptr(state),
         // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
         reactor_thread_barrier: unsafe { core::mem::zeroed() },
     });

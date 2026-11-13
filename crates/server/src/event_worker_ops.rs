@@ -169,12 +169,11 @@ fn callback(ctx: &Context<'_>, op: u32) -> Option<u64> {
         }
         _ => return None,
     };
-    let slot = callbacks.slot(index)?;
     if op == OP_ON_BEFORE_SHUTDOWN {
+        callbacks.slot(index)?;
         callbacks.call_server(index, ctx.server());
     } else {
-        // SAFETY: the slot takes the server and the event head or worker.
-        unsafe { slot.call(ctx.serv.raw(), data) };
+        ctx.callback(index, data)?;
     }
     Some(0)
 }

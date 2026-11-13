@@ -1056,8 +1056,8 @@ fn set_priority(call: &Call) {
     let Some(who) = priority_who(call, which, who) else {
         return;
     };
-    // SAFETY: setpriority has no memory preconditions.
-    if unsafe { libc::setpriority(which as _, who as _, priority as c_int) } < 0 {
+    let who = who as libc::id_t;
+    if swoole_rs_corebase::sys::setpriority(which as c_int, who, priority as c_int) < 0 {
         set_last_error(errno());
         call.set_bool(false);
         return;
@@ -1082,8 +1082,7 @@ fn get_priority(call: &Call) {
         return;
     };
     set_errno(0);
-    // SAFETY: getpriority has no memory preconditions.
-    let priority = unsafe { libc::getpriority(which as _, who as _) };
+    let priority = swoole_rs_corebase::sys::getpriority(which as c_int, who as libc::id_t);
     if priority == -1 && errno() != 0 {
         set_last_error(errno());
         call.set_bool(false);

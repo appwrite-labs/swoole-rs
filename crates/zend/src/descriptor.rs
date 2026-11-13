@@ -7,11 +7,18 @@ use crate::{
         IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_property,
         swr_zend_event_restore_shutdown, swr_zend_event_socket_fd, swr_zend_instanceof,
         swr_zend_last_fatal_error, swr_zend_stack_restore, swr_zend_stack_unlimit,
-        swr_zend_stream_from_zval, swr_zend_stream_select_fd, zend_long, zend_memory_usage,
+        swr_zend_stream_select_fd, zend_long, zend_memory_usage,
     },
 };
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::ptr;
+
+unsafe extern "C" {
+    /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
+    /// null for any other value or resource. It reads the zval, the resource's
+    /// type and the two stream type numbers PHP registers at startup.
+    safe fn swr_zend_stream_from_zval(value: &Value) -> *mut crate::sys::php_stream;
+}
 
 impl Value {
     /// `instanceof_function(Z_OBJCE_P(value), class)`: false for a non-object or
@@ -33,8 +40,7 @@ impl Value {
         if self.kind() != IS_RESOURCE {
             return Ok(None);
         }
-        // SAFETY: a resource zval; the no-verify lookup only reads its tag.
-        let stream = unsafe { swr_zend_stream_from_zval(self.as_ptr()) };
+        let stream = swr_zend_stream_from_zval(self);
         if stream.is_null() {
             return Ok(None);
         }
@@ -79,11 +85,11 @@ impl Value {
 
 /// The executor's last error, when it was fatal: where PHP keeps its message
 /// and file until the next error, and its line.
-fn fatal_parts() -> Option<(*const c_char, *const c_char, c_int)> {
+fn fatal_parts() -> Option<([*const c_char; 2], c_int)> {
     let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
     // SAFETY: writable slots; the executor's last error is only read.
     unsafe { swr_zend_last_fatal_error(&raw mut message, &raw mut file, &raw mut line) }
-        .then_some((message, file, line))
+        .then_some(([message, file], line))
 }
 
 /// `php_swoole_is_fatal_error()`: the last error was fatal.
@@ -103,12 +109,13 @@ pub struct FatalError {
 /// the next error.
 #[must_use]
 pub fn fatal_error() -> Option<FatalError> {
-    let (message, file, line) = fatal_parts()?;
+    let (texts, line) = fatal_parts()?;
+    // SAFETY: a fatal error's NUL-terminated message, then its file, each live
+    // until the next error.
+    let [message, file] = texts.map(|text| unsafe { CStr::from_ptr(text) }.to_owned());
     Some(FatalError {
-        // SAFETY: a fatal error's NUL-terminated message, live until the next error.
-        message: unsafe { CStr::from_ptr(message) }.to_owned(),
-        // SAFETY: as above, its file.
-        file: unsafe { CStr::from_ptr(file) }.to_owned(),
+        message,
+        file,
         line,
     })
 }

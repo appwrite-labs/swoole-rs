@@ -96,7 +96,8 @@ unsafe extern "C" {
     pub fn curl_easy_reset(curl: *mut CURL);
     pub fn curl_easy_setopt(curl: *mut CURL, option: CURLoption, ...) -> CURLcode;
     pub fn curl_easy_getinfo(curl: *mut CURL, info: CURLINFO, ...) -> CURLcode;
-    pub fn curl_multi_init() -> *mut CURLM;
+    /// A new multi handle, or null: it takes nothing and touches no caller state.
+    pub safe fn curl_multi_init() -> *mut CURLM;
     pub fn curl_multi_cleanup(multi: *mut CURLM) -> CURLMcode;
     pub fn curl_multi_setopt(multi: *mut CURLM, option: CURLMoption, ...) -> CURLMcode;
     pub fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;

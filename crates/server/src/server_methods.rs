@@ -16,9 +16,8 @@ use crate::ops::{
 use crate::ops::{
     RUN_ADD_CONNECTION, RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS,
     RUN_IDLE_WORKERS, RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT,
-    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_ADD_COMMAND, RUN_ST_CLEAR_TIMER,
-    RUN_ST_COMMAND, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS,
-    RUN_TASKING,
+    RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT,
+    RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
@@ -31,11 +30,15 @@ pub struct NativeContext<'a> {
     pub(crate) event: Option<&'a swoole_rs_reactor::Event>,
     pub(crate) port: *mut c_void,
     pub(crate) sock: *mut c_void,
-    pub(crate) conn: *mut c_void,
+    /// The connection the operation acts on or selects.
+    pub(crate) conn: Option<crate::Connection<'a>>,
     pub(crate) server_fd: c_int,
     pub(crate) reactor_id: u8,
     pub(crate) send: *mut c_void,
     pub(crate) data: *const c_void,
+    /// The bytes the operations that read a slice take: `sendwait`'s data, `sendfile`'s
+    /// name and the document root, each up to its first NUL.
+    pub(crate) bytes: &'a [u8],
     pub(crate) length: u32,
     pub(crate) session_id: c_long,
     pub(crate) buffer: Option<&'a mut SendfileBuffer>,
@@ -54,11 +57,12 @@ impl NativeContext<'_> {
             event: None,
             port: ptr::null_mut(),
             sock: ptr::null_mut(),
-            conn: ptr::null_mut(),
+            conn: None,
             server_fd: 0,
             reactor_id: 0,
             send: ptr::null_mut(),
             data: ptr::null(),
+            bytes: &[],
             length: 0,
             session_id: 0,
             buffer: None,
@@ -242,25 +246,22 @@ pub unsafe fn connection_incoming(
         .port_by_server_fd(conn.server_fd())
         .map_or(ptr::null_mut(), view::Port::raw);
     ctx.sock = conn.socket_ptr();
-    ctx.conn = conn.as_ptr().cast();
+    ctx.conn = Some(conn);
     // SAFETY: as the caller guarantees.
     c_int::narrow(unsafe { run(RUN_INCOMING, 0, &mut ctx) })
 }
 
-/// The accept-retry timer's callback: re-enables accepting on the server.
-///
-/// # Safety
-/// `serv` is a live `Server`, on the thread that armed the timer.
+/// Arms the accept-retry timer on this thread: once, after `msec`, it re-enables
+/// accepting on `serv`. The timer's node, or null.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe extern "C-unwind" fn enable_accept(serv: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    unsafe {
-        run(
-            crate::ops::RUN_ENABLE_ACCEPT,
-            0,
-            &mut NativeContext::new(serv),
-        )
-    };
+pub(crate) fn accept_retry_timer(serv: view::Server<'_>, msec: c_long) -> *mut c_void {
+    let serv = serv.raw();
+    swoole_rs_timer::add_fn(msec, false, move || {
+        // SAFETY: the server that armed this one-shot timer, on its own thread; it
+        // outlives its timers, which `clear_timer` deletes before it goes.
+        let serv = unsafe { view::Server::from_raw(serv) };
+        run_on(serv, crate::ops::RUN_ENABLE_ACCEPT, 0);
+    })
 }
 
 /// `Server::accept_connection(reactor, event)`: the master reactor's read handler
@@ -297,19 +298,24 @@ pub fn set_max_connection(serv: view::Server<'_>, max: u32) {
 #[must_use]
 pub fn feedback(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
     let mut ctx = NativeContext::new(serv.raw());
-    ctx.conn = conn.as_ptr().cast();
+    ctx.conn = Some(conn);
     // SAFETY: the live server and its connection, lent for the call.
     unsafe { run(RUN_FEEDBACK, i64::from(event).cast_unsigned(), &mut ctx) != 0 }
 }
 
-/// `Server::store_pipe_fd(pipe)`.
-///
-/// # Safety
-/// `serv` is a live `Server` and `pipe` a live `UnixSocket`.
-pub unsafe extern "C" fn store_pipe_fd(serv: *mut c_void, pipe: *mut c_void) {
-    let mut ctx = NativeContext::new(serv);
+/// `Server::store_pipe_fd(worker->pipe_object)`, when `worker` has a pipe.
+pub(crate) fn store_pipe_fd(
+    serv: view::Server<'_>,
+    worker: swoole_rs_process::worker_record::Worker<'_>,
+) {
+    let pipe = worker.pipe_object();
+    if pipe.is_null() {
+        return;
+    }
+    let mut ctx = NativeContext::new(serv.raw());
     ctx.object = pipe;
-    // SAFETY: as the caller guarantees.
+    // SAFETY: the live server, and the pipe object of one of its live workers: the
+    // live `UnixSocket` the server or its pool made for the worker.
     unsafe { run(RUN_ST_STORE_PIPE_FD, 0, &mut ctx) };
 }
 
@@ -380,6 +386,7 @@ pub unsafe fn add_connection(
     // SAFETY: as the caller guarantees.
     if unsafe { run(RUN_ADD_CONNECTION, 0, &mut ctx) } != 0 {
         ctx.conn
+            .map_or(ptr::null_mut(), |conn| conn.as_ptr().cast())
     } else {
         ptr::null_mut()
     }
@@ -417,6 +424,16 @@ pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
 }
 
+/// `text` up to its first NUL, as the C string at its start reads: one `memchr` for
+/// the usual text without one.
+fn until_nul(text: &[u8]) -> &[u8] {
+    if text.contains(&0) {
+        text.split(|byte| *byte == 0).next().unwrap_or_default()
+    } else {
+        text
+    }
+}
+
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
     clippy::must_use_candidate,
@@ -425,6 +442,7 @@ pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
 pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
     let mut ctx = NativeContext::new(serv.raw());
     ctx.data = path.as_ptr().cast();
+    ctx.bytes = until_nul(path);
     // SAFETY: the live server; the path lives for the call.
     unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
 }
@@ -475,13 +493,15 @@ pub(crate) unsafe extern "C-unwind" fn idle_timeout_tick(conn: *mut c_void) {
     };
     let mut ctx = NativeContext::new(serv.raw());
     // SAFETY: as the caller guarantees.
-    let record = unsafe { &*conn.cast::<crate::ConnectionRecord>() };
+    let Some(conn) = (unsafe { crate::Connection::from_ptr(conn.cast()) }) else {
+        return;
+    };
     ctx.port = serv
-        .port_by_server_fd(record.server_fd)
+        .port_by_server_fd(conn.server_fd())
         .map_or(ptr::null_mut(), view::Port::raw);
     ctx.reactor = swoole_rs_corebase::thread_reactor();
-    ctx.sock = record.socket;
-    ctx.conn = conn;
+    ctx.sock = conn.socket_ptr();
+    ctx.conn = Some(conn);
     // SAFETY: as the caller guarantees.
     unsafe { run(crate::ops::RUN_IDLE_TIMEOUT, 0, &mut ctx) };
 }
@@ -498,6 +518,7 @@ pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool
     )]
     let length = data.len() as u32;
     ctx.length = length;
+    ctx.bytes = data.get(..length as usize).unwrap_or(data);
     // SAFETY: the live server; `data` holds `length` bytes for the call.
     unsafe { run(RUN_SENDWAIT, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
@@ -558,7 +579,7 @@ pub(crate) struct SendfileBuffer(pub(crate) [u8; IPC_BUFFER_SIZE]);
 
 /// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the name's
 /// length narrowed to `uint32_t`, as upstream's callers do. The task copies the name up to
-/// its first NUL (`swoole_strlcpy`), so it goes over a terminated copy.
+/// its first NUL (`swoole_strlcpy`), so that much of it is lent.
 #[expect(
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
@@ -575,19 +596,16 @@ pub fn sendfile(
         reason = "Server::sendfile's uint32_t name length, as upstream's callers narrow it"
     )]
     let l_file = file.len() as u32;
-    let mut name = Vec::with_capacity(file.len() + 1);
-    name.extend_from_slice(file);
-    name.push(0);
     let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
     // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
     buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
     let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
-    ctx.data = name.as_ptr().cast();
+    ctx.bytes = until_nul(file);
     ctx.length = l_file;
     ctx.buffer = Some(&mut buffer);
     ctx.offset = offset;
-    // SAFETY: the live server; the name lives for the call.
+    // SAFETY: the live server.
     unsafe { run(RUN_SENDFILE, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
@@ -700,6 +718,23 @@ pub fn send_pipe_message(
     unsafe { run(RUN_NATIVE_OP, OP_PIPE_TO_WORKER.into(), &mut ctx) != 0 }
 }
 
+/// Runs a command `operation` over the host of a `Server` method whose context lends
+/// `serv` and nothing else, as [`run_on`] does an operation by number; true, as the
+/// runner's `SW_ERR` narrows to, when a native fault stops it.
+fn over_server(
+    serv: view::Server<'_>,
+    operation: impl FnOnce(&mut crate::Native<'_, '_>) -> crate::Effect<bool>,
+) -> bool {
+    let mut ctx = NativeContext::new(serv.raw());
+    let mut host = crate::Native {
+        state: Some(serv.state()),
+        master: &raw mut ctx,
+        server: Some(serv),
+        reactor: None,
+    };
+    operation(&mut host).unwrap_or(true)
+}
+
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
 /// command joined. The server keeps the handler for its life.
 pub fn swr_v1_server_add_command(
@@ -713,9 +748,7 @@ pub fn swr_v1_server_add_command(
         accepted_types,
         handler,
     };
-    // `add` lives for the call.
-    let arg = core::ptr::from_ref(&add).expose_provenance() as u64;
-    run_on(serv, RUN_ST_ADD_COMMAND, arg) != 0
+    over_server(serv, |h| crate::commands::add_command(h, &add))
 }
 
 /// `Server::command(process_id, process_type, name, message, callback)`: whether
@@ -736,9 +769,7 @@ pub fn swr_v1_server_command(
         message,
         callback,
     };
-    // `send` lives for the call.
-    let arg = core::ptr::from_ref(&send).expose_provenance() as u64;
-    run_on(serv, RUN_ST_COMMAND, arg) != 0
+    over_server(serv, |h| crate::commands::command(h, &send))
 }
 
 /// `Server::call_command_callback(request_id, message)`: the reply to `request_id`
@@ -780,11 +811,10 @@ mod tests {
                 ctx.host.map_or(0, |host| host.as_ptr().addr()),
             ));
         if op == RUN_SENDFILE {
-            // SAFETY: sendfile lends a terminated name.
-            let name = unsafe { core::ffi::CStr::from_ptr(ctx.data.cast()) };
+            // sendfile lends the name as far as the task copies it.
             *SENDFILE_NAME
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = name.to_bytes().to_vec();
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = ctx.bytes.to_vec();
         }
         // sendfile's buffer starts with a `SendfileTask`, its length at 8.
         let task_length = ctx.buffer.as_ref().map_or(0, |buffer| {
@@ -820,7 +850,6 @@ mod tests {
             return 1;
         }
         ctx.port = ptr::without_provenance_mut(0x50);
-        ctx.conn = ptr::without_provenance_mut(0x60);
         ctx.object = ptr::without_provenance_mut(0x70);
         match op {
             RUN_SHUTDOWN | RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,

@@ -311,16 +311,6 @@ pub unsafe extern "C" fn unset_property_deny(
     }
 }
 
-/// `ZSTR_VAL(Z_OBJCE_P(object)->name)`.
-/// # Safety
-/// `object` is live; the name lives as long as its class.
-#[must_use]
-pub unsafe fn class_name<'a>(object: *const zend_object) -> &'a CStr {
-    // SAFETY: a live object, per the caller.
-    let props = unsafe { crate::Props::new(ptr::null_mut(), object.cast_mut()) };
-    props.class_entry().name().c_str()
-}
-
 /// `ZSTR_VAL`: a `zend_string`'s NUL-terminated bytes.
 fn text(string: *const zend_string) -> *const c_char {
     string

@@ -96,7 +96,7 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
 ///
 /// # Safety
-/// As [`crate::swr_v1_reactor_interest`], on a live `Reactor`.
+/// As [`crate::swr_v1_reactor_change`], on a live `Reactor`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
@@ -107,11 +107,15 @@ pub unsafe extern "C" fn reactor_interest(
     kind: u32,
     event: c_int,
 ) -> c_int {
-    let owner = reactor.cast::<crate::ReactorState>().cast_mut();
     // SAFETY: as the caller promises.
-    changed(unsafe {
-        crate::swr_v1_reactor_interest(owner, socket, kind, event, swr_v1_reactor_log)
-    })
+    let Some(record) = (unsafe { crate::Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    let Some((op, events)) = crate::change::interest_change(record, kind, event) else {
+        return 0;
+    };
+    // SAFETY: as the caller promises.
+    unsafe { reactor_change(reactor, socket, op, events) }
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:
