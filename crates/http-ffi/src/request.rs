@@ -17,7 +17,7 @@ use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
-    CHUNK_SIZE, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
+    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
 };
 use swoole_rs_ossupport::create_tmpfile;
 
@@ -204,8 +204,7 @@ pub struct HttpRequest {
     pub known_length: bool,
     pub keep_alive: bool,
     pub chunked: bool,
-    /// `CHUNK_SIZE`, `CHUNK_DATA` or `CHUNK_TRAILER`: what the chunked body expects next.
-    pub chunk_state: u8,
+    pub chunk_state: ChunkState,
     pub url_offset: u32,
     pub url_length: u32,
     pub max_length: u32,
@@ -241,7 +240,7 @@ impl HttpRequest {
             known_length: false,
             keep_alive: false,
             chunked: false,
-            chunk_state: CHUNK_SIZE,
+            chunk_state: ChunkState::Size,
             url_offset: 0,
             url_length: 0,
             max_length: 0,
@@ -768,7 +767,6 @@ pub unsafe fn request_free(request: *mut HttpRequest) {
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use swoole_rs_http::CHUNK_DATA;
 
     /// A `swoole::String` stand-in: the head and the bytes it points at.
     #[repr(C)]
@@ -1173,7 +1171,7 @@ mod tests {
         let (status, mut r, mut i) = chunked(b"3\r\nab", 1 << 20);
         assert_eq!(
             (status, r.chunk_state, r.chunk_length),
-            (SW_ERR, CHUNK_DATA, 3)
+            (SW_ERR, ChunkState::Data, 3)
         );
         let rest = b"c\r\n0\r\n\r\n";
         let length = i.buffer.length;

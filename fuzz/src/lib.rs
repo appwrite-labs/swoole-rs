@@ -40,6 +40,7 @@ mod request {
     use std::cell::Cell;
     use std::ffi::{CStr, c_char, c_void};
     use swoole_rs_http_ffi::{HttpRequest as Request, HttpString};
+    use swoole_rs_http::ChunkState;
 
     thread_local! {
         /// The errno native code would leave after `strtoull`.
@@ -87,8 +88,12 @@ mod request {
         (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
         (r.request_line_length, r.header_length) = (s.line_length, s.header_length);
         r.content_length = s.content_length;
-        (r.max_length, r.too_large, r.chunk_state) =
-            (s.max_length, s.too_large != 0, s.chunk_state as u8);
+        (r.max_length, r.too_large) = (s.max_length, s.too_large != 0);
+        r.chunk_state = match s.chunk_state {
+            1 => ChunkState::Data,
+            2 => ChunkState::Trailer,
+            _ => ChunkState::Size,
+        };
         (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
             (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
         r.buffer = &raw mut buffer;
@@ -110,7 +115,7 @@ mod request {
             header_length: r.header_length,
             max_length: r.max_length,
             too_large: r.too_large.into(),
-            chunk_state: r.chunk_state.into(),
+            chunk_state: r.chunk_state as u32,
             chunk_length: r.chunk_length,
             chunk_offset: r.chunk_offset,
             chunk_scan_offset: r.chunk_scan_offset,
