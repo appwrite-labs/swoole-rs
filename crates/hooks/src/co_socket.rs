@@ -511,11 +511,11 @@ impl Co {
         self.lend(STATE, |bound| f(unsafe { &mut *bound.state.get() }))
     }
 
-    /// `errno` classified by the open socket: `SW_WAIT` to wait, as
-    /// `catch_read_error`/`catch_write_error` say.
+    /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
+    /// say; `None` without one.
     #[must_use]
-    pub fn catch_error(self, error: c_int) -> c_int {
-        self.net(|record| record.catch_error(error)).unwrap_or(0)
+    pub fn catch_error(self, error: c_int) -> Option<swoole_rs_reactor::Caught> {
+        self.net(|record| record.catch_error(error))
     }
 
     /// The socket's timeout of `kind`, or -1 when it has none.

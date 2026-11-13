@@ -379,10 +379,10 @@ mod members {
         "_ZN6swoole7network6Socket11set_timeoutEdi"
         fn set_timeout(this, timeout: f64, kind: c_int) -> () { this.timeouts.set(timeout, kind) }
         "_ZN6swoole7network6Socket17catch_write_errorEi"
-        fn catch_write_error(this, error: c_int) -> c_int { this.catch_error(error) }
+        fn catch_write_error(this, error: c_int) -> c_int { this.catch_error(error) as c_int }
         "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"
         fn catch_write_pipe_error(this, error: c_int) -> c_int {
-            crate::catch_pipe_error(error, &mut this.kernel_nobufs)
+            crate::catch_pipe_error(error, &mut this.kernel_nobufs) as c_int
         }
     }
 }

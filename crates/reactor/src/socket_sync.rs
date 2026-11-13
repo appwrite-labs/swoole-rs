@@ -6,9 +6,6 @@ use std::os::raw::c_int;
 use std::time::{Duration, Instant};
 use swoole_rs_corebase::CCast;
 
-/// `swReturnCode`'s `SW_WAIT` (from `catch_error`).
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
-
 /// `send`: everything, retrying short writes.
 pub const SYNC_SEND: c_int = 0;
 /// `recv`: once, or everything under `MSG_WAITALL` (cleared for each call).
@@ -33,7 +30,7 @@ pub trait SyncEffects {
     /// Steps past the `moved` bytes the last call moved: whether any are left.
     fn advance(&mut self, moved: usize) -> bool;
     /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
-    fn catch_error(&self, error: c_int) -> c_int;
+    fn catch_error(&self, error: c_int) -> crate::Caught;
     /// `has_kernel_nobufs()`: reads and clears the flag.
     fn take_nobufs(&self) -> bool;
     /// `swoole_set_last_error`.
@@ -73,7 +70,7 @@ pub fn swr_v1_socket_sync(
         let step = match n.cmp(&0) {
             core::cmp::Ordering::Less => {
                 let error = errno();
-                let retry = error == libc::EINTR || hooks.catch_error(error) == WAIT;
+                let retry = error == libc::EINTR || hooks.catch_error(error) == crate::Caught::Wait;
                 if retry {
                     Step::Continue
                 } else {
@@ -161,7 +158,7 @@ mod tests {
             self.left -= moved;
             true
         }
-        fn catch_error(&self, error: c_int) -> c_int {
+        fn catch_error(&self, error: c_int) -> crate::Caught {
             crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
         }
         fn take_nobufs(&self) -> bool {
@@ -320,7 +317,7 @@ mod tests {
             fn advance(&mut self, moved: usize) -> bool {
                 self.0.advance(moved)
             }
-            fn catch_error(&self, error: c_int) -> c_int {
+            fn catch_error(&self, error: c_int) -> crate::Caught {
                 self.0.catch_error(error)
             }
             fn take_nobufs(&self) -> bool {

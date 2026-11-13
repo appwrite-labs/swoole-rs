@@ -13,10 +13,9 @@ use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::{SW_ERR, SW_OK, ServerState, view};
 
-/// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_WAIT`.
+/// `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
 const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
 /// those for connections the server already closed.
@@ -33,11 +32,13 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         let message = unsafe { core::slice::from_raw_parts(front.data, front.length as usize) };
         if !discard(serv.state(), message) && swoole_rs_tls::upstream::send(sock, message, 0) < 0 {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            return int(if sock.catch_error(errno) == SW_WAIT {
-                SW_OK
-            } else {
-                SW_ERR
-            });
+            return int(
+                if sock.catch_error(errno) == swoole_rs_reactor::Caught::Wait {
+                    SW_OK
+                } else {
+                    SW_ERR
+                },
+            );
         }
         pop(sock);
     }

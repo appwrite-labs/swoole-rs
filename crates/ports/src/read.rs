@@ -7,6 +7,7 @@ use core::ffi::c_int;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
+use swoole_rs_reactor::Caught;
 
 /// Which readable callback runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,8 +62,8 @@ pub struct Upgrade {
 pub(crate) trait Connection {
     /// `recv` into the buffer, after its contents or (`whole`) over them: the `ssize_t`.
     fn recv(&mut self, whole: bool) -> i64;
-    /// `catch_read_error(errno)`, the raw `swReturnCode`.
-    fn catch_error(&mut self) -> u64;
+    /// `catch_read_error(errno)`.
+    fn catch_error(&mut self) -> Caught;
     /// Warns that `recv` failed.
     fn warn_recv(&mut self);
     /// `conn->close_errno = errno`.
@@ -137,9 +138,6 @@ enum Log {
     TooLarge,
 }
 
-/// `swReturnCode` values `catch_read_error` returns.
-const SW_CLOSE: u64 = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as u64;
-const SW_ERROR: u64 = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as u64;
 const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
 const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
@@ -185,15 +183,15 @@ enum Failure {
 
 fn read_error(n: &mut impl Connection) -> Failure {
     match n.catch_error() {
-        SW_ERROR => {
+        Caught::Error => {
             n.warn_recv();
             Failure::Wait
         }
-        SW_CLOSE => {
+        Caught::Close => {
             n.close_errno();
             Failure::Close
         }
-        _ => Failure::Wait,
+        Caught::Wait | Caught::Invalid | Caught::ReduceSize => Failure::Wait,
     }
 }
 
@@ -757,8 +755,8 @@ pub(crate) mod tests {
             }
             i64::try_from(n).unwrap()
         }
-        fn catch_error(&mut self) -> u64 {
-            2
+        fn catch_error(&mut self) -> Caught {
+            Caught::Wait
         }
         fn warn_recv(&mut self) {
             self.effects.push(Effect::WarnRecv);

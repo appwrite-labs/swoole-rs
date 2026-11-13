@@ -10,8 +10,6 @@ use core::ptr;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
-/// `SW_WAIT`.
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// The native socket's effects the packet framing uses: the timers, the read
 /// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The
@@ -431,7 +429,7 @@ pub fn timed_out(socket: Co, timeout: f64, startup: &mut f64, now: f64, kind: c_
 
 /// `catch_read_error`/`catch_write_error(errno) == SW_WAIT`.
 pub(crate) fn would_block(socket: Co) -> bool {
-    socket.catch_error(errno()) == WAIT
+    socket.catch_error(errno()) == Some(swoole_rs_reactor::Caught::Wait)
 }
 
 /// A timer slot's value while a negative timeout's wait runs without a timer.

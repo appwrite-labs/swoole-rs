@@ -242,18 +242,18 @@ impl<'a> Socket<'a> {
     /// `Socket::catch_error(error)`. It edits only on `ENOBUFS`, the one error that sets
     /// `kernel_nobufs`, so threads that share a record (a pipe) and hit `EAGAIN` only read it.
     #[track_caller]
-    pub fn catch_error(self, error: c_int) -> c_int {
+    pub fn catch_error(self, error: c_int) -> crate::Caught {
         self.catch(crate::catch_error, error)
     }
 
     /// `Socket::catch_write_pipe_error(error)`, editing as [`Self::catch_error`] does.
     #[track_caller]
-    pub fn catch_pipe_error(self, error: c_int) -> c_int {
+    pub fn catch_pipe_error(self, error: c_int) -> crate::Caught {
         self.catch(crate::catch_pipe_error, error)
     }
 
     #[track_caller]
-    fn catch(self, catch: fn(c_int, &mut bool) -> c_int, error: c_int) -> c_int {
+    fn catch(self, catch: fn(c_int, &mut bool) -> crate::Caught, error: c_int) -> crate::Caught {
         if error == libc::ENOBUFS {
             self.edit(|record| catch(error, &mut record.kernel_nobufs))
         } else {

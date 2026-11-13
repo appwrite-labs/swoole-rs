@@ -6,12 +6,8 @@ use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
 use swoole_rs_protocols_ffi::{
     ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespConnection, RespRequest, SW_ERR, request,
 };
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::ConnectionRecord;
-
-/// `catch_read_error`'s `SW_CLOSE` and `SW_ERROR`.
-const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
-const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
 
 /// `swoole::RecvData`.
 #[repr(C)]
@@ -50,12 +46,12 @@ impl RespConnection for Connection<'_> {
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         match socket.catch_error(error) {
-            ERROR => {
+            Caught::Error => {
                 log::sys_warning(ORIGIN, format_args!("recv from socket#{} failed", self.fd));
                 RESP_RECV_DONE
             }
-            CLOSE => RESP_RECV_CLOSE,
-            _ => RESP_RECV_DONE,
+            Caught::Close => RESP_RECV_CLOSE,
+            Caught::Wait | Caught::Invalid | Caught::ReduceSize => RESP_RECV_DONE,
         }
     }
 

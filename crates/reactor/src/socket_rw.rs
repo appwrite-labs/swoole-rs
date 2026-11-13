@@ -12,22 +12,29 @@ pub(crate) fn interrupted() -> bool {
 
 const SSL_BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 const SSL_RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
-const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
-const CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
-const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
-const INVALID: c_int = ReturnCode::SW_INVALID as c_int;
-const REDUCE_SIZE: c_int = ReturnCode::SW_REDUCE_SIZE as c_int;
+
+/// What [`catch_error`] makes of an errno: `swReturnCode`'s `SW_WAIT`, `SW_CLOSE`,
+/// `SW_ERROR`, `SW_INVALID` and `SW_REDUCE_SIZE`, at their numbers.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caught {
+    Wait = ReturnCode::SW_WAIT as i32,
+    Close = ReturnCode::SW_CLOSE as i32,
+    Error = ReturnCode::SW_ERROR as i32,
+    Invalid = ReturnCode::SW_INVALID as i32,
+    ReduceSize = ReturnCode::SW_REDUCE_SIZE as i32,
+}
 
 /// `Socket::catch_error`: what an errno (or Swoole TLS error) means for the socket.
 /// `ENOBUFS` waits and sets `kernel_nobufs`; `EFAULT` aborts, as upstream does.
-pub fn catch_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
+pub fn catch_error(error: c_int, kernel_nobufs: &mut bool) -> Caught {
     #[expect(
         unreachable_patterns,
         reason = "EWOULDBLOCK equals EAGAIN on these platforms"
     )]
     match error {
         libc::EFAULT => swoole_rs_corebase::fatal("a socket call got EFAULT, a bad buffer address"),
-        libc::EBADF | libc::ENOENT => INVALID,
+        libc::EBADF | libc::ENOENT => Caught::Invalid,
         libc::ECONNRESET
         | libc::ECONNABORTED
         | libc::EPIPE
@@ -39,26 +46,26 @@ pub fn catch_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
         | libc::EHOSTDOWN
         | libc::EHOSTUNREACH
         | SSL_BAD_CLIENT
-        | SSL_RESET => CLOSE,
-        libc::EAGAIN | libc::EWOULDBLOCK | 0 => WAIT,
+        | SSL_RESET => Caught::Close,
+        libc::EAGAIN | libc::EWOULDBLOCK | 0 => Caught::Wait,
         libc::ENOBUFS => {
             *kernel_nobufs = true;
-            WAIT
+            Caught::Wait
         }
-        _ => ERROR,
+        _ => Caught::Error,
     }
 }
 
 /// `Socket::catch_write_pipe_error`: a pipe write that is too large reduces its
 /// size (`EMSGSIZE`, and on Linux `ENOBUFS`, which also sets `kernel_nobufs`);
 /// anything else is [`catch_error`]'s.
-pub fn catch_pipe_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
+pub fn catch_pipe_error(error: c_int, kernel_nobufs: &mut bool) -> Caught {
     match error {
-        libc::EMSGSIZE => REDUCE_SIZE,
+        libc::EMSGSIZE => Caught::ReduceSize,
         #[cfg(target_os = "linux")]
         libc::ENOBUFS => {
             *kernel_nobufs = true;
-            REDUCE_SIZE
+            Caught::ReduceSize
         }
         _ => catch_error(error, kernel_nobufs),
     }
@@ -113,7 +120,7 @@ pub fn ssl_sendfile(
     let sent = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer));
     if sent < 0 {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
-        let failed = catch_error(error, kernel_nobufs) == ERROR;
+        let failed = catch_error(error, kernel_nobufs) == Caught::Error;
         return SslSendfileResult {
             value: sent,
             warn: failed.then_some(SslSendfileWarning::Write),
@@ -237,13 +244,13 @@ mod tests {
     fn errors_classify_as_upstream() {
         let mut nobufs = false;
         let mut classify = |error| catch_error(error, &mut nobufs);
-        assert_eq!(classify(libc::EAGAIN), WAIT);
-        assert_eq!(classify(0), WAIT);
-        assert_eq!(classify(libc::EPIPE), CLOSE);
-        assert_eq!(classify(SSL_RESET), CLOSE);
-        assert_eq!(classify(libc::EBADF), INVALID);
-        assert_eq!(classify(libc::EINVAL), ERROR);
-        assert_eq!(classify(libc::ENOBUFS), WAIT);
+        assert_eq!(classify(libc::EAGAIN), Caught::Wait);
+        assert_eq!(classify(0), Caught::Wait);
+        assert_eq!(classify(libc::EPIPE), Caught::Close);
+        assert_eq!(classify(SSL_RESET), Caught::Close);
+        assert_eq!(classify(libc::EBADF), Caught::Invalid);
+        assert_eq!(classify(libc::EINVAL), Caught::Error);
+        assert_eq!(classify(libc::ENOBUFS), Caught::Wait);
         assert!(nobufs, "ENOBUFS records kernel_nobufs");
     }
 
@@ -251,13 +258,13 @@ mod tests {
     fn pipe_errors_reduce_the_size() {
         let mut nobufs = false;
         let mut classify = |error| catch_pipe_error(error, &mut nobufs);
-        assert_eq!(classify(libc::EMSGSIZE), REDUCE_SIZE);
-        assert_eq!(classify(libc::EAGAIN), WAIT);
-        assert_eq!(classify(libc::EPIPE), CLOSE);
+        assert_eq!(classify(libc::EMSGSIZE), Caught::ReduceSize);
+        assert_eq!(classify(libc::EAGAIN), Caught::Wait);
+        assert_eq!(classify(libc::EPIPE), Caught::Close);
         let expected = if cfg!(target_os = "linux") {
-            REDUCE_SIZE
+            Caught::ReduceSize
         } else {
-            WAIT
+            Caught::Wait
         };
         assert_eq!(classify(libc::ENOBUFS), expected);
         assert!(nobufs, "ENOBUFS records kernel_nobufs");
