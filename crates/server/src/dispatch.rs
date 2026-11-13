@@ -4,12 +4,11 @@ use crate::callbacks::{CB_DISPATCH_FUNC, CallbackSlot};
 use crate::ops::{
     LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_INVALID_SESSION,
     LOG_LISTEN_PID, LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME,
-    LOG_SENDWAIT, LOG_STAT, LOG_TOO_MANY_PORTS, OP_DGRAM_PORT, OP_ENV_FDS_START, OP_ENV_LISTEN_PID,
-    OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
-    OP_IS_MASTER, OP_MODE, OP_NEW_PORT_TYPE, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_SEND_SYNC, OP_SENDFILE_FINISH,
-    OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET,
-    OP_STREAM_PORT, OP_SYSTEMD_FDS, OP_VERIFY_CONN,
+    LOG_STAT, LOG_TOO_MANY_PORTS, OP_DGRAM_PORT, OP_ENV_FDS_START, OP_ENV_LISTEN_PID,
+    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PORT_COUNT,
+    OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE,
+    OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
+    OP_SENDFILE_OFFSET, OP_STREAM_PORT, OP_SYSTEMD_FDS,
 };
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
@@ -185,23 +184,52 @@ pub(crate) fn tasking(serv: Server<'_>) -> c_int {
     count
 }
 
-/// `Server::feedback`: a connection event from a worker to the master.
-pub(crate) fn feedback<H: Host>(h: &mut H, event: u64) -> crate::Effect<bool> {
-    Ok(if h.get(OP_MODE)? == MODE_PROCESS {
-        h.op(OP_FEEDBACK_THREAD, event)? != 0
-    } else {
-        h.op(OP_FEEDBACK_SEND, event)? != 0
-    })
+/// `Server::feedback(conn, event)`: a connection event from a worker to the master,
+/// through a reactor thread in process mode, else sent here.
+#[must_use]
+pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
+    let info = swoole_rs_corebase::DataHead {
+        fd: conn.session_id(),
+        reactor_id: conn.reactor_id().into(),
+        kind: event.c_cast::<u8>(),
+        ..Default::default()
+    };
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
+    }
+    let send = SendData {
+        info,
+        data: core::ptr::null(),
+    };
+    // SAFETY: a send with no data.
+    let sent = unsafe { crate::server_methods::send_to_connection(serv, &send) };
+    i64::from(sent) == crate::SW_OK
 }
 
-/// `Server::sendwait`.
-pub(crate) fn sendwait<H: Host>(h: &mut H, session: u64) -> crate::Effect<bool> {
-    if h.op(OP_VERIFY_CONN, session)? == 0 {
-        h.op(LOG_SENDWAIT, session)?;
-        return Ok(false);
-    }
-    h.is(OP_SEND_SYNC)
+/// `Server::sendwait(session_id, data, length)`: a blocking send of all of `data` to
+/// the session's socket.
+#[must_use]
+pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
+    let Some(conn) = serv.state().connection(session_id, Lookup::VerifiedTls) else {
+        let length = data.len();
+        let m =
+            format_args!("send {length} byte failed, because session#{session_id} is not exists");
+        swoole_rs_corebase::log::error_log(
+            SW_LOG_TRACE,
+            swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int,
+            c"Server::sendwait",
+            m,
+        );
+        return false;
+    };
+    let sent = conn.socket().map_or(-1, |socket| {
+        swoole_rs_tls::upstream::send_sync(socket, data, 0)
+    });
+    usize::try_from(sent) == Ok(data.len())
 }
+
+/// `SW_LOG_TRACE`.
+const SW_LOG_TRACE: c_int = 1;
 
 /// `Server::sendfile`: validate the session and file, then hand the task to the factory.
 pub(crate) fn sendfile<H: Host>(h: &mut H, session: i64) -> crate::Effect<bool> {
@@ -309,10 +337,8 @@ pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
 
 /// The dispatch and port operations of `crate::run`.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use crate::ops::{RUN_ADD_PORT, RUN_FEEDBACK, RUN_SENDFILE, RUN_SENDWAIT, RUN_SYSTEMD_SOCKETS};
+    use crate::ops::{RUN_ADD_PORT, RUN_SENDFILE, RUN_SYSTEMD_SOCKETS};
     Ok(match operation {
-        RUN_FEEDBACK => i64::from(feedback(h, arg)?),
-        RUN_SENDWAIT => i64::from(sendwait(h, arg)?),
         RUN_SENDFILE => i64::from(sendfile(h, arg.cast_signed())?),
         RUN_ADD_PORT => add_port(h)?,
         RUN_SYSTEMD_SOCKETS => systemd_sockets(h)?,
@@ -323,7 +349,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MODE_BASE;
     use crate::script::Script;
 
     use crate::fixture::LiveServer;
@@ -481,18 +506,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn worker_side_sends() {
-        let mut s = Script::with(&[(OP_MODE, MODE_PROCESS), (OP_FEEDBACK_THREAD, 1)]);
+        use crate::hybrid::tests::{Call, calls};
+        let live = LiveServer::new();
+        let conn = live.state().tables_ref().connection_at(10).unwrap();
+        conn.set_session_id(7);
+        conn.set_reactor_id(1);
+        calls();
         assert!(
-            feedback(&mut s, 5).unwrap(),
+            feedback(live.server(), conn, 5),
             "process mode goes through the reactor thread"
         );
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        assert!(!feedback(&mut s, 5).unwrap(), "base mode sends directly");
-
-        let mut s = Script::with(&[]);
-        assert!(!sendwait(&mut s, 3).unwrap(), "missing session");
-        assert_eq!(s.args(LOG_SENDWAIT), vec![3], "traced");
+        assert_eq!(calls(), [Call::ToReactorThread(7, 1, 5)]);
+        assert!(!sendwait(live.server(), 3, b"data"), "missing session");
     }
 
     #[test]

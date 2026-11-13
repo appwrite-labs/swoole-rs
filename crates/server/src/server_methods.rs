@@ -12,8 +12,7 @@ use swoole_rs_corebase::CCast;
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
 use crate::ops::{
-    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_SC_SEND, RUN_SENDFILE, RUN_SENDWAIT,
-    RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
+    RUN_ADD_PORT, RUN_BASE_CREATE, RUN_SC_SEND, RUN_SENDFILE, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
 };
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
@@ -269,14 +268,7 @@ pub fn get_startup_error_message() -> CString {
 
 pub use crate::connection::{add as add_connection, set_max_connection};
 
-/// `Server::feedback(conn, event)`, over one of `serv`'s connections.
-#[must_use]
-pub fn feedback(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.conn = Some(conn);
-    // SAFETY: the live server and its connection, lent for the call.
-    unsafe { run(RUN_FEEDBACK, i64::from(event).cast_unsigned(), &mut ctx) != 0 }
-}
+pub use crate::dispatch::{feedback, sendwait};
 
 /// `Server::store_pipe_fd(worker->pipe_object)`, when `worker` has a pipe: both ends
 /// map to the pipe, and the highest fd grows to cover them.
@@ -414,19 +406,6 @@ pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut c_void {
         let serv = unsafe { view::Server::from_raw(serv) };
         crate::control::master_timer(serv);
     })
-}
-
-/// `Server::sendwait(session_id, data, length)`.
-#[must_use]
-pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.session_id = session_id;
-    ctx.data = data.as_ptr().cast();
-    let length = data.len().c_cast::<u32>();
-    ctx.length = length;
-    ctx.bytes = data.get(..length as usize).unwrap_or(data);
-    // SAFETY: the live server; `data` holds `length` bytes for the call.
-    unsafe { run(RUN_SENDWAIT, session_id.cast_unsigned(), &mut ctx) != 0 }
 }
 
 /// `Server::has_kernel_nobufs_error(session_id)`: whether a send to the session's
@@ -752,13 +731,6 @@ mod tests {
                 op == RUN_ADD_PORT && s == sv && number == 9 && host != 0,
                 "add_port context"
             );
-            // SAFETY: a zeroed record is a valid connection.
-            let mut conn: ConnectionRecord = core::mem::zeroed();
-            assert!(
-                !feedback(server(), (&mut conn).into(), 5),
-                "feedback result"
-            );
-            assert_eq!(last().1, 5, "event arg");
             send_family_and_base_factory(serv);
         }
     }
@@ -787,8 +759,6 @@ mod tests {
                 "send context, with its SendData lent"
             );
             assert_ne!(sent().3, 0, "a SendData is lent");
-            assert!(!sendwait(server(), 9, &[0; 4]), "sendwait result");
-            assert_eq!(sent().1, 9, "sendwait passes the session");
             assert!(
                 !sendfile(server(), 12, &b"fx"[..1], 3, 99),
                 "sendfile result"

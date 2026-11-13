@@ -36,10 +36,6 @@ pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
 pub const RUN_HEARTBEAT_THREAD: u32 = 32;
 
 // Dispatch, sends and ports (`src/server/master.cc`).
-/// `Server::feedback`: context connection, arg the event.
-pub const RUN_FEEDBACK: u32 = 34;
-/// `Server::sendwait(arg)`: context data and length.
-pub const RUN_SENDWAIT: u32 = 35;
 /// `Server::sendfile(arg)`: context file name, offset and length.
 pub const RUN_SENDFILE: u32 = 40;
 /// `Server::add_port`: context type, host and port; 1 with the port in the context.
@@ -394,14 +390,6 @@ pub const EVENT_SHUTDOWN_SIGNAL: u32 = 19;
 // Dispatch, sends and ports.
 /// `Server::state_`, a `state::ServerState`.
 pub const OP_STATE: u32 = 402;
-/// The event arg to the connection's reactor thread; whether it was sent.
-pub const OP_FEEDBACK_THREAD: u32 = 411;
-/// `send_to_connection` of the event arg; whether it succeeded.
-pub const OP_FEEDBACK_SEND: u32 = 412;
-/// Selects `get_connection_verify(arg)`; whether there is one.
-pub const OP_VERIFY_CONN: u32 = 413;
-/// `send_sync` of the context data; whether all of it was sent.
-pub const OP_SEND_SYNC: u32 = 414;
 pub const OP_IS_MASTER: u32 = 421;
 /// The longest sendfile name; copies the name into the task, returning its address.
 pub const OP_SENDFILE_NAME_MAX: u32 = 422;
@@ -441,7 +429,6 @@ pub const LOG_SENDFILE_NAME: u32 = 452;
 pub const LOG_STAT: u32 = 453;
 pub const LOG_NOT_REGULAR: u32 = 454;
 pub const LOG_FILE_EMPTY: u32 = 455;
-pub const LOG_SENDWAIT: u32 = 456;
 pub const LOG_PORT_CREATED: u32 = 457;
 pub const LOG_TOO_MANY_PORTS: u32 = 458;
 pub const LOG_INVALID_PORT: u32 = 459;
