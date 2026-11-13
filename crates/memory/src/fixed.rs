@@ -31,8 +31,8 @@ pub struct Fixed {
     slice_num: u32,
     slice_use: Cell<u32>,
     pub(crate) slice_size: u32,
-    pub(crate) shared: u8,
-    pub(crate) allocated: u8,
+    pub(crate) shared: bool,
+    pub(crate) allocated: bool,
 }
 
 /// The address of one field at `offset` inside `base`, computed without dereferencing it.
@@ -175,8 +175,8 @@ pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, ow
     p.size = plan.usable;
     p.slice_num = plan.slices;
     p.slice_size = plan.width;
-    p.shared = shared.into();
-    p.allocated = owned.into();
+    p.shared = shared;
+    p.allocated = owned;
     // Table row sizes may be odd: slice headers require unaligned loads/stores.
     let nodes = p.nodes();
     p.tail.set(p.memory.cast());

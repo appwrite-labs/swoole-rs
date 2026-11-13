@@ -242,7 +242,7 @@ fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     node_ref.interval = view.interval;
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
-    node_ref.removed = view.removed != 0;
+    node_ref.removed = view.removed;
     let calls = Calls {
         closure: node_ref.closure,
         plain: node_ref.plain,
@@ -519,7 +519,7 @@ impl Owner {
             check(status);
             // The node the queue just selected; the copies are read before it runs.
             let (node, calls) = applied(&view);
-            if view.removed == 0 {
+            if !view.removed {
                 if let Some(closure) = calls.closure {
                     closure.run();
                 } else if let Some(plain) = calls.plain {
@@ -561,7 +561,7 @@ impl Owner {
                 if status != RELEASE {
                     swoole_rs_corebase::fatal("a timer completed without releasing");
                 }
-                if stats.selecting != 0 {
+                if stats.selecting {
                     check(queue.end().0);
                 }
                 (stats.active_id != 0, view)

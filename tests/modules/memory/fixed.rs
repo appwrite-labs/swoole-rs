@@ -147,7 +147,7 @@ fn fixed_constructs_complete_real_header_and_links_without_touching_payload_or_t
                             pool.shared,
                             pool.allocated
                         ),
-                        (plan.usable, 17, 0, plan.width, shared.into(), owned.into())
+                        (plan.usable, 17, 0, plan.width, shared, owned)
                     );
                     let stride = 24 + plan.width as usize;
                     for index in (0..17).rev() {
@@ -253,7 +253,7 @@ fn normal_queue_changes_publish_only_mutable_header_fields() {
                     current.allocated,
                 )
             };
-            let expected = (original.memory, original.size, count, 16, 0, 1);
+            let expected = (original.memory, original.size, count, 16, false, true);
             let mut live = Vec::new();
             for _ in 0..count {
                 let value = alloc(&*pool);
