@@ -1,9 +1,9 @@
 # Locks and atomics ABI
 
 Feature bit 1024 (`locks`). No lock has a C++ class or a C entry point: the server, Table and
-crates/phplocks use crates/locks' `Lock` and `SharedMutex`, and `swoole::Barrier`'s methods
-(declared in this directory's `swoole_lock.h`) are Rust under their C++ symbols. The module has no C or C++
-source. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
+crates/phplocks use crates/locks' `Lock` and `SharedMutex`, and the server's `Barrier` is
+crates/locks' too. The module has no C or C++ source, and this directory declares only
+`swoole_atomic.h`. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
 `Coroutine\Lock` and the ZTS `Thread\Atomic`, `Atomic\Long` and `Thread\Lock`,
 MINITs included. A thread resource keeps its word or private lock in an `Arc`
 (upstream's `ThreadResource`), which crates/phpthread's containers share between

@@ -561,8 +561,8 @@ macro_rules! atomic_api {
 atomic_api!(swr_v1_locks_atomic32, AtomicU32, u32);
 atomic_api!(swr_v1_locks_atomic64, AtomicI64, i64);
 
-/// `swoole::Barrier` (`native/locks/swoole_lock.h`), whose methods are these exports under
-/// their C++ symbols. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
+/// Upstream's `swoole::Barrier`, made, awaited and destroyed by [`barrier_init`],
+/// [`barrier_wait`] and [`barrier_destroy`]. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
 /// (glibc and musl have `pthread_barrier_init`); macOS keeps the arrival/count words.
 /// The pthread barrier and its attribute are kept as atomic words only to be aligned,
 /// `Sync` storage that pthread alone reads and writes. Nothing here makes a `Barrier`:
@@ -617,8 +617,7 @@ unsafe extern "C" {
 
 /// `Barrier::init(bool shared, int count)`. Shared attrs are initialized before
 /// `setpshared`, fixing upstream's use of an uninitialized attribute.
-#[unsafe(export_name = "_ZN6swoole7Barrier4initEbi")]
-pub extern "C" fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
+pub fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
     #[cfg(target_os = "linux")]
     {
         barrier.shared.store(shared, Ordering::Relaxed);
@@ -644,8 +643,7 @@ pub extern "C" fn barrier_init(barrier: &Barrier, shared: bool, count: c_int) {
 }
 
 /// `Barrier::wait()`.
-#[unsafe(export_name = "_ZN6swoole7Barrier4waitEv")]
-pub extern "C" fn barrier_wait(barrier: &Barrier) {
+pub fn barrier_wait(barrier: &Barrier) {
     #[cfg(target_os = "linux")]
     pthread_barrier_wait(barrier);
     #[cfg(not(target_os = "linux"))]
@@ -659,8 +657,7 @@ pub extern "C" fn barrier_wait(barrier: &Barrier) {
 }
 
 /// `Barrier::destroy()`.
-#[unsafe(export_name = "_ZN6swoole7Barrier7destroyEv")]
-pub extern "C" fn barrier_destroy(barrier: &Barrier) {
+pub fn barrier_destroy(barrier: &Barrier) {
     #[cfg(target_os = "linux")]
     {
         // The barrier is initialized, has no waiters and is destroyed once.
