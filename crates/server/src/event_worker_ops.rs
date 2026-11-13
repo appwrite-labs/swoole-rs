@@ -245,7 +245,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_CONN_READABLE => {
             let removed = conn.socket().is_none_or(|s| s.read(|s| s.removed != 0));
-            u64::from(conn.peer_closed() == 0 && !removed)
+            u64::from(!conn.peer_closed() && !removed)
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id()),
         OP_CLOSE_CONNECTION => {

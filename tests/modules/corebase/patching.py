@@ -19,9 +19,8 @@ DEFINED = ('_Z21swoole_common_divisorjj', '_Z22swoole_common_multiplejj', '_Z22s
 def check_git_environment():
     redirected = {'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE',
                   'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-                  'GIT_CEILING_DIRECTORIES', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_PARAMETERS'}
-    injected = sorted(key for key in os.environ if key in redirected
-                      or key.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_')))
+                  'GIT_CEILING_DIRECTORIES'}
+    injected = sorted(key for key in os.environ if key in redirected)
     if injected:
         raise ValueError('Git environment requires a separate protocol: ' + ', '.join(injected))
 

@@ -765,7 +765,7 @@ fn connection(server: view::Server<'_>, fd: zend_long, verify: bool) -> Option<C
     Some(Connection {
         status: conn.websocket_status(),
         server_fd: conn.server_fd(),
-        compression: conn.websocket_compression() != 0,
+        compression: conn.websocket_compression(),
         closed: conn.closed().load(Relaxed) != 0,
     })
 }
@@ -1146,7 +1146,7 @@ pub(crate) fn accept(mut context: Ctx) {
     if !crate::context::co_socket(state)
         && let Some(conn) = crate::context::server(state).verified(state.fd)
     {
-        conn.set_websocket_compression(u8::from(accepted));
+        conn.set_websocket_compression(accepted);
     }
 }
 

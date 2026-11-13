@@ -741,7 +741,7 @@ fn heartbeat(call: &Call) {
             let session_id = conn.session_id();
             if session_id > 0 && !serv.healthy(now, conn) {
                 if close {
-                    conn.set_close_force(1);
+                    conn.set_close_force(true);
                     server_methods::close(serv, session_id, false);
                 }
                 call.add_next_index_long(session_id);
@@ -930,7 +930,7 @@ fn exists(call: &Call) {
         return call.set_bool(false);
     };
     let conn = serv.verified(session_id);
-    call.set_bool(conn.is_some_and(|conn| !closed(conn) && conn.closing() == 0));
+    call.set_bool(conn.is_some_and(|conn| !closed(conn) && !conn.closing()));
 }
 
 fn protect(call: &Call) {
@@ -943,7 +943,7 @@ fn protect(call: &Call) {
     };
     match serv.verified(session_id) {
         Some(conn) if !closed(conn) => {
-            conn.set_protect(u8::from(value));
+            conn.set_protect(value);
             call.set_bool(true);
         }
         _ => call.set_bool(false),

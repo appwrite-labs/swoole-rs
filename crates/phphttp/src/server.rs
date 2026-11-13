@@ -244,7 +244,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         websocket_status: conn.websocket_status(),
         http,
         websocket,
-        http2: conn.http2_stream() != 0,
+        http2: conn.http2_stream(),
         cache: None,
         coroutine: false,
     };
