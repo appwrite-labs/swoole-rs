@@ -16,8 +16,7 @@ pub use libz_sys::{
     Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 use libz_sys::{
-    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, deflateEnd, deflateInit2_, inflate, inflateEnd,
-    inflateInit2_, uInt, uLong, z_stream, z_streamp,
+    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, inflate, uInt, uLong, z_stream, z_streamp,
 };
 
 /// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
@@ -30,17 +29,38 @@ pub const CHUNK: usize = uInt::MAX as usize;
 #[repr(transparent)]
 struct Z(z_stream);
 
+/// The running library's version string, static and NUL-terminated, which an init
+/// call compares with its own. Only `zlibVersion` makes one.
+#[repr(transparent)]
+struct Version(*const c_char);
+
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
     fn zError(status: c_int) -> *const c_char;
     /// The running library's static version string.
-    safe fn zlibVersion() -> *const c_char;
-    // zlib's own declarations of the two calls that take only the stream, typed as
-    // the stream it is: each checks the stream's state first and touches neither its
-    // input nor its output.
+    safe fn zlibVersion() -> Version;
+    // zlib's own declarations of the calls that take only the stream, typed as the
+    // stream it is, and plain values. The init calls refuse a version, struct size
+    // or setting they don't accept and otherwise allocate the stream's state with
+    // its allocator; the others check the stream's state first (the end calls then
+    // free it with the stream's allocator and null it). None touches the stream's
+    // input or output.
+    safe fn inflateInit2_(z: &mut Z, window_bits: c_int, version: Version, size: c_int) -> c_int;
+    safe fn deflateInit2_(
+        z: &mut Z,
+        level: c_int,
+        method: c_int,
+        window_bits: c_int,
+        mem_level: c_int,
+        strategy: c_int,
+        version: Version,
+        size: c_int,
+    ) -> c_int;
     safe fn deflateReset(z: &mut Z) -> c_int;
     safe fn deflateBound(z: &mut Z, length: uLong) -> uLong;
+    safe fn deflateEnd(z: &mut Z) -> c_int;
+    safe fn inflateEnd(z: &mut Z) -> c_int;
 }
 
 extern "C" fn c_alloc(_: *mut c_void, items: uInt, size: uInt) -> *mut c_void {
@@ -101,8 +121,7 @@ impl Stream {
     /// zlib's status when it is not `Z_OK`.
     pub fn inflate(window_bits: c_int) -> Result<Self, c_int> {
         let mut z = Box::new(fresh());
-        // SAFETY: a fresh stream with its allocator, the running version and the struct's size.
-        let status = unsafe { inflateInit2_(&raw mut z.0, window_bits, zlibVersion(), size()) };
+        let status = inflateInit2_(&mut z, window_bits, zlibVersion(), size());
         // Only an initialised stream becomes a `Stream`, which `drop` ends.
         (status == Z_OK)
             .then_some(Self { z, deflate: false })
@@ -114,19 +133,16 @@ impl Stream {
     /// zlib's status when it is not `Z_OK`.
     pub fn deflate(level: c_int, window_bits: c_int, mem_level: c_int) -> Result<Self, c_int> {
         let mut z = Box::new(fresh());
-        // SAFETY: as in `inflate`.
-        let status = unsafe {
-            deflateInit2_(
-                &raw mut z.0,
-                level,
-                Z_DEFLATED,
-                window_bits,
-                mem_level,
-                Z_DEFAULT_STRATEGY,
-                zlibVersion(),
-                size(),
-            )
-        };
+        let status = deflateInit2_(
+            &mut z,
+            level,
+            Z_DEFLATED,
+            window_bits,
+            mem_level,
+            Z_DEFAULT_STRATEGY,
+            zlibVersion(),
+            size(),
+        );
         (status == Z_OK)
             .then_some(Self { z, deflate: true })
             .ok_or(status)
@@ -189,10 +205,11 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        let end: unsafe extern "C" fn(z_streamp) -> c_int =
-            if self.deflate { deflateEnd } else { inflateEnd };
-        // SAFETY: an initialised stream, ended once here.
-        unsafe { end(&raw mut self.z.0) };
+        if self.deflate {
+            deflateEnd(&mut self.z);
+        } else {
+            inflateEnd(&mut self.z);
+        }
     }
 }
 

@@ -283,28 +283,18 @@ mod native {
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        use swoole_rs_reactor::reactor_upstream::reactor_change;
-        let reactor = swoole_rs_corebase::thread_reactor();
-        // `Reactor::change`'s add (0) or set (1).
-        let op = u32::from(!add);
-        // SAFETY: an open socket's record, on this thread's running reactor.
-        unsafe { reactor_change(reactor, socket.socket(), op, events.cast_signed()) == 0 }
+        socket.register(add, events.cast_signed()) == 0
     }
 
     pub(super) fn remove(socket: Co, event: u32) {
-        /// `Reactor::interest`'s `remove_read_event`; `remove_write_event` follows it.
-        const REMOVE_READ: u32 = 4;
-        let kind = REMOVE_READ + u32::from(event != crate::shutdown::READ);
-        let reactor = swoole_rs_corebase::thread_reactor();
-        // SAFETY: this thread's live reactor and a socket registered in it.
-        unsafe {
-            swoole_rs_reactor::reactor_upstream::reactor_interest(
-                reactor,
-                socket.socket(),
-                kind,
-                0,
-            );
+        use swoole_rs_reactor::Interest;
+        // `Reactor::interest`'s `remove_read_event` or `remove_write_event`.
+        let kind = if event == crate::shutdown::READ {
+            Interest::RemoveRead
+        } else {
+            Interest::RemoveWrite
         };
+        _ = socket.interest(kind);
     }
 
     pub(super) fn ssl_shutdown(socket: Co) {

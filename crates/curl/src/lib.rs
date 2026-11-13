@@ -51,6 +51,27 @@ const CO_CANCELED: c_int = 10017;
 /// coroutine to wait in (or one already bound): C++ raises the fatal error.
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
 
+/// A live easy handle, as the bundled `ext/curl` hands over its `ch->cp`. Only an
+/// export's parameter makes one (and `php.rs`, reading a live `php_curl`'s), where the
+/// C caller's contract stands for the constructor, as it does for a `&T` parameter
+/// there. A `CURL *`'s layout, and neither `Send` nor `Sync`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Easy(*mut CURL);
+
+impl Easy {
+    /// `CURLINFO_PRIVATE`: the easy handle's Swoole handle, or null without one.
+    fn handle(self) -> *mut Handle {
+        let mut handle: *mut Handle = ptr::null_mut();
+        // SAFETY: the live easy handle; CURLINFO_PRIVATE writes a pointer.
+        if unsafe { curl_easy_getinfo(self.0, CURLINFO_PRIVATE, &raw mut handle) } == CURLE_OK {
+            handle
+        } else {
+            ptr::null_mut()
+        }
+    }
+}
+
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
 /// and the multi `curl_exec` runs it in. C++ reads and writes `multi`.
 #[repr(C)]
@@ -597,15 +618,10 @@ pub extern "C" fn swr_v1_curl_multi_perform(multi: &Multi) -> CURLMcode {
     multi.perform()
 }
 
-/// `Multi::select` in the coroutine `swoole_curl_check_bound_co` returned.
-/// # Safety
-/// `co` is the running coroutine.
+/// `Multi::select` in the coroutine `swoole_curl_check_bound_co` returned: the
+/// running one, which the yield checks (it aborts otherwise) before anything uses `co`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_select(
-    multi: &Multi,
-    co: *mut c_void,
-    timeout: f64,
-) -> c_long {
+pub extern "C" fn swr_v1_curl_multi_select(multi: &Multi, co: *mut c_void, timeout: f64) -> c_long {
     multi.select(co, timeout)
 }
 
@@ -638,41 +654,30 @@ fn socket_event(socket: &Socket, bitmask: c_int) {
 }
 
 /// `swoole::curl::get_handle`.
-/// # Safety
-/// `cp` is a live easy handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_get_handle(cp: *mut CURL) -> *mut Handle {
-    let mut handle: *mut Handle = ptr::null_mut();
-    // SAFETY: per the caller; CURLINFO_PRIVATE writes a pointer.
-    if unsafe { curl_easy_getinfo(cp, CURLINFO_PRIVATE, &raw mut handle) } == CURLE_OK {
-        handle
-    } else {
-        ptr::null_mut()
-    }
+pub extern "C" fn swr_v1_curl_get_handle(cp: Easy) -> *mut Handle {
+    cp.handle()
 }
 
 /// `swoole::curl::create_handle`.
-/// # Safety
-/// As [`swr_v1_curl_get_handle`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_create_handle(cp: *mut CURL) -> *mut Handle {
+pub extern "C" fn swr_v1_curl_create_handle(cp: Easy) -> *mut Handle {
     let handle = Box::into_raw(Box::new(Handle {
-        cp,
+        cp: cp.0,
         multi: ptr::null_mut(),
         easy_multi: ptr::null_mut(),
     }));
-    // SAFETY: per the caller.
-    unsafe { curl_easy_setopt(cp, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+    // SAFETY: the live easy handle, which keeps the pointer for `Easy::handle`.
+    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
     handle
 }
 
 /// `swoole::curl::destroy_handle`.
 /// # Safety
-/// As [`swr_v1_curl_get_handle`].
+/// No transfer of `cp` runs, and nothing uses its Swoole handle afterwards.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: *mut CURL) {
-    // SAFETY: per the caller.
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy) {
+    let handle = cp.handle();
     if handle.is_null() {
         return;
     }
@@ -680,21 +685,20 @@ pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: *mut CURL) {
     let handle = unsafe { Box::from_raw(handle) };
     // SAFETY: its own exec multi, or null.
     unsafe { swr_v1_curl_multi_free(handle.easy_multi) };
-    // SAFETY: per the caller.
-    unsafe { curl_easy_setopt(cp, CURLOPT_PRIVATE, ptr::null_mut::<c_void>()) };
+    // SAFETY: the live easy handle.
+    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, ptr::null_mut::<c_void>()) };
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
 /// # Safety
-/// As [`swr_v1_curl_get_handle`].
+/// As `curl_easy_reset`: no transfer of `cp` runs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_reset(cp: *mut CURL) {
+pub unsafe extern "C" fn swoole_curl_easy_reset(cp: Easy) {
+    let handle = cp.handle();
     // SAFETY: per the caller.
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
-    // SAFETY: as above.
-    unsafe { curl_easy_reset(cp) };
-    // SAFETY: as above.
-    unsafe { curl_easy_setopt(cp, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+    unsafe { curl_easy_reset(cp.0) };
+    // SAFETY: the live easy handle, which keeps the pointer it held.
+    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
 }
 
 #[cfg(not(test))]

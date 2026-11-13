@@ -517,7 +517,14 @@ pub(crate) mod tests {
         // The record's pointer comes from the raw one `free` reclaims, so it outlives
         // the box giving the allocation up.
         let socket = Box::into_raw(socket);
-        unsafe { (*socket).record.socket.set(&raw mut (*socket).network) };
+        unsafe {
+            (*socket)
+                .record
+                .socket
+                .set(swoole_rs_reactor::Socket::from_ptr(
+                    &raw mut (*socket).network,
+                ));
+        }
         unsafe { Co::new(socket.cast()) }
     }
 

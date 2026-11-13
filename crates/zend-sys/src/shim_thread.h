@@ -22,8 +22,6 @@ zend_long swr_zend_dval_to_lval_safe(double value);
 /* Z_RES_HANDLE_P of a resource zval; 0 for any other. */
 zend_long swr_zend_resource_handle(const zval *value);
 
-/* is_numeric_string(text, length, &lval, &dval, false): IS_LONG, IS_DOUBLE or 0. */
-uint8_t swr_zend_is_numeric_string(const char *text, size_t length, zend_long *lval, double *dval);
 /* zendi_smart_strcmp. */
 int swr_zend_smart_strcmp(zend_string *a, zend_string *b);
 

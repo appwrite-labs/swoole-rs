@@ -11,7 +11,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
+use swoole_rs_buffer::string::{Allocator, CppString, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -37,14 +37,18 @@ pub struct CoSocket {
     pub protocol: Cell<Protocol>,
     /// `swSocketType`.
     pub kind: Cell<c_int>,
-    pub(crate) socket: Cell<*mut SocketRecord>,
+    /// The `network::Socket`, none before the socket opens: the record's own from
+    /// `into_socket`, live until `~Socket()` frees it, when no handle reaches this
+    /// record any more.
+    pub(crate) socket: Cell<Option<Socket<'static>>>,
     pub sock_domain: Cell<c_int>,
     pub sock_type: Cell<c_int>,
     pub sock_protocol: Cell<c_int>,
     pub sock_fd: Cell<c_int>,
     pub connect_port: Cell<c_int>,
     pub backlog: Cell<c_int>,
-    pub(crate) buffer_allocator: Cell<*const c_void>,
+    /// The buffers' allocator: none for the default.
+    pub(crate) buffer_allocator: Cell<Option<&'static Allocator>>,
     pub buffer_init_size: Cell<usize>,
     pub(crate) read_buffer: Cell<*mut c_void>,
     pub(crate) write_buffer: Cell<*mut c_void>,
@@ -282,17 +286,32 @@ impl Co {
         /// `errMsg`: a NUL-terminated message, static, `swoole_strerror`'s, the thread's
         /// last error message or the record's own error string.
         err_msg, set_err_msg: *const c_char;
-        /// The `network::Socket`: null before the socket opens, else a live record that
-        /// nothing else frees while this one holds it.
-        socket, set_socket: *mut SocketRecord;
-        /// The buffers' allocator: null for the default, else a live `Allocator`.
-        buffer_allocator, set_buffer_allocator: *const c_void;
-        /// Null, or the live `String` the record owns.
-        read_buffer, set_read_buffer: *mut c_void;
-        /// Null, or the live `String` the record owns.
-        write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
+    }
+
+    fields!(get
+        /// Null, or the live `String` the record owns: a `new String`, a Box.
+        read_buffer: *mut c_void);
+    fields!(get
+        /// Null, or the live `String` the record owns: a `new String`, a Box.
+        write_buffer: *mut c_void);
+
+    /// The buffers' allocator: none for the default.
+    #[must_use]
+    pub fn buffer_allocator(self) -> Option<&'static Allocator> {
+        self.record().buffer_allocator.get()
+    }
+
+    /// The buffers' allocator from now on: none for the default.
+    pub fn set_buffer_allocator(self, allocator: Option<&'static Allocator>) {
+        self.record().buffer_allocator.set(allocator);
+    }
+
+    /// The `network::Socket`'s address: null before the socket opens.
+    #[must_use]
+    pub fn socket(self) -> *mut SocketRecord {
+        self.record().socket_ptr()
     }
 
     /// A copy of `errMsg`, which the socket may replace or free; `None` when null.
@@ -361,17 +380,47 @@ impl Co {
         if !slot.is_null() {
             return slot.cast();
         }
-        let allocator = self.buffer_allocator().cast::<Allocator>();
-        // SAFETY: the field's contract: null or a live allocator.
-        let made = new_sized_string(BUFFER_SIZE_BIG, unsafe { allocator.as_ref() });
-        let field = if write {
-            Self::set_write_buffer
-        } else {
-            Self::set_read_buffer
-        };
-        // SAFETY: a live String, which the record owns now.
-        unsafe { field(self, made.cast()) };
+        let made = new_sized_string(BUFFER_SIZE_BIG, self.buffer_allocator());
+        // A `new String`, which the record owns now.
+        self.buffer_slot(write).set(made.cast());
         made
+    }
+
+    /// The record's read or write buffer slot.
+    fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
+        let record = self.record();
+        if write {
+            &record.write_buffer
+        } else {
+            &record.read_buffer
+        }
+    }
+
+    /// The read or write buffer, which the record gives up, as before its first use;
+    /// none when it has none.
+    /// # Panics
+    /// Inside a `with_buffer` over the same buffer.
+    #[track_caller]
+    #[must_use]
+    pub(crate) fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
+        let part = if write { WRITE_BUFFER } else { READ_BUFFER };
+        self.lend(part, |_| {
+            let buffer = self.buffer_slot(write).replace(ptr::null_mut());
+            let buffer = buffer.cast::<CppString>();
+            // SAFETY: null or the `new String` the record owned, which nothing else
+            // reaches: the record no longer does and no `with_buffer` lends it.
+            (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
+        })
+    }
+
+    /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
+    /// outside this crate: a coroutine HTTP server reads requests out of it.
+    /// # Panics
+    /// Inside a `with_buffer` over the write buffer.
+    #[track_caller]
+    #[must_use]
+    pub fn take_write_buffer(self) -> Option<Box<CppString>> {
+        self.take_buffer(true)
     }
 
     /// The bound state's address; [`Co::with_state`] borrows it.
@@ -412,8 +461,32 @@ impl Co {
     /// `f` over the `network::Socket`'s handle, or `None` before the socket opens. The
     /// handle lives only for the call, so it cannot outlive the record.
     pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
-        // SAFETY: `new`'s contract: null or a live network::Socket, for the call.
-        unsafe { Socket::from_ptr(self.socket()) }.map(f)
+        self.record().socket.get().map(f)
+    }
+
+    /// `Reactor::change`'s add (`add`) or set of the open socket for `events`, on the
+    /// thread's reactor: 0, or -1 without a socket or a reactor. The record's own
+    /// network socket, which `~Socket()` takes off the reactor as it frees it.
+    #[must_use]
+    pub fn register(self, add: bool, events: c_int) -> c_int {
+        use swoole_rs_reactor::event_api::{event_add, event_set};
+        let change = if add { event_add } else { event_set };
+        self.record()
+            .socket
+            .get()
+            .map_or(-1, |network| change(network, events))
+    }
+
+    /// `Reactor::interest(socket, kind, 0)` of the open socket on the thread's reactor,
+    /// registered as [`Co::register`] registers it: the change's result, 0 when nothing
+    /// changes, -1 without a socket or a reactor.
+    #[must_use]
+    pub fn interest(self, kind: swoole_rs_reactor::Interest) -> c_int {
+        let interest = swoole_rs_reactor::event_api::event_interest;
+        self.record()
+            .socket
+            .get()
+            .map_or(-1, |network| interest(network, kind, 0))
     }
 
     /// The record's metadata, `None` once released.
@@ -466,6 +539,11 @@ impl CoSocket {
         self.sock_fd.get() == -1
     }
 
+    /// The `network::Socket`'s address: null before the socket opens.
+    pub(crate) fn socket_ptr(&self) -> *mut SocketRecord {
+        self.socket.get().map_or(ptr::null_mut(), Socket::as_ptr)
+    }
+
     /// The handle of a record this module boxed, which the caller owns from here:
     /// [`swr_v1_hook_co_socket_free`] releases it.
     fn into_co(self: Box<Self>) -> Co {
@@ -483,14 +561,14 @@ impl CoSocket {
             http2: Cell::new(false),
             protocol: Cell::new(Protocol::EMPTY),
             kind: Cell::new(0),
-            socket: Cell::new(ptr::null_mut()),
+            socket: Cell::new(None),
             sock_domain: Cell::new(0),
             sock_type: Cell::new(0),
             sock_protocol: Cell::new(0),
             sock_fd: Cell::new(-1),
             connect_port: Cell::new(0),
             backlog: Cell::new(0),
-            buffer_allocator: Cell::new(ptr::null()),
+            buffer_allocator: Cell::new(None),
             buffer_init_size: Cell::new(BUFFER_SIZE_BIG),
             read_buffer: Cell::new(ptr::null_mut()),
             write_buffer: Cell::new(ptr::null_mut()),
@@ -524,7 +602,7 @@ impl CoSocket {
         owner: *mut c_void,
     ) -> Option<Socket<'static>> {
         let network = socket?.into_socket();
-        self.socket.set(network.as_ptr());
+        self.socket.set(Some(network));
         self.sock_fd.set(network.edit(|record| {
             record.object = owner;
             record.info.kind = self.kind.get();
@@ -601,10 +679,10 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     let co = unsafe { Co::new(socket) };
     // The callback runs before anything is freed.
     crate::socket_extra::run_close_hook(co);
-    for buffer in [co.read_buffer(), co.write_buffer()] {
-        if !buffer.is_null() {
-            // SAFETY: the socket's own `new String`, deleted once.
-            unsafe { delete_string(buffer.cast()) };
+    for write in [false, true] {
+        // `delete` of the socket's own `new String`.
+        if let Some(mut buffer) = co.take_buffer(write) {
+            buffer.dispose();
         }
     }
     co.with_network(|network| {
@@ -780,7 +858,7 @@ impl CoSocket {
             socket.sock_protocol.get(),
             OPEN_FLAGS,
         );
-        let old = socket.socket.get();
+        let old = socket.socket_ptr();
         // Upstream records the old type on the new socket before taking the new one.
         socket.attach(made, owner)?;
         socket.sock_domain.set(domain);
@@ -811,7 +889,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
     if let Some(timeouts) = timeouts {
         conn.timeouts = timeouts;
     }
-    socket.socket.set(Box::into_raw(conn));
+    socket.socket.set(Some(conn.into_socket()));
     socket.open_length_check.set(server.open_length_check());
     socket.open_eof_check.set(server.open_eof_check());
     socket.http2.set(server.http2());
@@ -887,7 +965,7 @@ mod test_support {
         )]
         pub unsafe fn record(&self) -> &mut SocketFields {
             // SAFETY: as the caller promises.
-            unsafe { &mut (*self.socket.get()).fields }
+            unsafe { &mut (*self.socket_ptr()).fields }
         }
     }
 
@@ -905,9 +983,9 @@ mod test_support {
             let mut storage = Box::new(core::mem::MaybeUninit::<CoSocket>::uninit());
             unsafe { init(storage.as_mut_ptr()) };
             let socket = unsafe { Box::from_raw(Box::into_raw(storage).cast::<CoSocket>()) };
-            socket
-                .socket
-                .set(SocketRecord::with_fd(-1, FD_CO_SOCKET).into_raw());
+            socket.socket.set(Some(
+                Box::new(SocketRecord::with_fd(-1, FD_CO_SOCKET)).into_socket(),
+            ));
             socket.sock_fd.set(100);
             Self(socket)
         }
@@ -933,10 +1011,10 @@ mod test_support {
             unsafe {
                 for buffer in [self.0.read_buffer.get(), self.0.write_buffer.get()] {
                     if !buffer.is_null() {
-                        delete_string(buffer.cast());
+                        swoole_rs_buffer::string::delete_string(buffer.cast());
                     }
                 }
-                SocketRecord::free(self.0.socket.get());
+                SocketRecord::free(self.0.socket_ptr());
                 self.0.fini();
             }
         }
@@ -961,10 +1039,10 @@ mod tests {
         reason = "the records live in boxes so their addresses stay put"
     )]
     fn release(mut socket: Box<CoSocket>) {
-        if !socket.socket.get().is_null() {
+        if !socket.socket_ptr().is_null() {
             unsafe {
-                libc::close((*socket.socket.get()).fields.fd);
-                SocketRecord::free(socket.socket.get());
+                libc::close((*socket.socket_ptr()).fields.fd);
+                SocketRecord::free(socket.socket_ptr());
             }
         }
         socket.fini();
@@ -1040,7 +1118,7 @@ mod tests {
             (libc::AF_INET, libc::SOCK_STREAM)
         );
         let fd = socket.sock_fd.get();
-        let record = unsafe { &*socket.socket.get() };
+        let record = unsafe { &*socket.socket_ptr() };
         assert_eq!(
             (
                 record.fd,
@@ -1082,7 +1160,7 @@ mod tests {
             OPENED
         );
         assert_eq!(socket.kind.get(), 2);
-        assert_eq!(unsafe { (*socket.socket.get()).fields.socket_type }, 2);
+        assert_eq!(unsafe { (*socket.socket_ptr()).fields.socket_type }, 2);
         release(socket);
     }
 
@@ -1094,7 +1172,7 @@ mod tests {
     fn an_unknown_type_fails_to_open() {
         let mut socket = record();
         assert_eq!(new(&mut socket, New::ByType, 0, 99, 0, 0), 0);
-        assert!(socket.socket.get().is_null());
+        assert!(socket.socket_ptr().is_null());
         assert_eq!(socket.sock_fd.get(), -1);
         release(socket);
     }
@@ -1107,7 +1185,7 @@ mod tests {
         for how in [-1, 4] {
             let mut socket = record();
             assert_eq!(new_by_code(&mut socket, how, fd, 1, 0, 0), 0, "{how}");
-            assert!(socket.socket.get().is_null(), "{how}: no network socket");
+            assert!(socket.socket_ptr().is_null(), "{how}: no network socket");
             assert_eq!(socket.sock_fd.get(), -1, "{how}: no fd");
             release(socket);
         }
@@ -1139,7 +1217,7 @@ mod tests {
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0
         );
-        assert_eq!(unsafe { (*socket.socket.get()).fields.fd_type }, 6);
+        assert_eq!(unsafe { (*socket.socket_ptr()).fields.fd_type }, 6);
         release(socket);
 
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
@@ -1167,14 +1245,14 @@ mod tests {
     fn reinit_swaps_the_socket_and_hands_back_the_old_one() {
         let mut socket = record();
         new(&mut socket, New::ByType, 0, 1, 0, 0);
-        let first = socket.socket.get();
+        let first = socket.socket_ptr();
         let old = reinit(unsafe { Co::new(&raw mut *socket) }, 3).unwrap();
         assert_eq!(old, first);
         assert_eq!(
             (socket.kind.get(), socket.sock_domain.get()),
             (3, libc::AF_INET6)
         );
-        assert_eq!(unsafe { (*socket.socket.get()).fields.info.kind }, 1);
+        assert_eq!(unsafe { (*socket.socket_ptr()).fields.info.kind }, 1);
         unsafe {
             libc::close((*old).fields.fd);
             SocketRecord::free(old);
@@ -1190,12 +1268,12 @@ mod tests {
         server.http2.set(true);
         server.ssl_is_server.set(true);
         server.protocol.get_mut().package_eof_len = 2;
-        unsafe { (*server.socket.get()).fields.timeouts.read = 1.5 };
+        unsafe { (*server.socket_ptr()).fields.timeouts.read = 1.5 };
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         let conn = Box::new(SocketRecord::with_fd(fd, 0));
         let socket = accepted(unsafe { Co::new(&raw mut *server) }, conn);
         let socket = unsafe { Box::from_raw(socket.raw()) };
-        let conn = socket.socket.get();
+        let conn = socket.socket_ptr();
         assert_eq!(
             unsafe { (*conn).fields.object },
             (&raw const *socket).cast_mut().cast()

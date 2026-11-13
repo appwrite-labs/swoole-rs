@@ -1,8 +1,9 @@
-/* Stays C (docs/zend.md, What stays C): globals (EG(zend_constants)), allocator (the persistent strings Zend makes of names and
+/* Stays C (docs/zend.md, What stays C): globals (EG(zend_constants), the php.ini configuration), allocator (the persistent strings Zend makes of names and
  * values) and private (zend_add_parameter_attribute is a static inline). */
 #include "shim_minit.h"
 #include "zend_attributes.h"
 #include "zend_constants.h"
+#include "php_ini.h"
 
 /* zend_register_*_constant: a name that is defined already is refused with Zend's
  * warning, which at MINIT reaches no PHP error handler. */
@@ -61,4 +62,9 @@ bool swr_zend_minit_sensitive_parameter(zend_class_entry *ce, const char *lcname
     }
     zend_add_parameter_attribute(method, offset, ZSTR_KNOWN(ZEND_STR_SENSITIVEPARAMETER), 0);
     return true;
+}
+
+const char *swr_zend_minit_ini_string(const char *name) {
+    zval *value = cfg_get_entry(name, strlen(name));
+    return value && Z_TYPE_P(value) == IS_STRING ? Z_STRVAL_P(value) : NULL;
 }

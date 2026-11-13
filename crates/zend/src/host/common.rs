@@ -5,9 +5,16 @@ use crate::{
     sys::{self, zend_string},
 };
 use std::{
+    io::IoSlice,
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
+
+unsafe extern "C" {
+    /// `zend_string_init(bytes, len, 1)`: it reads the lent bytes (an `IoSlice` is
+    /// an iovec) and returns a new persistent string; out of memory, Zend exits.
+    safe fn swr_bytes_persistent(bytes: IoSlice<'_>) -> *mut zend_string;
+}
 
 /// Zend's interned known strings, in `SW_ZEND_STR_*` order: null until
 /// MINIT fills it, and again after MSHUTDOWN. C++ reads it as a
@@ -34,9 +41,9 @@ pub fn known_init() {
     // `AtomicPtr` has a pointer's layout, so C++ reads the slots as pointers.
     sw_zend_known_strings.store(TABLE.as_ptr().cast_mut().cast(), Relaxed);
     for (slot, bytes) in TABLE.iter().zip(super::known_strings::STRINGS) {
-        // SAFETY: frozen bytes include their NUL, which is not counted in the string length.
-        let string =
-            unsafe { sys::swr_zend_string_persistent(bytes.as_ptr().cast(), bytes.len() - 1) };
+        // Frozen bytes include their NUL, which is not counted in the string length.
+        let text = bytes.split_last().map_or(&[][..], |(_, text)| text);
+        let string = swr_bytes_persistent(IoSlice::new(text));
         let mut interned = ptr::null_mut();
         // SAFETY: the intern operation takes the newly allocated persistent string.
         if failed(unsafe { sys::swr_zend_try_facade_intern(string, &raw mut interned) }) {

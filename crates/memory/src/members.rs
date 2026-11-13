@@ -422,10 +422,10 @@ pub mod pool {
     /// Without futex, waiters register in a Rust registry in shared memory, from the
     /// pool `swoole_init` just made: a fatal error when it can't be had.
     pub fn wait_registry_init() {
-        let size = u32::try_from(swoole_rs_utilities::swr_v1_utils_wait_registry_size());
-        let registry = alloc(size.unwrap_or(u32::MAX));
-        // SAFETY: null or that many shared bytes, for the program's life.
-        if !unsafe { swoole_rs_utilities::swr_v1_utils_wait_registry_init(registry) } {
+        let count = swoole_rs_utilities::swr_v1_utils_wait_registry_size().div_ceil(8);
+        let adopted = words::<AtomicU64>(count)
+            .is_some_and(swoole_rs_utilities::swr_v1_utils_wait_registry_init);
+        if !adopted {
             let message = c"failed to allocate atomic wait registry";
             // SAFETY: `swoole_init`'s hook exits; no frame here owns anything.
             unsafe { swoole_rs_corebase::fatal_error(super::MALLOC_FAIL, message) };

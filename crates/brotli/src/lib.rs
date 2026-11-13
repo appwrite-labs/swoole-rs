@@ -11,8 +11,10 @@
     )
 )]
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
+use std::marker::PhantomData;
 use std::ptr::{NonNull, null_mut};
+use swoole_rs_corebase::sys::Text;
 
 /// `BROTLI_MIN_QUALITY`, `BROTLI_MAX_QUALITY`.
 pub const MIN_QUALITY: i32 = 0;
@@ -30,8 +32,31 @@ const BUFFER: usize = 16384;
 
 /// The opaque `BrotliDecoderState`.
 type State = c_void;
-type Alloc = unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void;
-type Free = unsafe extern "C" fn(*mut c_void, *mut c_void);
+/// A decoder state `BrotliDecoderCreateInstance` made, live until the unsafe
+/// `BrotliDecoderDestroyInstance` of it, whose caller drops the owner unused. It is
+/// not `Send`, as the pointer it replaced was not.
+#[repr(transparent)]
+struct Owned(NonNull<State>);
+
+impl Owned {
+    /// The state, for the calls that stay unsafe.
+    const fn as_ptr(&self) -> *mut State {
+        self.0.as_ptr()
+    }
+
+    /// The state while its owner is borrowed, for the safe calls.
+    const fn live(&self) -> Live<'_> {
+        Live(self.0, PhantomData)
+    }
+}
+
+/// An [`Owned`] state, borrowed: what a safe libbrotli call takes.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Live<'a>(NonNull<State>, PhantomData<&'a Owned>);
+/// Where libbrotli takes a custom allocator's `alloc`, `free` or `opaque`: always
+/// null here (nothing makes the reference), which selects malloc and free.
+type DefaultAllocator = Option<&'static std::convert::Infallible>;
 
 unsafe extern "C" {
     safe fn BrotliEncoderVersion() -> u32;
@@ -46,11 +71,13 @@ unsafe extern "C" {
         encoded_size: *mut usize,
         encoded_buffer: *mut u8,
     ) -> c_int;
-    fn BrotliDecoderCreateInstance(
-        alloc: Option<Alloc>,
-        free: Option<Free>,
-        opaque: *mut c_void,
-    ) -> *mut State;
+    /// A new decoder state on malloc, or none. Its caller owns it until the unsafe
+    /// `BrotliDecoderDestroyInstance`.
+    safe fn BrotliDecoderCreateInstance(
+        alloc: DefaultAllocator,
+        free: DefaultAllocator,
+        opaque: DefaultAllocator,
+    ) -> Option<Owned>;
     fn BrotliDecoderDestroyInstance(state: *mut State);
     fn BrotliDecoderDecompressStream(
         state: *mut State,
@@ -60,8 +87,10 @@ unsafe extern "C" {
         next_out: *mut *mut u8,
         total_out: *mut usize,
     ) -> c_int;
-    fn BrotliDecoderGetErrorCode(state: *const State) -> c_int;
-    safe fn BrotliDecoderErrorString(code: c_int) -> *const c_char;
+    /// The live state's last error: it reads the state and nothing else.
+    safe fn BrotliDecoderGetErrorCode(state: Live<'_>) -> c_int;
+    /// The code's name: a static string for every code, `INVALID` for an unknown one.
+    safe fn BrotliDecoderErrorString(code: c_int) -> Text<'static>;
 }
 
 /// MINFO's `brotli` row: `E<BrotliEncoderVersion>/D<BrotliDecoderVersion>`.
@@ -96,7 +125,7 @@ pub fn compress(input: &[u8], quality: i32) -> Option<Vec<u8>> {
 
 /// A response's Brotli decoder. `out` holds the bytes the last chunk produced.
 pub struct Decoder {
-    state: NonNull<State>,
+    state: Owned,
     out: Vec<u8>,
 }
 
@@ -105,9 +134,8 @@ impl Decoder {
     /// # Errors
     /// Upstream's warning when libbrotli can't allocate one.
     pub fn new() -> Result<Self, String> {
-        // SAFETY: null allocators select malloc and free; nothing else is read.
-        let state = unsafe { BrotliDecoderCreateInstance(None, None, null_mut()) };
-        let state = NonNull::new(state).ok_or("BrotliDecoderCreateInstance() failed")?;
+        let state = BrotliDecoderCreateInstance(None, None, None)
+            .ok_or("BrotliDecoderCreateInstance() failed")?;
         Ok(Self {
             state,
             out: Vec::new(),
@@ -152,10 +180,8 @@ impl Decoder {
 
     /// `BrotliDecoderDecompressStream() failed, <BrotliDecoderErrorString>`.
     fn error(&self) -> String {
-        // SAFETY: the decoder's live state.
-        let code = unsafe { BrotliDecoderGetErrorCode(self.state.as_ptr()) };
-        // SAFETY: libbrotli's error strings are static and NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(BrotliDecoderErrorString(code)) };
+        let code = BrotliDecoderGetErrorCode(self.state.live());
+        let reason = BrotliDecoderErrorString(code).get();
         format!(
             "BrotliDecoderDecompressStream() failed, {}",
             reason.to_string_lossy()

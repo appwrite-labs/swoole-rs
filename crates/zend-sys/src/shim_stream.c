@@ -32,16 +32,23 @@ int swr_zend_stream_progress(php_stream *stream, size_t bytes) {
     return bailed;
 }
 
-zval *swr_zend_stream_option(php_stream *stream, const char *wrapper, const char *name) {
+zval *swr_zend_stream_option(const php_stream *stream, const char *wrapper, const char *name) {
     php_stream_context *context = PHP_STREAM_CONTEXT(stream);
-    return context ? php_stream_context_get_option(context, wrapper, name) : NULL;
+    if (!context || Z_TYPE(context->options) != IS_ARRAY) {
+        return NULL;
+    }
+    zval *options = zend_hash_str_find(Z_ARRVAL(context->options), wrapper, strlen(wrapper));
+    if (!options || Z_TYPE_P(options) != IS_ARRAY) {
+        return NULL;
+    }
+    return zend_hash_str_find(Z_ARRVAL_P(options), name, strlen(name));
 }
 
 void swr_zend_stream_set_option(php_stream *stream, const char *wrapper, const char *name, zval *value) {
     php_stream_context_set_option(PHP_STREAM_CONTEXT(stream), wrapper, name, value);
 }
 
-php_stream_context *swr_zend_stream_context(php_stream *stream) {
+php_stream_context *swr_zend_stream_context(const php_stream *stream) {
     return PHP_STREAM_CONTEXT(stream);
 }
 
@@ -78,6 +85,12 @@ php_stream *swr_zend_stream_from_zval(zval *value) {
     php_stream *stream;
     php_stream_from_zval_no_verify(stream, value);
     return stream;
+}
+
+bool swr_zend_stream_zval_buffered(zval *value) {
+    php_stream *stream;
+    php_stream_from_zval_no_verify(stream, value);
+    return stream && stream->writepos > stream->readpos;
 }
 
 zend_long swr_zend_stream_default_timeout(void) {

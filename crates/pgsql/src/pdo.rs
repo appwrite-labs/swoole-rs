@@ -52,13 +52,8 @@ impl Dbh {
 /// shut down so the rest of the reply is never read as another's, and the
 /// persistent pool lets go of the handle; PDO's own owners keep it until
 /// their destructors `PQfinish` it.
-/// # Safety
-/// `message` is writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
-    dbh: Dbh,
-    message: *mut *const c_char,
-) -> bool {
+pub extern "C" fn php_swoole_pgsql_handle_io_error(dbh: Dbh, message: &mut *const c_char) -> bool {
     let conn = dbh.server();
     let Some((code, first)) = take_io_error(conn) else {
         return false;
@@ -72,8 +67,7 @@ pub unsafe extern "C" fn php_swoole_pgsql_handle_io_error(
         // SAFETY: a live `pdo_dbh_t`.
         unsafe { swr_zend_pdo_forget_persistent(dbh.0) };
     }
-    // SAFETY: per the caller.
-    unsafe { *message = swoole_rs_error_ffi::swoole_strerror(code) };
+    *message = swoole_rs_error_ffi::swoole_strerror(code);
     true
 }
 

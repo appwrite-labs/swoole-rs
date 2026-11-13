@@ -4,12 +4,12 @@
 //! thread's timer (crates/timer) and coroutine scheduler (crates/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The tests swap in a fake with the same functions.
-use crate::{EXEC_NEEDS_COROUTINE, Multi, swr_v1_curl_get_handle};
+use crate::{EXEC_NEEDS_COROUTINE, Easy, Multi};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::ptr;
 use swoole_rs_coroutine::{Coroutine, RC_CANCELED};
-use swoole_rs_curl_sys::{CURL, CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
+use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
@@ -225,13 +225,11 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
 
 /// `swoole_curl_easy_perform`: `curl_easy_perform` in the handle's own multi.
 /// # Safety
-/// `cp` is a live easy handle with a Swoole handle.
+/// `cp` has a Swoole handle, which nothing else uses meanwhile.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_perform(cp: *mut CURL) -> CURLcode {
-    // SAFETY: per the caller.
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy) -> CURLcode {
     // SAFETY: per the caller, the easy handle's live Swoole handle.
-    let handle = unsafe { &mut *handle };
+    let handle = unsafe { &mut *cp.handle() };
     if handle.easy_multi.is_null() {
         handle.easy_multi = Multi::create();
     }

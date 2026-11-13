@@ -1,6 +1,6 @@
 /* Stays C (docs/zend.md, What stays C): globals (PG, SG and EG of a ZTS request),
  * version (ZTS-only TSRM calls, refresh_memory_manager), bailout (a thread's
- * request, stream casts), allocator and budget (hash iteration, numeric strings). */
+ * request, stream casts), allocator and budget (hash iteration). */
 #include "shim.h"
 #include "shim_thread.h"
 #include "SAPI.h"
@@ -44,10 +44,6 @@ zend_long swr_zend_dval_to_lval_safe(double value) {
 
 zend_long swr_zend_resource_handle(const zval *value) {
     return Z_TYPE_P(value) == IS_RESOURCE ? Z_RES_HANDLE_P(value) : 0;
-}
-
-uint8_t swr_zend_is_numeric_string(const char *text, size_t length, zend_long *lval, double *dval) {
-    return is_numeric_string(text, length, lval, dval, false);
 }
 
 int swr_zend_smart_strcmp(zend_string *a, zend_string *b) {

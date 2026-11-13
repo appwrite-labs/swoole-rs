@@ -177,7 +177,7 @@ fn start(call: &Call) {
     while let Some(task) = next() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
-            if runtime::create(fcc, argc, argv, name).is_err() {
+            if runtime::create(call.php(), fcc, argc, argv, name).is_err() {
                 runtime::raise();
                 return;
             }

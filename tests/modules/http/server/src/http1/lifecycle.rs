@@ -1410,8 +1410,7 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
         "get_primary_port()->get_connection_num() == 1",
     );
 
-    // SAFETY: the base server's message bus.
-    let packet = unsafe { swoole_rs_server::bus_move_packet(serv.view().message_bus()) };
+    let packet = serv.view().move_worker_packet();
     expect(
         packet.is_null(),
         "get_worker_message_bus()->move_packet() == nullptr",

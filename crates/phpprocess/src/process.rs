@@ -21,12 +21,26 @@ use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, bailout, handlers,
     message,
     string::ZBuf,
-    sys::{
-        _zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_get_executed_filename,
-        zend_string,
-    },
+    sys::{_zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
 };
 use swoole_rs_zend::{method_table, sys as z};
+
+/// What a method asks of the executor with only its call in hand: the function
+/// takes a [`Php`](swoole_rs_zend::Php), so only a thread that runs PHP reaches
+/// the shim, whose declaration stays private to this module.
+mod leased {
+    unsafe extern "C" {
+        /// `ftok(zend_get_executed_filename(), 1)`: it reads this thread's
+        /// executor for the file whose code runs and stats that file. Runs no
+        /// PHP code.
+        safe fn swr_zend_process_ftok() -> libc::key_t;
+    }
+
+    /// The System V key of the file whose code is running; -1 for none.
+    pub(super) fn executed_file_key(_php: swoole_rs_zend::Php<'_>) -> libc::key_t {
+        swr_zend_process_ftok()
+    }
+}
 
 /// `Swoole\Process::IPC_NOWAIT` (`MSGQUEUE_NOWAIT`).
 const IPC_NOWAIT: i64 = 1 << 8;
@@ -464,10 +478,7 @@ fn use_queue(call: &Call) {
         return;
     }
     if key <= 0 {
-        // SAFETY: Zend's current file name, NUL-terminated, or null.
-        let file = unsafe { zend_get_executed_filename() };
-        // SAFETY: ftok reads the path.
-        key = i64::from(unsafe { libc::ftok(file, 1) });
+        key = i64::from(leased::executed_file_key(call.php()));
     }
     let blocking = mode & IPC_NOWAIT == 0;
     if !blocking {

@@ -60,6 +60,7 @@ mod classes;
 pub use classes::*;
 mod context;
 mod host;
+mod leased;
 pub use host::{Coroutine, Waiter, counts, in_coroutine, sleep, suspend, suspend_for};
 mod methods;
 pub use methods::*;

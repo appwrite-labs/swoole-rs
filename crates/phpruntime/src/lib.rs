@@ -39,7 +39,7 @@ pub use stream::*;
 use swoole_rs_corebase::CCast;
 
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_void},
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::{Switch, built_with};
@@ -49,8 +49,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_runtime_find_class, swr_zend_stream_factory, swr_zend_stream_factory_set,
-        zend_class_entry, zend_register_class_alias_ex, zif_handler,
+        swr_zend_runtime_find_class, swr_zend_stream_factory, zend_class_entry,
+        zend_register_class_alias_ex, zif_handler,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -155,13 +155,49 @@ fn factory() -> *mut c_void {
     swr_zend_stream_factory as *mut c_void
 }
 
-unsafe extern "C" {
-    /// `thirdparty/php/standard/proc_open.cc`.
-    fn swoole_proc_open_init(module_number: i32);
-    /// `thirdparty/php/streams/plain_wrapper.c`'s copy of PHP's plain-files
-    /// wrapper (a `php_stream_wrapper`, which only its address matters here).
-    static mut sw_php_plain_files_wrapper: u8;
-    fn php_register_url_stream_wrapper(protocol: *const c_char, wrapper: *mut c_void) -> c_int;
+/// MINIT's process-wide registrations, each taking the [`Minit`] that proves Zend
+/// runs this module's MINIT on this thread, before any PHP thread starts. The
+/// declarations are private to this module, so only these calls reach them.
+mod registration {
+    use std::ffi::c_int;
+    use swoole_rs_corebase::sys::Text;
+    use swoole_rs_zend::{Minit, sys::swr_zend_stream_factory_body};
+
+    /// A `php_stream_wrapper`, which is only passed on by address.
+    #[repr(C)]
+    pub(super) struct Wrapper([u8; 0]);
+
+    unsafe extern "C" {
+        /// `thirdparty/php/streams/plain_wrapper.c`'s copy of PHP's plain-files
+        /// wrapper, which nothing writes.
+        safe static sw_php_plain_files_wrapper: Wrapper;
+        /// `thirdparty/php/standard/proc_open.cc`: `proc_open`'s resource type,
+        /// a list destructor registered under the module's number.
+        safe fn swoole_proc_open_init(module_number: c_int);
+        /// PHP's table of URL wrappers keeps `wrapper` under a copy of
+        /// `protocol`; a malformed or taken name is refused (`FAILURE`).
+        safe fn php_register_url_stream_wrapper(
+            protocol: Text<'_>,
+            wrapper: &'static Wrapper,
+        ) -> c_int;
+        /// zend-sys's coroutine transport factory runs `body` from now on.
+        safe fn swr_zend_stream_factory_set(body: swr_zend_stream_factory_body);
+    }
+
+    /// The coroutine transport factory's body, [`crate::stream::transport_factory_body`].
+    pub(super) fn transport_factory(_minit: &Minit) {
+        swr_zend_stream_factory_set(Some(crate::stream::transport_factory_body));
+    }
+
+    /// `proc_open`'s resource type.
+    pub(super) fn proc_open(minit: &Minit) {
+        swoole_proc_open_init(minit.module());
+    }
+
+    /// The `async.file` wrapper, PHP's plain files through Swoole's copy.
+    pub(super) fn async_file(_minit: &Minit) {
+        php_register_url_stream_wrapper(c"async.file".into(), &sw_php_plain_files_wrapper);
+    }
 }
 
 #[cfg(feature = "curl")]
@@ -175,7 +211,6 @@ unsafe extern "C" {
 /// `SWOOLE_HOOK_*` constants, native curl, `proc_open`'s resource and the
 /// `async.file` wrapper.
 pub fn php_swoole_runtime_minit(minit: &Minit) {
-    let module_number = minit.module();
     minit.register_static(&RUNTIME, c"Swoole\\Runtime", &METHODS.0);
     let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
@@ -185,23 +220,15 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
         }
         minit.long_constant(name, i64::from(value));
     }
-    // SAFETY: MINIT, before any PHP thread starts.
-    unsafe { swr_zend_stream_factory_set(Some(stream::transport_factory_body)) };
+    registration::transport_factory(minit);
     transport::register_async(factory());
     #[cfg(feature = "curl")]
     // SAFETY: MINIT, with the module's number.
     unsafe {
-        swoole_native_curl_minit(module_number);
+        swoole_native_curl_minit(minit.module());
     }
-    // SAFETY: as above.
-    unsafe { swoole_proc_open_init(module_number) };
-    // SAFETY: MINIT; PHP keeps the static wrapper.
-    unsafe {
-        php_register_url_stream_wrapper(
-            c"async.file".as_ptr(),
-            (&raw mut sw_php_plain_files_wrapper).cast(),
-        )
-    };
+    registration::proc_open(minit);
+    registration::async_file(minit);
 }
 
 /// `php_swoole_runtime_mshutdown`: native curl's.

@@ -357,7 +357,7 @@ pub(crate) mod tests {
         p.package_length_size = 4;
         p.package_length_offset = 2;
         p.package_max_length = max_length;
-        unsafe { (*socket.0.socket.get()).fields.timeouts.read = -1.0 };
+        unsafe { (*socket.0.socket_ptr()).fields.timeouts.read = -1.0 };
         socket
     }
 

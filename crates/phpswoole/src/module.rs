@@ -201,10 +201,10 @@ pub struct Families {
     pub tracer_rshutdown: Hook,
     /// `php_swoole_thread_bailout()`: the bailout that ends this PHP thread.
     pub thread_bailout: extern "C" fn(),
-    /// `sw_php_print_backtrace(cid)`.
+    /// `sw_php_print_backtrace(cid)`, on the PHP thread.
     /// # Errors
     /// Its output bailed out.
-    pub print_backtrace: fn(c_long) -> Result<(), Bailout>,
+    pub print_backtrace: fn(swoole_rs_zend::Php<'_>, c_long) -> Result<(), Bailout>,
     /// `PHPCoroutine::get_hook_flags()` and `set_hook_flags(flags)` (which
     /// records them in the coroutine options too), for `Swoole\Runtime`.
     pub hook_flags: fn() -> u32,

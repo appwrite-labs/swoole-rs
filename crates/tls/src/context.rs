@@ -5,15 +5,14 @@
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
-    BIO, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE,
-    SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
-    SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, SSL_CTX, SSL_CTX_free, SSL_CTX_set_alpn_protos,
-    SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM,
-    SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE,
-    SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3,
-    SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3,
-    SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE,
-    SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_select_next_proto, X509_STORE_CTX,
+    EVP_MD, EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
+    SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
+    SSL_CTX, SSL_CTX_free, SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust,
+    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
+    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
+    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
+    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -32,7 +31,6 @@ use swoole_rs_corebase::sys::ReadSlot;
 // building crates/clients' parsers against OpenSSL 1.1, lacks.
 unsafe extern "C" {
     fn SSL_CTX_set0_tmp_dh_pkey(ctx: *mut SSL_CTX, key: *mut EVP_PKEY) -> c_int;
-    fn PEM_read_bio_Parameters(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
     fn ERR_print_errors_cb(
         callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
         user: *mut c_void,
@@ -67,6 +65,14 @@ unsafe extern "C" {
     safe fn SSL_CTX_use_PrivateKey_file(ctx: &SslCtx, file: CText<'_>, kind: c_int) -> c_int;
     safe fn SSL_load_client_CA_file(file: CText<'_>) -> Option<ClientCaNames>;
     safe fn SSL_CTX_set_client_CA_list(ctx: &SslCtx, names: ClientCaNames);
+    // Reads the BIO for new parameters, its one reference the caller's, or null; it
+    // reuses no key, since this side has no slot to pass.
+    safe fn PEM_read_bio_Parameters(bio: Bio<'_>, reuse: Option<&mut KeySlot>) -> Option<DhParams>;
+    // Drops the caller's reference, which the value was.
+    safe fn EVP_PKEY_free(key: DhParams);
+    // Copies `length` bytes of the id, or fails for more than `SSL_MAX_SID_CTX_LENGTH`,
+    // the array's 32.
+    safe fn SSL_CTX_set_session_id_context(ctx: &SslCtx, id: &[u8; 32], length: c_uint) -> c_int;
 
     safe fn TLS_method() -> &'static SslMethod;
     safe fn DTLS_method() -> &'static SslMethod;
@@ -116,6 +122,21 @@ struct SslMethod {
 /// until a context takes it.
 #[repr(transparent)]
 struct ClientCaNames(ptr::NonNull<c_void>);
+
+/// DH parameters this side owns, as `PEM_read_bio_Parameters` returns them, until a
+/// context takes them or `EVP_PKEY_free` frees them.
+#[repr(transparent)]
+struct DhParams(ptr::NonNull<EVP_PKEY>);
+
+/// An `EVP_PKEY *` for `PEM_read_bio_Parameters` to reuse, which this side never makes.
+#[repr(C)]
+struct KeySlot {
+    _opaque: [u8; 0],
+}
+
+/// The session id context of an HTTP server's sessions: its first four bytes.
+static SESSION_ID_CONTEXT: [u8; 32] =
+    *b"HTTP\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 /// A live `SSL_CTX`, borrowed from an [`SslContext`]. It is zero-sized, so a
 /// reference to it claims none of the bytes OpenSSL changes behind it.
@@ -481,17 +502,15 @@ impl Method<'_> {
             self.ssl_error(&quoted(b"BIO_new_file(", file, b") failed"));
             return false;
         };
-        // SAFETY: a live file BIO, and no key to reuse.
-        let key = unsafe { PEM_read_bio_Parameters(bio.bio().as_ptr(), ptr::null_mut()) };
-        if key.is_null() {
+        let Some(key) = PEM_read_bio_Parameters(bio.bio(), None) else {
             self.ssl_error(&quoted(b"PEM_read_bio_Parameters('", file, b"') failed"));
             return false;
-        }
-        // SAFETY: a live context takes the key on success.
-        if unsafe { SSL_CTX_set0_tmp_dh_pkey(self.ctx.as_ptr(), key) } != 1 {
+        };
+        // SAFETY: a live context, which takes the key's reference on success: it is
+        // freed below only when refused.
+        if unsafe { SSL_CTX_set0_tmp_dh_pkey(self.ctx.as_ptr(), key.0.as_ptr()) } != 1 {
             self.ssl_error(&quoted(b"SSL_CTX_set0_tmp_dh_pkey('", file, b"') failed"));
-            // SAFETY: the key the context refused.
-            unsafe { EVP_PKEY_free(key) };
+            EVP_PKEY_free(key);
             return false;
         }
         true
@@ -613,8 +632,7 @@ impl Method<'_> {
                     ptr::from_ref(protos).cast_mut().cast(),
                 );
             }
-            // SAFETY: a live context and a static id.
-            unsafe { SSL_CTX_set_session_id_context(raw, b"HTTP".as_ptr(), 4) };
+            SSL_CTX_set_session_id_context(ctx, &SESSION_ID_CONTEXT, 4);
             ctx.ctrl(Ctrl::SessionCacheMode, SSL_SESS_CACHE_SERVER);
         }
         if !config.client_cert_file.is_empty()

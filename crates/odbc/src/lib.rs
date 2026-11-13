@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
     RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
     SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo, SQLHANDLE, SQLHDBC, SQLHSTMT,
-    SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN, SQLRowCount,
-    SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN, SQLSMALLINT,
+    SQLULEN, SQLUSMALLINT,
 };
 
 /// A statement or connection handle the driver handed over: live, as ODBC's
@@ -38,9 +38,12 @@ pub struct Statement(SQLHSTMT);
 #[derive(Clone, Copy)]
 pub struct Connection(SQLHDBC);
 
-// ODBC's own declarations of two calls that take only a handle, typed as the
-// handle it is. Neither reads a bound buffer nor runs a callback.
+// ODBC's own declarations of the calls that take only a handle, typed as the
+// handle it is, and at most the one value they write. None reads a bound buffer
+// nor runs a callback.
 unsafe extern "C" {
+    #[link_name = "SQLRowCount"]
+    safe fn row_count(statement: Statement, row_count: &mut SQLLEN) -> SQLRETURN;
     #[link_name = "SQLCloseCursor"]
     safe fn close_cursor(statement: Statement) -> SQLRETURN;
     #[link_name = "SQLDisconnect"]
@@ -285,16 +288,11 @@ pub unsafe extern "C" fn swoole_odbc_SQLDescribeCol(
     })
 }
 
-/// `swoole_odbc_SQLRowCount`: called through.
-/// # Safety
-/// As `SQLRowCount`.
+/// `swoole_odbc_SQLRowCount`: called through. `SQLRowCount`'s whole contract is the
+/// live statement and the count's slot, which the types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLRowCount(
-    statement: SQLHSTMT,
-    row_count: *mut SQLLEN,
-) -> SQLRETURN {
-    // SAFETY: per the caller.
-    unsafe { SQLRowCount(statement, row_count) }
+pub extern "C" fn swoole_odbc_SQLRowCount(statement: Statement, count: &mut SQLLEN) -> SQLRETURN {
+    row_count(statement, count)
 }
 
 /// `swoole_odbc_SQLFreeHandle`: called through.

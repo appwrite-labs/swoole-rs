@@ -1,8 +1,8 @@
 //! MINIT and MSHUTDOWN for the bundled `pdo_oci` driver (upstream's
 //! `php_swoole_oracle_minit`): PDO's `OCI_ATTR_*` constants unless `pdo_oci`
 //! declared them, and the driver.
-use crate::{Handle, swoole_pdo_oci_Env};
-use std::{ffi::c_int, sync::atomic::Ordering};
+use crate::swoole_pdo_oci_Env;
+use std::{convert::Infallible, ffi::c_int, sync::atomic::Ordering};
 use swoole_rs_zend::{
     Minit, Mshutdown,
     pdo::{Driver, php_pdo_register_driver},
@@ -11,7 +11,9 @@ use swoole_rs_zend::{
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/pdo_oci/oci_driver.c`).
     safe static swoole_pdo_oci_driver: Driver;
-    fn OCIHandleFree(handle: Handle, kind: u32) -> c_int;
+    /// `OCIHandleFree` of no handle, the only one this passes it (nothing makes the
+    /// reference): OCI rejects a null handle without touching memory, whatever the kind.
+    safe fn OCIHandleFree(handle: Option<&'static Infallible>, kind: u32) -> c_int;
 }
 
 /// `PDO_ATTR_DRIVER_SPECIFIC`, where `php_pdo_oci_int.h`'s attributes start.
@@ -48,9 +50,7 @@ pub fn minit(minit: &Minit) {
 /// runs as upstream's condition has it, only while none was created.
 pub fn mshutdown(mshutdown: &Mshutdown) {
     mshutdown.pdo_unregister(&swoole_pdo_oci_driver);
-    let env = swoole_pdo_oci_Env.load(Ordering::Relaxed);
-    if env.is_null() {
-        // SAFETY: OCI rejects a null handle without touching memory.
-        unsafe { OCIHandleFree(env, OCI_HTYPE_ENV) };
+    if swoole_pdo_oci_Env.load(Ordering::Relaxed).is_null() {
+        OCIHandleFree(None, OCI_HTYPE_ENV);
     }
 }

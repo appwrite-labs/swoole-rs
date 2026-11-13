@@ -302,9 +302,16 @@ zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame) {
 }
 
 bool swr_zend_coroutine_called_by_destructor(void) {
-    zend_function *func = EG(current_execute_data)->prev_execute_data->func;
-    return func->common.function_name &&
+    const zend_execute_data *frame = EG(current_execute_data);
+    const zend_execute_data *caller = frame ? frame->prev_execute_data : NULL;
+    const zend_function *func = caller ? caller->func : NULL;
+    return func && func->common.function_name &&
            zend_string_equals_literal(func->common.function_name, "__destruct");
+}
+
+bool swr_zend_coroutine_library_loaded(void) {
+    zval *library = zend_get_constant_str(ZEND_STRL("SWOOLE_LIBRARY"));
+    return library && zend_is_true(library);
 }
 
 void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc) {

@@ -21,8 +21,7 @@ use swoole_rs_zend::{
         swr_zend_efree, swr_zend_separate_array, zend_class_entry, zend_internal_function,
         zend_long, zend_value, zif_handler, zval_ptr_dtor,
     },
-    throw_error, type_error,
-    value::{self, table},
+    throw_error, type_error, value,
 };
 
 /// `HASH_FLAG_TYPED_ARRAY`, a `HashTable` flag bit Zend leaves unused.
@@ -96,12 +95,9 @@ pub(crate) struct Typed<'a> {
 impl<'a> Typed<'a> {
     /// The typed array `value` holds, if it holds one (not dereferenced).
     pub(crate) fn of(value: &'a Value) -> Option<Self> {
-        if value.kind() != IS_ARRAY {
-            return None;
-        }
-        // SAFETY: a live array zval. The table pointer is read from it rather
-        // than borrowed, so it reaches the definition behind the table.
-        let ht = unsafe { table(value.as_ptr()) };
+        // The table pointer, not a borrow of the table, so it reaches the
+        // definition behind the table.
+        let ht = value.array_ptr()?;
         // SAFETY: the zval holds the table while borrowed.
         let flags = unsafe { flags_of(ht).read() };
         (flags & TYPED != 0).then_some(Self {
@@ -490,12 +486,14 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 /// room for it behind the table. The typed table `container` holds afterwards.
 /// # Safety
 /// `container` holds `source`, which nothing uses afterwards.
-pub(crate) unsafe fn separate<'a>(container: &'a Value, source: Typed<'a>) -> Typed<'a> {
-    let container = container.as_ptr();
+pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<'a> {
+    let container = value.as_ptr();
     // SAFETY: Zend separates this exact live array slot.
     unsafe { swr_zend_separate_array(container) };
-    // SAFETY: successful separation leaves the container holding an initialized array.
-    let ht = unsafe { table(container) };
+    // Separation leaves the container holding an array: `source`'s, or its copy.
+    let Some(ht) = value.array_ptr() else {
+        return source;
+    };
     if source.ht == ht {
         return source;
     }

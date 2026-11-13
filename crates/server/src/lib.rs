@@ -104,13 +104,4 @@ pub use tcp_info::tcp_fields;
 pub(crate) const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
 pub(crate) const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
 
-/// `message_bus->move_packet()`: the current packet's block, now the caller's.
-///
-/// # Safety
-/// `message_bus` is a live `MessageBus` that only this thread uses meanwhile.
-pub unsafe fn bus_move_packet(message_bus: *mut core::ffi::c_void) -> *mut core::ffi::c_char {
-    // SAFETY: as the caller guarantees; a `MessageBus` starts with its Rust bus.
-    let bus = unsafe { *message_bus.cast::<*mut swoole_rs_bus::MessageBus>() };
-    // SAFETY: that live bus, only this thread's meanwhile.
-    unsafe { &*bus }.move_packet()
-}
+pub use reactor_ops::{pool_bus_move_packet, pool_bus_set_allocator};

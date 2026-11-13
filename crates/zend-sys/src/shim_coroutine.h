@@ -110,8 +110,11 @@ int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *n
 /* EG(current_execute_data) = frame; returns the previous one. */
 zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame);
 /* Whether the function that called the running internal function is named
- * "__destruct" (go() during shutdown functions). */
+ * "__destruct" (go() during shutdown functions); false without a current
+ * frame, a caller's frame or a function in it. */
 bool swr_zend_coroutine_called_by_destructor(void);
+/* Whether the constant SWOOLE_LIBRARY is defined and true (zend_is_true). */
+bool swr_zend_coroutine_library_loaded(void);
 /* sw_zend_fci_cache_discard: release the bound object and closure that
  * swr_zend_callable_hold held. */
 void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc);

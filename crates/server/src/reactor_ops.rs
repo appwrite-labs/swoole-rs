@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{CoreAllocator, DataHead};
+use swoole_rs_corebase::{CoreAllocator, DataHead, TrustedAllocator};
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -110,15 +110,14 @@ pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
 };
 
 /// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
-/// come from. crates/process and crates/phpprocess read both through a pool's
-/// `message_bus`. Only the constructors here fill one, so its allocator is
-/// `SwooleG.std_allocator` or another record's, until `Server::set_bus_allocator`
-/// stores one a [`swoole_rs_corebase::TrustedAllocator`] vouched for.
+/// come from. Only the constructors here fill one, with `SwooleG.std_allocator` or
+/// another record's allocator, and only [`PoolBus::set_allocator`] replaces it, with
+/// one a [`TrustedAllocator`] vouched for.
 #[repr(C)]
 pub(crate) struct PoolBus {
     bus: Box<swoole_rs_bus::MessageBus>,
-    /// A cell: `Server::set_bus_allocator` replaces it in place.
-    allocator: Cell<&'static CoreAllocator>,
+    /// A cell: [`PoolBus::set_allocator`] replaces it in place.
+    allocator: Cell<TrustedAllocator>,
 }
 
 #[cfg_attr(
@@ -128,15 +127,55 @@ pub(crate) struct PoolBus {
 impl PoolBus {
     /// A record of `bus` over `SwooleG.std_allocator`.
     pub(crate) fn std(bus: Box<swoole_rs_bus::MessageBus>) -> Self {
+        // SAFETY: libc's `malloc`, `calloc`, `realloc` and `free`, which keep the
+        // allocator contract.
+        let std = unsafe { TrustedAllocator::new(&STD_ALLOCATOR) };
         Self {
             bus,
-            allocator: Cell::new(&STD_ALLOCATOR),
+            allocator: Cell::new(std),
         }
     }
 
-    /// The Rust bus and the allocator of its packets, as they are now.
-    pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, &'static CoreAllocator) {
+    /// The Rust bus and the allocator of its buffer and packets, as they are now.
+    pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, TrustedAllocator) {
         (&self.bus, self.allocator.get())
+    }
+
+    /// `set_allocator(allocator)`: the bus allocates its packets with `allocator`
+    /// from now on.
+    pub(crate) fn set_allocator(&self, allocator: TrustedAllocator) {
+        self.allocator.set(allocator);
+    }
+
+    /// The bus a pool's `create_message_bus` made, or `None` before it or after its
+    /// `destroy`.
+    pub(crate) fn of_pool(pool: swoole_rs_process::process_pool::PoolRef<'_>) -> Option<&Self> {
+        // SAFETY: crates/process keeps a pool's `message_bus` private: null, or what
+        // this crate's `PoolNative` answered `Op::NewMessageBus` with, a boxed record
+        // the pool keeps until `Op::FreeMessageBus` in its `destroy` frees it and the
+        // pool forgets it. The pool, and so its bus, belongs to the process or thread
+        // that runs its operations, as this call does.
+        unsafe { pool.message_bus().cast::<Self>().as_ref() }
+    }
+}
+
+/// `pool->message_bus->move_packet()`: the bus's current packet block, now the
+/// caller's; null for a pool without a bus or a packet.
+#[must_use]
+pub fn pool_bus_move_packet(
+    pool: swoole_rs_process::process_pool::PoolRef<'_>,
+) -> *mut core::ffi::c_char {
+    PoolBus::of_pool(pool).map_or(core::ptr::null_mut(), |bus| bus.bus.move_packet())
+}
+
+/// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its
+/// buffer and packets come from `allocator` from now on.
+pub fn pool_bus_set_allocator(
+    pool: swoole_rs_process::process_pool::PoolRef<'_>,
+    allocator: TrustedAllocator,
+) {
+    if let Some(bus) = PoolBus::of_pool(pool) {
+        bus.set_allocator(allocator);
     }
 }
 

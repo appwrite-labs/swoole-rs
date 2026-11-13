@@ -175,10 +175,11 @@ fn format_bytes(size: u64) -> String {
     format!("{adjusted:.2} {}", UNITS.get(unit).unwrap_or(&"YB"))
 }
 
-/// `zend_fetch_debug_backtrace(.., 0, options, 0)`.
-fn backtrace(options: i32) -> Owned {
+/// `zend_fetch_debug_backtrace(.., 0, options, limit)`: the frames from Zend's
+/// current one, as a new array.
+pub(crate) fn backtrace(options: i32, limit: i32) -> Owned {
     let trace = Owned::default();
-    zend_fetch_debug_backtrace(&trace, 0, options, 0);
+    zend_fetch_debug_backtrace(&trace, 0, options, limit);
     trace
 }
 
@@ -212,7 +213,7 @@ impl Leaks {
     /// `save_backtrace` of `at`, when `count` asked for it.
     fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
         if let Some(at) = at {
-            let trace = backtrace(BACKTRACE_IGNORE_ARGS);
+            let trace = backtrace(BACKTRACE_IGNORE_ARGS, 0);
             self.backtraces.insert(at, ManuallyDrop::new(trace));
         }
     }
@@ -614,7 +615,7 @@ fn blocking_end(func: Func<'_>) {
         return;
     }
     let duration = ZString::number_format(duration);
-    let trace_text = trace_to_string(&backtrace(0));
+    let trace_text = trace_to_string(&backtrace(0, 0));
     let mut message = format!(
         " >>> [Detected blocking I/O in Coroutine#{}, internal function `",
         runtime::get_cid()

@@ -1197,6 +1197,15 @@ mod tests {
         fn pipe_wait(&self, c: &mut PoolCall) {
             c.result = 0;
         }
+        fn bus_write(
+            &self,
+            _: crate::process_pool::PoolRef<'_>,
+            _: Record<'_>,
+            _: &mut swoole_rs_corebase::DataHead,
+            _: &[u8],
+        ) -> bool {
+            false
+        }
         fn bus_read(&self, c: &mut PoolCall) {
             let (result, error) = with(|s| s.bus.remove(0));
             c.result = result;

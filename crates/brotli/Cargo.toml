@@ -11,6 +11,10 @@ links = "brotli"
 name = "swoole_rs_brotli"
 crate-type = ["rlib"]
 
+[dependencies]
+# Its `Text`, a NUL-terminated string's type, for the decoder's error names.
+swoole-rs-corebase = { path = "../corebase" }
+
 [build-dependencies]
 pkg-config = "=0.3.34"
 

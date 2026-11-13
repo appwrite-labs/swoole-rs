@@ -347,15 +347,6 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> c_int {
 #[must_use]
 pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     use swoole_rs_corebase::DataHead;
-    // crates/bus' write; declared, since it depends on this crate.
-    unsafe extern "C" {
-        fn swr_v1_bus_write(
-            bus: *mut c_void,
-            socket: *mut c_void,
-            head: *mut DataHead,
-            data: *const std::ffi::c_char,
-        ) -> bool;
-    }
     let handle = pool;
     let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
@@ -378,10 +369,8 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         len: length.c_cast::<u32>(),
         ..DataHead::default()
     };
-    // SAFETY: `MessageBus` starts with its `swr_bus *`.
-    let bus = unsafe { *pool.message_bus.cast::<*mut c_void>() };
-    // SAFETY: the pool's bus, the worker's pipe and a header over the caller's bytes.
-    unsafe { swr_v1_bus_write(bus, pipe, &raw mut head, message.as_ptr().cast()) }
+    // The pool's bus (not null, checked above) and the worker's master pipe.
+    native().bus_write(handle, worker, &mut head, message)
 }
 
 /// `ProcessPool::pop_message(data, size)`: the next message in the master's box,

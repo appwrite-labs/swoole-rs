@@ -2,9 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_curl.cc (Swoole contributors).
 //! `swoole_curl_get_handle`: the bundled `ext/curl`'s `php_curl` behind a
 //! `CurlHandle` zval, checked against the coroutine its multi waits in.
-use crate::{host, swr_v1_curl_get_handle};
+use crate::{Easy, host};
 use swoole_rs_curl_sys::CURL;
-use swoole_rs_zend::{E_WARNING, bailout, object_of, sys::zval};
+use swoole_rs_zend::{E_WARNING, Value, bailout, sys::zval};
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
 const PHP_FATAL_ERROR: i32 = 503;
@@ -20,8 +20,10 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
     exclusive: bool,
     required: bool,
 ) -> *mut *mut CURL {
-    // SAFETY: per the caller.
-    let object = unsafe { object_of(zid) };
+    // SAFETY: per the caller, a live zval.
+    let Some(object) = unsafe { Value::from_ptr(zid) }.and_then(Value::object) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: a live object.
     let handlers = unsafe { (*object).handlers };
     // SAFETY: its live handlers; `offset` is where `std` sits in `php_curl`.
@@ -39,12 +41,10 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
     if !exclusive || shut_down || host::current().is_null() {
         return ch;
     }
-    // SAFETY: `ch` is the live `php_curl`, which starts with its easy handle.
-    let cp = unsafe { *ch };
-    // SAFETY: a live easy handle.
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    // SAFETY: `ch` is the live `php_curl`, which starts with its live easy handle.
+    let cp = unsafe { *ch.cast::<Easy>() };
     // SAFETY: null or the easy handle's live Swoole handle.
-    let Some(handle) = (unsafe { handle.as_ref() }) else {
+    let Some(handle) = (unsafe { cp.handle().as_ref() }) else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
             bailout::raise(swoole_rs_zend::report(

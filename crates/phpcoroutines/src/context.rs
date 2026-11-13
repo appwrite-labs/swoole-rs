@@ -9,12 +9,13 @@
 //! (`Co::cancel`, `Co::join`), so no reference to one lives across a switch.
 use crate::{host, methods::Join, runtime};
 use std::{
-    cell::UnsafeCell,
+    cell::{RefCell, UnsafeCell},
     ffi::{c_int, c_long, c_void},
     mem,
     ptr::{self, NonNull},
 };
 use swoole_rs_coroutine::State;
+use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
     IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
     swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
@@ -69,7 +70,8 @@ pub(crate) struct Context {
     pcid: c_long,
     /// `Coroutine\Context`, null until asked for, `INVALID` once destroyed.
     context: *mut zend_object,
-    timer_limit: *mut c_void,
+    /// Whether [`TIME_LIMITS`] holds a `Co::setTimeLimit` timer of this coroutine.
+    time_limited: bool,
     last_msec: c_long,
     /// The tracer's blocking detection counts this context's switches.
     watch_switches: bool,
@@ -89,7 +91,7 @@ impl Context {
         join: ptr::null_mut(),
         pcid: 0,
         context: ptr::null_mut(),
-        timer_limit: ptr::null_mut(),
+        time_limited: false,
         last_msec: 0,
         watch_switches: false,
         switch_count: 0,
@@ -138,7 +140,7 @@ fields! {
     join, set_join: *mut Join;
     pcid, set_pcid: c_long;
     context, set_context: *mut zend_object;
-    timer_limit, set_timer_limit: *mut c_void;
+    time_limited, set_time_limited: bool;
     last_msec, set_last_msec: c_long;
     watch_switches, set_watch_switches: bool;
     switch_count, set_switch_count: usize;
@@ -252,6 +254,24 @@ impl Ctx {
 
 per_thread! {
     static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
+    /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a list.
+    static TIME_LIMITS: RefCell<Vec<(c_long, Held)>> = RefCell::new(Vec::new());
+}
+
+/// Coroutine `cid`'s time-limit timer becomes `timer` (none: it fired, or the
+/// coroutine closes); the armed one it replaces, for the caller to delete.
+pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Option<Held> {
+    let limited = ctx.time_limited();
+    ctx.set_time_limited(timer.is_some());
+    TIME_LIMITS.with(|limits| {
+        let mut limits = limits.borrow_mut();
+        let old = limits
+            .iter()
+            .position(|&(owner, _)| limited && owner == cid)
+            .map(|at| limits.swap_remove(at).1);
+        limits.extend(timer.map(|timer| (cid, timer)));
+        old
+    })
 }
 
 /// The thread's main context, live as long as the thread.
@@ -496,11 +516,10 @@ pub(crate) fn close(ctx: Ctx) {
     unsafe { zval_ptr_dtor(ctx.return_value()) };
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
-    let timer = ctx.timer_limit();
-    ctx.set_timer_limit(ptr::null_mut());
-    if !timer.is_null() {
-        // SAFETY: the coroutine's armed timer.
-        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
+    if ctx.time_limited()
+        && let Some(timer) = swap_time_limit(ctx, host::cid(ctx.co()), None)
+    {
+        swoole_rs_timer::del_id(timer);
     }
     // SAFETY: the coroutine's own VM stack.
     unsafe { swr_zend_coroutine_vm_destroy() };
@@ -621,9 +640,7 @@ mod tests {
     fn a_new_context_has_no_pending_state() {
         let context = Context::EMPTY;
         assert_eq!(context.defer.len(), 0);
-        assert!(
-            context.join.is_null() && context.context.is_null() && context.timer_limit.is_null()
-        );
+        assert!(context.join.is_null() && context.context.is_null() && !context.time_limited);
         assert_eq!(unsafe { context.return_value.u1.type_info }, IS_UNDEF);
         assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());
     }

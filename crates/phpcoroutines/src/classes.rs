@@ -360,7 +360,8 @@ unsafe extern "C" fn autoload(
     // SAFETY: Zend marked the class as loading.
     unsafe { swr_zend_autoload_forget(lc_name) };
     // SAFETY: a live string.
-    let key = unsafe { swoole_rs_zend::string::bytes(lc_name) }.to_vec();
+    let key = unsafe { swoole_rs_zend::ZStr::from_ptr(lc_name) }
+        .map_or_else(Vec::new, |name| name.bytes().to_vec());
     let mut waiter = Waiter {
         co: current,
         ce: ptr::null_mut(),

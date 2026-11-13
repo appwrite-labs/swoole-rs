@@ -16,14 +16,7 @@ pub(crate) struct DgramPacket {
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_> {
-    let thread_mode = state.config_ref().mode_ == Mode::Thread;
-    let bus = if thread_mode {
-        swoole_rs_corebase::thread_message_bus()
-    } else {
-        state.tables_ref().message_bus
-    };
-    // SAFETY: the thread's or the server's live `MessageBus`.
-    unsafe { crate::objects::Bus::of(bus) }
+    crate::objects::Bus::over(state.worker_bus_record())
 }
 
 /// Base mode's message bus takes `send`, then `worker_accept_event` of it.
@@ -56,10 +49,7 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
     };
     let mut info = send.info;
     // SAFETY: a live pipe socket and the send it writes.
-    unsafe {
-        bus.rust()
-            .send(socket.as_ptr(), &mut info, send.data.cast())
-    }
+    unsafe { bus.rust().send_raw(socket, &mut info, send.data.cast()) }
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.

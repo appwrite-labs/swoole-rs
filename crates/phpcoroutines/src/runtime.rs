@@ -17,13 +17,12 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING,
+    E_ERROR, E_WARNING, Php,
     bailout::{self, Bailout},
     message,
     sys::{
         swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt_raise,
-        swr_zval_is_true, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
-        zend_get_constant_str, zval,
+        zend_atomic_bool, zend_execute_data, zend_fcall_info_cache, zval,
     },
 };
 
@@ -98,6 +97,7 @@ pub fn get_cid() -> c_long {
 /// errors and the coroutine's own bailouts longjmp across this frame, which
 /// owns nothing to drop.
 pub(crate) fn create(
+    php: Php<'_>,
     fcc: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
@@ -125,7 +125,7 @@ pub(crate) fn create(
         return Ok(ERR_INVALID);
     }
     if !activated() {
-        activate()?;
+        activate(php)?;
     }
     let mut args = Args {
         fcc,
@@ -140,11 +140,8 @@ pub(crate) fn create(
 }
 
 /// `PHPCoroutine::activate`.
-fn activate() -> Result<(), Bailout> {
-    // SAFETY: a NUL-free constant name.
-    let library = unsafe { zend_get_constant_str(c"SWOOLE_LIBRARY".as_ptr(), 14) };
-    // SAFETY: null or a live constant.
-    if library.is_null() || !unsafe { swr_zval_is_true(library) } {
+fn activate(php: Php<'_>) -> Result<(), Bailout> {
+    if !crate::leased::library_loaded(php) {
         swoole_rs_phpswoole::load_library()?;
     }
     host::check_reactor();
@@ -347,7 +344,8 @@ pub(crate) fn set_preemptive(enable: bool) {
 /// `PHPCoroutine::create`, the coroutine leaf the callers of
 /// `swoole_rs_zend::host::function_call` and the zend-sys shims pass (C ABI).
 /// # Safety
-/// As `zend_call_function`'s callable; `bailout` is writable.
+/// As `zend_call_function`'s callable, on the thread that runs PHP; `bailout`
+/// is writable.
 pub unsafe extern "C" fn create_coroutine(
     fcc: *mut zend_fcall_info_cache,
     argc: u32,
@@ -355,7 +353,9 @@ pub unsafe extern "C" fn create_coroutine(
     callable: *mut zval,
     bailout: *mut u8,
 ) -> c_long {
-    let created = create(fcc, argc, argv, callable);
+    // SAFETY: per the caller, for this call.
+    let php = unsafe { Php::assume() };
+    let created = create(php, fcc, argc, argv, callable);
     // SAFETY: per the caller.
     unsafe { bailout.write(u8::from(created.is_err())) };
     created.unwrap_or(ERR_INVALID)

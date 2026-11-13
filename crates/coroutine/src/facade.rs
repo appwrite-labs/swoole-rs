@@ -33,7 +33,7 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const CORO_TIME: u32 = 8;
 
 // crates/timer's, crates/hooks' and crates/reactor's upstream
-// functions; those marked safe take no pointers and have no preconditions.
+// functions; those marked safe have no preconditions.
 // Declarations, since each of those crates depends on this one.
 unsafe extern "C-unwind" {
     /// `f(co)` when the timer fires: its data is a coroutine's handle, which the
@@ -44,10 +44,12 @@ unsafe extern "C-unwind" {
         f: extern "C" fn(Co),
         co: Co,
     ) -> *mut c_void;
-    fn swr_v1_timer_add_plain(
+    /// `f(data)` when the timer fires: `f` is a safe function, sound for any
+    /// `data`. The node, or null; nothing here reads it.
+    safe fn swr_v1_timer_add_plain(
         ms: c_long,
         persistent: bool,
-        f: Routine,
+        f: extern "C" fn(*mut c_void),
         data: *mut c_void,
     ) -> *mut c_void;
     #[link_name = "_Z25swoole_timer_is_availablev"]
@@ -144,8 +146,8 @@ pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
         if !swoole_timer_is_available() {
-            // SAFETY: a timer whose callback does nothing.
-            unsafe { swr_v1_timer_add_plain(1, false, keep_alive, ptr::null_mut()) };
+            // A timer whose callback does nothing.
+            swr_v1_timer_add_plain(1, false, keep_alive, ptr::null_mut());
         }
         swr_v1_async_threads_ensure();
         swr_v1_thread_context_init();

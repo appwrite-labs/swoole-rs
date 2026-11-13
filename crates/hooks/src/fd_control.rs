@@ -77,7 +77,7 @@ mod tests {
             let socket = Box::new(unsafe { core::mem::zeroed::<CoSocket>() });
             socket
                 .socket
-                .set(Box::into_raw(Box::new(SocketRecord::new())));
+                .set(Some(Box::new(SocketRecord::new()).into_socket()));
             Self(socket)
         }
 
@@ -86,13 +86,13 @@ mod tests {
         }
 
         fn record(&mut self) -> &mut SocketRecord {
-            unsafe { &mut *self.0.socket.get() }
+            unsafe { &mut *self.0.socket_ptr() }
         }
     }
 
     impl Drop for Records {
         fn drop(&mut self) {
-            drop(unsafe { Box::from_raw(self.0.socket.get()) });
+            drop(unsafe { Box::from_raw(self.0.socket_ptr()) });
         }
     }
 

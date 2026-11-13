@@ -4,12 +4,12 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_corebase::{CoreAllocator, DataHead};
+use swoole_rs_corebase::{DataHead, TrustedAllocator};
 use swoole_rs_reactor::Socket;
 
 use swoole_rs_bus::{BusPacket, MessageBus};
 
-use crate::pool_native::{PoolBus, read_bus};
+use crate::pool_native::PoolBus;
 use swoole_rs_reactor::{reactor_if_exit, reactor_wait};
 
 pub(crate) use crate::view::{set_nonblock, worker_pipe};
@@ -53,10 +53,30 @@ pub(crate) fn timer_reinit(manually_trigger: bool) {
 // Only the upstream-symbol operations, which the unit tests don't link, use these.
 #[cfg(not(test))]
 impl crate::ServerState {
+    /// The server's own `MessageBus` record.
+    pub(crate) fn message_bus_record(&self) -> &PoolBus {
+        // SAFETY: `swr_v1_server_new`'s boxed record, which lives as long as the
+        // server; it frees it in `swr_v1_server_delete`, with the state.
+        unsafe { &*self.tables_ref().message_bus.cast::<PoolBus>() }
+    }
+
     /// The server's own `MessageBus`.
     pub(crate) fn message_bus(&self) -> Bus<'_> {
-        // SAFETY: `swr_v1_server_new`'s bus, which lives as long as the server.
-        unsafe { Bus::of(self.tables_ref().message_bus) }
+        Bus::over(self.message_bus_record())
+    }
+
+    /// `serv->get_worker_message_bus()`'s record: this thread's in thread mode, else
+    /// the server's.
+    pub(crate) fn worker_bus_record(&self) -> &PoolBus {
+        if self.config_ref().mode_ != Mode::Thread {
+            return self.message_bus_record();
+        }
+        let bus = swoole_rs_corebase::thread_message_bus();
+        // SAFETY: a thread-mode thread that sends to workers has its bus: a reactor
+        // thread's record's, set for its loop, or the one `create_message_bus` boxed
+        // for a task or user worker thread until it ends. Either outlives the server's
+        // use on this thread, and only this thread uses it.
+        unsafe { &*bus.cast::<PoolBus>() }
     }
 }
 
@@ -65,19 +85,10 @@ impl crate::ServerState {
 #[derive(Clone, Copy)]
 pub(crate) struct Bus<'a> {
     bus: &'a MessageBus,
-    allocator: &'static CoreAllocator,
+    allocator: TrustedAllocator,
 }
 
 impl<'a> Bus<'a> {
-    /// The `MessageBus` at `message_bus`.
-    ///
-    /// # Safety
-    /// `message_bus` is a live `MessageBus` record for `'a`, and only this thread uses
-    /// it meanwhile.
-    pub(crate) unsafe fn of(message_bus: *mut c_void) -> Self {
-        // SAFETY: per the caller; a `MessageBus` is a `PoolBus`.
-        Self::over(unsafe { &*message_bus.cast::<PoolBus>() })
-    }
     /// The bus of `record`, which a thread's own record lends.
     pub(crate) fn over(record: &'a PoolBus) -> Self {
         let (bus, allocator) = record.parts();
@@ -88,7 +99,7 @@ impl<'a> Bus<'a> {
         self.bus
     }
     /// The allocator of its packets.
-    pub(crate) fn allocator(self) -> &'static CoreAllocator {
+    pub(crate) fn allocator(self) -> TrustedAllocator {
         self.allocator
     }
     /// The bus's buffer, which starts with the head of its message.
@@ -125,14 +136,18 @@ impl<'a> Bus<'a> {
     }
     /// `MessageBus::read(sock)`.
     pub(crate) fn read(self, sock: Socket<'_>) -> isize {
-        read_bus(self.rust(), self.allocator, sock, false)
+        self.rust().read_from(self.allocator, sock, false)
+    }
+    /// `MessageBus::read_with_buffer(sock)`, of a datagram pipe.
+    pub(crate) fn read_dgram(self, sock: Socket<'_>) -> isize {
+        self.rust().read_from(self.allocator, sock, true)
     }
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
     /// whether the whole message went.
     pub(crate) fn write(self, sock: Socket<'_>, head: &mut DataHead, data: &[u8]) -> bool {
-        head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: a live socket, and `head.len` readable bytes.
-        unsafe { self.rust().send(sock.as_ptr(), head, data.as_ptr()) }
+        // SAFETY: every caller passes a worker pipe (a command's reply socket is
+        // one), which the server keeps until it shuts down, after its event loop.
+        unsafe { self.rust().send(sock, head, data) }
     }
     /// `MessageBus::set_always_chunked_transfer()`.
     pub(crate) fn set_always_chunked(self) {
@@ -145,26 +160,11 @@ impl<'a> Bus<'a> {
     /// `MessageBus::alloc_buffer()`, after `set_buffer_size(size)`: whether the
     /// allocator gave the bus its buffer.
     pub(crate) fn alloc_buffer(self, size: usize) -> bool {
-        let bus = self.rust();
-        bus.set_buffer_size(size);
-        let malloc = self.allocator.malloc;
-        // SAFETY: the allocator's malloc.
-        let buffer = malloc.map_or(core::ptr::null_mut(), |malloc| unsafe {
-            malloc(bus.buffer_size())
-        });
-        // SAFETY: the bus takes the fresh buffer of its size.
-        unsafe { bus.set_buffer(buffer) };
-        !buffer.is_null()
+        self.rust().alloc_buffer(size, self.allocator)
     }
     /// `MessageBus::free_buffer()`.
     pub(crate) fn free_buffer(self) {
-        let buffer = self.buffer();
-        if let Some(free) = self.allocator.free {
-            // SAFETY: the bus's buffer, from this allocator, unused afterwards.
-            unsafe { free(buffer.cast()) };
-        }
-        // SAFETY: null forgets the buffer.
-        unsafe { self.rust().set_buffer(core::ptr::null_mut()) };
+        self.rust().free_buffer();
     }
     /// `get_pipe_socket(sock)`: this bus's own end of the pipe `sock`.
     pub(crate) fn pipe_socket(&self, sock: Socket<'_>) -> Option<Socket<'_>> {

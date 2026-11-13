@@ -17,8 +17,7 @@ use swoole_rs_process::worker_record::WorkerType;
 use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
 use core::sync::atomic::AtomicU64;
-use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
-use swoole_rs_corebase::CoreAllocator;
+use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
@@ -66,8 +65,7 @@ fn fd(socket: Option<Socket<'_>>) -> c_int {
 
 /// The pool's stream listener, or `None` without one.
 fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
-    // SAFETY: null, or the listening socket the pool's IPC owns until the pool frees it.
-    unsafe { Socket::from_ptr(pool.ipc_listener().cast()) }
+    crate::view::pool_ipc_listener(pool)
 }
 
 /// The socket a hook works on, or `None`.
@@ -100,70 +98,22 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 // ---------------------------------------------------------------- message bus
 
-fn bus_of(pool: Pool<'_>) -> crate::objects::Bus<'_> {
-    // SAFETY: the pool's bus, which `Op::NewMessageBus` made.
-    unsafe { crate::objects::Bus::of(pool.message_bus()) }
+/// The pool's bus, which `Op::NewMessageBus` made, or `None` without one.
+fn bus_of(pool: Pool<'_>) -> Option<crate::objects::Bus<'_>> {
+    PoolBus::of_pool(pool).map(crate::objects::Bus::over)
 }
 
-/// `MessageBus::read(sock)`.
+/// `MessageBus::read(sock)`; -1 without a socket or a bus.
 fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
-    sock.map_or(-1, |sock| bus_of(pool).read(sock))
-}
-
-/// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
-/// default allocator: allocates each packet block the bus asks for.
-pub(crate) fn read_bus(
-    bus: &MessageBus,
-    allocator: *const CoreAllocator,
-    sock: Socket<'_>,
-    dgram: bool,
-) -> isize {
-    let mut state = BusRead {
-        received: 0,
-        size: 0,
-        data: ptr::null_mut(),
-        allocator: ptr::null(),
-        chunks: 0,
-        resume: false,
-        event: 0,
-    };
-    loop {
-        // The receive only ever sets `kernel_nobufs`, so it edits the record only then:
-        // in thread mode, other threads read this worker's pipe meanwhile.
-        let mut nobufs = false;
-        let n = bus.receive(sock.fd(), dgram, &mut nobufs, &mut state);
-        if nobufs {
-            sock.edit(|sock| sock.kernel_nobufs = true);
-        }
-        if state.event != BUS_ALLOCATE {
-            return n;
-        }
-        let allocator = if state.data.is_null() {
-            allocator
-        } else {
-            state.allocator.cast()
-        };
-        // SAFETY: a live `swoole::Allocator`.
-        let allocator = unsafe { &*allocator };
-        let data = match (state.data.is_null(), allocator.malloc, allocator.realloc) {
-            // SAFETY: a fresh block of the size the bus asked for.
-            (true, Some(malloc), _) => unsafe { malloc(state.size) },
-            // SAFETY: the block the bus asked to grow, from this allocator.
-            (false, _, Some(realloc)) => unsafe { realloc(state.data, state.size) },
-            _ => ptr::null_mut(),
-        };
-        if data.is_null() {
-            // `throw std::bad_alloc()`, which nothing catches.
-            swoole_rs_corebase::fatal("out of memory");
-        }
-        // SAFETY: the block just allocated, from `allocator`.
-        unsafe { bus.adopt(data, state.size, ptr::from_ref(allocator).cast()) };
-    }
+    sock.zip(bus_of(pool))
+        .map_or(-1, |(sock, bus)| bus.read(sock))
 }
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let bus = bus_of(pool);
+    let Some(bus) = bus_of(pool) else {
+        return;
+    };
     let mut info = bus.head();
     let packet = bus.packet();
     info.len = packet.length.c_cast::<u32>();
@@ -183,18 +133,19 @@ fn new_message_bus() -> *mut c_void {
         return ptr::null_mut();
     };
     *msg_id.get_mut() = 1;
-    new_bus(msg_id)
+    Box::into_raw(Box::new(new_bus(msg_id))).cast()
 }
 
-/// `new MessageBus()` numbering its messages from `counter`; [`free_bus`] frees it.
-pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
+/// `new MessageBus()` numbering its messages from `counter`. Its owner boxes and
+/// leaks it into the `MessageBus *` it keeps, which [`free_bus`] frees.
+pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
     let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
     bus.count_ids(counter);
-    Box::into_raw(Box::new(PoolBus::std(bus))).cast()
+    PoolBus::std(bus)
 }
 
 fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
-    i64::from(bus_of(pool).alloc_buffer(size.c_cast::<usize>()))
+    i64::from(bus_of(pool).is_some_and(|bus| bus.alloc_buffer(size.c_cast::<usize>())))
 }
 
 fn free_message_bus(pool: Pool<'_>) {
@@ -213,8 +164,9 @@ pub(crate) unsafe fn free_bus(bus: *mut c_void) {
 
 // ---------------------------------------------------------------- pipes and box
 
-/// `pool->pipes`: each worker's `UnixSocket`.
-type Pipes = Vec<*mut SocketPair>;
+/// `pool->pipes`: each worker's `UnixSocket`, boxed so a worker's record keeps its
+/// pair's address while the list grows.
+type Pipes = Vec<Box<SocketPair>>;
 
 fn free_pipes(pool: Pool<'_>) {
     let pipes = pool.pipes().cast::<Pipes>();
@@ -222,9 +174,8 @@ fn free_pipes(pool: Pool<'_>) {
         return;
     }
     // SAFETY: `Op::NewPipes`'s box, freed once.
-    for pair in *unsafe { Box::from_raw(pipes) } {
-        // SAFETY: a pair `new_pipe` boxed, not used again.
-        socket_pair::drop(&mut *unsafe { Box::from_raw(pair) });
+    for mut pair in *unsafe { Box::from_raw(pipes) } {
+        socket_pair::drop(&mut pair);
     }
 }
 
@@ -238,9 +189,13 @@ fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
         free_pipes(pool);
         return 0;
     }
-    let pair = Box::into_raw(built);
     // SAFETY: `Op::NewPipes` made the list.
-    unsafe { &mut *pool.pipes().cast::<Pipes>() }.push(pair);
+    let pipes = unsafe { &mut *pool.pipes().cast::<Pipes>() };
+    pipes.push(built);
+    // The box keeps the pair at this address while the list owns it.
+    let pair = pipes
+        .last_mut()
+        .map_or(ptr::null_mut(), |pair| &raw mut **pair);
     // SAFETY: the two ends of the pair the pool's list now owns until `free_pipes`,
     // in the pool's `destroy`, after which this process sends to its workers no more.
     unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
@@ -713,6 +668,18 @@ impl PoolNative for Native {
 
     fn bus_deliver(&self, c: &mut PoolCall) {
         bus_deliver(c.pool());
+    }
+
+    fn bus_write(
+        &self,
+        pool: PoolRef<'_>,
+        worker: Record<'_>,
+        head: &mut DataHead,
+        message: &[u8],
+    ) -> bool {
+        worker_pipe(worker, true)
+            .zip(bus_of(pool))
+            .is_some_and(|(pipe, bus)| bus.write(pipe, head, message))
     }
 
     fn task(&self, c: &mut PoolCall) {

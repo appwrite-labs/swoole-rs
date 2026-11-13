@@ -68,15 +68,15 @@ no native source left.
 
 ## Context stack
 
-`swr_v1_context_stack_alloc(size, flags)` allocates a coroutine stack with
+`Stack::alloc(size, flags)` (crates/coroutine/src/stack.rs) allocates a coroutine stack with
 `malloc`, or with `STACK_PROTECT` (`SW_CONTEXT_PROTECT_STACK_PAGE`) as an
 anonymous mapping (plus `MAP_STACK` on OpenBSD) whose lowest page is made
-inaccessible; it returns null on failure, which context init reports as upstream does.
+inaccessible; it returns `None` on failure, which context init reports as upstream does.
 `STACK_MARK` (`SW_CONTEXT_DETECT_STACK_USAGE`) writes upstream's magic
 markers before the context is made: at `size - offset + 31` for each doubling
 `offset` from 64 KiB while `offset <= size`; only upstream's trace log read
-them (`get_stack_usage`), which stack.rs's tests keep. `swr_v1_context_stack_free`
-takes the same size and flags.
+them (`get_stack_usage`), which stack.rs's tests keep. The `Stack` owns the
+allocation and frees it, with the same size and flags, when dropped.
 
 `crates/coroutine/src/context.rs` owns the `Context` record that follows
 each coroutine's `swr_v1_coroutine`: init

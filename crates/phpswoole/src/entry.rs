@@ -109,9 +109,11 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
             "\n [Coroutine-{cid}] Stack trace:\n {rule}\n"
         )
         .unwrap_or_default();
+        // SAFETY: `swr_zend_fatal_error` runs on the PHP thread that raised the error.
+        let php = unsafe { swoole_rs_zend::Php::assume() };
         // The coroutine's backtrace, printed; a bailout is trapped.
         if let Some(families) = module::families()
-            && let Err(bailed) = (families.print_backtrace)(cid)
+            && let Err(bailed) = (families.print_backtrace)(php, cid)
         {
             bailout::raise(Err(bailed));
             return;

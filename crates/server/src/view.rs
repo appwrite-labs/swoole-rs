@@ -171,12 +171,16 @@ impl<'a> Server<'a> {
     }
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
-    /// the packet it holds; its new owner does.
+    /// the packet it holds; its new owner, given its block (null for none), does.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
-    pub fn move_worker_packet(self) {
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "a caller that read the message already holds the block it returns"
+    )]
+    pub fn move_worker_packet(self) -> *mut core::ffi::c_char {
         crate::master_ops::worker_message_bus(self.state())
             .rust()
-            .move_packet();
+            .move_packet()
     }
 
     /// `set_allocator(allocator)` on the server's own `MessageBus`, or with
@@ -184,16 +188,13 @@ impl<'a> Server<'a> {
     /// `allocator` from now on.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub fn set_bus_allocator(self, worker: bool, allocator: swoole_rs_corebase::TrustedAllocator) {
-        let thread_mode = self.config().mode_ == Mode::Thread;
-        let bus = if worker && thread_mode {
-            swoole_rs_corebase::thread_message_bus()
+        let state = self.state();
+        let bus = if worker {
+            state.worker_bus_record()
         } else {
-            self.message_bus()
+            state.message_bus_record()
         };
-        let allocator = allocator.get();
-        // SAFETY: the thread's or the server's live `MessageBus`, which starts with
-        // its Rust bus and then its allocator, read only by this thread meanwhile.
-        unsafe { (*bus.cast::<[*const swoole_rs_corebase::CoreAllocator; 2]>())[1] = allocator };
+        bus.set_allocator(allocator);
     }
 
     /// `upload_tmp_dir = dir`.
@@ -685,18 +686,53 @@ impl<'a> Port<'a> {
     }
 }
 
+/// An end of a worker's pipe.
+#[derive(Clone, Copy)]
+pub enum PipeEnd {
+    /// `pipe_master`, the master's end.
+    Master,
+    /// `pipe_worker`, the worker's end.
+    Worker,
+    /// `pipe_current`, the end this process uses: one of the other two, or none.
+    Current,
+}
+
+/// The `end` of `worker`'s pipe, or `None` while it has none.
+#[inline]
+#[must_use]
+pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'_>> {
+    let pipe = match end {
+        PipeEnd::Master => worker.pipe_master(),
+        PipeEnd::Worker => worker.pipe_worker(),
+        PipeEnd::Current => worker.pipe_current(),
+    };
+    // SAFETY: crates/process keeps the pipe fields private: null, or an end of the
+    // pair `Worker::set_pipes` gave, live until its owner clears or frees it (and
+    // `pipe_current` a copy of one of them), so for the worker's handle.
+    unsafe { Socket::from_ptr(pipe.cast()) }
+}
+
 /// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
 /// it has none.
+#[inline]
 #[must_use]
 pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>> {
-    let pipe = if master {
-        worker.pipe_master()
-    } else {
-        worker.pipe_worker()
-    };
-    // SAFETY: null or a pipe socket of a live worker, which its owner keeps until it
-    // frees the worker.
-    unsafe { Socket::from_ptr(pipe.cast()) }
+    worker_pipe_end(
+        worker,
+        if master {
+            PipeEnd::Master
+        } else {
+            PipeEnd::Worker
+        },
+    )
+}
+
+/// The listening socket of `pool`'s stream IPC, or `None` without one.
+#[must_use]
+pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<Socket<'_>> {
+    // SAFETY: crates/process keeps a pool's IPC private: null, or the listener the
+    // pool's IPC owns until the pool's `destroy` frees it.
+    unsafe { Socket::from_ptr(pool.ipc_listener().cast()) }
 }
 
 /// `sock->set_nonblock()`.

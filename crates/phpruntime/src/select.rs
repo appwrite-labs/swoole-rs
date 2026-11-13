@@ -7,14 +7,15 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
-    sys::{php_stream, swr_zend_runtime_select_args, zend_long, zend_ulong, zval},
+    sys::{swr_zend_runtime_select_args, zend_long, zend_ulong, zval},
 };
 
 unsafe extern "C" {
-    /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
-    /// null for any other value or resource. It reads the zval and the
-    /// resource's type, and runs no PHP code.
-    safe fn swr_zend_stream_from_zval(value: &Value) -> *mut php_stream;
+    /// Whether `value` holds a stream resource (`php_stream_from_zval_no_verify`)
+    /// whose read buffer has bytes not yet read; false for any other value or
+    /// resource. It reads the zval, the resource's type and the stream's two
+    /// positions, and runs no PHP code.
+    safe fn swr_zend_stream_zval_buffered(value: &Value) -> bool;
 }
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
@@ -99,9 +100,7 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
         let mut entries = table.entries();
         while let Some((key, index, value)) = entries.next_stored() {
             let value = value.dereferenced();
-            let stream = swr_zend_stream_from_zval(&value);
-            // SAFETY: null or a live stream.
-            if unsafe { stream.as_ref() }.is_some_and(|stream| stream.writepos > stream.readpos) {
+            if swr_zend_stream_zval_buffered(&value) {
                 ready.push(Entry::new(key, index, &value));
             }
         }

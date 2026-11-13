@@ -4,7 +4,7 @@
 //! last error.
 use crate::ip::swr_v1_clients_ip;
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use std::io::Write;
 use std::net::Ipv4Addr;
 use swoole_rs_corebase::CCast;
@@ -16,15 +16,9 @@ use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_tls::CText;
 
-// libc's own declarations. `inet_pton` reads the NUL-terminated source and
+// libc's own declaration. `inet_pton` reads the NUL-terminated source and
 // writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
 unsafe extern "C" {
-    fn inet_ntop(
-        family: c_int,
-        address: *const c_void,
-        text: *mut c_char,
-        size: libc::socklen_t,
-    ) -> *const c_char;
     safe fn inet_pton(family: c_int, source: CText<'_>, destination: &mut [u8; 16]) -> c_int;
 }
 
@@ -130,13 +124,20 @@ fn address_size(family: c_int) -> usize {
 /// short for the family.
 #[must_use]
 pub fn address_string(family: c_int, address: &[u8]) -> *const c_char {
-    if address.len() < address_size(family) {
+    let Some(given) = address.get(..address_size(family)) else {
         return std::ptr::null();
+    };
+    // The family's bytes, in room for either's.
+    let mut bytes = [0; 16];
+    for (byte, &given) in bytes.iter_mut().zip(given) {
+        *byte = c_char::from_ne_bytes([given]);
     }
+    let Some(text) = ntop(family, &bytes) else {
+        return std::ptr::null();
+    };
     ADDRESS_SCRATCH.with(|scratch| {
-        // SAFETY: this thread alone accesses its fixed scratch; inet_ntop reads the
-        // family's bytes, writes at most its supplied capacity and retains neither.
-        unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.as_ptr().cast(), 46) }
+        scratch.set(text.map(|unit| unit.to_ne_bytes()[0]));
+        scratch.as_ptr().cast()
     })
 }
 

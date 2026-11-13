@@ -280,7 +280,7 @@ mod tests {
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: the cursor names the two local iovecs.
-        let sent = unsafe { swr_v1_socket_iov_owned(a, true, &raw mut *owner, NO_TLS) };
+        let sent = unsafe { swr_v1_socket_iov_owned(a, true, &mut owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((sent, state.remain_count), (7, 0));
 
@@ -298,7 +298,7 @@ mod tests {
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: as above, writable.
-        let read = unsafe { swr_v1_socket_iov_owned(b, false, &raw mut *owner, NO_TLS) };
+        let read = unsafe { swr_v1_socket_iov_owned(b, false, &mut owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!(read, 7);
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
@@ -328,7 +328,7 @@ mod tests {
             swr_v1_socket_iov_owned(
                 -1,
                 false,
-                &raw mut *owner,
+                &mut owner,
                 Some(&(
                     |mut fill: crate::Fill<'_>| {
                         let slots = fill.slots();
