@@ -371,8 +371,7 @@ pub extern "C-unwind" fn swoole_timer_select() {
     }
 }
 
-/// What `Swoole\Timer` (crates/phptimer) needs: PHP (`TYPE_PHP`) timers on
-/// this thread's timer.
+/// What `Swoole\Timer` (crates/phptimer) needs: PHP timers on this thread's timer.
 pub mod php {
     use super::{Timer, TimerNode, add, current};
     pub use crate::owner::{Bailout, Info, Plain};

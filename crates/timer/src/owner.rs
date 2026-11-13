@@ -32,8 +32,6 @@ type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
 pub type Plain = swoole_rs_reactor::DeferCall;
 /// `abandon_selection`'s pending Zend bailout.
 pub type Bailout = unsafe extern "C-unwind" fn();
-/// `TimerNode::TYPE_PHP`.
-const TYPE_PHP: i32 = 1;
 
 /// A node's fields, for `Swoole\Timer::info()`.
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +49,8 @@ pub struct Info {
 #[repr(C)]
 pub struct TimerNode {
     pub(crate) id: c_long,
-    kind: i32,
+    /// Upstream's `type == TYPE_PHP`: a [`TimerNode::php`] node.
+    php: bool,
     pub(crate) exec_msec: i64,
     interval: i64,
     exec_count: u64,
@@ -141,7 +140,7 @@ impl TimerNode {
     pub(crate) fn new(callback: Option<Callback>, data: *mut c_void) -> Self {
         Self {
             id: 0,
-            kind: 0,
+            php: false,
             exec_msec: 0,
             interval: 0,
             exec_count: 0,
@@ -170,17 +169,17 @@ impl TimerNode {
         node
     }
 
-    /// A `TYPE_PHP` node: `callback(data)` on each run, `destructor(data)` once
+    /// A PHP node: `callback(data)` on each run, `destructor(data)` once
     /// it is removed.
     pub(crate) fn php(callback: Plain, destructor: Plain, data: *mut c_void) -> Self {
         let mut node = Self::plain(callback, data);
-        node.kind = TYPE_PHP;
+        node.php = true;
         node.plain_drop = Some(destructor);
         node
     }
 
     pub(crate) fn is_php(&self) -> bool {
-        self.kind == TYPE_PHP
+        self.php
     }
 
     /// The timer's id, which its timer never reuses.
