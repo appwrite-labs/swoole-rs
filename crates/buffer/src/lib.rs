@@ -243,26 +243,6 @@ impl Buffer {
     }
 }
 
-/// Diagnostics for the actual external C input layout; no conversion credit.
-#[cfg(unix)]
-#[repr(C)]
-pub struct PosixIovecLayout {
-    pub size: usize,
-    pub alignment: usize,
-    pub base_offset: usize,
-    pub length_offset: usize,
-}
-#[cfg(unix)]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_buffer_iovec_layout() -> PosixIovecLayout {
-    PosixIovecLayout {
-        size: mem::size_of::<libc::iovec>(),
-        alignment: mem::align_of::<libc::iovec>(),
-        base_offset: mem::offset_of!(libc::iovec, iov_base),
-        length_offset: mem::offset_of!(libc::iovec, iov_len),
-    }
-}
-
 /// Copy actual target POSIX iovecs without allocating descriptor staging storage.
 /// # Safety
 /// `iov` holds `count` descriptors, each over `iov_len` readable bytes (null only when

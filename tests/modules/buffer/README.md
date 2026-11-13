@@ -15,7 +15,6 @@ shared options in `tests/conftest.py` and read sources from `target/upstream/src
 | Command | Checks |
 | --- | --- |
 | `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix that records upstream defects. |
-| `test_iovec.py --archive A [--sanitize]` | Twelve positive POSIX iovec append cases; native and selected layout and observation counts must match. |
 | `test_typed.py --archive A [--sanitize]` | Typed queue facade compiled and run under C++14/17/20. |
 
 `swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`) under their upstream
@@ -25,6 +24,12 @@ is ported there, one Rust test per `TEST`:
 | Upstream `TEST` | Rust test |
 | --- | --- |
 | `buffer.append_iov` | `cpp::tests::append_iov` (64 seeded runs of the same lengths, offsets and checks) |
+
+The project-written `iovec.cc` fixture is ported there too:
+
+| Fixture | Rust test |
+| --- | --- |
+| `iovec.cc` (twelve positive offset-0 vectors and the `iovec` layout) | `cpp::tests::positive_iovec_vectors` |
 
 ## String gates
 

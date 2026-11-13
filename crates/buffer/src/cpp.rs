@@ -245,6 +245,67 @@ mod tests {
         }
     }
 
+    /// Ported from the `tests/modules/buffer/iovec.cc` fixture: twelve positive offset-0
+    /// vectors of three-byte binary parts, appended whole and drained entry by entry.
+    #[test]
+    fn positive_iovec_vectors() {
+        // POSIX `struct iovec`: a pointer, then a `size_t`.
+        let word = size_of::<usize>();
+        assert_eq!(
+            (
+                size_of::<libc::iovec>(),
+                align_of::<libc::iovec>(),
+                std::mem::offset_of!(libc::iovec, iov_base),
+                std::mem::offset_of!(libc::iovec, iov_len),
+            ),
+            (2 * word, word, 0, word)
+        );
+        let mut cases = 0;
+        for count in [1u8, 8, 9, 32] {
+            let bytes: Vec<[u8; 3]> = (0..count).map(|i| [0, i, 255]).collect();
+            let parts: Vec<libc::iovec> = bytes
+                .iter()
+                .map(|part| libc::iovec {
+                    iov_base: part.as_ptr().cast_mut().cast(),
+                    iov_len: part.len(),
+                })
+                .collect();
+            let expected = bytes.concat();
+            for chunk in [0u32, 1, 4] {
+                with_buffer(chunk, |buffer| {
+                    unsafe { swr_cpp_buffer_append_iovec(buffer, parts.as_ptr(), parts.len(), 0) };
+                    assert_eq!(swr_cpp_buffer_length(buffer) as usize, expected.len());
+                    let effective = if chunk == 0 {
+                        i32::MAX as usize
+                    } else {
+                        chunk as usize
+                    };
+                    assert_eq!(
+                        swr_cpp_buffer_count(buffer),
+                        expected.len().div_ceil(effective)
+                    );
+                    let mut copied = Vec::new();
+                    while !swr_cpp_buffer_empty(buffer) {
+                        let front = swr_cpp_buffer_typed_front(buffer);
+                        assert_eq!(front.offset, 0);
+                        copied.extend_from_slice(unsafe {
+                            std::slice::from_raw_parts(front.data, front.length as usize)
+                        });
+                        swr_cpp_buffer_pop(buffer);
+                        assert_eq!(
+                            swr_cpp_buffer_length(buffer) as usize,
+                            expected.len() - copied.len()
+                        );
+                    }
+                    assert_eq!(copied, expected);
+                    assert_eq!(swr_cpp_buffer_count(buffer), 0);
+                });
+                cases += 1;
+            }
+        }
+        assert_eq!(cases, 12);
+    }
+
     #[test]
     fn typed_cursor_close_and_teardown() {
         with_buffer(2, |this| {
