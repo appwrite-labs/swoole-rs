@@ -13,8 +13,13 @@ use core::ffi::c_void;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 
-pub const PRODUCER: u32 = 1;
-pub const CONSUMER: u32 = 2;
+/// Which queue a waiter is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Producer,
+    Consumer,
+}
+
 pub const ERROR_OK: i32 = 0;
 pub const ERROR_TIMEOUT: i32 = -1;
 pub const ERROR_CLOSED: i32 = -2;
@@ -58,23 +63,16 @@ impl<T> Channel<T> {
         }
     }
 
-    fn queue(&mut self, role: u32) -> &mut VecDeque<*mut c_void> {
-        // Upstream's enqueue/dequeue test for PRODUCER; removal tests for CONSUMER.
-        if role == PRODUCER {
-            &mut self.producers
-        } else {
-            &mut self.consumers
+    fn queue(&mut self, role: Role) -> &mut VecDeque<*mut c_void> {
+        match role {
+            Role::Producer => &mut self.producers,
+            Role::Consumer => &mut self.consumers,
         }
     }
 
     /// Drops every queued `co` waiter of `role`: a timeout or cancel before resume.
-    pub fn remove(&mut self, role: u32, co: *mut c_void) {
-        let queue = if role == CONSUMER {
-            &mut self.consumers
-        } else {
-            &mut self.producers
-        };
-        queue.retain(|&entry| entry != co);
+    pub fn remove(&mut self, role: Role, co: *mut c_void) {
+        self.queue(role).retain(|&entry| entry != co);
     }
 
     /// Removes and returns the oldest item.
@@ -148,7 +146,7 @@ pub fn take<T>(ch: &UnsafeCell<Channel<T>>) -> Option<T> {
 
 /// Queues the current coroutine as a `role` waiter and suspends it. Returns the
 /// error to report, or `ERROR_OK` to proceed.
-fn wait<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, role: u32) -> i32 {
+fn wait<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, role: Role) -> i32 {
     let co = fx.current();
     with(ch, |c| c.queue(role).push_back(co));
     let flags = fx.wait();
@@ -186,7 +184,7 @@ pub fn pop<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> Option<T> {
         return None;
     }
     if wait_first {
-        let status = wait(ch, fx, CONSUMER);
+        let status = wait(ch, fx, Role::Consumer);
         let closed = with(ch, |c| c.closed && c.data.is_empty());
         if !ok(
             ch,
@@ -217,7 +215,7 @@ pub fn push<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, data: T) -> R
         return Err(data);
     }
     if wait_first {
-        let status = wait(ch, fx, PRODUCER);
+        let status = wait(ch, fx, Role::Producer);
         let closed = with(ch, |c| c.closed);
         if !ok(
             ch,
@@ -245,7 +243,7 @@ pub fn close<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> bool {
     if with(ch, |c| std::mem::replace(&mut c.closed, true)) {
         return false;
     }
-    for role in [PRODUCER, CONSUMER] {
+    for role in [Role::Producer, Role::Consumer] {
         // Re-read the queue after each resume: the woken waiter may change it.
         while let Some(co) = with(ch, |c| c.queue(role).pop_front()) {
             fx.resume(co);

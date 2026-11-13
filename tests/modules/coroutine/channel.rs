@@ -504,10 +504,9 @@ fn remove_drops_every_entry_of_a_waiter() {
     let mut ch = Channel::<*mut c_void>::new(1);
     ch.consumers.extend([t(1), t(2), t(1)]);
     ch.producers.push_back(t(1));
-    ch.remove(CONSUMER, t(1));
+    ch.remove(Role::Consumer, t(1));
     assert_eq!(ch.consumer_num(), 1);
-    // Any role but CONSUMER removes from the producers.
-    ch.remove(0, t(1));
+    ch.remove(Role::Producer, t(1));
     assert_eq!(ch.producer_num(), 0);
     assert_eq!(ch.pop_data(), None);
 }
