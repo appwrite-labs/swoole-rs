@@ -21,9 +21,8 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
-    EventType, FdType, ResultCode, ReturnCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE,
-    SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
-    TimeoutType,
+    EventType, FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
+    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType, TimeoutType,
 };
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
@@ -32,6 +31,7 @@ use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
+use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
     Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
     swr_v1_socket_domain_and_type,
@@ -111,11 +111,9 @@ impl ClientEvent {
 /// error as `length` for [`ClientEvent::Error`].
 pub type Listener = Rc<dyn Fn(ClientEvent, *const c_char, usize)>;
 
-/// The socket's connect modes: `connect_async` (returns `SW_READY`, `SW_WAIT` or
-/// `SW_ERROR`), `connect_sync`, and `connect(2)`.
+/// The socket's blocking connect modes: `connect_sync` and `connect(2)`.
 #[derive(Clone, Copy, Debug)]
 enum ConnectMode {
-    Async,
     Sync,
     Raw,
 }
@@ -132,8 +130,6 @@ enum EventOp {
 /// Swoole's constants this file uses.
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
-const SW_WAIT: c_int = ReturnCode::SW_WAIT as c_int;
-const SW_READY: c_int = ReturnCode::SW_READY as c_int;
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
@@ -1370,14 +1366,14 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         return ERR;
     }
     if nonblock {
-        let rc = ops::connect(this, ConnectMode::Async);
-        if rc == SW_READY {
-            return OK;
-        }
-        if rc == SW_WAIT {
-            this.set(Flag::AsyncConnect, true);
-        }
-        return ERR;
+        return match ops::connect_async(this) {
+            Connect::Ready => OK,
+            Connect::Wait => {
+                this.set(Flag::AsyncConnect, true);
+                ERR
+            }
+            Connect::Error => ERR,
+        };
     }
     let ret = ops::connect(this, ConnectMode::Sync);
     if ret < 0 {
@@ -1588,7 +1584,7 @@ fn bind_unix(this: Handle) -> c_int {
 /// with recording doubles.
 #[cfg(not(test))]
 mod ops {
-    use super::{ConnectMode, EventOp, Handle, SocketRecord, address_of};
+    use super::{Connect, ConnectMode, EventOp, Handle, SocketRecord, address_of};
     use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
@@ -1621,14 +1617,18 @@ mod ops {
         true
     }
 
+    /// `connect_async` of the socket to `server_addr`; errno is the call's.
+    pub(super) fn connect_async(this: Handle) -> Connect {
+        let address = &this.record().server_addr;
+        this.socket()
+            .edit(|socket| socket_upstream::socket_connect_async(socket, address))
+    }
+
     /// Connects the socket to `server_addr`, by `mode`; errno is the call's.
     pub(super) fn connect(this: Handle, mode: ConnectMode) -> c_int {
         let socket = this.socket();
         let address = &this.record().server_addr;
         match mode {
-            ConnectMode::Async => {
-                socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
-            }
             ConnectMode::Sync => socket_upstream::connect_sync(socket, address),
             ConnectMode::Raw => address.connect(socket.fd()),
         }

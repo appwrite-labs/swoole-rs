@@ -10,6 +10,7 @@ const TLS_HOST_NAME: usize = 8;
 struct Mock {
     log: Vec<String>,
     connect: Vec<c_int>,
+    connect_async: Vec<Connect>,
     io: Vec<isize>,
     ssl_connect_ready: bool,
     socket_error: c_int,
@@ -77,6 +78,10 @@ pub(super) mod ops {
             set_errno(libc::EINPROGRESS);
         }
         ret
+    }
+    pub(in super::super) fn connect_async(_: Handle) -> Connect {
+        log("connect Async");
+        mock(|m| m.connect_async.pop()).unwrap_or(Connect::Error)
     }
     pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> c_int {
         log(format!("event {op:?} {events}"));
@@ -454,9 +459,9 @@ fn failed_resolution_closes_and_reports_once() {
 #[test]
 fn sync_nonblocking_connect_reports_ready_and_wait() {
     let client = client(1, false, false);
-    mock(|m| m.connect = vec![SW_READY]);
+    mock(|m| m.connect_async = vec![Connect::Ready]);
     assert_eq!(connect(client, c"example.test", -1.0, 1), OK);
-    mock(|m| m.connect = vec![SW_WAIT]);
+    mock(|m| m.connect_async = vec![Connect::Wait]);
     assert_eq!(connect(client, c"example.test", -1.0, 1), ERR);
     assert!(flag(client, Flag::AsyncConnect));
     free(client);
