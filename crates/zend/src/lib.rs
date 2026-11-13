@@ -70,7 +70,14 @@ pub use zval::{
 #[macro_export]
 macro_rules! handlers {
     // Hot handlers whose bodies raise (`bailout::finish`) any bailout they defer.
-    (leaf: $($name:ident => $body:path;)*) => {$(
+    (leaf: $($name:ident => $body:path;)*) => {
+        $crate::handlers!(@then {} $($name => $body;)*);
+    };
+    ($($name:ident => $body:path;)*) => {
+        $crate::handlers!(@then { $crate::bailout::finish(); } $($name => $body;)*);
+    };
+    // Each handler, ending with `$then`.
+    (@then $then:block $($name:ident => $body:path;)*) => {$(
         /// A Zend handler.
         /// # Safety
         /// Called by Zend with a live frame and return slot.
@@ -81,20 +88,7 @@ macro_rules! handlers {
         ) {
             // SAFETY: per Zend's handler contract.
             $body(&unsafe { $crate::Call::new(frame, value) });
-        }
-    )*};
-    ($($name:ident => $body:path;)*) => {$(
-        /// A Zend handler.
-        /// # Safety
-        /// Called by Zend with a live frame and return slot.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            frame: *mut $crate::sys::zend_execute_data,
-            value: *mut $crate::sys::zval,
-        ) {
-            // SAFETY: per Zend's handler contract.
-            $body(&unsafe { $crate::Call::new(frame, value) });
-            $crate::bailout::finish();
+            $then
         }
     )*};
 }

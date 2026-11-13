@@ -30,7 +30,6 @@ use swoole_rs_zend::{
     object_zval,
     sys::{
         E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -1910,96 +1909,83 @@ fn path_arg(call: &Call) -> Option<&[u8]> {
     path
 }
 
-/// A method that can run PHP: its body says whether the `write_func`
-/// callback bailed out, which goes on, as any other deferred bailout, once
-/// the body's frames are gone.
-macro_rules! calling {
-    ($($name:ident => $body:ident;)*) => {$(
-        /// A Zend handler.
-        /// # Safety
-        /// Called by Zend with its live frame and return slot.
-        unsafe extern "C" fn $name(frame: *mut z::zend_execute_data, value: *mut zval) {
-            // SAFETY: per Zend.
-            if $body(&unsafe { Call::new(frame, value) }) {
-                bailout::Bailout.defer();
-            }
-            bailout::finish();
-        }
-    )*};
+/// The last step of a method that can run PHP: a bailout its `write_func`
+/// callback left goes on, as any other deferred bailout, once the handler's
+/// frames are gone.
+fn settle(bailed: bool) {
+    if bailed {
+        Bailout.defer();
+    }
 }
 
-calling! {
-    zim_swoole_http_client_coro_execute => execute;
-    zim_swoole_http_client_coro_get => get;
-    zim_swoole_http_client_coro_post => post;
-    zim_swoole_http_client_coro_download => download;
-    zim_swoole_http_client_coro_upgrade => upgrade;
-    zim_swoole_http_client_coro_recv => recv;
-}
-
-fn execute(call: &Call) -> bool {
+fn execute(call: &Call) {
     let client = client(call);
     let Some(path) = path_arg(call) else {
-        return false;
+        return;
     };
     let result = client.exec(path);
-    finish(client, call, result)
+    settle(finish(client, call, result));
 }
 
-fn get(call: &Call) -> bool {
+fn get(call: &Call) {
     let client = client(call);
     let Some(path) = path_arg(call) else {
-        return false;
+        return;
     };
     client.props().bytes(c"requestMethod", b"GET");
     let result = client.exec(path);
-    finish(client, call, result)
+    settle(finish(client, call, result));
 }
 
 /// `post(string $path, mixed $data): bool`.
-fn post(call: &Call) -> bool {
+fn post(call: &Call) {
     let client = client(call);
     let Ok(path) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
         call.set_bool(false);
-        return false;
+        return;
     };
     client.props().bytes(c"requestMethod", b"POST");
     if let Some(data) = call.value(2) {
         client.props().value(c"requestBody", data);
     }
     let result = client.exec(path);
-    finish(client, call, result)
+    settle(finish(client, call, result));
 }
 
 /// `download(string $path, string $file, int $offset = 0): bool`.
-fn download(call: &Call) -> bool {
+fn download(call: &Call) {
     let client = client(call);
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.long(3, 0)?)));
     let Ok((path, offset)) = parsed else {
         call.set_bool(false);
-        return false;
+        return;
     };
     if let Some(file) = call.value(2) {
         client.props().value(c"downloadFile", file);
     }
     client.props().long(c"downloadOffset", offset);
     let result = client.exec(path);
-    finish(client, call, result)
+    settle(finish(client, call, result));
 }
 
-fn upgrade(call: &Call) -> bool {
+fn upgrade(call: &Call) {
     let client = client(call);
     let Some(path) = path_arg(call) else {
-        return false;
+        return;
     };
     let result = client.upgrade(path);
-    finish(client, call, result)
+    settle(finish(client, call, result));
 }
 
 /// `recv(float $timeout = 0)`: a WebSocket frame, or the deferred response.
-fn recv(call: &Call) -> bool {
+fn recv(call: &Call) {
+    settle(receive(call));
+}
+
+/// [`recv`]: whether `write_func` bailed out.
+fn receive(call: &Call) -> bool {
     let client = client(call);
     if !client.is_available() {
         call.set_bool(false);
@@ -2184,6 +2170,12 @@ fn disconnect(call: &Call) {
 
 swoole_rs_zend::handlers! {
     zim_swoole_http_client_coro___construct => construct;
+    zim_swoole_http_client_coro_execute => execute;
+    zim_swoole_http_client_coro_get => get;
+    zim_swoole_http_client_coro_post => post;
+    zim_swoole_http_client_coro_download => download;
+    zim_swoole_http_client_coro_upgrade => upgrade;
+    zim_swoole_http_client_coro_recv => recv;
     zim_swoole_http_client_coro___destruct => destruct;
     zim_swoole_http_client_coro_set => set;
     zim_swoole_http_client_coro_getDefer => get_defer;

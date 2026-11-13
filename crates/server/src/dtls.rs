@@ -66,15 +66,16 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and
-/// connected to the peer, registered as a connection with a DTLS session; null,
-/// with everything it made undone, when a step fails.
+/// connected to the peer, registered as a connection with a DTLS session: the
+/// session and its socket, which the server's connection keeps until it closes;
+/// `None`, with everything it made undone, when a step fails.
 ///
 /// `listen` is one of `serv`'s DTLS ports.
-fn accept(
-    serv: crate::view::Server<'_>,
+fn accept<'s>(
+    serv: crate::view::Server<'s>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> *mut DtlsSession {
+) -> Option<(*mut DtlsSession, Socket<'s>)> {
     let port = listen.raw();
     let (kind, number, host) = {
         let config = listen.config();
@@ -85,9 +86,7 @@ fn accept(
     let server_fd = listen.fd();
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
     // SAFETY: null, or the socket just made, which only this thread uses.
-    let Some(socket) = (unsafe { Socket::from_ptr(sock) }) else {
-        return ptr::null_mut();
-    };
+    let socket = unsafe { Socket::from_ptr(sock) }?;
     let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(
@@ -132,7 +131,7 @@ fn accept(
         }
         let session = (port_config::methods().dtls_create)(port, sock);
         if !session.is_null() {
-            return session;
+            return Some((session, socket));
         }
     }
     if !conn.is_null() {
@@ -141,7 +140,7 @@ fn accept(
     }
     // SAFETY: the socket just made, which nothing uses afterwards.
     unsafe { swoole_rs_tls::upstream::socket_free(sock) };
-    ptr::null_mut()
+    None
 }
 
 /// `session->append(...)`, which throws `std::bad_alloc` when the queue can't grow.
@@ -173,25 +172,23 @@ pub(crate) unsafe fn on_packet(
     let Some(port) = (unsafe { crate::view::Port::from_raw(port) }) else {
         return -1;
     };
-    let session = accept(serv, port, &pkt.socket_addr);
-    if session.is_null() {
+    // The session `dtls_create` made over the socket: `session->socket` is `record`.
+    let Some((session, record)) = accept(serv, port, &pkt.socket_addr) else {
         return -1;
-    }
+    };
     // SAFETY: the live session.
     let session = unsafe { &*session };
     let data = (&raw const pkt.data).cast::<u8>();
     // SAFETY: the packet's `length` received bytes.
     let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
     appended(swr_v1_tls_dtls_append(session, data));
-    let socket = session.socket();
-    // SAFETY: the live session's socket.
-    let record = unsafe { Socket::from_ptr(socket) };
     if !dtls_session_listen(session) {
-        return i64::from(crate::reactor_entry::close_socket(serv, reactor, record));
+        return i64::from(crate::reactor_entry::close_socket(
+            serv,
+            reactor,
+            Some(record),
+        ));
     }
-    let Some(record) = record else {
-        return -1;
-    };
     // A session socket's object is its live connection.
     let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
     // SAFETY: as above; nothing else borrows it during the call.
@@ -215,7 +212,7 @@ pub(crate) unsafe fn on_packet(
     };
     if failed && let Some(close) = close {
         // SAFETY: the live reactor and the session's socket.
-        unsafe { close(reactor.ptr(), socket.cast()) };
+        unsafe { close(reactor.ptr(), record.as_ptr().cast()) };
     }
     0
 }

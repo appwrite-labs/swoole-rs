@@ -214,8 +214,7 @@ pub fn swr_v1_core_max_sockets(limit: u32) -> i64 {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: `rlimit` is a live, writable local.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut rlimit) } < 0 {
+    if crate::sys::getrlimit(libc::RLIMIT_NOFILE, &mut rlimit) < 0 {
         return -1;
     }
     #[expect(

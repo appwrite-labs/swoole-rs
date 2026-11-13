@@ -289,8 +289,10 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // The slot is read only before the dispatch, as upstream does: base and thread mode
     // run the callback inline, and a close there hands the slot to the accept that reuses
     // the fd (`OP_CC_FINISH`'s Release of `closed`), which no later read is ordered before.
-    let (port, reactor_id, mut task) = {
-        // SAFETY: the live connection, borrowed only for this block.
+    // Only the atomic count of queued bytes, which is shared by reference, is kept past it.
+    let (port, reactor_id, mut task, queued) = {
+        // SAFETY: the live connection slot, which lives as long as the server; its
+        // plain fields are borrowed only for this block.
         let c = unsafe { &*conn };
         if len > 0 {
             c.recv_queued_bytes.fetch_add(len, SeqCst);
@@ -308,7 +310,12 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             },
             data: rdata.data.cast(),
         };
-        (server.port_of_fd(c.fd), c.reactor_id, task)
+        (
+            server.port_of_fd(c.fd),
+            c.reactor_id,
+            task,
+            &c.recv_queued_bytes,
+        )
     };
     let mode = u64::from(state.config_ref().mode_);
     let dispatched = if mode == crate::MODE_PROCESS {
@@ -324,8 +331,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     };
     if !dispatched {
         if len > 0 {
-            // SAFETY: the connection slot, which lives as long as the server.
-            unsafe { &*conn }.recv_queued_bytes.fetch_sub(len, SeqCst);
+            queued.fetch_sub(len, SeqCst);
         }
         return -1;
     }

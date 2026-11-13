@@ -1,7 +1,7 @@
 //! The base-mode reactor process's ops on native objects (its pool, reactor, pipes,
 //! timer and the server's message bus), and the reactor callbacks that run its
 //! operations: what workers.cc's `ReactorProcessContext::call` did.
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
@@ -189,10 +189,12 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ADD_HEARTBEAT_TIMER => {
             let msec = c_long::from(ctx.config().heartbeat_check_interval.get()) * 1000;
-            let reactor = ctx.reactor_handle().ptr();
-            // SAFETY: `on_timeout` takes the reactor, which outlives its timers.
-            let node =
-                unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, on_timeout, reactor) };
+            // `ReactorProcess_onTimeout`: the heartbeat check, on the reactor arming it,
+            // which outlives its timers.
+            let reactor = ctx.reactor_handle();
+            let node = swoole_rs_timer::add_fn(msec, true, move || {
+                run(reactor, None, RUN_REACTOR_PROCESS_TIMEOUT);
+            });
             ctx.config().heartbeat_timer.store(node, Ordering::Relaxed);
             u64::from(!node.is_null())
         }
@@ -321,14 +323,4 @@ extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
         Some(event),
         RUN_REACTOR_PROCESS_CLOSE,
     )
-}
-
-/// `ReactorProcess_onTimeout`: the heartbeat check.
-///
-/// # Safety
-/// `reactor` is the live reactor that armed the timer, on its thread.
-unsafe extern "C-unwind" fn on_timeout(reactor: *mut c_void) {
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
-    run(reactor, None, RUN_REACTOR_PROCESS_TIMEOUT);
 }

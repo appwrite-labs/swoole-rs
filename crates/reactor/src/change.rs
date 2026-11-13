@@ -329,29 +329,6 @@ pub(crate) fn interest_change(record: Socket<'_>, kind: u32, event: c_int) -> Op
     Some((op, events))
 }
 
-/// `Reactor`'s interest helpers over [`swr_v1_reactor_change`], as [`interest_change`]
-/// chooses: the change's result, or 0 when nothing changes.
-///
-/// # Safety
-/// As for [`swr_v1_reactor_change`].
-pub unsafe fn swr_v1_reactor_interest(
-    owner: *mut ReactorState,
-    socket: *mut SocketRecord,
-    kind: u32,
-    event: c_int,
-    log: ChangeLog,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
-    let Some((op, events)) = interest_change(record, kind, event) else {
-        return 0;
-    };
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_reactor_change(owner, socket, op, events, log) }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,7 +485,10 @@ mod tests {
             let state = crate::reactor_state::tests::state(3, 4);
             let mut socket = SocketRecord::with_fd(20, 5);
             let interest = |socket: &mut SocketRecord, kind, event| {
-                swr_v1_reactor_interest(state.owner, socket, kind, event, log)
+                let record = Socket::from_ptr(socket).unwrap();
+                interest_change(record, kind, event).map_or(0, |(op, events)| {
+                    swr_v1_reactor_change(state.owner, socket, op, events, log)
+                })
             };
             // add_write_event on a new socket adds it for writing; add_read_event sets both.
             assert_eq!(interest(&mut socket, 3, 0), 0);

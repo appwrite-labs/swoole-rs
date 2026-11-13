@@ -12,7 +12,6 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::Socket;
-use swoole_rs_timer::swr_v1_timer_add_plain;
 
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE};
@@ -310,8 +309,17 @@ pub(crate) fn answer(
         OP_HEARTBEAT_ENTRY => heartbeat_main as *const () as u64,
         OP_HEARTBEAT_TIMER | OP_RT_HEARTBEAT_TIMER => {
             let msec = c_long::from(config().heartbeat_check_interval.get()) * 1000;
-            // SAFETY: `heartbeat_check` takes the reactor, which outlives its timers.
-            let timer = unsafe { swr_v1_timer_add_plain(msec, true, heartbeat_check, reactor) };
+            // `Server::heartbeat_check`: the reactor arms its own heartbeat, which the
+            // timer checks on this thread.
+            let reactor = handle?;
+            let timer = swoole_rs_timer::add_fn(msec, true, move || {
+                // SAFETY: this context's reactor, a server reactor whose `ptr` is its
+                // live server, which outlives its timers.
+                let serv = unsafe { entry::server(reactor) };
+                let mut ctx = ReactorContext::new(serv, Some(reactor));
+                ctx.thread = thread(serv.state(), usize::from(reactor.handle().id()));
+                run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
+            });
             if op == OP_HEARTBEAT_TIMER {
                 config()
                     .heartbeat_timer
@@ -323,16 +331,16 @@ pub(crate) fn answer(
         }
         OP_RESUME_TIMER => {
             let msec = c_long::from(ctx.connection()?.waiting_time());
-            // SAFETY: `resume_data_receiving` takes the connection's socket, which
-            // deletes the timer before it goes.
-            let timer = unsafe {
-                swr_v1_timer_add_plain(
-                    msec,
-                    false,
-                    resume_data_receiving,
-                    ctx.sock?.as_ptr().cast(),
-                )
-            };
+            let sock = ctx.sock?.as_ptr();
+            let timer = swoole_rs_timer::add_fn(msec, false, move || {
+                // SAFETY: the server whose reactor armed the timer, which outlives the
+                // timers of its sockets.
+                let serv = unsafe { view::Server::from_raw(serv) };
+                // SAFETY: the paused session socket, which deletes this timer before it goes.
+                if let Some(sock) = unsafe { Socket::from_ptr(sock) } {
+                    resume_data_receiving(serv, sock);
+                }
+            });
             ctx.connection()?.set_timer(timer);
             u64::from(!timer.is_null())
         }
@@ -631,28 +639,9 @@ extern "C" fn heartbeat_main(server: view::Server<'_>, _: u64) {
     );
 }
 
-/// `Server::heartbeat_check`: the heartbeat timer of `reactor`.
-unsafe extern "C-unwind" fn heartbeat_check(reactor: *mut c_void) {
-    // SAFETY: the timer's live reactor, on its own thread: a server reactor, whose
-    // `ptr` is its live server.
-    let mut ctx = unsafe { entry::reactor_context(reactor) };
-    if let Some(reactor) = ctx.reactor {
-        ctx.thread = thread(ctx.serv.state(), usize::from(reactor.handle().id()));
-    }
-    run(RUN_HEARTBEAT_CHECK, 0, &mut ctx);
-}
-
-/// `ReactorThread_resume_data_receiving`: the timer of a paused session socket.
-unsafe extern "C-unwind" fn resume_data_receiving(sock: *mut c_void) {
-    // SAFETY: the timer's live session socket, whose object is its connection.
-    let Some(socket) = (unsafe { Socket::from_ptr(sock.cast()) }) else {
-        return;
-    };
-    // SAFETY: the server whose socket's timer this is, live while its reactor runs
-    // the timer; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
+/// `ReactorThread_resume_data_receiving`: the timer of a paused session socket,
+/// whose object is its connection.
+fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'_>) {
     let mut ctx = ReactorContext::new(serv, None);
     ctx.conn = socket.read(|s| s.object.cast::<ConnectionRecord>());
     ctx.sock = Some(socket);
