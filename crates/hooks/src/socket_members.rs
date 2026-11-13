@@ -11,7 +11,7 @@ use crate::co_io::{
     Message, NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
 };
 use crate::co_socket::{Co, peer_name};
-use crate::sendfile::{FAILED, ZERO, send_range};
+use crate::sendfile::{SendFailure, send_range};
 use crate::setup::{Setup, swr_v1_hook_accept};
 use crate::shutdown::READ;
 use crate::socket_wait::{error_event, ready, wait_for};
@@ -535,20 +535,20 @@ impl Co {
         let error = errno();
         timer.stop();
         match outcome {
-            0 => return true,
-            ZERO => borrowed_err(
+            Ok(()) => return true,
+            Err(SendFailure::Zero) => borrowed_err(
                 self,
                 SYSTEM_CALL_FAIL,
                 Message::Static(c"sendfile return zero"),
             ),
-            FAILED => {
+            Err(SendFailure::Failed) => {
                 let fd = self.sock_fd();
                 self.set_err_text(
                     error,
                     &format!("sendfile({fd}, {name}) failed, {}", strerror(error)),
                 );
             }
-            _ => {}
+            Err(SendFailure::Wait) => {}
         }
         false
     }
