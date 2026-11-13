@@ -472,7 +472,7 @@ impl<'a> Worker<'a> {
 
     /// The worker's live pool, or `None` for a record no pool holds.
     #[must_use]
-    pub fn pool_ref(self) -> Option<crate::process_pool::PoolRef<'a>> {
+    pub(crate) fn pool_ref(self) -> Option<crate::process_pool::PoolRef<'a>> {
         let pool = self.pool().cast::<crate::process_pool::PoolRecord>();
         if pool.is_null() {
             return None;

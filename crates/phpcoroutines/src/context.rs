@@ -110,7 +110,7 @@ fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
 }
 
 /// A live context: the thread's main one, or a coroutine's from [`open`] until
-/// [`on_swap`]'s close. Only this module makes one, from the thread-local main context
+/// [`on_close`]. Only this module makes one, from the thread-local main context
 /// and the host's task pointers. Each method borrows the context for that one
 /// access and keeps no reference.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -309,48 +309,29 @@ fn switch(from: Ctx, to: Ctx) {
     unsafe { swr_zend_coroutine_switch(from.vm(), to.vm()) };
 }
 
-/// The core's swap callbacks, [`on_swap`] of each kind.
-pub(crate) const ON_YIELD: u8 = 0;
-pub(crate) const ON_RESUME: u8 = 1;
-pub(crate) const ON_CLOSE: u8 = 2;
-
-/// `PHPCoroutine::on_yield`, `on_resume` and `on_close`, as `KIND` says: the core
-/// calls each with the task of the coroutine that yields, resumes or closes.
-///
-/// # Safety
-/// `arg` is null or that coroutine's task: its context, live until this returns
-/// from its close, which nothing follows.
-pub(crate) unsafe extern "C" fn on_swap<const KIND: u8>(arg: *mut c_void) {
-    // SAFETY: as the caller promises.
+/// `PHPCoroutine::on_yield`.
+pub(crate) unsafe extern "C" fn on_yield(arg: *mut c_void) {
+    // SAFETY: the core passes the yielding coroutine's task, a live context.
     let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
         return;
     };
-    match KIND {
-        ON_YIELD => {
-            let origin = origin(ctx);
-            fiber_switch_try_notify(ctx, origin);
-            switch(ctx, origin);
-            count_switch(ctx);
-        }
-        ON_RESUME => {
-            let current = current();
-            fiber_switch_try_notify(current, ctx);
-            switch(current, ctx);
-            record_last_msec(ctx);
-            count_switch(ctx);
-        }
-        // `on_close`: run the join hook, then free the context.
-        _ => {
-            let join = ctx.join();
-            if !join.is_null() {
-                Join::closed(join, ctx);
-            }
-            // SAFETY: the closing context, written by `open` and not used after this.
-            unsafe { ptr::drop_in_place(ctx.ptr()) };
-            // SAFETY: emalloc'd by `open`.
-            unsafe { swr_zend_efree(ctx.ptr().cast()) };
-        }
-    }
+    let origin = origin(ctx);
+    fiber_switch_try_notify(ctx, origin);
+    switch(ctx, origin);
+    count_switch(ctx);
+}
+
+/// `PHPCoroutine::on_resume`.
+pub(crate) unsafe extern "C" fn on_resume(arg: *mut c_void) {
+    // SAFETY: the core passes the resumed coroutine's task, a live context.
+    let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
+        return;
+    };
+    let current = current();
+    fiber_switch_try_notify(current, ctx);
+    switch(current, ctx);
+    record_last_msec(ctx);
+    count_switch(ctx);
 }
 
 #[inline]
@@ -372,7 +353,23 @@ pub(crate) fn watch_switches(watch: bool) -> usize {
     this.switch_count()
 }
 
-/// `create_context`, on the new coroutine: its context, live until [`on_swap`]'s close.
+/// `PHPCoroutine::on_close`: run the join hook, then free the context.
+pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
+    // SAFETY: the core passes the closing coroutine's task, a live context.
+    let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
+        return;
+    };
+    let join = ctx.join();
+    if !join.is_null() {
+        Join::closed(join, ctx);
+    }
+    // SAFETY: the closing context, written by `open` and not used after this.
+    unsafe { ptr::drop_in_place(ctx.ptr()) };
+    // SAFETY: emalloc'd by `open`.
+    unsafe { swr_zend_efree(ctx.ptr().cast()) };
+}
+
+/// `create_context`, on the new coroutine: its context, live until [`on_close`].
 /// # Safety
 /// `args` is the creator's live `Args`, and this runs on the new coroutine.
 pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {

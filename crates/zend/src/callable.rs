@@ -18,7 +18,7 @@ unsafe extern "C" {
     /// `sw_zend_fci_cache_persist`: one more reference to the object and the
     /// closure of the function `parse` resolved. The handle is spent: `keep`
     /// makes the [`Callable`] of the same record.
-    safe fn swr_zend_callable_hold(parsed: Parsed);
+    fn swr_zend_callable_hold(parsed: Parsed);
     /// `efree` of the record of a callable that holds nothing.
     #[link_name = "swr_zend_efree"]
     safe fn discard(parsed: Parsed);
@@ -171,7 +171,8 @@ impl Parsed {
             callable.fci.param_count = total;
         }
         let record = self.0;
-        swr_zend_callable_hold(self);
+        // SAFETY: a parsed callable.
+        unsafe { swr_zend_callable_hold(self) };
         Callable(record)
     }
 

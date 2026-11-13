@@ -61,8 +61,11 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
 }
 
 /// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-type OnRead =
-    extern "C-unwind" fn(swoole_rs_reactor::Running<'_>, view::Port<'_>, &mut Event) -> c_int;
+type OnRead = unsafe extern "C-unwind" fn(
+    swoole_rs_reactor::Running<'_>,
+    view::Port<'_>,
+    &mut Event,
+) -> c_int;
 
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
@@ -127,7 +130,9 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         return ERR;
     };
     // SAFETY: the reactor's event, which no reference is used through during the read.
-    let retval = on_read(reactor.handle(), port, unsafe { &mut *raw });
+    let event = unsafe { &mut *raw };
+    // SAFETY: this server's reactor, and a readable event on a connection of `port`.
+    let retval = unsafe { on_read(reactor.handle(), port, event) };
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);

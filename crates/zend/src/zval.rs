@@ -49,10 +49,12 @@ unsafe extern "C" {
     fn swr_zend_object_properties(object: &Value) -> Option<&Array>;
     /// `zend_zval_value_name`: it reads the zval, and returns a static type
     /// name or the name of the object's class, which outlives its objects.
+    /// `mixed` for a slot that holds no PHP value.
     safe fn swr_zend_zval_value_name(value: &Value) -> crate::helpers::CText<'_>;
     /// `zend_zval_type_name`: it reads the zval, and returns a static type
-    /// name or, before PHP 8.3, the name of the object's class.
-    safe fn zend_zval_type_name(value: &Value) -> crate::helpers::CText<'_>;
+    /// name or, before PHP 8.3, the name of the object's class. `mixed` for a
+    /// slot that holds no PHP value.
+    safe fn swr_zend_zval_type_name(value: &Value) -> crate::helpers::CText<'_>;
     /// `ZEND_HASH_FOREACH`'s step: null (`None`) past the end, or the next
     /// defined element at or after `position` (any position: the walk stops at
     /// the table's last slot), which then points past it, with its key (null
@@ -607,7 +609,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn type_name(&self) -> &CStr {
-        zend_zval_type_name(self).get()
+        swr_zend_zval_type_name(self).get()
     }
 
     /// `Z_ARRVAL_P` of an array.

@@ -255,14 +255,17 @@ impl SendfileTask {
 /// The server, request, session and socket of an HTTP/1 static response.
 struct Wire<'a> {
     server: crate::view::Server<'a>,
-    request: &'a swoole_rs_http_ffi::HttpRequest,
+    request: *const swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_reactor::Socket<'a>,
 }
 
 impl Wire<'_> {
+    /// The request, for one read: a send may close the connection and free it, and
+    /// nothing reads it after that send.
     fn request(&self) -> &swoole_rs_http_ffi::HttpRequest {
-        self.request
+        // SAFETY: `static_select`'s caller: the connection's request, live at each read.
+        unsafe { &*self.request }
     }
 
     /// `length` bytes of the request's buffer at `offset`.
@@ -305,10 +308,13 @@ impl Exchange for Wire<'_> {
 
 /// `Server::select_static_handler(request, conn)` for the ports read path: `request`
 /// is the request of the connection of session `session_id`, whose socket is `socket`.
+/// # Safety
+/// `request` is that connection's live request. The last send may close the
+/// connection, which frees it.
 #[must_use]
-pub fn static_select(
+pub unsafe fn static_select(
     server: crate::view::Server<'_>,
-    request: &swoole_rs_http_ffi::HttpRequest,
+    request: *const swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_reactor::Socket<'_>,
 ) -> bool {

@@ -341,7 +341,7 @@ const CALLBACKS: Callbacks = {
 
 /// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`, as the server's connection
 /// read calls it: under its reactor, with the port and the connection's event.
-type Reader = extern "C" fn(Running<'_>, view::Port<'_>, &mut Event) -> c_int;
+type Reader = unsafe extern "C" fn(Running<'_>, view::Port<'_>, &mut Event) -> c_int;
 
 /// A readable callback's address.
 fn reader(function: Reader) -> *mut c_void {
@@ -482,10 +482,12 @@ use tests::on_read;
 /// Each static `readable_callback_*`: its Rust name and readable kind.
 macro_rules! readable_callbacks {
     ($(fn $name:ident = $kind:ident;)*) => {$(
-        /// One readable callback kind. Private, and named only by [`reader`]: the server's
-        /// connection read is its one caller, on a connection of `port` under its reactor.
-        extern "C" fn $name(reactor: Running<'_>, port: view::Port<'_>, event: &mut Event) -> c_int {
-            on_read(reactor, port, event, $kind)
+        /// One readable callback kind.
+        /// # Safety
+        /// As [`on_read`].
+        unsafe extern "C" fn $name(reactor: Running<'_>, port: view::Port<'_>, event: &mut Event) -> c_int {
+            // SAFETY: the caller's contract.
+            unsafe { on_read(reactor, port, event, $kind) }
         }
     )*};
 }
@@ -537,7 +539,12 @@ mod tests {
     }
 
     /// Tests link no C++: the readable kind stands in for the read.
-    pub(super) fn on_read(_: Running<'_>, _: view::Port<'_>, _: &mut Event, kind: u32) -> c_int {
+    pub(super) unsafe fn on_read(
+        _: Running<'_>,
+        _: view::Port<'_>,
+        _: &mut Event,
+        kind: u32,
+    ) -> c_int {
         c_int::try_from(kind).unwrap_or_default()
     }
 

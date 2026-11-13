@@ -57,10 +57,13 @@ struct Read<'a> {
 /// connection read ([`crate::methods`]' callbacks are a port's `onRead` and nothing
 /// else), so the event is a readable one on a live connection of `port`, which only this
 /// reactor thread touches.
+/// # Safety
+/// `reactor` is the reactor of the server `port` belongs to, and `event` is a readable
+/// event on a live connection of that port.
 // Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
 // frame reads, measures and dispatches where five did (#3335).
 #[inline(always)]
-pub(crate) fn on_read(
+pub(crate) unsafe fn on_read(
     reactor: Running<'_>,
     port: view::Port<'_>,
     event: &mut Event,
@@ -347,9 +350,9 @@ impl Connection for Read<'_> {
     fn serve_static(&mut self) -> bool {
         let conn = self.conn();
         let (request, session) = (conn.object.cast::<HttpRequest>(), conn.session_id);
-        // SAFETY: the connection's live request, which nothing writes or frees while
-        // the static handler reads it.
-        static_select(self.server, unsafe { &*request }, session, self.socket)
+        // SAFETY: the connection's live request; the handler's last send may close
+        // the connection and free it, and nothing here reads it afterwards.
+        unsafe { static_select(self.server, request, session, self.socket) }
     }
 
     #[inline]
