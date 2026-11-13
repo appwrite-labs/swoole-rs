@@ -1,4 +1,4 @@
-//! Operation and op numbers shared with `native/include/swoole_rs.h` (`SWR_SERVER_*`).
+//! Operation and op numbers, Rust's on both ends.
 //! The native context carries the server and, per operation, the reactor, port,
 //! socket and connection an op acts on.
 
@@ -893,52 +893,19 @@ pub const OP_LC_INIT_PROTOCOLS: u32 = 1216;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
-    /// `NAME = value` of the header's `SWR_SERVER_*` enumerators, counting on from the last value.
-    fn header() -> HashMap<String, u32> {
-        let text = include_str!("../../../native/include/swoole_rs.h");
-        let mut out = HashMap::new();
-        for block in text.split("enum {").skip(1) {
-            let body = block.split("};").next().unwrap_or_default();
-            let mut next = 0;
-            for item in body
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-            {
-                let (name, value) = match item.split_once('=') {
-                    Some((name, value)) => (name.trim(), value.trim().parse().unwrap()),
-                    None => (item, next),
-                };
-                out.insert(name.to_owned(), value);
-                next = value + 1;
-            }
-        }
-        out
-    }
-
     #[test]
-    fn numbers_match_the_header() {
-        let header = header();
-        let mut checked = 0;
-        let mut operations = HashMap::new();
+    fn operations_are_distinct() {
+        let mut seen = std::collections::HashMap::new();
         for line in include_str!("ops.rs").lines() {
-            let Some(rest) = line.strip_prefix("pub const ") else {
+            let Some(rest) = line.strip_prefix("pub const RUN_") else {
                 continue;
             };
             let (name, value) = rest.split_once(": u32 = ").unwrap();
             let value: u32 = value.trim_end_matches(';').parse().unwrap();
-            if name.starts_with("RUN_") {
-                assert!(
-                    operations.insert(value, name).is_none(),
-                    "duplicate operation {value}: {name}"
-                );
-            }
-            let native = format!("SWR_SERVER_{name}");
-            assert_eq!(header.get(&native), Some(&value), "{native}");
-            checked += 1;
+            assert!(
+                seen.insert(value, name).is_none(),
+                "duplicate operation {value}: RUN_{name}"
+            );
         }
-        assert_eq!(checked, header.len(), "every enumerator has a Rust number");
     }
 }
