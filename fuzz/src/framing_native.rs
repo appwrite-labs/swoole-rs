@@ -4,7 +4,7 @@
 //! the arguments and `call(context, op, arg)` performs each effect and refreshes
 //! `io.flags`. The hybrid runs the loop over crates/ports' effects instead.
 use std::ffi::c_void;
-use swoole_rs_framing::recv::{self, Buffer, Effects, FLAG_REMOVED, OP_RESET, RECV_CLOSE, recv};
+use swoole_rs_framing::recv::{self, Buffer, Effects, FLAG_REMOVED, Mode, Op, RECV_CLOSE, recv};
 
 const SW_ERR: i32 = -1;
 
@@ -42,6 +42,26 @@ pub struct SwrFramingIo {
 /// One native effect on the socket, buffer or protocol in `context`.
 pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
 
+/// `SWR_FRAMING_OP_*` for `op`. The native effect tables predate the reset, which
+/// only changes how the connection closes: it has none.
+fn code(op: Op) -> Option<u32> {
+    Some(match op {
+        Op::Recv => 1,
+        Op::GetLength => 2,
+        Op::Extend => 3,
+        Op::Dispatch => 4,
+        Op::Reduce => 5,
+        Op::Split => 7,
+        Op::SslPending => 8,
+        Op::ClearSkip => 9,
+        Op::Page => 10,
+        Op::LogMalformed => 11,
+        Op::LogNoLength => 12,
+        Op::LogTooLarge => 13,
+        Op::Reset => return None,
+    })
+}
+
 /// Any op: a native exception was caught; native code rethrows it after return.
 pub const THROWN: i64 = i64::MIN;
 
@@ -57,12 +77,10 @@ struct NativeEffects {
 impl Effects for NativeEffects {
     /// After a `THROWN` op, no further effect runs: each op fails and the socket
     /// reads as removed, so the loop returns within a few steps.
-    fn effect(&mut self, op: u32, arg: u64, flags: &mut u32) -> i64 {
-        // The native effect tables predate the reset, which only changes how the
-        // connection closes.
-        if op == OP_RESET {
+    fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
+        let Some(op) = code(op) else {
             return 0;
-        }
+        };
         if !self.thrown {
             // SAFETY: the caller's live receive; native code reads it only inside `call`.
             unsafe { (*self.io).flags = *flags };
@@ -134,7 +152,13 @@ pub unsafe extern "C" fn swr_v1_framing_recv(
     if shared.protocol.is_null() || shared.buffer.is_null() {
         return SW_ERR;
     }
-    let (mode, head, mut flags) = (shared.mode, shared.head, shared.flags);
+    let mode = match shared.mode {
+        0 => Mode::Length,
+        1 => Mode::Eof,
+        2 => Mode::Split,
+        _ => return SW_ERR,
+    };
+    let (head, mut flags) = (shared.head, shared.flags);
     let mut effects = NativeEffects {
         io,
         protocol: shared.protocol,
@@ -153,7 +177,9 @@ pub unsafe extern "C" fn swr_v1_framing_recv(
 mod tests {
     use super::*;
     use std::ptr;
-    use swoole_rs_framing::recv::{MODE_LENGTH, OP_EXTEND, OP_GET_LENGTH, OP_RECV};
+    const OP_RECV: u32 = 1;
+    const OP_GET_LENGTH: u32 = 2;
+    const OP_EXTEND: u32 = 3;
 
     struct Fake {
         protocol: ProtocolHead,
@@ -206,7 +232,7 @@ mod tests {
         let mut io = SwrFramingIo {
             protocol: unsafe { &raw const (*raw).protocol },
             buffer: unsafe { &raw mut (*raw).buffer },
-            mode: MODE_LENGTH,
+            mode: 0,
             head: 1,
             flags: 0,
         };
