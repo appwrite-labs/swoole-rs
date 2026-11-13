@@ -10,7 +10,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
 use swoole_rs_process::process_pool::PoolRef;
 use swoole_rs_process::server_workers::ServerWorkers;
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
     LOG_UNKNOWN_COMMAND, OP_ALL_WORKER_NUM, OP_ANY_WORKER_PID, OP_CHECK_EXIT_STATUS,
     OP_COMMAND_REPLY, OP_CREATE_EVENT_WORKERS, OP_CREATE_MESSAGE_BOX, OP_CREATE_USER_WORKERS,
@@ -332,15 +332,19 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SIGNAL_DISPATCH => swoole_rs_process::signal::swoole_signal_dispatch(),
         OP_RELOAD_ADD_EVENT_WORKERS | OP_RELOAD_ADD_TASK_WORKERS => {
-            let (workers, count) = if op == OP_RELOAD_ADD_EVENT_WORKERS {
-                (config.workers.as_ptr().cast(), config.worker_num.get())
+            // `serv->get_worker(id)` numbers the task workers after the event workers.
+            let events = u64::from(config.worker_num.get());
+            let ids = if op == OP_RELOAD_ADD_EVENT_WORKERS {
+                0..events
             } else {
-                (ctx.task_pool().workers(), config.task_worker_num.get())
+                events..events + u64::from(config.task_worker_num.get())
             };
-            // SAFETY: the server's `count` worker records.
-            let workers: &[WorkerRecord] =
-                unsafe { core::slice::from_raw_parts(workers, count as usize) };
-            ctx.reload_task().add_workers(workers);
+            for id in ids {
+                if let Some(worker) = ctx.worker_at(id) {
+                    // A copy of the record, whose pid and id the task snapshots.
+                    ctx.reload_task().add_workers(&[worker.get()]);
+                }
+            }
         }
         OP_RELOAD_KILL_ALL => {
             ctx.reload_task()

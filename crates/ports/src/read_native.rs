@@ -414,10 +414,7 @@ impl Connection for Read<'_> {
     }
 
     fn parse_multipart(&mut self) -> bool {
-        // SAFETY: the current buffer, live and apart from the request's own fields; the
-        // parser's callbacks only append past its contents.
-        let buffer = unsafe { &mut *self.buffer.cast::<HttpString>() };
-        self.request().parse_multipart_data(buffer)
+        self.request().parse_multipart_data()
     }
 
     fn finish_multipart(&mut self) {

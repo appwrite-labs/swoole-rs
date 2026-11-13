@@ -161,7 +161,7 @@ pub(crate) unsafe fn on_packet(
     serv: crate::view::Server<'_>,
     single_thread: bool,
     reactor: crate::reactor_handle::Reactor,
-    close: Option<swoole_rs_reactor::ReactorClose>,
+    _close: Option<swoole_rs_reactor::ReactorClose>,
     port: *mut c_void,
     pkt: *mut DgramPacket,
     length: u64,
@@ -210,9 +210,9 @@ pub(crate) unsafe fn on_packet(
         };
         crate::event_worker_ops::send_to_reactor_thread(serv, &ev) < 0
     };
-    if failed && let Some(close) = close {
-        // SAFETY: the live reactor and the session's socket.
-        unsafe { close(reactor.ptr(), record.as_ptr().cast()) };
+    if failed {
+        // The reactor's own close, which is what the caller passes as `_close`.
+        reactor.close(record);
     }
     0
 }

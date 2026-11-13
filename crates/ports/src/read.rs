@@ -113,7 +113,7 @@ pub(crate) trait Connection {
     fn request(&mut self) -> &mut Request;
     /// `init_multipart_parser(serv)`, then its buffer becomes current. Whether it succeeded.
     fn init_multipart(&mut self) -> bool;
-    /// `parse_multipart_data(buffer)`: false rejects the request.
+    /// `parse_multipart_data(buffer)` over the request's buffer: false rejects the request.
     fn parse_multipart(&mut self) -> bool;
     /// `destroy_multipart_parser()`, then the request's buffer becomes current.
     fn finish_multipart(&mut self);
@@ -714,7 +714,7 @@ pub(crate) mod tests {
                 offset: 0,
                 str: core::ptr::null_mut(),
             },
-            req: Request::new(request_native),
+            req: Request::new(Some(request_native)),
             incoming: chunks.iter().rev().map(|c| c.to_vec()).collect(),
             bytes: vec![0; 64],
             request: false,
@@ -848,7 +848,7 @@ pub(crate) mod tests {
         }
         fn destroy_request(&mut self) {
             self.request = false;
-            self.req = Request::new(request_native);
+            self.req = Request::new(Some(request_native));
             self.point();
         }
         fn request(&mut self) -> &mut Request {
@@ -862,7 +862,7 @@ pub(crate) mod tests {
             ok
         }
         fn parse_multipart(&mut self) -> bool {
-            self.req.parse_multipart_data(unsafe { &mut *self.current })
+            self.req.parse_multipart_data()
         }
         fn finish_multipart(&mut self) {
             self.req.destroy_multipart_parser();

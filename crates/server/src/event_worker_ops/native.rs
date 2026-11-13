@@ -99,11 +99,13 @@ impl Context<'_> {
         let kind = if tls { VERIFIED_TLS } else { VERIFIED };
         self.state().connection(self.info().fd, kind)
     }
-    fn callback(&self, index: u32, data: *mut c_void) {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            // SAFETY: the slot takes the server and the event data.
-            unsafe { slot.call(self.serv.raw(), data) };
-        }
+    /// `serv->onX(serv, data)` for slot `index`, with the event head, event data or
+    /// worker it takes; `None` for no such slot.
+    pub(super) fn callback(&self, index: u32, data: *mut c_void) -> Option<()> {
+        let slot = self.state().callbacks.slot(index)?;
+        // SAFETY: the slot takes the server and the event head, event data or worker.
+        unsafe { slot.call(self.serv.raw(), data) };
+        Some(())
     }
 
     fn worker_error(&self) {
