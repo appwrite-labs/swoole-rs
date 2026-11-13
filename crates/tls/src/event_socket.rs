@@ -38,31 +38,19 @@ impl EventSocket {
     /// `swoole_event_add(socket, events)`.
     #[must_use]
     pub fn add(&self, events: c_int) -> c_int {
-        if !reactor() {
-            return -1;
-        }
-        // SAFETY: the live record, on the thread's live reactor.
-        unsafe { event_api::swoole_event_add(self.0.as_ptr(), events) }
+        event_api::event_add(self.0, events)
     }
 
     /// `swoole_event_set(socket, events)`.
     #[must_use]
     pub fn set(&self, events: c_int) -> c_int {
-        if !reactor() {
-            return -1;
-        }
-        // SAFETY: as above.
-        unsafe { event_api::swoole_event_set(self.0.as_ptr(), events) }
+        event_api::event_set(self.0, events)
     }
 
     /// `swoole_event_del(socket)`.
     #[must_use]
     pub fn del(&self) -> c_int {
-        if !reactor() {
-            return -1;
-        }
-        // SAFETY: as above.
-        unsafe { event_api::swoole_event_del(self.0.as_ptr()) }
+        event_api::event_del(self.0)
     }
 
     /// `swoole_event_write(socket, data, len)`.
@@ -71,7 +59,7 @@ impl EventSocket {
         if !reactor() {
             return -1;
         }
-        // SAFETY: as above, with the caller's bytes.
+        // SAFETY: the live record, on the thread's live reactor, with the caller's bytes.
         unsafe { event_api::swoole_event_write(self.0.as_ptr(), data.as_ptr().cast(), data.len()) }
     }
 

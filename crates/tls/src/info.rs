@@ -12,7 +12,7 @@ unsafe extern "C" {
         callback: Option<extern "C" fn(Ssl<'_>, c_int, c_int)>,
     );
 }
-/// The info callback of every context `swr_v1_tls_owner_create` makes: `ssl` is
+/// The info callback of every context `ssl_context_create` makes: `ssl` is
 /// OpenSSL's live SSL for the call.
 pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     let renegotiating = where_ & 0x10 != 0;

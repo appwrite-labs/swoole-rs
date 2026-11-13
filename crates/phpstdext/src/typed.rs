@@ -452,13 +452,12 @@ fn check_object(typed: Typed, value: &Value, actual: *mut zend_class_entry) -> b
     if unsafe { swr_zend_instanceof(actual, ce) } {
         return true;
     }
-    // SAFETY: that live class.
-    let expected = unsafe { (*ce).name };
-    // SAFETY: a class's name lives as long as the class.
-    let expected = unsafe { swoole_rs_zend::string::bytes(expected) };
+    // SAFETY: that class, which the definition's parse found and so is never
+    // null; classes outlive the request's arrays.
+    let expected = unsafe { swoole_rs_zend::ClassEntry::from_ptr(ce) };
     type_error(&message(&[
         b"Array value type mismatch, expected `",
-        expected,
+        expected.map_or(&[][..], |class| class.name().bytes()),
         b"`, got `",
         // An object's value name is its class's.
         value.value_name().to_bytes(),

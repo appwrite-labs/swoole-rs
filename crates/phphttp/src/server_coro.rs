@@ -849,17 +849,13 @@ struct Connection<'a> {
 }
 
 impl Connection<'_> {
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "the socket owns the buffer; no two borrows overlap"
-    )]
-    fn buffer(&self) -> &mut Buffer {
+    fn buffer(&mut self) -> &mut Buffer {
         // SAFETY: the connection socket's read buffer, live for the loop and
         // only touched by the socket through calls that take it.
         unsafe { &mut *self.buffer }
     }
 
-    fn data(&self, from: usize, to: usize) -> &[u8] {
+    fn data(&mut self, from: usize, to: usize) -> &[u8] {
         self.buffer().view().get(from..to).unwrap_or_default()
     }
 
@@ -919,14 +915,14 @@ fn on_accept(call: &Call) {
         remote_port,
         server_port: address(server.socket).1,
     };
-    let conn = Connection {
+    let mut conn = Connection {
         this,
         server,
         socket,
         zconn,
         buffer,
     };
-    let result = serve(&conn, &peer);
+    let result = serve(&mut conn, &peer);
     drop(peer);
     if result.is_ok() {
         // SAFETY: the server's live array.
@@ -948,7 +944,7 @@ fn add_peer(mut context: Ctx, peer: &Peer) {
 }
 
 /// The request loop: parse each request on the connection and run its handler.
-fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
+fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
     let mut current: Option<Ctx> = None;
     let mut header_completed = false;
     let mut crlf_offset = 0;
@@ -956,10 +952,11 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
     let mut step = Step::Recv;
     loop {
         if matches!(step, Step::Recv) {
-            set_recv_wait(conn.socket, true);
+            let socket = conn.socket;
+            set_recv_wait(socket, true);
             let buffer = conn.buffer();
             let length = buffer.len();
-            let received = conn.socket.recv(buffer.spare());
+            let received = socket.recv(buffer.spare());
             if received <= 0 {
                 break;
             }
@@ -1090,7 +1087,7 @@ fn serve(conn: &Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
 /// takes the HTTP/1 request's context as its default and handles each frame
 /// until the peer goes or a frame fails (or a handler bailed out, which
 /// `onAccept` re-raises).
-fn http2(conn: &Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
+fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
     http2_begin(conn.socket);
     let fd = context.state().fd;
     #[expect(

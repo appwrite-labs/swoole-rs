@@ -180,10 +180,10 @@ impl ReactorState {
     /// logging the kernel's refusal. Allocation failure aborts (upstream's `bad_alloc`),
     /// as does a negative `count` (`bad_array_new_length`).
     /// The head is set by [`ReactorState::into_raw`], once the caller is done with the
-    /// `&mut`.
-    pub(crate) fn open(requested: c_int, count: c_int) -> &'static mut Self {
+    /// box.
+    pub(crate) fn open(requested: c_int, count: c_int) -> Box<Self> {
         let (kind, opened) = select(requested);
-        let owner = Box::leak(Box::new(Self {
+        let mut owner = Box::new(Self {
             head: ReactorPrepared {
                 owner: ptr::null_mut(),
                 fields: ptr::null_mut(),
@@ -228,7 +228,7 @@ impl ReactorState {
             backend_limit: 0,
             callbacks: crate::callbacks::Callbacks::default(),
             running_defer: Vec::new(),
-        }));
+        });
         if !owner.open_backend(opened, count) {
             let (origin, call) = if opened == 1 {
                 (c"ReactorEpoll::ReactorEpoll", "epoll_create")
@@ -242,7 +242,8 @@ impl ReactorState {
 
     /// The state as the pointer its head and callers keep, the head set. Nothing goes
     /// through `owner` afterwards: a write or reborrow through it would end them.
-    pub(crate) fn into_raw(owner: &'static mut Self) -> *mut Self {
+    pub(crate) fn into_raw(owner: Box<Self>) -> *mut Self {
+        let owner = Box::leak(owner);
         let state = &raw mut *owner;
         let head = ReactorPrepared {
             owner: state,
@@ -358,7 +359,7 @@ unsafe extern "C" {
 /// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
-    let owner = ReactorState::open(kind, max_event);
+    let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
         return ReactorState::into_raw(owner).cast();
     }

@@ -2,16 +2,15 @@
 //! handshake steps, reads and writes, host and verify checks, PEM export and error
 //! reasons, and the socket's TLS state group they set. `upstream` defines the
 //! `Socket` methods over them, errno, the last error and logs included.
-use crate::handle::{Cert, CertRef, Ssl};
+use crate::handle::Ssl;
 use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
     SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
     SSL_ERROR_ZERO_RETURN, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER, SSL_RECEIVED_SHUTDOWN,
-    SSL_SENT_SHUTDOWN, X509, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
+    SSL_SENT_SHUTDOWN, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
 };
 use std::ffi::CStr;
-use std::mem::MaybeUninit;
-use std::os::raw::{c_char, c_int, c_long, c_ulong, c_void};
+use std::os::raw::{c_int, c_long, c_ulong, c_void};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::SocketFields;
 
@@ -229,32 +228,6 @@ pub fn swr_v1_socket_ssl_verify(ssl: Ssl, allow_self_signed: bool) -> c_long {
     result
 }
 
-/// `_ssl_read_x509_file`: `cert` as PEM into at most `length` bytes at `buffer`.
-/// Returns the bytes written, or -1 when `BIO_new` failed and -2 when
-/// `PEM_write_bio_X509` failed (native code warns). When `consume`, frees `cert`.
-///
-/// # Safety
-/// `cert` is a live X509 (owned by the caller when `consume`), and `buffer` denotes
-/// `length` writable bytes.
-pub unsafe fn swr_v1_socket_ssl_pem(
-    cert: *mut X509,
-    buffer: *mut c_char,
-    length: usize,
-    consume: bool,
-) -> c_int {
-    // SAFETY: the caller's live certificate.
-    let borrowed = unsafe { CertRef::new(cert) };
-    // SAFETY: the caller's reference when `consume`, which this side now owns.
-    let owned = consume.then(|| unsafe { Cert::from_raw(cert) });
-    // SAFETY: the caller lends `length` writable bytes.
-    let buffer =
-        unsafe { std::slice::from_raw_parts_mut(buffer.cast::<MaybeUninit<u8>>(), length) };
-    let written = borrowed.map_or(-2, |cert| cert.pem(buffer));
-    // The reference the caller handed over, released as this side's own.
-    drop(owned);
-    written
-}
-
 /// OpenSSL 3's `ERR_GET_REASON`: a system error's reason is its errno.
 /// openssl-sys's port returns `ERR_LIB_SYS` (2) for those instead.
 #[must_use]
@@ -419,6 +392,7 @@ pub unsafe fn swr_v1_socket_ssl_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handle::{Cert, CertRef};
     use openssl_sys::*;
     use std::os::raw::c_int;
 
@@ -591,12 +565,15 @@ mod tests {
     fn pem_reason_and_new() {
         unsafe {
             let mut pem = [0_u8; 4096];
+            // `swr_v1_socket_ssl_read_x509` before its warnings: the PEM, then the
+            // reference released when `consume`.
+            let pem_of = |cert: *mut X509, buffer: &mut [u8], consume: bool| {
+                let written = CertRef::new(cert).map_or(-2, |cert| cert.pem(buffer));
+                drop(consume.then(|| Cert::from_raw(cert)));
+                written
+            };
             let empty = X509_new();
-            assert_eq!(
-                swr_v1_socket_ssl_pem(empty, pem.as_mut_ptr().cast(), pem.len(), true),
-                -2,
-                "nothing to encode"
-            );
+            assert_eq!(pem_of(empty, &mut pem, true), -2, "nothing to encode");
             ERR_clear_error();
             // A self-signed Ed25519 certificate.
             let keygen = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, std::ptr::null_mut());
@@ -608,15 +585,11 @@ mod tests {
             assert_eq!(X509_set_pubkey(cert, key), 1);
             assert!(X509_sign(cert, key, std::ptr::null()) > 0);
             EVP_PKEY_free(key);
-            let written = swr_v1_socket_ssl_pem(cert, pem.as_mut_ptr().cast(), pem.len(), false);
+            let written = pem_of(cert, &mut pem, false);
             assert!(written > 0);
             assert!(pem.starts_with(b"-----BEGIN CERTIFICATE-----"));
             let mut short = [0_u8; 10];
-            assert_eq!(
-                swr_v1_socket_ssl_pem(cert, short.as_mut_ptr().cast(), short.len(), true),
-                10,
-                "bounded by the buffer"
-            );
+            assert_eq!(pem_of(cert, &mut short, true), 10, "bounded by the buffer");
 
             let context = SSL_CTX_new(TLS_method());
             let mut error = 0;

@@ -23,14 +23,14 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, UNDEF,
-    Value, ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
+    ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    set_object,
+    object_zval,
     sys::{
         E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-        zval, zval_ptr_dtor,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -326,19 +326,17 @@ impl Client {
     /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
     /// 2 if it bailed out.
     fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
-        let mut args = [UNDEF; 2];
+        // The string argument's reference, released when it drops.
+        let data = Owned::string(ZString::new(data));
         // SAFETY: the object outlives its client, so the call; it is borrowed
         // for the call as upstream's `ZVAL_OBJ`.
-        unsafe { set_object(&raw mut args[0], self.object) };
-        args[1] = Owned::string(ZString::new(data)).into_zval();
-        let result = match callable.call(&mut args, None, false) {
+        let this = unsafe { object_zval(self.object) };
+        let mut args = [this, data.copy_value()];
+        match callable.call(&mut args, None, false) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(bailout::Bailout) => 2,
-        };
-        // SAFETY: the string argument's reference.
-        unsafe { zval_ptr_dtor(&raw mut args[1]) };
-        result
+        }
     }
 
     /// `zval_get_long` of a declared property of the client object.

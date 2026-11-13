@@ -5,8 +5,8 @@ use crate::{
     bailout::{self, Bailout},
     sys::{
         IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
-        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, zend_fcall_info,
-        zend_fcall_info_cache, zend_value, zval,
+        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, zend_fcall_info_cache,
+        zend_value, zval,
     },
 };
 use std::{ffi::c_void, ptr};
@@ -35,9 +35,8 @@ impl Callable {
             unsafe { swr_zend_emalloc(size_of::<swr_zend_callable>()) }.cast::<swr_zend_callable>();
         // SAFETY: fresh storage; all-zero is an empty callable.
         unsafe { raw.write_bytes(0, 1) };
-        let this = Parsed(raw);
-        // SAFETY: as above.
-        let callable = unsafe { &mut *raw };
+        let mut this = Parsed(raw);
+        let callable = this.record();
         let arg = call.arg_value(n).as_ptr();
         // SAFETY: passed argument `n`; Zend fills the callable.
         let parsed =
@@ -80,24 +79,6 @@ impl Callable {
         )
     }
 
-    /// The kept callable's call record, copied: its function name, bound
-    /// arguments and result slot, for a caller that calls it with others.
-    /// The copy owns nothing; the callable still holds what it names.
-    #[must_use]
-    pub fn fci(&self) -> zend_fcall_info {
-        // SAFETY: a parsed callable, live while this holds it; the record is
-        // plain data.
-        unsafe { (*self.0).fci }
-    }
-
-    /// The kept callable's cache, for a call.
-    #[must_use]
-    pub fn fcc_ptr(&self) -> *mut zend_fcall_info_cache {
-        self.0
-            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
-            .cast()
-    }
-
     /// The callback and destructor of a C owner, such as a timer, whose data is
     /// this callable's [`Callable::as_raw`]: each runs `H`'s with the callable.
     #[must_use]
@@ -132,14 +113,20 @@ impl Callable {
 }
 
 impl Parsed {
+    /// The callable's record, which only this owner reaches until it is kept.
+    fn record(&mut self) -> &mut swr_zend_callable {
+        // SAFETY: `parse`'s live allocation, zeroed (an empty callable) before
+        // this is made; the exclusive borrow is the only way to it.
+        unsafe { &mut *self.0 }
+    }
+
     /// Keep the callable past this call: copy its arguments out of the frame
     /// (`sw_zend_fci_params_persist`), with `first` before them when given (a
     /// tick's timer id), and hold its object and closure
     /// (`sw_zend_fci_cache_persist`).
     #[must_use]
-    pub fn keep(self, first: Option<i64>) -> Callable {
-        // SAFETY: a parsed callable.
-        let callable = unsafe { &mut *self.0 };
+    pub fn keep(mut self, first: Option<i64>) -> Callable {
+        let callable = self.record();
         let count = callable.fci.param_count as usize;
         let lead = usize::from(first.is_some());
         if count + lead > 0 {

@@ -34,7 +34,9 @@ mod c {
     // SAFETY: POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or writes the one object its
     // reference names. `calloc` and `strndup` return null or a fresh
-    // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone.
+    // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
+    // `sigset_t` is plain bits the set calls read or write whole, and a signal number
+    // outside the set is an error they return.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn shutdown(fd: c_int, how: c_int) -> c_int;
@@ -66,6 +68,8 @@ mod c {
         pub(crate) safe fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int)
         -> pid_t;
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
+        /// Stores the head of a new list, which `freeifaddrs` frees, when it returns 0.
+        pub(crate) safe fn getifaddrs(list: &mut *mut libc::ifaddrs) -> c_int;
         pub(crate) safe fn srandom(seed: c_uint);
         /// `sigemptyset(3)`: `set` without a signal.
         #[cfg_attr(target_os = "netbsd", link_name = "__sigemptyset14")]
@@ -503,8 +507,7 @@ impl Interfaces {
     #[must_use]
     pub fn new() -> Option<Self> {
         let mut list = std::ptr::null_mut();
-        // SAFETY: a writable out-pointer.
-        (unsafe { libc::getifaddrs(&raw mut list) } == 0).then_some(Self(list))
+        (c::getifaddrs(&mut list) == 0).then_some(Self(list))
     }
 
     /// The entries, in the list's order.
