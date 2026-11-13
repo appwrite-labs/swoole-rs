@@ -153,9 +153,21 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
 
 /// `swoole_set_isolation(group, user, chroot)`, which the header calls with each
 /// `std::string`'s `c_str()`.
+/// # Safety
+/// `group`, `user` and `root` are valid NUL-terminated strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_set_isolation(group: Text<'_>, user: Text<'_>, root: Text<'_>) {
-    set_isolation(group.get(), user.get(), root.get());
+pub unsafe extern "C" fn swr_v1_os_set_isolation(
+    group: *const c_char,
+    user: *const c_char,
+    root: *const c_char,
+) {
+    // SAFETY: valid C strings per the contract.
+    let group = unsafe { CStr::from_ptr(group) };
+    // SAFETY: as above.
+    let user = unsafe { CStr::from_ptr(user) };
+    // SAFETY: as above.
+    let root = unsafe { CStr::from_ptr(root) };
+    set_isolation(group, user, root);
 }
 
 /// `swoole_set_isolation`: drop to `group` and `user`, then chroot to `root`,
@@ -401,11 +413,13 @@ mod tests {
     fn os_set_isolation() {
         const CHILD: &str = "SWR_OS_SET_ISOLATION_CHILD";
         if std::env::var_os(CHILD).is_some() {
-            swr_v1_os_set_isolation(
-                c"not-exists-group".into(),
-                c"not-exists-user".into(),
-                c"/tmp/not-exists-dir".into(),
-            );
+            unsafe {
+                swr_v1_os_set_isolation(
+                    c"not-exists-group".as_ptr(),
+                    c"not-exists-user".as_ptr(),
+                    c"/tmp/not-exists-dir".as_ptr(),
+                );
+            }
             return;
         }
         let child = std::process::Command::new(std::env::current_exe().unwrap())

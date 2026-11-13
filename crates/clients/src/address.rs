@@ -111,8 +111,8 @@ pub fn assign(
 /// NUL; `resolve` is native `gethostbyname` or null (`resolve_name` false).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_address_assign(
-    storage: &mut AddressStorage,
-    size: &mut libc::socklen_t,
+    address: &mut AddressStorage,
+    length: &mut libc::socklen_t,
     kind: c_int,
     host: *const c_char,
     host_length: usize,
@@ -122,7 +122,7 @@ pub unsafe extern "C" fn swr_v1_clients_address_assign(
     // SAFETY: the caller passes `host_length` bytes of host, then its NUL.
     let bytes =
         unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length.saturating_add(1)) };
-    assign_with(storage, size, kind, bytes, port, |family, name| {
+    assign_with(address, length, kind, bytes, port, |family, name| {
         let Some(resolve) = resolve else {
             return Err(BAD_HOST_ADDR);
         };

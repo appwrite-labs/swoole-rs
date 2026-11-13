@@ -164,17 +164,23 @@ pub fn parse_stoi(input: &[u8]) -> Option<c_int> {
     c_int::try_from(value).ok()
 }
 
-/// [`parse_stoi`] for native code: 1 with `*output` set, else 0. `input` is null or a
-/// NUL-terminated string.
+/// [`parse_stoi`] for native code: 1 with `*output` set, else 0.
+/// # Safety
+/// `input` is null or a valid NUL-terminated string.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_corebase_parse_stoi(
-    input: Option<sys::Text<'_>>,
+pub unsafe extern "C" fn swr_v1_corebase_parse_stoi(
+    input: *const c_char,
     output: Option<&mut c_int>,
 ) -> u8 {
-    let (Some(input), Some(output)) = (input, output) else {
+    let Some(output) = output else {
         return 0;
     };
-    let Some(value) = parse_stoi(input.get().to_bytes()) else {
+    if input.is_null() {
+        return 0;
+    }
+    // SAFETY: a non-null, NUL-terminated string.
+    let input = unsafe { CStr::from_ptr(input) };
+    let Some(value) = parse_stoi(input.to_bytes()) else {
         return 0;
     };
     *output = value;
@@ -652,7 +658,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                swr_v1_corebase_parse_stoi(Some(input.as_c_str().into()), Some(&mut output)),
+                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
                 1
             );
             assert_eq!(output, expected);
@@ -661,7 +667,7 @@ mod tests {
             let input = std::ffi::CString::new(text).unwrap();
             let mut output = 0x1357_9bdf;
             assert_eq!(
-                swr_v1_corebase_parse_stoi(Some(input.as_c_str().into()), Some(&mut output)),
+                unsafe { swr_v1_corebase_parse_stoi(input.as_ptr(), Some(&mut output)) },
                 0
             );
             assert_eq!(output, 0x1357_9bdf);

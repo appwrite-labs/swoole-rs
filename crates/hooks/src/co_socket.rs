@@ -653,7 +653,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
 /// there is overwritten, not dropped); the native object owns it for its lifetime.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_hook_co_socket_new(
-    storage: &mut MaybeUninit<CoSocket>,
+    socket: &mut MaybeUninit<CoSocket>,
     owner: *mut c_void,
     how: c_int,
     fd: c_int,
@@ -662,7 +662,7 @@ pub extern "C" fn swr_v1_hook_co_socket_new(
     kind: c_int,
     protocol: c_int,
 ) -> u32 {
-    let record = storage.write(CoSocket::new());
+    let record = socket.write(CoSocket::new());
     record.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
