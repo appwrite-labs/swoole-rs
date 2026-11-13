@@ -210,32 +210,67 @@ pub fn sw_rs_http2_send_complete(sent: isize, wanted: usize) -> bool {
     sent == wanted.cast_signed()
 }
 
+/// Whose headers a name is looked up among.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderRole {
+    /// A request the server received.
+    Request,
+    /// A response the client received.
+    Response,
+    /// A response the server sends.
+    Server,
+    /// A request the client sends.
+    Client,
+}
+
+/// A header its role acts on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HeaderKind {
+    /// Any other header.
+    #[default]
+    Other,
+    Method,
+    Path,
+    Authority,
+    ContentType,
+    Cookie,
+    ContentLength,
+    AcceptEncoding,
+    Status,
+    ContentEncoding,
+    SetCookie,
+    Server,
+    Date,
+    Host,
+}
+
 /// Match locale-folded native header bytes; Rust selects role-specific effects.
-fn header_kind(role: u32, name: &[u8], logical: usize) -> u32 {
-    if name.is_empty() || name.len() != logical {
-        return 0;
+fn header_kind(role: HeaderRole, name: &[u8], logical: usize) -> HeaderKind {
+    use HeaderRole::{Client, Request, Response, Server};
+    if name.len() != logical {
+        return HeaderKind::Other;
     }
     match (role, name) {
-        (0, b":method") => 1,
-        (0, b":path") => 2,
-        (0, b":authority") => 3,
-        (0 | 2, b"content-type") => 4,
-        (0, b"cookie") => 5,
-        (0 | 2, b"content-length") => 6,
-        (0, b"accept-encoding") => 7,
-        (1, b":status") => 8,
-        (1, b"content-encoding") => 9,
-        (1, b"set-cookie") => 10,
-        (2, b"server") => 11,
-        (2, b"date") => 12,
-        (3, b"host") => 13,
-        _ => 0,
+        (Request, b":method") => HeaderKind::Method,
+        (Request, b":path") => HeaderKind::Path,
+        (Request, b":authority") => HeaderKind::Authority,
+        (Request | Server, b"content-type") => HeaderKind::ContentType,
+        (Request, b"cookie") => HeaderKind::Cookie,
+        (Request | Server, b"content-length") => HeaderKind::ContentLength,
+        (Request, b"accept-encoding") => HeaderKind::AcceptEncoding,
+        (Response, b":status") => HeaderKind::Status,
+        (Response, b"content-encoding") => HeaderKind::ContentEncoding,
+        (Response, b"set-cookie") => HeaderKind::SetCookie,
+        (Server, b"server") => HeaderKind::Server,
+        (Server, b"date") => HeaderKind::Date,
+        (Client, b"host") => HeaderKind::Host,
+        _ => HeaderKind::Other,
     }
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2HeaderPlan {
-    pub kind: u32,
+    pub kind: HeaderKind,
     pub publish_flags: u32,
     pub suppress: bool,
     pub capture_content_type: bool,
@@ -244,18 +279,18 @@ pub struct Http2HeaderPlan {
 /// The plan for a header whose `logical`-byte name folds to `folded`.
 #[must_use]
 pub fn sw_rs_http2_header_plan(
-    role: u32,
+    role: HeaderRole,
     folded: &[u8],
     logical: usize,
     can_capture: bool,
 ) -> Http2HeaderPlan {
     let kind = header_kind(role, folded, logical);
-    let server = role == 2;
+    let server = role == HeaderRole::Server;
     let publish_flags = if server {
         match kind {
-            11 => 2,
-            12 => 16,
-            4 => 32,
+            HeaderKind::Server => 2,
+            HeaderKind::Date => 16,
+            HeaderKind::ContentType => 32,
             _ => 0,
         }
     } else {
@@ -264,8 +299,8 @@ pub fn sw_rs_http2_header_plan(
     Http2HeaderPlan {
         kind,
         publish_flags,
-        suppress: server && kind == 6,
-        capture_content_type: server && kind == 4 && can_capture,
+        suppress: server && kind == HeaderKind::ContentLength,
+        capture_content_type: server && kind == HeaderKind::ContentType && can_capture,
     }
 }
 
@@ -901,30 +936,37 @@ mod tests {
 
     /// Upstream's `SW_STRCASEEQ` role predicates (the client and server header
     /// parsers) over the unfolded name.
-    fn upstream_kind(role: u32, name: &[u8]) -> u32 {
+    fn upstream_kind(role: HeaderRole, name: &[u8]) -> HeaderKind {
+        use HeaderKind::*;
         let colon = name.first() == Some(&b':');
-        let keys: &[(&str, u32)] = match role {
-            0 if colon => &[("method", 1), ("path", 2), ("authority", 3)],
-            0 => &[
-                ("content-type", 4),
-                ("cookie", 5),
-                ("content-length", 6),
-                ("accept-encoding", 7),
+        let keys: &[(&str, HeaderKind)] = match role {
+            HeaderRole::Request if colon => {
+                &[("method", Method), ("path", Path), ("authority", Authority)]
+            }
+            HeaderRole::Request => &[
+                ("content-type", ContentType),
+                ("cookie", Cookie),
+                ("content-length", ContentLength),
+                ("accept-encoding", AcceptEncoding),
             ],
-            1 if colon => &[("status", 8)],
-            1 => &[("content-encoding", 9), ("set-cookie", 10)],
-            2 => &[
-                ("server", 11),
-                ("content-length", 6),
-                ("date", 12),
-                ("content-type", 4),
+            HeaderRole::Response if colon => &[("status", Status)],
+            HeaderRole::Response => &[
+                ("content-encoding", ContentEncoding),
+                ("set-cookie", SetCookie),
             ],
-            _ => &[("host", 13)],
+            HeaderRole::Server => &[
+                ("server", Server),
+                ("content-length", ContentLength),
+                ("date", Date),
+                ("content-type", ContentType),
+            ],
+            HeaderRole::Client => &[("host", Host)],
         };
-        let text = if role < 2 && colon { &name[1..] } else { name };
+        let parsed = matches!(role, HeaderRole::Request | HeaderRole::Response);
+        let text = if parsed && colon { &name[1..] } else { name };
         keys.iter()
             .find(|(key, _)| text.eq_ignore_ascii_case(key.as_bytes()))
-            .map_or(0, |(_, kind)| *kind)
+            .map_or(Other, |(_, kind)| *kind)
     }
 
     fn upstream_media(value: &[u8]) -> Media {
@@ -985,9 +1027,18 @@ mod tests {
         }
         for name in &names {
             let (bytes, n) = folded(name);
-            for role in 0..4 {
+            for role in [
+                HeaderRole::Request,
+                HeaderRole::Response,
+                HeaderRole::Server,
+                HeaderRole::Client,
+            ] {
                 let plan = sw_rs_http2_header_plan(role, &bytes[..n], name.len(), false);
-                assert_eq!(plan.kind, upstream_kind(role, name), "role {role} {name:?}");
+                assert_eq!(
+                    plan.kind,
+                    upstream_kind(role, name),
+                    "role {role:?} {name:?}"
+                );
             }
         }
         let values: [&[u8]; 13] = [
