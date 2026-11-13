@@ -9,14 +9,7 @@
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
 use std::hash::{BuildHasher, RandomState};
-use swoole_rs_http::multipart_parser::{
-    MPPE_BAD_PART_END, MPPE_BAD_START_BOUNDARY, MPPE_BOUNDARY_END_NO_CRLF,
-    MPPE_END_BOUNDARY_NO_DASH, MPPE_HEADER_VALUE_INCOMPLETE, MPPE_INVALID_HEADER_FIELD_CHAR,
-    MPPE_INVALID_HEADER_VALUE_CHAR, MPPE_OK, MultipartParser, Parts,
-};
-
-/// `MPPE_PAUSED`, as an error reason.
-const MPPE_PAUSED: u8 = 1;
+use swoole_rs_http::multipart_parser::{MultipartError, MultipartParser, Parts};
 
 /// `MppResult`, filled by `_settings`' callbacks.
 #[derive(Default)]
@@ -67,8 +60,8 @@ fn len(data: &[u8]) -> isize {
 }
 
 /// `create_error`: the message for `reason` is non-empty and contains `error`.
-fn create_error(parser: &mut MultipartParser, reason: u8, error: &str) {
-    parser.error_reason = reason;
+fn create_error(parser: &mut MultipartParser, reason: MultipartError, error: &str) {
+    parser.error_reason = Some(reason);
     let response = parser.error_message();
     assert!(!response.is_empty(), "{error}");
     assert!(
@@ -80,37 +73,41 @@ fn create_error(parser: &mut MultipartParser, reason: u8, error: &str) {
 #[test]
 fn error_message() {
     let mut parser = create_parser();
-    parser.error_reason = MPPE_OK;
+    parser.error_reason = None;
     assert!(parser.error_message().is_empty(), "MPPE_OK");
     for expected in *b"\0\r\na" {
         parser.error_expected = expected;
-        create_error(&mut parser, MPPE_PAUSED, "parser paused");
+        create_error(&mut parser, MultipartError::Paused, "parser paused");
         create_error(
             &mut parser,
-            MPPE_BOUNDARY_END_NO_CRLF,
+            MultipartError::BoundaryEndNoCrlf,
             "no CRLF at first boundary end: ",
         );
         create_error(
             &mut parser,
-            MPPE_BAD_START_BOUNDARY,
+            MultipartError::BadStartBoundary,
             "first boundary mismatching: ",
         );
         create_error(
             &mut parser,
-            MPPE_INVALID_HEADER_FIELD_CHAR,
+            MultipartError::InvalidHeaderFieldChar,
             "invalid char in header field: ",
         );
         create_error(
             &mut parser,
-            MPPE_INVALID_HEADER_VALUE_CHAR,
+            MultipartError::InvalidHeaderValueChar,
             "invalid char in header value: ",
         );
         create_error(
             &mut parser,
-            MPPE_BAD_PART_END,
+            MultipartError::BadPartEnd,
             "no next part or final hyphen: expecting CR or '-' ",
         );
-        create_error(&mut parser, MPPE_END_BOUNDARY_NO_DASH, "bad final hyphen: ");
+        create_error(
+            &mut parser,
+            MultipartError::EndBoundaryNoDash,
+            "bad final hyphen: ",
+        );
     }
 }
 
@@ -164,7 +161,11 @@ fn header_error() {
         -1,
         "incomplete header"
     );
-    assert_eq!(parser.error_reason, MPPE_HEADER_VALUE_INCOMPLETE, "reason");
+    assert_eq!(
+        parser.error_reason,
+        Some(MultipartError::HeaderValueIncomplete),
+        "reason"
+    );
     assert_eq!(parser.error_expected, b'\r', "expected CR");
 }
 
