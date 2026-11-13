@@ -28,8 +28,6 @@ class SocketPair {
   public:
     ~SocketPair();
 
-    ssize_t read(void *_buf, size_t length) const;
-    ssize_t write(const void *_buf, size_t length) const;
     void clean() const;
     bool close(int which = 0);
 
