@@ -808,7 +808,10 @@ fn get_client_info(call: &Call) {
         .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_websocket_protocol.get())
     {
-        call.add_assoc_long(c"websocket_status", i64::from(conn.websocket_status()));
+        call.add_assoc_long(
+            c"websocket_status",
+            i64::from(conn.websocket_status().code()),
+        );
     }
     conn.with_client_cert(|cert| call.add_assoc_stringl(c"ssl_client_cert", cert));
     if let Some(server_socket) = serv.at(conn.server_fd()) {

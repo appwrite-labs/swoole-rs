@@ -12,7 +12,7 @@ use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_httpbindings::{
@@ -566,13 +566,10 @@ fn websocket_connection(state: &State) -> bool {
         .port_of_server_fd(conn.server_fd())
         .is_some_and(|port| port.open_websocket_protocol.get())
     {
-        conn.set_websocket_status(STATUS_CONNECTION);
+        conn.set_websocket_status(WebSocketStatus::Connection);
     }
     true
 }
-
-/// `WebSocket::STATUS_CONNECTION`.
-const STATUS_CONNECTION: u8 = 1;
 
 fn header_value(state: &mut State, value_: &[u8]) -> c_int {
     let length = value_.len();

@@ -18,7 +18,6 @@ pub use conditional::{Calendar, Conditional, Tm, conditional, http_date};
 mod directory;
 use directory::HttpDirectory;
 mod dispatch;
-pub use dispatch::transport_route;
 mod framing;
 pub use framing::{HttpFrame, expect as has_expect_header, header_value};
 mod headers;

@@ -15,9 +15,9 @@ use std::{
     sync::{Arc, OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
-use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
+use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
@@ -549,8 +549,6 @@ const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int
 const UDP: c_int = 2;
 const UDP6: c_int = 4;
 const UNIX_DGRAM: c_int = 6;
-/// `websocket::STATUS_ACTIVE`.
-const WEBSOCKET_ACTIVE: u8 = 3;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
 /// receive slot its request for the call; its fields are private, so safe code
@@ -827,8 +825,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    let websocket_status = conn.websocket_status();
-    if websocket_status != WEBSOCKET_ACTIVE {
+    if conn.websocket_status() != WebSocketStatus::Active {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket

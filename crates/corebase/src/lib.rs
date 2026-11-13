@@ -56,11 +56,11 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, ServerEvent, datahead_dump, microtime, sw_calloc, sw_free, sw_malloc,
-    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
-    swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any, swoole_random_int,
-    swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
-    swr_v1_core_format_result,
+    DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, sw_calloc, sw_free,
+    sw_malloc, swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit,
+    swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
+    swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
+    swoole_system_random, swr_v1_core_format_result,
 };
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
