@@ -362,7 +362,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
             0
         }
         OP_RESET => i64::from(swr_v1_socket_reset_on_close(s.fd())) - 1,
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("an unknown framing op"),
     }
 }
 

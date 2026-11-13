@@ -781,8 +781,12 @@ impl Server {
         let conn = unsafe {
             swoole_rs_server::Connection::from_ptr(ptr::from_ref(conn).cast_mut().cast())
         };
-        self.view()
-            .healthy(now, conn.unwrap_or_else(|| std::process::abort()))
+        self.view().healthy(
+            now,
+            conn.unwrap_or_else(|| {
+                swoole_rs_corebase::fatal("a live connection with a null record")
+            }),
+        )
     }
 
     fn feedback(self, conn: &mut Connection, event: c_int) -> bool {

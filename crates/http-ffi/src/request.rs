@@ -190,7 +190,7 @@ unsafe extern "C" fn effects(op: u32, a: *mut c_void, b: *const u8, n: u64, m: u
             c"Request::parse_multipart_data",
             format_args!("parse multipart body failed, {n}/{m} bytes processed"),
         ),
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("an unknown multipart parse result"),
     }
     0
 }
@@ -582,10 +582,9 @@ impl HttpRequest {
 
 fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
     // Callbacks run only from `parse_multipart_data`, on a request with a form.
-    request
-        .form
-        .as_deref_mut()
-        .unwrap_or_else(|| std::process::abort())
+    request.form.as_deref_mut().unwrap_or_else(|| {
+        swoole_rs_corebase::fatal("a multipart callback on a request without a form")
+    })
 }
 
 /// The multipart parser's callbacks, which rewrite the body into the saved buffer.

@@ -244,7 +244,7 @@ impl ServerState {
             unsafe { entry(core::ptr::with_exposed_provenance_mut(serv), arg) };
         });
         let Ok(thread) = thread else {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a server thread can't start");
         };
         self.threads
             .lock()

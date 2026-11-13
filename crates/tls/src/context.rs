@@ -722,7 +722,7 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [impl ReadSlot; 255], cookie_length: &mu
             &field::<16>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_addr))[..],
         ),
         // Upstream's OPENSSL_assert(0).
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("a peer address that is neither IPv4 nor IPv6"),
     };
     let data = [&port[..], address].concat();
     let sha1 = EVP_sha1();

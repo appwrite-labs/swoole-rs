@@ -80,7 +80,7 @@ pub unsafe extern "C" fn parse_multipart_boundary(
 pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
     // A null buffer: upstream's loop writes through it.
     if str.is_null() || len >= isize::MAX as usize {
-        std::process::abort();
+        swoole_rs_corebase::fatal("url_decode of a null or oversized buffer");
     }
     // SAFETY: non-null, `len + 1 <= isize::MAX`; the caller lends that many writable bytes.
     let buffer = unsafe { std::slice::from_raw_parts_mut(str.cast::<u8>(), len + 1) };
@@ -105,19 +105,19 @@ pub unsafe extern "C" fn url_decode(str: *mut c_char, len: usize) -> usize {
 pub unsafe extern "C" fn url_encode(str: *const c_char, len: usize) -> *mut c_char {
     // SAFETY: as the caller guarantees.
     let Ok(input) = (unsafe { crate::bytes(str.cast(), len) }) else {
-        std::process::abort();
+        swoole_rs_corebase::fatal("url_encode of a null buffer");
     };
     let Ok(capacity) = swoole_rs_http::url_capacity(input) else {
-        std::process::abort();
+        swoole_rs_corebase::fatal("url_encode's output size overflows");
     };
     let result = swoole_rs_corebase::sw_malloc(capacity).cast::<MaybeUninit<u8>>();
     if result.is_null() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("url_encode is out of memory");
     }
     // SAFETY: `result` holds `capacity` bytes, disjoint from the input.
     let output = unsafe { std::slice::from_raw_parts_mut(result, capacity) };
     if swoole_rs_http::url_encode(input, output).is_err() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("url_encode overran its output");
     }
     result.cast()
 }

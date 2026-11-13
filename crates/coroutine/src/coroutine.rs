@@ -233,7 +233,7 @@ impl Co {
     pub(crate) fn running(s: Sched, co: *mut Coroutine) -> Self {
         match Self::current(s) {
             Some(current) if current.ptr() == co => current,
-            _ => std::process::abort(),
+            _ => swoole_rs_corebase::fatal("a yield from a coroutine that is not running"),
         }
     }
 

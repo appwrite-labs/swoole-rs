@@ -66,11 +66,13 @@ impl CoroutineLock {
         if host.wait.is_some() != host.wake.is_some()
             || (host.wait.is_none() && host.sleep.is_none())
         {
-            std::process::abort();
+            swoole_rs_corebase::fatal(
+                "a coroutine lock host needs wait and wake together, or sleep",
+            );
         }
         let word = if shared {
             let Some(word) = (host.alloc_shared)() else {
-                std::process::abort();
+                swoole_rs_corebase::fatal("no shared memory for a coroutine lock");
             };
             word.store(0, Ordering::Relaxed);
             Word::Shared(word)
@@ -123,7 +125,7 @@ impl CoroutineLock {
                 }
             } else {
                 let Some(sleep) = host.sleep else {
-                    std::process::abort();
+                    swoole_rs_corebase::fatal("a coroutine lock host has neither wait nor sleep");
                 };
                 let result = sleep(second);
                 if result.bailed != 0 {

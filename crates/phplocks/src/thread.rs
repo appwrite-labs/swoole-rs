@@ -279,7 +279,8 @@ fn lock_construct(call: &Call) {
     };
     // Upstream throws a C++ exception, which terminates the process, when a
     // lock cannot be made.
-    let lock = Lock::private(lock_kind(requested, KINDS)).unwrap_or_else(|| std::process::abort());
+    let lock = Lock::private(lock_kind(requested, KINDS))
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread lock can't be made"));
     this.0.get_or_init(|| Arc::new(Resource::Lock(lock)));
 }
 

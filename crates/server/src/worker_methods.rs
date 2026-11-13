@@ -94,10 +94,11 @@ pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     // keeps for the program's life; nothing else sees them yet.
     let lock = unsafe { lock.cast::<MaybeUninit<SharedMutex>>().as_mut() };
     // Upstream's `Mutex` constructor throws, which ends the process here.
-    let lock = lock.unwrap_or_else(|| std::process::abort());
+    let lock =
+        lock.unwrap_or_else(|| swoole_rs_corebase::fatal("no shared memory for a worker lock"));
     let lock = lock.write(SharedMutex::new());
     if lock.init() != 0 {
-        std::process::abort();
+        swoole_rs_corebase::fatal("a worker lock can't be initialized");
     }
     worker.set_lock(Some(lock));
     let pipe = worker.pipe_object();

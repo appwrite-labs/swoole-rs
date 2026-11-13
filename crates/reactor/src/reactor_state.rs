@@ -279,7 +279,7 @@ impl ReactorState {
             return false;
         }
         let Ok(length) = usize::try_from(count) else {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a negative event count");
         };
         self.backend = match kind {
             #[cfg(target_os = "linux")]

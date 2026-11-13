@@ -198,7 +198,7 @@ impl TimerNode {
 /// A queue status that only a broken invariant returns (upstream threw).
 fn check(status: i32) {
     if status != OK {
-        std::process::abort();
+        swoole_rs_corebase::fatal("a timer queue operation failed");
     }
 }
 
@@ -555,7 +555,7 @@ impl Owner {
                     queue.complete(stats.active_id)
                 };
                 if status != RELEASE {
-                    std::process::abort();
+                    swoole_rs_corebase::fatal("a timer completed without releasing");
                 }
                 if stats.selecting != 0 {
                     check(queue.end().0);
@@ -575,7 +575,7 @@ impl Owner {
         };
         // The record's drop frees the drained queue.
         if status != EMPTY || !self.queue.borrow().idle() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a timer queue still busy when dropped");
         }
     }
 }

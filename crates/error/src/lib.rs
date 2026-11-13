@@ -256,6 +256,10 @@ pub fn swoole_clear_last_error_msg() {
 pub fn swoole_throw_error(code: i32) -> ! {
     use std::io::Write;
     writeln!(std::io::stderr(), "swoole_throw_error({code})").ok();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the line above says why; this crate sits below corebase"
+    )]
     std::process::abort();
 }
 

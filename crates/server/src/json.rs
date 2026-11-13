@@ -24,7 +24,7 @@ impl Json {
     pub(crate) fn utf8(bytes: &[u8]) -> String {
         match core::str::from_utf8(bytes) {
             Ok(text) => text.to_owned(),
-            Err(_) => std::process::abort(),
+            Err(_) => swoole_rs_corebase::fatal("admin JSON that is not UTF-8"),
         }
     }
 
@@ -147,7 +147,9 @@ pub(crate) fn param(msg: &[u8], key: &str) -> Option<String> {
     let mut parser = Parser { text: msg, at: 0 };
     match parser.document(key.as_bytes()) {
         Ok(Found::Text(value)) => Some(value),
-        Ok(Found::Other) | Err(()) => std::process::abort(),
+        Ok(Found::Other) | Err(()) => {
+            swoole_rs_corebase::fatal("admin JSON without the expected text field")
+        }
         Ok(Found::Missing) => None,
     }
 }

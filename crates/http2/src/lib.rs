@@ -64,6 +64,10 @@ static DEFAULT_SETTINGS: [AtomicU32; 6] = [
 ];
 
 /// The slot of a setting id. Upstream asserts on any other id, so this aborts.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "upstream asserts on an unknown id; this crate has no dependencies, so no logger"
+)]
 fn default_slot(id: u32) -> &'static AtomicU32 {
     usize::try_from(id)
         .ok()

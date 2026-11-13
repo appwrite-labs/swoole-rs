@@ -89,13 +89,13 @@ impl<'a> Context<'a> {
     fn send(&self) -> &SendData {
         self.send
             .as_deref()
-            .unwrap_or_else(|| std::process::abort())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a factory op without send data"))
     }
     /// The data sent, to write.
     fn send_mut(&mut self) -> &mut SendData {
         self.send
             .as_deref_mut()
-            .unwrap_or_else(|| std::process::abort())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a factory op without send data"))
     }
     /// The data sent, for the native-shaped calls that take it, or null.
     fn send_ptr(&mut self) -> *mut SendData {
@@ -105,7 +105,8 @@ impl<'a> Context<'a> {
     }
     /// The context's worker, for the ops that run with one.
     fn worker(&self) -> Worker<'a> {
-        self.worker.unwrap_or_else(|| std::process::abort())
+        self.worker
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a factory op without a worker"))
     }
     /// The context's worker, for the native-shaped calls that take it, or null.
     fn worker_ptr(&self) -> *mut WorkerRecord {
@@ -113,7 +114,8 @@ impl<'a> Context<'a> {
     }
     /// The exit status, for the ops that run with one.
     fn status(&self) -> &ExitStatus {
-        self.status.unwrap_or_else(|| std::process::abort())
+        self.status
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a factory op without an exit status"))
     }
     /// The connection selected by `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN`, if any.
     fn conn(&self) -> Option<crate::Connection<'a>> {
@@ -172,7 +174,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         let answer = answer.or_else(|| worker(self, op, arg));
         let answer = answer.or_else(|| server(self, op, arg));
         let answer = answer.or_else(|| native(self, op, arg));
-        answer.unwrap_or_else(|| std::process::abort())
+        answer.unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown factory op"))
     }
 }
 

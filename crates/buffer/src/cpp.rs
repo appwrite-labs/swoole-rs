@@ -21,7 +21,7 @@ pub struct CppBuffer {
 
 fn check(status: i32) {
     if status != OK {
-        std::process::abort();
+        swoole_rs_corebase::fatal("a buffer queue operation failed");
     }
 }
 
@@ -55,7 +55,7 @@ upstream! {
     /// `Buffer(uint32_t chunk_size)`, in uninitialized storage.
     pub extern "C" fn swr_cpp_buffer_new(this: &mut MaybeUninit<CppBuffer>, chunk_size: u32) -> *mut CppBuffer {
         let Ok(queue) = crate::Buffer::create(chunk_size) else {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a buffer queue can't be created");
         };
         this.write(CppBuffer { queue: Box::into_raw(queue) })
     }
@@ -67,7 +67,7 @@ upstream! {
         while this.pop() {}
         // SAFETY: the handle `swr_cpp_buffer_new` boxed, released once: `this` is not used again.
         if unsafe { Box::from_raw(this.queue) }.release().is_err() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a buffer queue still in use when dropped");
         }
         this
     }
@@ -75,7 +75,7 @@ upstream! {
     /// `typed_front()`: the first entry; the queue must not be empty.
     #[must_use]
     pub extern "C" fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
-        this.with(|queue| queue.front()).unwrap_or_else(|_| std::process::abort())
+        this.with(|queue| queue.front()).unwrap_or_else(|_| swoole_rs_corebase::fatal("typed_front of an empty buffer"))
     }
     "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj", "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj" =>
     /// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
@@ -100,7 +100,7 @@ upstream! {
         let data = if size == 0 {
             &[]
         } else if data.is_null() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("append of null data");
         } else {
             // SAFETY: non-null with `size` readable bytes, as the caller promises.
             unsafe { std::slice::from_raw_parts(data, size as usize) }

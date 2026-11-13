@@ -165,7 +165,7 @@ pub unsafe fn swr_v1_reactor_write(
     socket.read(|record| {
         let Some(buffer) = record.output.buffer() else {
             // `new Buffer` threw, which nothing catches.
-            std::process::abort();
+            swoole_rs_corebase::fatal("a socket's output buffer can't be created");
         };
         // SAFETY: `iov` holds `count` iovecs over the payload; `offset` bytes were sent.
         unsafe { swr_cpp_buffer_append_iovec(buffer, iov, count, offset) };
