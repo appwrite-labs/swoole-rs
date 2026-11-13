@@ -277,23 +277,22 @@ fn c_str(bytes: &[u8]) -> &[u8] {
 /// `parse_ip_address_ex`: host and port of `name`, else the error text when
 /// `param` wants it.
 fn parse_address(name: &[u8], param: &mut php_stream_xport_param) -> Option<(CString, i32)> {
-    let plan = swoole_rs_hooks::address::parse(name);
-    if plan.status != 0 {
-        let what = if plan.status == 1 {
-            "IPv6 address"
-        } else {
-            "address"
-        };
-        let name = String::from_utf8_lossy(c_str(name));
-        set_error(
-            param,
-            format!("Failed to parse {what} \"{name}\"").as_bytes(),
-        );
-        return None;
+    use swoole_rs_hooks::address::{AddressError, parse};
+    match parse(name) {
+        Ok((host, port)) => Some((CString::new(c_str(host)).unwrap_or_default(), port)),
+        Err(error) => {
+            let what = match error {
+                AddressError::Ipv6 => "IPv6 address",
+                AddressError::Address => "address",
+            };
+            let name = String::from_utf8_lossy(c_str(name));
+            set_error(
+                param,
+                format!("Failed to parse {what} \"{name}\"").as_bytes(),
+            );
+            None
+        }
     }
-    let host = name.get(plan.host_offset..plan.host_offset + plan.host_length);
-    let host = c_str(host.unwrap_or_default());
-    Some((CString::new(host).unwrap_or_default(), plan.port))
 }
 
 /// A copy of `text` in the transport parameter's error text, when it wants one.
