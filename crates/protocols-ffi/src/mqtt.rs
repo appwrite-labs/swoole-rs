@@ -60,14 +60,16 @@ mod tests {
             ),
             (4, 1, 0)
         );
-        assert_eq!(
-            protocol.get_package_length.map(|f| f as usize),
-            Some(get_package_length as swoole_rs_corebase::net_types::GetPackageLength as usize)
-        );
+        // The stored callback measures, rather than comparing addresses: a fn's address
+        // isn't unique (Miri gives each use its own).
+        let stored = protocol
+            .get_package_length
+            .expect("set_protocol stores the callback");
         let measure = |bytes: &[u8]| {
             let mut pl = PacketLength::new(bytes);
             pl.header_len = 99;
-            let length = get_package_length(core::ptr::null(), core::ptr::null_mut(), &mut pl);
+            // SAFETY: MQTT's measure reads only `pl`.
+            let length = unsafe { stored(core::ptr::null(), core::ptr::null_mut(), &mut pl) };
             assert_eq!(pl.header_len, 99);
             length
         };
