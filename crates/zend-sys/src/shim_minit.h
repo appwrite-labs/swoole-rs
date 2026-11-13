@@ -6,11 +6,11 @@
 #include "shim.h"
 
 /* REGISTER_{LONG,DOUBLE,BOOL,STRING}_CONSTANT, persistent, for module `module`.
- * False when a constant is defined as `name` already, where Zend warns. */
-bool swr_zend_minit_long_constant(const char *name, zend_long value, int module);
-bool swr_zend_minit_double_constant(const char *name, double value, int module);
-bool swr_zend_minit_bool_constant(const char *name, bool value, int module);
-bool swr_zend_minit_string_constant(const char *name, const char *value, int module);
+ * Zend warns and keeps the first when a constant is defined as `name` already. */
+void swr_zend_minit_long_constant(const char *name, zend_long value, int module);
+void swr_zend_minit_double_constant(const char *name, double value, int module);
+void swr_zend_minit_bool_constant(const char *name, bool value, int module);
+void swr_zend_minit_string_constant(const char *name, const char *value, int module);
 
 /* zend_declare_class_constant_{long,string}. False when `ce` declares `name`
  * already or `name` is "class", where Zend raises a fatal error. */

@@ -19,17 +19,15 @@ use std::{
 
 // MINIT's registrations (shim_minit.h), each over NUL-terminated names, a
 // registered class or plain values, and total: it registers, or does nothing
-// and says so where Zend would warn or raise a fatal error. None runs PHP code.
+// and says so where Zend would raise a fatal error. A global constant that is
+// defined already gets Zend's warning, which at MINIT reaches no PHP error
+// handler. None runs PHP code.
 // Private, so only a [`Minit`]'s methods call them: at MINIT, on its thread.
 unsafe extern "C" {
-    safe fn swr_zend_minit_long_constant(name: CText<'_>, value: zend_long, module: c_int) -> bool;
-    safe fn swr_zend_minit_double_constant(name: CText<'_>, value: f64, module: c_int) -> bool;
-    safe fn swr_zend_minit_bool_constant(name: CText<'_>, value: bool, module: c_int) -> bool;
-    safe fn swr_zend_minit_string_constant(
-        name: CText<'_>,
-        value: CText<'_>,
-        module: c_int,
-    ) -> bool;
+    safe fn swr_zend_minit_long_constant(name: CText<'_>, value: zend_long, module: c_int);
+    safe fn swr_zend_minit_double_constant(name: CText<'_>, value: f64, module: c_int);
+    safe fn swr_zend_minit_bool_constant(name: CText<'_>, value: bool, module: c_int);
+    safe fn swr_zend_minit_string_constant(name: CText<'_>, value: CText<'_>, module: c_int);
     safe fn swr_zend_minit_class_constant_long(
         class: ClassEntry<'static>,
         name: CText<'_>,
@@ -136,7 +134,7 @@ impl Minit {
         }
     }
 
-    /// `SW_REGISTER_LONG_CONSTANT`: nothing when a constant has the name already.
+    /// `SW_REGISTER_LONG_CONSTANT`: Zend warns when a constant has the name already.
     pub fn long_constant(&self, name: &CStr, value: zend_long) {
         swr_zend_minit_long_constant(name.into(), value, self.module);
     }
@@ -321,19 +319,22 @@ impl Minit {
         );
     }
 
-    /// `zend_declare_class_constant_long` on a registered class: nothing when
-    /// the class has the constant already, or for the name `class`.
+    /// `zend_declare_class_constant_long` on a registered class.
     /// # Panics
-    /// `class` is not registered.
+    /// `class` is not registered, has the constant already, or the name is
+    /// `class`: Zend's fatal errors.
     pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        swr_zend_minit_class_constant_long(declared(class), name.into(), value);
+        let declared = swr_zend_minit_class_constant_long(declared(class), name.into(), value);
+        assert!(declared, "class constant {name:?} declared twice");
     }
 
     /// `zend_declare_class_constant_string`, as [`Self::class_constant_long`].
     /// # Panics
     /// `class` is not registered.
     pub fn class_constant_string(&self, class: &Class, name: &CStr, value: &CStr) {
-        swr_zend_minit_class_constant_string(declared(class), name.into(), value.into());
+        let declared =
+            swr_zend_minit_class_constant_string(declared(class), name.into(), value.into());
+        assert!(declared, "class constant {name:?} declared twice");
     }
 
     /// `zend_add_parameter_attribute(method, offset, SensitiveParameter)`: PHP

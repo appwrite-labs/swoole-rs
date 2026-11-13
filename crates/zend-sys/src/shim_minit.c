@@ -4,31 +4,11 @@
 #include "zend_attributes.h"
 #include "zend_constants.h"
 
-/* Whether zend_register_constant would add `name` rather than warn that it is
- * defined: it keys a namespaced constant by its lowercased namespace. */
-static bool constant_free(const char *name, size_t length) {
-    if (length == sizeof("__COMPILER_HALT_OFFSET__") - 1 && memcmp(name, "__COMPILER_HALT_OFFSET__", length) == 0) {
-        return false;
-    }
-    const char *slash = zend_memrchr(name, '\\', length);
-    if (!slash) {
-        return !zend_hash_str_exists(EG(zend_constants), name, length);
-    }
-    zend_string *key = zend_string_init(name, length, 1);
-    zend_str_tolower(ZSTR_VAL(key), slash - name);
-    bool is_free = !zend_hash_str_exists(EG(zend_constants), ZSTR_VAL(key), length);
-    zend_string_free(key);
-    return is_free;
-}
-
+/* zend_register_*_constant: a name that is defined already is refused with Zend's
+ * warning, which at MINIT reaches no PHP error handler. */
 #define SWR_MINIT_CONSTANT(suffix, type)                                                  \
-    bool swr_zend_minit_##suffix##_constant(const char *name, type value, int module) {   \
-        size_t length = strlen(name);                                                     \
-        if (!constant_free(name, length)) {                                               \
-            return false;                                                                 \
-        }                                                                                 \
-        zend_register_##suffix##_constant(name, length, value, CONST_PERSISTENT, module); \
-        return true;                                                                      \
+    void swr_zend_minit_##suffix##_constant(const char *name, type value, int module) {   \
+        zend_register_##suffix##_constant(name, strlen(name), value, CONST_PERSISTENT, module); \
     }
 SWR_MINIT_CONSTANT(long, zend_long)
 SWR_MINIT_CONSTANT(double, double)
