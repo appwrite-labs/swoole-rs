@@ -17,7 +17,8 @@ use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
-    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
+    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
+    case_equal,
 };
 use swoole_rs_ossupport::create_tmpfile;
 
@@ -562,7 +563,7 @@ impl HttpRequest {
             form.parser = Some(parser);
         }
         match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
-            outcome if outcome < 0 => {
+            Err(MultipartError::Parser) => {
                 // Upstream formats it into 256 bytes, its NUL included.
                 let reason = reason.get(..255).unwrap_or(&reason);
                 log::error_log(
@@ -576,12 +577,12 @@ impl HttpRequest {
                 );
                 false
             }
-            2 => {
+            Ok(()) => {
                 // `buffer->clear()`.
                 (buffer.length, buffer.offset) = (0, 0);
                 true
             }
-            outcome => {
+            Err(MultipartError::Short { excepted }) => {
                 log::error_log(
                     NOTICE,
                     INVALID_REQUEST,
@@ -591,7 +592,7 @@ impl HttpRequest {
                         processed.cast_unsigned()
                     ),
                 );
-                outcome != 0
+                excepted
             }
         }
     }
@@ -643,7 +644,7 @@ impl Parts for HttpRequest {
         // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
         let mut value = data.to_vec();
         value.push(0);
-        if swoole_rs_http::multipart_filename(&mut value) != 1 {
+        if swoole_rs_http::multipart_filename(&mut value) != Ok(true) {
             return 0;
         }
         let native = self.native;
