@@ -153,7 +153,7 @@ impl TlsContext {
     #[must_use]
     pub fn new() -> Self {
         let owner = core::ptr::NonNull::new(swr_v1_tls_owner_new().owner.cast_mut());
-        Self(owner.unwrap_or_else(|| std::process::abort()))
+        Self(owner.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS context can't be allocated")))
     }
     /// A new owner holding `texts`, each set as [`Lent::set_text`] sets it.
     #[must_use]
@@ -605,7 +605,7 @@ impl Lent<'_> {
         let status = unsafe { slot.set_shared(value) };
         // An allocation refusal, which std::bad_alloc ends.
         if status != 0 {
-            std::process::abort();
+            swoole_rs_corebase::fatal("out of memory storing a TLS setting");
         }
         if matches!(which, Text::HostName) {
             self.edit(|fields| fields.disable_tls_host_name = value.is_empty().into());

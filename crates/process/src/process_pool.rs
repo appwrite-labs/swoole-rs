@@ -1181,7 +1181,7 @@ impl<H: PoolHost> Pool<'_, H> {
     ///   many bytes.
     fn set_protocol(&mut self, protocol: c_int) {
         if !matches!(protocol, PROTOCOL_TASK | PROTOCOL_STREAM | PROTOCOL_MESSAGE) {
-            std::process::abort();
+            swoole_rs_corebase::fatal("an unknown process pool protocol");
         }
         self.op(OP_MAIN_LOOP, u64::from(protocol.cast_unsigned()));
         self.set_protocol_type(protocol);

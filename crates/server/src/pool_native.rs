@@ -189,7 +189,7 @@ pub(crate) fn read_bus(
         };
         if data.is_null() {
             // `throw std::bad_alloc()`, which nothing catches.
-            std::process::abort();
+            swoole_rs_corebase::fatal("out of memory");
         }
         // SAFETY: the block just allocated, from `allocator`.
         unsafe { bus.adopt(data, state.size, ptr::from_ref(allocator).cast()) };

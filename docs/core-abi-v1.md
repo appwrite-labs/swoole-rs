@@ -32,7 +32,7 @@ For each case in pinned `src/core/error.cc`, returns the exact NUL-terminated
 message for its `swoole_error.h` value. The pointer is immutable static storage.
 Unknown codes and system errno values return null.
 
-Additional module-local exports (`native/error/swoole_rs_error_resolver.h`, [contract](../native/error/contract.md)):
+Additional exports (`swr_v1_error_resolve`, `swr_v1_error_strerror`, [contract](../native/error/contract.md)):
 
 - The resolver classifies codes and formats unknown ones; it may call only the
   synchronous, non-throwing native system formatter and retains nothing. Native

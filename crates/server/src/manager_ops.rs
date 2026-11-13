@@ -72,7 +72,8 @@ struct Context<'a> {
 impl<'a> Context<'a> {
     /// The context's live server, which every op but `OP_MANAGER` runs with.
     fn server(&self) -> view::Server<'a> {
-        self.serv.unwrap_or_else(|| std::process::abort())
+        self.serv
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a manager op without a server"))
     }
 }
 
@@ -128,7 +129,9 @@ impl<'a> Context<'a> {
     }
     /// The worker `OP_WORKER_BY_PID` found; the ops reading it run after it is found.
     fn worker(&self) -> Worker<'a> {
-        self.worker.unwrap_or_else(|| std::process::abort())
+        self.worker.unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("a manager op before its worker was found")
+        })
     }
     /// The command message's live head.
     fn task(&self) -> &EventData {
@@ -183,7 +186,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
             .or_else(|| effect(ctx, op, arg))
             .or_else(|| child(ctx, op, arg))
             .or_else(|| native(ctx, op, arg))
-            .unwrap_or_else(|| std::process::abort())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown manager op"))
     }
 }
 

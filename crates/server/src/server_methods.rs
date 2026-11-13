@@ -223,7 +223,7 @@ pub(crate) fn start_master_thread(
 pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
-        std::process::abort();
+        swoole_rs_corebase::fatal("pipe sockets set up before the server started");
     }
     let mut ctx = NativeContext::new(serv.raw());
     ctx.object = mb;

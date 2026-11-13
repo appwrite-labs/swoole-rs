@@ -313,7 +313,7 @@ impl Client {
     /// The property `name`, which the client class declares.
     fn property(&self, name: &CStr) -> &Value {
         let slot = self.props().slot(name);
-        slot.unwrap_or_else(|| std::process::abort())
+        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
     }
 
     /// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it is null.

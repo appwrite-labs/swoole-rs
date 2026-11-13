@@ -100,7 +100,7 @@ impl ThreadManager {
         let thread = usize::try_from(index)
             .ok()
             .and_then(|index| self.threads.get(index));
-        thread.unwrap_or_else(|| std::process::abort())
+        thread.unwrap_or_else(|| swoole_rs_corebase::fatal("no worker thread at this index"))
     }
 
     /// `ThreadFactory::shutdown()`: joins every started thread. A failed join was a
@@ -108,7 +108,7 @@ impl ThreadManager {
     pub fn join_all(&self) {
         for thread in &self.threads {
             if thread.joinable() && thread.join().is_err() {
-                std::process::abort();
+                swoole_rs_corebase::fatal("a worker thread's join failed");
             }
         }
     }

@@ -95,7 +95,7 @@ pub(crate) fn start<H: Host>(h: &mut H) -> crate::Effect<i64> {
             h.get(OP_SET_MASTER_PID)?;
             h.signed(OP_LC_START_THREAD)?
         }
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("an unknown server start mode"),
     };
     if started < 0 {
         return Ok(SW_ERR);

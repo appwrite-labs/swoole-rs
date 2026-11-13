@@ -30,7 +30,7 @@ pub fn catch_error(error: c_int, kernel_nobufs: &mut bool) -> c_int {
         reason = "EWOULDBLOCK equals EAGAIN on these platforms"
     )]
     match error {
-        libc::EFAULT => std::process::abort(),
+        libc::EFAULT => swoole_rs_corebase::fatal("a socket call got EFAULT, a bad buffer address"),
         libc::EBADF | libc::ENOENT => INVALID,
         libc::ECONNRESET
         | libc::ECONNABORTED

@@ -79,7 +79,7 @@ pub fn context_dup(config: &PortConfig) -> TlsContext {
         .map_or(ptr::null(), TlsContext::as_ptr);
     // SAFETY: two live owners, the copy fresh; no native view caches either's strings.
     if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(copy.as_ptr(), source) }.status != 0 {
-        std::process::abort();
+        swoole_rs_corebase::fatal("copying a port's TLS context failed");
     }
     copy
 }
@@ -343,7 +343,7 @@ pub(crate) fn import(port: *mut c_void, fd: c_int) -> bool {
     config.socket = socket.into_raw().cast();
     config.r#type = kind;
     if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
-        std::process::abort();
+        swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
     config.port = swr_v1_clients_address_port(&info);
     config.listening = true;

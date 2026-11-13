@@ -52,6 +52,7 @@ fn implicit_fn(call: &Call) {
         // It bails out across this frame, which owns nothing.
         sw_php_exit(status);
     } else if is(b"abort") {
+        #[expect(clippy::disallowed_methods, reason = "the script called abort()")]
         std::process::abort();
     } else if is(b"refcount") {
         // SAFETY: upstream's zval_refcount_p of the second argument, which must be refcounted.

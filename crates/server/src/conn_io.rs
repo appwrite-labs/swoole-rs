@@ -122,7 +122,7 @@ pub(crate) fn read<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
         SW_READY if facts & DTLS_SOCKET != 0 => return Ok(SW_OK),
         SW_WAIT => return Ok(SW_OK),
         SW_READY | SW_CONTINUE => {}
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("an unknown TLS handshake state"),
     }
     let result = h.get(OP_RD_PORT_READ)?;
     let retval = i64::from(low(result).cast_signed());

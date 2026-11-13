@@ -231,14 +231,22 @@ impl<'a> Obj<'a> {
     pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
         // SAFETY: per the caller.
         let data = unsafe { swoole_rs_zend::custom_of::<Data>(object) };
-        Self(object, data.unwrap_or_else(|| std::process::abort()))
+        Self(
+            object,
+            data.unwrap_or_else(|| swoole_rs_corebase::fatal("a client object without its data")),
+        )
     }
 
     /// `$this` of a client method: client methods are non-static, so `$this`
     /// is a client object (or an async one), live for the call.
     pub(crate) fn this(call: &'a Call) -> Self {
         let data = call.custom::<Data>();
-        Self(call.this(), data.unwrap_or_else(|| std::process::abort()))
+        Self(
+            call.this(),
+            data.unwrap_or_else(|| {
+                swoole_rs_corebase::fatal("a client method's $this without its data")
+            }),
+        )
     }
 
     pub(crate) fn as_ptr(self) -> *mut zend_object {
@@ -263,7 +271,7 @@ impl<'a> Obj<'a> {
     /// The property `name`, which the client class declares.
     fn property(self, name: &CStr) -> &'a Value {
         let slot = self.props().slot(name);
-        slot.unwrap_or_else(|| std::process::abort())
+        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
     }
 }
 
@@ -1251,7 +1259,7 @@ fn close(call: &Call) {
             .map(|pool| pool.push(&conn.key, Pooled(Box::new(conn.detach()))))
     };
     if !matches!(pushed, Some(Ok(()))) {
-        std::process::abort();
+        swoole_rs_corebase::fatal("the connection pool refused a connection");
     }
     this(call).set_conn(None);
     call.set_bool(true);

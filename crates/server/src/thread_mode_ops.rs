@@ -141,7 +141,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         let answer = server(ctx, op, arg);
         let answer = answer.or_else(|| worker(ctx, op, arg));
         let answer = answer.or_else(|| threads(ctx, op, arg));
-        answer.unwrap_or_else(|| std::process::abort())
+        answer.unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown thread-mode op"))
     }
 }
 
@@ -183,7 +183,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_JOIN_THREAD => {
             // An uncaught `std::system_error` upstream: the process ends.
             if ctx.manager()?.thread(arg).join().is_err() {
-                std::process::abort();
+                swoole_rs_corebase::fatal("a worker thread's join failed");
             }
             0
         }
@@ -219,7 +219,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             };
             // An uncaught `std::system_error` upstream: the process ends.
             if ctx.manager()?.thread(slot).start(body).is_err() {
-                std::process::abort();
+                swoole_rs_corebase::fatal("a worker thread can't start");
             }
             0
         }
@@ -371,7 +371,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_ON_MANAGER_STOP => ctx.call_server(CB_MANAGER_STOP),
         OP_ON_BEFORE_RELOAD => ctx.call_server(CB_BEFORE_RELOAD),
         OP_ON_AFTER_RELOAD => ctx.call_server(CB_AFTER_RELOAD),
-        OP_ABORT => std::process::abort(),
+        OP_ABORT => swoole_rs_corebase::fatal("native code asked to abort"),
         _ => return None,
     })
 }

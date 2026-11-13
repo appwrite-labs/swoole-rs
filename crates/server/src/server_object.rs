@@ -43,7 +43,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
             c"Server",
             format_args!("[Master] Fatal Error: failed to allocate memory for Server->gs"),
         );
-        std::process::abort();
+        swoole_rs_corebase::fatal("out of memory for the server's counters");
     }
     // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters,
     // freed only by `swr_v1_server_delete` after the message bus.

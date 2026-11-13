@@ -691,7 +691,7 @@ pub(crate) fn release_request() {
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         // Upstream dereferences `sw_reactor()` here unchecked.
         if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("no reactor to defer the queued request to");
         }
     }
 }

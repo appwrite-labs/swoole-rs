@@ -553,12 +553,13 @@ pub mod co {
             Vectors::Read(read) => (read.as_ptr().cast::<iovec>(), read.len(), false),
             Vectors::Write(written) => (written.as_ptr().cast::<iovec>(), written.len(), true),
         };
-        let count = c_int::try_from(count).unwrap_or_else(|_| std::process::abort());
+        let count = c_int::try_from(count)
+            .unwrap_or_else(|_| swoole_rs_corebase::fatal("too many I/O vectors for an int"));
         // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so
         // these are `count` vectors over live bytes, writable for a read.
         let Some(mut vector) = (unsafe { IoVector::new(vectors, count, write) }) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
-            std::process::abort();
+            swoole_rs_corebase::fatal("the I/O vectors can't be built");
         };
         let result = socket.vector(&mut vector, all);
         let (index, offset) = vector.stopped();
@@ -569,7 +570,7 @@ pub mod co {
     pub fn set_error(socket: Co, code: c_int, message: &[u8]) {
         if socket.set_error(code, message) != 0 {
             // std::bad_alloc, which upstream leaves uncaught.
-            std::process::abort();
+            swoole_rs_corebase::fatal("out of memory storing a socket error");
         }
     }
 

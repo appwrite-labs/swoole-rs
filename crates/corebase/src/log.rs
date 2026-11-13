@@ -124,6 +124,35 @@ pub fn error_log(level: c_int, code: c_int, origin: &CStr, message: fmt::Argumen
     emit(LOG_ERROR, level, code, origin, message);
 }
 
+/// Ends the process on a broken invariant. `unwrap`, `expect` and `panic` are
+/// denied, and a bare `abort` says nothing, so code calls this instead: the
+/// reason and the caller's location go to the log (stderr before `swoole_init`
+/// sets one up), then the process aborts.
+#[cold]
+#[track_caller]
+pub fn fatal(reason: &str) -> ! {
+    /// `SW_LOG_ERROR`.
+    const LEVEL: c_int = 5;
+    let at = std::panic::Location::caller();
+    if HOST.get().is_some() {
+        emit(
+            LOG_ERROR,
+            LEVEL,
+            0,
+            c"fatal",
+            format_args!("{reason} at {at}"),
+        );
+    } else {
+        use std::io::Write;
+        writeln!(std::io::stderr(), "fatal: {reason} at {at}").ok();
+    }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one abort, after the log line"
+    )]
+    std::process::abort()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -201,7 +201,7 @@ impl<'a> Server<'a> {
         let status = unsafe { slot.set_shared(value) };
         if status < 0 {
             // C++'s assignment threw `std::bad_alloc`, which nothing catches.
-            std::process::abort();
+            swoole_rs_corebase::fatal("out of memory storing a server setting");
         }
     }
 
@@ -433,7 +433,7 @@ impl<'a> Server<'a> {
         self.config()
             .worker_registry
             .as_deref()
-            .unwrap_or_else(|| std::process::abort())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a server without a worker registry"))
     }
 
     /// `Server::get_user_worker_num()`: the user workers added so far.

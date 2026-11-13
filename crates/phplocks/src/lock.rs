@@ -114,7 +114,7 @@ fn new_lock(kind: i32) -> Lock {
     let words = swr_v1_locks_size(kind).div_ceil(size_of::<AtomicU64>());
     pool::words(words)
         .and_then(|storage| Lock::shared(kind, storage))
-        .unwrap_or_else(|| std::process::abort())
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("a shared lock can't be made"))
 }
 
 /// `__construct(int $type = SWOOLE_MUTEX)`.

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "swoole.h"
 #include "swoole_rs_error.h"
-#include "swoole_rs_error_resolver.h"
 #include <array>
 #include <atomic>
 #include <climits>

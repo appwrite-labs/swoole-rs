@@ -61,7 +61,8 @@ impl Context<'_> {
     }
     /// The context's worker; the ops reading it run with one.
     pub(super) fn worker(&self) -> Worker<'_> {
-        self.worker.unwrap_or_else(|| std::process::abort())
+        self.worker
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a reactor-process op without a worker"))
     }
     /// `serv->get_worker(id)`, or `None` past the last.
     fn other(&self, id: u64) -> Option<Worker<'_>> {
@@ -80,7 +81,8 @@ impl Context<'_> {
     }
     /// The context's event, which the ops reading it run with.
     pub(super) fn event(&self) -> &Event {
-        self.event.unwrap_or_else(|| std::process::abort())
+        self.event
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a reactor-process op without an event"))
     }
     pub(super) fn event_socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
         self.event().socket()

@@ -95,7 +95,7 @@ extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
 fn defer_resume(co: Parked) {
     // Upstream dereferences the thread's null reactor; abort instead.
     if swoole_rs_reactor::event_api::swoole_event_defer_value(co).is_err() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("no reactor to defer the resume to");
     }
 }
 

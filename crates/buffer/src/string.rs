@@ -110,7 +110,7 @@ fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// An allocator's result, aborting on failure as `std::bad_alloc` would.
 fn checked(pointer: *mut c_void) -> *mut u8 {
     if pointer.is_null() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("out of memory");
     }
     pointer.cast()
 }
@@ -279,7 +279,7 @@ impl CppString {
     pub fn write(&mut self, offset: i64, data: &[u8]) {
         let offset = unsigned(offset.max(0));
         let Some(new_length) = offset.checked_add(data.len()) else {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a string write past the address space");
         };
         if new_length > self.size {
             self.reserve(page_aligned(new_length.saturating_mul(2)).max(new_length));
