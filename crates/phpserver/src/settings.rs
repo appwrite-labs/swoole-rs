@@ -605,7 +605,6 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    let cpus = Some(std::sync::Arc::new(cpus));
     s.server().config().cpu_affinity_available.set(cpus);
     Ok(true)
 }

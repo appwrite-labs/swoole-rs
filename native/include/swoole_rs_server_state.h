@@ -90,7 +90,7 @@ enum {
     F(bool, enable_coroutine) \
     F(bool, single_thread) \
     F(bool, running) \
-    F(void *, cpu_affinity_available) /* Rust's Option<Arc<Vec<int>>>, opaque here */ \
+    F(void *, cpu_affinity_available) /* Rust's Published<Vec<int>>, opaque here */ \
     F(SWR_SERVER_NATIVE(UnixSocket) *, pipe_command) \
     F(double, send_timeout) \
     F(uint16_t, heartbeat_check_interval) \
