@@ -440,6 +440,10 @@ impl Source for Zend<'_> {
         if crate::lifecycle::owns_shared() {
             drop(owner);
         } else {
+            #[expect(
+                clippy::mem_forget,
+                reason = "the master owns the callable other threads may still call"
+            )]
             std::mem::forget(owner);
         }
     }
@@ -945,8 +949,11 @@ mod tests {
             SW_IPC_BUFFER_SIZE
         );
         assert_eq!(
-            c.protocol.get_mut().get_package_length.map(|f| f as usize),
-            Some(length_func as GetPackageLength as usize)
+            c.protocol
+                .get_mut()
+                .get_package_length
+                .map(|f| f as *const ()),
+            Some(length_func as *const ())
         );
         let trace = table.trace.borrow().join(";");
         assert!(trace.contains("callable:package_length_func;release:7;single_thread"));

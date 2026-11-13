@@ -144,6 +144,7 @@ impl<'a> Sock<'a> {
 
     /// The slot forgets its stream, which closed without releasing it.
     fn forget_stream(self) {
+        #[expect(clippy::mem_forget, reason = "the stream closed without releasing it")]
         std::mem::forget(self.0.stream.take());
     }
 }

@@ -331,9 +331,8 @@ fn run(scenario: i32) -> Vec<String> {
         record(format!("caller-retval:{}", event.retval));
         record(format!("caller-error:{}", event.error));
         // SAFETY: the worker slot, read between callbacks.
-        record(format!("worker-canceled:{}", unsafe {
-            (*worker()).canceled.load(Relaxed)
-        }));
+        let canceled = unsafe { (*worker()).canceled.load(Relaxed) };
+        record(format!("worker-canceled:{canceled}"));
         record(format!("errno:{}", errno()));
         late_completion();
     } else if scenario < 102 {

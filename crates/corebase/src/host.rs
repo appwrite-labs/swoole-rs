@@ -117,7 +117,7 @@ pub fn swoole_dump_bin(data: &[u8], kind: c_char) {
     let [format] = kind.to_ne_bytes();
     for field in data.chunks_exact(width) {
         let value = swoole_rs_framing::unpack(format, field).unwrap_or(-1);
-        put(&format!("{},", value as c_long));
+        put(&format!("{value},"));
     }
     put("\n");
 }
@@ -461,6 +461,10 @@ thread_local! {
 pub extern "C" fn swoole_exit(status: c_int) -> ! {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     if !EXITING.replace(true) {
+        #[expect(
+            clippy::mem_forget,
+            reason = "the exit lock stays held until the process ends"
+        )]
         std::mem::forget(LOCK.lock());
     }
     // SAFETY: exit(3) never returns.

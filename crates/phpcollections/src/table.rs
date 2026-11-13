@@ -54,6 +54,10 @@ impl Held {
         let table = self.0.take();
         let copy = table.clone();
         // Still empty: cloning an `Rc` runs no code, so nothing filled the slot.
+        #[expect(
+            clippy::mem_forget,
+            reason = "the slot is still empty, so there is nothing to release"
+        )]
         std::mem::forget(self.0.replace(table));
         copy
     }

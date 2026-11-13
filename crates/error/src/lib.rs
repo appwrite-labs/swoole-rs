@@ -255,6 +255,10 @@ pub fn swoole_clear_last_error_msg() {
 /// catches none, so it terminated. This reports the code and aborts.
 pub fn swoole_throw_error(code: i32) -> ! {
     use std::io::Write;
+    #[expect(
+        clippy::unused_result_ok,
+        reason = "the process aborts next, stderr or not"
+    )]
     writeln!(std::io::stderr(), "swoole_throw_error({code})").ok();
     #[expect(
         clippy::disallowed_methods,
@@ -321,6 +325,7 @@ pub fn strerror_text(code: i32, system: impl FnOnce(i32) -> String) -> Cow<'stat
         return Cow::Borrowed(known);
     }
     let mut text = Vec::new();
+    #[expect(clippy::unused_result_ok, reason = "a Vec's writes don't fail")]
     write_unknown(&mut text, code).ok();
     Cow::Owned(CString::new(text).unwrap_or_default())
 }

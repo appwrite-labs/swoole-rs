@@ -144,7 +144,7 @@ pub fn fatal(reason: &str) -> ! {
         );
     } else {
         use std::io::Write;
-        writeln!(std::io::stderr(), "fatal: {reason} at {at}").ok();
+        writeln!(std::io::stderr(), "fatal: {reason} at {at}").unwrap_or_default();
     }
     #[expect(
         clippy::disallowed_methods,

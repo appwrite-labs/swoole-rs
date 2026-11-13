@@ -103,7 +103,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
             std::io::stderr(),
             "\n [Coroutine-{cid}] Stack trace:\n {rule}\n"
         )
-        .ok();
+        .unwrap_or_default();
         // The coroutine's backtrace, printed; a bailout is trapped.
         if let Some(families) = module::families()
             && let Err(bailed) = (families.print_backtrace)(cid)

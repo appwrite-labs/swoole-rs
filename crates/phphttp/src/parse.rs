@@ -682,7 +682,6 @@ fn on_headers_complete(state: &mut State) -> c_int {
     };
     add_protocol(state, protocol);
 
-    // SAFETY: the context's parser.
     state.keepalive = u8::from(state.parser.should_keep_alive());
     state.recv_chunked = u8::from(state.parser.flags & CHUNKED != 0);
     state.parse.header_name = ptr::null();

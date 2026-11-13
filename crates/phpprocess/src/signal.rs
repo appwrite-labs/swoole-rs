@@ -89,7 +89,6 @@ pub(crate) fn signal(call: &Call) {
         return;
     };
     let callback = call.value(2).filter(|value| !value.is_null());
-    // SAFETY: C++'s reader of an ini flag.
     if !cli() {
         fatal(
             E_ERROR,

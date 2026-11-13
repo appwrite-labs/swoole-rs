@@ -434,7 +434,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no network sockets")]
     fn release_unlinks_a_bound_unix_socket_and_closes() {
         let path = std::env::temp_dir().join(format!("swr-release-{}", std::process::id()));
-        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&path).unwrap_or_default();
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
         let mut socket = SocketRecord::new();
         socket.fd = std::os::fd::IntoRawFd::into_raw_fd(listener);

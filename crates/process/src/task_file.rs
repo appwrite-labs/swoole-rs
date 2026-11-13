@@ -82,7 +82,7 @@ fn read_file(path: &CStr, buffer: &mut [u8], peek: bool) -> TaskFileRead {
     }
     drop(file);
     if outcome.status == 0 && !peek {
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(path).unwrap_or_default();
     }
     outcome
 }
@@ -629,7 +629,7 @@ mod tests {
         let nul = path_bytes.iter().position(|&b| b == 0).unwrap();
         let path = std::str::from_utf8(&path_bytes[..nul]).unwrap();
         assert_eq!(std::fs::read(path).unwrap(), payload);
-        std::fs::remove_file(path).ok();
+        std::fs::remove_file(path).unwrap_or_default();
     }
 
     fn pack_large(template: &CString) -> TaskPack {

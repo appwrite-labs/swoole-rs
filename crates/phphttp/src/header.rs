@@ -361,7 +361,7 @@ fn build(
             }
             Ok(())
         })
-        .ok();
+        .unwrap_or_default();
     }
 
     if flags & SERVER == 0 {

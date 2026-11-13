@@ -969,7 +969,8 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
         let max = conn.package_max_length();
         if !header_completed {
             let length = conn.buffer().len();
-            let Some(pos) = find_crlf2(conn.data(crlf_offset, length)) else {
+            let found = find_crlf2(conn.data(crlf_offset, length));
+            let Some(pos) = found else {
                 if length == conn.buffer().size() {
                     context.state().response.status = ENTITY_TOO_LARGE;
                     break;

@@ -32,7 +32,7 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
     let family = flags & !LOOKUP_RANDOM;
     // The entry's lists live in `buffer`, which outlives the reads below.
     #[cfg(target_os = "linux")]
-    let mut buffer = vec![0 as c_char; 256];
+    let mut buffer: Vec<c_char> = vec![0; 256];
     #[cfg(target_os = "linux")]
     let entry = {
         let mut entry: libc::hostent = crate::sys::zeroed();
@@ -75,7 +75,7 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
         *unsafe { entry.as_ref() }?
     };
     let length = usize::try_from(entry.h_length).unwrap_or(0).min(46);
-    let mut bytes = [0 as c_char; 46];
+    let mut bytes: [c_char; 46] = [0; 46];
     // SAFETY: the resolver filled `entry`: `h_addr_list` is its null-terminated list,
     // which some libcs (Apple's) do not align.
     let first = unsafe { entry.h_addr_list.read_unaligned() };
@@ -182,7 +182,7 @@ pub fn gethostbyname(flags: c_int, name: &CStr) -> Option<[c_char; 46]> {
     lookup(flags, name).map(|(binary, _)| binary)
 }
 
-// SAFETY: libc's.
+// libc's.
 unsafe extern "C" {
     fn inet_ntop(
         family: c_int,
@@ -195,7 +195,7 @@ unsafe extern "C" {
 /// `inet_ntop(family, binary)`'s text, or none for another family or a failure.
 #[must_use]
 pub fn ntop(family: c_int, binary: &[c_char; 16]) -> Option<[c_char; 46]> {
-    let mut text = [0 as c_char; 46];
+    let mut text: [c_char; 46] = [0; 46];
     // SAFETY: room for an address of either family (4 or 16 bytes) and for its text;
     // another family reads nothing.
     let result = unsafe { inet_ntop(family, binary.as_ptr().cast(), text.as_mut_ptr(), 46) };

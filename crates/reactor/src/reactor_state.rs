@@ -318,7 +318,7 @@ const HOOK_ON_REACTOR_CREATE: c_int = 5;
 const HOOK_ON_REACTOR_DESTROY: c_int = 9;
 
 #[cfg(feature = "upstream-symbols")]
-// SAFETY: crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
+// crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
 // under their upstream symbols; declared, since both depend on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm"]
@@ -341,7 +341,7 @@ unsafe extern "C-unwind" {
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
 #[cfg(feature = "upstream-symbols")]
-// SAFETY: crates/tls's, under its upstream symbol, and crates/clients's; declared,
+// crates/tls's, under its upstream symbol, and crates/clients's; declared,
 // since both depend on this crate. Each takes the live reactor's handle, and the
 // writable callback is a reactor handler, sound for any event the reactor lends it.
 unsafe extern "C" {

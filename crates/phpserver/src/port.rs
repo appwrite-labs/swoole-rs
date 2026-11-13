@@ -140,6 +140,10 @@ pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     }
     let socket = swoole_rs_phpswoole::socket_create(fd).0;
     // The reference upstream's `sw_zval_dup` leaks.
+    #[expect(
+        clippy::mem_forget,
+        reason = "the reference upstream's sw_zval_dup leaks"
+    )]
     std::mem::forget(socket.copy());
     call.set_owned(socket);
 }

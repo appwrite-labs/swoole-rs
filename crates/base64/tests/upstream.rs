@@ -26,10 +26,10 @@ fn compare(bytes: &[u8], encoding: bool) {
         let a = actual
             .get_mut(RED_ZONE..RED_ZONE + capacity)
             .unwrap_or_default();
-        // SAFETY: `expected` has `capacity` writable bytes after the red zone,
-        // and zero-length encode (undefined upstream) is never passed.
         let (want, got) = if encoding {
             (
+                // SAFETY: `expected` has `capacity` writable bytes after the red zone,
+                // and zero-length encode (undefined upstream) is never passed.
                 unsafe { upstream::encode(input, bytes.len(), e) },
                 encode(rest, a),
             )

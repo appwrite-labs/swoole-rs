@@ -492,7 +492,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn resolves_through_libc() {
-        let mut addr = [0 as c_char; 16];
+        let mut addr: [c_char; 16] = [0; 16];
         assert_eq!(
             unsafe {
                 swr_v1_clients_gethostbyname(

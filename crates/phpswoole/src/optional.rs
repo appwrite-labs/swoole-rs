@@ -9,7 +9,7 @@ use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{Owned, Value};
 
 #[cfg(feature = "ssh2")]
-// SAFETY: the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
+// the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
 unsafe extern "C" {
     fn php_swoole_ssh2_minit(module_number: c_int) -> c_int;
     fn php_swoole_ssh2_mshutdown() -> c_int;
@@ -17,14 +17,14 @@ unsafe extern "C" {
 }
 
 #[cfg(feature = "ftp")]
-// SAFETY: the bundled ext/ftp's module hooks (thirdparty/php84/ftp), linked with this feature.
+// the bundled ext/ftp's module hooks (thirdparty/php84/ftp), linked with this feature.
 unsafe extern "C" {
     fn zm_startup_ftp(kind: c_int, module_number: c_int) -> c_int;
     fn zm_info_ftp(module: *mut c_void);
 }
 
 #[cfg(feature = "sockets")]
-// SAFETY: ext/sockets' class and import, which PHP exports when it has the extension.
+// ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
     /// Written once, by ext/sockets' MINIT, before any request reads it.
     safe static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;

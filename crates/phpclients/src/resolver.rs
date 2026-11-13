@@ -40,6 +40,10 @@ mod native {
             with_port,
             ..NameResolverContext::default()
         };
+        #[expect(
+            clippy::mem_forget,
+            reason = "upstream overwrites the old context without releasing it"
+        )]
         std::mem::forget(std::mem::replace(context, fresh));
     }
 

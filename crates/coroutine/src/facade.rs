@@ -32,7 +32,7 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// [`build`]'s `SW_CORO_TIME` bit, beside the context's flags.
 const CORO_TIME: u32 = 8;
 
-// SAFETY: crates/timer's, crates/hooks' and crates/reactor's upstream
+// crates/timer's, crates/hooks' and crates/reactor's upstream
 // functions; those marked safe take no pointers and have no preconditions.
 // Declarations, since each of those crates depends on this one.
 unsafe extern "C-unwind" {

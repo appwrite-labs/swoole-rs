@@ -20,7 +20,7 @@ use std::ptr::NonNull;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Socket, SocketFields};
 
-// SAFETY: libssl's and libcrypto's own declarations, with each pointer typed as the
+// libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
 // an entry of OpenSSL's static cipher table, `Cert` and `OwnedBio` take the reference
 // OpenSSL returns, a `CText<'static>` is one of OpenSSL's static strings, and an

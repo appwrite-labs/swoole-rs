@@ -267,7 +267,7 @@ struct NewTable {
     _not_send: PhantomData<(*mut u8, PhantomPinned)>,
 }
 
-// SAFETY: libcrypto's declarations, typed so that a live BIO is a reference: the
+// libcrypto's declarations, typed so that a live BIO is a reference: the
 // `safe` ones read or write only the BIO's own flags and shutdown fields (data and
 // init stay unsafe: a method reads data as the session once init is set), and
 // OpenSSL calls each method of a table with the live BIO it is reading or writing.

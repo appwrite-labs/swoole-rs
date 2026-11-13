@@ -292,6 +292,10 @@ pub(crate) fn decode(task: Packed<'_>) -> Result<Option<(Owned, bool)>, Bailout>
     }
     let (value, done, bailed) = unserialize_from(c"php_swoole_server_task_unpack", data);
     if let Err(bailout) = bailed {
+        #[expect(
+            clippy::mem_forget,
+            reason = "a value a bailout interrupted is leaked, as upstream's"
+        )]
         std::mem::forget(value);
         return Err(bailout);
     }

@@ -2235,7 +2235,7 @@ mod tests {
         assert_eq!(pool.worker_by_pid(4321), worker);
         // A respawn forgets the old pid.
         pool.h.answers.insert(OP_FORK, 4322);
-        pool.spawn(worker).ok();
+        assert_eq!(pool.spawn(worker).ok(), Some(4322));
         assert!(pool.worker_by_pid(4321).is_null());
         pool.destroy();
     }
@@ -2320,7 +2320,7 @@ mod tests {
     fn a_socket_pool_sends_a_dispatch_length_prefixed() {
         use std::io::Read;
         let path = std::env::temp_dir().join(format!("swr-pool-sync-{}.sock", std::process::id()));
-        std::fs::remove_file(&path).ok();
+        std::fs::remove_file(&path).unwrap_or_default();
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
         let file = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
         let mut fixture = Fixture::new(0);
@@ -2347,7 +2347,7 @@ mod tests {
             assert_eq!(received[..4], 43u32.to_be_bytes());
             assert_eq!(received[4..], event[..43]);
         }
-        assert_eq!(ops(&pool), [] as [u32; 0]);
+        assert_eq!(ops(&pool), Vec::<u32>::new());
         std::fs::remove_file(&path).unwrap();
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: the handle made above; it has no listener to close.

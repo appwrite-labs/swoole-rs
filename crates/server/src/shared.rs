@@ -275,8 +275,8 @@ mod tests {
         use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
         use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
-        // SAFETY: a fresh mapping of a whole `ServerCounters`.
         let counters = gs.as_ptr().cast::<ServerCounters>();
+        // SAFETY: a fresh mapping of a whole `ServerCounters`.
         unsafe { counters.write(ServerCounters::default()) };
         // SAFETY: as above; the mapping outlives every use below.
         let server = unsafe { &*counters };

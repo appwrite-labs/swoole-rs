@@ -12,6 +12,9 @@
   mints    safe fns that hand out `&mut` from `&self` or a `Copy` handle (#3554): two calls
            give two live `&mut` to one place in safe code. Return a raw pointer or
            per-field access, or make the fn `unsafe` with the aliasing rule in `# Safety`
+  fakes    `cfg(...not(test)...)`: code tests and Miri don't run, usually because a
+           test build swaps in a stand-in. Pass the dependency in (an ops table, a
+           closure, a trait) so tests run the shipped body (#3556)
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -50,6 +53,7 @@ KINDS = {
     'mints': re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?fn\s+\w+(?:<[^>]*>)?"
                         r"\((?:(?!&\s*(?:'\w+\s+)?mut\b)(?:[^()]|\((?:(?!&\s*(?:'\w+\s+)?mut\b)[^()])*\)))*\)"
                         r"\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
+    'fakes': re.compile(r'\bcfg!?\([^\n]*\bnot\(\s*test\s*\)'),
 }
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')

@@ -56,7 +56,7 @@ pub(crate) mod kind {
 pub(crate) mod timeout {
     pub(crate) const CONNECT: i32 = 1 << 1;
     pub(crate) const READ: i32 = 1 << 2;
-    pub(crate) const RDWR: i32 = READ | 1 << 3;
+    pub(crate) const RDWR: i32 = READ | (1 << 3);
     pub(crate) const ALL: i32 = 0xf;
 }
 

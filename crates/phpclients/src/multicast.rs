@@ -454,7 +454,7 @@ fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
 /// `if_indextoname`: the interface's name into `request`.
 #[cfg(not(target_os = "linux"))]
 fn interface_name(_fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
-    // SAFETY: libc's own declaration: it writes at most `IF_NAMESIZE` bytes, the
+    // libc's own declaration: it writes at most `IF_NAMESIZE` bytes, the
     // name's size, and returns the name or null.
     unsafe extern "C" {
         safe fn if_indextoname(
@@ -804,7 +804,7 @@ mod tests {
         for address in addresses {
             let address: Ipv6Addr = address.parse().unwrap();
             let octets = address.octets();
-            let mut shown = [0 as c_char; 46];
+            let mut shown: [c_char; 46] = [0; 46];
             let length = socklen_t::try_from(shown.len()).unwrap();
             let text = unsafe {
                 inet_ntop(
