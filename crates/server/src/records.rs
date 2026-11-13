@@ -22,21 +22,21 @@ pub struct ConnectionRecord {
     pub fd: c_int,
     pub worker_id: c_int,
     pub session_id: libc::c_long,
-    pub ssl: u8,
-    pub ssl_ready: u8,
-    pub overflow: u8,
-    pub high_watermark: u8,
-    pub http_upgrade: u8,
-    pub http2_stream: u8,
-    pub websocket_compression: u8,
-    pub close_actively: u8,
-    pub close_queued: u8,
-    pub closing: u8,
-    pub close_reset: u8,
-    pub peer_closed: u8,
-    pub protect: u8,
-    pub close_notify: u8,
-    pub close_force: u8,
+    pub ssl: bool,
+    pub ssl_ready: bool,
+    pub overflow: bool,
+    pub high_watermark: bool,
+    pub http_upgrade: bool,
+    pub http2_stream: bool,
+    pub websocket_compression: bool,
+    pub close_actively: bool,
+    pub close_queued: bool,
+    pub closing: bool,
+    pub close_reset: bool,
+    pub peer_closed: bool,
+    pub protect: bool,
+    pub close_notify: bool,
+    pub close_force: bool,
     pub reactor_id: u8,
     pub close_errno: u16,
     pub recv_queued_bytes: AtomicU32,
@@ -163,21 +163,21 @@ impl<'a> Connection<'a> {
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
     field!(session_id, set_session_id: libc::c_long);
-    field!(ssl, set_ssl: u8);
-    field!(ssl_ready, set_ssl_ready: u8);
-    field!(overflow, set_overflow: u8);
-    field!(high_watermark, set_high_watermark: u8);
-    field!(http_upgrade, set_http_upgrade: u8);
-    field!(http2_stream, set_http2_stream: u8);
-    field!(websocket_compression, set_websocket_compression: u8);
-    field!(close_actively, set_close_actively: u8);
-    field!(close_queued, set_close_queued: u8);
-    field!(closing, set_closing: u8);
-    field!(close_reset, set_close_reset: u8);
-    field!(peer_closed, set_peer_closed: u8);
-    field!(protect, set_protect: u8);
-    field!(close_notify, set_close_notify: u8);
-    field!(close_force, set_close_force: u8);
+    field!(ssl, set_ssl: bool);
+    field!(ssl_ready, set_ssl_ready: bool);
+    field!(overflow, set_overflow: bool);
+    field!(high_watermark, set_high_watermark: bool);
+    field!(http_upgrade, set_http_upgrade: bool);
+    field!(http2_stream, set_http2_stream: bool);
+    field!(websocket_compression, set_websocket_compression: bool);
+    field!(close_actively, set_close_actively: bool);
+    field!(close_queued, set_close_queued: bool);
+    field!(closing, set_closing: bool);
+    field!(close_reset, set_close_reset: bool);
+    field!(peer_closed, set_peer_closed: bool);
+    field!(protect, set_protect: bool);
+    field!(close_notify, set_close_notify: bool);
+    field!(close_force, set_close_force: bool);
     field!(reactor_id, set_reactor_id: u8);
     field!(close_errno, set_close_errno: u16);
     field!(send_queued_bytes, set_send_queued_bytes: u32);
@@ -399,7 +399,7 @@ impl crate::ServerState {
                 false
             }
             Lookup::Iterated if value.closed().load(Relaxed) != 0 => false,
-            Lookup::VerifiedTls | Lookup::Iterated => value.ssl() == 0 || value.ssl_ready() != 0,
+            Lookup::VerifiedTls | Lookup::Iterated => !value.ssl() || value.ssl_ready(),
             Lookup::Verified => true,
         };
         found.then_some(value)
@@ -534,10 +534,10 @@ pub(crate) mod tests {
             assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
             // fd == max_connection is one past the table.
             assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
-            (*expected).ssl = 1;
+            (*expected).ssl = true;
             assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
-            (*expected).ssl_ready = 1;
+            (*expected).ssl_ready = true;
             assert_eq!(swr_v1_server_connection(&*state, 1, 3), expected);
             (*expected)
                 .closed
