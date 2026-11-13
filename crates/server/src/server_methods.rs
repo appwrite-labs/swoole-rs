@@ -4,14 +4,14 @@
 //! it in Rust.
 
 use crate::records::Lookup;
-use core::ffi::{CStr, c_int, c_long, c_void};
+use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
-use crate::ops::{RUN_ADD_PORT, RUN_BASE_CREATE, RUN_SC_SEND, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS};
+use crate::ops::{RUN_BASE_CREATE, RUN_SC_SEND, RUN_ST_SEND};
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
     RUN_STORE_LISTEN_SOCKET,
@@ -32,9 +32,6 @@ pub struct NativeContext<'a> {
     pub(crate) data: *const c_void,
     pub(crate) length: u32,
     pub(crate) session_id: c_long,
-    pub(crate) socket_type: c_int,
-    pub(crate) host: Option<&'a CStr>,
-    pub(crate) number: c_int,
     pub(crate) object: *mut c_void,
 }
 
@@ -50,9 +47,6 @@ impl NativeContext<'_> {
             data: ptr::null(),
             length: 0,
             session_id: 0,
-            socket_type: 0,
-            host: None,
-            number: 0,
             object: ptr::null_mut(),
         }
     }
@@ -118,7 +112,6 @@ impl Narrow for u32 {
 
 plain_methods! {
     fn start() -> c_int = RUN_START;
-    fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     fn start_check() -> c_int = RUN_START_CHECK;
     fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
 }
@@ -302,25 +295,7 @@ pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
     crate::dispatch::tasking(serv)
 }
 
-/// `Server::add_port(type, host, port)`: the new port, or `None`.
-#[must_use]
-pub fn add_port<'a>(
-    serv: view::Server<'a>,
-    socket_type: c_int,
-    host: &CStr,
-    port: c_int,
-) -> Option<view::Port<'a>> {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.socket_type = socket_type;
-    ctx.host = Some(host);
-    ctx.number = port;
-    // SAFETY: the live server.
-    if unsafe { run(RUN_ADD_PORT, 0, &mut ctx) } == 0 {
-        return None;
-    }
-    // SAFETY: the port the server just added, which it keeps for its life.
-    unsafe { view::Port::from_raw(ctx.port) }
-}
+pub use crate::dispatch::{add_port, add_systemd_socket};
 
 /// `Server::send(session_id, data, length)`: the operation reads the `SendData` it lends.
 /// The length narrows to `uint32_t`, as the C++ callers' `ZSTR_LEN` did.
@@ -582,26 +557,11 @@ mod tests {
     use crate::records::ConnectionRecord;
     use std::sync::Mutex;
 
-    /// The last call the fake runner saw: op, arg and the context's fields.
-    type Seen = (u32, u64, usize, usize, usize, usize, c_int, usize);
-    static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
     /// The send fields of each call: op, arg, serv, send, data, length and session.
     type Sent = (u32, u64, usize, usize, usize, u32, c_long);
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
 
     pub(super) unsafe fn fake(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
-        SEEN.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((
-                op,
-                arg,
-                ctx.serv.addr(),
-                ctx.port.addr(),
-                ctx.sock.addr(),
-                ctx.object.addr(),
-                ctx.number,
-                ctx.host.map_or(0, |host| host.as_ptr().addr()),
-            ));
         SENT.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((
@@ -616,7 +576,7 @@ mod tests {
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.object = ptr::without_provenance_mut(0x70);
         match op {
-            RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,
+            RUN_BASE_CREATE | RUN_ST_SEND => 1,
             RUN_SC_SEND => -1,
             _ => 0,
         }
@@ -633,14 +593,6 @@ mod tests {
         unsafe { view::Server::from_raw(fake_serv()) }
     }
 
-    fn last() -> Seen {
-        *SEEN
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last()
-            .unwrap_or(&(0, 0, 0, 0, 0, 0, 0, 0))
-    }
-
     fn sent() -> Sent {
         *SENT
             .lock()
@@ -651,21 +603,7 @@ mod tests {
 
     #[test]
     fn methods_fill_the_context_their_forward_did() {
-        let serv = fake_serv();
-        let sv = serv.addr();
-        unsafe {
-            assert_eq!(
-                add_port(server(), 1, c"h", 9).map(|port| port.raw().addr()),
-                Some(0x50),
-                "nonzero yields the port"
-            );
-            let (op, _, s, _, _, _, number, host) = last();
-            assert!(
-                op == RUN_ADD_PORT && s == sv && number == 9 && host != 0,
-                "add_port context"
-            );
-            send_family_and_base_factory(serv);
-        }
+        unsafe { send_family_and_base_factory(fake_serv()) };
     }
 
     unsafe fn send_family_and_base_factory(serv: *mut c_void) {
