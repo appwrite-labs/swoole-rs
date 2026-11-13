@@ -7,7 +7,7 @@ use std::{
     ffi::CString,
     sync::{LazyLock, Mutex, PoisonError},
 };
-use swoole_rs_zend::{Call, sys::swr_zend_runtime_env_lock};
+use swoole_rs_zend::Call;
 
 swoole_rs_zend::handlers! {
     zif_swoole_putenv => putenv;
@@ -35,8 +35,8 @@ fn putenv(call: &Call) {
         .unwrap_or(setting);
     let stored = CString::new(text).unwrap_or_default();
 
-    // SAFETY: PHP's environment lock, released below.
-    unsafe { swr_zend_runtime_env_lock(true) };
+    // PHP's environment lock, released below.
+    let lock = call.php().env_lock();
     let mut environ = ENVIRON.lock().unwrap_or_else(PoisonError::into_inner);
     let set = store(&mut environ, key, stored, assignment.is_none());
     if set && key.eq_ignore_ascii_case(b"TZ") {
@@ -44,8 +44,7 @@ fn putenv(call: &Call) {
         tzset();
     }
     drop(environ);
-    // SAFETY: taken above.
-    unsafe { swr_zend_runtime_env_lock(false) };
+    drop(lock);
     call.set_bool(set);
 }
 

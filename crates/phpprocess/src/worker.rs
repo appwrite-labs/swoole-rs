@@ -50,12 +50,8 @@ pub(crate) fn new() -> *mut c_void {
 }
 
 /// `delete pair`: the pair's ends, then its box.
-/// # Safety
-/// `pair` is a boxed pair, as [`open_pipe`] and crates/server's pools make them, and
-/// nothing uses it afterwards.
-unsafe fn delete_pair(pair: *mut SocketPair) {
-    // SAFETY: as the caller promises.
-    socket_pair::drop(&mut *unsafe { Box::from_raw(pair) });
+fn delete_pair(mut pair: Box<SocketPair>) {
+    socket_pair::drop(&mut pair);
 }
 
 /// Frees a worker `new` made, and the pipe it owns unless it shares a server's.
@@ -65,8 +61,9 @@ pub(crate) unsafe fn free(worker: *mut c_void) {
     // SAFETY: as the caller promises.
     let worker = unsafe { Box::from_raw(worker.cast::<WorkerRecord>()) };
     if !worker.pipe_object.is_null() && !worker.shared {
-        // SAFETY: the worker's own `new UnixSocket`.
-        unsafe { delete_pair(worker.pipe_object.cast()) };
+        // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
+        // nothing uses afterwards.
+        delete_pair(unsafe { Box::from_raw(worker.pipe_object.cast()) });
     }
 }
 
@@ -192,8 +189,9 @@ pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
         )),
     };
     if ret >= 0 && which == 0 {
-        // SAFETY: the worker's pair, deleted once; upstream deletes it even when shared.
-        unsafe { delete_pair(pair) };
+        // SAFETY: the worker's pair, boxed as [`open_pipe`] and crates/server's pools
+        // make them, deleted once; upstream deletes it even when shared.
+        delete_pair(unsafe { Box::from_raw(pair) });
         worker.pipe_object = std::ptr::null_mut();
         worker.pipe_current = std::ptr::null_mut();
     }

@@ -778,21 +778,16 @@ fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut 
     string
 }
 
-/// Fresh boxed storage for one String, which [`delete_string`] frees.
-fn new_storage() -> &'static mut MaybeUninit<CppString> {
-    Box::leak(Box::new_uninit())
-}
-
-/// `new String(data.data(), data.size())`.
+/// `new String(data.data(), data.size())`, in boxed storage [`delete_string`] frees.
 #[must_use]
 pub fn new_string(data: &[u8]) -> *mut CppString {
-    from_bytes(new_storage(), data)
+    from_bytes(Box::leak(Box::new_uninit()), data)
 }
 
-/// `new String(size, with)`.
+/// `new String(size, with)`, in boxed storage [`delete_string`] frees.
 #[must_use]
 pub fn new_sized_string(size: usize, with: Option<&'static Allocator>) -> *mut CppString {
-    swr_string_new(new_storage(), size, with)
+    swr_string_new(Box::leak(Box::new_uninit()), size, with)
 }
 
 /// `delete string`.

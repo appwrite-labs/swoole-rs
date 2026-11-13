@@ -22,10 +22,8 @@ use swoole_rs_zend::{
     Call, Class, E_ERROR, Minit, Owned, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    set_object,
     sys::{
         ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PRIVATE, zend_class_entry, zend_object_handlers, zval,
-        zval_ptr_dtor,
     },
     unset_property_deny,
 };
@@ -127,10 +125,9 @@ fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
 }
 
 fn object_zval(object: Obj) -> zval {
-    let mut zobject = swoole_rs_zend::long_zval(0);
-    // SAFETY: a borrowed copy of the object, as upstream's `args[0] = *zobject`.
-    unsafe { set_object(&raw mut zobject, object.as_ptr()) };
-    zobject
+    // SAFETY: the handle's live object, lent for the call its caller makes: a
+    // borrowed copy, as upstream's `args[0] = *zobject`.
+    unsafe { swoole_rs_zend::object_zval(object.as_ptr()) }
 }
 
 /// `client_execute_callback`: run the slot's callback with the object.
@@ -186,11 +183,11 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
             let callable = callback(object.data(), RECEIVE);
             // SAFETY: the client lends `length` bytes for the call.
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
-            let payload = Owned::string(ZString::new(bytes)).into_zval();
-            let mut argv = [object_zval(object), payload];
+            let payload = Owned::string(ZString::new(bytes));
+            let mut argv = [object_zval(object), payload.copy_value()];
             let called = callable.map_or(Ok(false), |callable| invoke(&callable, &mut argv));
-            // SAFETY: our reference to the payload.
-            unsafe { zval_ptr_dtor(&raw mut argv[1]) };
+            // Our reference to the payload.
+            drop(payload);
             if !called? {
                 let class = object.class_name().to_string_lossy();
                 warn(

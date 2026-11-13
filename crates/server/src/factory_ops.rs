@@ -44,7 +44,7 @@ struct Context<'a> {
     worker: Option<Worker<'a>>,
     send: Option<&'a mut SendData>,
     status: Option<&'a ExitStatus>,
-    conn: *mut ConnectionRecord,
+    conn: Option<crate::Connection<'a>>,
     fd: c_int,
 }
 
@@ -117,8 +117,7 @@ impl<'a> Context<'a> {
     }
     /// The connection selected by `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN`, if any.
     fn conn(&self) -> Option<crate::Connection<'a>> {
-        // SAFETY: null or a slot of the live connection table.
-        unsafe { crate::Connection::from_ptr(self.conn) }
+        self.conn
     }
     /// The server's worker registry.
     fn registry(&self) -> &'a swoole_rs_corebase::worker_registry::WorkerRegistry {
@@ -153,7 +152,7 @@ pub(crate) fn run<'a>(
         worker,
         send,
         status,
-        conn: core::ptr::null_mut(),
+        conn: None,
         fd: 0,
     };
     swoole_rs_process::workers::run_over(&mut ctx, op, arg)
@@ -307,7 +306,7 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             return Some(signed(worker));
         }
         OP_SEND_CONN_ACTIVE => {
-            ctx.conn = ctx.state().connection_ptr(ctx.fd.into(), 0);
+            ctx.conn = ctx.state().connection(ctx.fd.into(), 0);
             return Some(u64::from(
                 ctx.conn().is_some_and(crate::Connection::is_active),
             ));
@@ -315,8 +314,8 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         OP_SESSION_CONN => {
             let kind = if arg != 0 { VERIFIED } else { VERIFIED_TLS };
             let session = ctx.send().info.fd;
-            ctx.conn = ctx.state().connection_ptr(session, kind);
-            return Some(u64::from(!ctx.conn.is_null()));
+            ctx.conn = ctx.state().connection(session, kind);
+            return Some(u64::from(ctx.conn.is_some()));
         }
         OP_ON_CLOSE => {
             let call = |info: &mut DataHead| {

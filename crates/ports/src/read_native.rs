@@ -16,7 +16,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::{MODE_EOF, MODE_LENGTH};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Event, ReactorPrepared, Running, Socket};
+use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_server::port_config::{self, PortConfig};
 use swoole_rs_server::static_select::swr_v1_server_static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -77,10 +77,8 @@ pub(crate) unsafe fn on_read(
     };
     // A connection socket's object is its connection.
     let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
-    // A live reactor.
-    let fields = ReactorPrepared::of(reactor.as_ptr()).fields;
-    // SAFETY: its fields, whose `ptr` is its server.
-    let serv = unsafe { (*fields).ptr };
+    // The live reactor's `ptr` is its server.
+    let serv = reactor.object();
     // SAFETY: the reactor's live server, whose settings this thread only reads.
     let server = unsafe { view::Server::from_raw(serv) };
     // SAFETY: as the caller guarantees.

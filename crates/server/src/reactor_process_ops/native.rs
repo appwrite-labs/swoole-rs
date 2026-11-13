@@ -87,8 +87,7 @@ impl Context<'_> {
     }
     /// The connection `OP_CONN_AT` or `OP_EVENT_CONN_ACTIVE` selected, if any.
     pub(super) fn conn(&self) -> Option<crate::Connection<'_>> {
-        // SAFETY: null or the connection selected, a live slot of the server's table.
-        unsafe { crate::Connection::from_ptr(self.conn) }
+        self.conn
     }
 }
 
@@ -276,7 +275,7 @@ fn run(reactor: Reactor, event: Option<&Event>, operation: u32) -> c_int {
         worker: None,
         reactor: Some(reactor),
         event,
-        conn: core::ptr::null_mut(),
+        conn: None,
         now: 0.0,
     };
     c_int::try_from(run_over(&mut ctx, operation)).unwrap_or(-1)
@@ -294,7 +293,7 @@ fn over<'a>(serv: view::Server<'a>, worker: Option<Worker<'a>>) -> Context<'a> {
         worker,
         reactor: None,
         event: None,
-        conn: core::ptr::null_mut(),
+        conn: None,
         now: 0.0,
     }
 }
