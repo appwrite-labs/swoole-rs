@@ -415,6 +415,7 @@ pub fn call_handler(
 /// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.
 /// # Safety
 /// As `function_call`, from a frame that owns nothing that needs a drop.
+// The bundled curl's symbol, over Zend's call, which the unit tests don't link.
 #[cfg(not(test))]
 #[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
 unsafe extern "C" fn zend_function_call(

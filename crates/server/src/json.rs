@@ -19,8 +19,9 @@ impl Json {
         Self::Object(fields.into_iter().collect())
     }
 
+    /// Text from native code; nlohmann refused to dump invalid UTF-8. Only the live admin
+    /// facts, which the unit tests don't link, use it.
     #[cfg(not(test))]
-    /// Text from native code; nlohmann refused to dump invalid UTF-8.
     pub(crate) fn utf8(bytes: &[u8]) -> String {
         match core::str::from_utf8(bytes) {
             Ok(text) => text.to_owned(),
