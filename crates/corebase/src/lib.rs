@@ -303,13 +303,10 @@ format_exports! {
 }
 
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
-#[cfg(feature = "upstream-symbols")]
 const LOG_ERROR: c_int = 5;
-#[cfg(feature = "upstream-symbols")]
 const TOO_MANY_LISTEN_PORT: c_int = 9005;
 
 /// `LISTEN_FDS`'s verdict: the count to return, or which log line (`true`: too big).
-#[cfg(any(test, feature = "upstream-symbols"))]
 fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
     match count {
         None => Err(false),
@@ -320,12 +317,10 @@ fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
     }
 }
 
-/// `int swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
+/// `swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
 /// or reaches `SW_MAX_LISTEN_PORT`.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_Z29swoole_get_systemd_listen_fdsv")]
 #[must_use]
-pub extern "C-unwind" fn swoole_get_systemd_listen_fds() -> c_int {
+pub fn get_systemd_listen_fds() -> c_int {
     let origin = c"swoole_get_systemd_listen_fds";
     match systemd_listen_fds(get_env(c"LISTEN_FDS")) {
         Ok(count) => count,

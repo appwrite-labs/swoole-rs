@@ -35,10 +35,6 @@ pub const RUN_JOIN_REACTOR_THREADS: u32 = 31;
 /// The heartbeat thread's loop.
 pub const RUN_HEARTBEAT_THREAD: u32 = 32;
 
-// Dispatch, sends and ports (`src/server/master.cc`).
-/// `Server::add_port`: context type, host and port; 1 with the port in the context.
-pub const RUN_ADD_PORT: u32 = 41;
-pub const RUN_SYSTEMD_SOCKETS: u32 = 42;
 // `BaseFactory` (`src/server/base.cc`, `crates/server/src/base_factory.rs`).
 /// `Server::create_base_factory`: 1 with the factory in the context.
 pub const RUN_BASE_CREATE: u32 = 43;
@@ -389,35 +385,6 @@ pub const EVENT_SHUTDOWN_SIGNAL: u32 = 19;
 /// `Server::state_`, a `state::ServerState`.
 pub const OP_STATE: u32 = 402;
 pub const OP_IS_CREATED: u32 = 425;
-pub const OP_PORT_TYPE: u32 = 426;
-pub const OP_PORT_NUMBER: u32 = 427;
-/// `strlen(host) + 1` and `SW_HOST_MAXSIZE`.
-pub const OP_HOST_SIZE: u32 = 428;
-pub const OP_HOST_MAXSIZE: u32 = 429;
-/// A new `ListenPort` of the context's type, host and port, with TLS when arg.
-pub const OP_PORT_NEW: u32 = 430;
-/// `create_socket()`; on failure `swoole_set_last_error(errno)` and the port is freed.
-pub const OP_PORT_SOCKET: u32 = 431;
-/// The new port's socket type; the dgram socket buffer; the socket for kind arg.
-pub const OP_NEW_PORT_TYPE: u32 = 432;
-pub const OP_DGRAM_PORT: u32 = 433;
-pub const OP_STREAM_PORT: u32 = 434;
-/// The new port joins `ports`.
-pub const OP_PORT_PUSH: u32 = 435;
-/// `LISTEN_PID`, `LISTEN_FDS_START`: the value, or `i64::MIN` when unset.
-pub const OP_ENV_LISTEN_PID: u32 = 436;
-pub const OP_ENV_FDS_START: u32 = 437;
-/// `swoole_get_systemd_listen_fds()`.
-pub const OP_SYSTEMD_FDS: u32 = 439;
-/// A new port importing fd arg, non-blocking and close-on-exec; whether it imported.
-pub const OP_PORT_IMPORT: u32 = 440;
-
-pub const LOG_PORT_CREATED: u32 = 457;
-pub const LOG_TOO_MANY_PORTS: u32 = 458;
-pub const LOG_INVALID_PORT: u32 = 459;
-pub const LOG_HOST_TOO_LONG: u32 = 460;
-pub const LOG_LISTEN_PID: u32 = 461;
-pub const LOG_FDS_START: u32 = 462;
 
 // `BaseFactory`.
 /// `reactor_num = worker_num`, then the connection list and the per-worker counters.

@@ -79,8 +79,8 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     let serv = unsafe { view::Server::from_raw(serv) };
     crate::server_methods::destroy_running(serv);
     for port in serv.ports() {
-        // SAFETY: a live port, deleted once.
-        unsafe { port_delete(port.raw()) };
+        // SAFETY: a live port is its settings' box, deleted once.
+        PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });
     }
     let object_ptr = serv.raw();
     // The server's state, which its object owns until the last step below.
@@ -153,41 +153,6 @@ impl SharedServer {
         // SAFETY: the owner's live server, deleted only once every share is gone.
         unsafe { view::Server::from_raw(self.0.0) }
     }
-}
-
-/// `new ListenPort(serv)`: a port of `serv` with the default settings, whose box
-/// becomes the `ListenPort *`.
-pub(crate) fn port_new(serv: *mut c_void) -> Box<PortConfig> {
-    let buffer_size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    let mut config = PortConfig::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
-    config.protocol.get_mut().private_data_2 = serv;
-    config
-}
-
-/// `delete port`: its TLS state, its settings, and the record of a socket
-/// `destroy` never closed.
-///
-/// # Safety
-/// `port` came from [`port_new`] and is not used again.
-pub(crate) unsafe fn port_delete(port: *mut c_void) {
-    // SAFETY: as the caller guarantees: the port is its settings' box, which nothing
-    // else uses now.
-    port_drop(unsafe { Box::from_raw(port.cast::<PortConfig>()) });
-}
-
-/// [`port_delete`] of a port still in its box.
-pub(crate) fn port_drop(mut config: Box<PortConfig>) {
-    (crate::port_config::methods().tls_free)(&mut config);
-    // Upstream's `~ListenPort` leaves the length callable to the port's deref
-    // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
-    #[expect(
-        clippy::mem_forget,
-        reason = "a port kept past this owns the callable to the exit"
-    )]
-    std::mem::forget(config.length_owner.replace(None));
-    // SAFETY: the record of a port `destroy` never closed (a server never started),
-    // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-    unsafe { swoole_rs_reactor::SocketRecord::free(config.socket_ptr().cast()) };
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.

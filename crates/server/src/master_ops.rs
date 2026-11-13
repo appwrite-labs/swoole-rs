@@ -27,18 +27,16 @@ use crate::hybrid::hybrid;
 use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
-    LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_FDS_START, LOG_HOST_TOO_LONG,
-    LOG_INVALID_PORT, LOG_LC_ONLY_ONE, LOG_LISTEN_PID, LOG_MAX_CONNECTION_MINIMUM,
-    LOG_PORT_CREATED, LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW,
-    LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_TASK_POOL,
-    LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED,
-    OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_DGRAM_PORT, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE,
-    OP_HOST_SIZE, OP_IS_CREATED, OP_NEW_PORT_TYPE, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH,
-    OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
-    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
-    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
-    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD,
-    OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT,
+    LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_LC_ONLY_ONE, LOG_MAX_CONNECTION_MINIMUM,
+    LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA,
+    LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
+    LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING,
+    OP_HAS_PIPE_COMMAND, OP_IS_CREATED, OP_PORT_IDLE_TIME, OP_SC_ADD, OP_SC_ADD_READ,
+    OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER,
+    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
+    OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_TIMEOUT,
+    OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN,
+    OP_STATE,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -90,12 +88,6 @@ const _: () = assert!(
 );
 /// `SW_BUFFER_MIN_SIZE`.
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-/// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
-fn host_maxsize() -> usize {
-    // `sun_path` is the struct's last field, with no padding after its bytes.
-    size_of::<libc::sockaddr_un>() - core::mem::offset_of!(libc::sockaddr_un, sun_path)
-}
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, origin, message);
@@ -151,17 +143,9 @@ impl<'a> Objects<'a> {
     fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
         self.sock().map(|sock| sock.edit(edit)).unwrap_or_default()
     }
-    /// The context port's listening fd, or -1 without one.
-    fn port_fd(&self) -> c_int {
-        self.port_socket().map_or(-1, Socket::fd)
-    }
     /// `Reactor::change`'s `op` of `socket` with `events`, or -1 without one.
     fn change(&self, socket: Option<Socket<'_>>, op: u32, events: c_int) -> c_int {
         socket.map_or(-1, |socket| self.reactor().change(socket, op, events))
-    }
-    /// The context port's listening socket.
-    fn port_socket(&self) -> Option<Socket<'_>> {
-        self.port().listening_socket()
     }
     fn port(&self) -> &PortConfig {
         // SAFETY: the ops reading it run with a live port in the context, which no
@@ -184,10 +168,6 @@ impl<'a> Objects<'a> {
     fn send(&self) -> &SendData {
         // SAFETY: the ops reading it run with a live send in the context.
         unsafe { &*self.ctx.send.cast::<SendData>() }
-    }
-    /// The host `add_port` lends, or an empty one.
-    fn host(&self) -> &CStr {
-        self.ctx.host.unwrap_or_default()
     }
     /// The live socket native code passes as `arg`.
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
@@ -313,26 +293,6 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_SEND_TIMEOUT_MIN => {
             o.config().send_timeout.set(0.001);
-            0
-        }
-        OP_STREAM_PORT => {
-            config().have_stream_sock = true;
-            0
-        }
-        OP_DGRAM_PORT => {
-            let fd = o.port_fd();
-            let port = o.port();
-            let socket = port.socket_ptr();
-            let size = port.socket_buffer_size.get().cast_unsigned();
-            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
-            let config = config();
-            config.have_dgram_sock = true;
-            config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
-            match arg {
-                2 => config.udp_socket_ipv4 = socket,
-                4 => config.udp_socket_ipv6 = socket,
-                _ => config.dgram_socket = socket,
-            }
             0
         }
         OP_BASE_REACTORS => {
@@ -600,64 +560,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_PORT_CREATED => {
-            let m = format_args!("must add port before server is created");
-            error(
-                SW_LOG_ERROR,
-                E::SW_ERROR_WRONG_OPERATION,
-                c"Server::add_port",
-                m,
-            );
-            0
-        }
-        LOG_TOO_MANY_PORTS => {
-            let m = format_args!("up to 60000 listening ports are allowed");
-            error(
-                SW_LOG_ERROR,
-                E::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT,
-                c"Server::add_port",
-                m,
-            );
-            0
-        }
-        LOG_INVALID_PORT => {
-            let m = format_args!("invalid port [{}]", o.ctx.number);
-            error(
-                SW_LOG_ERROR,
-                E::SW_ERROR_SERVER_INVALID_LISTEN_PORT,
-                c"Server::add_port",
-                m,
-            );
-            0
-        }
-        LOG_HOST_TOO_LONG => {
-            let host = o.host().to_string_lossy();
-            let m = format_args!(
-                "address '{host}' exceeds the limit of {} characters",
-                host_maxsize() - 1
-            );
-            error(
-                SW_LOG_ERROR,
-                E::SW_ERROR_NAME_TOO_LONG,
-                c"Server::add_port",
-                m,
-            );
-            0
-        }
-        LOG_LISTEN_PID => {
-            log::warning(
-                c"Server::add_systemd_socket",
-                format_args!("invalid LISTEN_PID"),
-            );
-            0
-        }
-        LOG_FDS_START => {
-            log::warning(
-                c"Server::add_systemd_socket",
-                format_args!("invalid LISTEN_FDS_START"),
-            );
-            0
-        }
         LOG_SC_NO_SESSION_DATA => {
             let (length, session) = (o.ctx.length.cast_signed(), o.ctx.session_id);
             let m = format_args!("send {length} byte failed, session#{session} does not exist");
@@ -746,15 +648,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
 
-        // The context's port.
-        OP_NEW_PORT_TYPE => sign(o.port().r#type),
-        OP_PORT_PUSH => {
-            // SAFETY: the context's new port, which the server owns from now on;
-            // ports are only added before the server starts.
-            unsafe { o.state.push_port(o.ctx.port) };
-            0
-        }
-
         OP_SC_HAS_SEND_TIMER => u64::from(o.edit_sock(|s| !s.output.send_timer.is_null())),
 
         OP_CONN_CLOSING => {
@@ -770,10 +663,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
 
         // The context's own fields.
-        OP_PORT_TYPE => sign(o.ctx.socket_type),
-        OP_PORT_NUMBER => sign(o.ctx.number),
-        OP_HOST_SIZE => o.host().count_bytes() as u64 + 1,
-        OP_HOST_MAXSIZE => host_maxsize() as u64,
         OP_SC_ADVANCE => {
             #[expect(clippy::cast_possible_truncation, reason = "a length within the data")]
             let step = arg as u32;
@@ -1137,12 +1026,11 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_START;
     use crate::ops::{
-        OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_LC_DAEMON, OP_LC_FACTORY_START,
-        OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER,
-        OP_MAX_SOCKETS, OP_ST_FINISH, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
+        OP_LC_DAEMON, OP_LC_FACTORY_START, OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS,
+        OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH, OP_STORE_LISTEN,
     };
     use swoole_rs_clients::address::assign;
-    use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
+    use swoole_rs_corebase::swoole_redirect_stdout_file;
     use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
     Some(match op {
@@ -1206,16 +1094,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             socket.edit(|socket| socket.object = ls);
             sign(fd)
         }
-        OP_ENV_LISTEN_PID | OP_ENV_FDS_START => {
-            let name = if op == OP_ENV_LISTEN_PID {
-                c"LISTEN_PID"
-            } else {
-                c"LISTEN_FDS_START"
-            };
-            swoole_rs_corebase::get_env(name).map_or(i64::MIN.cast_unsigned(), sign)
-        }
-        // SAFETY: reads the environment.
-        OP_SYSTEMD_FDS => sign(swoole_get_systemd_listen_fds()),
         op => return closing(o, op, arg),
     })
 }
@@ -1439,24 +1317,17 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.ctx.object = crate::factory::new(serv, None);
             0
         }
-        op => return objects(o, op, arg),
+        op => return objects(o, op),
     })
 }
 
-/// The ops over the server's ports, timers, barriers, command pipe and message
-/// bus, which build or call a native `ListenPort`, `Barrier` or `UnixSocket`;
-/// else `None`.
+/// The ops over the server's timers, barriers and pipe buffers; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+fn objects(o: &mut Objects<'_>, op: u32) -> Option<u64> {
     use crate::ops::{
-        OP_MANAGER_BARRIER, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_SOCKET, OP_REACTOR_BARRIER,
-        OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
+        OP_MANAGER_BARRIER, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
     };
-    /// `SW_SOCK_SSL`.
-    const SOCK_SSL: c_int = 1 << 9;
-    use crate::server_object::{barrier, port_delete, port_new};
-    use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-    let serv = o.ctx.serv;
+    use crate::server_object::barrier;
     Some(match op {
         // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
         // for the context socket's sends.
@@ -1487,47 +1358,6 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_RELEASE_PIPE_BUFFERS => {
             release_pipe_buffers(o.state);
             0
-        }
-        OP_PORT_NEW => {
-            let mut port = port_new(serv);
-            port.r#type = o.ctx.socket_type;
-            port.port.set(o.ctx.number);
-            if port.host.set(o.host().to_bytes()) < 0 {
-                // `throw std::bad_alloc()`, which nothing catches.
-                swoole_rs_corebase::fatal("out of memory storing a port's host");
-            }
-            if arg != 0 {
-                port.r#type = o.ctx.socket_type & !SOCK_SSL;
-                port.ssl = 1;
-            }
-            if arg != 0 {
-                (methods().ssl_context_init)(&mut port);
-            }
-            o.ctx.port = Box::into_raw(port).cast();
-            0
-        }
-        OP_PORT_SOCKET => {
-            if (methods().create_socket)(o.port()) < 0 {
-                log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
-                // SAFETY: the new port, deleted once.
-                unsafe { port_delete(o.ctx.port) };
-                o.ctx.port = core::ptr::null_mut();
-                return Some(0);
-            }
-            1
-        }
-        OP_PORT_IMPORT => {
-            let mut port = port_new(serv);
-            let fd = arg.c_cast::<c_int>();
-            if !(methods().import)(&mut port, fd) {
-                crate::server_object::port_drop(port);
-                return Some(0);
-            }
-            o.ctx.port = Box::into_raw(port).cast();
-            // The record `import` made: O_NONBLOCK and O_CLOEXEC.
-            o.port_socket()?
-                .edit(|socket| socket_set_fd_option(socket, 1, 1));
-            1
         }
         _ => return None,
     })
@@ -1671,19 +1501,14 @@ mod tests {
     }
 
     #[test]
-    fn host_size_counts_the_nul_and_advance_moves_the_data() {
+    fn advance_moves_the_data() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        ctx.host = Some(c"0.0.0.0");
         let data = [0u8; 8];
         ctx.data = data.as_ptr().cast();
         ctx.length = 8;
-        // SAFETY: the context's host and data are live above.
+        // SAFETY: the context's data is live above.
         unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_HOST_SIZE, 0),
-                Some(8)
-            );
             answer(&raw mut ctx, None, &*state, OP_SC_ADVANCE, 3);
             crate::state::free_state(state);
         }

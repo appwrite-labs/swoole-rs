@@ -1,19 +1,15 @@
 //! Choosing a worker, sends from workers, and listen ports.
+use crate::MODE_PROCESS;
 use crate::base_factory::SendData;
 use crate::callbacks::{CB_DISPATCH_FUNC, CallbackSlot};
-use crate::ops::{
-    LOG_FDS_START, LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_LISTEN_PID, LOG_PORT_CREATED,
-    LOG_TOO_MANY_PORTS, OP_DGRAM_PORT, OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_HOST_MAXSIZE,
-    OP_HOST_SIZE, OP_IS_CREATED, OP_NEW_PORT_TYPE, OP_PORT_COUNT, OP_PORT_IMPORT, OP_PORT_NEW,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_STREAM_PORT, OP_SYSTEMD_FDS,
-};
+use crate::port_config::{PortConfig, methods};
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
-use crate::view::Server;
-use crate::{Host, MODE_PROCESS};
+use crate::view::{Port, Server};
 use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
+use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
 /// `Server::DispatchMode`, `DISPATCH_RESULT_USERFUNC_FALLBACK`; native asserts each.
@@ -27,13 +23,13 @@ const DISPATCH_CONCURRENT_LB: u8 = 10;
 const USERFUNC_FALLBACK: c_int = -3;
 
 /// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
-const SOCK_UDP: u64 = 2;
-const SOCK_UDP6: u64 = 4;
-const SOCK_UNIX_STREAM: u64 = 5;
-const SOCK_UNIX_DGRAM: u64 = 6;
-const SOCK_SSL: u64 = 1 << 9;
-const MAX_LISTEN_PORT: u64 = 60000;
-const SYSTEMD_FDS_START: i64 = 3;
+const SOCK_UDP: c_int = 2;
+const SOCK_UDP6: c_int = 4;
+const SOCK_UNIX_STREAM: c_int = 5;
+const SOCK_UNIX_DGRAM: c_int = 6;
+const SOCK_SSL: c_int = 1 << 9;
+const MAX_LISTEN_PORT: usize = 60000;
+const SYSTEMD_FDS_START: c_int = 3;
 
 /// `Server::schedule_worker(fd, data)`: the user's dispatch function, else the dispatch
 /// mode. `send` is the data the worker takes, if any.
@@ -241,8 +237,17 @@ const SW_LOG_ERROR: c_int = 5;
 #[repr(C, align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
+fn log_error(
+    level: c_int,
+    code: swoole_rs_error::ErrorCode,
+    origin: &CStr,
+    m: core::fmt::Arguments<'_>,
+) {
+    swoole_rs_corebase::log::error_log(level, code as c_int, origin, m);
+}
+
 fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
-    swoole_rs_corebase::log::error_log(level, code as c_int, c"Server::sendfile", m);
+    log_error(level, code, c"Server::sendfile", m);
 }
 
 /// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the
@@ -326,91 +331,157 @@ pub fn sendfile(
     crate::hybrid::hybrid().factory_finish(serv, &mut send)
 }
 
-/// `Server::add_port`: validate, create the listen socket, and register the port.
-pub(crate) fn add_port<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    if h.is(OP_IS_CREATED)? {
-        h.get(LOG_PORT_CREATED)?;
-        return Ok(0);
-    }
-    if h.get(OP_PORT_COUNT)? >= MAX_LISTEN_PORT {
-        h.get(LOG_TOO_MANY_PORTS)?;
-        return Ok(0);
-    }
-    let kind = h.get(OP_PORT_TYPE)?;
-    let local = matches!(kind, SOCK_UNIX_STREAM | SOCK_UNIX_DGRAM);
-    if !local && !(0..=65535).contains(&h.signed(OP_PORT_NUMBER)?) {
-        h.get(LOG_INVALID_PORT)?;
-        return Ok(0);
-    }
-    if h.get(OP_HOST_SIZE)? > h.get(OP_HOST_MAXSIZE)? {
-        h.get(LOG_HOST_TOO_LONG)?;
-        return Ok(0);
-    }
-    h.op(OP_PORT_NEW, u64::from(kind & SOCK_SSL != 0))?;
-    if !h.is(OP_PORT_SOCKET)? {
-        return Ok(0);
-    }
-    check_port_type(h)?;
-    h.get(OP_PORT_PUSH)?;
-    Ok(1)
+/// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
+fn host_maxsize() -> usize {
+    // `sun_path` is the struct's last field, with no padding after its bytes.
+    size_of::<libc::sockaddr_un>() - core::mem::offset_of!(libc::sockaddr_un, sun_path)
 }
 
-/// `Server::check_port_type` of the new port.
-fn check_port_type<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let kind = h.get(OP_NEW_PORT_TYPE)?;
+/// `Server::add_port(type, host, port)`: validates, creates the listen socket, and
+/// keeps the port; `None` with the error logged or set.
+#[must_use]
+pub fn add_port<'a>(
+    serv: Server<'a>,
+    socket_type: c_int,
+    host: &CStr,
+    number: c_int,
+) -> Option<Port<'a>> {
+    use swoole_rs_error::ErrorCode as E;
+    let fail = |code, m: core::fmt::Arguments<'_>| {
+        log_error(SW_LOG_ERROR, code, c"Server::add_port", m);
+        None
+    };
+    if !serv.state().config_ref().factory_.is_null() {
+        let m = format_args!("must add port before server is created");
+        return fail(E::SW_ERROR_WRONG_OPERATION, m);
+    }
+    if serv.ports().len() >= MAX_LISTEN_PORT {
+        let m = format_args!("up to 60000 listening ports are allowed");
+        return fail(E::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT, m);
+    }
+    let local = matches!(socket_type, SOCK_UNIX_STREAM | SOCK_UNIX_DGRAM);
+    if !local && !(0..=65535).contains(&number) {
+        let m = format_args!("invalid port [{number}]");
+        return fail(E::SW_ERROR_SERVER_INVALID_LISTEN_PORT, m);
+    }
+    if host.count_bytes() + 1 > host_maxsize() {
+        let host = host.to_string_lossy();
+        let limit = host_maxsize() - 1;
+        let m = format_args!("address '{host}' exceeds the limit of {limit} characters");
+        return fail(E::SW_ERROR_NAME_TOO_LONG, m);
+    }
+    let mut port = PortConfig::new_port(serv.raw());
+    port.r#type = socket_type;
+    port.port.set(number);
+    if port.host.set(host.to_bytes()) < 0 {
+        // `throw std::bad_alloc()`, which nothing catches.
+        swoole_rs_corebase::fatal("out of memory storing a port's host");
+    }
+    if socket_type & SOCK_SSL != 0 {
+        port.r#type = socket_type & !SOCK_SSL;
+        port.ssl = 1;
+        (methods().ssl_context_init)(&mut port);
+    }
+    if (methods().create_socket)(&port) < 0 {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        swoole_rs_corebase::log::set_last_error(errno);
+        port.delete();
+        return None;
+    }
+    Some(keep_port(serv, port))
+}
+
+/// `Server::check_port_type(port)` then `ports.push_back(port)`: the server keeps the port.
+fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
+    // SAFETY: ports are added before the server starts, while the master is its
+    // only thread, and no other reference to the config is held across this.
+    let config = unsafe { serv.config_mut() };
+    let kind = port.r#type;
     if matches!(kind, SOCK_UDP | SOCK_UDP6 | SOCK_UNIX_DGRAM) {
-        h.op(OP_DGRAM_PORT, kind)?;
+        let fd = port
+            .listening_socket()
+            .map_or(-1, swoole_rs_reactor::Socket::fd);
+        let size = port.socket_buffer_size.get().cast_unsigned();
+        swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+        config.have_dgram_sock = true;
+        config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
+        let socket = port.socket_ptr();
+        match kind {
+            SOCK_UDP => config.udp_socket_ipv4 = socket,
+            SOCK_UDP6 => config.udp_socket_ipv6 = socket,
+            _ => config.dgram_socket = socket,
+        }
     } else {
-        h.get(OP_STREAM_PORT)?;
+        config.have_stream_sock = true;
     }
-    Ok(())
+    let raw = Box::into_raw(port).cast();
+    // SAFETY: the new port, which the server owns from now on; as above, no other
+    // thread reads the list.
+    unsafe { serv.state().push_port(raw) };
+    // SAFETY: the port the server just kept, for its life.
+    unsafe { Port::from_raw(raw) }.unwrap_or_else(|| swoole_rs_corebase::fatal("a null port"))
 }
 
-/// `Server::add_systemd_socket`: import the sockets systemd passed; the number imported.
-pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
+/// `Server::add_systemd_socket()`: imports the sockets systemd passed; the number
+/// imported.
+#[must_use]
+pub fn add_systemd_socket(serv: Server<'_>) -> c_int {
+    use swoole_rs_corebase::get_env;
+    let count = || swoole_rs_corebase::get_systemd_listen_fds();
+    import_sockets(
+        serv,
+        get_env(c"LISTEN_PID"),
+        count,
+        get_env(c"LISTEN_FDS_START"),
+    )
+}
+
+/// [`add_systemd_socket`] over `LISTEN_PID`, the `LISTEN_FDS` count and
+/// `LISTEN_FDS_START`.
+fn import_sockets(
+    serv: Server<'_>,
+    listen_pid: Option<c_int>,
+    count: impl FnOnce() -> c_int,
+    start: Option<c_int>,
+) -> c_int {
+    let origin = c"Server::add_systemd_socket";
     // Upstream compares an unset `LISTEN_PID` with an indeterminate value; treat it as foreign.
-    if h.signed(OP_ENV_LISTEN_PID)? == i64::MIN {
-        h.get(LOG_LISTEN_PID)?;
-        return Ok(0);
+    if listen_pid.is_none() {
+        swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_PID"));
+        return 0;
     }
-    let count = h.signed(OP_SYSTEMD_FDS)?;
+    let count = count();
     if count <= 0 {
-        return Ok(0);
+        return 0;
     }
-    let start = match h.signed(OP_ENV_FDS_START)? {
-        i64::MIN => SYSTEMD_FDS_START,
-        start if start < 0 => {
-            h.get(LOG_FDS_START)?;
-            return Ok(0);
+    let start = match start {
+        None => SYSTEMD_FDS_START,
+        Some(start) if start < 0 => {
+            swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_FDS_START"));
+            return 0;
         }
-        start => start,
+        Some(start) => start,
     };
     let mut imported = 0;
-    for fd in start..start + count {
-        if h.op(OP_PORT_IMPORT, fd.cast_unsigned())? == 0 {
+    for fd in start..start.saturating_add(count) {
+        let mut port = PortConfig::new_port(serv.raw());
+        if !(methods().import)(&mut port, fd) {
+            port.delete();
             continue;
         }
-        check_port_type(h)?;
-        h.get(OP_PORT_PUSH)?;
+        // The record `import` made: O_NONBLOCK and O_CLOEXEC.
+        if let Some(socket) = port.listening_socket() {
+            socket.edit(|socket| socket_set_fd_option(socket, 1, 1));
+        }
+        keep_port(serv, port);
         imported += 1;
     }
-    Ok(imported)
-}
-
-/// The dispatch and port operations of `crate::run`.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use crate::ops::{RUN_ADD_PORT, RUN_SYSTEMD_SOCKETS};
-    Ok(match operation {
-        RUN_ADD_PORT => add_port(h)?,
-        RUN_SYSTEMD_SOCKETS => systemd_sockets(h)?,
-        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
-    })
+    imported
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::Script;
 
     use crate::fixture::LiveServer;
     use swoole_rs_process::worker_record::{WorkerRecord, WorkerStatus};
@@ -626,49 +697,104 @@ mod tests {
         );
     }
 
+    /// Port methods whose `create_socket` fails for port 1, and whose `import` takes
+    /// fd 3 as TCP, fd 4 as UDP and refuses the rest, keeping the fd as the port.
+    fn fake_port_methods() {
+        // SAFETY: the fakes touch only the settings they are given.
+        unsafe {
+            crate::port_config::set_methods(crate::port_config::PortMethods {
+                ssl_context_init: |_| true,
+                ssl_create: |_, _| unreachable!(),
+                import: |config, fd| {
+                    config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
+                    config.port.set(fd);
+                    fd < 5
+                },
+                close: |_| unreachable!(),
+                listen: |_| unreachable!(),
+                create_socket: |config| if config.port.get() == 1 { -1 } else { 0 },
+                close_socket: |_| unreachable!(),
+                get_protocols: |_| unreachable!(),
+                init_protocol: |_| unreachable!(),
+                destroy_http_request: |_| unreachable!(),
+                tls_free: |_| {},
+                dtls_create: |_, _| unreachable!(),
+                dtls_session: |_, _| unreachable!(),
+                dtls_free: |_, _| unreachable!(),
+            });
+        }
+    }
+
     #[test]
-    fn ports() {
-        let mut s = Script::with(&[
-            (OP_PORT_TYPE, 1 | SOCK_SSL),
-            (OP_PORT_NUMBER, 9501),
-            (OP_HOST_SIZE, 8),
-            (OP_HOST_MAXSIZE, 108),
-            (OP_PORT_SOCKET, 1),
-            (OP_NEW_PORT_TYPE, SOCK_UDP),
-        ]);
-        assert_eq!(add_port(&mut s).unwrap(), 1, "added");
-        assert_eq!(s.args(OP_PORT_NEW), vec![1], "TLS");
-        assert_eq!(
-            s.args(OP_DGRAM_PORT),
-            vec![SOCK_UDP],
-            "datagram socket recorded"
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn add_port_checks_then_keeps_the_port() {
+        fake_port_methods();
+        let live = LiveServer::new();
+        let serv = live.server();
+        let before = serv.ports().len();
+        assert!(add_port(serv, 1, c"127.0.0.1", 70000).is_none(), "bad port");
+        let long = std::ffi::CString::new(vec![b'a'; host_maxsize()]).unwrap();
+        assert!(
+            add_port(serv, SOCK_UNIX_STREAM, &long, 70000).is_none(),
+            "unix sockets skip the port check, then the path is too long"
         );
+        assert!(add_port(serv, 1, c"127.0.0.1", 1).is_none(), "no socket");
+        assert_eq!(serv.ports().len(), before, "none kept");
+        assert!(!serv.config().have_dgram_sock);
 
-        let mut s = Script::with(&[(OP_PORT_TYPE, 1), (OP_PORT_NUMBER, 70000)]);
-        assert_eq!(add_port(&mut s).unwrap(), 0, "bad port");
-        assert_eq!(s.called(LOG_INVALID_PORT), 1, "warned");
-        let mut s = Script::with(&[
-            (OP_PORT_TYPE, SOCK_UNIX_STREAM),
-            (OP_PORT_NUMBER, 70000),
-            (OP_HOST_SIZE, 200),
-            (OP_HOST_MAXSIZE, 108),
-        ]);
-        assert_eq!(add_port(&mut s).unwrap(), 0, "path too long");
+        let port = add_port(serv, SOCK_UDP | SOCK_SSL, c"127.0.0.1", 9501).unwrap();
+        let config = port.config();
         assert_eq!(
-            s.called(LOG_HOST_TOO_LONG),
-            1,
-            "unix sockets skip the port check"
+            (config.r#type, config.ssl, config.port.get()),
+            (SOCK_UDP, 1, 9501)
         );
+        assert_eq!(serv.ports().len(), before + 1, "kept");
+        assert_eq!(serv.ports()[before].raw(), port.raw());
+        assert!(serv.config().have_dgram_sock);
+        assert_eq!(serv.config().dgram_port_num, 1);
+        assert!(add_port(serv, 1, c"::", 9502).is_some(), "a stream port");
+        assert!(serv.config().have_stream_sock);
 
-        let mut s = Script::with(&[
-            (OP_ENV_LISTEN_PID, 1),
-            (OP_SYSTEMD_FDS, 3),
-            (OP_ENV_FDS_START, i64::MIN.cast_unsigned()),
-        ])
-        .queue(OP_PORT_IMPORT, &[1, 0, 1]);
-        assert_eq!(systemd_sockets(&mut s).unwrap(), 2, "two imported");
-        assert_eq!(s.args(OP_PORT_IMPORT), vec![3, 4, 5], "from fd 3");
-        let mut s = Script::with(&[(OP_ENV_LISTEN_PID, i64::MIN.cast_unsigned())]);
-        assert_eq!(systemd_sockets(&mut s).unwrap(), 0, "no LISTEN_PID");
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        let config = unsafe { serv.config_mut() };
+        config.factory_ = core::ptr::NonNull::dangling().as_ptr();
+        assert!(add_port(serv, 1, c"::", 9503).is_none(), "created");
+        config.factory_ = core::ptr::null_mut();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn systemd_sockets_import_from_listen_fds_start() {
+        fake_port_methods();
+        let live = LiveServer::new();
+        let serv = live.server();
+        let before = serv.ports().len();
+        assert_eq!(
+            import_sockets(serv, None, || unreachable!(), None),
+            0,
+            "no LISTEN_PID"
+        );
+        assert_eq!(
+            import_sockets(serv, Some(1), || -1, None),
+            0,
+            "no LISTEN_FDS"
+        );
+        assert_eq!(
+            import_sockets(serv, Some(1), || 3, Some(-1)),
+            0,
+            "bad start"
+        );
+        assert_eq!(serv.ports().len(), before);
+        assert_eq!(
+            import_sockets(serv, Some(1), || 3, None),
+            2,
+            "from fd 3; 5 refused"
+        );
+        let kept: Vec<_> = serv.ports()[before..]
+            .iter()
+            .map(|port| (port.config().port.get(), port.config().r#type))
+            .collect();
+        assert_eq!(kept, [(3, 1), (4, SOCK_UDP)]);
+        assert!(serv.config().have_stream_sock && serv.config().have_dgram_sock);
     }
 }
