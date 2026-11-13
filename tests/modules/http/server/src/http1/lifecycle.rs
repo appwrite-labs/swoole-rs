@@ -224,11 +224,10 @@ fn sleep_forever() -> ! {
 
 /// `new Worker()`, as the server's user worker: the id `add_worker` returns is the one it sets.
 fn add_user_worker(serv: Server) -> *mut WorkerRecord {
-    let worker = Box::into_raw(WorkerRecord::boxed());
-    // SAFETY: the server before `create`, and a live worker it keeps.
-    let id = unsafe { worker_methods::add_worker(serv.view(), worker) };
-    assert_eq!(id, worker_id(worker).cast_signed());
-    worker
+    let worker = Worker::from(Box::leak(WorkerRecord::boxed()));
+    let id = worker_methods::add_worker(serv.view(), worker);
+    assert_eq!(id, worker_id(worker.raw()).cast_signed());
+    worker.raw()
 }
 
 /// `delete worker`.
@@ -1637,14 +1636,10 @@ fn test_process(single_thread: bool) {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
 
     clear_last_error();
-    let fake_worker = Box::into_raw(WorkerRecord::boxed());
-    // SAFETY: the created server, and a live worker it refuses.
-    assert_eq!(
-        unsafe { worker_methods::add_worker(serv.view(), fake_worker) },
-        SW_ERR
-    );
+    let fake_worker = Worker::from(Box::leak(WorkerRecord::boxed()));
+    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), SW_ERR);
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
-    delete_worker(fake_worker);
+    delete_worker(fake_worker.raw());
 
     serv.set_callback(CB_START, process_on_start as *const c_void);
     serv.set_callback(CB_WORKER_START, process_worker_start as *const c_void);
