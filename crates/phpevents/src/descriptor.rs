@@ -1,18 +1,15 @@
 //! Descriptor admission over actual Zend values and SDK stream/socket leaves.
 use super::native;
 use std::ffi::CStr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{Value, ZString, bailout::Bailout, message, sys as z};
 
 fn warning(message: &CStr) -> Result<(), Bailout> {
     native::fatal_warning(message)
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the native descriptor API narrows zend_long to int before its sign check"
-)]
 fn native_fd(value: z::zend_long) -> i32 {
-    value as i32
+    value.c_cast::<i32>()
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or -1 after a warning.

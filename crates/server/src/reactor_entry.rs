@@ -5,6 +5,7 @@
 //! they make is Rust's.
 use crate::records::Lookup;
 use core::ffi::{c_int, c_long, c_void};
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -93,12 +94,8 @@ fn run_with<'s, 'c>(
     int(crate::run_reactor_with(ctx, state, |h| operation(h, facts)))
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "C++'s implicit int64_t to int"
-)]
 pub(crate) fn int(value: i64) -> c_int {
-    value as c_int
+    value.c_cast::<c_int>()
 }
 
 /// `reactor->ptr`, a server reactor's server.

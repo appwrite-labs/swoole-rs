@@ -18,6 +18,7 @@ use std::{
     ptr,
     sync::OnceLock,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     observer::{self, Observer},
@@ -148,8 +149,7 @@ fn file_and_line() -> Option<Vec<u8>> {
 /// `format_bytes`: the size in the largest unit below 1024, two decimals.
 fn format_bytes(size: u64) -> String {
     const UNITS: [&str; 9] = ["B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    #[expect(clippy::cast_precision_loss, reason = "upstream's double")]
-    let mut adjusted = size as f64;
+    let mut adjusted = size.c_cast::<f64>();
     let mut unit = 0;
     while adjusted >= 1024.0 && unit < 8 {
         adjusted /= 1024.0;
@@ -413,10 +413,8 @@ fn profiling_end() {
         event.insert_bytes(b"name", Some(&name));
         event.insert_bytes(b"ph", Some(b"X".as_slice()));
         event.insert_bytes(b"cat", Some(b"FEE".as_slice()));
-        #[expect(clippy::cast_precision_loss, reason = "upstream's double")]
-        event.insert_double(b"ts", prof.began_at as f64);
-        #[expect(clippy::cast_precision_loss, reason = "upstream's double")]
-        event.insert_double(b"dur", (ended_at - prof.began_at) as f64);
+        event.insert_double(b"ts", prof.began_at.c_cast::<f64>());
+        event.insert_double(b"dur", (ended_at - prof.began_at).c_cast::<f64>());
         event.insert_long(b"pid", native_thread_id());
         event.insert_long(b"tid", cid);
         if let Some(events) = profile.events.as_mut() {

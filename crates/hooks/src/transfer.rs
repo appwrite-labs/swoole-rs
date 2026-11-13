@@ -227,11 +227,6 @@ fn socklen(length: usize) -> libc::socklen_t {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "the test socket drives the native integer interface with small lengths"
-)]
 mod tests {
     use super::*;
     use crate::co_io::set_errno;
@@ -242,6 +237,7 @@ mod tests {
     use core::ffi::c_void;
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use swoole_rs_corebase::CCast;
 
     thread_local! {
         /// Scripted call results: bytes moved, or -errno.
@@ -256,7 +252,7 @@ mod tests {
             return -1;
         }
         set_errno(0);
-        result.min(length as isize)
+        result.min(length.c_cast::<isize>())
     }
 
     const EAGAIN: isize = -(libc::EAGAIN as isize);
@@ -412,7 +408,10 @@ mod tests {
         let mut results: VecDeque<isize> = results.iter().copied().collect();
         let mut call = |effects: &mut Vec<String>, length: usize| {
             effects.push(format!("io:{length}:true"));
-            results.pop_front().unwrap_or(0).min(length as isize)
+            results
+                .pop_front()
+                .unwrap_or(0)
+                .min(length.c_cast::<isize>())
         };
         let first = call(&mut effects, 8);
         if first == 0 || first == 8 {
@@ -421,7 +420,7 @@ mod tests {
         if first < 0 && first != EAGAIN {
             return (-1, i32::try_from(-first).unwrap(), effects);
         }
-        let mut total = first.max(0) as usize;
+        let mut total = first.max(0).c_cast::<usize>();
         let mut result = -1;
         let mut error = 0;
         effects.push("timer:add:1".into());
@@ -431,7 +430,7 @@ mod tests {
             loop {
                 result = call(&mut effects, 8 - total);
                 if result > 0 {
-                    total += result as usize;
+                    total += result.c_cast::<usize>();
                 }
                 if !(result == EAGAIN || result > 0 && total < 8) {
                     break;
@@ -451,7 +450,7 @@ mod tests {
         let total = if result < 0 && total == 0 {
             -1
         } else {
-            total as isize
+            total.c_cast::<isize>()
         };
         (total, error, effects)
     }

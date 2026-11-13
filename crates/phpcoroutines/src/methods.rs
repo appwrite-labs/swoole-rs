@@ -17,6 +17,7 @@ use std::{
     ptr,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray,
     bailout::{self, Bailout},
@@ -574,12 +575,8 @@ fn get_back_trace(call: &Call) {
 }
 
 /// `(int) value`, as C's conversion to the `int` Zend takes.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream passes zend_long to int"
-)]
 fn narrow(value: i64) -> i32 {
-    value as i32
+    value.c_cast::<i32>()
 }
 
 /// `sw_php_print_backtrace`.

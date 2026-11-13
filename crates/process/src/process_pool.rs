@@ -16,6 +16,7 @@ use crate::worker_record::Worker;
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
 
 use crate::armed_timer::ArmedTimer;
@@ -942,11 +943,7 @@ fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: u32, arg: u64) -> Option<i64> {
     use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the int the operation widened"
-    )]
-    let int = arg as c_int;
+    let int = arg.c_cast::<c_int>();
     Some(match op {
         OP_WORKER_TYPE => {
             swoole_set_worker_type(int);
@@ -974,11 +971,7 @@ fn log(op: u32, arg: u64) {
     const WARNING: c_int = 4;
     const NOT_SUPPORT: c_int = 507;
     const WRONG_OPERATION: c_int = 509;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the pid the operation widened from an int"
-    )]
-    let pid = arg as c_int;
+    let pid = arg.c_cast::<c_int>();
     match op {
         LOG_NO_SYSVMSG => warning(
             c"ProcessPool::create",

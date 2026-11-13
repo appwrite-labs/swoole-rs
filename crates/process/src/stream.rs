@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::{log, sys};
 
@@ -155,11 +156,7 @@ impl Stream {
             return false;
         }
         // The body's length, in upstream's uint32_t; a failed write closes the stream, as upstream's.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's uint32_t length"
-        )]
-        let head = (self.buffer.len() as u32).to_be_bytes();
+        let head = self.buffer.len().c_cast::<u32>().to_be_bytes();
         let _closed = set_flags(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, false)
             .and_then(|()| self.socket.write_all(&head))
             .and_then(|()| self.socket.write_all(&self.buffer));

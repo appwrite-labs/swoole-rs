@@ -1,6 +1,7 @@
 //! The worker side's warnings, logged from Rust under the upstream function that
 //! logged each. An operation names one with its `LOG_*` number and up to two
 //! values ([`super::Host::log`]); a scripted host records the number instead.
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::{error_log, info, sys_error, sys_warning, warning};
 
 // The numbers native code never sees: tests tell the logs apart by them.
@@ -66,10 +67,6 @@ const SERVER_WORKER_EXIT_TIMEOUT: i32 = 9101;
 const SERVER_WORKER_UNPROCESSED_DATA: i32 = 9103;
 
 /// Logs `op` with its values `a` and `b`, as upstream's C++ formatted them.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "each value is the C int, uint32 or int16 upstream printed, widened to i64"
-)]
 #[expect(clippy::too_many_lines, reason = "one arm per upstream log statement")]
 pub(super) fn emit(op: u32, a: i64, b: i64) {
     let which = if a != 0 { "all" } else { "task" };
@@ -84,13 +81,13 @@ pub(super) fn emit(op: u32, a: i64, b: i64) {
         ),
         LOG_INVALID_TARGET => warning(
             c"ProcessFactory::dispatch",
-            format_args!("invalid target worker id[{}]", a as i32),
+            format_args!("invalid target worker id[{}]", a.c_cast::<i32>()),
         ),
         LOG_CONN_NOT_ACTIVE => warning(
             c"ProcessFactory::dispatch",
             format_args!(
                 "dispatch[type={a}] failed, connection#{} is not active",
-                b as i32
+                b.c_cast::<i32>()
             ),
         ),
         LOG_TOO_LARGE => error_log(
@@ -114,7 +111,7 @@ pub(super) fn emit(op: u32, a: i64, b: i64) {
             c"ProcessFactory::finish",
             format_args!(
                 "send {} bytes failed, because session#{b} is closed",
-                a as i32
+                a.c_cast::<i32>()
             ),
         ),
         LOG_OVERFLOW => error_log(
@@ -167,7 +164,7 @@ pub(super) fn emit(op: u32, a: i64, b: i64) {
             WARNING,
             INVALID_PARAMS,
             c"Server::kill_worker",
-            format_args!("the worker_id[{}] is invalid", a as i32),
+            format_args!("the worker_id[{}] is invalid", a.c_cast::<i32>()),
         ),
         LOG_PUSH_STOP => sys_warning(
             c"Server::stop_async_worker",
@@ -266,11 +263,11 @@ pub(super) fn emit(op: u32, a: i64, b: i64) {
         ),
         LOG_UNKNOWN_CHILD => warning(
             c"Server::restart_worker_process",
-            format_args!("Unknown type child process [{}] exited", a as i32),
+            format_args!("Unknown type child process [{}] exited", a.c_cast::<i32>()),
         ),
         LOG_UNKNOWN_WORKER_TYPE => warning(
             c"Server::restart_worker_process",
-            format_args!("Unknown worker [pid={}] type [{b}]", a as i32),
+            format_args!("Unknown worker [pid={}] type [{b}]", a.c_cast::<i32>()),
         ),
         LOG_UNKNOWN_MESSAGE => warning(
             c"Server::read_worker_message",

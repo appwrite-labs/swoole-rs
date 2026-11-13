@@ -5,6 +5,7 @@ use crate::{
     net::{CONNECT_TIMEOUT, bailed, errno, warn, warn_sys},
 };
 use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, pollfd};
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{Array, Call, Owned, OwnedArray, Value};
 
 /// The arrays by argument number, with the event each is polled for.
@@ -125,11 +126,7 @@ fn select(call: &Call) {
             revents: 0,
         },
     );
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (int) (timeout * 1000)"
-    )]
-    let wait = (timeout * 1000.0) as c_int;
+    let wait = (timeout * 1000.0).c_cast::<c_int>();
     let ready = loop {
         let polled = fds.get_mut(..count).unwrap_or_default();
         let ready = swoole_rs_corebase::sys::poll(polled, wait);

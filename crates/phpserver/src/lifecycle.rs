@@ -15,6 +15,7 @@ use std::{
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
@@ -167,8 +168,7 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
             return -2;
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
-        #[expect(clippy::cast_possible_truncation, reason = "get_worker(uint16_t)")]
-        if let Some(worker) = serv.worker_record(id as u16) {
+        if let Some(worker) = serv.worker_record(id.c_cast::<u16>()) {
             worker.set_redirect_stdin(false);
             worker.set_redirect_stdout(false);
             worker.set_redirect_stderr(false);
@@ -758,11 +758,7 @@ fn construct(call: &Call) {
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
     if mode != MODE_BASE && mode != MODE_PROCESS && !(thread && mode == MODE_THREAD) {
         set_last_error(SW_ERROR_INVALID_PARAMS);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "(int) serv_mode, as upstream"
-        )]
-        let text = message!("invalid $mode parameters {}", mode as i32);
+        let text = message!("invalid $mode parameters {}", mode.c_cast::<i32>());
         call.throw_error(text.as_cstr());
         return call.set_bool(false);
     }
@@ -808,11 +804,12 @@ fn construct(call: &Call) {
         // The host as C reads it: up to its first NUL.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
         let host = CString::new(host).unwrap_or_default();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "add_port((SocketType) type, host, (int) port), as upstream"
-        )]
-        server_methods::add_port(server, kind as c_int, &host, port as c_int)
+        server_methods::add_port(
+            server,
+            kind.c_cast::<c_int>(),
+            &host,
+            port.c_cast::<c_int>(),
+        )
     }
     .is_none()
     {

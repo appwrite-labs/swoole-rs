@@ -1,5 +1,6 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys;
 use swoole_rs_locks::SharedMutex;
 
@@ -410,13 +411,9 @@ pub fn swr_v1_memory_channel_full(state: Option<&CapacityState>) -> i32 {
     let Some(state) = state else {
         return -1;
     };
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "native size_t arithmetic on the int record count"
-    )]
     let occupied = state
         .bytes
-        .wrapping_add((state.num as usize).wrapping_mul(4));
+        .wrapping_add(state.num.c_cast::<usize>().wrapping_mul(4));
     i32::from(
         state.head == state.tail && state.tail_tag != state.head_tag || occupied == state.size,
     )
@@ -424,10 +421,4 @@ pub fn swr_v1_memory_channel_full(state: Option<&CapacityState>) -> i32 {
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/channel.rs"]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests;

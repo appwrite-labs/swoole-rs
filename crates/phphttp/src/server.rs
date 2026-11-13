@@ -18,6 +18,7 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::{
@@ -453,11 +454,7 @@ fn handle(
             cache,
         );
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (zend_long) cast"
-    )]
-    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
     add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_rs_corebase::swoole_isset_hook(HOOK_BEFORE_REQUEST) {
@@ -565,11 +562,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         cache,
     );
     request_times(state);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (zend_long) cast"
-    )]
-    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
     add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);

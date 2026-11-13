@@ -4,6 +4,7 @@
 use crate::static_handler::{Effects, StaticHandler, page_404};
 use core::ffi::c_void;
 use core::ptr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
@@ -116,12 +117,8 @@ fn encode(header: &HttpStaticHeaders<'_>) -> Vec<u8> {
     head
 }
 
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "upstream prints the size_t length with %ld"
-)]
 fn signed(length: usize) -> i64 {
-    length as i64
+    length.c_cast::<i64>()
 }
 
 /// `Server::select_static_handler`: answer an HTTP/1 request from the

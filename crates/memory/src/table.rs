@@ -24,6 +24,7 @@ use std::sync::atomic::{
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 use std::{ptr, slice};
+use swoole_rs_corebase::CCast;
 use swoole_rs_locks::SharedMutex;
 
 /// `TableColumn::TYPE_INT`, `TYPE_FLOAT`, `TYPE_STRING`.
@@ -364,11 +365,7 @@ fn warn(warning: Warning, message: &[u8]) {
 /// The bytes of a key a row holds: its `uint16_t` length (as upstream's
 /// `Table` takes it), then `check_key_length`'s 63 bytes.
 fn clamp(key: &[u8]) -> &[u8] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's Table takes uint16_t key lengths"
-    )]
-    let length = usize::from(key.len() as u16);
+    let length = usize::from(key.len().c_cast::<u16>());
     key.get(..length.min(KEY_SIZE - 1)).unwrap_or(key)
 }
 
@@ -452,9 +449,8 @@ impl Table {
         if self.created {
             return false;
         }
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's uint32_t size")]
         let width = if kind == TYPE_STRING {
-            size.wrapping_add(4) as u32
+            size.wrapping_add(4).c_cast::<u32>()
         } else {
             8
         };
@@ -498,13 +494,7 @@ impl Table {
     }
 
     fn plan(&self) -> Option<Plan> {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            clippy::cast_precision_loss,
-            reason = "upstream sizes rows in float: size_t * (1 + float)"
-        )]
-        let rows = (self.size as f32 * (1.0 + self.conflict_proportion)) as usize;
+        let rows = (self.size.c_cast::<f32>() * (1.0 + self.conflict_proportion)).c_cast::<usize>();
         let slices = rows.checked_sub(self.size)?;
         let row_size = ROW.checked_add(self.item_size)?;
         let stride = row_size.checked_next_multiple_of(8)?;
@@ -1041,11 +1031,7 @@ impl Data {
             warn(warning, &message);
         }
         let value = value.get(..capacity).unwrap_or(value);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream stores the low 4 bytes"
-        )]
-        let length = value.len() as u32;
+        let length = value.len().c_cast::<u32>();
         // SAFETY: the column's length word inside the row (`slot`), under its lock.
         unsafe { at.cast::<u32>().write_unaligned(length) };
         // SAFETY: at most the column's capacity after its length word, inside the row.

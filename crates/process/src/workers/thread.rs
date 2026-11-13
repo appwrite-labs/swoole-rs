@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use swoole_rs_corebase::CCast;
 
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
@@ -369,15 +370,11 @@ fn factory_start<H: Host>(h: &mut H) -> bool {
 /// A thread's body (`ThreadFactory::spawn_*`): enter the thread as its worker
 /// (or the manager), run its main inside the server's `worker_thread_start`,
 /// then leave, telling the manager thread when a worker exited.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the kind, slot and native thread id narrow as the C++ setters' parameters do"
-)]
 fn body<H: Host>(h: &mut H, arg: u64) {
     let (id, kind) = (arg & u64::from(u32::MAX), arg >> 32);
-    let pid = h.op(OP_THREAD_ENTER, id) as i32;
-    swoole_set_worker_type(kind as i32);
-    swoole_set_worker_id(id as u32);
+    let pid = h.op(OP_THREAD_ENTER, id).c_cast::<i32>();
+    swoole_set_worker_type(kind.c_cast::<i32>());
+    swoole_set_worker_id(id.c_cast::<u32>());
     swoole_set_worker_pid(pid);
     let message_bus = kind == TASK_WORKER || kind == USER_WORKER;
     if message_bus {
@@ -390,7 +387,7 @@ fn body<H: Host>(h: &mut H, arg: u64) {
         worker = usize::try_from(h.op(OP_GET_WORKER, id)).unwrap_or(0) as *mut WorkerRecord;
         // SAFETY: native lends the server's live record for this slot, which this thread runs.
         let worker = unsafe { Worker::new(worker) };
-        worker.set_kind(kind as u8);
+        worker.set_kind(kind.c_cast::<u8>());
         worker.set_pid(pid);
         if kind == TASK_WORKER {
             worker.set_status(WORKER_IDLE);

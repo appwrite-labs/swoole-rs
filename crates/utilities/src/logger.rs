@@ -10,6 +10,7 @@ use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, errno};
 
@@ -419,12 +420,7 @@ pub unsafe extern "C" fn swr_v1_logger_put(
     content: *const c_char,
     length: usize,
 ) {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "upstream's static_cast<int>(length)"
-    )]
-    let precision = length as i32;
+    let precision = length.c_cast::<i32>();
     // printf precision is a signed int: negative means read through the terminator.
     let data = content.cast::<u8>();
     let content = match usize::try_from(precision) {

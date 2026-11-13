@@ -10,6 +10,7 @@ use crate::{
 };
 use libc::c_int;
 use std::{borrow::Cow, cell::Cell, ffi::CStr, ptr};
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
@@ -133,8 +134,7 @@ fn this(call: &Call) -> Option<&Data> {
 
 /// `Address::verify_port(port, true)`, over upstream's `int` port.
 fn verify_port(port: i64) -> bool {
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-    let port = port as i32;
+    let port = port.c_cast::<i32>();
     (1..=65535).contains(&port)
 }
 

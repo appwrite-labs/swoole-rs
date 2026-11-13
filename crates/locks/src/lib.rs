@@ -28,6 +28,8 @@ use std::{
     mem::{align_of, offset_of, size_of},
     sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
 };
+#[cfg(target_os = "linux")]
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys;
 
 pub mod coroutine;
@@ -635,14 +637,10 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> i32 {
     {
         return 0;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "upstream's split of the seconds; Rust's float casts saturate where C's are undefined"
-    )]
     let duration = timespec {
         tv_sec: timeout as time_t,
-        tv_nsec: ((timeout - (timeout as time_t) as f64) * 1000.0 * 1000.0 * 1000.0) as c_long,
+        tv_nsec: ((timeout - (timeout as time_t).c_cast::<f64>()) * 1000.0 * 1000.0 * 1000.0)
+            .c_cast::<c_long>(),
     };
     // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with
     // EAGAIN; its token is still in the word, so the result alone doesn't decide.

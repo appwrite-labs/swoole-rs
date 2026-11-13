@@ -22,7 +22,7 @@ use swoole_rs_zend::{
     ZString,
     bailout::Bailout,
     string::ZBuf,
-    sys::{E_WARNING, IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zval},
+    sys::{IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -314,8 +314,7 @@ fn sync(call: &Call, socket: Co) {
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
 pub(crate) fn warn(fatal: bool, message: &str) {
     let message = CString::new(message).unwrap_or_default();
-    #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    native::swoole_rs_php_error(E_WARNING as c_int, fatal, &message);
+    native::swoole_rs_php_error(swoole_rs_zend::E_WARNING, fatal, &message);
 }
 
 /// `zend_throw_exception_ex(swoole_socket_coro_exception_ce, code, ...)`.

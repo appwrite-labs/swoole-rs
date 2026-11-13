@@ -4,6 +4,7 @@
 //! `StaticHandler`.
 use crate::server::{Value, begin_file, current, finish_file, of, respond, send_body, set};
 use std::ffi::CString;
+use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::offload::async_job;
 use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
@@ -147,8 +148,9 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
 /// The single range's `Content-Range`, as upstream's stringstream writes it
 /// (`length + offset - 1` in `size_t`, and its trailing CRLF).
 fn content_range(offset: i64, length: usize, size: usize) -> String {
-    #[expect(clippy::cast_sign_loss, reason = "upstream's size_t sum")]
-    let last = (length as u64).wrapping_add(offset as u64).wrapping_sub(1);
+    let last = (length as u64)
+        .wrapping_add(offset.c_cast::<u64>())
+        .wrapping_sub(1);
     format!("bytes {offset}-{last}/{size}\r\n")
 }
 

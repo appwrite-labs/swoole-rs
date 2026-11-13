@@ -19,6 +19,7 @@ use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::{self as os, ReadSlot};
@@ -99,13 +100,9 @@ fn errno() -> c_int {
 
 /// Upstream's `DOUBLE_TO_TIMESPEC`.
 fn timespec(seconds: f64) -> libc::timespec {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (__kernel_time64_t) and (long long) casts"
-    )]
     let (mut tv_sec, mut tv_nsec) = (
-        seconds.trunc() as i64,
-        (seconds.fract() * 1_000_000_000.0) as i64,
+        seconds.trunc().c_cast::<i64>(),
+        (seconds.fract() * 1_000_000_000.0).c_cast::<i64>(),
     );
     if tv_nsec >= 1_000_000_000 {
         tv_sec += 1;
@@ -134,12 +131,7 @@ fn ring_entries(configured: u32) -> u32 {
     while (1_u64 << shift) < u64::from(configured) {
         shift += 1;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's `1 << i` stored in a uint32_t"
-    )]
-    let entries = (1_u64 << shift) as u32;
-    entries
+    (1_u64 << shift).c_cast::<u32>()
 }
 
 /// `siginfo_t` of a waited child as `waitpid`'s status word.
@@ -407,15 +399,8 @@ impl Uring {
 
     #[must_use]
     pub fn sq_usage_percent(&self) -> f32 {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "upstream's (float) used / capacity"
-        )]
-        let percent = {
-            let (used, capacity) = self.sq();
-            used as f32 / capacity as f32 * 100.0
-        };
-        percent
+        let (used, capacity) = self.sq();
+        used.c_cast::<f32>() / capacity.c_cast::<f32>() * 100.0
     }
 
     /// Submit everything queued: the reactor's end-of-loop callback.
@@ -494,12 +479,8 @@ unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> isize {
     Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream's static_cast<int> of the request result"
-)]
 fn int(result: isize) -> c_int {
-    result as c_int
+    result.c_cast::<c_int>()
 }
 
 macro_rules! operations {
@@ -540,20 +521,16 @@ macro_rules! safe_operations {
 }
 
 safe_operations! {
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
     pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as u32).flags(flags), std::convert::identity;
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
     pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32).flags(flags), std::convert::identity;
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
     pub fn close_fd(fd: c_int) -> c_int,
         timeout -1.0, opcode::Close::new(Fd(fd)), int;
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
     pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
-        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
+        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
     pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
-        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
     pub fn futex_wait(futex: &AtomicU32) -> c_int,
         timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
     pub fn futex_wakeup(futex: &AtomicU32) -> c_int,
@@ -575,9 +552,8 @@ safe_operations! {
             opcode::Accept::new(Fd(fd), (&raw mut address.addr).cast(), &raw mut address.len).flags(flags)
         }, int;
     /// `IORING_OP_SEND` of `buf` to `address`, of which the kernel reads at most its storage.
-    #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
     pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32)
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>())
             .dest_addr((&raw const address.addr).cast())
             .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), std::convert::identity;
     /// `IORING_OP_CONNECT` of `fd` to `peer`, whose address the kernel reads.
@@ -818,8 +794,7 @@ pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
         f64::from(timeout) / 1000.0,
     );
     if rc > 0 {
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's revents = rc")]
-        let revents = rc as libc::c_short;
+        let revents = rc.c_cast::<libc::c_short>();
         pollfd.revents = revents;
         return 1;
     }

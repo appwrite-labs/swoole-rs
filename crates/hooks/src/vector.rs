@@ -214,11 +214,6 @@ pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "the test vector drives the native integer interface with small lengths"
-)]
 mod tests {
     use super::*;
     use crate::co_io::set_errno;
@@ -229,6 +224,7 @@ mod tests {
     use crate::socket_wait::ready;
     use std::cell::RefCell;
     use std::collections::VecDeque;
+    use swoole_rs_corebase::CCast;
 
     const EAGAIN: isize = -(libc::EAGAIN as isize);
     const EINTR: isize = -(libc::EINTR as isize);
@@ -272,7 +268,7 @@ mod tests {
                 return (-1, i32::try_from(-result).unwrap());
             }
             let left = self.entries[self.index..].iter().sum::<usize>() - self.offset;
-            let mut amount = (result as usize).min(left);
+            let mut amount = result.c_cast::<usize>().min(left);
             let moved = amount;
             while self.index < self.entries.len()
                 && amount >= self.entries[self.index] - self.offset
@@ -282,7 +278,7 @@ mod tests {
                 self.offset = 0;
             }
             self.offset += amount;
-            (moved as isize, 0)
+            (moved.c_cast::<isize>(), 0)
         }
     }
 

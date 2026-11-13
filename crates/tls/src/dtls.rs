@@ -9,6 +9,7 @@ use core::ptr;
 use openssl_sys::{BIO_METHOD, BIO_meth_free, SSL_set_bio};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{Fill, Socket, SocketRecord};
 
@@ -117,10 +118,6 @@ pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_
 }
 
 /// A copy of `data` queued as one datagram.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the public native Buffer length is uint16_t"
-)]
 pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
     let length = data.len();
     let mut queue = owner.queue.borrow_mut();
@@ -135,7 +132,7 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
     if buffer.is_null() {
         return -1;
     }
-    let length = length as u16;
+    let length = length.c_cast::<u16>();
     // SAFETY: malloc provided at least the Buffer header plus length payload bytes.
     unsafe { (*buffer).length = length };
     let out = payload(buffer);
@@ -202,10 +199,6 @@ pub fn swr_v1_tls_dtls_length(owner: &DtlsSession) -> usize {
 /// Native decodes its actual OpenSSL macro values into the existing stable tags.
 /// Shutdown and diagnostic effects are returned to native, outside this Rust frame,
 /// and the peer command's address is [`peer`], which the BIO's control copies out.
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "native BIO_CTRL_PENDING casts wrapping size_t total to long"
-)]
 pub fn swr_v1_tls_dtls_control(
     owner: &DtlsSession,
     tag: u32,
@@ -214,7 +207,7 @@ pub fn swr_v1_tls_dtls_control(
 ) -> crate::ControlPlan {
     let observed = match tag {
         0 => c_long::from(owner.queue.borrow().is_empty()),
-        2 => swr_v1_tls_dtls_length(owner) as c_long,
+        2 => swr_v1_tls_dtls_length(owner).c_cast::<c_long>(),
         _ => observed,
     };
     if tag == 8 {
@@ -383,8 +376,7 @@ unsafe extern "C" fn bio_ctrl(
         unsafe { out.write_unaligned(address) };
     }
     match plan.effect {
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) lval")]
-        1 => BIO_set_shutdown(bio, value as c_int),
+        1 => BIO_set_shutdown(bio, value.c_cast::<c_int>()),
         4 => log::warning(c"dtls::BIO_ctrl", format_args!("unknown cmd: {command}")),
         _ => {}
     }

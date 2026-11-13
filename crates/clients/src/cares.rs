@@ -13,6 +13,7 @@ use std::{
     },
 };
 use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
@@ -275,16 +276,11 @@ unsafe extern "C" fn host(
 /// `dns_lookup_impl_with_cares(domain, family, timeout)`: the addresses c-ares finds
 /// through the configured DNS server; a failure is the last error. All calls and
 /// callbacks for this query occur on the invoking reactor thread, in a coroutine.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream passes the int port to c-ares' uint16_t"
-)]
 pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     // The configured server's host, NUL-terminated: empty when none is set.
     let (server_host, port) = crate::dns::server();
     let has_server = server_host.first().is_some_and(|&byte| byte != 0);
-    let (server, port) = (server_host.as_ptr().cast::<c_char>(), port as u16);
+    let (server, port) = (server_host.as_ptr().cast::<c_char>(), port.c_cast::<u16>());
     let domain = domain.as_ptr();
     if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
@@ -381,12 +377,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     // The channel no longer retains the userdata: the owner goes, once.
     owner.results.into_inner()
 }
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the native SDK timeout assignment narrows timeout * 1000 to int"
-)]
 fn millis(timeout: f64) -> i32 {
-    (timeout * 1000.0) as i32
+    (timeout * 1000.0).c_cast::<i32>()
 }
 
 #[cfg(test)]

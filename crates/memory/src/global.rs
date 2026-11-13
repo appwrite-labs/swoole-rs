@@ -3,6 +3,7 @@
 use crate::members::{arena, release};
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
+use swoole_rs_corebase::CCast;
 
 /// Page invariant: every entry of `pages` is a live, 8-aligned `page_size`-byte page
 /// this registry got from `arena(shared, ..)` and frees on drop, and
@@ -76,13 +77,12 @@ impl Global {
         // 8-aligned.
         let block = page.as_ptr().wrapping_add(self.offset);
         #[expect(
-            clippy::cast_possible_truncation,
             clippy::cast_ptr_alignment,
             reason = "an 8-aligned native block header storing a sub-page uint32_t size"
         )]
         // SAFETY: as above.
         unsafe {
-            block.cast::<u32>().write(size as u32);
+            block.cast::<u32>().write(size.c_cast::<u32>());
         };
         // SAFETY: as above.
         unsafe { ptr::write_bytes(block.wrapping_add(8), 0, size) };

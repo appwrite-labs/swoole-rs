@@ -4,6 +4,7 @@
 //! which yields); outside one it passes null and the thread sleeps here. Native code
 //! keeps only parameter parsing, raising the reported error and building the value.
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::CCast;
 
 /// `System::sleep(seconds)`: 0, or negative when the coroutine was cancelled.
 pub type CoroutineSleep = extern "C-unwind" fn(f64) -> i32;
@@ -45,20 +46,15 @@ pub fn swr_v1_hooks_sleep(seconds: i64, coroutine_sleep: Option<CoroutineSleep>)
         return argument(1);
     }
     let value = match coroutine_sleep {
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) num")]
         Some(sleep) => {
-            if yielded(sleep, seconds as f64) {
+            if yielded(sleep, seconds.c_cast::<f64>()) {
                 seconds
             } else {
                 0
             }
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's (unsigned int) num"
-        )]
         None => i64::from(swoole_rs_corebase::sys::sleep(
-            seconds.cast_unsigned() as u32
+            seconds.cast_unsigned().c_cast::<u32>(),
         )),
     };
     SleepOutcome {
@@ -77,16 +73,11 @@ pub fn swr_v1_hooks_usleep(
         return argument(1);
     }
     match coroutine_sleep {
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) num")]
         Some(sleep) => {
-            yielded(sleep, microseconds as f64 / 1_000_000.0);
+            yielded(sleep, microseconds.c_cast::<f64>() / 1_000_000.0);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's (unsigned int) num"
-        )]
         None => {
-            swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned() as u32);
+            swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned().c_cast::<u32>());
         }
     }
     SleepOutcome::default()
@@ -106,13 +97,9 @@ pub fn swr_v1_hooks_nanosleep(
         return argument(2);
     }
     if let Some(sleep) = coroutine_sleep {
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "upstream's (double) tv_sec + tv_nsec"
-        )]
         yielded(
             sleep,
-            seconds as f64 + nanoseconds as f64 / 1_000_000_000.00,
+            seconds.c_cast::<f64>() + nanoseconds.c_cast::<f64>() / 1_000_000_000.00,
         );
         return SleepOutcome::default();
     }

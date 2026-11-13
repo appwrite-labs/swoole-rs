@@ -10,6 +10,7 @@ use std::{
     ffi::{CStr, c_int},
     sync::{OnceLock, atomic::Ordering::Relaxed},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpserver::RecvData;
 use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::{
@@ -302,8 +303,7 @@ impl Ctx {
             Field::End => state.end.into(),
             Field::SendHeader => state.send_header.into(),
             Field::SendChunked => state.send_chunked.into(),
-            #[expect(clippy::cast_sign_loss, reason = "upstream's uint32_t return")]
-            Field::Status => state.response.status as u32,
+            Field::Status => state.response.status.c_cast::<u32>(),
             Field::ParseBody => state.parse_body.into(),
             Field::Form => state.request.post_form_urlencoded.into(),
             Field::Multipart => u32::from(state.mt_parser.is_some()),
@@ -325,8 +325,7 @@ impl Ctx {
             Field::End => state.end = value != 0,
             Field::SendHeader => state.send_header = value != 0,
             Field::SendChunked => state.send_chunked = value != 0,
-            #[expect(clippy::cast_possible_wrap, reason = "upstream's int status")]
-            Field::Status => state.response.status = value as i32,
+            Field::Status => state.response.status = value.c_cast::<i32>(),
             Field::Form => state.request.post_form_urlencoded = value != 0,
             Field::AcceptCompression if compression() => state.accept_compression = value != 0,
             _ => {}

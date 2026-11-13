@@ -7,6 +7,7 @@ use std::{
     ffi::{CStr, CString, c_int},
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
 
@@ -118,29 +119,24 @@ fn fact(serv: view::Server<'_>, id: u32) -> i64 {
 }
 
 /// `serv-><field> = v` for the Server field `id`, converted as C++ assigns it.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "C++'s implicit conversions of the int64_t setting to each field's type"
-)]
 fn apply(serv: view::Server<'_>, id: u32, v: i64) {
     use field as f;
     let c = serv.config();
     let on = v != 0;
     match id {
         f::DAEMONIZE => c.daemonize.set(on),
-        f::REACTOR_NUM => c.reactor_num.set(v as u16),
+        f::REACTOR_NUM => c.reactor_num.set(v.c_cast::<u16>()),
         f::SINGLE_THREAD => c.single_thread.set(on),
-        f::WORKER_NUM => c.worker_num.set(v as u32),
-        f::MAX_WAIT_TIME => c.max_wait_time.set(v as u32),
-        f::MAX_QUEUED_BYTES => c.max_queued_bytes.set(v as u32),
+        f::WORKER_NUM => c.worker_num.set(v.c_cast::<u32>()),
+        f::MAX_WAIT_TIME => c.max_wait_time.set(v.c_cast::<u32>()),
+        f::MAX_QUEUED_BYTES => c.max_queued_bytes.set(v.c_cast::<u32>()),
         f::MAX_CONCURRENCY => serv
             .counters()
             .max_concurrency
             .store(limit(v), core::sync::atomic::Ordering::Relaxed),
         f::WORKER_MAX_CONCURRENCY => c.worker_max_concurrency.set(limit(v)),
         f::ENABLE_COROUTINE => c.enable_coroutine.set(on),
-        f::DISPATCH_MODE => c.dispatch_mode.set(v as u8),
+        f::DISPATCH_MODE => c.dispatch_mode.set(v.c_cast::<u8>()),
         f::SEND_YIELD => c.send_yield.set(on),
         f::DISCARD_TIMEOUT_REQUEST => c.discard_timeout_request.set(on),
         f::ENABLE_UNSAFE_EVENT => c.enable_unsafe_event.set(on),
@@ -149,47 +145,46 @@ fn apply(serv: view::Server<'_>, id: u32, v: i64) {
         f::TASK_OBJECT => c.task_object.set(on),
         f::EVENT_OBJECT => c.event_object.set(on),
         f::TASK_ENABLE_COROUTINE => c.task_enable_coroutine.set(on),
-        f::TASK_WORKER_NUM => c.task_worker_num.set(v as u32),
-        f::TASK_IPC_MODE => c.task_ipc_mode.set(v as u8),
-        f::TASK_MAX_REQUEST => c.task_max_request.set(v as u32),
-        f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace.set(v as u32),
-        f::MAX_CONNECTION => server_methods::set_max_connection(serv, v as u32),
+        f::TASK_WORKER_NUM => c.task_worker_num.set(v.c_cast::<u32>()),
+        f::TASK_IPC_MODE => c.task_ipc_mode.set(v.c_cast::<u8>()),
+        f::TASK_MAX_REQUEST => c.task_max_request.set(v.c_cast::<u32>()),
+        f::TASK_MAX_REQUEST_GRACE => c.task_max_request_grace.set(v.c_cast::<u32>()),
+        f::MAX_CONNECTION => server_methods::set_max_connection(serv, v.c_cast::<u32>()),
         f::START_SESSION_ID => {
             let round = v.min(i64::from(u32::MAX));
             serv.counters()
                 .session_round
                 .store(round, core::sync::atomic::Ordering::Relaxed);
         }
-        f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval.set(v as u16),
-        f::MAX_REQUEST => c.max_request.set(v as u32),
-        f::MAX_REQUEST_GRACE => c.max_request_grace.set(v as u32),
+        f::HEARTBEAT_CHECK_INTERVAL => c.heartbeat_check_interval.set(v.c_cast::<u16>()),
+        f::MAX_REQUEST => c.max_request.set(v.c_cast::<u32>()),
+        f::MAX_REQUEST_GRACE => c.max_request_grace.set(v.c_cast::<u32>()),
         f::RELOAD_ASYNC => c.reload_async.set(on),
         f::OPEN_CPU_AFFINITY => c.open_cpu_affinity.set(on),
         f::HTTP_PARSE_COOKIE => c.http_parse_cookie.set(on),
         f::HTTP_PARSE_POST => c.http_parse_post.set(on),
         f::HTTP_PARSE_FILES => c.http_parse_files.set(on),
         f::HTTP_COMPRESSION => c.http_compression.set(on),
-        f::HTTP_COMPRESSION_LEVEL => c.http_compression_level.set(v as u8),
-        f::COMPRESSION_MIN_LENGTH => c.compression_min_length.set(v as u32),
+        f::HTTP_COMPRESSION_LEVEL => c.http_compression_level.set(v.c_cast::<u8>()),
+        f::COMPRESSION_MIN_LENGTH => c.compression_min_length.set(v.c_cast::<u32>()),
         f::WEBSOCKET_COMPRESSION => c.websocket_compression.set(on),
-        f::UPLOAD_MAX_FILESIZE => c.upload_max_filesize.set(v as usize),
+        f::UPLOAD_MAX_FILESIZE => c.upload_max_filesize.set(v.c_cast::<usize>()),
         f::ENABLE_STATIC_HANDLER => c.enable_static_handler.set(on),
         f::HTTP_AUTOINDEX => c.http_autoindex.set(on),
-        f::INPUT_BUFFER_SIZE => c.input_buffer_size.set(v as u32),
-        f::OUTPUT_BUFFER_SIZE => c.output_buffer_size.set(v as u32),
-        f::MESSAGE_QUEUE_KEY => c.message_queue_key.set(v as u64),
+        f::INPUT_BUFFER_SIZE => c.input_buffer_size.set(v.c_cast::<u32>()),
+        f::OUTPUT_BUFFER_SIZE => c.output_buffer_size.set(v.c_cast::<u32>()),
+        f::MESSAGE_QUEUE_KEY => c.message_queue_key.set(v.c_cast::<u64>()),
         _ => unreachable!("not a Server field: {id}"),
     }
 }
 
 /// A concurrency limit, for which `0` is unlimited.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "C++'s implicit conversion of the int64_t setting to uint32_t"
-)]
 fn limit(v: i64) -> u32 {
-    if v as u32 == 0 { u32::MAX } else { v as u32 }
+    if v.c_cast::<u32>() == 0 {
+        u32::MAX
+    } else {
+        v.c_cast::<u32>()
+    }
 }
 
 /// The settings array and the Server being configured.

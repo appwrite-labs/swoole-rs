@@ -43,6 +43,8 @@ fn with(field: fn(&mut Record) -> &mut u8) {}
 fn unit(_: ()) -> &'static mut u8 {}
 fn paired(pair: (u8, u8)) -> &'static mut u8 {}
 fn borrow<'a>(arg: (&'a mut u8,)) -> &'a mut u8 {}
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "C's")]
+fn narrow(x: i64) -> u8 { x as u8 }
 #[cfg(not(test))]
 static NATIVE: Ops = OPS;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -77,6 +79,8 @@ class Budget(unittest.TestCase):
                 'mints': {'one': 4},
                 # NATIVE and linked; the lint attribute isn't a cfg.
                 'fakes': {'one': 2},
+                # narrow's two; spanned's attribute belongs to a test module.
+                'casts': {'one': 2},
             })
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):

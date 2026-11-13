@@ -38,6 +38,7 @@ pub use connect::*;
 pub use putenv::*;
 pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, report, strerror};
 pub use stream::*;
+use swoole_rs_corebase::CCast;
 
 use std::{
     ffi::{CStr, c_char, c_int, c_void},
@@ -259,12 +260,7 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
         call.set_bool(false);
         return Ok(());
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream passes the zend_long as uint32_t"
-    )]
-    let requested = requested as u32;
+    let requested = requested.c_cast::<u32>();
     if let Some(families) = swoole_rs_phpswoole::families() {
         (families.set_hook_flags)(requested);
     }

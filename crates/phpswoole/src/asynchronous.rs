@@ -14,6 +14,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     sync::atomic::{AtomicU64, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{
     log::set_last_error, swoole_rand_any, swr_v1_core_dns_lookup_random,
     swr_v1_core_set_aio_core_worker_num, swr_v1_core_set_aio_max_idle_time,
@@ -106,12 +107,7 @@ pub fn php_swoole_set_aio_option(options: &Array) {
         swr_v1_core_set_iouring_workers(bounded(value, 0));
     }
     if let Some(value) = get(options, c"iouring_flag").and_then(Value::applied_long) {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "the native setter assigned the PHP int64_t to uint32_t"
-        )]
-        let flag = value as u32;
+        let flag = value.c_cast::<u32>();
         swr_v1_core_set_iouring_flag(flag);
     }
 }
@@ -214,11 +210,7 @@ fn dns_lookup(call: &Call) {
         return;
     }
     crate::check_reactor();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "C's (int) conversion of the family"
-    )]
-    let family = family as i32;
+    let family = family.c_cast::<i32>();
     // The coroutine yields.
     let mut answers = swoole_rs_hooks::resolve::dns_lookup(name, family, timeout);
     if answers.is_empty() {
@@ -235,8 +227,7 @@ fn dns_lookup(call: &Call) {
     call.set_bytes(&address);
     let refresh = f64::from_bits(DNS_REFRESH_SECONDS.load(Ordering::Relaxed));
     let now = swoole_rs_timer::absolute_msec();
-    #[expect(clippy::cast_possible_truncation, reason = "C's (int64_t) conversion")]
-    let expires = now + (refresh * 1000.0) as i64;
+    let expires = now + (refresh * 1000.0).c_cast::<i64>();
     let entry = Cached { address, expires };
     CACHE.with_borrow_mut(|cache| match cache.get_mut(name) {
         Some(cached) => *cached = entry,

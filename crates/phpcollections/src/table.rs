@@ -10,16 +10,18 @@ use std::{
     ffi::{CStr, c_int},
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_memory::{
     members::SharedTable,
     table::{Column, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table},
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Message, Minit, Owned, OwnedArray, Value, ZString,
+    Call, Custom, CustomClass, E_ERROR, E_WARNING, Message, Minit, Owned, OwnedArray, Value,
+    ZString,
     bailout::{self, Bailout},
     method_table,
-    sys::{E_ERROR, E_WARNING, ZEND_ACC_PUBLIC},
+    sys::ZEND_ACC_PUBLIC,
 };
 
 /// `SW_TABLE_KEY_SIZE`, `SW_TABLE_CONFLICT_PROPORTION`.
@@ -114,10 +116,9 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
 }
 
 /// `php_swoole_fatal_error(level, "%s", message)`: always reported.
-fn fatal(level: u32, message: &CStr) {
+fn fatal(level: i32, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-    #[expect(clippy::cast_possible_wrap, reason = "E_ERROR and E_WARNING")]
-    bailout::defer(swoole_rs_zend::report(level as i32, message));
+    bailout::defer(swoole_rs_zend::report(level, message));
 }
 
 /// `php_swoole_fatal_error(E_WARNING, "<before>%s<after>", text)` of Zend's
@@ -129,8 +130,7 @@ fn report(before: &[u8], text: &[u8], after: &[u8]) -> bool {
     message.push(text.split(|&b| b == 0).next().unwrap_or_default());
     message.push(after);
     swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
-    #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
-    let reported = swoole_rs_zend::report(E_WARNING as i32, message.as_cstr());
+    let reported = swoole_rs_zend::report(E_WARNING, message.as_cstr());
     let bailed = reported.is_err();
     bailout::defer(reported);
     bailed
@@ -150,8 +150,7 @@ fn set_failed(key: &[u8]) {
     message.push(b"'), unable to allocate memory");
     swoole_rs_corebase::log::set_last_error(PHP_RUNTIME_NOTICE);
     if swoole_rs_phpswoole::display_errors() {
-        #[expect(clippy::cast_possible_wrap, reason = "E_WARNING")]
-        bailout::defer(swoole_rs_zend::report(E_WARNING as i32, message.as_cstr()));
+        bailout::defer(swoole_rs_zend::report(E_WARNING, message.as_cstr()));
     }
 }
 
@@ -212,12 +211,11 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream passes the zend_long to a uint32_t and the double to a float"
-    )]
-    let made = SharedTable::make(rows as u32, conflict as f32, swoole_rs_zend::string::hash);
+    let made = SharedTable::make(
+        rows.c_cast::<u32>(),
+        conflict.c_cast::<f32>(),
+        swoole_rs_zend::string::hash,
+    );
     let Some(table) = made else {
         let exception = swoole_rs_phpswoole::exception();
         call.throw(exception, c"global memory allocation failure", MALLOC_FAIL);
@@ -260,13 +258,8 @@ fn column(call: &Call) {
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream casts the type to the enum and the size to size_t"
-    )]
     call.set_bool(change(call, |table| {
-        table.add_column(name, kind as u32, size as usize)
+        table.add_column(name, kind.c_cast::<u32>(), size.c_cast::<usize>())
     }));
 }
 
@@ -286,9 +279,8 @@ fn create(call: &Call) {
     call.set_bool(true);
 }
 
-#[expect(clippy::cast_possible_wrap, reason = "upstream's (zend_long) casts")]
 fn long(value: usize) -> i64 {
-    value as i64
+    value.c_cast::<i64>()
 }
 
 /// `destroy(): bool`.
@@ -315,8 +307,7 @@ fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool)
         // Copied, cut to the column with a warning.
         TYPE_STRING => row.set_bytes(column, value.applied_string()?.bytes()),
         TYPE_FLOAT => row.set_number(column, value.applied_double()?.to_bits()),
-        #[expect(clippy::cast_sign_loss, reason = "the long's 8 bytes")]
-        _ => row.set_number(column, value.applied_long()? as u64),
+        _ => row.set_number(column, (value.applied_long()?).c_cast::<u64>()),
     }
     Some(())
 }
@@ -413,15 +404,13 @@ fn update(call: &Call, subtract: bool) {
             let Some(by) = by.map_or(Some(1), Value::applied_long) else {
                 return;
             };
-            #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
-            let current = row.number(column) as i64;
+            let current = row.number(column).c_cast::<i64>();
             let value = if subtract {
                 current.wrapping_sub(by)
             } else {
                 current.wrapping_add(by)
             };
-            #[expect(clippy::cast_sign_loss, reason = "the long's 8 bytes")]
-            row.set_number(column, value as u64);
+            row.set_number(column, value.c_cast::<u64>());
             drop(row);
             call.set_long(value);
         }
@@ -475,8 +464,7 @@ fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
     match column.kind {
         TYPE_STRING => Field::Bytes(row.bytes(column)),
         TYPE_FLOAT => Field::Double(f64::from_bits(row.number(column))),
-        #[expect(clippy::cast_possible_wrap, reason = "the column's 8 bytes as a long")]
-        _ => Field::Long(row.number(column) as i64),
+        _ => Field::Long(row.number(column).c_cast::<i64>()),
     }
 }
 
@@ -590,13 +578,9 @@ fn stats(call: &Call) {
         return;
     };
     let stats = table.stats();
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream's (zend_long) casts of its counters"
-    )]
     let values = [
-        table.count() as i64,
-        stats.conflict_count as i64,
+        table.count().c_cast::<i64>(),
+        stats.conflict_count.c_cast::<i64>(),
         i64::from(stats.conflict_max_level),
         stats.insert_count,
         stats.update_count,

@@ -5,6 +5,7 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
@@ -124,12 +125,7 @@ pub(crate) fn listen(config: &PortConfig) -> c_int {
         }
     }
     if config.buffer_high_watermark.get() == 0 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream's implicit double-to-uint32_t conversion of `socket_buffer_size * 0.8`"
-        )]
-        let watermark = (f64::from(config.socket_buffer_size.get()) * 0.8) as u32;
+        let watermark = (f64::from(config.socket_buffer_size.get()) * 0.8).c_cast::<u32>();
         config.buffer_high_watermark.set(watermark);
     }
     0
@@ -439,11 +435,6 @@ pub fn set_eof_protocol(config: &mut PortConfig, eof: &[u8], find_from_right: bo
 }
 
 /// `ListenPort::set_length_protocol(length_offset, length_type, body_offset)`.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "the narrowing stores of the C++ fields"
-)]
 pub fn set_length_protocol(
     config: &mut PortConfig,
     length_offset: u32,
@@ -453,9 +444,9 @@ pub fn set_length_protocol(
     config.open_length_check.set(true);
     let protocol = config.protocol.get_mut();
     protocol.package_length_type = length_type.to_ne_bytes()[0];
-    protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type) as u8;
-    protocol.package_length_offset = length_offset as u16;
-    protocol.package_body_offset = body_offset as u16;
+    protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type).c_cast::<u8>();
+    protocol.package_length_offset = length_offset.c_cast::<u16>();
+    protocol.package_body_offset = body_offset.c_cast::<u16>();
 }
 
 /// `ListenPort::set_stream_protocol()`: length framing as `Stream::set_protocol`
@@ -1025,18 +1016,14 @@ mod tests {
 
     /// The stream setter after any length and EOF settings (was settings.cc).
     #[test]
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "settings.cc's byte-wrapping iteration values"
-    )]
     fn set_stream_protocol_sets_network_u32_framing() {
         let mut port = Fresh::new();
         let config = port.config();
         for iteration in 0..256u32 {
             config.protocol.get_mut().get_package_length = Some(length::<17>);
-            let kind = c_char::from_ne_bytes([iteration as u8]);
+            let kind = c_char::from_ne_bytes([iteration.c_cast::<u8>()]);
             set_length_protocol(config, iteration * 257, kind, u32::MAX - iteration);
-            let eof = vec![iteration as u8; (iteration % 17) as usize];
+            let eof = vec![iteration.c_cast::<u8>(); (iteration % 17) as usize];
             set_eof_protocol(config, &eof, iteration % 2 == 1);
             let eof_before = (
                 config.protocol.get_mut().split_by_eof,

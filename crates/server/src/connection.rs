@@ -3,7 +3,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
@@ -133,15 +133,11 @@ pub fn add<'a>(
     let gs = serv.counters();
     let fd = sock.fd();
     let conn = state.tables_ref().connection_at(fd)?;
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "C++'s ReactorId (uint8_t)"
-    )]
+    // C++'s ReactorId (uint8_t).
     let reactor_id = if u64::from(config.mode_) == MODE_BASE {
-        swoole_rs_process::methods::swoole_get_worker_id() as u8
+        swoole_rs_process::methods::swoole_get_worker_id().c_cast::<u8>()
     } else {
-        (fd % c_int::from(config.reactor_num.get())) as u8
+        (fd % c_int::from(config.reactor_num.get())).c_cast::<u8>()
     };
     // The fd's last connection, closed on a reactor thread, published the slot with
     // its last write: acquire that before reusing it.
@@ -344,8 +340,8 @@ pub(crate) fn incoming(
     };
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
-        #[expect(clippy::cast_possible_truncation, reason = "sec2msec's (long) cast")]
-        let msec = (idle * 1000.0) as c_long;
+        // sec2msec's (long) cast.
+        let msec = (idle * 1000.0).c_cast::<c_long>();
         // SAFETY: `idle_tick` takes the live connection, which deletes the timer
         // before it goes.
         let node = unsafe {

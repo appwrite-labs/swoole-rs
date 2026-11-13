@@ -6,6 +6,7 @@
 use crate::records::Lookup;
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
@@ -385,11 +386,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_BASE_REACTORS => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "C++'s uint16_t reactor_num"
-            )]
-            let reactors = o.config().worker_num.get() as u16;
+            let reactors = o.config().worker_num.get().c_cast::<u16>();
             o.config().reactor_num.set(reactors);
             0
         }
@@ -578,8 +575,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         LOG_MANAGER_EXIT => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let status = arg as c_int;
+            let status = arg.c_cast::<c_int>();
             let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
             let signal = signal.as_cstr().to_string_lossy();
             let exit = libc::WEXITSTATUS(status);
@@ -1008,8 +1004,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CONN_UID => u64::from(o.conn().uid()),
         OP_CONN_WORKER => sign(o.conn().worker_id()),
         OP_PIN_WORKER => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let worker = arg as c_int;
+            let worker = arg.c_cast::<c_int>();
             o.conn().set_worker_id(worker);
             0
         }
@@ -1152,8 +1147,7 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::swoole_set_worker_type(SW_MASTER);
             if arg == MODE_THREAD {
-                #[expect(clippy::cast_possible_truncation, reason = "C++'s pid_t parameter")]
-                let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id() as c_int;
+                let tid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<c_int>();
                 swoole_rs_process::methods::swoole_set_worker_pid(tid);
             } else if arg == MODE_PROCESS {
                 swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
@@ -1237,8 +1231,7 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         )),
         OP_LC_START_THREAD => {
             let started = thread_mode(o.server(), RUN_START_WORKER_THREADS);
-            #[expect(clippy::cast_possible_truncation, reason = "the method's int result")]
-            sign(started as c_int)
+            sign(started.c_cast::<c_int>())
         }
         OP_STOP_WORKER_THREADS => {
             thread_mode(o.server(), RUN_STOP_WORKER_THREADS);
@@ -1285,8 +1278,7 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
         OP_IS_MASTER_THREAD => u64::from(swoole_rs_corebase::thread_kind() == THREAD_MASTER),
         OP_MASTER_THREAD => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) arg")]
-            swoole_rs_corebase::set_thread(THREAD_MASTER, arg as u16);
+            swoole_rs_corebase::set_thread(THREAD_MASTER, arg.c_cast::<u16>());
             0
         }
         // `SwooleTG.reactor->del` on a listening socket.
@@ -1425,8 +1417,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const WORKER_IDLE: u8 = 2;
     Some(match op {
         OP_WORKER_IDLE => {
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint16_t) id")]
-            let id = arg as u16;
+            let id = arg.c_cast::<u16>();
             let worker = o.server().worker_record(id);
             u64::from(worker.is_some_and(|worker| worker.status() == WORKER_IDLE))
         }
@@ -1451,8 +1442,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 let v6 = (&raw const addr.addr).cast::<c_char>();
                 // SAFETY: the address's storage holds a whole `sockaddr_in6`.
                 let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
-                #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint32_t)")]
-                u64::from(hash as u32)
+                u64::from(hash.c_cast::<u32>())
             }
         }
         OP_SC_CLOSE => {
@@ -1537,8 +1527,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             } else {
                 Handler::NONE
             };
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let signo = arg as c_int;
+            let signo = arg.c_cast::<c_int>();
             _ = signal_upstream::set(signo, handler, false);
             0
         }
@@ -1816,13 +1805,12 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     const EVENT_BUFFER_FULL: c_int = 13;
     const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
     // The connection's session and reactor in a head of `kind` (C++'s uint8_t).
-    #[expect(clippy::cast_possible_truncation, reason = "C++'s (uint8_t) arg")]
     let head = |kind: u64| {
         let conn = o.conn();
         DataHead {
             fd: conn.session_id(),
             reactor_id: conn.reactor_id().into(),
-            kind: kind as u8,
+            kind: kind.c_cast::<u8>(),
             ..DataHead::default()
         }
     };
@@ -1980,9 +1968,8 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let task_pool = o.server().task_pool();
             // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
             unsafe { task_pool.write_bytes(0, 1) };
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s key_t conversion")]
             let key = if arg == IPC_MSGQUEUE {
-                config.message_queue_key.get() as c_int
+                config.message_queue_key.get().c_cast::<c_int>()
             } else {
                 0
             };
@@ -2075,8 +2062,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let idle = o.port().max_idle_time.get();
             let sock = o.sock()?;
             let tick = crate::connection::idle_tick;
-            #[expect(clippy::cast_possible_truncation, reason = "sec2msec's (long) cast")]
-            let msec = (idle * 1000.0) as libc::c_long;
+            let msec = (idle * 1000.0).c_cast::<libc::c_long>();
             let conn = o
                 .ctx
                 .conn
@@ -2130,8 +2116,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_IMPORT => {
             let mut port = port_new(serv);
-            #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
-            let fd = arg as c_int;
+            let fd = arg.c_cast::<c_int>();
             if !(methods().import)(&mut port, fd) {
                 crate::server_object::port_drop(port);
                 return Some(0);
@@ -2146,15 +2131,10 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: the `CommandSend` `arg` lends.
             let c = unsafe { &*ptr_of::<crate::commands::CommandSend>(arg) };
             let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "C++'s conversions into DataHead's fields"
-            )]
             let head = |info: &mut swoole_rs_corebase::DataHead| {
-                info.kind = EVENT_COMMAND_REQUEST as u8;
+                info.kind = EVENT_COMMAND_REQUEST.c_cast::<u8>();
                 info.fd = c.request_id;
-                info.server_fd = c.command_id as u16;
+                info.server_fd = c.command_id.c_cast::<u16>();
             };
             if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
                 let mut buf = EventData {

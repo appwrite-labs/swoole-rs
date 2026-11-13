@@ -22,6 +22,7 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -340,11 +341,7 @@ fn warn(config: &TlsConfig, function: &CStr, message: &[u8]) {
 fn ssl_error(config: &TlsConfig, function: &CStr, message: &[u8]) {
     let code = crate::pop_error();
     let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream stores ERR_get_error's unsigned long in a long and prints %ld"
-    )]
-    let code = code as c_long;
+    let code = code.c_cast::<c_long>();
     let mut text = message.to_vec();
     text.extend_from_slice(b", Error: ");
     text.extend_from_slice(reason);

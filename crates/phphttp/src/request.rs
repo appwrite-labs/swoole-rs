@@ -6,6 +6,7 @@ use crate::{
     state::State,
 };
 use std::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::CCast;
 use swoole_rs_httpbindings::request_option;
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
@@ -168,11 +169,7 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
         3 => state.parse_files = truth(),
         4 => state.enable_compression = truth(),
         5 => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream's int8_t compression_level"
-            )]
-            let level = value.long() as i8;
+            let level = value.long().c_cast::<i8>();
             state.compression_level = level;
         }
         6 => state.websocket_compression = truth(),

@@ -12,6 +12,7 @@
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
+use swoole_rs_corebase::CCast;
 
 /// `swoole::Allocator`.
 #[repr(C)]
@@ -58,19 +59,13 @@ const _: () = assert!(
 );
 
 /// `(size_t) off_t`.
-#[expect(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    reason = "upstream's C cast"
-)]
-const fn unsigned(value: i64) -> usize {
-    value as usize
+fn unsigned(value: i64) -> usize {
+    value.c_cast::<usize>()
 }
 
 /// `(off_t) size_t`.
-#[expect(clippy::cast_possible_wrap, reason = "upstream's C cast")]
-const fn signed(value: usize) -> i64 {
-    value as i64
+fn signed(value: usize) -> i64 {
+    value.c_cast::<i64>()
 }
 
 /// `SW_MEM_ALIGNED_SIZE`.
@@ -96,11 +91,7 @@ unsafe fn bytes<'a>(data: *const u8, length: usize) -> &'a [u8] {
 
 /// `swoole_strnstr`: the first `needle` in `haystack`, both lengths cut to its `uint32_t`.
 fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "swoole_strnstr's uint32_t lengths"
-    )]
-    let cut = |bytes: &[u8]| bytes.len() as u32 as usize;
+    let cut = |bytes: &[u8]| bytes.len().c_cast::<u32>() as usize;
     let haystack = haystack.get(..cut(haystack)).unwrap_or_default();
     let needle = needle.get(..cut(needle)).unwrap_or_default();
     debug_assert!(!needle.is_empty(), "swoole_strnstr's needle is not empty");
