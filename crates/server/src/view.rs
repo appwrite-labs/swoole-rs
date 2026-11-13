@@ -135,12 +135,12 @@ impl<'a> Server<'a> {
         self.state().callbacks.set(callback);
     }
 
-    /// `serv->onX != nullptr` of callback slot `index`.
+    /// `serv->onX != nullptr` of callback `slot`.
     #[must_use]
-    pub fn has_callback(self, index: u32) -> bool {
+    pub fn has_callback(self, slot: crate::callbacks::CallbackKind) -> bool {
         self.state()
             .callbacks
-            .slot(index)
+            .slot(slot)
             .is_some_and(CallbackSlot::is_set)
     }
 

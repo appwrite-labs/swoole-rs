@@ -258,7 +258,9 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
         fact::SEND_YIELD => i64::from(c.send_yield.get()),
-        fact::HAS_ON_CLOSE => i64::from(serv.has_callback(swoole_rs_server::callbacks::CB_CLOSE)),
+        fact::HAS_ON_CLOSE => {
+            i64::from(serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close))
+        }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event.get()),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
         fact::WORKER_NUM => i64::from(c.worker_num.get()),

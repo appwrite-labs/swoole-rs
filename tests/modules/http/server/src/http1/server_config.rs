@@ -12,7 +12,6 @@ const SW_MAX_WORKER_NCPU: u32 = 1000;
 const SW_SOCK_UDP: c_int = 2;
 const SW_LOG_NONE: c_int = 6;
 const SW_ERROR_SERVER_INVALID_CALLBACK: c_int = 9015;
-const CB_TASK: usize = 4;
 
 unsafe extern "C-unwind" {
     /// `SwooleG`, whose first member is `max_sockets`.
@@ -201,7 +200,7 @@ fn startup_error() {
     assert!(startup_error.contains("require 'onTask' callback"));
     assert_eq!(last_error(), SW_ERROR_SERVER_INVALID_CALLBACK);
 
-    server.set_callback(CB_TASK, return_ok as *const c_void);
+    server.set_callback(CallbackKind::Task, return_ok as *const c_void);
 
     assert_eq!(server.start(), -1);
     assert!(
@@ -223,7 +222,7 @@ fn startup_error() {
     // SAFETY: restores it.
     unsafe { swoole_set_log_level(ori_log_level) };
 
-    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    server.set_callback(CallbackKind::Receive, return_ok as *const c_void);
 
     assert_eq!(server.start(), -1);
     assert!(

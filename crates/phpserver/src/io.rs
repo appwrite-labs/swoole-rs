@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString, c_int};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
-use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
+use swoole_rs_server::{callbacks::CallbackKind, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, Value, bailout, message, sys::IS_TRUE};
 
 /// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
@@ -274,7 +274,7 @@ fn sendfile(call: &Call) {
 
 fn send_message(call: &Call) {
     let Some(serv) = running(call) else { return };
-    if !serv.has_callback(CB_PIPE_MESSAGE) {
+    if !serv.has_callback(CallbackKind::PipeMessage) {
         fatal(E_WARNING, c"onPipeMessage is null, can't use sendMessage");
         return call.set_bool(false);
     }

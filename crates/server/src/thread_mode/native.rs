@@ -14,7 +14,7 @@ use swoole_rs_process::methods::{
 use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType};
 
 use super::{ThreadManager, ThreadOp, Wake, worker_thread_start};
-use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
+use crate::callbacks::ServerSlot;
 use crate::objects::{Bus, Reactor};
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
@@ -305,9 +305,9 @@ unsafe extern "C" fn thread_main(main: *mut c_void) {
     let serv = *serv;
     let Some(worker) = *worker else {
         let callbacks = &serv.state().callbacks;
-        callbacks.call_server(CB_MANAGER_START, serv);
+        callbacks.call_server(ServerSlot::ManagerStart, serv);
         wait(serv, manager(serv));
-        callbacks.call_server(CB_MANAGER_STOP, serv);
+        callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
     };
     // The task pool copies a hook out before it runs it: the pool's own code, every
@@ -379,9 +379,9 @@ fn reload_next(serv: view::Server<'_>, manager: &ThreadManager) {
     let events = u16::try_from(serv.config().worker_num.get()).unwrap_or(u16::MAX);
     manager.reload_next(
         (all_core_worker_num(serv), events),
-        || callbacks.call_server(CB_BEFORE_RELOAD, serv),
+        || callbacks.call_server(ServerSlot::BeforeReload, serv),
         |id| _ = crate::event_worker::native::kill_worker(serv, id.into()),
-        || callbacks.call_server(CB_AFTER_RELOAD, serv),
+        || callbacks.call_server(ServerSlot::AfterReload, serv),
     );
 }
 

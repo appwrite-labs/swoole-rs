@@ -14,7 +14,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
-use crate::callbacks::{CB_AFTER_RELOAD, CB_BEFORE_RELOAD, CB_MANAGER_START, CB_MANAGER_STOP};
+use crate::callbacks::ServerSlot;
 use crate::event_worker::{HANDLER_NONE, HANDLER_OWN, SIGNAL_RTMIN};
 use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
@@ -190,7 +190,7 @@ fn wait(serv: view::Server<'_>) {
             state.set_isolation();
         }
     }
-    state.callbacks.call_server(CB_MANAGER_START, serv);
+    state.callbacks.call_server(ServerSlot::ManagerStart, serv);
 
     reaper::run(&mut Reaping {
         serv,
@@ -227,7 +227,7 @@ fn wait(serv: view::Server<'_>) {
     if max_wait_time != 0 {
         alarm(0);
     }
-    state.callbacks.call_server(CB_MANAGER_STOP, serv);
+    state.callbacks.call_server(ServerSlot::ManagerStop, serv);
 }
 
 /// The manager's start: its pid, the event pool's message hook and its master pid,
@@ -277,7 +277,9 @@ impl Reaping<'_> {
     fn begin(&mut self, which: &str, events: bool) {
         let serv = self.serv;
         log::info(format_args!("Server is reloading {which} workers now"));
-        serv.state().callbacks.call_server(CB_BEFORE_RELOAD, serv);
+        serv.state()
+            .callbacks
+            .call_server(ServerSlot::BeforeReload, serv);
         if events {
             self.add_workers(true);
         }
@@ -398,7 +400,9 @@ impl Reap for Reaping<'_> {
     fn finish_reload(&mut self) {
         let serv = self.serv;
         methods::drop_reload_task(serv.event_pool_ref());
-        serv.state().callbacks.call_server(CB_AFTER_RELOAD, serv);
+        serv.state()
+            .callbacks
+            .call_server(ServerSlot::AfterReload, serv);
     }
 
     fn warn(&self) -> Warn {

@@ -23,7 +23,7 @@ use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_BUFFER_EMPTY, CB_CONNECT, CB_DISPATCH_FUNC, CallbackSlot};
+use crate::callbacks::{CallbackKind, CallbackSlot};
 use crate::hybrid::hybrid;
 use crate::port_config::PortConfig;
 use crate::reactor_handle::Reactor;
@@ -205,7 +205,7 @@ fn verify_ssl(
             hybrid().factory_dispatch(serv, &mut task);
         }
         Certificate::None => {
-            let on_connect = state.callbacks.slot(CB_CONNECT);
+            let on_connect = state.callbacks.slot(CallbackKind::Connect);
             if on_connect.is_some_and(CallbackSlot::is_set) {
                 crate::server_methods::notify(serv, conn, c_int::from(EVENT_CONNECT));
             }
@@ -391,7 +391,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     }
     let buffer_empty = state
         .callbacks
-        .slot(CB_BUFFER_EMPTY)
+        .slot(CallbackKind::BufferEmpty)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
     if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
@@ -461,7 +461,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
     let config = state.config_ref();
     let dispatch_func = state
         .callbacks
-        .slot(CB_DISPATCH_FUNC)
+        .slot(CallbackKind::DispatchFunc)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     !prequeue
         || u64::from(config.mode_) != crate::MODE_PROCESS
