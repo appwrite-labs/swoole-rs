@@ -108,7 +108,49 @@ const METHODS: PortMethods = PortMethods {
     dtls_free: lifecycle::dtls_free,
 };
 
-const EVENTS: &[(&[u8], &[u8])] = &[
+/// A port's callbacks (`php_swoole_server_port_callback_type`), in [`EVENTS`] order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub enum PortCallback {
+    Connect,
+    Receive,
+    Close,
+    Packet,
+    Request,
+    Handshake,
+    BeforeHandshakeResponse,
+    Open,
+    Message,
+    Disconnect,
+    BufferFull,
+    BufferEmpty,
+}
+
+impl PortCallback {
+    /// Every callback, in slot order.
+    pub const ALL: [Self; 12] = [
+        Self::Connect,
+        Self::Receive,
+        Self::Close,
+        Self::Packet,
+        Self::Request,
+        Self::Handshake,
+        Self::BeforeHandshakeResponse,
+        Self::Open,
+        Self::Message,
+        Self::Disconnect,
+        Self::BufferFull,
+        Self::BufferEmpty,
+    ];
+
+    /// The callback's slot.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+const EVENTS: [(&[u8], &[u8]); 12] = [
     (b"connect", b"onConnect"),
     (b"receive", b"onReceive"),
     (b"close", b"onClose"),
@@ -167,14 +209,14 @@ pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
     }
 }
 
-/// The event `name` registers (`on()`): its index and callback property.
+/// The event `name` registers (`on()`): its callback and callback property.
 /// `native_casefold` matches as libc's `strncasecmp` does, else exactly.
 #[must_use]
-pub fn event(name: &[u8], native_casefold: bool) -> Option<(usize, &'static [u8])> {
-    EVENTS
-        .iter()
-        .enumerate()
-        .find_map(|(index, &(key, property))| {
+pub fn event(name: &[u8], native_casefold: bool) -> Option<(PortCallback, &'static [u8])> {
+    PortCallback::ALL
+        .into_iter()
+        .zip(EVENTS)
+        .find_map(|(index, (key, property))| {
             let found = name.len() == key.len()
                 && if native_casefold {
                     swoole_rs_locale::strncasecmp_equal(name, key, key.len())
