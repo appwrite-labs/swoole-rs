@@ -6,10 +6,10 @@
 //! `socket.cc` no longer defines them.
 use crate::handle::CText;
 use crate::{
-    Cert, CertRef, SocketTls, Ssl, SslHandshakeResult, SslIoResult, swr_v1_socket_ssl_accept,
-    swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
-    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send,
-    swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
+    Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslHandshakeResult, SslIoResult,
+    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
+    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv,
+    swr_v1_socket_ssl_send, swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -372,22 +372,19 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
         return ERROR;
     };
     handshake(result);
-    if result.log == 1 {
+    if result.log == HandshakeLog::BadClient {
         let (reason, error) = error_reason_text();
         let (host, port) = socket.read(|record| peer(&record.info));
         log::warning(
             c"Socket::ssl_accept",
             format_args!("bad SSL client[{host}:{port}], reason={reason}, error_string={error}"),
         );
-    } else if result.log == 2 {
+    } else if let HandshakeLog::Failed(ssl_error) = result.log {
         let code = errno();
         let message = swoole_rs_corebase::sys::strerror(code);
         log::warning(
             c"Socket::ssl_accept",
-            format_args!(
-                "SSL_do_handshake() failed. Error: {message}[{}|{code}]",
-                result.ssl_error
-            ),
+            format_args!("SSL_do_handshake() failed. Error: {message}[{ssl_error}|{code}]"),
         );
     }
     result.code
@@ -404,13 +401,12 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> c_int {
         return -1;
     };
     handshake(result);
-    if result.log == 2 {
+    if let HandshakeLog::Failed(ssl_error) = result.log {
         let error = crate::pop_error();
         let message = crate::error_string(error);
         let ((host, port), fd) = socket.read(|record| (peer(&record.info), record.fd));
         log::notice(format_args!(
-            "ssl_connect(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{}|{}]",
-            result.ssl_error,
+            "ssl_connect(fd={fd}) to server[{host}:{port}] failed. Error: {message}[{ssl_error}|{}]",
             crate::socket::error_reason(error)
         ));
     }
@@ -1219,25 +1215,13 @@ pub unsafe fn socket_ssl_create(
 ) -> c_int {
     // SAFETY: as the caller promises.
     let context = unsafe { crate::owner_fields(context) }.context.as_deref();
-    let mut error = 0;
-    let status = crate::socket_ssl_new(socket, context, flags, &mut error);
-    match status {
-        0 => return 0,
-        1 => log::warning(c"Socket::ssl_create", format_args!("SSL_new() failed")),
-        2 => {
-            let reason =
-                crate::reason_string(error).map_or_else(|| "(null)".into(), CStr::to_string_lossy);
-            log::warning(
-                c"Socket::ssl_create",
-                format_args!("SSL_set_fd() failed. Error: {reason}[{error}]"),
-            );
+    match crate::socket_ssl_new(socket, context, flags) {
+        Ok(()) => 0,
+        Err(error) => {
+            error.warn();
+            -1
         }
-        _ => log::warning(
-            c"Socket::ssl_create",
-            format_args!("SSL_set_ex_data() failed"),
-        ),
     }
-    -1
 }
 
 /// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
