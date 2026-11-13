@@ -57,7 +57,6 @@ int swr_v1_logger_level(const SwrLogger *);
 void swr_v1_logger_set_level(const SwrLogger *, int level);
 void swr_v1_logger_set(const SwrLogger *, enum SwrLoggerSetting, int value);
 bool swr_v1_logger_set_date_format(const SwrLogger *, const char *format);
-bool swr_v1_logger_redirect(const SwrLogger *, bool enable);
 bool swr_v1_logger_is_opened(const SwrLogger *);
 /* get_file (false) or get_real_file (true), valid until the file next changes. */
 const char *swr_v1_logger_file(const SwrLogger *, bool real);
