@@ -170,7 +170,7 @@ pub unsafe extern "C" fn swr_v1_framing_recv(
     let status = recv(mode, head, &mut flags, &mut effects);
     // SAFETY: the caller's live receive.
     unsafe { (*io).flags = flags };
-    if effects.thrown { SW_ERR } else { status }
+    if effects.thrown { SW_ERR } else { status as i32 }
 }
 
 #[cfg(test)]

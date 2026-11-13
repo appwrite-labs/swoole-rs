@@ -78,10 +78,16 @@ pub const FLAG_SKIP: u32 = 8;
 pub const FLAG_DYNAMIC: u32 = 16;
 pub const FLAG_PAUSED: u32 = 32;
 
-pub const SW_OK: i32 = 0;
-pub const SW_ERR: i32 = -1;
-const SW_CONTINUE: i32 = 1;
-pub const SW_CLOSE: i32 = 3;
+/// A receive's result: upstream's `SW_OK`, `SW_ERR`, `SW_CONTINUE` and `SW_CLOSE`, as
+/// the native caller reads them. Only [`Mode::Split`] continues or closes.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ok = 0,
+    Err = -1,
+    Continue = 1,
+    Close = 3,
+}
 const BUFFER_SIZE_STD: usize = 8192;
 
 /// The head of `swoole::String`, without its bytes ([`Effects::data`]).
@@ -201,13 +207,13 @@ impl<E: Effects> Recv<'_, E> {
     }
 
     #[inline(always)]
-    fn length_protocol(&mut self, head: u32) -> i32 {
+    fn length_protocol(&mut self, head: u32) -> Status {
         if self.flag(FLAG_DYNAMIC) && head == 0 {
-            return SW_ERR;
+            return Status::Err;
         }
         // A length header the buffer can never hold fails before any read.
         if self.header(head) > self.size() {
-            return SW_ERR;
+            return Status::Err;
         }
         // Whether the last `recv` left space in the buffer, so the kernel had no more.
         let mut drained = false;
@@ -222,17 +228,17 @@ impl<E: Effects> Recv<'_, E> {
                 Step::Recv => {
                     self.settle();
                     if self.flag(FLAG_REMOVED) {
-                        return SW_OK;
+                        return Status::Ok;
                     }
                     let free = self.size() - self.length();
                     if free == 0 {
-                        return SW_ERR;
+                        return Status::Err;
                     }
                     match self.op(Op::Recv, free as u64) {
-                        RECV_DONE => return SW_OK,
-                        RECV_CLOSE | 0 => return SW_ERR,
-                        n if n < 0 => return SW_ERR,
-                        n if !self.grow(n) => return SW_ERR,
+                        RECV_DONE => return Status::Ok,
+                        RECV_CLOSE | 0 => return Status::Err,
+                        n if n < 0 => return Status::Err,
+                        n if !self.grow(n) => return Status::Err,
                         n => drained = n.unsigned_abs() < free as u64,
                     }
                     if !self.flag(FLAG_WAIT) {
@@ -242,21 +248,21 @@ impl<E: Effects> Recv<'_, E> {
                     } else if self.flag(FLAG_TLS) {
                         Step::Recv
                     } else {
-                        return SW_OK;
+                        return Status::Ok;
                     }
                 }
                 Step::GetLength => self.get_length(head, drained),
                 Step::Dispatch => {
                     if self.op(Op::Dispatch, self.start as u64) < 0 {
                         self.settle();
-                        return SW_ERR;
+                        return Status::Err;
                     }
                     // A closed socket stops here, as upstream's does. A paused one
                     // still delivers the whole packages already read: only a partial
                     // one can be left, and the rest of it is still in the kernel.
                     if self.flag(FLAG_REMOVED) && !self.flag(FLAG_PAUSED) {
                         self.settle();
-                        return SW_OK;
+                        return Status::Ok;
                     }
                     self.set_wait(false);
                     let offset = usize::try_from(self.offset()).unwrap_or(usize::MAX);
@@ -267,15 +273,15 @@ impl<E: Effects> Recv<'_, E> {
                     } else {
                         self.clear();
                         if !self.flag(FLAG_TLS) || self.flag(FLAG_REMOVED) {
-                            return SW_OK;
+                            return Status::Ok;
                         }
                         Step::Recv
                     }
                 }
-                Step::Fail => return SW_ERR,
+                Step::Fail => return Status::Err,
                 Step::Wait => {
                     self.settle();
-                    return SW_OK;
+                    return Status::Ok;
                 }
             };
         }
@@ -351,52 +357,52 @@ impl<E: Effects> Recv<'_, E> {
         usize::try_from(self.offset()).is_ok_and(|offset| self.pending() >= offset)
     }
 
-    fn eof_protocol(&mut self) -> i32 {
+    fn eof_protocol(&mut self) -> Status {
         let mut again = false;
         loop {
             let size = self.size() - self.length();
             match self.op(Op::Recv, size.min(BUFFER_SIZE_STD) as u64) {
-                RECV_DONE => return SW_OK,
-                RECV_CLOSE | 0 => return SW_ERR,
-                n if n < 0 => return SW_ERR,
-                n if !self.grow(n) => return SW_ERR,
+                RECV_DONE => return Status::Ok,
+                RECV_CLOSE | 0 => return Status::Err,
+                n if n < 0 => return Status::Err,
+                n if !self.grow(n) => return Status::Err,
                 _ => {}
             }
             if self.length() < self.eof_len() {
-                return SW_OK;
+                return Status::Ok;
             }
             if self.effects.protocol().split_by_eof {
                 match self.split_by_eof() {
-                    SW_CONTINUE => again = true,
-                    SW_CLOSE => return SW_ERR,
-                    _ => return SW_OK,
+                    Status::Continue => again = true,
+                    Status::Close => return Status::Err,
+                    Status::Ok | Status::Err => return Status::Ok,
                 }
             } else if self.ends_with_eof() {
                 let length = self.length();
                 self.set_offset(length.cast_signed() as i64);
                 if self.op(Op::Dispatch, 0) < 0 {
-                    return SW_ERR;
+                    return Status::Err;
                 }
                 if self.flag(FLAG_REMOVED) {
-                    return SW_OK;
+                    return Status::Ok;
                 }
                 self.clear();
                 if self.flag(FLAG_TLS) && self.op(Op::SslPending, 0) > 0 {
                     continue;
                 }
-                return SW_OK;
+                return Status::Ok;
             }
             let (length, size, max) = (self.length(), self.size(), self.max());
             if length == max as usize {
                 self.op(Op::LogTooLarge, length as u64);
-                return SW_ERR;
+                return Status::Err;
             }
             if length == size {
                 again = true;
                 if size < max as usize {
                     let page = self.op(Op::Page, 0);
                     let Some(page) = usize::try_from(page).ok().filter(|&page| page > 0) else {
-                        return SW_ERR;
+                        return Status::Err;
                     };
                     let double = size.wrapping_mul(2);
                     #[expect(
@@ -408,21 +414,21 @@ impl<E: Effects> Recv<'_, E> {
                 }
             }
             if !again {
-                return SW_OK;
+                return Status::Ok;
             }
         }
     }
 
-    fn split_by_eof(&mut self) -> i32 {
+    fn split_by_eof(&mut self) -> Status {
         if self.length() < self.eof_len() {
-            return SW_CONTINUE;
+            return Status::Continue;
         }
         let n = self.op(Op::Split, 0);
         if self.flag(FLAG_REMOVED) || n < 0 {
-            return SW_CLOSE;
+            return Status::Close;
         }
         if n == 0 {
-            return SW_CONTINUE;
+            return Status::Continue;
         }
         if usize::try_from(n).is_ok_and(|n| n < self.length()) {
             self.op(Op::Reduce, n.unsigned_abs());
@@ -431,23 +437,28 @@ impl<E: Effects> Recv<'_, E> {
         } else {
             self.clear();
         }
-        i32::from(self.flag(FLAG_TLS))
+        // A TLS socket may hold decrypted bytes the kernel no longer reports.
+        if self.flag(FLAG_TLS) {
+            Status::Continue
+        } else {
+            Status::Ok
+        }
     }
 }
 
-/// Runs one receive of `mode` and returns its `SW_*` result. `head` is the
+/// Runs one receive of `mode` and returns its result. `head` is the
 /// package length size (`get_package_length_size` or the fixed size); `flags`
 /// holds the socket's flags at entry and its `recv_wait` on return. Always inlined, with the
 /// length loop: each caller's `mode` is a constant, and the loop shares its caller's frame.
 #[inline(always)]
-pub fn recv<E: Effects>(mode: Mode, head: u32, flags: &mut u32, effects: &mut E) -> i32 {
+pub fn recv<E: Effects>(mode: Mode, head: u32, flags: &mut u32, effects: &mut E) -> Status {
     let mut recv = Recv {
         flags: *flags,
         start: 0,
         effects,
     };
     if recv.length() > recv.size() {
-        return SW_ERR;
+        return Status::Err;
     }
     let result = match mode {
         Mode::Length => recv.length_protocol(head),
@@ -602,7 +613,7 @@ mod tests {
         }
     }
 
-    fn run(native: &mut Native) -> i32 {
+    fn run(native: &mut Native) -> Status {
         let mut flags = native.flags;
         let status = recv(native.mode, native.head, &mut flags, native);
         native.flags = flags;
@@ -614,11 +625,11 @@ mod tests {
     fn length_protocol_reads_what_is_there_then_waits() {
         // Each chunk is one arrival: a short read means the kernel had no more.
         let mut native = Native::new(Mode::Length, 2, vec![b"\x03", b"abc\x01"]);
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(native.events, ["recv:2", "length:1", "extend:4"]);
         assert!(native.wait, "waits for the body");
         native.events.clear();
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(native.events, ["recv:3", "package:\x03abc"]);
         assert_eq!(
             (native.buffer.length, native.buffer.offset),
@@ -627,7 +638,7 @@ mod tests {
         );
         // The next call finds the next header and waits for its body.
         native.events.clear();
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(native.events, ["recv:4", "length:1"]);
         assert!(native.wait, "waits for the next body");
         assert_eq!(native.buffer.offset, 2);
@@ -636,7 +647,7 @@ mod tests {
     #[test]
     fn length_protocol_dispatches_every_package_one_read_brings() {
         let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x02bc\x03d"]);
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             [
@@ -657,7 +668,7 @@ mod tests {
     fn length_protocol_closed_mid_buffer_stops_and_paused_delivers_the_rest() {
         let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b"]);
         native.gone_on_dispatch = FLAG_REMOVED;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(native.events, ["recv:16", "length:4", "package:\x01a"]);
 
         // Closed by a later package's callback: the buffer may be gone, so nothing is
@@ -665,7 +676,7 @@ mod tests {
         let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b\x01c"]);
         native.gone_on_dispatch = FLAG_REMOVED;
         native.gone_at = 2;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             [
@@ -679,7 +690,7 @@ mod tests {
 
         let mut native = Native::new(Mode::Length, 16, vec![b"\x01a\x01b\x02", b"c"]);
         native.gone_on_dispatch = FLAG_REMOVED | FLAG_PAUSED;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             [
@@ -702,7 +713,7 @@ mod tests {
         native.storage[..3].copy_from_slice(b"\x01a\x00");
         native.buffer.length = 3;
         native.flags = FLAG_SKIP;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             ["length:3", "package:\x01a", "length:1", "package:\0"]
@@ -714,7 +725,7 @@ mod tests {
         );
         native.events.clear();
         native.protocol.package_max_length = 4;
-        assert_eq!(run(&mut native), SW_ERR);
+        assert_eq!(run(&mut native), Status::Err);
         assert_eq!(native.events, ["recv:8", "length:1", "LogTooLarge:17"]);
     }
 
@@ -722,7 +733,7 @@ mod tests {
     fn a_bad_package_with_bytes_past_its_header_closes_with_a_reset() {
         let mut native = Native::new(Mode::Length, 8, vec![b"\x10abc"]);
         native.protocol.package_max_length = 4;
-        assert_eq!(run(&mut native), SW_ERR);
+        assert_eq!(run(&mut native), Status::Err);
         assert_eq!(
             native.events,
             ["recv:8", "length:4", "LogTooLarge:17", "Reset:0"]
@@ -734,18 +745,18 @@ mod tests {
         let mut native = Native::new(Mode::Length, 8, vec![b"\x01"]);
         native.flags = FLAG_REMOVED;
         native.gone = FLAG_REMOVED;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(native.events, Vec::<String>::new());
         native.flags = FLAG_DYNAMIC;
         native.head = 0;
-        assert_eq!(run(&mut native), SW_ERR);
+        assert_eq!(run(&mut native), Status::Err);
         assert_eq!(native.events, Vec::<String>::new());
     }
 
     #[test]
     fn eof_protocol_grows_then_dispatches() {
         let mut native = Native::new(Mode::Eof, 4, vec![b"abcd", b"e\r\n"]);
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             ["recv:4", "extend:64", "recv:60", "package:abcde\r\n"]
@@ -761,7 +772,7 @@ mod tests {
     fn split_keeps_the_residual() {
         let mut native = Native::new(Mode::Eof, 16, vec![b"a\r\nb\r\nc"]);
         native.protocol.split_by_eof = true;
-        assert_eq!(run(&mut native), SW_OK);
+        assert_eq!(run(&mut native), Status::Ok);
         assert_eq!(
             native.events,
             ["recv:16", "package:a\r\n", "package:b\r\n", "reduce:6"]
@@ -774,7 +785,7 @@ mod tests {
     fn rejects_overrun() {
         let mut native = Native::new(Mode::Eof, 2, vec![]);
         native.buffer.length = 3;
-        assert_eq!(run(&mut native), SW_ERR);
+        assert_eq!(run(&mut native), Status::Err);
         assert_eq!(native.events, Vec::<String>::new());
     }
 
@@ -784,7 +795,7 @@ mod tests {
     fn rejects_a_header_the_buffer_cannot_hold() {
         let mut native = Native::new(Mode::Length, 1, vec![b"\x01"]);
         native.protocol.package_length_offset = 3;
-        assert_eq!(run(&mut native), SW_ERR);
+        assert_eq!(run(&mut native), Status::Err);
         assert_eq!(native.events, Vec::<String>::new());
     }
 }
