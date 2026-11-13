@@ -265,13 +265,9 @@ pub extern "C" fn swr_v1_resp_extend_size(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::CCast;
     #[test]
     fn handler_keys_reject_invalid_outputs() {
         let mut output = [99; 64];
@@ -340,7 +336,7 @@ mod tests {
             assert_eq!(range, 0);
             for (index, span) in output.iter().enumerate() {
                 if index < capacity.min(3) {
-                    assert_eq!(span.integer, (index + 1) as i32);
+                    assert_eq!(span.integer, (index + 1).c_cast::<i32>());
                 } else {
                     assert_eq!((span.offset, span.kind), (99, 3));
                 }

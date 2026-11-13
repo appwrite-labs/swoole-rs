@@ -11,6 +11,7 @@ use std::{
     marker::PhantomData,
     sync::Arc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
 
 const STRING_COUNT: usize = 11;
@@ -613,12 +614,7 @@ impl Lent<'_> {
     /// Write the scalar setting into the owner.
     pub fn set_value(&self, value: Value) {
         self.edit(|fields| match value {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "upstream assigns the long to a uint32_t"
-            )]
-            Value::Protocols(value) => fields.protocols = value as u32,
+            Value::Protocols(value) => fields.protocols = value.c_cast::<u32>(),
             Value::DisableCompress(value) => fields.disable_compress = value.into(),
             Value::VerifyPeer(value) => fields.verify_peer = value.into(),
             Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),

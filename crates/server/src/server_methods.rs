@@ -7,6 +7,7 @@ use crate::records::Lookup;
 use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
+use swoole_rs_corebase::CCast;
 
 use crate::base_factory::{SEND_DATA, SendData};
 use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
@@ -123,23 +124,14 @@ impl Narrow for bool {
 }
 
 impl Narrow for c_int {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the C++ method's (int) conversion of the runner's result"
-    )]
     fn narrow(value: i64) -> c_int {
-        value as c_int
+        value.c_cast::<c_int>()
     }
 }
 
 impl Narrow for u32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the C++ method's (uint32_t) conversion of the runner's result"
-    )]
     fn narrow(value: i64) -> u32 {
-        value as u32
+        value.c_cast::<u32>()
     }
 }
 
@@ -403,11 +395,7 @@ pub unsafe fn add_connection(
     reason = "callers ignore the result where upstream's do"
 )]
 pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::send's uint32_t length, as upstream's callers narrow it"
-    )]
-    let length = data.len() as u32;
+    let length = data.len().c_cast::<u32>();
     let data: *const c_void = data.as_ptr().cast();
     let mut send = SendData {
         info: DataHead {
@@ -513,11 +501,7 @@ pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool
     let mut ctx = NativeContext::new(serv.raw());
     ctx.session_id = session_id;
     ctx.data = data.as_ptr().cast();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::sendwait's uint32_t length, as upstream"
-    )]
-    let length = data.len() as u32;
+    let length = data.len().c_cast::<u32>();
     ctx.length = length;
     ctx.bytes = data.get(..length as usize).unwrap_or(data);
     // SAFETY: the live server; `data` holds `length` bytes for the call.
@@ -532,8 +516,7 @@ pub fn sendwait(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool
 pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bool {
     let state = serv.state();
     // `get_connection(int)` of the session id, as master.cc did.
-    #[expect(clippy::cast_possible_truncation, reason = "C++'s int parameter")]
-    let fd = session_id as c_int;
+    let fd = session_id.c_cast::<c_int>();
     let Some(conn) = state.connection(c_long::from(fd), Lookup::ByFd) else {
         return false;
     };
@@ -592,11 +575,7 @@ pub fn sendfile(
     offset: libc::off_t,
     length: usize,
 ) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::sendfile's uint32_t name length, as upstream's callers narrow it"
-    )]
-    let l_file = file.len() as u32;
+    let l_file = file.len().c_cast::<u32>();
     let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
     // `SendfileTask::length` follows its `off_t offset` (server.cc asserts it).
     buffer.0[8..16].copy_from_slice(&length.to_ne_bytes());
@@ -681,16 +660,11 @@ pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
     reason = "callers ignore the result where upstream's do"
 )]
 pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "DataHead's uint8_t type and uint16_t server_fd keep the low bits, as the C++ assignments did"
-    )]
     let mut head = DataHead {
         fd: conn.fd().into(),
         reactor_id: conn.reactor_id().into(),
-        kind: event as u8,
-        server_fd: conn.server_fd() as u16,
+        kind: event.c_cast::<u8>(),
+        server_fd: conn.server_fd().c_cast::<u16>(),
         ..DataHead::default()
     };
     let mut ctx = NativeContext::new(serv.raw());

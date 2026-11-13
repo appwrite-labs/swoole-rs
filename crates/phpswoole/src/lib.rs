@@ -20,6 +20,7 @@
 
 mod asynchronous;
 pub use asynchronous::zif_swoole_async_dns_lookup_coro;
+use swoole_rs_corebase::CCast;
 mod constants;
 mod entry;
 mod functions;
@@ -169,11 +170,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
 /// MINIT's start: the `SWOOLE_RS_*` constants, then the module globals and
 /// their ini entries.
 fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream's zend_long of the bits"
-    )]
-    let features = swoole_rs_error::swr_v1_feature_bits() as i64;
+    let features = swoole_rs_error::swr_v1_feature_bits().c_cast::<i64>();
     let abi = i64::from(swoole_rs_error::swr_v1_abi_version());
     for (name, value) in [
         (c"SWOOLE_RS_ABI_VERSION", abi),

@@ -13,6 +13,7 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_process::process_pool::{PoolRef, RecvData};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -536,15 +537,10 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream converts to uint32_t, key_t and swIPCMode"
-    )]
     let made = pool_new(
-        worker_num as u32,
-        key as c_int,
-        ipc_type as c_int,
+        worker_num.c_cast::<u32>(),
+        key.c_cast::<c_int>(),
+        ipc_type.c_cast::<c_int>(),
         this_value,
         coroutine,
     );
@@ -707,12 +703,13 @@ fn listen(call: &Call) {
     let host =
         CString::new(host.split(|&byte| byte == 0).next().unwrap_or_default()).unwrap_or_default();
     let kind = if unix { SOCK_UNIX_STREAM } else { SOCK_TCP };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's int port and backlog"
-    )]
-    let listened =
-        methods::listen_socket(handle(pool), kind, &host, port as c_int, backlog as c_int);
+    let listened = methods::listen_socket(
+        handle(pool),
+        kind,
+        &host,
+        port.c_cast::<c_int>(),
+        backlog.c_cast::<c_int>(),
+    );
     let socket = handle(pool).ipc_listener();
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
@@ -735,11 +732,7 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's uint32_t length"
-    )]
-    let length = data.len() as u32 as usize;
+    let length = data.len().c_cast::<u32>() as usize;
     let written = methods::response(view, data.get(..length).unwrap_or(data));
     call.set_bool(written >= 0);
 }
@@ -762,12 +755,7 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's WorkerId"
-    )]
-    let sent = methods::send_message(view, worker as u32, data);
+    let sent = methods::send_message(view, worker.c_cast::<u32>(), data);
     call.set_bool(sent);
 }
 

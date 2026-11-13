@@ -19,6 +19,7 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicU32, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
@@ -28,9 +29,7 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     object_zval,
-    sys::{
-        E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-    },
+    sys::{ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -228,8 +227,7 @@ fn c_bytes(bytes: &[u8]) -> CString {
 
 /// `php_swoole_error(E_WARNING, ...)`, or with `fatal` `php_swoole_fatal_error`.
 fn warn(fatal: bool, message: &CStr) {
-    #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    swoole_rs_php_error(E_WARNING as c_int, fatal, message);
+    swoole_rs_php_error(swoole_rs_zend::E_WARNING, fatal, message);
 }
 
 /// `php_swoole_sys_error(E_WARNING, "%s", message)`.
@@ -375,12 +373,7 @@ impl Client {
             conn,
             socket_type: request::socket_type(&mut host),
             host,
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "upstream's uint16_t port"
-            )]
-            port: port as u16,
+            port: port.c_cast::<u16>(),
             ssl,
             use_default_port,
             connect_timeout: Cell::new(0.0),
@@ -473,12 +466,7 @@ impl Client {
                     return;
                 };
                 let retries = retries.min(i64::from(u8::MAX));
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "upstream's (uint8_t) cast"
-                )]
-                self.max_retries.set(retries as u8);
+                self.max_retries.set(retries.c_cast::<u8>());
             }
             if let Some(found) = get(b"defer") {
                 self.defer.set(truthy(found));

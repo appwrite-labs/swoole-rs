@@ -8,6 +8,7 @@ use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
@@ -74,9 +75,8 @@ fn or_false<T>(call: &Call, parsed: Result<T, Invalid>) -> Option<T> {
 }
 
 /// `zend_long` to the `int` upstream passes on, as C converts it.
-#[expect(clippy::cast_possible_truncation, reason = "C's (int) conversion")]
 fn int(value: i64) -> i32 {
-    value as i32
+    value.c_cast::<i32>()
 }
 
 fn version(call: &Call) {
@@ -157,8 +157,7 @@ fn hashcode(call: &Call) {
     match kind {
         0 => {
             let hash = swoole_rs_zend::string::hash(data, data.len());
-            #[expect(clippy::cast_possible_wrap, reason = "RETURN_LONG of a zend_ulong")]
-            call.set_long(hash as i64);
+            call.set_long(hash.c_cast::<i64>());
         }
         1 => call.set_long(i64::from(one_at_a_time(data))),
         _ => call.set_bool(false),

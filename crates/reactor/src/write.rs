@@ -8,6 +8,7 @@ use std::ffi::{c_int, c_void};
 use swoole_rs_buffer::cpp::{
     CppBuffer, swr_cpp_buffer_append_iovec, swr_cpp_buffer_count, swr_cpp_buffer_length,
 };
+use swoole_rs_corebase::CCast;
 
 /// `SwReturnCode::SW_WAIT`.
 const SW_WAIT: c_int = 2;
@@ -112,11 +113,7 @@ pub unsafe fn swr_v1_reactor_write(
         ops.set_nonblock();
     }
     // Upstream compares `(uint32_t) _len`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (uint32_t) cast"
-    )]
-    if length as u32 > buffer_size {
+    if length.c_cast::<u32>() > buffer_size {
         return failed(1);
     }
     let mut sent = 0isize;

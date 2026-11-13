@@ -13,6 +13,7 @@ use std::{
         atomic::{AtomicBool, AtomicI32, Ordering},
     },
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::thread;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_WARNING, Message, Minit, OwnedArray, bailout, message,
@@ -148,11 +149,7 @@ fn construct(call: &Call) {
     }
     thread.constructed.set(true);
     if let Some(id) = thread.thread.id() {
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "upstream's (zend_long) pthread_t"
-        )]
-        call.update_property_long(Some(&*THREAD), c"id", id as i64);
+        call.update_property_long(Some(&*THREAD), c"id", id.c_cast::<i64>());
     }
 }
 
@@ -205,11 +202,7 @@ fn get_arguments(call: &Call) {
 
 fn get_id(call: &Call) {
     let id = swoole_rs_ossupport::pthread_self();
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream's (zend_long) pthread_t"
-    )]
-    call.set_long(id as i64);
+    call.set_long(id.c_cast::<i64>());
 }
 
 fn get_info(call: &Call) {
@@ -287,18 +280,13 @@ fn set_priority(call: &Call) {
         return;
     };
     let mut param = sched_param();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's int conversions"
-    )]
-    let mut sched_policy = policy as c_int;
+    let mut sched_policy = policy.c_cast::<c_int>();
     let me = swoole_rs_ossupport::pthread_self();
     if policy == -1 {
         get_sched(&mut sched_policy, &mut param);
     }
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int conversion")]
     {
-        param.sched_priority = priority as c_int;
+        param.sched_priority = priority.c_cast::<c_int>();
     }
     // SAFETY: a valid sched_param.
     if unsafe { libc::pthread_setschedparam(me, sched_policy, &raw const param) } == 0 {

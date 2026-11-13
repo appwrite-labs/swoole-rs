@@ -4,6 +4,7 @@
 //! reference, and sockets by a duplicated descriptor.
 use crate::{array::Array, barrier, classes, host, queue::Queue, request};
 use std::{cmp::Ordering, ffi::c_int, sync::Arc};
+use swoole_rs_corebase::CCast;
 use swoole_rs_phplocks::{self as phplocks, Resource, Shareable};
 use swoole_rs_zend::{
     Call, Owned, Value as ZValue, ZString, bailout, numeric,
@@ -317,10 +318,8 @@ impl Item {
         let pair = |x: u32, y: u32| (x << 4) | y;
         match (a.kind << 4) | b.kind {
             p if p == pair(IS_LONG, IS_LONG) => sign(a.lval().cmp(&b.lval())),
-            #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-            p if p == pair(IS_DOUBLE, IS_LONG) => normalize(a.dval() - b.lval() as f64),
-            #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-            p if p == pair(IS_LONG, IS_DOUBLE) => normalize(a.lval() as f64 - b.dval()),
+            p if p == pair(IS_DOUBLE, IS_LONG) => normalize(a.dval() - b.lval().c_cast::<f64>()),
+            p if p == pair(IS_LONG, IS_DOUBLE) => normalize(a.lval().c_cast::<f64>() - b.dval()),
             p if p == pair(IS_DOUBLE, IS_DOUBLE) =>
             {
                 #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
@@ -419,11 +418,10 @@ fn binary_strcmp(a: &[u8], b: &[u8]) -> i32 {
 /// Upstream's `compare_long_to_string`.
 fn long_to_string(lval: i64, text: &[u8]) -> i32 {
     match numeric(text) {
-        #[expect(clippy::cast_possible_truncation, reason = "IS_LONG is a byte")]
-        (kind, number, _) if kind == IS_LONG as u8 => sign(lval.cmp(&number)),
-        #[expect(clippy::cast_possible_truncation, reason = "IS_DOUBLE is a byte")]
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-        (kind, _, number) if kind == IS_DOUBLE as u8 => normalize(lval as f64 - number),
+        (kind, number, _) if kind == IS_LONG.c_cast::<u8>() => sign(lval.cmp(&number)),
+        (kind, _, number) if kind == IS_DOUBLE.c_cast::<u8>() => {
+            normalize(lval.c_cast::<f64>() - number)
+        }
         _ => binary_strcmp(lval.to_string().as_bytes(), text),
     }
 }
@@ -431,12 +429,11 @@ fn long_to_string(lval: i64, text: &[u8]) -> i32 {
 /// Upstream's `compare_double_to_string`.
 fn double_to_string(dval: f64, text: &[u8]) -> i32 {
     match numeric(text) {
-        #[expect(clippy::cast_possible_truncation, reason = "IS_LONG is a byte")]
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-        (kind, number, _) if kind == IS_LONG as u8 => normalize(dval - number as f64),
-        #[expect(clippy::cast_possible_truncation, reason = "IS_DOUBLE is a byte")]
+        (kind, number, _) if kind == IS_LONG.c_cast::<u8>() => {
+            normalize(dval - number.c_cast::<f64>())
+        }
         #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
-        (kind, _, number) if kind == IS_DOUBLE as u8 => {
+        (kind, _, number) if kind == IS_DOUBLE.c_cast::<u8>() => {
             if dval == number {
                 0
             } else {

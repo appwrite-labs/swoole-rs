@@ -5,6 +5,7 @@ use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
 use libc::c_int;
 use swoole_rs_clients::client::ClientRecord;
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpswoole::length::Named;
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
@@ -174,8 +175,7 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
     }
     if let Some(eof) = options.string("package_eof") {
         let eof = eof.bytes();
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's uint8_t length")]
-        let length = eof.len() as u8;
+        let length = eof.len().c_cast::<u8>();
         edit(cli, |record| record.protocol.package_eof_len = length);
         if length == 0 {
             report(

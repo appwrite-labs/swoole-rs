@@ -8,6 +8,7 @@
 )]
 mod frontdoor;
 pub use frontdoor::*;
+use swoole_rs_corebase::CCast;
 mod helpers;
 pub use helpers::timezone;
 mod logger;
@@ -27,45 +28,35 @@ fn promoted(byte: u8, signed: bool) -> u64 {
         u64::from(byte)
     }
 }
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the native hashes' 32-bit mixing truncates and reinterprets by design"
-)]
 fn word<'a>(bytes: impl IntoIterator<Item = &'a u8>, signed: bool) -> u32 {
     bytes.into_iter().enumerate().fold(0u32, |sum, (i, byte)| {
-        sum.wrapping_add((promoted(*byte, signed) as u32).wrapping_shl((8 * i) as u32))
+        sum.wrapping_add(
+            promoted(*byte, signed)
+                .c_cast::<u32>()
+                .wrapping_shl((8 * i).c_cast::<u32>()),
+        )
     })
 }
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the native hashes' 32-bit mixing truncates and reinterprets by design"
-)]
 fn mix(a: &mut u32, b: &mut u32, c: &mut u64) {
-    *a = a.wrapping_sub(*b).wrapping_sub(*c as u32);
-    *a ^= (*c >> 13) as u32;
-    *b = b.wrapping_sub(*c as u32).wrapping_sub(*a);
+    *a = a.wrapping_sub(*b).wrapping_sub((*c).c_cast::<u32>());
+    *a ^= (*c >> 13).c_cast::<u32>();
+    *b = b.wrapping_sub((*c).c_cast::<u32>()).wrapping_sub(*a);
     *b ^= a.wrapping_shl(8);
     *c = c.wrapping_sub(u64::from(*a)).wrapping_sub(u64::from(*b));
     *c ^= u64::from(*b >> 13);
-    *a = a.wrapping_sub(*b).wrapping_sub(*c as u32);
-    *a ^= (*c >> 12) as u32;
-    *b = b.wrapping_sub(*c as u32).wrapping_sub(*a);
+    *a = a.wrapping_sub(*b).wrapping_sub((*c).c_cast::<u32>());
+    *a ^= (*c >> 12).c_cast::<u32>();
+    *b = b.wrapping_sub((*c).c_cast::<u32>()).wrapping_sub(*a);
     *b ^= a.wrapping_shl(16);
     *c = c.wrapping_sub(u64::from(*a)).wrapping_sub(u64::from(*b));
     *c ^= u64::from(*b >> 5);
-    *a = a.wrapping_sub(*b).wrapping_sub(*c as u32);
-    *a ^= (*c >> 3) as u32;
-    *b = b.wrapping_sub(*c as u32).wrapping_sub(*a);
+    *a = a.wrapping_sub(*b).wrapping_sub((*c).c_cast::<u32>());
+    *a ^= (*c >> 3).c_cast::<u32>();
+    *b = b.wrapping_sub((*c).c_cast::<u32>()).wrapping_sub(*a);
     *b ^= a.wrapping_shl(10);
     *c = c.wrapping_sub(u64::from(*a)).wrapping_sub(u64::from(*b));
     *c ^= u64::from(*b >> 15);
 }
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "the native hashes' 32-bit mixing truncates and reinterprets by design"
-)]
 fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
     match algorithm {
         0 => bytes.iter().fold(5381u64, |h, b| {
@@ -88,7 +79,9 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
             b = b.wrapping_add(word(rest.iter().skip(4).take(4), signed));
             for (i, byte) in rest.iter().enumerate().skip(8) {
                 c = c.wrapping_add(u64::from(
-                    (promoted(*byte, signed) as u32).wrapping_shl((8 * (i - 7)) as u32),
+                    promoted(*byte, signed)
+                        .c_cast::<u32>()
+                        .wrapping_shl((8 * (i - 7)).c_cast::<u32>()),
                 ));
             }
             mix(&mut a, &mut b, &mut c);
@@ -100,9 +93,11 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
             for part in chunks {
                 let mut k = promoted(part[0], signed);
                 for (i, byte) in part.iter().enumerate().skip(1) {
-                    let shifted =
-                        (promoted(*byte, signed) as u32).wrapping_shl((8 * i) as u32) as i32;
-                    k |= i64::from(shifted) as u64;
+                    let shifted = promoted(*byte, signed)
+                        .c_cast::<u32>()
+                        .wrapping_shl((8 * i).c_cast::<u32>())
+                        .c_cast::<i32>();
+                    k |= i64::from(shifted).c_cast::<u64>();
                 }
                 k = k.wrapping_mul(0x5bd1_e995);
                 k ^= k >> 24;
@@ -110,8 +105,13 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
                 h = h.wrapping_mul(0x5bd1_e995) ^ k;
             }
             for (i, byte) in tail.iter().enumerate() {
-                h ^= i64::from((promoted(*byte, signed) as u32).wrapping_shl((8 * i) as u32) as i32)
-                    as u64;
+                h ^= (i64::from(
+                    promoted(*byte, signed)
+                        .c_cast::<u32>()
+                        .wrapping_shl((8 * i).c_cast::<u32>())
+                        .c_cast::<i32>(),
+                ))
+                .c_cast::<u64>();
             }
             if !tail.is_empty() {
                 h = h.wrapping_mul(0x5bd1_e995);
@@ -129,11 +129,7 @@ fn hash(bytes: &[u8], length: usize, algorithm: u32, signed: bool) -> u64 {
 #[must_use]
 pub fn swoole_hash(bytes: &[u8], algorithm: u32, signed_char: bool) -> u64 {
     // Native Jenkins consumes an unsigned-width prefix but mixes the full length.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "native Jenkins' unsigned-width prefix"
-    )]
-    let prefix = bytes.len() as u32 as usize;
+    let prefix = bytes.len().c_cast::<u32>() as usize;
     let count = if algorithm == 1 { prefix } else { bytes.len() };
     hash(
         bytes.get(..count).unwrap_or_default(),

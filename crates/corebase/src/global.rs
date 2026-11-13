@@ -6,6 +6,7 @@
 //! (the memory pool, the stdout stream, the logger, the server, the AIO pipe
 //! socket, the fatal-error and backtrace hooks) are opaque: native code
 //! allocates and frees them, Rust only holds the pointer.
+use crate::CCast;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_void};
 use std::ptr;
 use std::sync::Mutex;
@@ -183,24 +184,16 @@ pub fn swr_v1_core_init() -> bool {
     swr_v1_core_set_enable_coroutine(true);
     let page = crate::sys::sysconf(libc::_SC_PAGESIZE);
     let cpus = crate::sys::sysconf(libc::_SC_NPROCESSORS_ONLN);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's uint32_t pagesize of getpagesize() and uint16_t cpu_num of a positive count"
-    )]
     {
-        swr_v1_core_set_pagesize(page as u32);
-        RECORD.cpu_num.store(cpus.max(1) as u16, Ordering::Relaxed);
+        swr_v1_core_set_pagesize(page.c_cast::<u32>());
+        RECORD
+            .cpu_num
+            .store(cpus.max(1).c_cast::<u16>(), Ordering::Relaxed);
     }
     swr_v1_core_set_max_file_content(MAX_FILE_CONTENT);
     RECORD.dns_tries.store(1, Ordering::Relaxed);
     let now = time_now();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "srandom(time(nullptr)) narrows as upstream"
-    )]
-    let seed = now as c_uint;
+    let seed = now.c_cast::<c_uint>();
     crate::sys::srandom(seed);
     true
 }
@@ -217,11 +210,7 @@ pub fn swr_v1_core_max_sockets(limit: u32) -> i64 {
     if crate::sys::getrlimit(libc::RLIMIT_NOFILE, &mut rlimit) < 0 {
         return -1;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (uint32_t) rlmt.rlim_cur"
-    )]
-    let current = rlimit.rlim_cur as u32;
+    let current = rlimit.rlim_cur.c_cast::<u32>();
     i64::from(current.min(limit))
 }
 

@@ -7,6 +7,7 @@
 use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 
 /// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
@@ -99,14 +100,10 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
     }
     let timeout = socket.read(|record| record.timeouts.connect);
     // Upstream's `timeout > 0 ? sec2msec(timeout) : timeout` is a double.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sec2msec's (long) and the int parameter's conversion"
-    )]
     let timeout_ms = if timeout > 0.0 {
-        (timeout * 1000.0) as i64 as c_int
+        (timeout * 1000.0).c_cast::<i64>().c_cast::<c_int>()
     } else {
-        timeout as c_int
+        timeout.c_cast::<c_int>()
     };
     if socket.wait_event(timeout_ms, EVENT_WRITE) < 0 {
         log::set_last_error(libc::ETIMEDOUT);

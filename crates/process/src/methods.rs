@@ -6,6 +6,7 @@ use crate::task_file::Packed;
 use crate::worker_record::Worker;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
+use swoole_rs_corebase::CCast;
 
 use crate::pool::{
     raise_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
@@ -58,13 +59,8 @@ impl Narrow for bool {
 }
 
 impl Narrow for u32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the C++ method's (uint32_t) conversion of the export's result"
-    )]
     fn narrow(value: i64) -> u32 {
-        value as u32
+        value.c_cast::<u32>()
     }
 }
 
@@ -75,22 +71,14 @@ impl Narrow for *mut core::ffi::c_void {
 }
 
 impl Narrow for isize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the C++ method's (ssize_t) conversion of the export's result"
-    )]
     fn narrow(value: i64) -> isize {
-        value as isize
+        value.c_cast::<isize>()
     }
 }
 
 impl Narrow for c_int {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the C++ method's (int) conversion of the export's result"
-    )]
     fn narrow(value: i64) -> c_int {
-        value as c_int
+        value.c_cast::<c_int>()
     }
 }
 
@@ -407,13 +395,9 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
         // SAFETY: the worker's pipe and the caller's bytes.
         return unsafe { send_async(pipe, message.as_ptr().cast(), length) } != 0;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "DataHead's reactor_id and len are upstream's int16_t and uint32_t"
-    )]
     let mut head = DataHead {
-        reactor_id: swoole_get_worker_id() as i16,
-        len: length as u32,
+        reactor_id: swoole_get_worker_id().c_cast::<i16>(),
+        len: length.c_cast::<u32>(),
         ..DataHead::default()
     };
     // SAFETY: `MessageBus` starts with its `swr_bus *`.

@@ -10,6 +10,7 @@ use std::{
     ffi::CStr,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
     Http2FrameFacts, Http2Settings, Http2WindowPlan,
@@ -594,12 +595,7 @@ impl Client {
     }
 
     fn send_goaway(&self, error_code: i64, debug: &[u8]) -> bool {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream packs the code as frame flags and a uint32_t"
-        )]
-        let code = error_code as u32;
+        let code = error_code.c_cast::<u32>();
         let mut frame =
             frame_header(TYPE_GOAWAY, GOAWAY_SIZE + debug.len(), code & 0xff, 0).to_vec();
         frame.extend_from_slice(&self.last_stream_id.get().to_be_bytes());
@@ -890,8 +886,7 @@ impl Client {
         }
         if !self.streams.borrow().contains_key(&id) {
             // Upstream's "%d" of the unsigned stream id.
-            #[expect(clippy::cast_possible_wrap, reason = "printf's %d of a uint32_t")]
-            let id = id as i32;
+            let id = id.c_cast::<i32>();
             swoole_rs_corebase::log::notice(format_args!(
                 "http2 stream#{id} belongs to an unknown type or it never registered"
             ));
@@ -1520,12 +1515,7 @@ fn write(call: &Call) {
         return call.set_bool(false);
     };
     let _hold = client.hold_socket();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's uint32_t stream id"
-    )]
-    let result = client.write_data(id as u32, call.value(2), end);
+    let result = client.write_data(id.c_cast::<u32>(), call.value(2), end);
     call.set_bool(result);
 }
 

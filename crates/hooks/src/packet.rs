@@ -1,5 +1,6 @@
 //! Coroutine packet framing directly over the socket's record and installed host.
 /// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
+use swoole_rs_corebase::CCast;
 const BIG: usize = 65536;
 
 /// A view of the native read String, refreshed after every resize.
@@ -27,12 +28,8 @@ impl Packet {
     fn set_length(&mut self, length: usize) {
         self.view.length = length;
     }
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream assigns size_t to off_t"
-    )]
     fn set_offset(&mut self, offset: usize) {
-        self.view.offset = offset as libc::off_t;
+        self.view.offset = offset.c_cast::<libc::off_t>();
     }
     fn clear(&mut self) {
         self.set_length(0);
@@ -88,14 +85,10 @@ impl Packet {
             known = false;
             let buffer = self.buffer();
             let mut header = 0;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream's (uint32_t) read_buffer->length"
-            )]
             // It reads the initialized prefix and writes the header length.
             let packet = (crate::co_io::host().package_length)(
                 self.socket,
-                buffer.length as u32,
+                buffer.length.c_cast::<u32>(),
                 &mut header,
             );
             if packet < 0 {
@@ -183,11 +176,7 @@ impl Packet {
 
 /// `swoole_strnpos` over the buffered bytes, whose length it takes as `uint32_t`.
 fn find(buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "swoole_strnpos takes a uint32_t length"
-    )]
-    let length = buffer.length as u32 as usize;
+    let length = buffer.length.c_cast::<u32>() as usize;
     if needle.is_empty() || needle.len() > length {
         return None;
     }
@@ -257,12 +246,6 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
 mod ported;
 
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "the test socket drives the native integer interfaces with small lengths"
-)]
 pub(crate) mod tests {
     use super::*;
     use crate::buffered::recv_buffered;
@@ -294,7 +277,7 @@ pub(crate) mod tests {
             fake.chunks.push_front(chunk.split_off(length));
         }
         unsafe { at.copy_from_nonoverlapping(chunk.as_ptr(), chunk.len()) };
-        chunk.len() as isize
+        chunk.len().c_cast::<isize>()
     }
 
     unsafe extern "C" fn recv_all(context: *mut c_void, at: *mut u8, length: usize) -> isize {
@@ -304,9 +287,9 @@ pub(crate) mod tests {
             if received <= 0 {
                 break;
             }
-            total += received as usize;
+            total += received.c_cast::<usize>();
         }
-        total as isize
+        total.c_cast::<isize>()
     }
 
     /// A 4-byte big-endian body length after a 2-byte tag.
@@ -320,7 +303,7 @@ pub(crate) mod tests {
             return 0;
         }
         let bytes = unsafe { core::slice::from_raw_parts(at.add(2), 4) };
-        6 + u32::from_be_bytes(bytes.try_into().unwrap()) as isize
+        6 + (u32::from_be_bytes(bytes.try_into().unwrap())).c_cast::<isize>()
     }
 
     unsafe extern "C" fn fail(context: *mut c_void, kind: u32, _: isize) {
@@ -341,7 +324,7 @@ pub(crate) mod tests {
         socket.0.err_code = if fake.timed_out { libc::ETIMEDOUT } else { 0 };
         let p = &mut socket.0.protocol;
         p.package_eof[..eof.len()].copy_from_slice(eof);
-        p.package_eof_len = eof.len() as u8;
+        p.package_eof_len = eof.len().c_cast::<u8>();
         p.package_length_type = b'N';
         p.package_length_size = 4;
         p.package_length_offset = 2;
@@ -522,7 +505,7 @@ pub(crate) mod tests {
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
             assert_eq!(
                 recv_buffered(socket.co(), &mut out[..length]),
-                expected.len() as isize
+                expected.len().c_cast::<isize>()
             );
             assert_eq!(&out[..expected.len()], expected);
         }

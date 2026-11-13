@@ -7,6 +7,7 @@ use std::cell::UnsafeCell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::Write;
 use std::net::Ipv4Addr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_address::{
     BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, RAW, RAW6, TCP, TCP6, UDP, UDP6, UNIX_DGRAM,
     UNIX_STREAM, platform_parses,
@@ -284,14 +285,9 @@ pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int 
 }
 
 /// `Address::set_port`, including the original int-to-uint16_t wrapping.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "htons accepts the low 16 bits of upstream's int argument"
-)]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_address_set_port(address: &mut SocketAddress, port: c_int) {
-    let port = (port as u16).to_be();
+    let port = port.c_cast::<u16>().to_be();
     if inet4(address.kind) {
         address.addr.inet_v4.sin_port = port;
     } else if inet6(address.kind) {

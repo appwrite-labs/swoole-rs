@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::ffi::{CStr, c_int};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log::set_last_error, thread_reactor};
 use swoole_rs_phpstubs::timer;
 use swoole_rs_timer::php;
@@ -69,11 +70,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     minit.long_constant(c"SWOOLE_TIMER_MIN_MS", MIN_MS);
     minit.double_constant(c"SWOOLE_TIMER_MIN_SEC", 0.001);
     minit.long_constant(c"SWOOLE_TIMER_MAX_MS", MAX_MS);
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "upstream's ((double) LONG_MAX / 1000)"
-    )]
-    let max_sec = MAX_MS as f64 / 1000.0;
+    let max_sec = MAX_MS.c_cast::<f64>() / 1000.0;
     minit.double_constant(c"SWOOLE_TIMER_MAX_SEC", max_sec);
     Ok(())
 }
@@ -196,7 +193,6 @@ fn exists(call: &Call) {
     }
 }
 
-#[expect(clippy::cast_possible_wrap, reason = "add_assoc_long of a uint64_t")]
 fn info(call: &Call) {
     if !php::available() {
         call.set_bool(false);
@@ -209,23 +205,19 @@ fn info(call: &Call) {
     };
     call.set_array();
     call.add_assoc_long(c"exec_msec", node.exec_msec);
-    call.add_assoc_long(c"exec_count", node.exec_count as i64);
+    call.add_assoc_long(c"exec_count", node.exec_count.c_cast::<i64>());
     call.add_assoc_long(c"interval", node.interval);
-    call.add_assoc_long(c"round", node.round as i64);
+    call.add_assoc_long(c"round", node.round.c_cast::<i64>());
     call.add_assoc_bool(c"removed", node.removed);
 }
 
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "add_assoc_long of a size_t and a uint64_t"
-)]
 fn stats(call: &Call) {
     call.set_array();
     let stats = php::stats();
     let (count, round) = stats.unwrap_or_default();
     call.add_assoc_bool(c"initialized", stats.is_some());
-    call.add_assoc_long(c"num", count as i64);
-    call.add_assoc_long(c"round", round as i64);
+    call.add_assoc_long(c"num", count.c_cast::<i64>());
+    call.add_assoc_long(c"round", round.c_cast::<i64>());
 }
 
 /// The PHP timers' ids, in the timer's order.

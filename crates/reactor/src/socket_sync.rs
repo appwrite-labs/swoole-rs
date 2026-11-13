@@ -4,6 +4,7 @@
 //! counters and TLS, and reads the socket's bitfields, through [`SyncHooks`].
 use std::os::raw::c_int;
 use std::time::{Duration, Instant};
+use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`'s `SW_WAIT` (from `catch_error`).
 const WAIT: c_int = 2;
@@ -120,11 +121,7 @@ pub fn swr_v1_socket_sync(
             return -1;
         }
         if timeout_ms > 0 {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream's sec2msec converts to int"
-            )]
-            let elapsed = began.elapsed().as_millis() as c_int;
+            let elapsed = began.elapsed().as_millis().c_cast::<c_int>();
             timeout_ms -= elapsed;
             if timeout_ms <= 0 {
                 hooks.set_last_error(libc::ETIMEDOUT);

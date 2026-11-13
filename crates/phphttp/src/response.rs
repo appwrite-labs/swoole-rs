@@ -14,6 +14,7 @@ use std::{
     ptr,
     sync::atomic::Ordering::Relaxed,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
@@ -393,11 +394,7 @@ fn status(call: &Call) {
         let mut ctx = checked(call)?;
         let reason = reason.unwrap_or_default();
         let response = &mut ctx.state().response;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream assigns it to an int"
-        )]
-        let code = code as i32;
+        let code = code.c_cast::<i32>();
         response.status = code;
         response.reason = (!reason.is_empty()).then(|| {
             let text = reason.split(|&byte| byte == 0).next().unwrap_or_default();
@@ -764,8 +761,7 @@ fn redirect(call: &Call) {
             return None;
         };
         let mut ctx = checked(call)?;
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's int status")]
-        let status = code.map_or(302, |code| code.long() as c_int);
+        let status = code.map_or(302, |code| code.long().c_cast::<c_int>());
         ctx.state().response.status = status;
         set_header(ctx, b"Location", url, false);
         if swoole_rs_zend::bailout::pending() {

@@ -7,6 +7,7 @@
 use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
@@ -215,11 +216,7 @@ impl FlushEffects for Flush<'_> {
 
     fn wait_writable(&self) -> c_int {
         let timeout = SOCKET_DEFAULTS.write.get();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's static_cast<int>(sec2msec(...))"
-        )]
-        let timeout = (timeout * 1000.0) as c_int;
+        let timeout = (timeout * 1000.0).c_cast::<c_int>();
         self.socket.wait_event(timeout, SW_EVENT_WRITE)
     }
 }

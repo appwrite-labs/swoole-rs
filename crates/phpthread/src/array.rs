@@ -8,6 +8,7 @@ use std::{
     ffi::c_void,
     sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Array as ZArray, Call, Key as ZKey, Owned, OwnedArray, Value as ZValue, ZString, bailout,
     sys::{zend_sort, zend_ulong},
@@ -35,8 +36,7 @@ impl Array {
                 return;
             }
             let key = match key {
-                #[expect(clippy::cast_possible_wrap, reason = "Zend's int keys are zend_long")]
-                ZKey::Index(index) => Key::Int(index as i64),
+                ZKey::Index(index) => Key::Int(index.c_cast::<i64>()),
                 ZKey::Name(name) => Key::Str(name.into()),
             };
             let item = Item::store(value);
@@ -238,8 +238,7 @@ impl Array {
         for (key, item) in table.iter() {
             let value = item.fetch_or_null();
             match key {
-                #[expect(clippy::cast_sign_loss, reason = "Zend's int keys are zend_ulong")]
-                Key::Int(index) => array.insert_index(*index as zend_ulong, value),
+                Key::Int(index) => array.insert_index((*index).c_cast::<zend_ulong>(), value),
                 // A table's string keys are never numeric, so this is `zend_hash_str_add`.
                 Key::Str(name) => array.insert(name, value),
             }

@@ -4,6 +4,7 @@
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
@@ -336,11 +337,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FINISH_HEADER => {
             let id = ctx.task().fd;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "DataHead's uint16_t ext_flags"
-            )]
-            let flags = arg as u16;
+            let flags = arg.c_cast::<u16>();
             ctx.edit_packed(|packed| {
                 packed.ext_flags |= flags;
                 packed.kind = EVENT_FINISH;
@@ -368,11 +365,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                     swoole_rs_tls::upstream::send_sync(socket, data, 0)
                 })
             };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "htonl's uint32_t, as upstream"
-            )]
-            let length = (ctx.data.len() as u32).to_be_bytes();
+            let length = ctx.data.len().c_cast::<u32>().to_be_bytes();
             let mut retval = send(&length);
             if retval > 0 {
                 retval = send(ctx.data);

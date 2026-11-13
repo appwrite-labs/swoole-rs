@@ -3,6 +3,7 @@
 //! Whole host operations from base.cc, under their C++ symbols with
 //! `upstream-symbols`. Logs name the function as upstream's `__SW_FUNC__` did.
 
+use crate::CCast;
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::ptr;
@@ -484,11 +485,7 @@ pub unsafe extern "C" fn swr_v1_core_format_result(
     zero_query: bool,
 ) -> usize {
     if zero_query && size == 0 {
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "native size-query overload converts libc's signed result to size_t"
-        )]
-        return formatted as usize;
+        return formatted.c_cast::<usize>();
     }
     let result = if formatted < 0 {
         0

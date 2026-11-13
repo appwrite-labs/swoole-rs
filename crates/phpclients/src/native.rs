@@ -13,6 +13,7 @@ use swoole_rs_clients::{
     address::{swr_v1_clients_address_port, with_host},
     client::{self, Client, Op},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
@@ -238,14 +239,12 @@ impl Co {
         self.0.set_err_code(code);
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn bind(self, address: &[u8], port: i64) -> bool {
-        self.0.bind(address, port as c_int)
+        self.0.bind(address, port.c_cast::<c_int>())
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int backlog")]
     pub(crate) fn listen(self, backlog: i64) -> bool {
-        self.0.listen(backlog as c_int)
+        self.0.listen(backlog.c_cast::<c_int>())
     }
 
     /// `sw_callable_free(protocol.private_data_1)`, the `package_length_func` the socket
@@ -280,19 +279,17 @@ impl Co {
     }
 
     /// `connect(host, port)` under a connect timeout of `timeout`.
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn connect(self, host: &[u8], port: i64, timeout: f64) -> bool {
         let _timeout = self.timeout(timeout, TIMEOUT_CONNECT);
-        self.0.connect_host(host, port as c_int)
+        self.0.connect_host(host, port.c_cast::<c_int>())
     }
 
     /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port)` of
     /// the host up to its first NUL, as upstream reads it.
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64) -> bool {
         self.set_timeout(timeout, TIMEOUT_CONNECT);
         let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
-        self.0.connect_host(host, port as c_int)
+        self.0.connect_host(host, port.c_cast::<c_int>())
     }
 
     pub(crate) fn check_liveness(self) -> bool {
@@ -412,14 +409,12 @@ impl Co {
             .map_or_else(|| (CString::default(), 0), net_address)
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
-        self.0.sendto(address, port as c_int, data)
+        self.0.sendto(address, port.c_cast::<c_int>(), data)
     }
 
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int how")]
     pub(crate) fn shutdown(self, how: i64) -> bool {
-        self.0.shutdown(how as c_int)
+        self.0.shutdown(how.c_cast::<c_int>())
     }
 
     pub(crate) fn getsockname(self) -> bool {
@@ -479,9 +474,9 @@ impl Co {
     }
 
     /// `set_http_proxy` or `set_socks5_proxy`.
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
     pub(crate) fn proxy(self, http: bool, host: &[u8], port: i64, user: &[u8], password: &[u8]) {
-        self.0.set_proxy(http, host, port as c_int, user, password);
+        self.0
+            .set_proxy(http, host, port.c_cast::<c_int>(), user, password);
     }
 
     /// `enable_ssl_encrypt()`: false when TLS was already on.

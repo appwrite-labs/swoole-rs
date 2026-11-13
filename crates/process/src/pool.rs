@@ -13,16 +13,12 @@
 //! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
-#![expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "upstream's C conversions between ssize_t, uint32_t and long, kept so lengths and logged numbers match"
-)]
 use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::set_errno;
 
 use crate::process_pool::PoolNative;
@@ -390,11 +386,7 @@ impl Worker<'_> {
         } else {
             u64::from(worker_id) + 1
         };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream stores the id in the u16 server_fd"
-        )]
-        let server_fd = u64::from(worker_id as u16);
+        let server_fd = u64::from(worker_id.c_cast::<u16>());
         // `info.server_fd`: bytes 24..26 of the head, i.e. of out[4].
         if let Some(word) = out.get_mut(1 + HEAD_SERVER_FD / 8) {
             *word = server_fd << (8 * (HEAD_SERVER_FD % 8));
@@ -460,7 +452,7 @@ impl Worker<'_> {
                 let size = HEAD as u64 + u64::from(length);
                 let tmpfile = read::<u16>(buf, HEAD_EXT_FLAGS) & TASK_TMPFILE != 0;
                 let alone = self.connection().is_none();
-                if n as u64 != size || (tmpfile && length != PACKET_TASK) {
+                if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
                     self.warn(WARN_BAD_PACKET, 0, n as i64, size.cast_signed());
                 } else {
@@ -535,13 +527,15 @@ impl Worker<'_> {
                     let n = u32::from_be_bytes(head);
                     // Errors on one connection close it and carry on with the next.
                     received = received && n != 0 && n <= max_packet_size;
-                    if !received || self.recv_all(socket, packet, n as usize)? != n as isize {
+                    if !received
+                        || self.recv_all(socket, packet, n as usize)? != n.c_cast::<isize>()
+                    {
                         self.close(socket);
                         self.end()?;
                         continue;
                     }
                     self.set_connection(socket);
-                    (packet, n as isize)
+                    (packet, n.c_cast::<isize>())
                 }
                 Mode::Pipe => {
                     let call = self.io(
@@ -559,11 +553,7 @@ impl Worker<'_> {
                 }
             };
             if n >= 0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "upstream stores the length in the u32 info.len"
-                )]
-                let length = n as u32 as usize;
+                let length = n.c_cast::<u32>() as usize;
                 self.io(
                     |native, call| native.message(call),
                     ptr::null_mut(),
@@ -579,11 +569,7 @@ impl Worker<'_> {
                         .map(std::mem::take)
                         .unwrap_or_default();
                     if !response.is_empty() {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "upstream's htonl of the length"
-                        )]
-                        let head = (response.len() as u32).to_be_bytes();
+                        let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;
                         self.send(socket, &response)?;
                     }
@@ -958,7 +944,7 @@ pub unsafe fn swr_v1_process_worker_send(
         let base = message.as_mut_ptr().cast::<u8>();
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
-        native.warn(&call, TRACE_PUSH, length as i64, 0);
+        native.warn(&call, TRACE_PUSH, length.c_cast::<i64>(), 0);
         call.data = base.cast();
         call.length = length;
         // The native queue's push, which cannot reach PHP.
@@ -1160,7 +1146,7 @@ mod tests {
                 bytes.len().min(call.length),
             );
         }
-        call.result = bytes.len() as isize;
+        call.result = bytes.len().c_cast::<isize>();
     }
 
     fn bytes_of(call: &PoolCall) -> Vec<u8> {
@@ -1201,7 +1187,7 @@ mod tests {
         }
         fn send(&self, c: &mut PoolCall) {
             let bytes = bytes_of(c);
-            c.result = bytes.len() as isize;
+            c.result = bytes.len().c_cast::<isize>();
             with(|s| s.sent.push(bytes));
         }
         fn close(&self, c: &PoolCall) {
@@ -1353,8 +1339,16 @@ mod tests {
         assert_eq!(
             script.warnings,
             vec![
-                (WARN_BAD_PACKET, HEAD as i64 + 2, HEAD as i64 + 4),
-                (WARN_BAD_PACKET, HEAD as i64 + 4, HEAD as i64 + 4),
+                (
+                    WARN_BAD_PACKET,
+                    HEAD.c_cast::<i64>() + 2,
+                    HEAD.c_cast::<i64>() + 4
+                ),
+                (
+                    WARN_BAD_PACKET,
+                    HEAD.c_cast::<i64>() + 4,
+                    HEAD.c_cast::<i64>() + 4
+                ),
                 (WARN_TASK_FAILED, 42, 0),
                 (WARN_READ, 0, 0),
             ]

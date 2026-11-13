@@ -1,6 +1,7 @@
 //! PHP `Swoole\Coroutine\Channel`: class registration, object handlers and every
 //! method. The queue is crates/phpcoroutines' channel; values cross it as owned
 //! zval copies.
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpcoroutines::channel::{Channel, Queue, Stats};
 use swoole_rs_phpstubs::channel_coro;
 use swoole_rs_zend::{
@@ -184,9 +185,8 @@ fn pop(call: &Call) {
     }
 }
 
-#[expect(clippy::cast_possible_wrap, reason = "queue sizes fit a zend_long")]
 fn long(size: usize) -> i64 {
-    size as i64
+    size.c_cast::<i64>()
 }
 
 /// `close(): bool`, which wakes every waiter.

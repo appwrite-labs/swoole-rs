@@ -2,6 +2,7 @@
 //! as upstream's ZPP block does, applies one atomic operation to the object's
 //! word and sets the return value.
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use swoole_rs_corebase::CCast;
 use swoole_rs_utilities::misc::{futex_wait, futex_wakeup};
 use swoole_rs_zend::{Call, Custom};
 
@@ -50,13 +51,8 @@ macro_rules! word {
     };
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream casts zend_long to uint32_t"
-)]
-const fn word32(value: i64) -> u32 {
-    value as u32
+fn word32(value: i64) -> u32 {
+    value.c_cast::<u32>()
 }
 
 word!(AtomicU32, word32);
@@ -155,12 +151,8 @@ pub(crate) fn wait<H: Holder<Word = AtomicU32>>(call: &Call) {
 /// `wakeup(int $count = 1): bool`.
 pub(crate) fn wakeup<H: Holder<Word = AtomicU32>>(call: &Call) {
     match call.arity(0, 1).and_then(|()| call.long(1, 1)) {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream casts zend_long to int"
-        )]
         Ok(count) => {
-            let woken = word::<H>(call).map(|word| futex_wakeup(word, count as i32));
+            let woken = word::<H>(call).map(|word| futex_wakeup(word, count.c_cast::<i32>()));
             call.set_bool(woken.is_some_and(|woken| woken >= 0));
         }
         Err(_) => failed(call),

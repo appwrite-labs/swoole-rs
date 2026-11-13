@@ -5,6 +5,7 @@
 use crate::socket_rw::interrupted;
 use crate::{Drain, Fill, Socket, SocketAddress, SocketFields, TlsIo};
 use std::ffi::{c_int, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::ReadSlot;
 
 /// `SW_OK`, `SW_ERR`, `SW_WAIT` and `SW_BACKLOG`.
@@ -24,13 +25,9 @@ pub extern "C" fn steady_ms() -> f64 {
     let clock = libc::CLOCK_UPTIME_RAW;
     #[cfg(not(target_vendor = "apple"))]
     let clock = libc::CLOCK_MONOTONIC;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "upstream converts the millisecond count to double too"
-    )]
-    let ms = swoole_rs_corebase::sys::clock_gettime(clock)
-        .map_or(0, |now| now.tv_sec * 1000 + now.tv_nsec / 1_000_000) as f64;
-    ms
+    swoole_rs_corebase::sys::clock_gettime(clock)
+        .map_or(0, |now| now.tv_sec * 1000 + now.tv_nsec / 1_000_000)
+        .c_cast::<f64>()
 }
 
 fn status(ok: bool) -> c_int {
@@ -430,11 +427,7 @@ mod tests {
         let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
         address.sin_family = libc::AF_INET.try_into().unwrap_or_default();
         address.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "sizeof(sockaddr_in) fits socklen_t"
-        )]
-        let length = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let length = (size_of::<libc::sockaddr_in>()).c_cast::<libc::socklen_t>();
         // SAFETY: a live local record and sockaddr_in.
         unsafe {
             assert_eq!(

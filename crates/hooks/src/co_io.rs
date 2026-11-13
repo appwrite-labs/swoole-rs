@@ -705,6 +705,7 @@ mod tests {
     use super::*;
     use crate::co_socket::TestSocket;
     use crate::shutdown::WRITE;
+    use swoole_rs_corebase::CCast;
 
     fn slot_state(socket: &TestSocket) -> usize {
         let node = unsafe { (*socket.state()).timers[0] };
@@ -970,15 +971,11 @@ mod tests {
     /// The socket policy gate's former scenarios 324..348: `set_timeout(timeval)`'s
     /// conversion, upstream's two divisions.
     #[test]
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "upstream converts both fields to double"
-    )]
     fn ported_timeval_conversion() {
         for seconds in [-1i64, 0, 1, 9_007_199_254_740_993] {
             for micros in [-1i64, 0, 1, 999_999, 1_000_000, i64::from(i32::MAX)] {
-                let expected = seconds as f64 + micros as f64 / 1000.0 / 1000.0;
-                let got = crate::timeval(seconds as f64, micros as f64);
+                let expected = seconds.c_cast::<f64>() + micros.c_cast::<f64>() / 1000.0 / 1000.0;
+                let got = crate::timeval(seconds.c_cast::<f64>(), micros.c_cast::<f64>());
                 assert_eq!(got.to_bits(), expected.to_bits(), "{seconds} {micros}");
             }
         }

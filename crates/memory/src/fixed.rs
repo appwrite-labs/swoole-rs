@@ -309,8 +309,4 @@ pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
 
 #[cfg(test)]
 #[path = "../../../tests/modules/memory/fixed.rs"]
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests;
