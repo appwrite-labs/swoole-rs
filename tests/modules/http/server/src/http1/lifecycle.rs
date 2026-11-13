@@ -13,7 +13,7 @@ use swoole_rs_clients::client::{
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::callbacks as cb;
-use swoole_rs_server::{event_worker_ops, manager_ops, task_worker_ops, worker_methods};
+use swoole_rs_server::{event_worker_ops, manager_ops, task_worker, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -1398,7 +1398,7 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     let resp = server_response();
     serv.send(session, &resp);
 
-    let finished = task_worker_ops::finish(serv.view(), &resp, 0, None);
+    let finished = task_worker::native::finish(serv.view(), &resp, 0, None);
     expect(!finished, "!serv->finish(resp)");
 
     expect(

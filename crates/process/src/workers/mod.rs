@@ -1,9 +1,7 @@
 //! The server's worker side: event workers (upstream's `src/server/worker.cc`), the
-//! base-mode reactor processes (upstream's `src/server/reactor_process.cc`), task workers
-//! (upstream's `src/server/task_worker.cc`), the manager (upstream's `src/server/manager.cc`) and the
-//! process-mode factory (upstream's `src/server/process.cc`), and thread mode
-//! (upstream's `src/server/thread.cc`). crates/server keeps
-//! the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
+//! manager (upstream's `src/server/manager.cc`), the process-mode factory (upstream's
+//! `src/server/process.cc`) and thread mode (upstream's `src/server/thread.cc`).
+//! crates/server keeps the objects (server, workers, reactor, ports, connections, callbacks, logs); Rust
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
 mod event_worker;
@@ -11,7 +9,6 @@ mod factory;
 mod log;
 mod manager;
 pub mod ops;
-mod task_worker;
 pub mod thread;
 
 pub(crate) const SW_OK: i64 = 0;
@@ -69,18 +66,13 @@ pub fn run_over(context: &mut dyn Answer, operation: u32, arg: u64) -> i64 {
     run(&mut Over(context), operation, arg)
 }
 
-/// Runs a task-worker `operation` with `arg` over `context`, compiled for its
+/// Runs a process-factory `operation` with `arg` over `context`, compiled for its
 /// type: each step's op is a constant, so an inlined answer folds to its arm.
-pub fn run_task_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
-    task_worker::run(&mut Over(context), operation, arg)
-}
-
-/// [`run_task_worker`] for a process-factory `operation`.
 pub fn run_factory<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
     factory::run(&mut Over(context), operation, arg)
 }
 
-/// [`run_task_worker`] for an event-worker `operation`.
+/// [`run_factory`] for an event-worker `operation`.
 pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
     event_worker::run(&mut Over(context), operation, arg)
 }
@@ -194,14 +186,6 @@ fn effect(op: u32) -> Option<u64> {
 /// operation's return value as upstream's C++ function returns it.
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {
-        ops::RUN_INIT_TASK_WORKERS
-        | ops::RUN_TASK_COMMAND
-        | ops::RUN_TASK_ON_TASK
-        | ops::RUN_TASK_ON_START
-        | ops::RUN_TASK_ON_STOP
-        | ops::RUN_TASK_ON_PIPE
-        | ops::RUN_TASK_LOOP_ASYNC
-        | ops::RUN_FINISH => task_worker::run(h, operation, arg),
         ops::RUN_START_MANAGER
         | ops::RUN_MANAGER_MAIN
         | ops::RUN_MANAGER_SIGNAL

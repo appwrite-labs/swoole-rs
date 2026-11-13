@@ -411,7 +411,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
-        crate::task_worker_ops::init_task_workers(serv)
+        crate::task_worker::native::init(serv)
     }
 
     fn step(&self, serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {

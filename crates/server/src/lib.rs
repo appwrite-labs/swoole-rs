@@ -70,8 +70,7 @@ mod state;
 mod static_config;
 pub mod static_handler;
 pub mod static_select;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod task_worker_ops;
+pub mod task_worker;
 mod tcp_info;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod thread_mode_ops;

@@ -13,12 +13,6 @@ pub(super) const LOG_KILL_BAD_ID: u32 = 54;
 pub(super) const LOG_PUSH_STOP: u32 = 72;
 pub(super) const LOG_EXIT_TIMEOUT: u32 = 85;
 pub(super) const LOG_INVALID_WORKER: u32 = 123;
-pub(super) const LOG_COROUTINE_MSGQUEUE: u32 = 167;
-pub(super) const LOG_NO_TASK_WORKERS: u32 = 187;
-pub(super) const LOG_FINISH_IN_PIPE: u32 = 189;
-pub(super) const LOG_FINISH_NOREPLY: u32 = 191;
-pub(super) const LOG_LARGE_PACK: u32 = 195;
-pub(super) const LOG_SEND_RESULT: u32 = 212;
 pub(super) const LOG_UNKNOWN_MESSAGE: u32 = 214;
 pub(super) const LOG_FORK_MANAGER: u32 = 221;
 pub(super) const LOG_START_TASK_POOL: u32 = 224;
@@ -62,7 +56,6 @@ const SESSION_NOT_EXIST: i32 = 1005;
 const SESSION_DISCARD_TIMEOUT_DATA: i32 = 1007;
 const OUTPUT_BUFFER_OVERFLOW: i32 = 1009;
 const DATA_LENGTH_TOO_LARGE: i32 = 1203;
-const SERVER_SEND_TO_WOKER_TIMEOUT: i32 = 9014;
 const SERVER_WORKER_EXIT_TIMEOUT: i32 = 9101;
 const SERVER_WORKER_UNPROCESSED_DATA: i32 = 9103;
 
@@ -179,39 +172,6 @@ pub(super) fn emit(op: u32, a: i64, b: i64) {
         LOG_INVALID_WORKER => warning(
             c"ReactorProcess_onPipeRead",
             format_args!("invalid worker_id={a}"),
-        ),
-        LOG_COROUTINE_MSGQUEUE => error_log(
-            WARNING,
-            WRONG_OPERATION,
-            c"Server::init_task_workers",
-            format_args!("cannot use msgqueue when task_enable_coroutine is enable"),
-        ),
-        LOG_NO_TASK_WORKERS => warning(
-            c"Server::finish",
-            format_args!(
-                "cannot use Server::task()/Server::finish() method, because no set [task_worker_num]"
-            ),
-        ),
-        LOG_FINISH_IN_PIPE => warning(
-            c"Server::finish",
-            format_args!(
-                "Server::task()/Server::finish() is not supported in onPipeMessage callback"
-            ),
-        ),
-        LOG_FINISH_NOREPLY => warning(
-            c"Server::finish",
-            format_args!("Server::finish() can only be used in the worker process"),
-        ),
-        LOG_LARGE_PACK => warning(c"Server::finish", format_args!("large task pack failed()")),
-        LOG_SEND_RESULT if a != 0 => error_log(
-            WARNING,
-            SERVER_SEND_TO_WOKER_TIMEOUT,
-            c"Server::finish",
-            format_args!("send result to worker timed out"),
-        ),
-        LOG_SEND_RESULT => sys_warning(
-            c"Server::finish",
-            format_args!("send result to worker failed"),
         ),
         LOG_THREAD_UNSUPPORTED => error_log(
             ERROR,
