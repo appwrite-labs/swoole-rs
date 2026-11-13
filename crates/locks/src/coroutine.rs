@@ -13,8 +13,8 @@ pub struct CoroutineHost {
     pub current: fn() -> Option<i64>,
     /// A process-shared word, for the program's life, or None.
     pub alloc_shared: fn() -> Option<&'static AtomicU32>,
-    /// `System::sleep`: 0, or nonzero when cancelled.
-    pub sleep: Option<fn(f64) -> i32>,
+    /// `System::sleep`: false when cancelled.
+    pub sleep: Option<fn(f64) -> bool>,
     /// The futex wait: 0, or nonzero with errno set.
     pub wait: Option<fn(&AtomicU32) -> i32>,
     /// The futex wake: negative with errno set on failure.
@@ -115,7 +115,7 @@ impl CoroutineLock {
                 let Some(sleep) = host.sleep else {
                     swoole_rs_corebase::fatal("a coroutine lock host has neither wait nor sleep");
                 };
-                if sleep(second) != 0 {
+                if !sleep(second) {
                     return Err(ErrorCode::SW_ERROR_CO_CANCELED as i32);
                 }
                 second = super::swr_v1_locks_coroutine_backoff(
@@ -189,7 +189,11 @@ mod tests {
         STATE.with(|state| state.borrow_mut().allocated += 1);
         WORDS.get(NEXT.fetch_add(1, Ordering::Relaxed))
     }
-    fn sleep(second: f64) -> i32 {
+    fn sleep(second: f64) -> bool {
+        pause(second) == 0
+    }
+    /// A sleep, or a futex wait: the state's result.
+    fn pause(second: f64) -> i32 {
         let (lock, releases, result) = STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.sleeps.push(second);
@@ -207,7 +211,7 @@ mod tests {
         result
     }
     fn wait(_: &AtomicU32) -> i32 {
-        sleep(0.0)
+        pause(0.0)
     }
     fn wake(_: &AtomicU32) -> i32 {
         STATE.with(|state| {
@@ -433,9 +437,9 @@ mod tests {
         fn shared() -> Option<&'static AtomicU32> {
             Some(&WORD)
         }
-        fn sleep(_: f64) -> i32 {
+        fn sleep(_: f64) -> bool {
             std::thread::yield_now();
-            0
+            true
         }
         fn warning() {}
         static HOST: CoroutineHost = CoroutineHost {

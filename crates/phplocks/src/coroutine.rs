@@ -44,7 +44,7 @@ mod host {
     }
     #[cfg(not(feature = "iouring"))]
     /// The lock sleeps only inside a coroutine.
-    pub(super) fn sleep(seconds: f64) -> i32 {
+    pub(super) fn sleep(seconds: f64) -> bool {
         swoole_rs_phpcoroutines::sleep(seconds)
     }
     /// `Iouring::futex_wait`.
