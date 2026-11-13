@@ -379,30 +379,26 @@ pub fn add_port<'a>(
 }
 
 /// `Server::check_port_type(port)` then `ports.push_back(port)`: the server keeps the port.
+/// The port is the server's last of its type, which is how upstream's
+/// `udp_socket_ipv4`, `udp_socket_ipv6` and `dgram_socket` name their listeners
+/// ([`Server::dgram_socket`] finds them).
 fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
-    // SAFETY: ports are added before the server starts, while the master is its
-    // only thread, and no other reference to the config is held across this.
-    let config = unsafe { serv.config_mut() };
-    let kind = port.r#type;
-    if matches!(kind, SOCK_UDP | SOCK_UDP6 | SOCK_UNIX_DGRAM) {
+    let config = serv.config();
+    if matches!(port.r#type, SOCK_UDP | SOCK_UDP6 | SOCK_UNIX_DGRAM) {
         let fd = port
             .listening_socket()
             .map_or(-1, swoole_rs_reactor::Socket::fd);
         let size = port.socket_buffer_size.get().cast_unsigned();
         swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
-        config.have_dgram_sock = true;
-        config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
-        let socket = port.socket_ptr();
-        match kind {
-            SOCK_UDP => config.udp_socket_ipv4 = socket,
-            SOCK_UDP6 => config.udp_socket_ipv6 = socket,
-            _ => config.dgram_socket = socket,
-        }
+        config.have_dgram_sock.set(true);
+        let ports = config.dgram_port_num.get();
+        config.dgram_port_num.set(ports.wrapping_add(1));
     } else {
-        config.have_stream_sock = true;
+        config.have_stream_sock.set(true);
     }
-    // SAFETY: as above, no other thread reads the list, and the caller's views of
-    // it ended before the push.
+    // SAFETY: ports are added before the server starts, while the master is its only
+    // thread, so no other thread reads the list, and the caller's views of it ended
+    // before the push.
     unsafe { serv.state().push_port(port) }
 }
 
@@ -731,7 +727,7 @@ mod tests {
         );
         assert!(add_port(serv, 1, c"127.0.0.1", 1).is_none(), "no socket");
         assert_eq!(serv.ports().len(), before, "none kept");
-        assert!(!serv.config().have_dgram_sock);
+        assert!(!serv.config().have_dgram_sock.get());
 
         let port = add_port(serv, SOCK_UDP | SOCK_SSL, c"127.0.0.1", 9501).unwrap();
         let config = port.config();
@@ -741,10 +737,10 @@ mod tests {
         );
         assert_eq!(serv.ports().len(), before + 1, "kept");
         assert_eq!(serv.ports()[before].raw(), port.raw());
-        assert!(serv.config().have_dgram_sock);
-        assert_eq!(serv.config().dgram_port_num, 1);
+        assert!(serv.config().have_dgram_sock.get());
+        assert_eq!(serv.config().dgram_port_num.get(), 1);
         assert!(add_port(serv, 1, c"::", 9502).is_some(), "a stream port");
-        assert!(serv.config().have_stream_sock);
+        assert!(serv.config().have_stream_sock.get());
 
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { serv.config_mut() };
@@ -786,6 +782,6 @@ mod tests {
             .map(|port| (port.config().port.get(), port.config().r#type))
             .collect();
         assert_eq!(kept, [(3, 1), (4, SOCK_UDP)]);
-        assert!(serv.config().have_stream_sock && serv.config().have_dgram_sock);
+        assert!(serv.config().have_stream_sock.get() && serv.config().have_dgram_sock.get());
     }
 }

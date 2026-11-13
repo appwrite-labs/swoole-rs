@@ -141,9 +141,9 @@ impl Call {
 pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: a registered class; creating an object never bails out.
     let object = unsafe { crate::sys::zend_objects_new(ce) };
-    // SAFETY: class entries live for the process.
-    let class = unsafe { &*ce };
-    let count = usize::try_from(class.default_properties_count).unwrap_or(0);
+    // Per Zend, a registered class, which lives for the process.
+    let class = ClassEntry(ce, PhantomData);
+    let count = usize::try_from(class.read(|ce| ce.default_properties_count)).unwrap_or(0);
     // `zend_objects_new` allocated the class's property slots from here.
     let slots = object
         .wrapping_byte_add(offset_of!(zend_object, properties_table))

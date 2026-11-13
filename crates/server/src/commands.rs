@@ -259,10 +259,7 @@ fn new_command_pipe(serv: Server<'_>) -> bool {
         drop(&mut pipe);
         return false;
     }
-    // SAFETY: before start, only the master's thread writes the configuration, and it
-    // holds no reference into it here.
-    let config = unsafe { serv.config_mut() };
-    config.pipe_command = Box::into_raw(pipe).cast();
+    serv.config().pipe_command.keep(pipe);
     true
 }
 
@@ -454,7 +451,7 @@ mod tests {
 
     /// The command pipe's address, which the test then closes.
     fn close_command_pipe(live: &LiveServer) -> usize {
-        let pipe = live.server().config().pipe_command;
+        let pipe = live.server().config().pipe_command.as_ptr();
         if !pipe.is_null() {
             // SAFETY: the pair `add_command` boxed, which nothing uses after the test.
             let mut pair =
@@ -484,9 +481,13 @@ mod tests {
         assert!(add(&process, b"a", 2));
         let pipe = process.server().config().command_pipe().unwrap();
         assert!(pipe.master_end().is_some() && pipe.worker_end().is_some());
-        let made = process.server().config().pipe_command;
+        let made = process.server().config().pipe_command.as_ptr();
         assert!(add(&process, b"b", 2));
-        assert_eq!(process.server().config().pipe_command, made, "made once");
+        assert_eq!(
+            process.server().config().pipe_command.as_ptr(),
+            made,
+            "made once"
+        );
         close_command_pipe(&process);
         drop(process);
 

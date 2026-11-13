@@ -486,8 +486,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
                 let task = unsafe { &mut *task };
                 task.kill_all(libc::SIGKILL, reload_warn);
             });
-            // SAFETY: the pool's live reload task.
-            unsafe { &mut *task }.set_timer(timer);
+            pool.with_reload_task(|task| task.set_timer(timer));
         }
         Op::TimerInit => {
             if swoole_timer_is_available() {

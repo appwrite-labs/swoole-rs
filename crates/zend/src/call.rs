@@ -89,6 +89,14 @@ impl Call {
         unsafe { (*self.frame).This }
     }
 
+    /// `EX(func)`: the function this call runs, which Zend keeps for the call.
+    #[must_use]
+    #[inline]
+    pub fn function(&self) -> crate::Function<'_> {
+        // SAFETY: a live frame, which runs a function.
+        crate::Function(unsafe { (*self.frame).func }, std::marker::PhantomData)
+    }
+
     /// `ZEND_NUM_ARGS()`.
     #[must_use]
     #[inline]
@@ -495,20 +503,12 @@ impl Call {
         unsafe { *self.value = value.into_zval() };
     }
 
-    /// `RETVAL_STR(string)`: the return slot takes over the reference.
-    /// # Safety
-    /// `string` is a live string carrying a reference the caller gives up.
-    pub unsafe fn set_string(&self, string: *mut zend_string) {
-        // SAFETY: the return slot is live for the handler; per the caller,
-        // `string` carries a reference.
-        unsafe { swr_zval_str(self.value, string) };
-    }
-
-    /// `RETVAL_STR(string)`, taking over its reference.
+    /// `RETVAL_STR(string)`: the return slot takes over its reference.
     #[inline]
     pub fn set_zstring(&self, string: crate::ZString) {
-        // SAFETY: a live string and the reference it gives up.
-        unsafe { self.set_string(string.into_raw()) };
+        // SAFETY: the return slot is live for the handler, and takes the live
+        // string's reference, which `ZString` gives up.
+        unsafe { swr_zval_str(self.value, string.into_raw()) };
     }
 
     /// `RETURN_ZVAL(ZEND_THIS, 1, 0)`: return `$this` with a new reference

@@ -677,16 +677,6 @@ pub enum Key<'a> {
 }
 
 impl Array {
-    /// Borrow the table at `table`, or None for null.
-    /// # Safety
-    /// `table` is null or a live table that nothing frees or changes for `'a`.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_ptr<'a>(table: *const HashTable) -> Option<&'a Self> {
-        // SAFETY: per the caller; `Array` is a transparent table.
-        unsafe { table.cast::<Self>().as_ref() }
-    }
-
     #[must_use]
     #[inline]
     pub fn as_ptr(&self) -> *mut HashTable {

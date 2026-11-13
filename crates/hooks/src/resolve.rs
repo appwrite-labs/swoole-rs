@@ -5,7 +5,7 @@
 //! and `getaddrinfo` over the async pool, `coroutine::dns_lookup` and the pool's DNS
 //! handlers. The query itself is crates/clients (dns.rs, cares.rs) and the request
 //! record crates/corebase.
-use crate::offload::{AsyncEvent, AsyncOps, Handler, hook_async};
+use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
@@ -72,7 +72,7 @@ fn run(
     let mut event = AsyncEvent::empty();
     event.data = request.as_ptr();
     event.retval = retval;
-    hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
+    swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     request.failed(event.retval, event.error, request_error)
 }
 

@@ -183,7 +183,7 @@ pub(crate) fn close_reactor_connections(serv: view::Server<'_>, reactor: Reactor
 pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     use crate::reactor_entry::{on_packet_received, on_read, on_write};
     // 64K datagrams need the larger thread buffer.
-    if serv.state().config_ref().have_dgram_sock {
+    if serv.state().config_ref().have_dgram_sock.get() {
         swoole_rs_buffer::string::with_thread_buffer(|b| b.extend(b.size().wrapping_mul(2)));
     }
     reactor.set_handler(FD_DGRAM_SERVER, SW_EVENT_READ, on_packet_received);

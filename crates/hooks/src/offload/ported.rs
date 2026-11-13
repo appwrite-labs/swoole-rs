@@ -220,7 +220,7 @@ fn async_event(
     timeout: f64,
 ) -> bool {
     CALLER_REQUEST.set(request.cloned());
-    let result = hook_async(event, handler, timeout, &OPS);
+    let result = swr_v1_hook_async(event, handler, timeout, &OPS);
     drop(CALLER_REQUEST.take());
     result
 }

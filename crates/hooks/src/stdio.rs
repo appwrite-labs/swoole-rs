@@ -289,12 +289,25 @@ unsafe extern "C" {
     static mut h_errno: c_int;
 }
 
-/// This thread's `h_errno`.
+/// This thread's `h_errno` slot.
 fn h_errno_slot() -> *mut c_int {
     #[cfg(target_os = "linux")]
     return __h_errno_location();
     #[cfg(not(target_os = "linux"))]
     return &raw mut h_errno;
+}
+
+/// This thread's `h_errno`, the resolver's last error.
+#[must_use]
+pub fn thread_h_errno() -> c_int {
+    // SAFETY: this thread's live slot, which only this thread writes.
+    unsafe { *h_errno_slot() }
+}
+
+/// Sets this thread's `h_errno`.
+fn set_thread_h_errno(error: c_int) {
+    // SAFETY: as above.
+    unsafe { *h_errno_slot() = error };
 }
 
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
@@ -308,13 +321,11 @@ pub unsafe extern "C" fn swoole_coroutine_gethostbyname(name: *const c_char) -> 
     let call = || {
         // SAFETY: the caller passes a C string.
         let entry = unsafe { gethostbyname(name) };
-        // SAFETY: this thread's slot.
-        (entry, unsafe { *h_errno_slot() })
+        (entry, thread_h_errno())
     };
     // SAFETY: the caller passes native `async` or null.
     let (entry, error) = unsafe { offloaded(offload, (std::ptr::null_mut(), 0), call) };
-    // SAFETY: this thread's slot.
-    unsafe { *h_errno_slot() = error };
+    set_thread_h_errno(error);
     entry
 }
 

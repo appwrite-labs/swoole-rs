@@ -163,22 +163,10 @@ extern "C" fn completed(event: &AsyncEvent) {
 /// `coroutine::async(handler, event, timeout)`, inside a coroutine (`ops.current` is
 /// fatal outside one): runs `handler` on the pool and waits up to `timeout`. True with
 /// the pool's result in `event`; false if refused, or on timeout or cancellation
-/// (`event` canceled, -1, and the last error as errno).
-///
-/// # Safety
-/// `handler` doesn't read `event`'s object, which is the waiting task while it runs.
-pub unsafe fn swr_v1_hook_async(
-    event: &mut AsyncEvent,
-    handler: Handler,
-    timeout: f64,
-    ops: &AsyncOps,
-) -> bool {
-    hook_async(event, handler, timeout, ops)
-}
-
-/// [`swr_v1_hook_async`] for this crate, whose handlers read the event's request,
-/// never its object.
-pub(crate) fn hook_async(
+/// (`event` canceled, -1, and the last error as errno). While `handler` runs, `event`'s
+/// object is the waiting task, which only this module's handlers read: a handler can
+/// reach it only through the raw [`AsyncEvent::object`].
+pub fn swr_v1_hook_async(
     event: &mut AsyncEvent,
     handler: Handler,
     timeout: f64,
@@ -339,7 +327,7 @@ mod tests {
     fn handler_result_or_timeout_reaches_the_event() {
         RESUMED.set(0);
         let mut event = empty();
-        assert!(hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
         assert_eq!(
             (
                 event.retval,
@@ -353,7 +341,7 @@ mod tests {
 
         TIME_OUT.set(true);
         let mut event = empty();
-        assert!(!hook_async(&mut event, handler, 1.0, &OPS));
+        assert!(!swr_v1_hook_async(&mut event, handler, 1.0, &OPS));
         TIME_OUT.set(false);
         assert_eq!(
             (

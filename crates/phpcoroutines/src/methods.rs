@@ -21,11 +21,10 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
     bailout::{self, Bailout},
-    set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
         swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
-        zend_objects_new, zend_throw_exception_object,
+        zend_objects_new, zend_throw_exception_internal,
     },
 };
 
@@ -339,11 +338,11 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         // caller when it returns.
         // SAFETY: a new exception, in the running frame.
         unsafe { swr_zend_coroutine_locate(exception) };
-        let mut thrown = swoole_rs_zend::UNDEF;
-        // SAFETY: the zval takes over the new object's reference.
-        unsafe { set_object(&raw mut thrown, exception) };
-        // SAFETY: Zend takes the exception.
-        unsafe { zend_throw_exception_object(&raw mut thrown) };
+        // `zend_throw_exception_object` of a zval holding it, past its
+        // Throwable check (`ce` is a Swoole exception class): Zend takes the
+        // new object's reference.
+        // SAFETY: a new exception, thrown in the running frame.
+        unsafe { zend_throw_exception_internal(exception) };
         return true;
     }
     task.set_exception(exception, ce);

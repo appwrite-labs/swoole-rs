@@ -513,7 +513,7 @@ extern "C" fn defers(_context: *mut c_void) {
         fci.params = argv;
         // SAFETY: a kept callable's resolved cache, over its kept arguments or the
         // context's live return value.
-        if unsafe { swoole_rs_zend::host::call_anyway(&raw mut fci, fcc) } != 0 {
+        if unsafe { swoole_rs_zend::host::call_anyway(&mut fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         if !swoole_rs_zend::host::exception().is_null() {

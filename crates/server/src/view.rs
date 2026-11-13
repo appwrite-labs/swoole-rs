@@ -516,19 +516,28 @@ impl<'a> Server<'a> {
     }
 
     /// The fd and `swSocketType` of the server's own datagram socket of `kind`
-    /// (1 UDP, 2 UDP6, else the unix one), or `None` before one listens.
+    /// (1 UDP, 2 UDP6, else the unix one): upstream's `udp_socket_ipv4`,
+    /// `udp_socket_ipv6` or `dgram_socket`, the listener of the last port of that
+    /// type added; `None` before one listens.
     #[must_use]
     pub fn dgram_socket(self, kind: u8) -> Option<(c_int, c_int)> {
-        let config = self.config();
-        let socket = match kind {
-            1 => config.udp_socket_ipv4,
-            2 => config.udp_socket_ipv6,
-            _ => config.dgram_socket,
+        // `SW_SOCK_UDP`, `SW_SOCK_UDP6` and `SW_SOCK_UNIX_DGRAM`.
+        let socket_type = match kind {
+            1 => 2,
+            2 => 4,
+            _ => 6,
         };
-        // SAFETY: null, or the listening socket `master_ops` recorded, which lives as
-        // long as the server.
-        let socket = unsafe { Socket::from_ptr(socket.cast()) }?;
-        Some(socket.read(|s| (s.fd, s.socket_type)))
+        let port = self.find_last_port(|config| config.r#type == socket_type)?;
+        port.with_socket(|s| s.read(|s| (s.fd, s.socket_type)))
+    }
+
+    /// The last of `serv->ports` whose settings `wanted` accepts.
+    fn find_last_port(self, wanted: impl Fn(&PortConfig) -> bool) -> Option<Port<'a>> {
+        self.ports()
+            .iter()
+            .rev()
+            .copied()
+            .find(|port| wanted(port.config()))
     }
 
     /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.

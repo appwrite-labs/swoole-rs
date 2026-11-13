@@ -27,8 +27,7 @@ fn empty() -> AsyncEvent {
 
 /// `swoole::coroutine::async(handler, event, timeout)`.
 fn co_async(handler: Handler, event: &mut AsyncEvent, timeout: f64) -> bool {
-    // SAFETY: these tests' handlers only sleep and set retval; none reads the object.
-    unsafe { swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC) }
+    swr_v1_hook_async(event, handler, timeout, &COROUTINE_ASYNC)
 }
 
 /// `swoole::coroutine::async(fn)`.

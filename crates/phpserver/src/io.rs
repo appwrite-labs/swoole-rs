@@ -200,7 +200,7 @@ fn send(call: &Call) {
     }
     if let Some(path) = zfd.str() {
         let config = serv.config();
-        if path.bytes().first() == Some(&b'/') && config.have_dgram_sock {
+        if path.bytes().first() == Some(&b'/') && config.have_dgram_sock.get() {
             let socket = if server_socket == -1 {
                 serv.dgram_socket(3)
             } else {
