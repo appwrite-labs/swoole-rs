@@ -3,13 +3,11 @@
 //! `crates/tls`'s `reactor_write.rs` supplies the effects.
 use crate::Socket;
 use std::ffi::c_int;
+use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `BufferChunk::TYPE_SENDFILE` and `TYPE_CLOSE` (the typed kinds use the same numbers).
-const SENDFILE: c_int = 1;
-const CLOSE: c_int = 2;
 
 /// The flush's effects (`crates/tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
@@ -36,16 +34,16 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
                 .output
                 .buffer()
                 .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
-                .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind.cast_signed());
+                .map(|buffer| swr_cpp_buffer_typed_front(buffer).kind);
             (kind, record.output.send_timer)
         });
         let Some(kind) = kind else {
             break timer;
         };
         let result = match kind {
-            CLOSE => return ops.close(),
-            SENDFILE => ops.handle_sendfile(),
-            _ => ops.handle_send(),
+            EntryKind::Close => return ops.close(),
+            EntryKind::Sendfile => ops.handle_sendfile(),
+            EntryKind::Data => ops.handle_send(),
         };
         if result < 0 {
             let output = socket.read(|record| record.output);
@@ -99,19 +97,21 @@ mod tests {
 
     /// A buffer holding one entry of each kind: a byte of data, an empty sendfile
     /// request or a close marker.
-    fn queue(kinds: &[c_int]) -> *mut CppBuffer {
+    fn queue(kinds: &[EntryKind]) -> *mut CppBuffer {
         let buffer = new_buffer(1);
         for &kind in kinds {
             match kind {
-                CLOSE => swr_cpp_buffer_typed_close(unsafe { &*buffer }),
-                SENDFILE => {
+                EntryKind::Close => swr_cpp_buffer_typed_close(unsafe { &*buffer }),
+                EntryKind::Sendfile => {
                     unsafe extern "C" fn keep(_: *mut c_void) {}
                     // `Buffer`'s first member is its Rust queue handle.
                     let handle = unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() };
-                    let status = unsafe { (*handle).push(1, std::ptr::dangling_mut(), Some(keep)) };
+                    let status = unsafe {
+                        (*handle).push(EntryKind::Sendfile, std::ptr::dangling_mut(), Some(keep))
+                    };
                     assert_eq!(status, 0);
                 }
-                _ => unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) },
+                EntryKind::Data => unsafe { swr_cpp_buffer_append(&*buffer, b"x".as_ptr(), 1) },
             }
         }
         buffer
@@ -185,7 +185,7 @@ mod tests {
 
     fn run(
         output: &mut SocketOutput,
-        kinds: &[c_int],
+        kinds: &[EntryKind],
         sends: Vec<c_int>,
         close_wait: bool,
     ) -> (c_int, Vec<&'static str>) {
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn upstream_writable_callback_order() {
         // Two data entries sent, then the timer and write interest go.
-        let (r, trace) = run(&mut block(true), &[0, 0], vec![1, 1], false);
+        let (r, trace) = run(&mut block(true), &[EntryKind::Data; 2], vec![1, 1], false);
         assert_eq!(
             (r, trace),
             (
@@ -226,12 +226,12 @@ mod tests {
         );
         // A queued close closes at once.
         assert_eq!(
-            run(&mut block(true), &[CLOSE], vec![], false),
+            run(&mut block(true), &[EntryKind::Close], vec![], false),
             (7, vec!["close"])
         );
         // A failed send while closing triggers the close event.
         assert_eq!(
-            run(&mut block(false), &[0], vec![-1], true),
+            run(&mut block(false), &[EntryKind::Data], vec![-1], true),
             (8, vec!["send", "trigger_close"])
         );
         // A failed send while send_wait stops there, timer and interest untouched.
@@ -239,7 +239,10 @@ mod tests {
             send_wait: true,
             ..block(true)
         };
-        assert_eq!(run(&mut waiting, &[0], vec![-1], false), (0, vec!["send"]));
+        assert_eq!(
+            run(&mut waiting, &[EntryKind::Data], vec![-1], false),
+            (0, vec!["send"])
+        );
         // An empty queue only drops interest; a sendfile entry goes to handle_sendfile.
         assert_eq!(
             run(&mut block(false), &[], vec![], false),
@@ -250,7 +253,7 @@ mod tests {
             ..block(false)
         };
         assert_eq!(
-            run(&mut waiting, &[SENDFILE], vec![], false),
+            run(&mut waiting, &[EntryKind::Sendfile], vec![], false),
             (0, vec!["sendfile"])
         );
     }
@@ -270,7 +273,7 @@ mod tests {
 
         #[derive(Default)]
         struct Facade {
-            kinds: VecDeque<c_int>,
+            kinds: VecDeque<EntryKind>,
             trace: Vec<String>,
             buffer: usize,
             record: usize,
@@ -327,7 +330,7 @@ mod tests {
             }
         }
 
-        fn run(kinds: &[c_int], timer: bool, drain: bool) -> Vec<String> {
+        fn run(kinds: &[EntryKind], timer: bool, drain: bool) -> Vec<String> {
             let buffer = super::queue(kinds);
             let mut record = SocketRecord::new();
             record.output = SocketOutput {
@@ -371,13 +374,13 @@ mod tests {
             trace
         }
 
-        const D: c_int = 0;
-        const F: c_int = SENDFILE;
-        const C: c_int = CLOSE;
+        const D: EntryKind = EntryKind::Data;
+        const F: EntryKind = EntryKind::Sendfile;
+        const C: EntryKind = EntryKind::Close;
         /// Each row is upstream's trace for (timer, drain, queued kinds), as the gate's
         /// original variant produced it.
         #[rustfmt::skip]
-        const ROWS: [(bool, bool, &[c_int], &[&str]); 24] = [
+        const ROWS: [(bool, bool, &[EntryKind], &[&str]); 24] = [
             (false, false, &[], &["remove-write", "remaining=0", "removed=0", "timer=0"]),
             (false, false, &[D], &["data", "remove-write", "remaining=0", "removed=0", "timer=0"]),
             (false, false, &[F], &["sendfile", "remove-write", "remaining=0", "removed=0", "timer=0"]),

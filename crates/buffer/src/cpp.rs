@@ -166,8 +166,7 @@ pub unsafe fn delete_buffer(buffer: *mut CppBuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TYPE_CLOSE: u32 = 2;
+    use crate::EntryKind;
 
     /// Runs `body` over a constructed Buffer, then destroys it.
     fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {
@@ -323,12 +322,15 @@ mod tests {
                 (3, 3)
             );
             let view = swr_cpp_buffer_typed_front(this);
-            assert_eq!((view.kind, view.length, view.offset), (0, 2, 0));
+            assert_eq!(
+                (view.kind, view.length, view.offset),
+                (EntryKind::Data, 2, 0)
+            );
             swr_cpp_buffer_typed_consume(this, &view, 1);
             assert_eq!(swr_cpp_buffer_typed_front(this).offset, 1);
             swr_cpp_buffer_pop(this);
             swr_cpp_buffer_pop(this);
-            assert_eq!(swr_cpp_buffer_typed_front(this).kind, TYPE_CLOSE);
+            assert_eq!(swr_cpp_buffer_typed_front(this).kind, EntryKind::Close);
             // Teardown pops the queued CLOSE marker.
         });
     }

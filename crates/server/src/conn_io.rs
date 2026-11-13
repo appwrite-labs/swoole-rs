@@ -11,6 +11,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 
+use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
@@ -32,10 +33,6 @@ use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{is_dgram, out_buffer, valid};
 use crate::records::{Connection, Lookup};
 use crate::view;
-
-/// `BufferChunk::Type`'s sendfile and close chunks.
-const KIND_SENDFILE: u64 = 1;
-const KIND_CLOSE: u64 = 2;
 
 /// `swReturnCode`'s handshake states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -361,12 +358,12 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     }
     while let Some(kind) = sock.read(|s| {
         let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
-        Some(u64::from(swr_cpp_buffer_typed_front(buffer).kind))
+        Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let ret = match kind {
-            KIND_CLOSE => return reactor.close(sock),
-            KIND_SENDFILE => tls::socket_handle_sendfile(sock),
-            _ => {
+            EntryKind::Close => return reactor.close(sock),
+            EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
+            EntryKind::Data => {
                 let ret = tls::socket_handle_send(sock);
                 if ret == OK {
                     conn.set_send_queued_bytes(output(sock).0);
