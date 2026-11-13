@@ -6,16 +6,12 @@ use crate::server::{Value, begin_file, current, finish_file, of, respond, send_b
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::offload::async_job;
-use swoole_rs_http2::{sw_rs_http2_file_length, sw_rs_http2_file_mode};
+use swoole_rs_http2::{FileMode, sw_rs_http2_file_length, sw_rs_http2_file_mode};
 use swoole_rs_phphttp::http2::{Ctx, Field};
 use swoole_rs_server::static_handler::{StaticHandler, page_404};
 use swoole_rs_server::view;
 use swoole_rs_zend::bailout;
 
-/// `sw_rs_http2_file_mode`'s modes.
-const MODE_EMPTY: u32 = 0;
-const MODE_MULTI: u32 = 1;
-const MODE_SINGLE: u32 = 2;
 /// `SW_HTTP_NOT_FOUND`, `SW_HTTP_NOT_MODIFIED` and `SW_HTTP_PARTIAL_CONTENT`.
 const NOT_FOUND: i32 = 404;
 const NOT_MODIFIED: u32 = 304;
@@ -171,11 +167,11 @@ fn send_ranges(ctx: Ctx, handler: &StaticHandler<'_>) -> bool {
     };
     let mode = sw_rs_http2_file_mode(tasks.len(), first);
     let mut error = false;
-    if mode != MODE_EMPTY {
+    if mode != FileMode::Empty {
         let Some(file) = File::open(&handler.filename()) else {
             return false;
         };
-        if mode == MODE_MULTI {
+        if mode == FileMode::Multi {
             for task in &tasks {
                 if !body(ctx, c_text(&task.part_header), false) {
                     error = true;
@@ -193,7 +189,7 @@ fn send_ranges(ctx: Ctx, handler: &StaticHandler<'_>) -> bool {
             if !error && !body(ctx, &handler.end_part(), end_stream) {
                 error = true;
             }
-        } else if let (MODE_SINGLE, [task]) = (mode, tasks.as_slice()) {
+        } else if let (FileMode::Single, [task]) = (mode, tasks.as_slice()) {
             let mut buf = vec![0; task.length];
             let pooled = swoole_rs_phpcoroutines::in_coroutine();
             let Some(read) = file.read(task.offset, &mut buf, pooled) else {

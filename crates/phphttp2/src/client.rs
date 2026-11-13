@@ -13,7 +13,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
-    Http2FrameFacts, Http2Settings, Http2WindowPlan,
+    FrameAction, Http2FrameFacts, Http2Settings, Http2WindowPlan, Media, QueueAction,
     hpack::{Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
@@ -51,17 +51,6 @@ const FLAG_END_STREAM: u32 = 1;
 const FLAG_PRIORITY: u32 = 0x20;
 /// `SW_HTTP2_STREAM_PIPELINE_REQUEST`.
 const STREAM_PIPELINE_REQUEST: u32 = 2;
-/// `SwRsHttp2FrameAction`.
-const ACTION_SETTINGS: u32 = 0;
-const ACTION_HEADERS: u32 = 1;
-const ACTION_DATA: u32 = 2;
-const ACTION_PING_REPLY: u32 = 3;
-const ACTION_WINDOW_UPDATE: u32 = 4;
-const ACTION_RESET: u32 = 5;
-const ACTION_GOAWAY: u32 = 6;
-const ACTION_SETTINGS_ACK: u32 = 8;
-const ACTION_PING_ACK: u32 = 9;
-const ACTION_IGNORE_PUSH: u32 = 10;
 /// `SwRsHttp2HeaderRole` and `SwRsHttp2HeaderKind`.
 const RESPONSE_HEADERS: u32 = 1;
 const CLIENT_HEADERS: u32 = 3;
@@ -69,7 +58,6 @@ const HEADER_STATUS: u32 = 8;
 const HEADER_CONTENT_ENCODING: u32 = 9;
 const HEADER_SET_COOKIE: u32 = 10;
 const HEADER_HOST: u32 = 13;
-const MEDIA_GZIP: u32 = 3;
 /// `SW_HTTP2_SETTING_HEADER_TABLE_SIZE` and `..._MAX_HEADER_LIST_SIZE`.
 const SETTING_HEADER_TABLE_SIZE: u16 = 1;
 const SETTING_MAX_HEADER_LIST_SIZE: u16 = 6;
@@ -273,7 +261,7 @@ fn frame_header(kind: u32, length: usize, flags: u32, stream: u32) -> [u8; FRAME
 }
 
 fn window(current: u32, amount: usize, initial: u32, credit: bool) -> Http2WindowPlan {
-    sw_rs_http2_window_plan(current, amount, initial, u32::from(credit))
+    sw_rs_http2_window_plan(current, amount, initial, credit)
 }
 
 /// The HPACK header list upstream's `HeaderSet` builds (names lowercased),
@@ -522,15 +510,15 @@ impl Client {
         } else {
             (0, 0)
         };
-        match sw_rs_http2_queue_action(u32::from(bound), queued, limit) {
-            0 => {}
-            2 => {
+        match sw_rs_http2_queue_action(bound, queued, limit) {
+            QueueAction::Send => {}
+            QueueAction::Full => {
                 socket.set_err_code(QUEUE_FULL);
                 socket.set_static_err_msg(c"the send queue is full, try again later");
                 self.io_error(socket);
                 return false;
             }
-            _ => {
+            QueueAction::Append => {
                 self.queue.borrow_mut().push_back(data.to_vec());
                 return true;
             }
@@ -554,7 +542,7 @@ impl Client {
     }
 
     fn send_all(socket: Co, data: &[u8]) -> bool {
-        sw_rs_http2_send_complete(socket.send_all(data), data.len()) != 0
+        sw_rs_http2_send_complete(socket.send_all(data), data.len())
     }
 
     fn send_setting(&self) -> bool {
@@ -686,14 +674,14 @@ impl Client {
             None => !data.truthy(),
         };
         let mut frame = self.build_header(request);
-        let flags = sw_rs_http2_stream_flags(u32::from(pipeline), u32::from(use_pipeline_read));
+        let flags = sw_rs_http2_stream_flags(pipeline, use_pipeline_read);
         // The id is taken before a send yields or the body's conversion runs PHP
         // code, so an overlapping send gets the next one. A failed send gives it
         // back unless a later send has taken one since.
         let id = self.stream_id.get();
         self.stream_id.set(id + 2);
         self.create_stream(id, flags);
-        let header_flags = sw_rs_http2_headers_flags(u32::from(empty), 1, flags);
+        let header_flags = sw_rs_http2_headers_flags(empty, true, flags);
         let header = frame_header(TYPE_HEADERS, frame.len() - FRAME_HEADER, header_flags, id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
             *head = header;
@@ -731,7 +719,7 @@ impl Client {
     /// `write_data`: more of a pipeline request's body.
     fn write_data(&self, id: u32, data: Option<&Value>, end: bool) -> bool {
         let flags = self.streams.borrow().get(&id).map(|stream| stream.flags);
-        if sw_rs_http2_write_allowed(u32::from(flags.is_some()), flags.unwrap_or(0)) == 0 {
+        if !sw_rs_http2_write_allowed(flags.is_some(), flags.unwrap_or(0)) {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
             return false;
@@ -744,7 +732,7 @@ impl Client {
             return false;
         }
         if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
-            stream.flags = sw_rs_http2_stream_update(stream.flags, u32::from(end), 0);
+            stream.flags = sw_rs_http2_stream_update(stream.flags, end, false);
         }
         true
     }
@@ -778,17 +766,17 @@ impl Client {
     fn read_frame(&self, packet: &[u8]) -> (Http2FrameFacts, Payload) {
         let (head, body) = packet.split_at_checked(FRAME_HEADER).unwrap_or_default();
         let facts =
-            sw_rs_http2_decode_frame(head, self.last_stream_id.get(), 1).unwrap_or_default();
+            sw_rs_http2_decode_frame(head, self.last_stream_id.get(), true).unwrap_or_default();
         let length = facts.length as usize;
         // The length protocol's packet is the header and `length` payload bytes.
         let payload = body.get(..length).unwrap_or(body);
         let id = facts.stream_id;
-        if facts.publish_last_id != 0 {
+        if facts.publish_last_id {
             self.last_stream_id.set(id);
         }
         let known = || self.streams.borrow().contains_key(&id);
         let read = match facts.action {
-            ACTION_SETTINGS => {
+            FrameAction::Settings => {
                 for setting in payload.chunks(6) {
                     let mut raw = [0_u8; 6];
                     for (slot, byte) in raw.iter_mut().zip(setting) {
@@ -800,7 +788,7 @@ impl Client {
                 }
                 Payload::Unread
             }
-            ACTION_WINDOW_UPDATE => {
+            FrameAction::WindowUpdate => {
                 let credit = read_u32(payload);
                 if id == 0 {
                     let plan = window(self.remote_window.get(), credit as usize, 0, true);
@@ -813,16 +801,16 @@ impl Client {
             }
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
-            ACTION_PING_REPLY => Payload::Ping(<[u8; PING_PAYLOAD]>::try_from(payload).ok()),
-            ACTION_GOAWAY => Payload::Goaway {
+            FrameAction::PingReply => Payload::Ping(<[u8; PING_PAYLOAD]>::try_from(payload).ok()),
+            FrameAction::Goaway => Payload::Goaway {
                 server_last: read_u32(payload),
                 code: read_u32(payload.get(4..).unwrap_or_default()),
                 debug: payload.get(GOAWAY_SIZE..).unwrap_or_default().to_vec(),
             },
-            ACTION_HEADERS if known() => {
+            FrameAction::Headers if known() => {
                 Payload::Headers(self.parse_header(id, facts.flags, payload))
             }
-            ACTION_DATA if known() => {
+            FrameAction::Data if known() => {
                 Payload::Data(payload.len(), self.buffer_data(id, facts.flags, payload))
             }
             _ => Payload::Unread,
@@ -840,16 +828,19 @@ impl Client {
         });
         let id = facts.stream_id;
         match facts.action {
-            ACTION_SETTINGS_ACK | ACTION_PING_ACK | ACTION_IGNORE_PUSH | ACTION_WINDOW_UPDATE => {
+            FrameAction::SettingsAck
+            | FrameAction::PingAck
+            | FrameAction::IgnorePush
+            | FrameAction::WindowUpdate => {
                 return Frame::Continue;
             }
-            ACTION_SETTINGS => {
+            FrameAction::Settings => {
                 if !self.send(&frame_header(TYPE_SETTINGS, 0, FLAG_ACK, id)) {
                     return Frame::Fail;
                 }
                 return Frame::Continue;
             }
-            ACTION_PING_REPLY => {
+            FrameAction::PingReply => {
                 let Payload::Ping(Some(echo)) = read else {
                     return Frame::Fail;
                 };
@@ -861,7 +852,7 @@ impl Client {
                     Frame::Fail
                 };
             }
-            ACTION_GOAWAY => {
+            FrameAction::Goaway => {
                 if let Payload::Goaway {
                     server_last,
                     code,
@@ -877,7 +868,7 @@ impl Client {
                 self.close();
                 return Frame::Fail;
             }
-            ACTION_RESET => {
+            FrameAction::Reset => {
                 let reset = self.streams.borrow_mut().remove(&id);
                 drop(reset);
                 return Frame::Continue;
@@ -909,13 +900,8 @@ impl Client {
             let Some(stream) = streams.get_mut(&id) else {
                 return Frame::Continue;
             };
-            let plan = sw_rs_http2_response(
-                facts.kind,
-                facts.flags,
-                stream.flags,
-                u32::from(pipeline_read),
-            );
-            if plan.ready == 0 {
+            let plan = sw_rs_http2_response(facts.kind, facts.flags, stream.flags, pipeline_read);
+            if !plan.ready {
                 return Frame::Continue;
             }
             // Only this client has seen the response so far: no user code runs
@@ -933,7 +919,7 @@ impl Client {
             stream.buffer.clear();
             // The return value takes the stream's response; a pipeline stream
             // goes on with a fresh one.
-            if plan.end != 0 {
+            if plan.end {
                 streams.remove(&id).map(|stream| stream.response.zval)
             } else {
                 if let Some(response) = stream.response.props() {
@@ -955,8 +941,8 @@ impl Client {
             SETTING_MAX_HEADER_LIST_SIZE => remote.max_header_list_size,
             _ => 0,
         };
-        let plan = sw_rs_http2_setting_plan(u32::from(key), number, old, 0, 0);
-        if plan.set_value != 0 {
+        let plan = sw_rs_http2_setting_plan(u32::from(key), number, old, false, false);
+        if plan.set_value {
             let field = match plan.field {
                 0 => &mut remote.header_table_size,
                 1 => &mut remote.enable_push,
@@ -968,10 +954,10 @@ impl Client {
             *field = number;
             self.remote.set(remote);
         }
-        if plan.set_window != 0 {
+        if plan.set_window {
             self.remote_window.set(number);
         }
-        if plan.change_deflater != 0
+        if plan.change_deflater
             && let Some((_, encoder)) = self.hpack.borrow_mut().as_mut()
         {
             encoder.set_table_size(number);
@@ -986,7 +972,7 @@ impl Client {
         let Some(stream) = streams.get_mut(&id) else {
             return Buffered::Nothing;
         };
-        stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM, 1);
+        stream.flags = sw_rs_http2_stream_update(stream.flags, flags & FLAG_END_STREAM != 0, true);
         if payload.is_empty() {
             return Buffered::Nothing;
         }
@@ -1100,7 +1086,7 @@ impl Client {
                         props.own().long(c"statusCode", atol(text));
                     }
                 } else {
-                    if kind == HEADER_CONTENT_ENCODING && media_kind(text) == MEDIA_GZIP {
+                    if kind == HEADER_CONTENT_ENCODING && media_kind(text) == Media::Gzip {
                         if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
                             stream.gzip = Some(Inflate::gzip_only());
                         }
@@ -1110,11 +1096,11 @@ impl Client {
                     headers.insert_bytes(name, Some(text));
                 }
             }
-            let step = sw_rs_http2_inflate_step(flags, input.len(), 1);
+            let step = sw_rs_http2_inflate_step(flags, input.len(), true);
             // The input is always the whole block, so a finished step ends it, even
             // on a field before a final step (where upstream leaves nghttp2 in the
             // block and refuses the next block's table size update).
-            if step.end_headers != 0 || step.finish != 0 {
+            if step.end_headers || step.finish {
                 decoder.end_headers();
                 break None;
             }
@@ -1172,10 +1158,10 @@ fn fold(bytes: &[u8]) -> ([u8; 33], usize) {
 
 fn header_kind(role: u32, name: &[u8]) -> u32 {
     let (folded, n) = fold(name);
-    sw_rs_http2_header_plan(role, folded.get(..n).unwrap_or_default(), name.len(), 0).kind
+    sw_rs_http2_header_plan(role, folded.get(..n).unwrap_or_default(), name.len(), false).kind
 }
 
-fn media_kind(value: &[u8]) -> u32 {
+fn media_kind(value: &[u8]) -> Media {
     let (folded, n) = fold(value);
     sw_rs_http2_media_kind(folded.get(..n).unwrap_or_default())
 }

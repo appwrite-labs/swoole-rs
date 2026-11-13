@@ -18,24 +18,23 @@ pub struct Http2Settings {
     pub max_header_list_size: u32,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2FrameFacts {
     pub length: u32,
     pub kind: u32,
     pub flags: u32,
     pub stream_id: u32,
-    pub publish_last_id: u32,
-    pub action: u32,
+    /// The stream id is past the previous last one.
+    pub publish_last_id: bool,
+    pub action: FrameAction,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2SettingPlan {
     pub field: i32,
-    pub set_value: u32,
-    pub set_window: u32,
-    pub change_deflater: u32,
+    pub set_value: bool,
+    pub set_window: bool,
+    pub change_deflater: bool,
 }
 
 #[repr(C)]
@@ -45,11 +44,10 @@ pub struct Http2ChunkPlan {
     pub flags: u32,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2ResponsePlan {
-    pub end: u32,
-    pub ready: u32,
+    pub end: bool,
+    pub ready: bool,
 }
 
 /// The process-wide defaults (`SW_HTTP2_DEFAULT_*`), indexed by setting id - 1:
@@ -120,13 +118,13 @@ pub fn sw_rs_http2_window_plan(
     current: u32,
     amount: usize,
     initial: u32,
-    credit: u32,
+    credit: bool,
 ) -> Http2WindowPlan {
     #[expect(
         clippy::cast_possible_truncation,
         reason = "native uint32_t window arithmetic"
     )]
-    let value = if credit != 0 {
+    let value = if credit {
         current.wrapping_add(amount as u32)
     } else {
         current.wrapping_sub(amount as u32)
@@ -144,13 +142,14 @@ pub fn sw_rs_http2_data_rejected(
     current: usize,
     additional: usize,
     maximum: u32,
-    ended: u32,
-) -> u32 {
-    u32::from(current.wrapping_add(additional) > maximum as usize || ended != 0)
+    ended: bool,
+) -> bool {
+    current.wrapping_add(additional) > maximum as usize || ended
 }
 
-#[repr(u32)]
-enum FrameAction {
+/// What a received frame asks of its session.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum FrameAction {
     Settings,
     Headers,
     Data,
@@ -158,15 +157,16 @@ enum FrameAction {
     WindowUpdate,
     Reset,
     Goaway,
+    #[default]
     Other,
     SettingsAck,
     PingAck,
     IgnorePush,
 }
 
-fn frame_action(client: u32, kind: u32, flags: u32) -> u32 {
+fn frame_action(client: bool, kind: u32, flags: u32) -> FrameAction {
     let ack = flags & 1 != 0;
-    let action = match kind {
+    match kind {
         4 if ack => FrameAction::SettingsAck,
         4 => FrameAction::Settings,
         1 => FrameAction::Headers,
@@ -176,28 +176,38 @@ fn frame_action(client: u32, kind: u32, flags: u32) -> u32 {
         8 => FrameAction::WindowUpdate,
         3 => FrameAction::Reset,
         7 => FrameAction::Goaway,
-        5 if client != 0 => FrameAction::IgnorePush,
+        5 if client => FrameAction::IgnorePush,
         _ => FrameAction::Other,
-    };
-    action as u32
+    }
 }
 
-/// Queue storage and native allocation/release remain owned by the client.
+/// Where the client puts an outgoing frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueAction {
+    /// Send it now.
+    Send,
+    /// Append it to the queue.
+    Append,
+    /// The queue is past its limit (strictly greater, as upstream).
+    Full,
+}
+
+/// Queue storage and its allocation and release stay with the client.
 #[must_use]
-pub fn sw_rs_http2_queue_action(bound: u32, queued: usize, limit: u32) -> u32 {
-    if bound == 0 {
-        0 // direct send
+pub fn sw_rs_http2_queue_action(bound: bool, queued: usize, limit: u32) -> QueueAction {
+    if !bound {
+        QueueAction::Send
     } else if queued > limit as usize {
-        2 // preserve the original strict greater-than limit
+        QueueAction::Full
     } else {
-        1 // append one native-owned frame
+        QueueAction::Append
     }
 }
 
 #[must_use]
-pub fn sw_rs_http2_send_complete(sent: isize, wanted: usize) -> u32 {
+pub fn sw_rs_http2_send_complete(sent: isize, wanted: usize) -> bool {
     // Native compares `send_all(...) != (ssize_t) len`: the cast wraps.
-    u32::from(sent == wanted.cast_signed())
+    sent == wanted.cast_signed()
 }
 
 /// Match locale-folded native header bytes; Rust selects role-specific effects.
@@ -223,13 +233,12 @@ fn header_kind(role: u32, name: &[u8], logical: usize) -> u32 {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2HeaderPlan {
     pub kind: u32,
     pub publish_flags: u32,
-    pub suppress: u32,
-    pub capture_content_type: u32,
+    pub suppress: bool,
+    pub capture_content_type: bool,
 }
 
 /// The plan for a header whose `logical`-byte name folds to `folded`.
@@ -238,7 +247,7 @@ pub fn sw_rs_http2_header_plan(
     role: u32,
     folded: &[u8],
     logical: usize,
-    can_capture: u32,
+    can_capture: bool,
 ) -> Http2HeaderPlan {
     let kind = header_kind(role, folded, logical);
     let server = role == 2;
@@ -255,68 +264,69 @@ pub fn sw_rs_http2_header_plan(
     Http2HeaderPlan {
         kind,
         publish_flags,
-        suppress: u32::from(server && kind == 6),
-        capture_content_type: u32::from(server && kind == 4 && can_capture != 0),
+        suppress: server && kind == 6,
+        capture_content_type: server && kind == 4 && can_capture,
     }
 }
 
-#[repr(C)]
 pub struct Http2RespondFacts {
-    pub header_sent: u32,
-    pub trailer_present: u32,
-    pub chunked: u32,
-    pub shutting_down: u32,
-    pub streams_empty: u32,
+    pub header_sent: bool,
+    pub trailer_present: bool,
+    pub chunked: bool,
+    pub shutting_down: bool,
+    pub streams_empty: bool,
     pub body_length: usize,
 }
 
-// Module-local effect tags mirror the private native executor.
-mod respond_action {
-    pub(crate) const START: u32 = 0;
-    pub(crate) const HEADER: u32 = 1;
-    pub(crate) const COMMIT_END: u32 = 2;
-    pub(crate) const EMPTY: u32 = 3;
-    pub(crate) const BODY: u32 = 4;
-    pub(crate) const TRAILER: u32 = 5;
-    pub(crate) const ERROR_CLOSE: u32 = 6;
-    pub(crate) const REMOVE: u32 = 7;
-    pub(crate) const ERROR_SHUTDOWN: u32 = 8;
-    pub(crate) const SUCCESS_SHUTDOWN: u32 = 9;
-    pub(crate) const FALSE: u32 = 10;
-    pub(crate) const TRUE: u32 = 11;
+/// A step of `Response::end` over HTTP/2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Respond {
+    Start,
+    Header,
+    CommitEnd,
+    Empty,
+    Body,
+    Trailer,
+    ErrorClose,
+    Remove,
+    ErrorShutdown,
+    SuccessShutdown,
+    /// Return false.
+    False,
+    /// Return true.
+    True,
 }
 
-/// Choose one native effect. No borrowed state or Rust frame survives its execution.
-/// The caller refreshes only the facts needed after each native effect, preserving
-/// cached trailer presence and end flags.
+/// The step after `previous`, which `succeeded` or not. The caller refreshes only
+/// the facts needed after each step, keeping cached trailer presence and end flags.
 #[must_use]
-pub fn sw_rs_http2_respond_next(previous: u32, succeeded: u32, facts: &Http2RespondFacts) -> u32 {
-    use respond_action::{
-        BODY, COMMIT_END, EMPTY, ERROR_CLOSE, ERROR_SHUTDOWN, FALSE, HEADER, REMOVE, START,
-        SUCCESS_SHUTDOWN, TRAILER, TRUE,
+pub fn sw_rs_http2_respond_next(
+    previous: Respond,
+    succeeded: bool,
+    facts: &Http2RespondFacts,
+) -> Respond {
+    use Respond::{
+        Body, CommitEnd, Empty, ErrorClose, ErrorShutdown, False, Header, Remove, Start,
+        SuccessShutdown, Trailer, True,
     };
     match previous {
-        START if facts.header_sent == 0 => HEADER,
-        START => COMMIT_END,
-        HEADER if succeeded != 0 => COMMIT_END,
-        HEADER => FALSE,
+        Start if !facts.header_sent => Header,
+        Start => CommitEnd,
+        Header if succeeded => CommitEnd,
+        Header => False,
         // A trailer's HEADERS carry END_STREAM: a streamed response with one
         // ends with it, not with an empty DATA frame.
-        COMMIT_END
-            if facts.chunked != 0 && facts.body_length == 0 && facts.trailer_present == 0 =>
-        {
-            EMPTY
-        }
-        COMMIT_END => BODY,
-        EMPTY | BODY | TRAILER if succeeded == 0 => ERROR_CLOSE,
-        EMPTY => BODY,
-        BODY if facts.trailer_present != 0 => TRAILER,
-        BODY | TRAILER => REMOVE,
-        ERROR_CLOSE if facts.shutting_down != 0 && facts.streams_empty != 0 => ERROR_SHUTDOWN,
-        ERROR_CLOSE => FALSE,
-        REMOVE if facts.shutting_down != 0 && facts.streams_empty != 0 => SUCCESS_SHUTDOWN,
-        REMOVE => TRUE,
-        _ => FALSE,
+        CommitEnd if facts.chunked && facts.body_length == 0 && !facts.trailer_present => Empty,
+        CommitEnd => Body,
+        Empty | Body | Trailer if !succeeded => ErrorClose,
+        Empty => Body,
+        Body if facts.trailer_present => Trailer,
+        Body | Trailer => Remove,
+        ErrorClose if facts.shutting_down && facts.streams_empty => ErrorShutdown,
+        ErrorClose => False,
+        Remove if facts.shutting_down && facts.streams_empty => SuccessShutdown,
+        Remove => True,
+        ErrorShutdown | SuccessShutdown | False | True => False,
     }
 }
 
@@ -335,21 +345,30 @@ pub fn sw_rs_http2_header_defaults(published: u32) -> u32 {
 }
 
 #[must_use]
-pub fn sw_rs_http2_content_length_rejected(complete: u32, parsed: i64, maximum: u32) -> u32 {
-    u32::from(complete == 0 || parsed > i64::from(maximum))
+pub fn sw_rs_http2_content_length_rejected(complete: bool, parsed: i64, maximum: u32) -> bool {
+    !complete || parsed > i64::from(maximum)
+}
+
+/// A content type or encoding the session acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Media {
+    UrlEncoded,
+    Multipart,
+    Gzip,
+    Other,
 }
 
 /// The media kind of locale-folded bytes (at most 33 needed).
 #[must_use]
-pub fn sw_rs_http2_media_kind(value: &[u8]) -> u32 {
+pub fn sw_rs_http2_media_kind(value: &[u8]) -> Media {
     if value.starts_with(b"application/x-www-form-urlencoded") {
-        1
+        Media::UrlEncoded
     } else if value.starts_with(b"multipart/form-data") {
-        2
+        Media::Multipart
     } else if value.starts_with(b"gzip") {
-        3
+        Media::Gzip
     } else {
-        0
+        Media::Other
     }
 }
 
@@ -413,7 +432,7 @@ pub fn sw_rs_http2_unpack_setting(b: &[u8; 6]) -> (u16, u32) {
 pub fn sw_rs_http2_decode_frame(
     b: &[u8],
     previous_last_id: u32,
-    client: u32,
+    client: bool,
 ) -> Option<Http2FrameFacts> {
     let &[b0, b1, b2, kind, flags, i0, i1, i2, i3, ..] = b else {
         return None;
@@ -424,7 +443,7 @@ pub fn sw_rs_http2_decode_frame(
         kind: u32::from(kind),
         flags: u32::from(flags),
         stream_id: id,
-        publish_last_id: u32::from(id > previous_last_id),
+        publish_last_id: id > previous_last_id,
         action: frame_action(client, u32::from(kind), u32::from(flags)),
     })
 }
@@ -447,8 +466,8 @@ pub fn sw_rs_http2_setting_plan(
     id: u32,
     value: u32,
     old_value: u32,
-    deflater_present: u32,
-    server: u32,
+    deflater_present: bool,
+    server: bool,
 ) -> Http2SettingPlan {
     let field = match id {
         1 | 3 | 4 | 5 | 6 => (id - 1).cast_signed(),
@@ -456,13 +475,9 @@ pub fn sw_rs_http2_setting_plan(
     };
     Http2SettingPlan {
         field,
-        set_value: u32::from(
-            field >= 0 && (id != 1 && (server != 0 || id != 6) || value != old_value),
-        ),
-        set_window: u32::from(id == 4),
-        change_deflater: u32::from(
-            id == 1 && value != old_value && (server == 0 || deflater_present != 0),
-        ),
+        set_value: field >= 0 && (id != 1 && (server || id != 6) || value != old_value),
+        set_window: id == 4,
+        change_deflater: id == 1 && value != old_value && (!server || deflater_present),
     }
 }
 
@@ -487,29 +502,40 @@ pub fn sw_rs_http2_chunk(remaining: usize, max_frame: u32, flags: u32) -> Http2C
     }
 }
 
-/// 0: send as planned, 1: native warning, 2: native yield, 3: truncate to window.
+/// What to do with DATA of some length under the remote window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowAction {
+    /// Send it as planned.
+    Send,
+    /// Warn that it exceeds the window (and send it).
+    Warn,
+    /// Wait for a `WINDOW_UPDATE`.
+    Yield,
+    /// Send what the window allows.
+    Truncate,
+}
+
 #[must_use]
-pub fn sw_rs_http2_window_action(length: usize, window: u32, may_suspend: u32) -> u32 {
+pub fn sw_rs_http2_window_action(length: usize, window: u32, may_suspend: bool) -> WindowAction {
     if length <= window as usize {
-        0
-    } else if may_suspend == 0 {
-        1
+        WindowAction::Send
+    } else if !may_suspend {
+        WindowAction::Warn
     } else if window == 0 {
-        2
+        WindowAction::Yield
     } else {
-        3
+        WindowAction::Truncate
     }
 }
 
 #[must_use]
-pub fn sw_rs_http2_stream_flags(pipeline: u32, pipeline_read: u32) -> u32 {
-    (if pipeline != 0 { 2 } else { 0 }) | (if pipeline_read != 0 { 8 } else { 0 })
+pub fn sw_rs_http2_stream_flags(pipeline: bool, pipeline_read: bool) -> u32 {
+    (if pipeline { 2 } else { 0 }) | (if pipeline_read { 8 } else { 0 })
 }
 
-#[repr(C)]
 pub struct Http2InflateStep {
-    pub end_headers: u32,
-    pub finish: u32,
+    pub end_headers: bool,
+    pub finish: bool,
 }
 
 /// One inflate step; copied facts are reobserved after native header effects.
@@ -517,34 +543,34 @@ pub struct Http2InflateStep {
 pub fn sw_rs_http2_inflate_step(
     flags: u32,
     remaining: usize,
-    client_role: u32,
+    client_role: bool,
 ) -> Http2InflateStep {
     let end_headers = flags & 1 != 0;
     Http2InflateStep {
-        end_headers: u32::from(end_headers),
-        finish: u32::from(end_headers || remaining == 0 && (client_role != 0 || flags & 2 == 0)),
+        end_headers,
+        finish: end_headers || remaining == 0 && (client_role || flags & 2 == 0),
     }
 }
 
 #[must_use]
-pub fn sw_rs_http2_headers_flags(empty: u32, end_stream: u32, stream_flags: u32) -> u32 {
-    4 | u32::from(empty != 0 && end_stream != 0 && stream_flags & 2 == 0)
+pub fn sw_rs_http2_headers_flags(empty: bool, end_stream: bool, stream_flags: u32) -> u32 {
+    4 | u32::from(empty && end_stream && stream_flags & 2 == 0)
 }
 
 /// Apply a copied stream flag transition. Callers publish into the sole native stream.
 #[must_use]
-pub fn sw_rs_http2_stream_update(flags: u32, end: u32, receiving: u32) -> u32 {
+pub fn sw_rs_http2_stream_update(flags: u32, end: bool, receiving: bool) -> u32 {
     flags
-        | if receiving != 0 && end == 0 {
+        | if receiving && !end {
             4
         } else {
-            u32::from(receiving == 0 && end != 0)
+            u32::from(!receiving && end)
         }
 }
 
 #[must_use]
-pub fn sw_rs_http2_write_allowed(exists: u32, stream_flags: u32) -> u32 {
-    u32::from(exists != 0 && stream_flags & 2 != 0 && stream_flags & 1 == 0)
+pub fn sw_rs_http2_write_allowed(exists: bool, stream_flags: u32) -> bool {
+    exists && stream_flags & 2 != 0 && stream_flags & 1 == 0
 }
 
 /// Whether a received frame ends the response and makes it ready.
@@ -553,13 +579,13 @@ pub fn sw_rs_http2_response(
     kind: u32,
     flags: u32,
     stream_flags: u32,
-    pipeline_read: u32,
+    pipeline_read: bool,
 ) -> Http2ResponsePlan {
     let end = flags & 1 != 0 || kind == 3 || kind == 7;
-    let pipeline = (pipeline_read != 0 || stream_flags & 8 != 0) && stream_flags & 4 != 0;
+    let pipeline = (pipeline_read || stream_flags & 8 != 0) && stream_flags & 4 != 0;
     Http2ResponsePlan {
-        end: u32::from(end),
-        ready: u32::from(end || pipeline),
+        end,
+        ready: end || pipeline,
     }
 }
 
@@ -762,11 +788,11 @@ mod tests {
             for sent in [-1, 0, 1, isize::MIN, isize::MAX] {
                 assert_eq!(
                     sw_rs_http2_send_complete(sent, wanted),
-                    u32::from(sent == wanted as isize)
+                    sent == wanted as isize
                 );
             }
         }
-        assert_eq!(sw_rs_http2_send_complete(-1, usize::MAX), 1);
+        assert!(sw_rs_http2_send_complete(-1, usize::MAX));
     }
     #[test]
     fn codec_and_unknown_settings() {
@@ -784,7 +810,7 @@ mod tests {
             assert_eq!(n, if server == 0 { 45 } else { 39 });
             assert_eq!(out[0], 0xcc);
             assert_eq!(out[n + 1], 0xcc);
-            let frame = sw_rs_http2_decode_frame(&out[1..=n], 0, 0).unwrap();
+            let frame = sw_rs_http2_decode_frame(&out[1..=n], 0, false).unwrap();
             assert_eq!((frame.kind, frame.length), (4, (n - 9) as u32));
             for item in out[10..=n].as_chunks::<6>().0 {
                 let (id, value) = sw_rs_http2_unpack_setting(item);
@@ -803,16 +829,16 @@ mod tests {
         let bytes = header(255, 0x00ff_ffff, 0x80, 0xffff_ffff);
         assert_eq!(frame_length(&bytes[..8]), 0);
         assert_eq!(frame_length(&bytes), 0x00ff_ffff + 9);
-        assert_eq!(sw_rs_http2_decode_frame(&bytes[..8], 0, 0), None);
-        let f = sw_rs_http2_decode_frame(&bytes, 0, 0).unwrap();
+        assert_eq!(sw_rs_http2_decode_frame(&bytes[..8], 0, false), None);
+        let f = sw_rs_http2_decode_frame(&bytes, 0, false).unwrap();
         assert_eq!(f.stream_id, 0x7fff_ffff);
-        assert_eq!(f.publish_last_id, 1);
+        assert!(f.publish_last_id);
     }
     #[test]
     fn role_specific_setting_effects() {
         for id in 0..=7 {
-            for server in 0..=1 {
-                for has_deflater in 0..=1 {
+            for server in [false, true] {
+                for has_deflater in [false, true] {
                     let p = sw_rs_http2_setting_plan(id, 2, 1, has_deflater, server);
                     assert_eq!(
                         p.field,
@@ -822,11 +848,8 @@ mod tests {
                             -1
                         }
                     );
-                    assert_eq!(
-                        p.change_deflater,
-                        u32::from(id == 1 && (server == 0 || has_deflater != 0))
-                    );
-                    assert_eq!(p.set_window, u32::from(id == 4));
+                    assert_eq!(p.change_deflater, id == 1 && (!server || has_deflater));
+                    assert_eq!(p.set_window, id == 4);
                 }
             }
         }
@@ -849,31 +872,31 @@ mod tests {
             }
         );
         assert_eq!(sw_rs_http2_chunk(16, 16, 257).flags, 1);
-        assert_eq!(sw_rs_http2_window_action(16, 16, 0), 0);
-        assert_eq!(sw_rs_http2_window_action(16, 0, 0), 1);
-        assert_eq!(sw_rs_http2_window_action(16, 0, 1), 2);
-        assert_eq!(sw_rs_http2_window_action(16, 8, 1), 3);
+        assert_eq!(sw_rs_http2_window_action(16, 16, false), WindowAction::Send);
+        assert_eq!(sw_rs_http2_window_action(16, 0, false), WindowAction::Warn);
+        assert_eq!(sw_rs_http2_window_action(16, 0, true), WindowAction::Yield);
+        assert_eq!(
+            sw_rs_http2_window_action(16, 8, true),
+            WindowAction::Truncate
+        );
         for flags in 0..16 {
-            for read in 0..=1 {
+            for read in [false, true] {
                 for kind in 0..=9 {
                     for frame_flags in 0..8 {
                         let p = sw_rs_http2_response(kind, frame_flags, flags, read);
                         let end = frame_flags & 1 != 0 || kind == 3 || kind == 7;
-                        assert_eq!(p.end, u32::from(end));
-                        assert_eq!(
-                            p.ready,
-                            u32::from(end || ((read != 0 || flags & 8 != 0) && flags & 4 != 0))
-                        );
+                        assert_eq!(p.end, end);
+                        assert_eq!(p.ready, end || ((read || flags & 8 != 0) && flags & 4 != 0));
                     }
                 }
             }
         }
-        assert_eq!(sw_rs_http2_stream_flags(1, 1), 10);
-        assert_eq!(sw_rs_http2_headers_flags(1, 1, 0), 5);
-        assert_eq!(sw_rs_http2_headers_flags(1, 1, 2), 4);
-        assert_eq!(sw_rs_http2_write_allowed(0, 2), 0);
-        assert_eq!(sw_rs_http2_write_allowed(1, 3), 0);
-        assert_eq!(sw_rs_http2_write_allowed(1, 2), 1);
+        assert_eq!(sw_rs_http2_stream_flags(true, true), 10);
+        assert_eq!(sw_rs_http2_headers_flags(true, true, 0), 5);
+        assert_eq!(sw_rs_http2_headers_flags(true, true, 2), 4);
+        assert!(!sw_rs_http2_write_allowed(false, 2));
+        assert!(!sw_rs_http2_write_allowed(true, 3));
+        assert!(sw_rs_http2_write_allowed(true, 2));
     }
 
     /// Upstream's `SW_STRCASEEQ` role predicates (the client and server header
@@ -904,19 +927,19 @@ mod tests {
             .map_or(0, |(_, kind)| *kind)
     }
 
-    fn upstream_media(value: &[u8]) -> u32 {
+    fn upstream_media(value: &[u8]) -> Media {
         let starts = |prefix: &str| {
             value.len() >= prefix.len()
                 && value[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
         };
         if starts("application/x-www-form-urlencoded") {
-            1
+            Media::UrlEncoded
         } else if starts("multipart/form-data") {
-            2
+            Media::Multipart
         } else if starts("gzip") {
-            3
+            Media::Gzip
         } else {
-            0
+            Media::Other
         }
     }
 
@@ -963,7 +986,7 @@ mod tests {
         for name in &names {
             let (bytes, n) = folded(name);
             for role in 0..4 {
-                let plan = sw_rs_http2_header_plan(role, &bytes[..n], name.len(), 0);
+                let plan = sw_rs_http2_header_plan(role, &bytes[..n], name.len(), false);
                 assert_eq!(plan.kind, upstream_kind(role, name), "role {role} {name:?}");
             }
         }
