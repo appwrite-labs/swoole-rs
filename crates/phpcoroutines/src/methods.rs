@@ -604,10 +604,7 @@ fn print_backtrace(
 /// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).
 /// # Errors
 /// The output bailed out.
-pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
-    // SAFETY: crates/phpswoole's fatal-error report, which the PHP thread that
-    // raised the error runs before it returns to Zend.
-    let php = unsafe { Php::assume() };
+pub fn print_coroutine_backtrace(php: Php<'_>, cid: c_long) -> Result<(), Bailout> {
     print_backtrace(php, cid, 0, 0, None)
 }
 

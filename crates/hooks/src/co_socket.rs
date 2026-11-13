@@ -377,7 +377,7 @@ impl Co {
     /// Inside a `with_buffer` over the same buffer.
     #[track_caller]
     #[must_use]
-    pub fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
+    pub(crate) fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
         let part = if write { WRITE_BUFFER } else { READ_BUFFER };
         self.lend(part, |_| {
             let buffer = self.buffer_slot(write).replace(ptr::null_mut());
@@ -386,6 +386,16 @@ impl Co {
             // reaches: the record no longer does and no `with_buffer` lends it.
             (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
         })
+    }
+
+    /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
+    /// outside this crate: a coroutine HTTP server reads requests out of it.
+    /// # Panics
+    /// Inside a `with_buffer` over the write buffer.
+    #[track_caller]
+    #[must_use]
+    pub fn take_write_buffer(self) -> Option<Box<CppString>> {
+        self.take_buffer(true)
     }
 
     /// The bound state's address; [`Co::with_state`] borrows it.

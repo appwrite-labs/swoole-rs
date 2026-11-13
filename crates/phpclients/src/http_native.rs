@@ -181,7 +181,7 @@ impl Co {
 
     /// The socket gives up its write buffer, as before its first write.
     pub(crate) fn take_write_buffer(self) -> Written {
-        Written(self.handle().take_buffer(true))
+        Written(self.handle().take_write_buffer())
     }
 
     /// `f` over `get_write_buffer()`, made on first use.

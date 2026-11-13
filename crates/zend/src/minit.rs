@@ -60,8 +60,9 @@ unsafe extern "C" {
     /// compiler's table.
     safe fn swr_zend_compiled_function_find(name: CText<'_>) -> *mut zend_function;
     /// The php.ini entry `name`'s string, or none for an unset or non-string entry:
-    /// one lookup in the configuration, filled before MINIT and kept for the process.
-    safe fn swr_zend_minit_ini_string(name: CText<'_>) -> Option<CText<'static>>;
+    /// one lookup in the configuration, filled before MINIT and freed at module
+    /// shutdown. Only [`Minit::ini_string`] calls it, which ties the string to MINIT.
+    safe fn swr_zend_minit_ini_string<'m>(name: CText<'_>) -> Option<CText<'m>>;
     /// The native scopes' hooks (`native/corebase/swoole_rs_zend_guard.h`): two
     /// process-wide function pointers are stored, for scopes entered later,
     /// which call them with no arguments.
@@ -359,7 +360,7 @@ impl Minit {
     /// `cfg_get_string(name)`: the php.ini entry `name`, or None when it is unset
     /// or no string.
     #[must_use]
-    pub fn ini_string(&self, name: &CStr) -> Option<&'static CStr> {
+    pub fn ini_string(&self, name: &CStr) -> Option<&CStr> {
         swr_zend_minit_ini_string(name.into()).map(CText::get)
     }
 

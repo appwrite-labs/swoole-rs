@@ -779,10 +779,14 @@ impl Bus {
     /// `MessageBus::write` of `{head, data}`, `head.len` set to the data's length:
     /// numbers the message, then writes it through the event loop while one is
     /// available, else synchronously. False if the pipe failed.
+    ///
+    /// # Safety
+    /// `socket` outlives any registration the write makes: what the event loop
+    /// cannot send at once it queues, and watches `socket` until it drains.
     #[inline]
-    pub fn send(&self, socket: Socket<'_>, head: &mut BusHead, data: &[u8]) -> bool {
+    pub unsafe fn send(&self, socket: Socket<'_>, head: &mut BusHead, data: &[u8]) -> bool {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: the `head.len` bytes of `data`.
+        // SAFETY: the `head.len` bytes of `data`; `socket` as the caller promises.
         unsafe { self.send_raw(socket, head, data.as_ptr()) }
     }
 
@@ -790,7 +794,8 @@ impl Bus {
     /// pointer its `len` counts from.
     ///
     /// # Safety
-    /// `data` covers `head.len` bytes or is null.
+    /// `data` covers `head.len` bytes or is null, and `socket` outlives any
+    /// registration the write makes (see [`Bus::send`]).
     pub unsafe fn send_raw(&self, socket: Socket<'_>, head: &mut BusHead, data: *const u8) -> bool {
         use swoole_rs_reactor::event_api;
         // `write` passes iovecs over `head` and the caller's bytes.
@@ -889,7 +894,7 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(pipe.bus.send(Socket::new(&mut socket), &mut head, payload));
+            assert!(unsafe { pipe.bus.send(Socket::new(&mut socket), &mut head, payload) });
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }

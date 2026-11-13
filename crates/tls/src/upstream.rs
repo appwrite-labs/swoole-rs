@@ -1208,8 +1208,8 @@ pub extern "C-unwind" fn make_server_socket(
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
         return std::ptr::null_mut();
     };
-    let owned = crate::event_socket::OwnedSocket::new(record);
-    let record = owned.get();
+    let record = record.into_socket();
+    let socket = record.as_ptr();
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
     // datagram sockets can allow duplicate binds.
@@ -1246,9 +1246,10 @@ pub extern "C-unwind" fn make_server_socket(
         true
     };
     if served {
-        return owned.into_raw();
+        return socket;
     }
-    owned.free();
+    // SAFETY: the new record, which nothing else holds; `Socket::free`.
+    unsafe { socket_free(socket) };
     std::ptr::null_mut()
 }
 

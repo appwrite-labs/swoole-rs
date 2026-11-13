@@ -185,9 +185,8 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::log;
-    use swoole_rs_reactor::SocketRecord;
-    use swoole_rs_reactor::event_api::{event_del, swoole_event_is_available};
-    use swoole_rs_tls::event_socket::OwnedSocket;
+    use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
+    use swoole_rs_reactor::{Socket, SocketRecord};
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
@@ -213,7 +212,7 @@ pub(crate) mod native {
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
     /// the thread's reactor with an object the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
-    pub struct Watch(Option<OwnedSocket>);
+    pub struct Watch(Socket<'static>);
 
     impl Watch {
         /// Registers `fd`, typed `fd_type`, for `events` with `object`.
@@ -236,31 +235,31 @@ pub(crate) mod native {
             let mut record = SocketRecord::with_fd(fd, fd_type);
             record.object = object;
             // The record is this watch's until `release` frees it.
-            let socket = OwnedSocket::new(Box::new(record));
-            if socket.add(events) < 0 {
+            let watch = Self(Socket::new(Box::leak(Box::new(record))));
+            // A fresh record this watch owns until `release`, off the reactor by then.
+            if event_add(watch.0, events) < 0 {
                 let error = log::last_error();
-                release(socket);
+                watch.release();
                 return Err(error);
             }
-            Ok(Self(Some(socket)))
+            Ok(watch)
         }
-    }
 
-    /// Frees the record, off the reactor, without closing the fd it borrows.
-    fn release(socket: OwnedSocket) {
-        socket.get().edit(|record| record.fd = -1);
-        socket.free();
+        /// Frees the record, off the reactor, without closing the fd it borrows.
+        fn release(self) {
+            let socket = core::mem::ManuallyDrop::new(self).0;
+            socket.edit(|record| record.fd = -1);
+            // SAFETY: the watch's own record, which nothing uses afterwards.
+            unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
+        }
     }
 
     impl Drop for Watch {
         fn drop(&mut self) {
-            let Some(socket) = self.0.take() else {
-                return;
-            };
             if swoole_event_is_available() {
-                _ = event_del(socket.get());
+                _ = event_del(self.0);
             }
-            release(socket);
+            Self(self.0).release();
         }
     }
 
