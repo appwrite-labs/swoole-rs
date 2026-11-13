@@ -72,7 +72,6 @@ void swoole_ignore_error(int code);
 bool swoole_is_ignored_error(int code);
 bool swoole_is_main_thread();
 void swoole_set_log_level(int level);
-void swoole_set_log_file(const char *file);
 int swoole_get_log_level();
 void swoole_set_trace_flags(long flags);
 void swoole_set_print_backtrace_on_error(bool enable = true);

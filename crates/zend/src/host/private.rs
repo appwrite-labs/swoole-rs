@@ -1,6 +1,6 @@
 //! Shared object/property and callback custody operations for native PHP callers.
 use crate::{
-    Function, Owned, bailout,
+    Owned, bailout,
     sys::{self, zend_fcall_info, zend_fcall_info_cache, zend_object, zval},
 };
 use std::{
@@ -37,36 +37,6 @@ fn discard(value: Owned) {
     }
 }
 
-/// # Safety
-/// A resolved cache owns the references Zend added when resolving it; each release may execute PHP.
-pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
-    // SAFETY: read the initialized cache without keeping a Rust borrow across PHP.
-    let object = unsafe { (*cache).object };
-    if !object.is_null() {
-        // SAFETY: release the bound object's reference inside Zend's C trap.
-        bailout::defer(unsafe {
-            bailout::trap(sys::swr_zend_facade_object_release, object.cast())
-        });
-    }
-    if !bailout::pending() {
-        // SAFETY: reread the function after releasing the object, as the
-        // original does; a resolved cache holds a live function handler.
-        let handler = unsafe { (*cache).function_handler };
-        // SAFETY: per the caller, a resolved cache's live function.
-        let function = unsafe { Function::from_ptr(handler) };
-        if function.is_some_and(|function| function.flags() & sys::ZEND_ACC_CLOSURE != 0) {
-            // SAFETY: the closure flag makes Zend's version-dependent closure
-            // object projection valid.
-            let closure = unsafe { sys::swr_zend_facade_closure(handler) };
-            // SAFETY: release the separately held closure reference inside the C trap.
-            bailout::defer(unsafe {
-                bailout::trap(sys::swr_zend_facade_object_release, closure.cast())
-            });
-        }
-    }
-    bailout::finish();
-}
-
 /// `EG(exception)`: the exception pending on this thread, which runs PHP;
 /// null for none. A read of the executor's slot: nothing is retained.
 #[must_use]
@@ -78,7 +48,7 @@ pub fn exception() -> *mut zend_object {
 /// inside the C trap, its bailout deferred: what a callback outside the VM
 /// does about an exception nothing caught. Like [`exception`] it takes
 /// nothing from its caller: it reads the executor's slot itself.
-fn fatal_exception() {
+pub(super) fn fatal_exception() {
     // Observed only after the preceding call returned.
     let exception = exception();
     if !exception.is_null() {
@@ -91,7 +61,13 @@ fn fatal_exception() {
     }
 }
 
-unsafe fn direct_call(
+/// `zend::function::call(name, cache, argc, argv, retval)`: 0 when the call
+/// ran, -1 when it failed or bailed out (the bailout deferred).
+/// # Safety
+/// A null or initialised cache, a live function-name zval (or null, which an
+/// unresolved cache reports as a bad function), `argc` live arguments, and a
+/// writable return slot or null.
+pub(super) unsafe fn direct_call(
     name: *mut zval,
     cache: *mut zend_fcall_info_cache,
     argc: u32,
@@ -133,28 +109,6 @@ unsafe fn direct_call(
     };
     // Discard the private return slot after invocation, as upstream does.
     discard(temporary);
-    result
-}
-
-/// # Safety
-/// Live function-name/cache/argument zvals and optional return storage, as Zend requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phphelpers_call(
-    name: *mut zval,
-    cache: *mut zend_fcall_info_cache,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-    fatal: bool,
-    report: unsafe extern "C" fn(*const c_char),
-) -> c_int {
-    // SAFETY: forwarding the caller's initialized arguments and native warning reporter.
-    let result = unsafe { direct_call(name, cache, argc, argv, retval, report) };
-    if fatal && !bailout::pending() {
-        // Preserve the immediate fatal exception check for loop callbacks.
-        fatal_exception();
-    }
-    bailout::finish();
     result
 }
 

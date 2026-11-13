@@ -54,6 +54,14 @@ impl Held {
         Self { generation: 0, id }
     }
 
+    /// The generation of the thread timer that issued the id, then the id: what a
+    /// holder that cannot name this type keeps (crates/process's `ArmedTimer`), for
+    /// [`cancel_issued`].
+    #[must_use]
+    pub const fn parts(self) -> (u64, c_long) {
+        (self.generation, self.id)
+    }
+
     /// The id, while this thread's timer is still the one that issued it.
     fn live(self) -> Option<c_long> {
         (GENERATION.get() == self.generation).then_some(self.id)
@@ -242,9 +250,15 @@ pub fn cancel_held(held: Held) {
     }
 }
 
+/// [`cancel_held`] of a held timer kept as its [`Held::parts`]: parts no timer
+/// issued name none, or at worst another timer of this thread, as any id does.
+pub extern "C-unwind" fn cancel_issued(generation: u64, id: c_long) {
+    cancel_held(Held { generation, id });
+}
+
 /// Deletes timer `id` if this thread's timer still holds it, quietly otherwise:
 /// a timer never reuses an id, so one that already fired is left alone.
-pub extern "C-unwind" fn timer_cancel(id: c_long) {
+fn timer_cancel(id: c_long) {
     if let Some(timer) = current() {
         timer.remove(id);
     }

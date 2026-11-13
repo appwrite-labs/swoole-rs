@@ -1,8 +1,9 @@
 # Locks and atomics ABI
 
-Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h`. No lock has a C++ class: the
-server, Table and crates/phplocks call this ABI, and `swoole::Barrier`'s methods (declared in
-this directory's `swoole_lock.h`) are Rust under their C++ symbols. The module has no C or C++
+Feature bit 1024 (`locks`). Header: `swoole_rs_locks.h` (atomics, futex wait and the
+coroutine backoff). No lock has a C++ class or a C entry point: the server, Table and
+crates/phplocks use crates/locks' `Lock` and `SharedMutex`, and `swoole::Barrier`'s methods
+(declared in this directory's `swoole_lock.h`) are Rust under their C++ symbols. The module has no C or C++
 source. crates/phplocks is `Swoole\Atomic`, `Swoole\Lock`,
 `Coroutine\Lock` and the ZTS `Thread\Atomic`, `Atomic\Long` and `Thread\Lock`,
 MINITs included. A thread resource keeps its word or private lock in an `Arc`
@@ -11,32 +12,32 @@ threads. No panic or C++ exception crosses the ABI.
 
 ## Mutex, RW and spin locks
 
-`swr_v1_locks_size(kind)` / `swr_v1_locks_align(kind)` describe opaque,
-immovable pthread-backed storage. Kinds: RW = 1, mutex = 3, spin = 5.
+`Lock` is immovable pthread-backed storage of one kind: RW = 1, mutex = 3, spin = 5
+(Linux). Nothing outside the crate reaches the storage, so there is no C contract:
 
-- Caller storage must have the returned size and alignment, stay at a fixed
-  address until destroy, and be initialized exactly once.
-- Only a successful init permits lock/unlock/destroy. After destroy the caller
-  frees the storage with the allocator that allocated it: shared locks use the
-  native shared pool, private locks use `operator new`/`delete`.
-- Null, misaligned or unknown kinds are rejected; the caller must still pass a
-  valid live allocation.
-- Destroying a live/in-use lock, racing destruction and pthread-undefined
-  operations are outside the contract.
+- `Lock::private(kind)` owns heap storage and destroys the lock with it.
+- `Lock::shared(kind, words)` takes `Lock::words(kind)` exclusive words that live for the
+  program (the native shared pool's) and never destroys the lock, which forked processes
+  may hold.
+- `SharedMutex` is the mutex's words in storage its owner places (a Table row, a
+  shared-memory header): zeroed until `init` and after `destroy`.
+- An unknown kind or too little storage makes no lock. pthread reports misuse of a made
+  lock (unlocking one this thread doesn't hold, destroying a held one) as an error code.
 
 Mutex/RW attributes, pshared configuration, init, operations, error returns and
 destroy run in Rust via libc. On Linux, timed pthread entry points are selected
 by caller capability bits (mutex = 1, RW = 2); macOS and configurations without
 them keep the pinned `sw_wait_for` attempt/usleep/backoff order. `LOCK_NB` takes
 precedence over a positive timeout; RW `LOCK_SH` takes precedence over exclusive.
-Timeout <= 0 blocks. Syscall and pthread errors are returned as-is; init failure
-returns the error (upstream's `Mutex` constructor threw it as a `system_error`).
+Timeout <= 0 blocks. Syscall and pthread errors are returned as-is; `SharedMutex::init`
+returns an init failure's error and `Lock`'s constructors make no lock (upstream's
+`Mutex` constructor threw it as a `system_error`).
 
 Deliberate fixes relative to upstream:
 
 - On pthread lock-init failure Rust destroys the initialized attribute
-  (preserving errno) and the caller frees the storage. Upstream leaked the
-  attribute and allocation.
+  (preserving errno) and frees a private lock's storage without destroying the lock
+  that was never made. Upstream leaked the attribute and allocation.
 - Attribute init and shared-attribute setup return their first error instead of
   continuing into lock init. Failed setup releases the initialized attribute.
 

@@ -232,8 +232,7 @@ pub extern "C" fn swr_v1_clients_address_port(address: &SocketAddress) -> c_int 
 }
 
 /// `Address::set_port`, including the original int-to-uint16_t wrapping.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_set_port(address: &mut SocketAddress, port: c_int) {
+pub fn set_port(address: &mut SocketAddress, port: c_int) {
     let port = port.c_cast::<u16>().to_be();
     if inet4(address.kind) {
         address.addr.inet_v4.sin_port = port;
@@ -243,8 +242,8 @@ pub extern "C" fn swr_v1_clients_address_set_port(address: &mut SocketAddress, p
 }
 
 /// `Address::empty`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_empty(address: &SocketAddress) -> bool {
+#[must_use]
+pub fn is_empty(address: &SocketAddress) -> bool {
     address.kind == 0
 }
 
@@ -260,12 +259,6 @@ pub fn type_name(kind: c_int) -> &'static CStr {
     } else {
         c"Unknown"
     }
-}
-
-/// [`type_name`] for native code.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_address_type(kind: c_int) -> *const c_char {
-    type_name(kind).as_ptr()
 }
 
 /// `Address::is_loopback_addr`, preserving exact IPv4 localhost semantics.

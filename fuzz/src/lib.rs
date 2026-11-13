@@ -16,8 +16,7 @@ use swoole_rs_oracle::{
 };
 
 mod framing_native;
-// The C ABI the oracle's candidate protocol sources call.
-use swoole_rs_protocols_ffi as _;
+mod protocols_native;
 
 mod network;
 pub use network::{
@@ -526,17 +525,17 @@ pub fn http_header(bytes: &[u8]) {
     assert_eq!(got, want, "expect/header for {bytes:?}");
 }
 
-/// Upstream `mqtt::get_package_length` and the candidate over the same received
-/// bytes. With nothing received only the candidate runs.
+/// Upstream `mqtt::get_package_length` and `mqtt_frame_length` over the same received
+/// bytes. With nothing received only Rust runs.
 pub fn mqtt_length(bytes: &[u8]) {
     let data: Vec<c_char> = bytes.iter().map(|&byte| byte as c_char).collect();
     let size = data.len().min(u32::MAX as usize) as u32;
-    // SAFETY: both read at most `size` bytes of `data`.
-    let got = unsafe { (protocols::CANDIDATE.mqtt_length)(data.as_ptr(), size) };
+    let got = swoole_rs_protocols::mqtt_frame_length(&bytes[..size as usize]);
     if size == 0 {
         return;
     }
-    let want = unsafe { (protocols::UPSTREAM.mqtt_length)(data.as_ptr(), size) };
+    // SAFETY: it reads at most `size` bytes of `data`.
+    let want = unsafe { protocols::mqtt_length(data.as_ptr(), size) };
     assert_eq!(got, want, "mqtt length for {bytes:?}");
 }
 
@@ -613,33 +612,30 @@ fn resp_parse_in_bounds(data: &[u8]) -> bool {
     }
 }
 
-/// The strings and, on glibc, whether errno is ERANGE. macOS strtol also sets
-/// EINVAL when it converts nothing, which can overwrite an earlier ERANGE; glibc
-/// leaves errno alone there, and callers only test ERANGE.
-fn resp_parse_on(engine: &protocols::Engine, data: &[u8]) -> (Vec<u8>, bool) {
+/// Upstream's strings (each after its u32 length) and, on glibc, whether errno is
+/// ERANGE. macOS strtol also sets EINVAL when it converts nothing, which can overwrite
+/// an earlier ERANGE; glibc leaves errno alone there, and callers only test ERANGE.
+fn resp_parse_upstream(data: &[u8]) -> (Vec<u8>, bool) {
     let buffer = terminated(data);
     let (mut size, mut error) = (0, 0);
     // SAFETY: the buffer holds data.len() bytes and a NUL; the result is malloc'd.
     unsafe {
-        let output = (engine.resp_parse)(buffer.as_ptr(), data.len(), &mut size, &mut error);
+        let output = protocols::resp_parse(buffer.as_ptr(), data.len(), 0, &mut size, &mut error);
         let items = std::slice::from_raw_parts(output as *const u8, size).to_vec();
         protocols::free(output);
         (items, cfg!(target_os = "linux") && error == 34)
     }
 }
 
-/// Upstream `redis::parse` and the candidate over the same bytes: every string,
-/// in order, and ERANGE. The candidate runs on every input.
+/// Upstream `redis::parse` and `redis::parse` over Rust's spans, over the same bytes:
+/// every string, in order, and ERANGE. Rust runs on every input.
 pub fn resp_parse(bytes: &[u8]) {
-    let got = resp_parse_on(&protocols::CANDIDATE, bytes);
+    let (items, range) = protocols_native::resp_parse(bytes);
+    let got = (items, cfg!(target_os = "linux") && range);
     if !resp_parse_in_bounds(bytes) {
         return;
     }
-    assert_eq!(
-        got,
-        resp_parse_on(&protocols::UPSTREAM, bytes),
-        "resp parse for {bytes:?}"
-    );
+    assert_eq!(got, resp_parse_upstream(bytes), "resp parse for {bytes:?}");
 }
 
 /// Longest URL compared: libstdc++'s std::regex recurses once per character.
@@ -992,9 +988,9 @@ pub fn framing_stream(bytes: &[u8]) {
     );
 }
 
-/// `redis::recv_packet` from upstream and from the candidate (a loop over the Rust
-/// RESP receive state machine), over the same stream in the same chunks: every
-/// call's result and request state, every package and the final buffer must match.
+/// `redis::recv_packet` from upstream and Rust's `recv_packet` (the loop over the RESP
+/// receive state machine), over the same stream in the same chunks: every call's
+/// result and request state, every package and the final buffer must match.
 pub fn resp_stream(bytes: &[u8]) {
     let Some((&[flags, size, max, chunk_count], rest)) = bytes.split_first_chunk::<4>() else {
         return;
@@ -1017,7 +1013,13 @@ pub fn resp_stream(bytes: &[u8]) {
         close_at_end: flags & 1,
     };
     let want = stream_log(resp_stream::UPSTREAM, &stream);
-    let got = stream_log(resp_stream::CANDIDATE, &stream);
+    let got = protocols_native::resp_stream(
+        data,
+        &chunks,
+        buffer_size as usize,
+        stream.max_length,
+        flags & 1 != 0,
+    );
     assert_eq!(
         String::from_utf8_lossy(&want),
         String::from_utf8_lossy(&got),
@@ -1025,8 +1027,8 @@ pub fn resp_stream(bytes: &[u8]) {
     );
 }
 
-/// `Socks5Proxy` from upstream and from the candidate (over the Rust SOCKS5
-/// exports), from `create` through arbitrary server replies: every byte sent,
+/// `Socks5Proxy` from upstream and over the Rust SOCKS5 codec
+/// (`protocols_native::Socks5Proxy`), from `create` through arbitrary server replies: every byte sent,
 /// each handshake result and state, and each reply code's message must match.
 pub fn socks5(bytes: &[u8]) {
     let Some((
@@ -1086,7 +1088,7 @@ pub fn socks5(bytes: &[u8]) {
         reply_count: sizes.len(),
     };
     let want = stream_log(socks5::UPSTREAM, &case);
-    let got = stream_log(socks5::CANDIDATE, &case);
+    let got = protocols_native::socks5(&case, user, password, host, replies, &sizes);
     assert_eq!(
         String::from_utf8_lossy(&want),
         String::from_utf8_lossy(&got),

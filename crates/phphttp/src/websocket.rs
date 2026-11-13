@@ -14,7 +14,7 @@ use std::{
     cell::Cell,
     ffi::{CStr, c_int},
     mem::MaybeUninit,
-    ptr, slice,
+    ptr,
     sync::Arc,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
@@ -514,9 +514,8 @@ fn encoded(size: usize, write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize) -> 
         return (write(&mut buffer) == size).then_some(Frame::Inline(buffer, size));
     }
     let mut out = string::ZBuf::with_capacity(size);
-    // SAFETY: the fresh string's `size` writable bytes, which nothing else references.
-    let bytes = unsafe { slice::from_raw_parts_mut(out.as_mut_ptr().cast(), size) };
-    if write(bytes) != size {
+    // The fresh string's `size` unwritten bytes.
+    if write(out.spare_capacity_mut()) != size {
         // Dropped: the string is freed.
         return None;
     }

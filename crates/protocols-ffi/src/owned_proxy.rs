@@ -158,8 +158,9 @@ pub extern "C" fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
 /// reply (the state advances unless it is an error), logs a failure as upstream's
 /// `handshake` did, and packs the request that answers it. Returns its size, 0 when
 /// none is due, -1 on failure.
+/// A null `data` is an empty reply at zero length and a failure otherwise.
 /// # Safety
-/// `data` lends `length` readable bytes.
+/// A non-null `data` lends `length` readable bytes.
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm")]
 #[must_use]
 pub unsafe extern "C" fn handshake_step(
@@ -167,11 +168,14 @@ pub unsafe extern "C" fn handshake_step(
     data: *const u8,
     length: usize,
 ) -> isize {
-    // SAFETY: the caller lends `length` readable bytes.
-    let Some(reply) = (unsafe { crate::input(data, length) }) else {
+    if length == 0 {
+        return socks5_step(proxy, &[]);
+    }
+    if data.is_null() || length > isize::MAX as usize {
         return -1;
-    };
-    socks5_step(proxy, reply)
+    }
+    // SAFETY: non-null, `length <= isize::MAX`; the caller lends `length` readable bytes.
+    socks5_step(proxy, unsafe { std::slice::from_raw_parts(data, length) })
 }
 
 /// [`handshake_step`] over a borrowed reply.
@@ -315,6 +319,9 @@ mod tests {
         // Too short, then the wrong method: failures that leave the state alone.
         assert_eq!(unsafe { handshake_step(p, [5u8].as_ptr(), 1) }, -1);
         assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, -1);
+        // A null reply is refused at any length but zero, where it is empty (too short).
+        assert_eq!(unsafe { handshake_step(p, std::ptr::null(), 2) }, -1);
+        assert_eq!(unsafe { handshake_step(p, std::ptr::null(), 0) }, -1);
         assert_eq!(owner.fields().state, 1);
         // Username/password chosen: the auth request follows.
         let n = unsafe { handshake_step(p, [5u8, 2].as_ptr(), 2) };

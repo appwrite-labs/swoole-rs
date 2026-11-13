@@ -4,7 +4,6 @@
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
-use std::ptr;
 
 use crate::Event;
 
@@ -228,6 +227,18 @@ impl Handlers {
         self.defaults.get(index).and_then(Cell::get)
     }
 
+    /// `Reactor::get_handler(fd_type, event)`; none for an `event` that is not exactly
+    /// `SW_EVENT_READ`, `SW_EVENT_WRITE` or `SW_EVENT_ERROR`, where upstream aborts.
+    pub(crate) fn of_event(&self, fd_type: c_int, event: c_int) -> Option<Handler> {
+        let kind = match event {
+            SW_EVENT_READ => READ,
+            SW_EVENT_WRITE => WRITE,
+            SW_EVENT_ERROR => ERROR,
+            _ => return None,
+        };
+        self.get(kind, fd_type)
+    }
+
     /// `Reactor::get_handler`: the registered handler, else the write or error default.
     fn get(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
         let registered = self.registered(kind, fd_type);
@@ -249,23 +260,6 @@ impl Handlers {
     }
 }
 
-/// `Reactor::get_handler` (`kind` 0 read, 1 write, 2 error) and, for `error_only`
-/// false with kind 2, `get_error_handler`'s fallbacks.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_handlers_get(
-    handlers: &Handlers,
-    kind: u32,
-    fd_type: c_int,
-    error_only: bool,
-) -> Option<Handler> {
-    let kind = usize::try_from(kind).ok()?;
-    if error_only {
-        handlers.get(kind, fd_type)
-    } else {
-        handlers.dispatch(kind, fd_type)
-    }
-}
-
 /// The write (`kind` 1) or error (`kind` 2) default handler.
 pub fn swr_v1_reactor_handlers_set_default(
     handlers: &mut Handlers,
@@ -278,19 +272,6 @@ pub fn swr_v1_reactor_handlers_set_default(
     {
         slot.set(handler);
     }
-}
-
-/// The write (`kind` 1) or error (`kind` 2) default's slot, which lives as long as
-/// `handlers` (upstream's `default_write_handler` / `default_error_handler` members
-/// read it), or null for another `kind`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_handlers_default(
-    handlers: &Handlers,
-    kind: u32,
-) -> *const Option<Handler> {
-    kind.checked_sub(1)
-        .and_then(|i| handlers.defaults.get(i as usize))
-        .map_or(ptr::null(), |slot| slot.as_ptr().cast_const())
 }
 
 #[cfg(test)]
@@ -310,7 +291,7 @@ mod tests {
     fn call(handler: Option<Handler>) -> c_int {
         let mut event = Event::empty();
         handler.map_or(0, |h| {
-            h(unsafe { Running::new(ptr::null_mut()) }, &mut event)
+            h(unsafe { Running::new(std::ptr::null_mut()) }, &mut event)
         })
     }
 
@@ -328,21 +309,21 @@ mod tests {
             assert!(!(*h).isset(5, SW_EVENT_DEAULT));
 
             // Write and error fall back to the defaults; error dispatch then to read.
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 0);
+            assert_eq!(call((*h).get(1, 5)), 0);
             swr_v1_reactor_handlers_set_default(&mut *h, 1, Some(two));
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 2);
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, true)), 0);
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, false)), 1);
+            assert_eq!(call((*h).get(1, 5)), 2);
+            assert_eq!(call((*h).get(2, 5)), 0);
+            assert_eq!(call((*h).dispatch(2, 5)), 1);
             swr_v1_reactor_handlers_set_default(&mut *h, 2, Some(three));
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 5, false)), 3);
-            assert_eq!(call(*swr_v1_reactor_handlers_default(&*h, 2)), 3);
-            assert!(swr_v1_reactor_handlers_default(&*h, 3).is_null());
+            assert_eq!(call((*h).dispatch(2, 5)), 3);
+            assert_eq!(call((*h).fallback(1)), 3);
+            assert!((*h).fallback(2).is_none());
             assert!((*h).set(5, SW_EVENT_WRITE | SW_EVENT_ERROR, Some(one)));
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 1, 5, true)), 1);
+            assert_eq!(call((*h).get(1, 5)), 1);
             // Error-only types: no read handler, the error default still applies.
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 0, 6, true)), 0);
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 2, 6, false)), 3);
-            assert_eq!(call(swr_v1_reactor_handlers_get(&*h, 0, -1, true)), 0);
+            assert_eq!(call((*h).get(0, 6)), 0);
+            assert_eq!(call((*h).dispatch(2, 6)), 3);
+            assert_eq!(call((*h).get(0, -1)), 0);
         }
     }
 }

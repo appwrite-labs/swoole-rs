@@ -130,6 +130,20 @@ impl ZBuf {
         self.len == 0
     }
 
+    /// The room past the written bytes, as `Vec::spare_capacity_mut`: what a
+    /// reader fills before [`ZBuf::set_len`] counts it.
+    #[must_use]
+    #[inline]
+    pub fn spare_capacity_mut(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
+        let (len, room) = (self.len, self.capacity - self.len);
+        let at = self.as_mut_ptr().wrapping_add(len).cast();
+        // SAFETY: the string's own allocation holds `capacity` bytes from its
+        // first, `len <= capacity` of them written (`set_len`'s contract), so
+        // `room` bytes follow `at`; the exclusive borrow is the only way to
+        // them, and unwritten bytes are valid `MaybeUninit`s.
+        unsafe { std::slice::from_raw_parts_mut(at, room) }
+    }
+
     /// Count the first `len` bytes as written.
     /// # Safety
     /// `len <= capacity()` and the first `len` bytes are written.

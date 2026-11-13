@@ -172,8 +172,7 @@ fn worker_id() -> u32 {
 
 fn set_log_file(file: &str) {
     let file = CString::new(file).unwrap();
-    // SAFETY: a terminated path.
-    unsafe { swoole_rs_utilities::swoole_set_log_file(file.as_ptr()) };
+    swoole_rs_utilities::set_log_file(&file);
 }
 
 fn set_log_level(level: c_int) {

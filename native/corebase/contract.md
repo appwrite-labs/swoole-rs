@@ -5,8 +5,7 @@ and `src/core/misc.cc` are gone, and no C++ source of theirs is left. What stabl
 Rust can't express of them stays where it has to: the compile-time build strings
 are on the generated switch table (`switches.cc`, `swr_cpp_bug_report`), the
 variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`, and
-the two throwing APIs, `swoole_get_env` (`std::stoi`) and `swoole_set_task_tmpdir`
-(`std::string::at`), are inline in `swoole.h` for C++ callers; Rust reads the
+the throwing API, `swoole_get_env` (`std::stoi`), is inline in `swoole.h` for C++ callers; Rust reads the
 environment itself (`get_env`, which aborts where `std::stoi` would throw an
 exception nothing catches). Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
 and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
@@ -105,9 +104,8 @@ Rust defines the `SwooleG` symbol: the fields native code reads in place
 (`max_sockets`, `dns_cache_refresh_time`, `std_allocator`) followed by the bytes of
 `swoole::Global`'s empty accessor members. `task_tmpfile` lives in Rust only:
 `task_tmpfile()` hands each reader an `Arc<CStr>`, so a path another thread
-replaces stays alive while it is used. `swr_v1_core_set_task_tmpdir` is
-`swoole_set_task_tmpdir` under its lock; swoole.h's inline wrapper keeps upstream's
-throw on an empty path. Both sides assert the layout.
+replaces stays alive while it is used. `set_task_tmpdir` is
+`swoole_set_task_tmpdir` under its lock, for Rust callers only. Both sides assert the layout.
 
 Rust owns `SwooleG`'s scalars in one process-wide record of atomics: the init
 guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,

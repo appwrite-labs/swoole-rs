@@ -204,10 +204,6 @@ def plan(args, reports):
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
         pytest('http-header-reentry', 'tests/modules/http/test_header_reentry.py', *php, '--engine', f'cargo={cargo}')
     if 'locks' in modules:
-        script('locks-native', 'tests/modules/locks/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize', *report('locks-native'))
-        script('locks-constructor', 'tests/modules/locks/constructor.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize', *report('locks-constructor'))
         script('locks-platforms', 'tests/modules/locks/platforms.py', '--source', ROOT / 'target/upstream/src', *report('locks-platforms'))
         if integrate:
             script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))

@@ -105,7 +105,6 @@ struct ReactorView {
     write: *const c_void,
     close: *const c_void,
     defer_tasks: *const c_void,
-    default_write_handler: *const c_void,
     ptr: *mut c_void,
 }
 
@@ -158,11 +157,6 @@ unsafe extern "C" {
         handler: *const c_void,
     );
     fn swr_case_reactor_isset_handler(reactor: *mut Reactor, fd_type: c_int, event: c_int) -> bool;
-    fn swr_case_reactor_get_handler(
-        reactor: *mut Reactor,
-        fd_type: c_int,
-        event: c_int,
-    ) -> *const c_void;
     fn swr_case_reactor_exists_fd(reactor: *mut Reactor, fd: c_int) -> bool;
     fn swr_case_reactor_event_num(reactor: *mut Reactor) -> usize;
     fn swr_case_reactor_set_end_callback(
@@ -171,7 +165,7 @@ unsafe extern "C" {
         f: extern "C" fn(*mut Reactor),
     );
     fn swr_case_reactor_erase_end_callback(reactor: *mut Reactor, id: c_int);
-    fn swr_case_reactor_defer(reactor: *mut Reactor, f: Plain, data: *mut c_void);
+    fn swr_case_event_defer(f: Plain, data: *mut c_void);
     fn swr_case_reactor_set_task(reactor: *mut Reactor, which: c_int, f: Plain, data: *mut c_void);
     fn swr_case_reactor_drain_write_buffer(reactor: *mut Reactor, socket: *mut Socket);
     fn swr_case_event_socket(event: *const Event) -> *mut Socket;
@@ -321,6 +315,26 @@ fn random_data() -> Vec<u8> {
 static REACTOR_CREATE_COUNT: AtomicI32 = AtomicI32::new(0);
 static REACTOR_DESTROY_COUNT: AtomicI32 = AtomicI32::new(0);
 
+/// crates/reactor's handle on `reactor`.
+///
+/// # Safety
+/// `reactor` is the case's live reactor, on this thread.
+unsafe fn running(reactor: *mut Reactor) -> swoole_rs_ffi::Running<'static> {
+    // SAFETY: as the caller guarantees; the cases hold no reference to its state.
+    unsafe { swoole_rs_ffi::Running::new(reactor.cast()) }
+}
+
+/// `reactor->get_handler(fd_type, event)`, as its address.
+///
+/// # Safety
+/// As [`running`].
+unsafe fn get_handler(reactor: *mut Reactor, fd_type: c_int, event: c_int) -> *const c_void {
+    // SAFETY: as the caller guarantees.
+    let reactor = unsafe { running(reactor) };
+    swoole_rs_ffi::reactor_upstream::reactor_get_handler(reactor, fd_type, event)
+        .map_or(ptr::null(), |handler| handler as *const c_void)
+}
+
 unsafe fn create() {
     unsafe {
         swr_case_event_init(0);
@@ -331,7 +345,10 @@ unsafe fn create() {
         assert!(!view.write.is_null());
         assert!(!view.close.is_null());
         assert!(view.defer_tasks.is_null());
-        assert!(!view.default_write_handler.is_null());
+        assert!(
+            swoole_rs_ffi::reactor_upstream::reactor_default_write_handler(running(reactor))
+                .is_some()
+        );
         // coroutine socket reactor, then the system reactor
         let all = [SW_EVENT_READ, SW_EVENT_WRITE, SW_EVENT_ERROR];
         for (fd_type, events) in [
@@ -341,7 +358,7 @@ unsafe fn create() {
             (SW_FD_AIO, &all[..1]),
         ] {
             for &event in events {
-                assert!(!swr_case_reactor_get_handler(reactor, fd_type, event).is_null());
+                assert!(!get_handler(reactor, fd_type, event).is_null());
             }
         }
         swr_case_event_free();
@@ -406,7 +423,7 @@ unsafe fn set_handler() {
                 event
             ));
             assert_eq!(
-                swr_case_reactor_get_handler(reactor, SW_FD_SESSION, event),
+                get_handler(reactor, SW_FD_SESSION, event),
                 fake as *const c_void
             );
         }
@@ -973,7 +990,8 @@ unsafe fn defer_task() {
         );
 
         let count: *mut c_int = Box::into_raw(Box::new(0));
-        swr_case_reactor_defer(reactor, increment, count.cast());
+        // The thread's reactor, which `reactor` is.
+        swr_case_event_defer(increment, count.cast());
         swr_case_event_wait();
         assert_eq!(*count, 1);
         drop(Box::from_raw(count));

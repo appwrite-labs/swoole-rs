@@ -1,15 +1,6 @@
-//! MQTT's C ABI and its `swoole::mqtt` entries under their upstream symbols, over
-//! [`mqtt_frame_length`].
+//! `swoole::mqtt`'s entries under their upstream symbols, over [`mqtt_frame_length`].
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_protocols::mqtt_frame_length;
-
-/// # Safety
-/// Input covers `length` readable bytes; null is allowed at zero length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_mqtt_frame_length(data: *const u8, length: usize) -> i64 {
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    unsafe { crate::input(data, length) }.map_or(-1, mqtt_frame_length)
-}
 
 /// `SW_MQTT_MAX_LENGTH_SIZE`.
 const MAX_LENGTH_SIZE: u8 = 4;

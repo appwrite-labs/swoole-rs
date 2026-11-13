@@ -1,6 +1,6 @@
 // upstream/ holds unmodified files from Swoole v6.2.5 (76c657d8); see src/lib.rs. candidate/
-// holds four of them as the hybrid shipped them before Rust replaced each file outright:
-// their bodies call Rust, so each oracle runs Rust against upstream through the same C++.
+// holds base.cc as the hybrid shipped it before Rust replaced the file outright: its
+// bodies call Rust, so its oracle runs Rust against upstream through the same C++.
 #![expect(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -221,33 +221,43 @@ fn http_rewrite() {
     .unwrap();
 }
 
-/// MQTT's length decoder and RESP's parse from the pinned mqtt.cc and redis.cc
-/// (upstream) and from candidate/'s (calling Rust), copied unchanged for
-/// shim/protocols.cc, with redis's states.
+/// MQTT's length decoder and RESP's `get_number`, `parse` and `format` from the
+/// pinned mqtt.cc and redis.cc, and the request loop of the pinned PHP redis server,
+/// copied unchanged for shim/protocols.cc, with redis's states and reply types.
 fn protocols() {
-    for name in ["upstream", "candidate"] {
-        let mqtt = fs::read_to_string(format!("{name}/src/protocol/mqtt.cc")).expect("mqtt.cc");
-        let redis = fs::read_to_string(format!("{name}/src/protocol/redis.cc")).expect("redis.cc");
-        let mut parts = Vec::new();
-        if mqtt.contains("#define SW_MQTT_RECV_LEN_AGAIN") {
-            parts.push(slice(&mqtt, "#define SW_MQTT_RECV_LEN_AGAIN", "\n") + "\n");
-        }
-        parts.push(definition(&mqtt, "ssize_t get_package_length("));
-        if redis.contains("const char *get_number(") {
-            parts.push(definition(&redis, "const char *get_number("));
-        }
-        parts.push(definition(&redis, "std::vector<std::string> parse("));
-        fs::write(
-            out(&format!("protocols_{name}.inc")),
-            parts.join("\n") + "\n",
-        )
-        .unwrap();
-    }
+    let mqtt = fs::read_to_string("upstream/src/protocol/mqtt.cc").expect("vendored mqtt.cc");
+    let redis = fs::read_to_string("upstream/src/protocol/redis.cc").expect("vendored redis.cc");
+    let parts = [
+        slice(&mqtt, "#define SW_MQTT_RECV_LEN_AGAIN", "\n") + "\n",
+        definition(&mqtt, "ssize_t get_package_length("),
+        definition(&redis, "const char *get_number("),
+        definition(
+            &redis,
+            "void format(String *buf, ReplyType type, const std::string &value)",
+        ),
+        definition(
+            &redis,
+            "void format(String *buf, ReplyType type, long value)",
+        ),
+        definition(&redis, "std::vector<std::string> parse("),
+    ];
+    fs::write(out("protocols_upstream.inc"), parts.join("\n") + "\n").unwrap();
     let header =
         fs::read_to_string("upstream/include/swoole_redis.h").expect("vendored swoole_redis.h");
     fs::write(
         out("protocols_states.inc"),
-        slice(&header, "enum State {", "\n};") + "\n};\n",
+        slice(&header, "enum State {", "const char *get_number"),
+    )
+    .unwrap();
+    let server = fs::read_to_string("upstream/ext-src/swoole_redis_server.cc")
+        .expect("vendored swoole_redis_server.cc");
+    fs::write(
+        out("protocols_php_request.inc"),
+        slice(
+            &server,
+            "    const char *p = Z_STRVAL(zdata);",
+            "\n    if (command_len >=",
+        ) + "\n",
     )
     .unwrap();
 }
@@ -480,6 +490,64 @@ fn utilities() {
     fs::write(out("utilities.inc"), text).unwrap();
 }
 
+/// The pinned `swoole_lock.h` and the mutex, rwlock, spinlock and barrier bodies with
+/// misc.cc's atomic wait, base.cc's `sw_wait_for` and timer.cc's realtime clock, each
+/// copied unchanged but for its namespace (`locks_upstream`) and compiled with
+/// `shim/locks.cc` under what configure finds on this target.
+fn locks() {
+    let read = |path: &str| fs::read_to_string(format!("upstream/{path}")).expect(path);
+    let renamed = |text: String| text.replace("namespace swoole", "namespace locks_upstream");
+    let header = read("include/swoole_lock.h").replace("#include \"swoole_memory.h\"\n", "");
+    fs::write(out("locks_upstream.h"), renamed(header)).unwrap();
+    // The futex headers come out of the namespace.
+    let kernel = ["#include <linux/futex.h>\n", "#include <sys/syscall.h>\n"];
+    let mut text = format!(
+        "#ifdef HAVE_FUTEX\n{}{}#endif\nnamespace locks_upstream {{\n",
+        kernel[0], kernel[1]
+    );
+    text += &slice(
+        &read("src/core/misc.cc"),
+        "#ifdef HAVE_FUTEX",
+        "/* {{{ DJBX33A",
+    )
+    .replace(kernel[0], "")
+    .replace(kernel[1], "");
+    text += &slice(
+        &read("src/core/base.cc"),
+        "bool sw_wait_for(",
+        "\nint swoole_itoa",
+    );
+    text += &slice(
+        &read("src/os/timer.cc"),
+        "void realtime_get(",
+        "}  // namespace swoole",
+    );
+    text += "}\n";
+    for name in ["mutex", "rw_lock", "spin_lock", "barrier"] {
+        let body = read(&format!("src/lock/{name}.cc"));
+        text += &renamed(body.replace("#include \"swoole_lock.h\"\n", ""));
+    }
+    fs::write(out("locks_upstream.inc"), text).unwrap();
+    let mut build = cpp();
+    build.define("HAVE_RWLOCK", None);
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        for found in [
+            "HAVE_SPINLOCK",
+            "HAVE_FUTEX",
+            "HAVE_PTHREAD_BARRIER",
+            "HAVE_MUTEX_TIMEDLOCK",
+            "HAVE_RWLOCK_TIMEDRDLOCK",
+        ] {
+            build.define(found, None);
+        }
+    }
+    build
+        .flag_if_supported("-Wno-unused-parameter")
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/locks.cc")
+        .compile("swoole_oracle_locks");
+}
+
 /// A C++ build that matches the Rust side's sanitizer, so `cargo fuzz`'s `ASan`
 /// also checks the upstream code.
 fn cpp() -> cc::Build {
@@ -533,48 +601,29 @@ fn framing_stream() {
     fs::write(out("framing_stream_string.inc"), parts.join("\n") + "\n").unwrap();
 }
 
-/// `redis::recv_packet` and its `Request` from the pinned redis.cc (upstream) and
-/// from candidate/'s (calling Rust), copied unchanged for `shim/resp_stream.cc`.
+/// `redis::recv_packet` and its `Request` from the pinned redis.cc, copied unchanged
+/// for `shim/resp_stream.cc`.
 fn resp_stream() {
     let redis = fs::read_to_string("upstream/src/protocol/redis.cc").expect("vendored redis.cc");
-    let candidate =
-        fs::read_to_string("candidate/src/protocol/redis.cc").expect("candidate redis.cc");
-    for (name, text) in [("upstream", &redis), ("candidate", &candidate)] {
-        let request = if text.contains("struct Request {") {
-            slice(text, "struct Request {", "\n};") + "\n};"
-        } else {
-            slice(text, "using Request = ", "\n")
-        };
-        let mut parts = vec![request];
-        if text.contains("const char *get_number(") {
-            parts.push(definition(text, "const char *get_number("));
-        }
-        parts.push(definition(text, "int recv_packet("));
-        fs::write(
-            out(&format!("resp_stream_{name}.inc")),
-            parts.join("\n") + "\n",
-        )
-        .unwrap();
-    }
+    let parts = [
+        slice(&redis, "struct Request {", "\n};") + "\n};",
+        definition(&redis, "const char *get_number("),
+        definition(&redis, "int recv_packet("),
+    ];
+    fs::write(out("resp_stream_upstream.inc"), parts.join("\n") + "\n").unwrap();
 }
 
-/// socks5.cc as pinned (upstream) and candidate/'s (calling Rust), each with
-/// `swoole` renamed to its engine, compiled with `shim/socks5.cc` over the facade
-/// in `shim/socks5`.
+/// The pinned socks5.cc with `swoole` renamed, compiled with `shim/socks5.cc` over
+/// the facade in `shim/socks5`.
 fn socks5() {
-    for engine in ["upstream", "candidate"] {
-        let source = format!("{engine}/src/protocol/socks5.cc");
-        cpp()
-            // Its own namespace: other shims define different swoole classes per engine.
-            .define("swoole", format!("socks5_{engine}").as_str())
-            .define("SWR_SOCKS5_ENGINE", engine)
-            .include("shim/socks5")
-            .include("upstream/include")
-            .include("../../native/protocols")
-            .file(source)
-            .file("shim/socks5.cc")
-            .compile(&format!("swoole_{engine}_socks5"));
-    }
+    cpp()
+        // Its own namespace: other shims define different swoole classes.
+        .define("swoole", "socks5_upstream")
+        .include("shim/socks5")
+        .include("upstream/include")
+        .file("upstream/src/protocol/socks5.cc")
+        .file("shim/socks5.cc")
+        .compile("swoole_upstream_socks5");
 }
 
 fn main() {
@@ -600,6 +649,7 @@ fn main() {
     clients();
     hooks_async();
     utilities();
+    locks();
     // The hashes promote `char`, so each signedness is its own engine.
     for engine in ["signed", "unsigned"] {
         cpp()
@@ -619,11 +669,8 @@ fn main() {
         .file("shim/clients.cc")
         .compile("swoole_oracle_clients");
     cpp()
-        .define("SWR_PROTO_ENGINE", "upstream")
-        .define("SWR_PROTO_UPSTREAM", "1")
-        .define("SWR_PROTO_INC", "\"protocols_upstream.inc\"")
         .flag_if_supported("-Wno-unused-parameter")
-        .include("../../native/protocols")
+        .flag_if_supported("-Wno-implicit-fallthrough")
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/protocols.cc")
         .compile("swoole_oracle_protocols");
@@ -686,20 +733,12 @@ fn main() {
             .file("shim/framing_stream.cc")
             .compile(&format!("swoole_{engine}_framing_stream"));
     }
-    for engine in ["upstream", "candidate"] {
-        cpp()
-            .define("SWR_RESP_ENGINE", engine)
-            .define(
-                "SWR_RESP_INC",
-                format!("\"resp_stream_{engine}.inc\"").as_str(),
-            )
-            .flag_if_supported("-Wno-unused-parameter")
-            .flag_if_supported("-Wno-unused-label")
-            .include("../../native/protocols")
-            .include(env::var("OUT_DIR").unwrap())
-            .file("shim/resp_stream.cc")
-            .compile(&format!("swoole_{engine}_resp_stream"));
-    }
+    cpp()
+        .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-unused-label")
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/resp_stream.cc")
+        .compile("swoole_upstream_resp_stream");
     socks5();
     // The bundled llhttp the HTTP server and client parse with.
     cc::Build::new()
@@ -725,11 +764,4 @@ fn main() {
         )
         .extra_warnings(false)
         .compile("swoole_oracle_nghttp2");
-    cpp()
-        .define("SWR_PROTO_ENGINE", "candidate")
-        .define("SWR_PROTO_INC", "\"protocols_candidate.inc\"")
-        .include("../../native/protocols")
-        .include(env::var("OUT_DIR").unwrap())
-        .file("shim/protocols.cc")
-        .compile("swoole_candidate_protocols");
 }

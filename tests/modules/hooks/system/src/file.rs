@@ -4,14 +4,13 @@
 //! `swoole_init` installs sets, so they run here. tests/modules/ossupport/README.md maps
 //! each TEST, including the ones with no subject left.
 
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{CStr, c_int};
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::{swr_v1_core_max_file_content, swr_v1_core_set_max_file_content};
 use swoole_rs_ossupport::{
-    FileRecord, fd_write_all, file_get_contents, file_put_contents, file_size, swoole_tmpfile,
-    swr_v1_os_file_record_fd,
+    FileRecord, create_tmpfile, fd_write_all, file_get_contents, file_put_contents, file_size,
 };
 
 use super::{EBADF, ENOENT, TEST_STR, last_error};
@@ -126,18 +125,16 @@ fn error() {
     assert_eq!(file_size(fp.descriptor()).error, EBADF);
 
     let mut fp = fp;
-    assert_eq!(swr_v1_os_file_record_fd(&mut fp, true), fds[0]);
+    assert_eq!(fp.take_descriptor(), fds[0]);
 }
 
 /// `make_tmpfile` with `task_tmpfile` there is crates/process's
 /// `task_file::tests::make_tmpfile_in_a_missing_directory`.
 fn tmp_file() {
-    let mut buf: [c_char; 128] = [0; 128];
-    for (slot, &byte) in buf.iter_mut().zip(b"/tmp/not-exists-dir/test.XXXXXX") {
-        *slot = byte as c_char;
-    }
-    // SAFETY: a writable NUL-terminated template.
-    assert_eq!(unsafe { swoole_tmpfile(buf.as_mut_ptr()) }, -1);
+    let mut buf = [0_u8; 128];
+    let template = b"/tmp/not-exists-dir/test.XXXXXX";
+    buf[..template.len()].copy_from_slice(template);
+    assert_eq!(create_tmpfile(&mut buf), -1);
     assert_eq!(last_error(), ENOENT);
 }
 

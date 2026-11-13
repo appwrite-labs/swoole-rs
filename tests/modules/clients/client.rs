@@ -110,14 +110,6 @@ struct TlsCopy {
     index: u32,
 }
 
-/// `ReactorIovPrepared` (crates/reactor/src/iov_owned.rs).
-#[repr(C)]
-struct IovPrepared {
-    owner: *mut c_void,
-    fields: *mut c_void,
-    status: i32,
-}
-
 // OpenSSL's stack accessors, which `sk_X509_num` and `sk_X509_value` expand to.
 #[link(name = "crypto")]
 unsafe extern "C" {
@@ -127,17 +119,11 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
-    fn swr_v1_clients_proxy_fields(state: *const c_void, http: bool) -> *mut ProxyFields;
-    fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
-    fn swr_v1_clients_watermark(state: *mut c_void, high: bool) -> *mut u32;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
     fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
     fn swr_v1_tls_owner_free(owner: *const c_void);
-    fn swr_v1_reactor_iov_prepare(source: *const IoVec, count: i32) -> IovPrepared;
-    fn swr_v1_reactor_iov_destroy(owner: *mut c_void);
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
@@ -338,6 +324,20 @@ impl<'a> Client<'a> {
     }
 
     /// crates/clients' handle on the client.
+    /// The crates' client `state` is.
+    fn client(&self) -> &swoole_rs_clients::client::Client {
+        // SAFETY: the client `new` made, live until the drop frees it.
+        unsafe { &*self.state.cast() }
+    }
+
+    /// The client's `SSLContext` owner, null while TLS is off.
+    fn ssl_context(&self) -> *const c_void {
+        let context = self.handle().ssl_context();
+        context.map_or(std::ptr::null(), |context| {
+            context.as_ptr().cast_const().cast()
+        })
+    }
+
     fn handle(&self) -> Handle {
         // SAFETY: the client `new` made, live until the drop frees it.
         unsafe { Handle::new(self.state.cast()) }
@@ -455,8 +455,7 @@ impl<'a> Client<'a> {
                 0
             );
             assert_eq!(
-                swr_v1_tls_owner_assign(swr_v1_clients_ssl_context(self.state), prepared.owner)
-                    .status,
+                swr_v1_tls_owner_assign(self.ssl_context(), prepared.owner).status,
                 0
             );
             swr_v1_tls_owner_free(prepared.owner);
@@ -486,23 +485,18 @@ impl<'a> Client<'a> {
 
     /// `client.socks5_proxy`'s `dns_tunnel`, or None without one.
     fn socks5_dns_tunnel(&self) -> Option<&mut u8> {
-        // SAFETY: the live state.
-        let fields = unsafe { swr_v1_clients_proxy_fields(self.state, false) };
+        let fields = self.handle().proxy_fields(false).cast::<ProxyFields>();
         // SAFETY: the client's live proxy's fields.
         (!fields.is_null()).then(|| unsafe { &mut (*fields).dns_tunnel })
     }
 
     fn set_watermarks(&self, high: u32, low: u32) {
-        // SAFETY: the live state's watermark fields.
-        unsafe {
-            *swr_v1_clients_watermark(self.state, true) = high;
-            *swr_v1_clients_watermark(self.state, false) = low;
-        }
+        self.client().set_watermark(true, high);
+        self.client().set_watermark(false, low);
     }
 
     fn async_connect(&self) -> bool {
-        // SAFETY: the live state.
-        unsafe { swr_v1_clients_flag(self.state, SWR_CLIENTS_ASYNC_CONNECT) }
+        self.client().flag(SWR_CLIENTS_ASYNC_CONNECT)
     }
 
     fn has_timedout(&self) -> bool {
@@ -541,8 +535,7 @@ impl<'a> Client<'a> {
 
     /// `SyncClient::close`.
     fn sync_close(&self) -> bool {
-        // SAFETY: the live state.
-        if !self.created.get() || unsafe { swr_v1_clients_flag(self.state, SWR_CLIENTS_CLOSED) } {
+        if !self.created.get() || self.client().flag(SWR_CLIENTS_CLOSED) {
             return false;
         }
         self.close();
@@ -1448,14 +1441,13 @@ fn cpp_string(size: usize) -> CppString {
 /// C++ upstream, so this does what it does; the `ssl_readv`/`ssl_writev` it reaches
 /// read only its first member, `owner_`.
 fn with_io_vector<T>(iov: &[IoVec], body: impl FnOnce(*mut c_void) -> T) -> T {
-    // SAFETY: `iov` is a live array of `iov.len()` entries.
-    let prepared =
-        unsafe { swr_v1_reactor_iov_prepare(iov.as_ptr(), i32::try_from(iov.len()).unwrap()) };
-    assert_eq!(prepared.status, 0);
-    let mut owner = prepared.owner;
+    // SAFETY: `IoVec` is `struct iovec`, and `iov` a live array of them.
+    let source = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+    let owner = swoole_rs_reactor::ReactorIov::new(source);
+    let mut owner = Box::into_raw(owner.expect("IOVector(iov, count)"));
     let result = body((&raw mut owner).cast());
     // SAFETY: the vector's owner_, released once.
-    unsafe { swr_v1_reactor_iov_destroy(owner) };
+    drop(unsafe { Box::from_raw(owner) });
     result
 }
 

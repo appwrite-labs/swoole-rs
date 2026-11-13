@@ -57,7 +57,7 @@ use tests::{
     with_thread_buffer, writable_callback,
 };
 
-/// The flags `swr_v1_clients_flag` reads.
+/// The flags [`Client::flag`] reads.
 pub const ACTIVE: u32 = 0;
 pub const CLOSED: u32 = 1;
 pub const ASYNC: u32 = 2;
@@ -940,6 +940,14 @@ impl Handle {
         enable_ssl(self)
     }
 
+    /// The proxy's fields (`http` or SOCKS5), null without one.
+    #[must_use]
+    pub fn proxy_fields(self, http: bool) -> *mut swoole_rs_corebase::ProxyFields {
+        let which = if http { Proxy::Http } else { Proxy::Socks5 };
+        self.proxy(which)
+            .map_or(core::ptr::null_mut(), ProxyState::fields_ptr)
+    }
+
     /// The client's TLS context, which `set()` configures; None while TLS is off.
     #[must_use]
     pub fn ssl_context(self) -> Option<NonNull<OwnedTlsContext>> {
@@ -1023,23 +1031,6 @@ fn package_length(this: Handle, data: &[u8]) -> isize {
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
     unsafe { get(this.protocol(), record.socket.cast(), &mut packet) }
-}
-
-/// One of the flags above; false for any other.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_flag(client: &Client, name: u32) -> bool {
-    client.flag(name)
-}
-
-/// `buffer_high_watermark` (`high`) or `buffer_low_watermark`: the address of the
-/// value, which C++'s `Client` keeps as a reference for its lifetime.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_watermark(client: &Client, high: bool) -> *mut u32 {
-    if high {
-        client.high_watermark.as_ptr()
-    } else {
-        client.low_watermark.as_ptr()
-    }
 }
 
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
@@ -1176,27 +1167,6 @@ pub fn set_proxy(
     };
     // The replaced proxy is released here.
     drop(client.proxy_slot(which).replace(proxy));
-}
-
-/// The proxy's fields (`http` or SOCKS5), null without one.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_proxy_fields(
-    client: &Client,
-    http: bool,
-) -> *mut swoole_rs_corebase::ProxyFields {
-    let which = if http { Proxy::Http } else { Proxy::Socks5 };
-    Handle(core::ptr::from_ref(client).cast_mut())
-        .proxy(which)
-        .map_or(core::ptr::null_mut(), ProxyState::fields_ptr)
-}
-
-/// The client's `SSLContext`, which crates/tls configures; null while TLS is off.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTlsContext {
-    client
-        .tls
-        .get()
-        .map_or(core::ptr::null(), TlsContext::as_ptr)
 }
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
@@ -1636,17 +1606,18 @@ mod ops {
         }
     }
 
-    /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket.
+    /// The reactor's `swoole_event_*` (`EVENT_*`) on the socket; -1 without a socket
+    /// or a reactor. The client's socket stays live while it is registered: `close`
+    /// deletes it from the reactor before the record is freed.
     pub(super) fn event(this: Handle, op: c_int, events: c_int) -> c_int {
-        let socket = this.socket_ptr();
+        let Some(socket) = this.get().socket() else {
+            return -1;
+        };
         match op {
-            // SAFETY: the live socket on the thread's reactor.
-            EVENT_ADD => unsafe { event_api::swoole_event_add(socket, events) },
-            // SAFETY: as above.
-            EVENT_SET => unsafe { event_api::swoole_event_set(socket, events) },
-            EVENT_DEL => this.get().socket().map_or(-1, event_api::event_del),
-            // SAFETY: as above.
-            _ => unsafe { event_api::swoole_event_add_or_update(socket, events) },
+            EVENT_ADD => event_api::event_add(socket, events),
+            EVENT_SET => event_api::event_set(socket, events),
+            EVENT_DEL => event_api::event_del(socket),
+            _ => event_api::add_or_update(socket, events),
         }
     }
 

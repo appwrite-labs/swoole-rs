@@ -1,7 +1,7 @@
 //! Convenience/default argument policy for the original optional SDK aliases.
 use super::{
     KbdintResponse, LIBSSH2_CHANNEL, LIBSSH2_SESSION, LIBSSH2_SFTP, LIBSSH2_SFTP_ATTRIBUTES,
-    LIBSSH2_SFTP_HANDLE, Ops, c_char, c_int, c_long, c_uint, c_ulong, ptr,
+    LIBSSH2_SFTP_HANDLE, Ops, Session, Text, c_char, c_int, c_long, c_ulong, ptr,
     swoole_libssh2_channel_direct_tcpip_ex, swoole_libssh2_channel_open_ex,
     swoole_libssh2_channel_process_startup, swoole_libssh2_channel_read_ex,
     swoole_libssh2_channel_write_ex, swoole_libssh2_session_disconnect_ex,
@@ -19,9 +19,10 @@ macro_rules! aliases {
         $(
             #[doc = concat!("Original `", stringify!($name), "` convenience operation.")]
             /// # Safety
-            /// The caller lends the original SDK arguments, live wait session and host table.
+            /// The caller lends the original SDK arguments, the live session to wait on and
+            /// the host table.
             #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn $export($ops: *const Ops, $wait: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret $body
+            pub unsafe extern "C" fn $export($ops: &Ops, $wait: Session, $($arg: $ty),*) -> $ret $body
         )*
     };
 }
@@ -39,13 +40,9 @@ aliases! {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
         unsafe { swoole_libssh2_channel_process_startup(ops, wait_on, channel, c"shell".as_ptr(), 5, ptr::null(), 0) }
     }
-    libssh2_channel_exec => swoole_libssh2_channel_exec(ops, wait_on; channel: *mut LIBSSH2_CHANNEL, command: *const c_char) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let command_len = unsafe { libc::strlen(command) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let command_len = command_len as c_uint;
+    libssh2_channel_exec => swoole_libssh2_channel_exec(ops, wait_on; channel: *mut LIBSSH2_CHANNEL, command: Text<'_>) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_channel_process_startup(ops, wait_on, channel, c"exec".as_ptr(), 4, command, command_len) }
+        unsafe { swoole_libssh2_channel_process_startup(ops, wait_on, channel, c"exec".as_ptr(), 4, command.as_ptr(), command.len()) }
     }
     libssh2_channel_read => swoole_libssh2_channel_read(ops, wait_on; channel: *mut LIBSSH2_CHANNEL, buf: *mut c_char, buflen: usize) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
@@ -63,21 +60,13 @@ aliases! {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
         unsafe { swoole_libssh2_sftp_fstat_ex(ops, wait_on, handle, attrs, 0) }
     }
-    libssh2_sftp_open => swoole_libssh2_sftp_open(ops, wait_on; sftp: *mut LIBSSH2_SFTP, filename: *const c_char, flags: c_ulong, mode: c_long) -> *mut LIBSSH2_SFTP_HANDLE {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let filename_len = unsafe { libc::strlen(filename) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let filename_len = filename_len as c_uint;
+    libssh2_sftp_open => swoole_libssh2_sftp_open(ops, wait_on; sftp: *mut LIBSSH2_SFTP, filename: Text<'_>, flags: c_ulong, mode: c_long) -> *mut LIBSSH2_SFTP_HANDLE {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_open_ex(ops, wait_on, sftp, filename, filename_len, flags, mode, 0) }
+        unsafe { swoole_libssh2_sftp_open_ex(ops, wait_on, sftp, filename.as_ptr(), filename.len(), flags, mode, 0) }
     }
-    libssh2_sftp_opendir => swoole_libssh2_sftp_opendir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: *const c_char) -> *mut LIBSSH2_SFTP_HANDLE {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let path_len = unsafe { libc::strlen(path) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let path_len = path_len as c_uint;
+    libssh2_sftp_opendir => swoole_libssh2_sftp_opendir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: Text<'_>) -> *mut LIBSSH2_SFTP_HANDLE {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_open_ex(ops, wait_on, sftp, path, path_len, 0, 0, 1) }
+        unsafe { swoole_libssh2_sftp_open_ex(ops, wait_on, sftp, path.as_ptr(), path.len(), 0, 0, 1) }
     }
     libssh2_sftp_readdir => swoole_libssh2_sftp_readdir(ops, wait_on; handle: *mut LIBSSH2_SFTP_HANDLE, buffer: *mut c_char, buffer_maxlen: usize, attrs: *mut LIBSSH2_SFTP_ATTRIBUTES) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
@@ -87,56 +76,28 @@ aliases! {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
         unsafe { swoole_libssh2_sftp_close_handle(ops, wait_on, handle) }
     }
-    libssh2_sftp_unlink => swoole_libssh2_sftp_unlink(ops, wait_on; sftp: *mut LIBSSH2_SFTP, filename: *const c_char) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let filename_len = unsafe { libc::strlen(filename) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let filename_len = filename_len as c_uint;
+    libssh2_sftp_unlink => swoole_libssh2_sftp_unlink(ops, wait_on; sftp: *mut LIBSSH2_SFTP, filename: Text<'_>) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_unlink_ex(ops, wait_on, sftp, filename, filename_len) }
+        unsafe { swoole_libssh2_sftp_unlink_ex(ops, wait_on, sftp, filename.as_ptr(), filename.len()) }
     }
-    libssh2_sftp_rename => swoole_libssh2_sftp_rename(ops, wait_on; sftp: *mut LIBSSH2_SFTP, sourcefile: *const c_char, destfile: *const c_char) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let sourcefile_len = unsafe { libc::strlen(sourcefile) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let sourcefile_len = sourcefile_len as c_uint;
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let destfile_len = unsafe { libc::strlen(destfile) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let destfile_len = destfile_len as c_uint;
+    libssh2_sftp_rename => swoole_libssh2_sftp_rename(ops, wait_on; sftp: *mut LIBSSH2_SFTP, sourcefile: Text<'_>, destfile: Text<'_>) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_rename_ex(ops, wait_on, sftp, sourcefile, sourcefile_len, destfile, destfile_len, 1 | 2 | 4) }
+        unsafe { swoole_libssh2_sftp_rename_ex(ops, wait_on, sftp, sourcefile.as_ptr(), sourcefile.len(), destfile.as_ptr(), destfile.len(), 1 | 2 | 4) }
     }
-    libssh2_sftp_mkdir => swoole_libssh2_sftp_mkdir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: *const c_char, mode: c_long) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let path_len = unsafe { libc::strlen(path) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let path_len = path_len as c_uint;
+    libssh2_sftp_mkdir => swoole_libssh2_sftp_mkdir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: Text<'_>, mode: c_long) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_mkdir_ex(ops, wait_on, sftp, path, path_len, mode) }
+        unsafe { swoole_libssh2_sftp_mkdir_ex(ops, wait_on, sftp, path.as_ptr(), path.len(), mode) }
     }
-    libssh2_sftp_rmdir => swoole_libssh2_sftp_rmdir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: *const c_char) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let path_len = unsafe { libc::strlen(path) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let path_len = path_len as c_uint;
+    libssh2_sftp_rmdir => swoole_libssh2_sftp_rmdir(ops, wait_on; sftp: *mut LIBSSH2_SFTP, path: Text<'_>) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_sftp_rmdir_ex(ops, wait_on, sftp, path, path_len) }
+        unsafe { swoole_libssh2_sftp_rmdir_ex(ops, wait_on, sftp, path.as_ptr(), path.len()) }
     }
-    libssh2_userauth_publickey_fromfile => swoole_libssh2_userauth_publickey_fromfile(ops, wait_on; session: *mut LIBSSH2_SESSION, username: *const c_char, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let username_len = unsafe { libc::strlen(username) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let username_len = username_len as c_uint;
+    libssh2_userauth_publickey_fromfile => swoole_libssh2_userauth_publickey_fromfile(ops, wait_on; session: *mut LIBSSH2_SESSION, username: Text<'_>, publickey: *const c_char, privatekey: *const c_char, passphrase: *const c_char) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_userauth_publickey_fromfile_ex(ops, wait_on, session, username, username_len, publickey, privatekey, passphrase) }
+        unsafe { swoole_libssh2_userauth_publickey_fromfile_ex(ops, wait_on, session, username.as_ptr(), username.len(), publickey, privatekey, passphrase) }
     }
-    libssh2_userauth_keyboard_interactive => swoole_libssh2_userauth_keyboard_interactive(ops, wait_on; session: *mut LIBSSH2_SESSION, username: *const c_char, response_callback: Option<KbdintResponse>) -> c_int {
-        // SAFETY: the caller lends the original NUL-terminated SDK argument.
-        let username_len = unsafe { libc::strlen(username) };
-        #[expect(clippy::cast_possible_truncation, reason = "the upstream alias casts strlen to unsigned int")]
-        let username_len = username_len as c_uint;
+    libssh2_userauth_keyboard_interactive => swoole_libssh2_userauth_keyboard_interactive(ops, wait_on; session: *mut LIBSSH2_SESSION, username: Text<'_>, response_callback: Option<KbdintResponse>) -> c_int {
         // SAFETY: the original alias arguments satisfy the canonical hook contract.
-        unsafe { swoole_libssh2_userauth_keyboard_interactive_ex(ops, wait_on, session, username, username_len, response_callback) }
+        unsafe { swoole_libssh2_userauth_keyboard_interactive_ex(ops, wait_on, session, username.as_ptr(), username.len(), response_callback) }
     }
 }

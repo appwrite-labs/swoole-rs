@@ -1,8 +1,6 @@
-// redis::recv_packet from redis.cc behind a C entry point, once per engine:
-// build.rs copies the pinned body (upstream) or the body with the protocols
-// overlay patch applied (candidate, which calls the Rust exports) into
-// SWR_RESP_INC unchanged, with its Request. The facade's Socket returns a
-// fuzzer-chosen chunk per recv; onPackage is the facade's, the same for both.
+// redis::recv_packet from the pinned redis.cc behind a C entry point: build.rs
+// copies its body into resp_stream_upstream.inc unchanged, with its Request. The
+// facade's Socket returns a fuzzer-chosen chunk per recv; onPackage is the facade's.
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -10,7 +8,6 @@
 #include <deque>
 #include <string>
 #include <sys/types.h>
-#include "swoole_rs_protocols.h"
 
 // One fuzz case: the stream, the size of each chunk a recv may return, the
 // buffer's starting size and the protocol's package_max_length.
@@ -24,12 +21,9 @@ extern "C" struct SwrOracleResp {
     uint8_t close_at_end;
 };
 
-#define SWR_CAT2(a, b) a##_##b
-#define SWR_CAT(a, b) SWR_CAT2(a, b)
-
 // Each shim's facade types get their own namespace: framing_stream.cc defines a
 // different network::Socket, and inline members of same-named classes would merge.
-namespace SWR_RESP_ENGINE {
+namespace upstream {
 namespace resp_stream {
 // As upstream include/swoole.h, swoole_error.h and swoole_log.h (logging off).
 enum { SW_OK = 0, SW_ERR = -1 };
@@ -116,7 +110,7 @@ struct Connection {
 };
 
 namespace redis {
-#include SWR_RESP_INC
+#include "resp_stream_upstream.inc"
 }  // namespace redis
 
 static std::string *events;
@@ -131,7 +125,7 @@ static int on_package(const Protocol *, network::Socket *, const RecvData *data)
     return 0;
 }
 }  // namespace resp_stream
-}  // namespace SWR_RESP_ENGINE
+}  // namespace upstream
 
 // Runs recv_packet until it fails or the chunks are drained, logging each call's
 // result (R<n>), each package (P<len>:bytes) and, while the connection stays open,
@@ -141,8 +135,8 @@ static int on_package(const Protocol *, network::Socket *, const RecvData *data)
 // and after each call (E<n>), the buffer's length and offset after each call, and
 // the request state with its offset after a failed call too.
 // Returns the log's full length; at most capacity bytes are written to out.
-static size_t SWR_CAT(run, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out, size_t capacity, bool traced) {
-    using namespace SWR_RESP_ENGINE::resp_stream;
+static size_t run(const SwrOracleResp *stream, char *out, size_t capacity, bool traced) {
+    using namespace upstream::resp_stream;
     std::string log;
     events = &log;
     trace = traced;
@@ -173,13 +167,10 @@ static size_t SWR_CAT(run, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *o
             break;
         }
         if (conn.object) {
-            // Both engines' Request: a state byte, then the line and byte counters.
-            swr_resp_request r;
-            static_assert(sizeof(r) == sizeof(redis::Request), "one Request layout");
-            memcpy(&r, conn.object, sizeof(r));
-            log += "," + std::to_string(r.state) + "," + std::to_string(r.lines_received) + "/" +
-                   std::to_string(r.lines_total) + "," + std::to_string(r.bytes_received) + "/" +
-                   std::to_string(r.bytes_total);
+            const redis::Request &r = *static_cast<const redis::Request *>(conn.object);
+            log += "," + std::to_string(r.state) + "," + std::to_string(r.n_lines_received) + "/" +
+                   std::to_string(r.n_lines_total) + "," + std::to_string(r.n_bytes_received) + "/" +
+                   std::to_string(r.n_bytes_total);
             if (traced) {
                 log += "," + std::to_string(r.offset);
             }
@@ -200,12 +191,10 @@ static size_t SWR_CAT(run, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *o
     return log.size();
 }
 
-extern "C" size_t SWR_CAT(swr_oracle_resp_stream, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out,
-                                                                  size_t capacity) {
-    return SWR_CAT(run, SWR_RESP_ENGINE)(stream, out, capacity, false);
+extern "C" size_t swr_oracle_resp_stream_upstream(const SwrOracleResp *stream, char *out, size_t capacity) {
+    return run(stream, out, capacity, false);
 }
 
-extern "C" size_t SWR_CAT(swr_oracle_resp_trace, SWR_RESP_ENGINE)(const SwrOracleResp *stream, char *out,
-                                                                 size_t capacity) {
-    return SWR_CAT(run, SWR_RESP_ENGINE)(stream, out, capacity, true);
+extern "C" size_t swr_oracle_resp_trace_upstream(const SwrOracleResp *stream, char *out, size_t capacity) {
+    return run(stream, out, capacity, true);
 }

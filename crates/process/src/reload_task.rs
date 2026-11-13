@@ -239,7 +239,11 @@ pub(crate) mod tests {
         assert!(!task.remove(100));
         assert!(task.remove(101));
         assert!(task.completed());
-        task.set_timer(Some(ArmedTimer::new(9, crate::armed_timer::tests::record)));
+        task.set_timer(Some(ArmedTimer::new(
+            1,
+            9,
+            crate::armed_timer::tests::record,
+        )));
         drop(task);
         assert_eq!(crate::armed_timer::tests::cancelled(), [9]);
     }

@@ -117,20 +117,6 @@ pub fn host_type(host: &[u8]) -> HostType {
     }
 }
 
-/// `Socket::convert_to_type(host)`: `unix:/path` is a Unix stream socket, a ':' is
-/// IPv6, anything else IPv4 TCP.
-///
-/// # Safety
-/// `host` denotes `length` readable bytes, or is null for length 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_socket_host_type(host: *const u8, length: usize) -> HostType {
-    if length == 0 || host.is_null() || length > isize::MAX as usize {
-        return host_type(&[]);
-    }
-    // SAFETY: `host` is non-null and `length <= isize::MAX` (checked above); the caller lends `length` bytes.
-    host_type(unsafe { std::slice::from_raw_parts(host, length) })
-}
-
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 pub(crate) const NONBLOCK: c_int = 1 << 2;
 pub(crate) const CLOEXEC: c_int = 1 << 3;

@@ -49,16 +49,9 @@ class Reactor : public swr_v1_reactor_head {
         return change(socket, 2, 0);
     }
 
-    // The Rust default, set by swoole_event_init.
-    ReactorHandler default_write_handler() const {
-        return *reinterpret_cast<const ReactorHandler *>(swr_v1_reactor_handlers_default(state_.handlers, 1));
-    }
     // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs), keyed as
     // upstream's map was and holding plain functions.
     int wait();
-    void defer(void (*fn)(void *), void *data = nullptr) {
-        if (swr_v1_reactor_deferred_push(&defer_tasks, fn, data, nullptr) != 0) throw std::bad_alloc();
-    }
     void set_end_callback(EndCallback _id, void (*fn)(void)) {
         swr_v1_reactor_set_end(handle(), _id, fn);
     }
@@ -87,14 +80,6 @@ class Reactor : public swr_v1_reactor_head {
 
     network::Socket *get_socket(const int fd) const {
         return static_cast<network::Socket *>(swr_v1_reactor_registry_get(state_.registry, fd));
-    }
-
-    ReactorHandler get_handler(const FdType fd_type, const EventType event) const {
-        if (event != SW_EVENT_READ && event != SW_EVENT_WRITE && event != SW_EVENT_ERROR) {
-            abort();
-        }
-        uint32_t kind = event == SW_EVENT_READ ? 0 : event == SW_EVENT_WRITE ? 1 : 2;
-        return reinterpret_cast<ReactorHandler>(swr_v1_reactor_handlers_get(state_.handlers, kind, fd_type, true));
     }
 };
 

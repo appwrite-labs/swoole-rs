@@ -447,19 +447,12 @@ pub mod resp_stream {
     /// Runs one engine's `recv_packet` over the stream until it fails or the
     /// chunks are drained, writing each call's result and request state, each
     /// package and the final buffer length and offset to `out`. Returns the log's
-    /// full length. `upstream` is the pinned redis.cc, `candidate` the one with the
-    /// protocols overlay patch, which calls the Rust exports (the caller's binary
-    /// must link them).
+    /// full length. `upstream` is the pinned redis.cc.
     pub type Run =
         unsafe extern "C" fn(stream: *const Stream, out: *mut u8, capacity: usize) -> usize;
 
     unsafe extern "C" {
         fn swr_oracle_resp_stream_upstream(
-            stream: *const Stream,
-            out: *mut u8,
-            capacity: usize,
-        ) -> usize;
-        fn swr_oracle_resp_stream_candidate(
             stream: *const Stream,
             out: *mut u8,
             capacity: usize,
@@ -472,7 +465,6 @@ pub mod resp_stream {
     }
 
     pub const UPSTREAM: Run = swr_oracle_resp_stream_upstream;
-    pub const CANDIDATE: Run = swr_oracle_resp_stream_candidate;
     /// [`UPSTREAM`] with errno in the log: each call starts with it at `EDOM`, and the
     /// log gains `E<errno>` after each package and each call's result, `L<length>O<offset>`
     /// of the buffer after each call, and the request state (with its offset last)
@@ -504,17 +496,14 @@ pub mod socks5 {
     /// Runs one engine's `Socks5Proxy` from `create` through the replies, writing
     /// every byte sent, each handshake result, state and method, and each reply
     /// code's `strerror` to `out`. Returns the log's full length. `upstream` is the
-    /// pinned socks5.cc, `candidate` the one with the protocols overlay patch,
-    /// which calls the Rust exports (the caller's binary must link them).
+    /// pinned socks5.cc.
     pub type Run = unsafe extern "C" fn(case: *const Case, out: *mut u8, capacity: usize) -> usize;
 
     unsafe extern "C" {
         fn swr_oracle_socks5_upstream(case: *const Case, out: *mut u8, capacity: usize) -> usize;
-        fn swr_oracle_socks5_candidate(case: *const Case, out: *mut u8, capacity: usize) -> usize;
     }
 
     pub const UPSTREAM: Run = swr_oracle_socks5_upstream;
-    pub const CANDIDATE: Run = swr_oracle_socks5_candidate;
 }
 
 pub mod http_range {
@@ -763,49 +752,59 @@ pub mod http_static_context {
 }
 
 pub mod protocols {
-    use std::ffi::c_char;
+    use std::ffi::{c_char, c_int, c_long};
 
-    /// MQTT's length decoder and RESP's parse compiled from one engine's sources:
-    /// `upstream` is the pinned file, `candidate` the file with the protocols overlay
-    /// patch, which calls the Rust exports (the caller's binary must link them).
-    pub struct Engine {
-        /// `mqtt::get_package_length` over `size` bytes.
-        pub mqtt_length: unsafe extern "C" fn(*const c_char, u32) -> i64,
-        /// `redis::parse` over `length` bytes followed by a NUL, from errno 0: each
-        /// string as u32 length and bytes in a buffer of `*size` bytes (release with
-        /// [`free`]); `*error` is errno afterwards.
-        pub resp_parse:
-            unsafe extern "C" fn(*const c_char, usize, *mut usize, *mut i32) -> *mut c_char,
-    }
-
+    // MQTT's length decoder, RESP's codec and the PHP redis server's request loop,
+    // compiled from the pinned mqtt.cc, redis.cc and swoole_redis_server.cc.
     unsafe extern "C" {
-        fn swr_oracle_mqtt_length_upstream(data: *const c_char, size: u32) -> i64;
-        fn swr_oracle_resp_parse_upstream(
+        /// `mqtt::get_package_length` over `size` bytes.
+        #[link_name = "swr_oracle_mqtt_length_upstream"]
+        pub fn mqtt_length(data: *const c_char, size: u32) -> i64;
+        /// `redis::parse` over `length` bytes followed by a NUL, from errno `initial`:
+        /// each string as u32 length and bytes in a buffer of `*size` bytes (release
+        /// with [`free`]); `*error` is errno afterwards.
+        #[link_name = "swr_oracle_resp_parse_upstream"]
+        pub fn resp_parse(
             data: *const c_char,
             length: usize,
+            initial: c_int,
             size: *mut usize,
-            error: *mut i32,
+            error: *mut c_int,
         ) -> *mut c_char;
-        fn swr_oracle_mqtt_length_candidate(data: *const c_char, size: u32) -> i64;
-        fn swr_oracle_resp_parse_candidate(
-            data: *const c_char,
+        /// `redis::get_number` over a NUL-terminated line, from errno `initial`:
+        /// whether it found a number and its CRLF; `*error` is errno afterwards.
+        #[link_name = "swr_oracle_resp_get_number"]
+        pub fn resp_get_number(line: *const c_char, initial: c_int, error: *mut c_int) -> bool;
+        /// `redis::format(String *, ReplyType, const std::string &)` into an empty
+        /// String: its `*size` bytes (release with [`free`]).
+        #[link_name = "swr_oracle_resp_format_string"]
+        pub fn resp_format_string(
+            reply_type: c_int,
+            value: *const c_char,
             length: usize,
             size: *mut usize,
-            error: *mut i32,
         ) -> *mut c_char;
-        /// Releases a `resp_parse` buffer.
+        /// `redis::format(String *, ReplyType, long)`, as [`resp_format_string`].
+        #[link_name = "swr_oracle_resp_format_long"]
+        pub fn resp_format_long(reply_type: c_int, value: c_long, size: *mut usize) -> *mut c_char;
+        /// The PHP redis server's request loop over `length` bytes followed by a NUL,
+        /// from errno `initial`, with only Zend's array modeled: items as u32 kind,
+        /// u32 length and bytes in a buffer of `*size` bytes (release with [`free`]).
+        /// The first is the command (kind 1 once a string was taken as it, else 0 and
+        /// empty), the rest the parameters (0 string, 1 integer in decimal, 2 null).
+        /// `*error` is errno afterwards.
+        #[link_name = "swr_oracle_resp_php_request"]
+        pub fn resp_php_request(
+            wire: *const c_char,
+            length: usize,
+            initial: c_int,
+            size: *mut usize,
+            error: *mut c_int,
+        ) -> *mut c_char;
+        /// Releases a buffer one of these returned.
         #[link_name = "swr_oracle_free"]
         pub fn free(pointer: *mut c_char);
     }
-
-    pub const UPSTREAM: Engine = Engine {
-        mqtt_length: swr_oracle_mqtt_length_upstream,
-        resp_parse: swr_oracle_resp_parse_upstream,
-    };
-    pub const CANDIDATE: Engine = Engine {
-        mqtt_length: swr_oracle_mqtt_length_candidate,
-        resp_parse: swr_oracle_resp_parse_candidate,
-    };
 }
 
 pub mod clients {
@@ -1005,6 +1004,50 @@ pub mod cases {
     pub const REQ1: &[u8] = include_bytes!("../upstream/core-tests/fuzz/cases/req1.bin");
     /// A multipart POST of the same three fields and `examples/test.jpg`.
     pub const REQ2: &[u8] = include_bytes!("../upstream/core-tests/fuzz/cases/req2.bin");
+}
+
+/// The pinned `Mutex`, `RWLock`, `SpinLock`, `Barrier` and atomic wait, and the drivers
+/// of the former locks gate over them (see `shim/locks.cc`), built with what configure
+/// finds: timed pthread locks, spinlocks, futexes and pthread barriers on Linux.
+pub mod locks {
+    use std::ffi::c_int;
+    unsafe extern "C" {
+        /// The driver's lock results, up to `capacity` of them into `results`; returns
+        /// how many there are. It aborts when one of its own checks fails.
+        #[link_name = "swr_oracle_locks_exercise"]
+        pub fn exercise(results: *mut c_int, capacity: usize) -> usize;
+        /// A held `SpinLock`'s lock, try-lock, 3 ms timed lock and unlock results.
+        #[cfg(target_os = "linux")]
+        #[link_name = "swr_oracle_locks_spin"]
+        pub fn spin(results: *mut [c_int; 4]);
+        /// A process-shared word `Barrier` across fork; aborts when it fails.
+        #[cfg(not(target_os = "linux"))]
+        #[link_name = "swr_oracle_locks_shared_barrier"]
+        pub safe fn shared_barrier();
+        /// `sizeof(MutexImpl)` for kind 3, otherwise `sizeof(RWLockImpl)`.
+        #[link_name = "swr_oracle_locks_size"]
+        pub safe fn size(kind: c_int) -> usize;
+        /// [`size`]'s alignment.
+        #[link_name = "swr_oracle_locks_align"]
+        pub safe fn align(kind: c_int) -> usize;
+        /// `sw_atomic_futex_wait`.
+        #[link_name = "swr_oracle_locks_wait"]
+        pub fn wait(word: *mut u32, timeout: f64) -> c_int;
+        /// `sw_atomic_futex_wakeup`.
+        #[link_name = "swr_oracle_locks_wake"]
+        pub fn wake(word: *mut u32, count: c_int) -> c_int;
+        /// `sw_atomic_wait_init`, once before [`wait`] where there is no futex.
+        #[cfg(not(target_os = "linux"))]
+        #[link_name = "swr_oracle_locks_wait_init"]
+        pub safe fn wait_init();
+        /// `__sync_add_and_fetch` (operation 2), `__sync_sub_and_fetch` (3) or
+        /// `__sync_bool_compare_and_swap` (4) on `word`, as `sw_atomic_t`'s macros.
+        #[link_name = "swr_oracle_locks_sync32"]
+        pub fn sync32(word: *mut u32, operation: u32, value: u32, expected: u32) -> u32;
+        /// [`sync32`] on a 64-bit word.
+        #[link_name = "swr_oracle_locks_sync64"]
+        pub fn sync64(word: *mut i64, operation: u32, value: i64, expected: i64) -> i64;
+    }
 }
 
 /// Upstream's hashes (misc.cc), `Logger::get_pretty_name` and the logger's level,

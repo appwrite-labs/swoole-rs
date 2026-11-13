@@ -2,7 +2,7 @@
 //! callbacks, over crates/process's `ProcessPool` (`PoolRecord`).
 use crate::{
     host::{self, Callable},
-    process::{set_worker_of, worker_pid, worker_view},
+    process::set_worker_of,
     report::{INVALID_PARAMS, OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
     signal::clean,
 };
@@ -51,6 +51,9 @@ static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.
 static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
 static CURRENT_WORKER: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+/// What `CURRENT` holds once the pool it named was destroyed while published:
+/// no record's address, and never read through.
+const GONE: *mut PoolRecord = ptr::dangling_mut();
 
 /// Swoole\\Exception.
 fn exception() -> &'static Class {
@@ -100,6 +103,11 @@ impl Pool {
 
 impl Drop for Pool {
     fn drop(&mut self) {
+        // A `start` that failed, or a worker's, leaves this record published
+        // as `current_pool`. It stays published, as upstream's stays set (so a
+        // new Pool is still refused), but as [`GONE`], which [`current`] never
+        // hands out.
+        _ = CURRENT.compare_exchange(self.record.get(), GONE, Ordering::AcqRel, Ordering::Acquire);
         if self.created.get() {
             methods::destroy(self.handle());
         }
@@ -220,9 +228,12 @@ fn checked(object: Option<&PoolObject>) -> Option<PoolRef<'_>> {
 /// `current_pool`: the pool running in this process, if any.
 fn current<'a>() -> Option<PoolRef<'a>> {
     let pool = CURRENT.load(Ordering::Acquire);
-    // SAFETY: null, or the pool `start` published until it returns, or the one a
-    // worker published for the rest of its process: its object is live in both.
-    (!pool.is_null()).then(|| unsafe { PoolRef::new(pool) })
+    // SAFETY: null or `GONE`, which give none, or the record of a live `Pool`:
+    // `start` and a worker's start publish one, `start` clears it when it
+    // returns, and `Pool`'s drop replaces it with `GONE` before the record goes.
+    // The methods that read it run no PHP code that could free that pool's
+    // object while they hold the handle.
+    (!pool.is_null() && pool != GONE).then(|| unsafe { PoolRef::new(pool) })
 }
 
 method_table! {
@@ -346,7 +357,6 @@ fn owner(pool: PoolRef<'_>) -> Option<(&Value, &PoolObject)> {
 }
 
 extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    let worker = worker.raw().cast::<c_void>();
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -356,8 +366,8 @@ extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
         return;
     }
     CURRENT.store(pool.raw(), Ordering::Release);
-    CURRENT_WORKER.store(worker, Ordering::Release);
-    let id = i64::from(worker_view(worker).id);
+    CURRENT_WORKER.store(worker.raw().cast(), Ordering::Release);
+    let id = i64::from(worker.id());
     update_bool(object, c"running", true);
     update_bool(object, c"workerRunning", true);
     update_long(object, c"workerPid", getpid());
@@ -416,7 +426,7 @@ extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
     swoole_rs_zend::bailout::finish();
 }
 
-fn worker_stopped(pool: PoolRef<'_>, worker: *mut c_void, exit: bool) {
+fn worker_stopped(pool: PoolRef<'_>, worker: Worker<'_>, exit: bool) {
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -428,18 +438,18 @@ fn worker_stopped(pool: PoolRef<'_>, worker: *mut c_void, exit: bool) {
         (&this.on_worker_stop, "onWorkerStop")
     };
     if let Some(callable) = handler.get() {
-        let id = i64::from(worker_view(worker).id);
+        let id = i64::from(worker.id());
         dispatch(&callable, object, Some(id), false, event);
     }
 }
 
 extern "C-unwind" fn on_worker_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool, worker.raw().cast(), false);
+    worker_stopped(pool, worker, false);
     swoole_rs_zend::bailout::finish();
 }
 
 extern "C-unwind" fn on_worker_exit(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool, worker.raw().cast(), true);
+    worker_stopped(pool, worker, true);
     swoole_rs_zend::bailout::finish();
 }
 
@@ -483,7 +493,8 @@ fn construct(call: &Call) {
     if !swoole_rs_corebase::swr_v1_core_server().is_null() {
         return refuse("cannot create server and process pool instances simultaneously".into());
     }
-    if current().is_some() {
+    // `current_pool != nullptr`, which a destroyed pool leaves true.
+    if !CURRENT.load(Ordering::Acquire).is_null() {
         return refuse(
             "A process pool instance has already been created and cannot be created again".into(),
         );
@@ -916,31 +927,29 @@ fn get_process(call: &Call) {
                     reason = "a checked worker id"
                 )]
                 let pipe = worker_record::copy_for_process(view, id as usize, &mut copy);
-                // The Process object takes the copy.
-                let worker = Box::into_raw(copy).cast::<c_void>();
                 if let Some(props) = object.props(Some(class)) {
                     props.long(c"id", current_id);
-                    props.long(c"pid", i64::from(worker_pid(worker)));
+                    props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
                         props.long(c"pipe", i64::from(pipe));
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-                set_worker_of(&object, worker, true, c_int::from(view.is_async()));
+                // The Process object takes the copy.
+                set_worker_of(&object, *copy, true, c_int::from(view.is_async()));
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }
             Some(found) => {
-                if found.object().is_some() {
-                    let worker = crate::process::worker_of(found);
+                if let Some(worker) = crate::process::worker_of(found) {
                     #[expect(
                         clippy::cast_sign_loss,
                         clippy::cast_possible_truncation,
                         reason = "a checked worker id"
                     )]
                     let pid = view.worker(id as usize).map_or(0, Worker::pid);
-                    if worker_pid(worker) != pid {
-                        crate::worker::with(worker, |record| record.set_pid(pid));
+                    if worker.pid() != pid {
+                        worker.set_pid(pid);
                         if let Some(props) = found.props(Some(class)) {
                             props.long(c"pid", i64::from(pid));
                         }

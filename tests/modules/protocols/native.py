@@ -14,7 +14,7 @@ from tools.harness import ROOT, run_isolated, write_report
 from tools.harness import run_compiler
 
 from tools.build_upstream import COMMIT as PIN
-TARGETS = ['src/protocol/mqtt.cc', 'src/protocol/redis.cc', 'src/protocol/socks5.cc', 'ext-src/swoole_redis_server.cc']
+TARGETS = ['src/protocol/mqtt.cc', 'src/protocol/socks5.cc']
 
 
 def function(source, signature):
@@ -36,13 +36,13 @@ def main():
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
     sources = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in TARGETS}
-    headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h', 'include/swoole_redis.h']}
+    headers = {p: subprocess.check_output(['git', '-C', str(args.source), 'show', f'{PIN}:{p}'], text=True) for p in ['include/swoole_proxy.h']}
     # Only the pinned protocol bodies are read: the candidate's are Rust, which native.cc calls
     # through native/protocols/swoole_proxy.h.
     archive = args.archive.resolve(strict=True)
     local = Path(__file__).resolve().parent
     report = {'created_utc': datetime.now(timezone.utc).isoformat(), 'upstream_pin': PIN,
-              'scope': 'Actual pinned and selected protocol facade bodies. Native String/allocation/socket IO are modeled, protocol bodies unchanged. The exact original PHP request parser loop runs with modeled Zend parameters on 10000 seeded defined wires versus Rust typed events. Full Zend request/reply callers are staged, not executed here; run request.py/reply.py against actual PHP. No live network in this gate.',
+              'scope': 'Actual pinned MQTT and SOCKS5 bodies against the build\'s. Native addresses are modeled, protocol bodies unchanged. RESP is tests/modules/protocols/native.rs. No live network in this gate.',
               'sanitizer_scope': 'C++ ASan/UBSan; Rust not instrumented' if args.sanitize else 'none'}
     def bodies(selected, owned):
         socks_header = headers['include/swoole_proxy.h']
@@ -52,25 +52,16 @@ def main():
         # under upstream's symbols (crates/protocols-ffi/src/owned_proxy.rs).
         socks_types += ('using Socks5Proxy = ::swoole::Socks5Proxy;\n' if owned else
                         socks_header[socks_header.index('struct Socks5Proxy {'):socks_header.index('}  // namespace swoole')])
-        redis_header = headers['include/swoole_redis.h']
-        redis_types = redis_header[redis_header.index('enum State {'):redis_header.index('const char *get_number')]
-        redis_constants = '#define SW_REDIS_RETURN_NIL "$-1\\r\\n"\n'
-        socks = '' if owned else selected[TARGETS[2]]
+        socks = '' if owned else selected[TARGETS[1]]
         socks_body = socks and socks[socks.index('const char *Socks5Proxy::strerror'):socks.index('}  // namespace swoole')]
-        redis = '' if owned else selected[TARGETS[1]]
-        redis_body = redis and redis[redis.index('namespace redis {') + len('namespace redis {'):redis.index('}  // namespace redis')]
         # The candidate's mqtt::get_package_length is Rust's export under the upstream symbol (native.cc).
         mqtt = '' if owned else '\nnamespace mqtt {\n' + function(selected[TARGETS[0]], 'ssize_t get_package_length(') + '\n}'
-        return (constants + '\n' + socks_types + socks_body + mqtt + '\nnamespace redis {\n' +
-                redis_constants + redis_types + redis_body + '\n}\n')
+        return constants + '\n' + socks_types + socks_body + mqtt + '\n'
     with tempfile.TemporaryDirectory(prefix='swr-protocols-native-') as directory:
         tree = Path(directory)
         for name, selected in [('reference', sources), ('candidate', {})]:
             value = bodies(selected, name == 'candidate')
             (tree / f'{name}.inc').write_text(value)
-        php = sources['ext-src/swoole_redis_server.cc']
-        php_loop = php[php.index('    const char *p = Z_STRVAL(zdata);'):php.index('\n    if (command_len >=')]
-        (tree / 'php-request-original.inc').write_text(php_loop)
         binary = tree / 'native'
         command = ['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', '-Wno-unused-function',
                    '-I' + str(tree), '-I' + str(local), '-I' + str(ROOT / 'native/protocols'), '-I'+str(ROOT/'native/include'), '-I' + str(ROOT / 'native/http'),

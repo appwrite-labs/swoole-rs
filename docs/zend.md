@@ -61,8 +61,8 @@ fn fetch<H: Holder>(call: &Call, op: fn(&H::Word, i64) -> i64) {
 Speed: a method crosses crates (`zend`, the mechanism crate) and rustc inlines
 non-generic functions across crates only when they are `#[inline]`. Keep the
 `zend` call-frame accessors `#[inline]`, and give the mechanism a plain
-`#[inline] pub` Rust function beside its `swr_v1_*` export (as
-`locks::Lock` sits beside `swr_v1_locks_lock`); calling the export
+`#[inline] pub` Rust function beside its `swr_v1_*` export, where it has
+one; calling the export
 costs Atomic::add about 40 instructions.
 
 ## Objects

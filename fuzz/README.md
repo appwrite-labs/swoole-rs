@@ -1,6 +1,6 @@
 # Differential fuzzing
 
-Each target feeds the same bytes to a Rust `swr_v1_*` export and to the pinned
+Each target feeds the same bytes to a Rust entry point and to the pinned
 upstream C++ in `crates/oracle`, and fails on any difference in the return value
 or any output byte. `cargo fuzz` builds both sides with ASan, so a memory error
 in either is a crash too. The workspace stays on its pinned stable toolchain;
@@ -48,11 +48,12 @@ part header, and the closing boundary must match.
 
 For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on
-glibc, `ERANGE`), each against the same function from
-`crates/oracle/candidate/` (the hybrid's body, calling Rust). Outside the compared domain only the candidate runs; `resp_parse` models upstream's walk
+glibc, `ERANGE`), each against the hybrid's body over Rust's codec
+(`src/protocols_native.rs`). Outside the compared domain only Rust runs; `resp_parse` models upstream's walk
 without reading memory to find those inputs. `resp_stream` runs `redis::recv_packet`
 over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
-arbitrary server replies, each against the Rust candidate.
+arbitrary server replies, each against Rust's (`recv_packet`, and the SOCKS5 codec
+behind the hybrid's `Socks5Proxy` methods).
 
 For packet framing (`open_length_check`), `framing_unpack` compares
 `swoole_rs_framing::unpack` with `swoole_unpack` for every length type, and

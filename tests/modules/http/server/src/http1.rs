@@ -555,8 +555,6 @@ unsafe extern "C-unwind" {
         length: usize,
     ) -> usize;
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
-
-    fn swr_v1_server_set_document_root(serv: *mut c_void, path: *const u8, length: usize) -> bool;
 }
 
 unsafe extern "C" {
@@ -716,8 +714,7 @@ impl Server {
 
     /// `set_document_root(path)`.
     fn set_document_root(self, path: &[u8]) -> bool {
-        // SAFETY: `path` is readable for its length.
-        unsafe { swr_v1_server_set_document_root(self.0, path.as_ptr(), path.len()) }
+        server_methods::set_document_root(self.view(), path)
     }
 
     fn add_port(self, kind: c_int, host: &str, port: c_int) -> Option<Port> {

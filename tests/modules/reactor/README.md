@@ -19,7 +19,11 @@ its own name (`write` is `write_case`): `create`, `create_failure`, `set_handler
 `set_fd`, `error_event`, `error`, `drain_write_buffer`, `handle_fail`. Each case runs
 in its own process, so the hook-table save and restore upstream wraps around
 `create_failure` and `hook` has nothing to do. A failed EXPECT is printed and fails the
-case at exit, as GoogleTest's nonfatal assertions do.
+case at exit, as GoogleTest's nonfatal assertions do. `Reactor::get_handler` and
+`default_write_handler` have no C++ caller, so the cases read them through
+crates/reactor (`reactor_upstream::reactor_get_handler`,
+`reactor_default_write_handler`), and `defer_task`'s `reactor->defer` on the thread's
+reactor is `swoole_event_defer`.
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A

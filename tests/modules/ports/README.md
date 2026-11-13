@@ -63,8 +63,8 @@ python3 tests/modules/ports/php.py --engine ... --output REPORT
   conversion (reported uncaught, then fatal, as upstream does: #317) and the six
   fatal rejections, compared across engines. Before running it checks that the
   one engine with the ports feature bit is the extension the build manifest
-  names (pin and SHA-256) and that it exports `swr_v1_ports_protocol`,
-  `_protocol_name`, `_event`, `_callback_property` and `_callback_hook`.
+  names (pin and SHA-256) and that it exports `swr_v1_ports_event`,
+  `_callback_property` and `_callback_hook`.
 - `php.py`: event registration/lookup, unknown-event warnings, Stringable
   reentry and callback replacement lifetime across engines.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).

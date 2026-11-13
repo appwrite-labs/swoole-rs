@@ -3,8 +3,8 @@
 //! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
 //! records Rust owns, checked against the fixture's sizes; the callbacks are `extern "C"`
 //! functions, as upstream's are captureless lambdas, so a failed assertion inside one aborts
-//! the process it runs in. The fixture gives `swoole_set_isolation`, `SwooleWG` and
-//! `sw_timer()->remove`. core-tests' shared counters are `sw_mem_pool()` memory
+//! the process it runs in. The fixture gives `SwooleWG` and `sw_timer()->remove`;
+//! `swoole_set_isolation` is crates/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
 //! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
 
@@ -206,8 +206,8 @@ struct Pool {
     message_bus: *mut c_void,
     reload_task: *mut c_void,
     ptr: *mut c_void,
-    /// `kill_timer`, an `Option<ArmedTimer>`: its id and delete function.
-    kill_timer: [usize; 2],
+    /// `kill_timer`, an `Option<ArmedTimer>`: its timer generation, id and delete function.
+    kill_timer: [usize; 3],
 }
 
 /// `swoole::Worker`'s fields (crates/process's WorkerRecord).
@@ -241,7 +241,6 @@ struct Worker {
 
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
-    fn swr_case_set_isolation_user(user: *const c_char);
     fn swr_case_worker_max_request() -> u32;
     fn swr_case_current_worker() -> *mut Worker;
     #[link_name = "_Z18swoole_timer_clearl"]
@@ -857,8 +856,8 @@ fn msgqueue_2() {
     // spawn_exec_and_wait: upstream discards the child's status, and so does this.
     let pid = spawn_exec(|| {
         let pool = new_pool();
-        // SAFETY: the inline swoole_set_isolation("", "nobody", "").
-        unsafe { swr_case_set_isolation_user(c"nobody".as_ptr()) };
+        // swoole_set_isolation("", "nobody", "").
+        swoole_rs_ossupport::set_isolation(c"", c"nobody", c"");
         assert_eq!(create(pool, 1, key, SW_IPC_MSGQUEUE), SW_ERR);
         assert_eq!(last_error(), EACCES);
     });
