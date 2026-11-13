@@ -1,51 +1,55 @@
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SocksTransition {
-    pub state: u8,
-    pub action: u8,
-    pub error: u8,
-    pub reply: u8,
+/// The request a handshake step sends next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocksSend {
+    /// The username/password request.
+    Auth,
+    /// The CONNECT request.
+    Connect,
 }
 
-/// Native callback execution happens after this decision. State advances before
+/// Why a handshake step failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocksError {
+    /// The reply is shorter than two bytes.
+    Short,
+    /// The reply's version is not the one this state expects.
+    Version,
+    /// The server picked another method than the one offered.
+    Method,
+    /// The username/password was refused.
+    Auth,
+    /// The server refused the CONNECT with this reply code.
+    Server(u8),
+}
+
+/// A handshake step: the next state and what to send, or why it failed. Native
+/// callback execution happens after this decision. State advances before
 /// send/packing, including a failed send, as it does in the pinned implementation.
-#[must_use]
-pub fn socks_transition(state: u8, method: u8, response: &[u8]) -> SocksTransition {
-    let mut result = SocksTransition {
-        state,
-        ..SocksTransition::default()
-    };
+/// An unknown state stays where it is and sends nothing.
+///
+/// # Errors
+/// The [`SocksError`] that ends the handshake.
+pub fn socks_transition(
+    state: u8,
+    method: u8,
+    response: &[u8],
+) -> Result<(u8, Option<SocksSend>), SocksError> {
     let [version, reply, ..] = *response else {
-        result.error = 1;
-        return result;
+        return Err(SocksError::Short);
     };
-    result.reply = reply;
     match state {
-        1 if version != 5 => result.error = 2,
-        1 if method != reply => result.error = 3,
-        1 if method == 2 => {
-            result.state = 2;
-            result.action = 1;
-        }
-        1 => {
-            result.state = 3;
-            result.action = 2;
-        }
-        2 if version != 1 => result.error = 2,
-        2 if reply != 0 => result.error = 4,
-        2 => {
-            result.state = 3;
-            result.action = 2;
-        }
-        3 if version != 5 => result.error = 2,
-        3 if reply != 0 => result.error = 5,
-        3 => {
-            result.state = 4;
-            result.action = 3;
-        }
-        _ => {}
+        1 if version != 5 => Err(SocksError::Version),
+        1 if method != reply => Err(SocksError::Method),
+        1 if method == 2 => Ok((2, Some(SocksSend::Auth))),
+        1 => Ok((3, Some(SocksSend::Connect))),
+        2 if version != 1 => Err(SocksError::Version),
+        2 if reply != 0 => Err(SocksError::Auth),
+        2 => Ok((3, Some(SocksSend::Connect))),
+        3 if version != 5 => Err(SocksError::Version),
+        3 if reply != 0 => Err(SocksError::Server(reply)),
+        3 => Ok((4, None)),
+        _ => Ok((state, None)),
     }
-    result
 }
 
 /// The username/password request in `output`: its size, or -1 when `output` is
@@ -121,16 +125,27 @@ pub fn socks_negotiate(has_user: bool, output: &mut [u8]) -> Option<u8> {
     Some(selected)
 }
 
+/// Which credentials a SOCKS5 proxy keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocksConfig {
+    /// A credential is over 250 bytes: the proxy is refused.
+    Refused,
+    /// One is missing, so neither is kept.
+    Anonymous,
+    /// Both are kept.
+    Credentials,
+}
+
 /// Factory credentials differ from direct auth packing: either missing field
-/// disables both credentials; either field over250 bytes rejects the factory.
+/// disables both credentials; either field over 250 bytes rejects the factory.
 #[must_use]
-pub fn socks_config(user_length: usize, password_length: usize) -> i32 {
+pub fn socks_config(user_length: usize, password_length: usize) -> SocksConfig {
     if user_length > 250 || password_length > 250 {
-        0
+        SocksConfig::Refused
     } else if user_length != 0 && password_length != 0 {
-        2
+        SocksConfig::Credentials
     } else {
-        1
+        SocksConfig::Anonymous
     }
 }
 
@@ -160,17 +175,17 @@ mod tests {
         for user in 0..=251 {
             for password in 0..=251 {
                 let expected = if user > 250 || password > 250 {
-                    0
+                    SocksConfig::Refused
                 } else if user != 0 && password != 0 {
-                    2
+                    SocksConfig::Credentials
                 } else {
-                    1
+                    SocksConfig::Anonymous
                 };
                 assert_eq!(socks_config(user, password), expected);
             }
         }
-        assert_eq!(socks_config(usize::MAX, 0), 0);
-        assert_eq!(socks_config(0, usize::MAX), 0);
+        assert_eq!(socks_config(usize::MAX, 0), SocksConfig::Refused);
+        assert_eq!(socks_config(0, usize::MAX), SocksConfig::Refused);
         assert_eq!(
             socks_strerror(5).to_bytes(),
             b"Connection refused by destination host"
@@ -191,22 +206,20 @@ mod tests {
     fn state_changes_precede_native_send_and_preserve_unknown_states() {
         assert_eq!(
             socks_transition(1, 2, &[5, 2]),
-            SocksTransition {
-                state: 2,
-                action: 1,
-                error: 0,
-                reply: 2
-            }
+            Ok((2, Some(SocksSend::Auth)))
         );
-        assert_eq!(socks_transition(2, 2, &[1, 0]).state, 3);
-        assert_eq!(socks_transition(3, 2, &[5, 0]).state, 4);
+        assert_eq!(
+            socks_transition(2, 2, &[1, 0]),
+            Ok((3, Some(SocksSend::Connect)))
+        );
+        assert_eq!(socks_transition(3, 2, &[5, 0]), Ok((4, None)));
         for state in [0, 4, 255] {
-            assert_eq!(socks_transition(state, 2, &[0, 255]).error, 0);
+            assert_eq!(socks_transition(state, 2, &[0, 255]), Ok((state, None)));
         }
-        assert_eq!(socks_transition(4, 0, &[]).error, 1);
-        assert_eq!(socks_transition(1, 0, &[4, 0]).error, 2);
-        assert_eq!(socks_transition(1, 0, &[5, 2]).error, 3);
-        assert_eq!(socks_transition(2, 2, &[1, 1]).error, 4);
-        assert_eq!(socks_transition(3, 2, &[5, 8]).error, 5);
+        assert_eq!(socks_transition(4, 0, &[]), Err(SocksError::Short));
+        assert_eq!(socks_transition(1, 0, &[4, 0]), Err(SocksError::Version));
+        assert_eq!(socks_transition(1, 0, &[5, 2]), Err(SocksError::Method));
+        assert_eq!(socks_transition(2, 2, &[1, 1]), Err(SocksError::Auth));
+        assert_eq!(socks_transition(3, 2, &[5, 8]), Err(SocksError::Server(8)));
     }
 }
