@@ -139,32 +139,25 @@ impl HttpStaticContext {
         }
     }
     /// Upstream's `get_dir_files`: list the directory once. True when listed (or
-    /// already listed).
+    /// already listed); false when it is not a directory or cannot be listed.
     pub fn get_dir_files(&mut self, effects: &impl StaticEffects) -> bool {
-        self.directory(effects) == 1
-    }
-    /// `get_dir_files`: 1 when listed (or already listed), 0 when not a directory or
-    /// it cannot be opened, else negative.
-    pub(super) fn directory(&mut self, effects: &impl StaticEffects) -> i32 {
         if !self.directory.is_empty() {
-            return 1;
+            return true;
         }
         if self.facts.file_ready == 0 || self.facts.kind & DIRECTORY == 0 {
-            return 0;
+            return false;
         }
-        let Some(path) = self.effect_path() else {
-            return INVALID;
+        let Some(names) = self.effect_path().and_then(|path| effects.list(path)) else {
+            return false;
         };
-        let Some(names) = effects.list(path) else {
-            return 0;
-        };
-        for name in &names {
-            if let Err(error) = self.directory.scan_append(name) {
-                return error;
-            }
+        if names
+            .iter()
+            .any(|name| self.directory.scan_append(name).is_err())
+        {
+            return false;
         }
         self.directory.scan_finish();
-        1
+        true
     }
 }
 
@@ -220,14 +213,14 @@ mod tests {
         );
         set(&mut owner, &root);
         assert_eq!(owner.stat(&Native), 1);
-        assert_eq!(owner.directory(&Native), 1);
+        assert!(owner.get_dir_files(&Native));
         for name in [b".".as_slice(), b"..", b"index.html", b"link"] {
             assert!(owner.directory.contains(name).unwrap());
         }
         assert_eq!(owner.directory.len(), 4);
         std::fs::remove_dir_all(&root).unwrap();
         // Existing nonempty cache avoids reopening even after removal.
-        assert_eq!(owner.directory(&Native), 1);
+        assert!(owner.get_dir_files(&Native));
         assert_eq!(Native.list(root.as_os_str().as_bytes()), None);
     }
 }

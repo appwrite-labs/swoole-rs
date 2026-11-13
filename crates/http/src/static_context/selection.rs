@@ -16,7 +16,7 @@ impl HttpStaticContext {
         if files.is_empty() || self.facts.file_ready == 0 || self.facts.kind & DIRECTORY == 0 {
             return true;
         }
-        if self.directory(effects) != 1 {
+        if !self.get_dir_files(effects) {
             return false;
         }
         // `swoole::intersection`: the first configured name the directory holds.
@@ -69,7 +69,7 @@ impl HttpStaticContext {
         effects: &impl StaticEffects,
     ) -> Vec<u8> {
         // Upstream pages whatever the listing's outcome.
-        self.directory(effects);
+        self.get_dir_files(effects);
         let mut page = Vec::new();
         if self.ensure_directory_slash() < 0 {
             return page;
@@ -153,10 +153,10 @@ mod tests {
     fn directory_listing_is_kept_sorted_and_unique() {
         let effects = listing(&[b"z", b"index.html", b"z", b"a"]);
         let mut owner = directory(&effects);
-        assert_eq!(owner.directory(&effects), 1);
+        assert!(owner.get_dir_files(&effects));
         assert_eq!(owner.directory.len(), 3);
         assert_eq!(owner.directory.name(0), Some(b"a".as_slice()));
-        assert_eq!(owner.directory(&effects), 1);
+        assert!(owner.get_dir_files(&effects));
         assert_eq!(*effects.lists.borrow(), 1);
         assert!(owner.try_serve_index_file(&files(&[b"missing", b"z"]), false, &effects));
         assert_eq!(owner.index, b"z");
@@ -214,8 +214,8 @@ mod tests {
     fn empty_listing_relists_but_unconfigured_index_does_not_change_existing_name() {
         let effects = listing(&[]);
         let mut owner = directory(&effects);
-        assert_eq!(owner.directory(&effects), 1);
-        assert_eq!(owner.directory(&effects), 1);
+        assert!(owner.get_dir_files(&effects));
+        assert!(owner.get_dir_files(&effects));
         assert_eq!(*effects.lists.borrow(), 2);
         owner.index = b"existing".to_vec();
         let none: &[Vec<u8>] = &[];
