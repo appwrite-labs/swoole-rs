@@ -134,7 +134,7 @@ impl FixedPool {
 impl Drop for FixedPool {
     /// `FixedPool::~FixedPool()`.
     fn drop(&mut self) {
-        let shared = self.header().shared != 0;
+        let shared = self.header().shared;
         // SAFETY: the arena came from `arena(shared, ..)` in `new`, freed once.
         unsafe { release(shared, self.0.as_ptr().cast()) };
     }

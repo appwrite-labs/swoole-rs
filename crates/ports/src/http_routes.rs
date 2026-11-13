@@ -174,8 +174,8 @@ pub mod exports {
         // reaches until it deletes it.
         let mut buffered = unsafe { fragment.as_mut() };
         let mut context = Context {
-            has_fragment: u8::from(buffered.is_some()),
-            closing: u8::from(conn.websocket_status == STATUS_CLOSING),
+            has_fragment: buffered.is_some(),
+            closing: conn.websocket_status == STATUS_CLOSING,
             ..Context::default()
         };
         if let Some(fragment) = buffered.as_deref() {

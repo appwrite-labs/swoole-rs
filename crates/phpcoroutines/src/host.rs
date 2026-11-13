@@ -22,7 +22,7 @@ pub(crate) struct Stats {
     pub(crate) coroutine_num: i64,
     pub(crate) coroutine_peak_num: i64,
     pub(crate) coroutine_last_cid: i64,
-    pub(crate) iouring: u8,
+    pub(crate) iouring: bool,
     pub(crate) iouring_task_num: i64,
     pub(crate) iouring_sq_usage_percent: i64,
     pub(crate) iouring_waiting_task_num: i64,
@@ -259,7 +259,7 @@ fn iouring_stats(stats: &mut Stats) {
     let Some((tasks, waiting, percent)) = swoole_rs_hooks::iouring::stats() else {
         return;
     };
-    stats.iouring = 1;
+    stats.iouring = true;
     stats.iouring_task_num = i64::from(tasks);
     let percent = percent.c_cast::<i64>();
     stats.iouring_sq_usage_percent = percent;
