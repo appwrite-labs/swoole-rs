@@ -19,6 +19,9 @@ unsafe extern "C" {
     /// Zend's standard object handlers: a C `const`, initialised statically and
     /// never written.
     safe static std_object_handlers: zend_object_handlers;
+    /// `instanceof_function`: it reads the two live classes' inheritance
+    /// tables, and runs no PHP code.
+    safe fn swr_zend_instanceof(class: ClassEntry<'_>, parent: ClassEntry<'_>) -> bool;
 }
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
@@ -26,6 +29,7 @@ unsafe extern "C" {
 /// the entry (its flags, its statics) at any time, so each read takes one field
 /// through the pointer and no reference to the entry is ever made.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct ClassEntry<'a>(
     pub(crate) *mut zend_class_entry,
     pub(crate) PhantomData<&'a zend_class_entry>,
@@ -56,6 +60,14 @@ impl<'a> ClassEntry<'a> {
         // SAFETY: every class has a name, a string the class holds for `'a`;
         // `ZStr` is a transparent string.
         unsafe { &*name.cast::<ZStr>() }
+    }
+
+    /// `instanceof_function(this, parent)`: this class is `parent`, extends it
+    /// or implements it.
+    #[must_use]
+    #[inline]
+    pub fn instance_of(self, parent: ClassEntry<'_>) -> bool {
+        swr_zend_instanceof(self, parent)
     }
 
     /// `ce->ce_flags` (`ZEND_ACC_*`), as they are now.
@@ -261,6 +273,15 @@ impl Class {
         // SAFETY: a registered class, which lives for the process; Zend reads
         // its property table and `name` only.
         unsafe { swr_zend_http_property_offset(entry, name.as_ptr(), name.count_bytes()) }
+    }
+
+    /// The registered class as a handle: it lives for the process. None
+    /// before MINIT registers it.
+    #[must_use]
+    #[inline]
+    pub fn class_entry(&self) -> Option<ClassEntry<'static>> {
+        let entry = self.entry();
+        (!entry.is_null()).then_some(ClassEntry(entry, PhantomData))
     }
 
     /// The handlers this class's objects use (null before MINIT).

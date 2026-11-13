@@ -196,7 +196,8 @@ struct Stream {
     response: Option<Vec<u8>>,
 }
 
-type Trap = unsafe extern "C" fn(body: Step, arg: *mut c_void) -> c_int;
+/// `swr_zend_try`'s signature: `body` is never null.
+type Trap = unsafe extern "C" fn(body: Option<Step>, arg: *mut c_void) -> c_int;
 type Raise = unsafe extern "C" fn();
 
 /// The extension's trap and raise, which [`set_bailout`] installs.
@@ -241,7 +242,7 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
     };
     // SAFETY: the trap runs `step` over `body` inside `zend_try`; no Rust frame is
     // between its `setjmp` and `step`, whose body owns nothing a bailout skips.
-    if unsafe { trap(step::<F, R>, (&raw mut body).cast()) } != 0 {
+    if unsafe { trap(Some(step::<F, R>), (&raw mut body).cast()) } != 0 {
         return Err(Bailed);
     }
     body.result.ok_or(Bailed)

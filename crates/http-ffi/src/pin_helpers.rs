@@ -2,9 +2,9 @@
 //! (v6.2.5; these bodies are unchanged since v6.2.4).
 //! `pin` transcribes the pinned bodies (C locale). The cases are the ones the retired
 //! `tests/modules/http/gate.cc`, `status_buffer_gate.cc` and `dispatch_gate.cc` compared.
-use crate::{
-    HttpSpan, NATIVE_STATUS_CODES, swr_v1_http_boundary, swr_v1_http_method,
-    swr_v1_http_method_string, swr_v2_http_status_message,
+use crate::NATIVE_STATUS_CODES;
+use crate::http_server::{
+    get_method, get_method_string, get_status_message, parse_multipart_boundary,
 };
 use std::ffi::{CStr, c_char, c_int};
 
@@ -142,7 +142,7 @@ fn status_messages_and_errno_match_the_pin() {
     for code in (-512..=1024).chain([i32::MIN, i32::MAX]) {
         // SAFETY: the calling thread's errno slot.
         unsafe { *errno_location() = EINTR };
-        let message = text(swr_v2_http_status_message(code));
+        let message = text(get_status_message(code));
         // SAFETY: as above.
         assert_eq!(
             unsafe { *errno_location() },
@@ -152,10 +152,7 @@ fn status_messages_and_errno_match_the_pin() {
         assert_eq!(message, pin::status(code));
     }
     // Unknown codes share the thread's one fallback buffer.
-    assert_eq!(
-        swr_v2_http_status_message(-999),
-        swr_v2_http_status_message(-1000)
-    );
+    assert_eq!(get_status_message(-999), get_status_message(-1000));
 }
 
 #[test]
@@ -165,10 +162,10 @@ fn unknown_status_fallback_is_per_thread() {
         .map(|id| {
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let pointer = swr_v2_http_status_message(-12345) as usize;
+                let pointer = get_status_message(-12345) as usize;
                 barrier.wait();
                 for code in (0..1024).map(|n| -(2000 + id * 1024 + n)) {
-                    assert_eq!(text(swr_v2_http_status_message(code)), pin::status(code));
+                    assert_eq!(text(get_status_message(code)), pin::status(code));
                 }
                 pointer
             })
@@ -197,7 +194,7 @@ fn public_status_code_array_matches_the_pin_and_is_independent_of_lookup() {
     unsafe {
         assert_eq!(*slots, expected);
         (*slots)[0] = 777;
-        assert_eq!(text(swr_v2_http_status_message(100)), "100 Continue");
+        assert_eq!(text(get_status_message(100)), "100 Continue");
         (*slots)[0] = 100;
     }
 }
@@ -206,10 +203,10 @@ fn public_status_code_array_matches_the_pin_and_is_independent_of_lookup() {
 fn methods_match_the_pin() {
     let method = |input: &[u8]| {
         // SAFETY: `input` is initialized for its length.
-        unsafe { swr_v1_http_method(input.as_ptr(), input.len()) }
+        unsafe { get_method(input.as_ptr().cast(), input.len()) }
     };
     for id in -10..40 {
-        let name = swr_v1_http_method_string(id);
+        let name = get_method_string(id);
         let expected = pin::method_string(id);
         assert_eq!((!name.is_null()).then(|| text(name)).as_deref(), expected);
         if let Some(name) = expected {
@@ -275,18 +272,23 @@ fn boundaries_match_the_pin() {
     for input in parameters.split('|').map(str::as_bytes) {
         for length in 0..=input.len() {
             for offset in 0..=length + 1 {
-                let mut span = HttpSpan {
-                    offset: 7,
-                    length: 3,
-                };
+                // Outputs a miss must leave alone.
+                let (mut start, mut size) = (std::ptr::null_mut(), 3);
                 // SAFETY: `input` is initialized for `length` bytes.
                 let found = unsafe {
-                    swr_v1_http_boundary(input.as_ptr(), length, offset, Some(&mut span))
-                } == 1;
+                    parse_multipart_boundary(
+                        input.as_ptr().cast(),
+                        length,
+                        offset,
+                        &mut start,
+                        &mut size,
+                    )
+                };
+                let span = (start.addr().wrapping_sub(input.as_ptr().addr()), size);
                 let expected = pin::boundary(&input[..length], offset);
                 assert_eq!(
-                    found.then_some((span.offset, span.length)),
-                    expected,
+                    found.then_some(span),
+                    expected.map(|(offset, length)| (offset, c_int::try_from(length).unwrap())),
                     "{input:?} {length} {offset}"
                 );
             }

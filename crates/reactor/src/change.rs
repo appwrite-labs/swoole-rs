@@ -82,8 +82,7 @@ impl Change {
             );
             return false;
         }
-        // SAFETY: the token is the socket, live while registered.
-        if unsafe { registration::epoll_ctl(epfd, self.op, fd, token, self.events) } >= 0 {
+        if registration::epoll_ctl(epfd, self.op, fd, token, self.events) >= 0 {
             return true;
         }
         let error = errno();
@@ -137,8 +136,7 @@ impl Change {
         let fd = socket.fd;
         match self.op {
             ADD => {
-                // SAFETY: the token is the socket, live while registered.
-                let failed = unsafe { registration::kqueue_add(kq, fd, token, self.events) };
+                let failed = registration::kqueue_add(kq, fd, token, self.events);
                 if failed != 0 {
                     let filter = if failed == 1 { "read" } else { "write" };
                     self.warn(
@@ -154,8 +152,7 @@ impl Change {
                 failed == 0
             }
             SET => {
-                // SAFETY: as for add.
-                let failed = unsafe { registration::kqueue_set(kq, fd, token, self.events) };
+                let failed = registration::kqueue_set(kq, fd, token, self.events);
                 if failed != 0 {
                     let added = failed == 1 || failed == 3;
                     self.warn(

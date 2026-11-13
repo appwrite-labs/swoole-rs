@@ -60,13 +60,14 @@ mod c {
     pub(crate) use super::Text;
 
     // POSIX's prototypes, the same on every Unix this builds for. Each reads
-    // its integers, reads a `Text` up to its NUL, or writes the one object its
-    // reference names. `calloc` and `strndup` return null or a fresh
+    // its integers, reads a `Text` up to its NUL, or reads or writes the one object
+    // its reference names. `calloc` and `strndup` return null or a fresh
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
     // `sigset_t` is plain bits the set calls read or write whole, and a signal number
     // outside the set is an error they return.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
+        pub(crate) safe fn listen(fd: c_int, backlog: c_int) -> c_int;
         pub(crate) safe fn shutdown(fd: c_int, how: c_int) -> c_int;
         pub(crate) safe fn socketpair(
             domain: c_int,
@@ -102,6 +103,41 @@ mod c {
         /// Stores the head of a new list, which `freeifaddrs` frees, when it returns 0.
         pub(crate) safe fn getifaddrs(list: &mut *mut libc::ifaddrs) -> c_int;
         pub(crate) safe fn srandom(seed: c_uint);
+        #[cfg_attr(
+            all(target_os = "macos", target_arch = "x86_64"),
+            link_name = "fstat$INODE64"
+        )]
+        #[cfg_attr(target_os = "netbsd", link_name = "__fstat50")]
+        pub(crate) safe fn fstat(fd: c_int, status: &mut libc::stat) -> c_int;
+        #[cfg_attr(
+            all(target_os = "macos", target_arch = "x86_64"),
+            link_name = "stat$INODE64"
+        )]
+        #[cfg_attr(target_os = "netbsd", link_name = "__stat50")]
+        pub(crate) safe fn stat(path: Text<'_>, status: &mut libc::stat) -> c_int;
+        #[cfg_attr(target_os = "netbsd", link_name = "__nanosleep50")]
+        pub(crate) safe fn nanosleep(
+            request: &libc::timespec,
+            remaining: Option<&mut libc::timespec>,
+        ) -> c_int;
+        #[cfg_attr(target_os = "netbsd", link_name = "__setitimer50")]
+        pub(crate) safe fn setitimer(
+            which: c_int,
+            value: &libc::itimerval,
+            old: Option<&mut libc::itimerval>,
+        ) -> c_int;
+        /// Returns `calendar`, or null for a time with no calendar.
+        #[cfg_attr(target_os = "netbsd", link_name = "__localtime_r50")]
+        pub(crate) safe fn localtime_r(
+            time: &libc::time_t,
+            calendar: &mut libc::tm,
+        ) -> *mut libc::tm;
+        #[cfg_attr(target_os = "netbsd", link_name = "__clock_gettime50")]
+        pub(crate) safe fn clock_gettime(clock: libc::clockid_t, now: &mut libc::timespec)
+        -> c_int;
+        /// The id of the calling thread, for a null `thread`.
+        #[cfg(target_vendor = "apple")]
+        pub(crate) safe fn pthread_threadid_np(thread: libc::pthread_t, id: &mut u64) -> c_int;
         /// `sigemptyset(3)`: `set` without a signal.
         #[cfg_attr(target_os = "netbsd", link_name = "__sigemptyset14")]
         pub safe fn sigemptyset(set: &mut libc::sigset_t) -> c_int;
@@ -138,6 +174,18 @@ mod c {
         /// `epoll_create(2)`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         pub safe fn epoll_create(size: c_int) -> c_int;
+        /// `epoll_ctl(2)`: `event` is the interest and token to keep, none for
+        /// `EPOLL_CTL_DEL`.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_ctl(
+            epfd: c_int,
+            op: c_int,
+            fd: c_int,
+            event: Option<&mut libc::epoll_event>,
+        ) -> c_int;
+        /// `kqueue(2)`: a new queue's descriptor.
+        #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+        pub safe fn kqueue() -> c_int;
         /// glibc's `malloc_trim(3)`, which takes the allocator's own locks: 1 when it
         /// gave memory back to the system.
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -154,11 +202,13 @@ mod c {
         pub(crate) safe fn errno_location() -> *mut c_int;
     }
 }
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+pub use c::kqueue;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
 pub(crate) use c::{calloc, getrlimit, srandom, uname};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use c::{epoll_create, signalfd};
+pub use c::{epoll_create, epoll_ctl, signalfd};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
@@ -337,6 +387,11 @@ pub fn close(fd: c_int) -> c_int {
     unsafe { libc::close(fd) }
 }
 
+/// `listen(2)`.
+pub fn listen(fd: c_int, backlog: c_int) -> c_int {
+    c::listen(fd, backlog)
+}
+
 /// `socket(2)`.
 #[must_use]
 pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
@@ -442,8 +497,7 @@ pub fn pipe() -> Option<[c_int; 2]> {
 #[must_use]
 pub fn fstat(fd: c_int) -> Option<libc::stat> {
     let mut stat = zeroed::<libc::stat>();
-    // SAFETY: `stat` is writable storage for one stat.
-    (unsafe { libc::fstat(fd, &raw mut stat) } == 0).then_some(stat)
+    (c::fstat(fd, &mut stat) == 0).then_some(stat)
 }
 
 /// `sleep(3)`: the seconds left when a signal cut it short.
@@ -458,8 +512,7 @@ pub fn usleep(microseconds: libc::useconds_t) -> c_int {
 
 /// `nanosleep(2)` for `request`, the time left going to `remaining`.
 pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_int {
-    // SAFETY: both are live timespecs; nanosleep reads one and writes the other.
-    unsafe { libc::nanosleep(request, remaining) }
+    c::nanosleep(request, Some(remaining))
 }
 
 /// `open(2)` of `path`; `mode` applies when `flags` has `O_CREAT`.
@@ -724,8 +777,7 @@ pub(crate) fn strtoul(text: &CStr, base: c_int) -> (libc::c_ulong, &CStr) {
 #[must_use]
 pub fn stat(path: &CStr) -> Option<libc::stat> {
     let mut stat = zeroed::<libc::stat>();
-    // SAFETY: `path` is NUL-terminated and `stat` is writable storage for one stat.
-    (unsafe { libc::stat(path.as_ptr(), &raw mut stat) } == 0).then_some(stat)
+    (c::stat(path.into(), &mut stat) == 0).then_some(stat)
 }
 
 /// `sysconf(3)`.
@@ -757,16 +809,14 @@ pub fn setpriority(which: c_int, who: libc::id_t, priority: c_int) -> c_int {
 
 /// `setitimer(2)`, discarding the previous timer.
 pub fn setitimer(which: c_int, value: &libc::itimerval) -> c_int {
-    // SAFETY: `value` is a live itimerval, and a null old value is allowed.
-    unsafe { libc::setitimer(which, value, std::ptr::null_mut()) }
+    c::setitimer(which, value, None)
 }
 
 /// `localtime_r(3)`: `time`'s calendar in the local zone, None when it has none.
 #[must_use]
 pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
     let mut tm = zeroed::<libc::tm>();
-    // SAFETY: `time` and `tm` are live locals; localtime_r writes only `tm`.
-    (!unsafe { libc::localtime_r(&raw const time, &raw mut tm) }.is_null()).then_some(tm)
+    (!c::localtime_r(&time, &mut tm).is_null()).then_some(tm)
 }
 
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
@@ -800,8 +850,8 @@ pub fn gettid() -> libc::c_long {
 #[cfg(target_vendor = "apple")]
 pub fn gettid() -> libc::c_long {
     let mut id = 0_u64;
-    // SAFETY: a null thread means the caller; `id` is a live out-parameter.
-    unsafe { libc::pthread_threadid_np(0, &raw mut id) };
+    // A null thread means the caller.
+    c::pthread_threadid_np(0, &mut id);
     id.cast_signed()
 }
 
@@ -812,8 +862,7 @@ pub fn clock_gettime(clock: libc::clockid_t) -> Option<libc::timespec> {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: `now` is writable storage for one timespec.
-    (unsafe { libc::clock_gettime(clock, &raw mut now) } == 0).then_some(now)
+    (c::clock_gettime(clock, &mut now) == 0).then_some(now)
 }
 
 #[cfg(test)]

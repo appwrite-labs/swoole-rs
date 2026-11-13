@@ -581,8 +581,8 @@ mod tests {
     fn pem_reason_and_new() {
         unsafe {
             let mut pem = [0_u8; 4096];
-            // `swr_v1_socket_ssl_read_x509` before its warnings: the PEM, then the
-            // reference released when `consume`.
+            // `_ssl_read_x509_file` before its warnings: the PEM, then the reference
+            // released when `consume`.
             let pem_of = |cert: *mut X509, buffer: &mut [u8], consume: bool| {
                 let written = CertRef::new(cert).map_or(-2, |cert| cert.pem(buffer));
                 drop(consume.then(|| Cert::from_raw(cert)));

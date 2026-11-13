@@ -2,15 +2,15 @@
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_clients::address::{
-    Resolve, swr_v1_clients_address_assign, swr_v1_clients_address_loopback,
-    swr_v1_clients_address_string, swr_v1_clients_address_verify,
+    address_string, assign_with, swr_v1_clients_address_loopback, swr_v1_clients_address_verify,
 };
 use swoole_rs_clients::dns::{DnsExchange, INVALID_DOMAIN, hosts_lookup, set_hosts_path};
 use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
     URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode,
-    swr_v1_clients_port, swr_v1_clients_url,
+    swr_v1_clients_port,
 };
+use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED};
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_oracle::clients as upstream;
 
@@ -153,10 +153,8 @@ fn ip_hosts() -> Vec<Vec<u8>> {
 /// `Address::verify_ip`: the result, errno and the 46-byte scratch it parses into.
 #[test]
 fn verify_ip_matches_upstream() {
-    let seed = libc::in_addr { s_addr: 0 };
-    // SAFETY: `seed` is an IPv4 address; the result is Rust's per-thread scratch.
-    let scratch = unsafe { swr_v1_clients_address_string(libc::AF_INET, (&raw const seed).cast()) }
-        .cast_mut();
+    // Rust's per-thread scratch.
+    let scratch = address_string(libc::AF_INET, &[0; 4]).cast_mut();
     let mut cases = 0;
     for host in &ip_hosts() {
         let text = c_str(host);
@@ -231,18 +229,20 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     set_errno(17);
     RESOLVED.with_borrow_mut(|resolved| *resolved = (0, Vec::new()));
     let text = c_str(host);
-    // SAFETY: the union, its length and a NUL-terminated host of `host.len()` bytes.
-    let error = unsafe {
-        swr_v1_clients_address_assign(
-            &mut address.addr,
-            &mut address.len,
-            kind,
-            text.as_ptr().cast(),
-            host.len(),
-            port,
-            resolve_name.then_some::<Resolve>(resolve),
-        )
+    // The host's bytes and their NUL, and what `assign` does with `gethostbyname`.
+    let lookup = |family, name: &CStr| {
+        if !resolve_name {
+            return Err(BAD_HOST_ADDR);
+        }
+        let mut found = [0u8; 16];
+        // SAFETY: a terminated name and room for either family's address.
+        if unsafe { resolve(family, name.as_ptr(), found.as_mut_ptr().cast()) } < 0 {
+            return Err(DNSLOOKUP_RESOLVE_FAILED);
+        }
+        Ok(found)
     };
+    let (storage, length) = (&mut address.addr, &mut address.len);
+    let error = assign_with(storage, length, kind, &text, port, lookup);
     trace.error = errno();
     let (dns_calls, dns_host) = RESOLVED.with_borrow(Clone::clone);
     trace.result = c_int::from(error == 0);
@@ -455,18 +455,15 @@ fn urls() -> Vec<Vec<u8>> {
 /// The hybrid `Address::assign(url)` over Rust's parse, into a recorder returning
 /// `accept`: (result or -1 for `std::out_of_range`, type, host, port, error logs).
 fn rust_url(url: &[u8], accept: bool) -> (c_int, c_int, Vec<u8>, c_int, c_int) {
-    // SAFETY: `url` holds its bytes.
-    let plan = unsafe { swr_v1_clients_url(url.as_ptr(), url.len()) };
-    match plan.outcome {
-        URL_PORT_RANGE => (-1, 87, Vec::new(), 0, 0),
-        URL_INVALID => (0, 87, Vec::new(), 0, 1),
-        _ => (
+    match swoole_rs_clients::url(url) {
+        Err(URL_PORT_RANGE) => (-1, 87, Vec::new(), 0, 0),
+        Err(URL_INVALID) => (0, 87, Vec::new(), 0, 1),
+        Err(outcome) => unreachable!("outcome {outcome}"),
+        Ok((kind, host, port)) => (
             c_int::from(accept),
-            plan.kind,
-            url.get(plan.host_offset..plan.host_offset + plan.host_length)
-                .unwrap_or_default()
-                .to_vec(),
-            plan.port,
+            kind,
+            url.get(host).unwrap_or_default().to_vec(),
+            port,
             0,
         ),
     }

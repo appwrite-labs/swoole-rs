@@ -1317,14 +1317,6 @@ fn deliver(socket: co::Co, opcode: u8, payload: &Value, flags: u8) -> Owned {
     frame
 }
 
-fn bytes_of<'a>(data: *const u8, length: usize) -> &'a [u8] {
-    if length == 0 || data.is_null() {
-        return &[];
-    }
-    // SAFETY: per every caller, `length` readable bytes.
-    unsafe { std::slice::from_raw_parts(data, length) }
-}
-
 fn protocol_error() -> Owned {
     host::set_last_error(PROTOCOL_ERROR);
     Owned::null()
@@ -1361,10 +1353,11 @@ pub(crate) fn recv(settings: u32, slot: &mut Assembly, socket: co::Co, timeout: 
         let Some(frame) = decode(buffer) else {
             return protocol_error();
         };
-        let payload = bytes_of(
-            buffer.as_ptr().wrapping_add(frame.header_length),
-            frame.payload_length,
-        );
+        // `decode` accepted the frame, so the buffer holds its whole payload.
+        let payload = buffer
+            .get(frame.header_length..)
+            .and_then(|rest| rest.get(..frame.payload_length))
+            .unwrap_or_default();
         let opcode = frame.opcode;
         let respond = match opcode {
             OPCODE_PING if settings & OPEN_PING_FRAME == 0 => {

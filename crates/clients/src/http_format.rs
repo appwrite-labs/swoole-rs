@@ -1,35 +1,15 @@
-//! Allocation-free request formatting into disjoint native-owned storage.
+//! Allocation-free request formatting into the caller's buffer.
 //! Byte/C-string behavior and snprintf's clamped length/terminator are explicit.
-use std::mem::MaybeUninit;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ClientsFormatSpan {
-    pub data: *const u8,
-    pub length: usize,
-}
-#[repr(C)]
 pub struct ClientsFormatResult {
     pub written: usize,
     ///0 success;1 invalid span/output;2 printf count overflow (native errno).
     pub error: u32,
 }
-/// Where a request is formatted: native storage, which may be uninitialized, or a
-/// Rust buffer.
+/// Where a request is formatted.
 pub trait Output {
     fn capacity(&self) -> usize;
     /// Writes `bytes` at `offset`, which the writer keeps inside the capacity.
     fn put(&mut self, offset: usize, bytes: &[u8]);
-}
-impl Output for [MaybeUninit<u8>] {
-    fn capacity(&self) -> usize {
-        self.len()
-    }
-    fn put(&mut self, offset: usize, bytes: &[u8]) {
-        if let Some(to) = self.get_mut(offset..offset + bytes.len()) {
-            to.write_copy_of_slice(bytes);
-        }
-    }
 }
 impl Output for [u8] {
     fn capacity(&self) -> usize {
@@ -101,60 +81,9 @@ fn precision_string(bytes: &[u8]) -> &[u8] {
             .unwrap_or(bytes)
     })
 }
-/// The spans become slices once, here: one that is null with a length, or longer
-/// than `isize::MAX`, is `None`, an error only where the kind reads it.
-///
-/// # Safety
-/// Required input spans are initialized and disjoint from writable output storage;
-/// no span or native pointer is retained. Output may be uninitialized bytes.
-/// Native effects/errno run after return.
+/// The request formatter's `sw_snprintf` call for `kind` over `spans` (`None` for an
+/// invalid one, an error only where the kind reads it) and `number`, into `output`.
 /// kind0 length,1 proxy URI,2 multipart type,3 field,4 file,5 closing boundary.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_http_format(
-    kind: u32,
-    first: ClientsFormatSpan,
-    second: ClientsFormatSpan,
-    third: ClientsFormatSpan,
-    fourth: ClientsFormatSpan,
-    number: usize,
-    output: *mut u8,
-    capacity: usize,
-) -> ClientsFormatResult {
-    let output: &mut [MaybeUninit<u8>] = if capacity == 0 {
-        &mut []
-    } else if output.is_null() || capacity > i32::MAX as usize {
-        return ClientsFormatResult {
-            written: 0,
-            error: 1,
-        };
-    } else {
-        // SAFETY: the caller's `capacity` writable bytes, disjoint from every span.
-        unsafe { std::slice::from_raw_parts_mut(output.cast(), capacity) }
-    };
-    // The spans the kind reads, the only ones the caller lends.
-    let read = match kind {
-        1 | 3 => 2,
-        2 | 5 => 1,
-        4 => 4,
-        _ => 0,
-    };
-    let all = [first, second, third, fourth];
-    let spans = core::array::from_fn(|index| {
-        let &ClientsFormatSpan { data, length } = all.get(index).filter(|_| index < read)?;
-        if length == 0 {
-            Some(&[][..])
-        } else if data.is_null() || length > isize::MAX as usize {
-            None
-        } else {
-            // SAFETY: a span the kind reads: the caller's `length` initialized bytes.
-            Some(unsafe { std::slice::from_raw_parts(data, length) })
-        }
-    });
-    http_format(kind, spans, number, output)
-}
-
-/// `swr_v1_clients_http_format` over checked spans (`None` for an invalid one,
-/// an error only where the kind reads it) into `output`.
 pub fn http_format<O: Output + ?Sized>(
     kind: u32,
     spans: [Option<&[u8]>; 4],

@@ -56,16 +56,18 @@ fn delete_pair(mut pair: Box<SocketPair>) {
     socket_pair::drop(&mut pair);
 }
 
-/// Frees a worker `new` made, and the pipe it owns unless it shares a server's.
-/// # Safety
-/// `worker` came from `new` and nothing uses it afterwards.
-pub(crate) unsafe fn free(worker: *mut c_void) {
-    // SAFETY: as the caller promises.
-    let worker = unsafe { Box::from_raw(worker.cast::<WorkerRecord>()) };
-    if !worker.pipe_object.is_null() && !worker.shared {
-        // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
-        // nothing uses afterwards.
-        delete_pair(unsafe { Box::from_raw(worker.pipe_object.cast()) });
+/// A worker `new` made, taken back from its Process object: dropping it frees the
+/// worker, and the pipe it owns unless it shares a server's.
+pub(crate) struct Freed(pub(crate) Box<WorkerRecord>);
+
+impl Drop for Freed {
+    fn drop(&mut self) {
+        let worker = &self.0;
+        if !worker.pipe_object.is_null() && !worker.shared {
+            // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`])
+            // that nothing uses afterwards.
+            delete_pair(unsafe { Box::from_raw(worker.pipe_object.cast()) });
+        }
     }
 }
 

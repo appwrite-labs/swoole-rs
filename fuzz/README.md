@@ -84,7 +84,7 @@ reads untrusted bytes against the wire format or against invariants of its outpu
 `clients_dns_reply` hands `swoole_rs_clients::dns::query` any reply (optionally echoing the
 query's id): it succeeds exactly when it pushes an address, and each is IP text.
 `http_multipart` feeds crates/http's multipart parser a boundary and body
-in chunks, and runs `swr_v1_http_multipart_filename` on each part's headers.
+in chunks, and runs `swoole_rs_http::multipart_filename` on each part's headers.
 `http_chunked` feeds crates/http's llhttp a chunked request or response in chunks: body
 spans stay inside their chunk and never exceed the input. `http2_hpack` splits its
 input into header block fragments of one connection and decodes each with
@@ -101,7 +101,7 @@ names, in which the first `*`, with no `.` before it, matches any run without a 
 to a URL (pattern, replacement and URL split at NUL): compiling and matching end, and a
 pattern of letters, digits and `/` replaces each occurrence as literal text. ClusterFuzzLite
 links libc++, not the libstdc++ upstream's `std::regex` comes from, so the comparison with
-upstream is the `http-rewrites` gate's (`tests/modules/http/rewrite_gate.cc`).
+upstream is `tests/modules/http/rewrite.rs`'s, in `http-unit`.
 `ws_inflate` hands any bytes to `swoole_rs_inflate::message` (permessage-deflate,
 RFC 7692), then deflates the rest with `swoole_rs_deflate::message` at the level the
 first byte picks: inflating that gives the rest back. `http_inflate` compresses a body

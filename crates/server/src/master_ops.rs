@@ -1872,7 +1872,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
-        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.ctx.port, o.sock())),
+        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.port(), o.sock())),
         OP_COMMAND_HANDLER => {
             let handler: swoole_rs_reactor::Handler = accept_command_result;
             o.reactor().set_handler(SW_FD_PIPE, SW_EVENT_READ, handler);

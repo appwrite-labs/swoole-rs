@@ -5,9 +5,9 @@ use crate::{
     bailout::{self, Bailout},
     sys::{
         IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
-        swr_zend_callable_release_quiet, swr_zend_efree, swr_zend_emalloc, zend_fcall_info_cache,
-        zend_value, zval,
+        swr_zend_callable_release_quiet, swr_zend_efree, zend_fcall_info_cache, zend_value, zval,
     },
+    value::emalloc,
 };
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
 
@@ -30,9 +30,8 @@ impl Callable {
     /// # Errors
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
-        // SAFETY: Zend's allocator, for one callable (`ecalloc`).
-        let raw =
-            unsafe { swr_zend_emalloc(size_of::<swr_zend_callable>()) }.cast::<swr_zend_callable>();
+        // Zend's allocator, for one callable (`ecalloc`).
+        let raw = emalloc(size_of::<swr_zend_callable>()).cast::<swr_zend_callable>();
         // SAFETY: fresh storage; all-zero is an empty callable.
         unsafe { raw.write_bytes(0, 1) };
         let mut this = Parsed(raw);
@@ -130,9 +129,8 @@ impl Parsed {
         let count = callable.fci.param_count as usize;
         let lead = usize::from(first.is_some());
         if count + lead > 0 {
-            // SAFETY: Zend's allocator, for the arguments.
-            let params =
-                unsafe { swr_zend_emalloc((count + lead) * size_of::<zval>()) }.cast::<zval>();
+            // Zend's allocator, for the arguments.
+            let params = emalloc((count + lead) * size_of::<zval>()).cast::<zval>();
             // SAFETY: the allocation above, which `emalloc` never returns null
             // for and aligns for a zval: `count + lead` unwritten zvals that
             // only this reaches until they are written below.

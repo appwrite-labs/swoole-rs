@@ -249,17 +249,12 @@ pub(super) fn socket_ssl_check_host(_: Socket<'_>, _: &CStr) -> bool {
 pub(super) unsafe fn socket_ssl_close(_: Socket<'_>) {
     log("ssl close");
 }
-// crates/protocols-ffi's and OpenSSL's, which the hybrid links.
-#[unsafe(export_name = "SSL_ctrl")]
-extern "C" fn ssl_ctrl(
-    _: *mut c_void,
-    cmd: c_int,
-    _: libc::c_long,
-    _: *mut c_void,
-) -> libc::c_long {
-    log(format!("ssl ctrl {cmd}"));
-    1
+/// `SSL_set_tlsext_host_name`: logged as the `SSL_ctrl` command it is.
+pub(super) fn socket_ssl_set_host_name(_: Socket<'_>, _: &CStr) -> bool {
+    log("ssl ctrl 55");
+    true
 }
+// crates/protocols-ffi's, which the hybrid links.
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy5admitEmm")]
 extern "C" fn socks5_admit(user: usize, password: usize) -> c_int {
     if user != 0 && password != 0 { 2 } else { 1 }

@@ -98,7 +98,7 @@ fn defer(call: &Call) {
         return;
     };
     host::current_safe();
-    context::defer(callable.keep(None).into_raw());
+    context::defer(callable.keep(None));
 }
 
 /// `swoole_test_kernel_coroutine(int $count = 100, float $sleep = 1)`.

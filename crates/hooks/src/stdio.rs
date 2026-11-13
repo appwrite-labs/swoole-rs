@@ -192,18 +192,6 @@ macro_rules! hooked {
     )*};
 }
 
-/// `fdatasync`; upstream's macOS stand-in is `fcntl(F_FULLFSYNC)`.
-///
-/// # Safety
-/// As for `fsync`.
-unsafe fn datasync(fd: c_int) -> c_int {
-    #[cfg(target_vendor = "apple")]
-    return swoole_rs_corebase::sys::fcntl(fd, libc::F_FULLFSYNC, 0);
-    #[cfg(not(target_vendor = "apple"))]
-    // SAFETY: as above.
-    return unsafe { libc::fdatasync(fd) };
-}
-
 hooked! {
     swoole_coroutine_fopen(pathname: *const c_char, mode: *const c_char) -> *mut FILE, refused std::ptr::null_mut() => libc::fopen(pathname, mode);
     swoole_coroutine_fdopen(fd: c_int, mode: *const c_char) -> *mut FILE, refused std::ptr::null_mut() => libc::fdopen(fd, mode);
@@ -237,14 +225,24 @@ hooked! {
         ring |_| true => rename(oldpath, newpath) => libc::rename(oldpath, newpath);
     swoole_coroutine_fsync(fd: c_int) -> c_int, refused -1,
         ring |_| true => fsync(fd) => libc::fsync(fd);
-    swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
-        ring |_| true => fdatasync(fd) => datasync(fd);
     swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int, refused -1,
         ring |host| host.uring_ftruncate => ftruncate(fd, length) => libc::ftruncate(fd, length);
     swoole_coroutine_lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t, refused -1 => libc::lseek(fd, offset, whence);
     swoole_coroutine_readlink(pathname: *const c_char, buf: *mut c_char, len: size_t) -> ssize_t, refused -1 => libc::readlink(pathname, buf, len);
     swoole_coroutine_statvfs(path: *const c_char, buf: *mut statvfs) -> c_int, refused -1 => libc::statvfs(path, buf);
     swoole_coroutine_access(pathname: *const c_char, mode: c_int) -> c_int, refused -1 => libc::access(pathname, mode);
+}
+
+// Upstream's macOS stand-in for `fdatasync` is `fcntl(F_FULLFSYNC)`.
+#[cfg(target_vendor = "apple")]
+hooked! {
+    swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
+        ring |_| true => fdatasync(fd) => libc::fcntl(fd, libc::F_FULLFSYNC, 0);
+}
+#[cfg(not(target_vendor = "apple"))]
+hooked! {
+    swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
+        ring |_| true => fdatasync(fd) => libc::fdatasync(fd);
 }
 
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).

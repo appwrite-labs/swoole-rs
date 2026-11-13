@@ -20,10 +20,11 @@ use swoole_rs_zend::{
     string,
     sys::{
         IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_compiled_function_find, swr_zend_efree,
-        swr_zend_emalloc, swr_zend_function_find, swr_zend_push_nested_call,
-        swr_zend_try_call_known, swr_zend_zval_release, zend_execute_data, zend_function,
-        zend_throw_error, zend_zval_type_name, zval,
+        swr_zend_function_find, swr_zend_push_nested_call, swr_zend_try_call_known,
+        swr_zend_zval_release, zend_execute_data, zend_function, zend_throw_error,
+        zend_zval_type_name, zval,
     },
+    value,
 };
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
@@ -71,8 +72,8 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return DISPATCH,
         };
-        // SAFETY: Zend's request allocator, freed by the method call.
-        let info = unsafe { swr_zend_emalloc(size_of::<CallInfo>()) }.cast::<CallInfo>();
+        // Zend's request allocator, freed by the method call.
+        let info = value::emalloc(size_of::<CallInfo>()).cast::<CallInfo>();
         // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)` as upstream reads it.
         let name = op
             .at

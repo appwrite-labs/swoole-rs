@@ -6,12 +6,11 @@ use crate::{
     class::Layout,
     function::{arg_info, deny},
     sys::{
-        CONST_PERSISTENT, HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE,
-        swr_zend_facade_compiler_functions, swr_zend_http_intern, zend_class_entry,
-        zend_class_implements, zend_declare_class_constant_long, zend_declare_property,
-        zend_declare_property_string, zend_function_entry, zend_long, zend_object_handlers,
-        zend_register_bool_constant, zend_register_double_constant, zend_register_long_constant,
-        zend_register_string_constant,
+        CONST_PERSISTENT, HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern,
+        zend_class_entry, zend_class_implements, zend_declare_class_constant_long,
+        zend_declare_property, zend_declare_property_string, zend_function_entry, zend_long,
+        zend_object_handlers, zend_register_bool_constant, zend_register_double_constant,
+        zend_register_long_constant, zend_register_string_constant,
     },
 };
 use std::{
@@ -33,6 +32,8 @@ unsafe extern "C" {
     safe static zend_ce_stringable: *mut zend_class_entry;
     safe static zend_ce_arrayaccess: *mut zend_class_entry;
     safe static zend_ce_countable: *mut zend_class_entry;
+    /// `CG(function_table)`: one pointer of the compiler's globals is read.
+    safe fn swr_zend_facade_compiler_functions() -> *mut HashTable;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -173,9 +174,7 @@ impl Minit {
     /// registers global functions.
     #[must_use]
     pub fn compiler_functions(&self) -> *mut HashTable {
-        // SAFETY: MINIT, on the thread whose compiler globals Zend initialized
-        // before module startup; the pointer is only read.
-        unsafe { swr_zend_facade_compiler_functions() }
+        swr_zend_facade_compiler_functions()
     }
 
     /// `SW_FUNCTION_ALIAS` of each `(method, alias)` of `class`, registered with

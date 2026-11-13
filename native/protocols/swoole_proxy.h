@@ -12,7 +12,6 @@
 #include <memory>
 #include "swoole_rs_corebase_proxy.h"
 #include "swoole_rs_corebase_string_view.h"
-#include "swoole_rs_http.h"
 
 enum swHttpProxyState {
     SW_HTTP_PROXY_STATE_WAIT = 0,

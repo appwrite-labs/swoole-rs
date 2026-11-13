@@ -589,31 +589,14 @@ impl Call {
     /// bailout is deferred, leaving the return slot as it was. A static method
     /// has no `$this` to read.
     pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
-        let Some(this) = self.this_object() else {
+        let Some(this) = self.this_value() else {
             return;
         };
-        let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        let rv = crate::Owned::default();
-        let mut property = ptr::null_mut();
-        // SAFETY: the frame's live `$this`, a registered class or null, a slot
-        // for a computed value, which outlives the copy below, and a writable local.
-        let bailed = unsafe {
-            crate::sys::swr_zend_try_facade_read(
-                scope,
-                this,
-                name.as_ptr().cast(),
-                name.len(),
-                true,
-                rv.as_ptr(),
-                &raw mut property,
-            )
-        };
-        if let Err(bailout) = crate::bailout::trapped(bailed) {
-            bailout.defer();
-            return;
+        match this.read(scope.and_then(Class::class_entry), name, true) {
+            Ok(Some(property)) => self.set_owned(property),
+            Ok(None) => {}
+            Err(bailout) => bailout.defer(),
         }
-        // SAFETY: the property's live value, copied with a reference.
-        unsafe { crate::sys::swr_zval_copy(self.value, property) };
     }
 
     /// `RETVAL_BOOL`.

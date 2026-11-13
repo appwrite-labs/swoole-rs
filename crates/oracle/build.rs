@@ -180,6 +180,47 @@ fn http_static_context() {
     fs::write(out("http_static_context.inc"), parts.join("\n") + "\n").unwrap();
 }
 
+/// `get_method` and `parse_multipart_boundary` from the pinned http.cc with its method
+/// names, and `swoole_strcaseeq` and `swoole_str_istarts_with` from the pinned swoole.h
+/// with the two macros that call them, copied unchanged for `shim/http_locale.cc`.
+fn http_locale() {
+    let http = fs::read_to_string("upstream/src/protocol/http.cc").expect("vendored http.cc");
+    let header = fs::read_to_string("upstream/include/swoole.h").expect("vendored swoole.h");
+    let mut parts: Vec<String> = header
+        .lines()
+        .filter(|line| {
+            line.starts_with("#define SW_STRL(") || line.starts_with("#define SW_STR_ISTARTS_WITH(")
+        })
+        .map(str::to_string)
+        .collect();
+    parts.extend([
+        definition(&header, "static inline unsigned int swoole_strcaseeq("),
+        definition(
+            &header,
+            "static inline unsigned int swoole_str_istarts_with(",
+        ),
+        slice(&http, "static const char *method_strings[]", "\n};") + "\n};",
+        definition(&http, "int get_method("),
+        definition(&http, "bool parse_multipart_boundary("),
+    ]);
+    fs::write(out("http_locale.inc"), parts.join("\n") + "\n").unwrap();
+}
+
+/// `Server::add_rewrite_rule` and `apply_rewrite_rules` from the pinned
+/// `static_handler.cc`, copied unchanged for `shim/http_rewrite.cc`.
+fn http_rewrite() {
+    let handler = fs::read_to_string("upstream/src/server/static_handler.cc")
+        .expect("vendored static_handler.cc");
+    fs::write(
+        out("http_rewrite.inc"),
+        definition(&handler, "void Server::add_rewrite_rule(")
+            + "\n"
+            + &definition(&handler, "bool Server::apply_rewrite_rules(")
+            + "\n",
+    )
+    .unwrap();
+}
+
 /// MQTT's length decoder and RESP's parse from the pinned mqtt.cc and redis.cc
 /// (upstream) and from candidate/'s (calling Rust), copied unchanged for
 /// shim/protocols.cc, with redis's states.
@@ -212,8 +253,25 @@ fn protocols() {
 }
 
 /// The `Address` methods, the hosts lookup, the Set-Cookie split, the DNS name
-/// codec and the socket DNS lookup from the pinned sources, copied unchanged for shim/clients.cc.
+/// codec, the socket DNS lookup and the request formats with `sw_snprintf` from the
+/// pinned sources, copied unchanged for shim/clients.cc.
 fn clients() {
+    let config =
+        fs::read_to_string("upstream/include/swoole_config.h").expect("vendored swoole_config.h");
+    let base = fs::read_to_string("upstream/src/core/base.cc").expect("vendored base.cc");
+    fs::write(
+        out("clients_http_format.inc"),
+        [
+            slice(
+                &config,
+                "#define SW_HTTP_CLIENT_BOUNDARY_TOTAL_SIZE",
+                "#define SW_HTTP_FORM_FILE_DATA_FMT_LEN",
+            ),
+            slice(&base, "size_t sw_snprintf(", "size_t sw_vsnprintf("),
+        ]
+        .concat(),
+    )
+    .unwrap();
     let address =
         fs::read_to_string("upstream/src/network/address.cc").expect("vendored address.cc");
     let methods = [
@@ -535,6 +593,8 @@ fn main() {
     http_range();
     http_static_select();
     http_static_context();
+    http_locale();
+    http_rewrite();
     protocols();
     resp_stream();
     clients();
@@ -570,7 +630,6 @@ fn main() {
     cpp()
         .define("SWR_RANGE_ENGINE", "upstream")
         .define("SWR_RANGE_INC", "\"http_range_upstream.inc\"")
-        .include("../../native/http")
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_range.cc")
         .compile("swoole_upstream_http_range");
@@ -583,9 +642,13 @@ fn main() {
         .file("shim/http_static_context.cc")
         .compile("swoole_upstream_http_static_context");
     cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/http_locale.cc")
+        .file("shim/http_rewrite.cc")
+        .compile("swoole_upstream_http_gates");
+    cpp()
         .define("SWR_FRAME_ENGINE", "upstream")
         .define("SWR_FRAME_INC", "\"http_frame_upstream.inc\"")
-        .include("../../native/http")
         .include(env::var("OUT_DIR").unwrap())
         .file("shim/http_frame.cc")
         .compile("swoole_oracle_http_frame");

@@ -25,15 +25,22 @@ use swoole_rs_zend::{
     sys::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, add_next_index_resource, php_stream, php_stream_context,
         php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param,
-        sockaddr, swr_zend_stream_buffered, swr_zend_stream_context,
-        swr_zend_stream_default_timeout, swr_zend_stream_expose, swr_zend_stream_progress,
+        sockaddr, swr_zend_stream_context, swr_zend_stream_expose, swr_zend_stream_progress,
         swr_zend_stream_set_option, swr_zend_stream_share_context, swr_zend_stream_timeval,
-        swr_zend_stream_vm_active, timeval, zend_string, zval,
+        timeval, zend_long, zend_string, zval,
     },
     value::empty_string,
 };
 
 unsafe extern "C" {
+    /// `EG(active)`: a read of this PHP thread's executor, which runs no PHP code.
+    safe fn swr_zend_stream_vm_active() -> bool;
+    /// `FG(default_socket_timeout)`: a read of this PHP thread's file globals,
+    /// which runs no PHP code.
+    safe fn swr_zend_stream_default_timeout() -> zend_long;
+    /// `stream->has_buffered_data` (false before PHP 8.3): a read of the
+    /// stream's own flag.
+    safe fn swr_zend_stream_buffered(stream: &php_stream) -> bool;
     /// `php_stream_context_get_option`: null (`None`), or the option the
     /// stream's context holds, which lives until PHP code changes the context.
     fn swr_zend_stream_option<'a>(
@@ -47,21 +54,27 @@ unsafe extern "C" {
     fn php_network_populate_name_from_sockaddr(
         sa: *mut sockaddr,
         sl: socklen_t,
-        textaddr: *mut *mut zend_string,
-        addr: *mut *mut sockaddr,
-        addrlen: *mut socklen_t,
+        textaddr: Option<&mut *mut zend_string>,
+        addr: Option<&mut *mut sockaddr>,
+        addrlen: &mut socklen_t,
     );
-    fn php_network_get_sock_name(
+    /// `getsockname` of `sock`, then the name in each slot given: a new string
+    /// in `textaddr` (left alone for a family it can't print), and in `addr` a
+    /// new copy of the address with its length in `addrlen`, which is left alone
+    /// without `addr`. A slot is written without reading what it held. It
+    /// reports no error and runs no PHP code.
+    safe fn php_network_get_sock_name(
         sock: c_int,
-        textaddr: *mut *mut zend_string,
-        addr: *mut *mut sockaddr,
-        addrlen: *mut socklen_t,
+        textaddr: Option<&mut *mut zend_string>,
+        addr: Option<&mut *mut sockaddr>,
+        addrlen: &mut socklen_t,
     ) -> c_int;
-    fn php_network_get_peer_name(
+    /// [`php_network_get_sock_name`] with `getpeername`.
+    safe fn php_network_get_peer_name(
         sock: c_int,
-        textaddr: *mut *mut zend_string,
-        addr: *mut *mut sockaddr,
-        addrlen: *mut socklen_t,
+        textaddr: Option<&mut *mut zend_string>,
+        addr: Option<&mut *mut sockaddr>,
+        addrlen: &mut socklen_t,
     ) -> c_int;
 }
 
@@ -291,8 +304,7 @@ fn set_error(param: &mut php_stream_xport_param, text: &[u8]) {
 
 /// `EG(active)`: whether the executor is running, so a coroutine can wait.
 fn vm_active() -> bool {
-    // SAFETY: no preconditions: reads this PHP thread's executor flag.
-    unsafe { swr_zend_stream_vm_active() }
+    swr_zend_stream_vm_active()
 }
 
 /// `socket_write`.
@@ -362,8 +374,7 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
     if !vm_active() {
         return Ok(recv(RecvOp::Sync));
     }
-    // SAFETY: a live stream.
-    let mut read = if blocking && !unsafe { swr_zend_stream_buffered(stream) } {
+    let mut read = if blocking && !fields(stream, |stream| swr_zend_stream_buffered(stream)) {
         recv(RecvOp::Recv)
     } else {
         let read = recv(RecvOp::Once);
@@ -622,16 +633,16 @@ fn xport_api(
             p.outputs.returncode = accept(stream, socket, p)?;
         }
         xport::GET_NAME => {
-            let (textaddr, addr, addrlen) = name_slots(p);
-            // SAFETY: the output slots Zend asked for.
-            p.outputs.returncode =
-                unsafe { php_network_get_sock_name(socket.fd(), textaddr, addr, addrlen) };
+            let mut unwanted = 0;
+            let (textaddr, addr, addrlen) = name_slots(p, &mut unwanted);
+            let code = php_network_get_sock_name(socket.fd(), textaddr, addr, addrlen);
+            p.outputs.returncode = code;
         }
         xport::GET_PEER_NAME => {
-            let (textaddr, addr, addrlen) = name_slots(p);
-            // SAFETY: as above.
-            p.outputs.returncode =
-                unsafe { php_network_get_peer_name(socket.fd(), textaddr, addr, addrlen) };
+            let mut unwanted = 0;
+            let (textaddr, addr, addrlen) = name_slots(p, &mut unwanted);
+            let code = php_network_get_peer_name(socket.fd(), textaddr, addr, addrlen);
+            p.outputs.returncode = code;
         }
         xport::SEND => {
             if p.inputs.flags & STREAM_OOB == STREAM_OOB {
@@ -822,22 +833,25 @@ fn accept(
     Ok(SUCCESS)
 }
 
-/// The output slots of the names the transport parameter wants (`textaddr`,
-/// `addr` and `addrlen`), each null when it wants none.
-fn name_slots(
-    param: &mut php_stream_xport_param,
-) -> (*mut *mut zend_string, *mut *mut sockaddr, *mut socklen_t) {
-    let textaddr = if param.want_textaddr() != 0 {
-        &raw mut param.outputs.textaddr
+/// The output slots of the names the transport parameter wants: `textaddr` and
+/// `addr`, each none when it wants none, and `addrlen`, which is `unwanted` when
+/// it wants no `addr`.
+fn name_slots<'a>(
+    param: &'a mut php_stream_xport_param,
+    unwanted: &'a mut socklen_t,
+) -> (
+    Option<&'a mut *mut zend_string>,
+    Option<&'a mut *mut sockaddr>,
+    &'a mut socklen_t,
+) {
+    let (want_textaddr, want_addr) = (param.want_textaddr() != 0, param.want_addr() != 0);
+    let outputs = &mut param.outputs;
+    let textaddr = want_textaddr.then_some(&mut outputs.textaddr);
+    if want_addr {
+        (textaddr, Some(&mut outputs.addr), &mut outputs.addrlen)
     } else {
-        ptr::null_mut()
-    };
-    let (addr, addrlen) = if param.want_addr() != 0 {
-        (&raw mut param.outputs.addr, &raw mut param.outputs.addrlen)
-    } else {
-        (ptr::null_mut(), ptr::null_mut())
-    };
-    (textaddr, addr, addrlen)
+        (textaddr, None, unwanted)
+    }
 }
 
 /// `sizeof(sockaddr_storage)`.
@@ -847,7 +861,8 @@ const STORAGE_SIZE: socklen_t = size_of::<sockaddr_storage>() as socklen_t;
 /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of `peer`
 /// (at most all of it) into the names the transport parameter wants.
 fn populate_name(param: &mut php_stream_xport_param, peer: &mut sockaddr_storage, size: socklen_t) {
-    let (textaddr, addr, addrlen) = name_slots(param);
+    let mut unwanted = 0;
+    let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
     // SAFETY: an address of at least `size` bytes, and the output slots Zend asked for.
     unsafe {
         php_network_populate_name_from_sockaddr(
@@ -1112,8 +1127,7 @@ fn stream_from_socket(
     let Some(socket) = Socket::from_fd(fd, domain, kind, protocol) else {
         return Ok(ptr::null_mut());
     };
-    // SAFETY: reads a PHP global.
-    let seconds = unsafe { swr_zend_stream_default_timeout() };
+    let seconds = swr_zend_stream_default_timeout();
     if seconds > 0 {
         #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
         socket.set_timeout(seconds as f64, timeout::ALL);

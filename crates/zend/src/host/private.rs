@@ -8,6 +8,11 @@ use std::{
     ptr,
 };
 
+unsafe extern "C" {
+    /// `EG(exception)`: one pointer of the executor's is read; null for none.
+    safe fn swr_zend_facade_exception() -> *mut zend_object;
+}
+
 fn bailed(code: c_int) -> bool {
     if code != 0 {
         bailout::Bailout.defer();
@@ -66,8 +71,7 @@ pub unsafe fn cache_free(cache: *mut zend_fcall_info_cache) {
 /// null for none. A read of the executor's slot: nothing is retained.
 #[must_use]
 pub fn exception() -> *mut zend_object {
-    // SAFETY: the executor's globals, on the thread running PHP; one pointer is read.
-    unsafe { sys::swr_zend_facade_exception() }
+    swr_zend_facade_exception()
 }
 
 /// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,

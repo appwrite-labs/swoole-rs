@@ -5,7 +5,7 @@
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
-    BIO, BIO_ctrl, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE,
+    BIO, EVP_MD, EVP_PKEY, EVP_PKEY_free, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE,
     SSL_CTRL_SET_GROUPS_LIST, SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE,
     SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, SSL_CTX, SSL_CTX_free, SSL_CTX_set_alpn_protos,
     SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_CTX_set_session_id_context, SSL_FILETYPE_PEM,
@@ -221,8 +221,34 @@ const ALL: u32 = crate::constants::SW_SSL_ALL.unsigned_abs();
 
 /// `OPENSSL_INIT_LOAD_CONFIG | OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS`.
 const INIT_OPTIONS: u64 = 0x40 | 0x0020_0000 | 0x2;
-/// `BIO_CTRL_DGRAM_GET_PEER`.
-const BIO_CTRL_DGRAM_GET_PEER: c_int = 46;
+/// The `BIO_ctrl` command behind `BIO_dgram_get_peer`.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum BioPeerCtrl {
+    GetPeer = 46,
+}
+
+/// Where `BIO_dgram_get_peer` copies a peer's address: room for any sockaddr.
+type PeerBytes = [u8; size_of::<libc::sockaddr_storage>()];
+// The session BIO's own answer (dtls.rs's `bio_ctrl`) is the native address union.
+const _: () = assert!(
+    size_of::<swoole_rs_reactor::AddressStorage>() <= size_of::<PeerBytes>(),
+    "the session BIO's peer address fits where BIO_dgram_get_peer copies it"
+);
+
+// libcrypto's `BIO_ctrl`, declared for its one command here. A handle's BIO is one
+// this crate gave an SSL or made itself: a datagram BIO copies its peer's sockaddr,
+// the session BIO its address union, neither longer than `peer`, and the socket,
+// memory and file BIOs write nothing. OpenSSL answers a null BIO itself.
+unsafe extern "C" {
+    #[link_name = "BIO_ctrl"]
+    safe fn bio_peer(
+        bio: Option<Bio<'_>>,
+        command: BioPeerCtrl,
+        size: c_long,
+        peer: &mut PeerBytes,
+    ) -> c_long;
+}
 
 /// A native `std::string`: its `c_str()` and `length()`.
 #[repr(C)]
@@ -707,11 +733,9 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
 /// into `cookie` with its length in `cookie_length`.
 fn cookie_of(ssl: Ssl<'_>, cookie: &mut [impl ReadSlot; 255], cookie_length: &mut c_uint) -> c_int {
     let secret = [(ssl.as_ptr() as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
-    let mut peer = [0u8; size_of::<libc::sockaddr_storage>()];
-    let wbio = ssl.write_bio().map_or(ptr::null_mut(), Bio::as_ptr);
-    // SAFETY: `BIO_dgram_get_peer` on the SSL's write BIO (OpenSSL answers a null one
-    // itself), which copies at most a sockaddr_storage.
-    unsafe { BIO_ctrl(wbio, BIO_CTRL_DGRAM_GET_PEER, 0, peer.as_mut_ptr().cast()) };
+    let mut peer: PeerBytes = [0; size_of::<PeerBytes>()];
+    // `BIO_dgram_get_peer` on the SSL's write BIO.
+    bio_peer(ssl.write_bio(), BioPeerCtrl::GetPeer, 0, &mut peer);
     let family = libc::sa_family_t::from_ne_bytes(field(
         &peer,
         std::mem::offset_of!(libc::sockaddr_storage, ss_family),

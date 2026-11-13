@@ -21,9 +21,9 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt,
-        swr_zend_vm_interrupt_raise, swr_zval_is_true, zend_atomic_bool, zend_execute_data,
-        zend_fcall_info_cache, zend_get_constant_str, zval,
+        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt_raise,
+        swr_zval_is_true, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
+        zend_get_constant_str, zval,
     },
 };
 
@@ -133,9 +133,7 @@ pub(crate) fn create(
         argc,
         callable,
     };
-    let ctx = context::current();
-    // SAFETY: the running context.
-    unsafe { swoole_rs_zend::sys::swr_zend_coroutine_save(ctx.vm()) };
+    context::current().save();
     let cid = host::create((&raw mut args).cast());
     bailout::trapped(0)?;
     Ok(cid)
@@ -274,6 +272,12 @@ pub(crate) fn raise() {
     bailout::finish();
 }
 
+unsafe extern "C" {
+    /// `&EG(vm_interrupt)`: the address of this PHP thread's interrupt flag. It
+    /// takes nothing from its caller and runs no PHP code.
+    safe fn swr_zend_vm_interrupt() -> *mut zend_atomic_bool;
+}
+
 /// A pointer the interrupt thread may hold: `EG(vm_interrupt)` of this
 /// thread's executor, which outlives the interrupt thread.
 struct Flag(*mut zend_atomic_bool);
@@ -285,8 +289,7 @@ fn interrupt_start() {
         return;
     }
     let running = Arc::new(AtomicBool::new(true));
-    // SAFETY: this thread's executor globals.
-    let flag = Flag(unsafe { swr_zend_vm_interrupt() });
+    let flag = Flag(swr_zend_vm_interrupt());
     let shared = Arc::clone(&running);
     // The thread inherits a fully blocked mask (upstream's `interrupt_thread_start`).
     let spawned = swoole_rs_corebase::with_signals_blocked(|| {

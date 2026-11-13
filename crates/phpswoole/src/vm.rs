@@ -3,12 +3,17 @@
 //! `swoole_get_objects()` and `swoole_get_object_by_handle()`.
 use std::{ops::Range, ptr::NonNull};
 use swoole_rs_zend::{
-    Call, Owned, OwnedArray, Php, handlers,
-    sys::{
-        swr_zend_object_addref, swr_zend_objects_get, swr_zend_objects_top,
-        swr_zend_resource_count, zend_object,
-    },
+    Call, Owned, OwnedArray, Php, Value, handlers, object_zval,
+    sys::{swr_zend_objects_get, zend_object},
 };
+
+unsafe extern "C" {
+    /// `EG(objects_store).top`: one value of the executor's is read.
+    safe fn swr_zend_objects_top() -> u32;
+    /// `zend_array_count(&EG(regular_list))`: the executor's resource list is
+    /// counted; no PHP code runs.
+    safe fn swr_zend_resource_count() -> u32;
+}
 
 handlers! {
     zif_swoole_get_vm_status => vm_status;
@@ -18,8 +23,7 @@ handlers! {
 
 /// `EG(objects_store).top`, on the thread running PHP.
 fn objects_top(_php: Php<'_>) -> u32 {
-    // SAFETY: the executor's object store, which this thread's PHP owns.
-    unsafe { swr_zend_objects_top() }
+    swr_zend_objects_top()
 }
 
 /// An object the store holds, live while this call releases none. Only
@@ -29,10 +33,10 @@ struct Live(NonNull<zend_object>);
 impl Live {
     /// The object, with a new reference for the caller to hand on.
     fn retained(&self) -> Owned {
-        // SAFETY: a live object.
-        unsafe { swr_zend_object_addref(self.0.as_ptr()) };
-        // SAFETY: the live object, with the reference just added.
-        unsafe { Owned::object(self.0.as_ptr()) }
+        // SAFETY: a live object, named only for the copy below.
+        let mut named = unsafe { object_zval(self.0.as_ptr()) };
+        // `ZVAL_COPY`: the object, with a reference of its own.
+        Value::of(&mut named).copy()
     }
 }
 
@@ -51,11 +55,7 @@ fn vm_status(call: &Call) {
     // At most the store's u32 top.
     let count = u32::try_from(live_objects(call.php(), 0..u32::MAX).count()).unwrap_or(u32::MAX);
     call.add_assoc_long(c"object_num", i64::from(count));
-    // SAFETY: the executor's resource list.
-    call.add_assoc_long(
-        c"resource_num",
-        i64::from(unsafe { swr_zend_resource_count() }),
-    );
+    call.add_assoc_long(c"resource_num", i64::from(swr_zend_resource_count()));
 }
 
 fn objects(call: &Call) {

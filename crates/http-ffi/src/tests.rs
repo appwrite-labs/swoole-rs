@@ -1,5 +1,6 @@
 //! The C ABI's contracts: errors leave outputs alone, nulls and overflows are refused.
 use super::*;
+use crate::http_server::{get_method_string, get_status_message, parse_multipart_boundary};
 use std::mem::MaybeUninit;
 /// `swoole_rs_http::url_encode` into `output`, which holds only bytes.
 fn encode_into(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
@@ -59,8 +60,8 @@ fn errors_are_atomic_and_empty_encoding_has_terminator_storage() {
 }
 #[test]
 fn extreme_method_ids_do_not_panic() {
-    assert!(swr_v1_http_method_string(i32::MIN).is_null());
-    assert!(swr_v1_http_method_string(i32::MAX).is_null());
+    assert!(get_method_string(i32::MIN).is_null());
+    assert!(get_method_string(i32::MAX).is_null());
 }
 #[test]
 fn boundary_preserves_quotes_spaces_and_parameter_rules() {
@@ -71,13 +72,22 @@ fn boundary_preserves_quotes_spaces_and_parameter_rules() {
         (&b"x=a"[..], 0, None),
         (&b"boundary=x"[..], 99, None),
     ] {
-        let mut result = HttpSpan::default();
-        let status =
-            unsafe { swr_v1_http_boundary(input.as_ptr(), input.len(), offset, Some(&mut result)) };
-        assert_eq!(status, i32::from(expected.is_some()));
+        let (mut start, mut length) = (std::ptr::null_mut(), 0);
+        // SAFETY: `input` is initialized for its length.
+        let found = unsafe {
+            parse_multipart_boundary(
+                input.as_ptr().cast(),
+                input.len(),
+                offset,
+                &mut start,
+                &mut length,
+            )
+        };
+        assert_eq!(i32::from(found), i32::from(expected.is_some()));
         if let Some(expected) = expected {
+            let offset = start.addr() - input.as_ptr().addr();
             assert_eq!(
-                &input[result.offset..result.offset + result.length],
+                &input[offset..offset + usize::try_from(length).unwrap()],
                 expected
             );
         }
@@ -86,42 +96,41 @@ fn boundary_preserves_quotes_spaces_and_parameter_rules() {
 #[test]
 fn known_identity_and_repeated_unknown_backing_are_preserved() {
     let text = |pointer| unsafe { std::ffi::CStr::from_ptr(pointer) }.to_bytes();
-    let first = swr_v2_http_status_message(-701);
+    let first = get_status_message(-701);
     assert_eq!(text(first), b"-701 Unknown Status");
-    assert_eq!(text(swr_v2_http_status_message(200)), b"200 OK");
+    assert_eq!(text(get_status_message(200)), b"200 OK");
     assert_eq!(
-        swr_v2_http_status_message(200),
-        swr_v2_http_status_message(0),
+        get_status_message(200),
+        get_status_message(0),
         "known messages are the table's"
     );
     assert_eq!(text(first), b"-701 Unknown Status");
-    let next = swr_v2_http_status_message(-702);
+    let next = get_status_message(-702);
     assert_eq!(first, next);
     assert_eq!(text(first), b"-702 Unknown Status");
 }
 #[test]
 fn multipart_exports_refuse_nulls_and_unterminated_scratch() {
     assert_eq!(
-        unsafe { swr_v1_http_multipart_disposition(b"Content-Disposition".as_ptr(), 19) },
+        i32::from(swoole_rs_http::multipart_disposition(
+            b"Content-Disposition"
+        )),
         1
     );
+    assert_eq!(swoole_rs_http::multipart_filename(&mut []), INVALID);
+    // A null span, as the removed exports' callers could pass, is refused where the
+    // remaining ones borrow it.
     assert_eq!(
-        unsafe { swr_v1_http_multipart_filename(core::ptr::null_mut(), 0) },
-        INVALID
-    );
-    assert_eq!(
-        unsafe { swr_v1_http_multipart_disposition(core::ptr::null(), 1) },
-        INVALID
+        // SAFETY: a null span is refused before it is read.
+        unsafe { bytes(core::ptr::null(), 1) },
+        Err(INVALID)
     );
     let mut missing_nul = *b"filename";
     assert_eq!(
-        unsafe { swr_v1_http_multipart_filename(missing_nul.as_mut_ptr(), missing_nul.len()) },
+        swoole_rs_http::multipart_filename(&mut missing_nul),
         INVALID
     );
     let mut scratch = *b"name=x; filename=y\0";
-    assert_eq!(
-        unsafe { swr_v1_http_multipart_filename(scratch.as_mut_ptr(), scratch.len()) },
-        1
-    );
-    assert_eq!(swr_v1_http_multipart_result(2, 2, 0), 2);
+    assert_eq!(swoole_rs_http::multipart_filename(&mut scratch), 1);
+    assert_eq!(swoole_rs_http::multipart_result(2, 2, 0), 2);
 }

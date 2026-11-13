@@ -72,9 +72,6 @@ typedef struct {
     uint8_t want_read;
     uint8_t want_write;
 } swr_v1_socket_tls;
-/* _ssl_read_x509_file: a certificate as PEM into at most length bytes, warning and
- * returning -1 on failure; frees cert when consume. */
-int swr_v1_socket_ssl_read_x509(struct x509_st *cert, char *buffer, size_t length, bool consume);
 /* An IOVector's cursor. */
 typedef struct {
     struct iovec *iterator;

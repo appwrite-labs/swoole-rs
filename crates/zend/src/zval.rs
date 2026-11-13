@@ -11,15 +11,14 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
-        swr_zend_array_init, swr_zend_http_build_query, swr_zend_separate_array,
-        swr_zend_serialize, swr_zend_string_release, swr_zend_try_array_merge,
-        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
-        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_json_encode,
-        swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_url_decode, swr_zval_is_true,
-        zend_class_entry, zend_double_to_str, zend_hash_add_new, zend_hash_index_add,
-        zend_hash_next_index_insert, zend_ini_parse_quantity, zend_long, zend_object,
-        zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value, zval,
-        zval_ptr_dtor,
+        swr_zend_http_build_query, swr_zend_separate_array, swr_zend_serialize,
+        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
+        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
+        swr_zend_try_hash_update, swr_zend_try_json_encode, swr_zend_try_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zval_is_true, zend_class_entry,
+        zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert, zend_long,
+        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
+        zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -62,6 +61,16 @@ unsafe extern "C" {
         key: &mut *mut zend_string,
         index: &mut zend_ulong,
     ) -> Option<&'a Value>;
+    /// `zend_ini_parse_quantity`: it reads the string, and writes a new error
+    /// string or leaves `error` alone. It raises nothing itself.
+    safe fn zend_ini_parse_quantity(value: &ZStr, error: &mut *mut zend_string) -> zend_long;
+    /// `zend_double_to_str`: a new string; no PHP code runs.
+    safe fn zend_double_to_str(value: f64) -> *mut zend_string;
+    /// `number_format(number)`: a new string; no PHP code runs.
+    safe fn swr_zend_number_format(number: zend_long) -> *mut zend_string;
+    /// `array_init(target)`: `target` holds a new, empty array in place of
+    /// what it held, which is not released. No PHP code runs.
+    safe fn swr_zend_array_init(target: &Owned);
 }
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
@@ -261,7 +270,7 @@ impl Value {
         scope: Option<&crate::Class>,
         name: &CStr,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        self.read(scope, name, true)
+        self.read(self.scope(scope), name.to_bytes(), true)
     }
 
     /// [`Value::read_property`], not silent (`zend_read_property`'s `silent`
@@ -274,30 +283,40 @@ impl Value {
         scope: Option<&crate::Class>,
         name: &CStr,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        self.read(scope, name, false)
+        self.read(self.scope(scope), name.to_bytes(), false)
     }
 
-    /// [`Value::read_property`] (`silent`) or [`Value::read_property_loud`].
-    fn read(
+    /// The class a property read sees the object's properties as: `scope`,
+    /// or the object's own class for None.
+    fn scope(&self, scope: Option<&crate::Class>) -> Option<crate::ClassEntry<'_>> {
+        match scope {
+            Some(scope) => scope.class_entry(),
+            None => self.class_entry(),
+        }
+    }
+
+    /// `zend_read_property(scope, object, name, silent)` of an object, in
+    /// `zend_try`, as [`Value::read_property`], under `scope` (None: no scope).
+    pub(crate) fn read(
         &self,
-        scope: Option<&crate::Class>,
-        name: &CStr,
+        scope: Option<crate::ClassEntry<'_>>,
+        name: &[u8],
         silent: bool,
     ) -> Result<Option<Owned>, bailout::Bailout> {
         let Some(object) = self.object() else {
             return Ok(None);
         };
-        let scope = scope.map_or_else(|| self.class(), |scope| Some(scope.entry()));
+        let scope = scope.map_or(ptr::null_mut(), crate::ClassEntry::as_ptr);
         let rv = Owned::default();
         let mut found = ptr::null_mut();
         // SAFETY: the zval holds the object while borrowed; a class or null; Zend
         // reads `name`, and writes `rv` (undefined, this frame's) or nothing.
         bailout::trapped(unsafe {
             crate::sys::swr_zend_try_facade_read(
-                scope.unwrap_or(ptr::null_mut()),
+                scope,
                 object,
-                name.as_ptr(),
-                name.count_bytes(),
+                name.as_ptr().cast(),
+                name.len(),
                 silent,
                 rv.as_ptr(),
                 &raw mut found,
@@ -875,8 +894,7 @@ impl ZStr {
     /// What Zend parsed before the string stopped parsing, and its message.
     pub fn parse_quantity(&self) -> Result<zend_long, (zend_long, ZString)> {
         let mut error = ptr::null_mut();
-        // SAFETY: a live string; Zend writes a new error string or leaves null.
-        let size = unsafe { zend_ini_parse_quantity(self.as_ptr(), &raw mut error) };
+        let size = zend_ini_parse_quantity(self, &mut error);
         if error.is_null() {
             Ok(size)
         } else {
@@ -942,15 +960,13 @@ impl ZString {
     /// `zend_double_to_str`: `value` as PHP prints a float.
     #[must_use]
     pub fn from_double(value: f64) -> Self {
-        // SAFETY: Zend returns a new string.
-        Self(unsafe { zend_double_to_str(value) })
+        Self(zend_double_to_str(value))
     }
 
     /// `number_format(number)`: `number` with a `,` between its thousands.
     #[must_use]
     pub fn number_format(number: zend_long) -> Self {
-        // SAFETY: Zend formats the int into a new string; no PHP code runs.
-        Self(unsafe { crate::sys::swr_zend_number_format(number) })
+        Self(swr_zend_number_format(number))
     }
 
     /// `php_format_date`: `timestamp` as `date()` (`local`) or `gmdate()`
@@ -1140,8 +1156,7 @@ impl Default for OwnedArray {
     #[inline]
     fn default() -> Self {
         let owned = Owned::default();
-        // SAFETY: an undefined slot this owns.
-        unsafe { swr_zend_array_init(owned.as_ptr()) };
+        swr_zend_array_init(&owned);
         Self(ArrayMut(owned))
     }
 }

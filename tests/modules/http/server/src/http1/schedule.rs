@@ -6,6 +6,7 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::net_types::AddressStorage;
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
@@ -30,34 +31,15 @@ unsafe extern "C" {
     fn swoole_rand(min: c_int, max: c_int) -> c_int;
 }
 
-unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_assign(
-        address: *mut c_void,
-        length: *mut u32,
-        kind: c_int,
-        host: *const c_char,
-        host_length: usize,
-        port: c_int,
-        resolve: *const c_void,
-    ) -> c_int;
-}
-
 /// `network::Address::assign(type, host, port, false)`, as swoole_socket.h's inline does.
 fn assign(address: &mut Address, kind: c_int, host: &str, port: c_int) {
     address.kind = kind;
     let host = CString::new(host).unwrap();
-    // SAFETY: the address's storage and length; a NUL-terminated host; no resolver.
-    let error = unsafe {
-        swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
-            kind,
-            host.as_ptr(),
-            host.as_bytes().len(),
-            port,
-            ptr::null(),
-        )
-    };
+    // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
+    let storage = unsafe { &mut *(&raw mut address.addr).cast::<AddressStorage>() };
+    let host = host.as_bytes_with_nul();
+    let error =
+        swoole_rs_clients::address::assign(storage, &mut address.len, kind, host, port, false);
     assert_eq!(error, 0);
 }
 

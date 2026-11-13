@@ -10,10 +10,9 @@ Production exports have the prefix `swr_v1_clients_`.
 
 | Area | Exports | Rust responsibility |
 | --- | --- | --- |
-| Address | `url`, `port`, `ip`, `loopback`, `ip_text` | URL grammar, type and port; port validity; numeric bytes, original loopback policy and DNS text |
+| Address | `port`, `ip`, `loopback`, `ip_text` | Port validity; numeric bytes, original loopback policy and DNS text |
 | Resolver settings | `set_dns_server`, `dns_server`, `load_resolv_conf`, `set_hosts_path`, `hosts_lookup` | DNS server, `resolv.conf` and hosts file |
 | Client | `new`, `run` (connect, send, recv, close, shutdown, free, …), `listen`, … | `network::Client`: state and every operation (see below) |
-| HTTP | `http_format` | Bounded output formatting |
 
 ## Common rules
 
@@ -48,16 +47,17 @@ uncaught `bad_alloc` does.
 - Apple accepts decimal leading zeros; Linux is strict. Dotted IPv6 tails are
   normalized in bounded stack storage before `std::net` parsing.
 - IPv4 loopback is exactly `127.0.0.1`, not `/8`.
-- `Address::assign(type, host, port, resolve)` is one Rust call,
-  `clients_address_assign` (crates/corebase's `net_address::assign`, which crates/tls
+- `Address::assign(type, host, port, resolve)` is one Rust function,
+  `address::assign` (crates/corebase's `net_address::assign`, which crates/tls
   binds with): port check, then the sockaddr union and length for
-  IPv4/IPv6/raw (literal, else native `gethostbyname` through a function pointer
-  when resolving) or Unix (length limit, `strlcpy` copy); it returns the
-  `SW_ERROR_*` code native sets as the last error. Native sets `type` first.
-- `Address::assign(url)` is `clients_url`: the pinned regexes' grammar, the type,
-  ASCII port digits (the classic locale's `\d`) and `std::stoi`'s `int` range,
-  which native throws as `std::out_of_range`. Native logs the invalid-URL notice
-  and assigns the host span.
+  IPv4/IPv6/raw (literal, else `gethostbyname` when resolving) or Unix (length
+  limit, `strlcpy` copy); it returns the `SW_ERROR_*` code the caller sets as
+  the last error, having set `type` first. It has no export: every caller is Rust.
+- `Address::assign(url)` is `clients::url`, Rust-only too: the pinned regexes'
+  grammar, the type, ASCII port digits (the classic locale's `\d`) and
+  `std::stoi`'s `int` range (`URL_PORT_RANGE`, where upstream throws
+  `std::out_of_range`). The caller logs the invalid-URL notice and assigns the
+  host span.
 - `Address::verify_ip` is `clients_address_verify`, parsing into the scratch
   `addr_str` writes.
 - Unsupported families and Apple scoped-IPv6 parsing go to the platform's

@@ -16,7 +16,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
-use swoole_rs_server::port_config::{self, DtlsSessions, PortConfig, TlsState};
+use swoole_rs_server::port_config::{DtlsSessions, PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
@@ -183,10 +183,7 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
 }
 
 /// `ListenPort::ssl_create(sock)`: the socket's server-side `SSL`, which names the port.
-pub(crate) fn ssl_create(port: *mut c_void, sock: Option<Socket<'_>>) -> bool {
-    // SAFETY: the live port that accepted `sock`, which `PortMethods` takes; its
-    // context is only read.
-    let config: &PortConfig = unsafe { port_config::of(port) };
+pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool {
     let context = config
         .ssl_context
         .as_ref()
@@ -198,7 +195,8 @@ pub(crate) fn ssl_create(port: *mut c_void, sock: Option<Socket<'_>>) -> bool {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     };
-    // The port outlives its connections.
+    // The port outlives its connections; the SNI callback only reads it.
+    let port = ptr::from_ref(config).cast_mut().cast();
     if !Ssl::of(sock).is_some_and(|ssl| ssl.set_ex_data(swr_v1_tls_port_index(), port)) {
         log::warning(
             c"ListenPort::ssl_create",

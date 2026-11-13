@@ -19,14 +19,24 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     report,
     sys::{
-        HashTable, swr_zend_after_fork, swr_zend_compiling_preload, swr_zend_execute_ex_reset,
-        swr_zend_execute_ex_restore, swr_zend_fatal_error, swr_zend_leak_check,
-        swr_zend_module_globals, swr_zend_module_globals_init, swr_zend_print_stack_trace,
+        HashTable, swr_zend_after_fork, swr_zend_execute_ex_reset, swr_zend_execute_ex_restore,
+        swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
+        swr_zend_module_globals_init, swr_zend_print_stack_trace,
         swr_zend_register_shutdown_function, swr_zend_runtime_call_handler,
-        swr_zend_signals_uncheck, swr_zend_stream_constant_no_close, swr_zend_temporary_directory,
-        swr_zend_try_hook, swr_zend_try_minit, zend_class_entry, zval,
+        swr_zend_stream_constant_no_close, swr_zend_try_hook, swr_zend_try_minit, zend_class_entry,
+        zval,
     },
 };
+
+unsafe extern "C" {
+    /// `php_get_temporary_directory()`: PHP's temporary directory, which it
+    /// works out once per request and keeps.
+    safe fn swr_zend_temporary_directory() -> *const c_char;
+    /// Whether the compiler is preloading: one flag of its globals is read.
+    safe fn swr_zend_compiling_preload() -> c_int;
+    /// `SIGG(check) = 0`: one flag of Zend's signal globals is cleared.
+    safe fn swr_zend_signals_uncheck();
+}
 
 /// `zend_swoole_globals` (`php_swoole.h`'s layout, which Zend's ini handlers
 /// write by offset). Each field is a cell: this thread reads and writes them
@@ -574,13 +584,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     globals.req_status.set(RINIT_BEGIN);
     // Task files go to `sys_get_temp_dir()`: `/tmp` does not exist everywhere
     // (Android, termux).
-    // SAFETY: PHP's directory, which lives for the request.
-    let directory = unsafe { swr_zend_temporary_directory() };
-    // SAFETY: a NUL-terminated path, which the setter copies.
+    let directory = swr_zend_temporary_directory();
+    // SAFETY: PHP's directory, a NUL-terminated path that lives for the
+    // request; the setter copies it.
     swoole_rs_corebase::set_task_tmpdir(unsafe { CStr::from_ptr(directory) });
     php_swoole_register_shutdown_function(c"swoole_internal_call_user_shutdown_begin");
-    // SAFETY: this request's compiler globals.
-    if globals.enable_library.get() && unsafe { swr_zend_compiling_preload() } == 0 {
+    if globals.enable_library.get() && swr_zend_compiling_preload() == 0 {
         // xdebug hooks zend_execute_ex, under which the library does not load
         // correctly (swoole/swoole-src#5182): load it under execute_ex.
         // SAFETY: RINIT, before any PHP code runs.
@@ -592,8 +601,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
         // SAFETY: the hook replaced above.
         unsafe { swr_zend_execute_ex_restore(hook) };
     }
-    // SAFETY: RINIT.
-    unsafe { swr_zend_signals_uncheck() };
+    swr_zend_signals_uncheck();
     let Some(families) = families() else {
         return SUCCESS;
     };

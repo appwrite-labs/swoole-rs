@@ -6,8 +6,15 @@ use std::{collections::HashMap, ptr};
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
-    sys::{swr_zend_runtime_select_args, swr_zend_stream_from_zval, zend_long, zend_ulong, zval},
+    sys::{php_stream, swr_zend_runtime_select_args, zend_long, zend_ulong, zval},
 };
+
+unsafe extern "C" {
+    /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
+    /// null for any other value or resource. It reads the zval and the
+    /// resource's type, and runs no PHP code.
+    safe fn swr_zend_stream_from_zval(value: &Value) -> *mut php_stream;
+}
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
 const READ: i32 = 1 << 9;
@@ -91,8 +98,7 @@ fn emulate_read(array: &mut ArrayMut) -> usize {
         let mut entries = table.entries();
         while let Some((key, index, value)) = entries.next_stored() {
             let value = value.dereferenced();
-            // SAFETY: a live element.
-            let stream = unsafe { swr_zend_stream_from_zval(value.as_ptr()) };
+            let stream = swr_zend_stream_from_zval(&value);
             // SAFETY: null or a live stream.
             if unsafe { stream.as_ref() }.is_some_and(|stream| stream.writepos > stream.readpos) {
                 ready.push(Entry::new(key, index, &value));

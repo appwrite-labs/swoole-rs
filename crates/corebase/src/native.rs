@@ -21,11 +21,8 @@ pub struct NativeHost {
     pub delete_pool: fn(),
     /// One `LOGGER_*` operation on the process logger (crates/process).
     pub logger: fn(op: c_int),
-    /// `swoole_signal_clear()`.
-    ///
-    /// # Safety
-    /// On the thread that owns the signal handlers.
-    pub signal_clear: unsafe extern "C" fn(),
+    /// `swoole_signal_clear()`, which C++ calls too.
+    pub signal_clear: extern "C" fn(),
     pub timer_free: fn(),
     pub event_available: fn() -> bool,
     pub event_free: fn(),

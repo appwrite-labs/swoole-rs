@@ -4,7 +4,6 @@
 #pragma once
 
 #include "swoole_protocol.h"
-#include "swoole_rs_http.h"
 
 enum swHttpVersion {
     SW_HTTP_VERSION_10 = 1,

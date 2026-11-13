@@ -4,7 +4,6 @@ use libc::{c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
-    ptr::NonNull,
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
@@ -31,12 +30,12 @@ fn make_trapped(
     kind: c_int,
     protocol: c_int,
     family: bool,
-    made: &mut *mut c_void,
+    made: &mut Option<Co>,
 ) -> Result<(), Bailout> {
     let make = || {
         let (socket, result) =
             swoole_rs_hooks::co_socket::make_quiet(fd, domain, kind, protocol, family);
-        *made = socket.this();
+        *made = Some(socket);
         swoole_rs_hooks::co_socket::warn_created(socket, result);
     };
     // SAFETY: the body holds copies, a `Copy` handle and the caller's slot.
@@ -84,7 +83,8 @@ pub(crate) const SW_WAIT: i32 = 2;
 /// A `SocketImpl *`: owned (deleted on drop), or a hooked fd's, lent by the
 /// socket map until the fd's hooked close.
 pub(crate) struct Socket {
-    socket: NonNull<c_void>,
+    /// The socket's handle, live while this owns or borrows it.
+    socket: Co,
     owned: bool,
 }
 
@@ -116,10 +116,10 @@ impl Socket {
 
     /// The native `make`: `new SocketImpl(kind)` when `fd` is negative.
     fn make(fd: i32, domain: i32, kind: i32, protocol: i32) -> Option<Self> {
-        let mut made = std::ptr::null_mut();
+        let mut made = None;
         let trapped = make_trapped(fd, domain, kind, protocol, fd >= 0, &mut made);
         // Owns, so a bailout frees, the socket `make` wrote before it.
-        let socket = Self::wrap(made, true);
+        let socket = made.map(Self::owning);
         if trapped.is_err() {
             Bailout.defer();
             return None;
@@ -129,24 +129,28 @@ impl Socket {
 
     /// The coroutine socket of hooked `fd`, if any.
     pub(crate) fn of_fd(fd: i32) -> Option<Self> {
-        Self::wrap(swoole_rs_hooks::socket_map::get(fd)?.this(), false)
-    }
-
-    fn wrap(socket: *mut c_void, owned: bool) -> Option<Self> {
+        let socket = swoole_rs_hooks::socket_map::get(fd)?;
         Some(Self {
-            socket: NonNull::new(socket)?,
-            owned,
+            socket,
+            owned: false,
         })
     }
 
+    /// The owner of `socket`, which `make` made and nothing else holds.
+    fn owning(socket: Co) -> Self {
+        Self {
+            socket,
+            owned: true,
+        }
+    }
+
     fn raw(&self) -> *mut c_void {
-        self.socket.as_ptr()
+        self.socket.this()
     }
 
     /// The socket's handle.
-    fn co(&self) -> Co {
-        // SAFETY: the socket is live while this owns or borrows it.
-        unsafe { Co::of(self.raw()) }
+    const fn co(&self) -> Co {
+        self.socket
     }
 
     pub(crate) fn fd(&self) -> i32 {
@@ -276,7 +280,7 @@ impl Socket {
 
     /// `accept()`: the connection, if any.
     pub(crate) fn accept(&self) -> Option<Self> {
-        Self::wrap(self.co().accept(0.0)?.this(), true)
+        Some(Self::owning(self.co().accept(0.0)?))
     }
 
     pub(crate) fn shutdown(&self, how: i32) -> bool {
@@ -488,14 +492,14 @@ pub mod co {
         protocol: c_int,
         family: bool,
     ) -> Result<Co, Bailout> {
-        let mut made = std::ptr::null_mut();
+        let mut made = None;
         if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
-            drop(super::Socket::wrap(made, true));
+            drop(made.map(super::Socket::owning));
             return Err(Bailout);
         }
-        // SAFETY: the socket just made, which the caller holds until it frees it.
-        Ok(unsafe { Co::of(made) })
+        // The socket just made, which the caller holds until it frees it.
+        made.ok_or(Bailout)
     }
 
     /// `delete socket`.

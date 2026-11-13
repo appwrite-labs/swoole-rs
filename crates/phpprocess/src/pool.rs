@@ -7,7 +7,7 @@ use crate::{
     signal::clean,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell, RefCell, UnsafeCell},
     ffi::{CString, c_int, c_void},
     ptr,
     rc::Rc,
@@ -48,8 +48,6 @@ const WORKER_IDLE: u8 = 2;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 
-type Pool = *mut PoolRecord;
-
 /// `swoole::MessageBus`'s first members: its Rust bus, then its allocator.
 #[repr(C)]
 struct BusHead {
@@ -67,33 +65,53 @@ fn exception() -> &'static Class {
     swoole_rs_phpswoole::exception()
 }
 
-/// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
-/// on failure, none, with `errno` set.
-fn pool_new(worker_num: u32, key: c_int, ipc: c_int, object: &Value, async_: bool) -> Option<Pool> {
-    let pool = Box::into_raw(Box::new(PoolRecord::empty()));
-    if methods::create(handle(pool), worker_num, key, ipc) < 0 {
-        // SAFETY: the allocation above, which nothing else holds.
-        drop(unsafe { Box::from_raw(pool) });
-        return None;
-    }
-    // Copied without a reference, as upstream's `sw_zval_dup`.
-    let hooks = Hooks {
-        ptr: Some(Box::into_raw(Box::new(object.copy_value())).cast()),
-        ..Hooks::default()
-    };
-    // SAFETY: the pool has no hooks yet, and those `start` installs read this copy
-    // (`owner`), which `pool_free` drops only as it destroys the pool.
-    unsafe { handle(pool).install(&hooks) };
-    handle(pool).set_is_async(async_);
-    Some(pool)
+/// The pool a Pool object owns, and the copy of `$this`'s zval its hooks read.
+/// Both are reached in place: the pool's workers keep the record's address, and
+/// the pool keeps the copy's.
+struct Pool {
+    record: UnsafeCell<PoolRecord>,
+    /// Copied without a reference, as upstream's `sw_zval_dup`.
+    object: UnsafeCell<zval>,
+    /// `create` succeeded, so dropping this destroys the pool.
+    created: Cell<bool>,
 }
 
-fn pool_free(pool: Pool) {
-    // SAFETY: the zval copy `pool_new` made.
-    drop(unsafe { Box::from_raw(handle(pool).ptr().cast::<zval>()) });
-    methods::destroy(handle(pool));
-    // SAFETY: the allocation `pool_new` made.
-    drop(unsafe { Box::from_raw(pool) });
+impl Pool {
+    /// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
+    /// on failure, none, with `errno` set. It is shared so that handing it to its
+    /// object moves no claim to the record, as moving a `Box` would.
+    fn create(
+        worker_num: u32,
+        key: c_int,
+        ipc: c_int,
+        object: &Value,
+        async_: bool,
+    ) -> Option<Rc<Self>> {
+        let pool = Rc::new(Self {
+            record: UnsafeCell::new(PoolRecord::empty()),
+            object: UnsafeCell::new(object.copy_value()),
+            created: Cell::new(false),
+        });
+        if methods::create(pool.handle(), worker_num, key, ipc) < 0 {
+            return None;
+        }
+        pool.created.set(true);
+        pool.handle().set_is_async(async_);
+        Some(pool)
+    }
+
+    /// The pool, to run pool operations on.
+    fn handle(&self) -> PoolRef<'_> {
+        PoolRef::from(&self.record)
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        if self.created.get() {
+            methods::destroy(self.handle());
+        }
+    }
 }
 
 /// `SwooleWG.worker`'s status, and its request count once idle again.
@@ -109,7 +127,7 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: Pool, message: &RecvData) -> Owned {
+fn message_data(pool: PoolRef<'_>, message: &RecvData) -> Owned {
     let (length, data) = (
         message.info.len as usize,
         message.data.cast_mut().cast::<u8>(),
@@ -122,7 +140,7 @@ fn message_data(pool: Pool, message: &RecvData) -> Owned {
         let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
         // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
         // string is now the caller's.
-        unsafe { swoole_rs_server::bus_move_packet(handle(pool).message_bus()) };
+        unsafe { swoole_rs_server::bus_move_packet(pool.message_bus()) };
         packet.into_zstring()
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -156,7 +174,7 @@ impl Handler {
 /// and the object is only ever borrowed shared.
 #[derive(Default)]
 struct PoolObject {
-    pool: Cell<Pool>,
+    pool: OnceCell<Rc<Pool>>,
     on_start: Handler,
     on_shutdown: Handler,
     on_worker_start: Handler,
@@ -178,10 +196,7 @@ impl Custom for PoolObject {
 
 impl Drop for PoolObject {
     fn drop(&mut self) {
-        let pool = self.pool.get();
-        if !pool.is_null() {
-            pool_free(pool);
-        }
+        drop(self.pool.take());
         for handler in [
             &self.on_worker_start,
             &self.on_message,
@@ -200,19 +215,22 @@ fn this(call: &Call) -> Option<&PoolObject> {
     call.custom()
 }
 
-/// `process_pool_get_and_check_pool`.
-fn checked(object: Option<&PoolObject>) -> Pool {
-    let pool = object.map_or(ptr::null_mut(), |object| object.pool.get());
-    if pool.is_null() {
+/// `process_pool_get_and_check_pool`: the object's pool, which lives as long as
+/// the object; none, after the fatal error, before its constructor made one.
+fn checked(object: Option<&PoolObject>) -> Option<PoolRef<'_>> {
+    let pool = object.and_then(|object| object.pool.get());
+    if pool.is_none() {
         host::unconstructed();
     }
-    pool
+    pool.map(|pool| pool.handle())
 }
 
-/// A pool this module created, to run pool operations on.
-fn handle<'a>(pool: Pool) -> PoolRef<'a> {
-    // SAFETY: callers pass a live pool.
-    unsafe { PoolRef::new(pool) }
+/// `current_pool`: the pool running in this process, if any.
+fn current<'a>() -> Option<PoolRef<'a>> {
+    let pool = CURRENT.load(Ordering::Acquire);
+    // SAFETY: null, or the pool `start` published until it returns, or the one a
+    // worker published for the rest of its process: its object is live in both.
+    (!pool.is_null()).then(|| unsafe { PoolRef::new(pool) })
 }
 
 method_table! {
@@ -232,12 +250,6 @@ method_table! {
     ];
 }
 
-/// The pool's Rust worker loops call PHP inside this trap and leave before re-raising.
-unsafe extern "C" fn trap(body: unsafe extern "C" fn(*mut c_void), arg: *mut c_void) -> c_int {
-    // SAFETY: a C body for `zend_try`.
-    unsafe { swoole_rs_zend::sys::swr_zend_try(Some(body), arg) }
-}
-
 /// `zend_bailout()`, from a frame that owns nothing.
 unsafe extern "C" fn raise() {
     // SAFETY: Zend's bailout.
@@ -253,8 +265,9 @@ unsafe extern "C" fn raise() {
 pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
     // SAFETY: Zend's MINIT of this module, on this thread.
     let minit = unsafe { Minit::new(module) };
-    // SAFETY: a `zend_try` trap and Zend's bailout.
-    unsafe { swoole_rs_process::pool::set_bailout(trap, raise) };
+    // SAFETY: `zend_try` over a C body, in which the pool's Rust worker loops call
+    // PHP and which they leave before re-raising, and Zend's bailout.
+    unsafe { swoole_rs_process::pool::set_bailout(swoole_rs_zend::sys::swr_zend_try, raise) };
     minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", &METHODS.0, 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
@@ -269,11 +282,7 @@ pub unsafe extern "C" fn php_swoole_process_pool_minit(module: c_int) {
 /// `timer_if_use_reactor()` inside a running pool: not in its master, nor in a
 /// synchronous worker loop, which dispatches timers itself. `None` outside a pool.
 pub(crate) fn timer_uses_reactor(master: bool) -> Option<bool> {
-    let pool = CURRENT.load(Ordering::Acquire);
-    (!pool.is_null()).then(|| {
-        let pool = handle(pool);
-        !master && (pool.is_async() || !pool.has_main_loop())
-    })
+    current().map(|pool| !master && (pool.is_async() || !pool.has_main_loop()))
 }
 
 fn update_bool(object: &Value, name: &std::ffi::CStr, value: bool) {
@@ -326,31 +335,26 @@ fn handler_error(object: &Value, event: &str) {
 
 /// `process_pool_signal_handler`.
 extern "C" fn on_signal(signo: c_int) {
-    let pool = CURRENT.load(Ordering::Acquire);
-    if pool.is_null() {
-        return;
+    if let Some(pool) = current() {
+        signal(pool, signo);
     }
-    signal(pool, signo);
 }
 
 /// `ProcessPool::signal` in this process's worker (or null).
-fn signal(pool: Pool, signo: c_int) {
-    methods::signal(
-        handle(pool),
-        signo,
-        CURRENT_WORKER.load(Ordering::Acquire).cast(),
-    );
+fn signal(pool: PoolRef<'_>, signo: c_int) {
+    methods::signal(pool, signo, CURRENT_WORKER.load(Ordering::Acquire).cast());
 }
 
 /// The object a pool callback belongs to, and its data.
-fn owner<'a>(pool: Pool) -> Option<(&'a Value, &'a PoolObject)> {
-    // SAFETY: the pool's copy of its object zval, alive while the pool runs.
-    let object = unsafe { Value::from_ptr(handle(pool).ptr().cast()) }?;
+fn owner(pool: PoolRef<'_>) -> Option<(&Value, &PoolObject)> {
+    // SAFETY: null, or its `Pool`'s copy of its object zval, which `start`
+    // installed with the hooks and which lives as long as the record.
+    let object = unsafe { Value::from_ptr(pool.ptr().cast()) }?;
     Some((object, object.custom()?))
 }
 
 extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    let (pool, worker) = (pool.raw(), worker.raw().cast::<c_void>());
+    let worker = worker.raw().cast::<c_void>();
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -359,7 +363,7 @@ extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
         swoole_rs_zend::bailout::finish();
         return;
     }
-    CURRENT.store(pool, Ordering::Release);
+    CURRENT.store(pool.raw(), Ordering::Release);
     CURRENT_WORKER.store(worker, Ordering::Release);
     let id = i64::from(worker_view(worker).id);
     update_bool(object, c"running", true);
@@ -397,7 +401,6 @@ fn worker_signals(term: bool) {
 }
 
 extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
-    let pool = pool.raw();
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -421,7 +424,7 @@ extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
     swoole_rs_zend::bailout::finish();
 }
 
-fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
+fn worker_stopped(pool: PoolRef<'_>, worker: *mut c_void, exit: bool) {
     let Some((object, this)) = owner(pool) else {
         return;
     };
@@ -439,17 +442,16 @@ fn worker_stopped(pool: Pool, worker: *mut c_void, exit: bool) {
 }
 
 extern "C-unwind" fn on_worker_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool.raw(), worker.raw().cast(), false);
+    worker_stopped(pool, worker.raw().cast(), false);
     swoole_rs_zend::bailout::finish();
 }
 
 extern "C-unwind" fn on_worker_exit(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool.raw(), worker.raw().cast(), true);
+    worker_stopped(pool, worker.raw().cast(), true);
     swoole_rs_zend::bailout::finish();
 }
 
 extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
-    let pool = pool.raw();
     if let Some((object, this)) = owner(pool) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
@@ -463,7 +465,6 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
 }
 
 extern "C-unwind" fn on_shutdown(pool: PoolRef<'_>) {
-    let pool = pool.raw();
     if let Some((object, this)) = owner(pool) {
         update_bool(object, c"running", false);
         update_bool(object, c"workerRunning", false);
@@ -490,7 +491,7 @@ fn construct(call: &Call) {
     if !swoole_rs_corebase::swr_v1_core_server().is_null() {
         return refuse("cannot create server and process pool instances simultaneously".into());
     }
-    if !CURRENT.load(Ordering::Acquire).is_null() {
+    if current().is_some() {
         return refuse(
             "A process pool instance has already been created and cannot be created again".into(),
         );
@@ -524,7 +525,7 @@ fn construct(call: &Call) {
         call.throw(exception(), text, i64::from(crate::report::errno()));
         call.set_bool(false);
     };
-    if !pool.pool.get().is_null() {
+    if pool.pool.get().is_some() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
@@ -547,7 +548,7 @@ fn construct(call: &Call) {
         clippy::cast_sign_loss,
         reason = "upstream converts to uint32_t, key_t and swIPCMode"
     )]
-    let made = pool_new(
+    let made = Pool::create(
         worker_num as u32,
         key as c_int,
         ipc_type as c_int,
@@ -558,7 +559,8 @@ fn construct(call: &Call) {
         return fail(c"failed to create process pool");
     };
     pool.enable_coroutine.set(coroutine);
-    pool.pool.set(made);
+    // Empty, as checked above; creating the pool ran no PHP code.
+    _ = pool.pool.set(made);
 }
 
 fn destruct(_call: &Call) {}
@@ -571,7 +573,9 @@ fn set(call: &Call) {
     let this = this(call);
     // Each conversion below can run PHP code, which can call this object's
     // methods: the record is borrowed per write, after its value converted.
-    let pool = checked(this);
+    let Some(pool) = checked(this) else {
+        return;
+    };
     swoole_rs_phpswoole::php_swoole_set_global_option(options);
     swoole_rs_phpcoroutines::set_coroutine_option(options);
     // Each setter stops at a conversion's bailout, which upstream's ended the
@@ -585,7 +589,6 @@ fn set(call: &Call) {
     }
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
-        let pool = handle(pool);
         pool.set_max_packet_size(packet_limit(
             pool.use_msgqueue() != 0,
             max_package_size(size),
@@ -595,7 +598,7 @@ fn set(call: &Call) {
         let Some(seconds) = value.applied_long() else {
             return;
         };
-        handle(pool).set_max_wait_time(
+        pool.set_max_wait_time(
             u32::try_from(seconds.clamp(0, u32::MAX.into())).unwrap_or(u32::MAX),
         );
     }
@@ -605,7 +608,7 @@ fn set(call: &Call) {
     if let Some(value) = options.get(b"enable_coroutine") {
         let enable = value.truthy();
         this.enable_coroutine.set(enable);
-        handle(pool).set_is_async(enable);
+        pool.set_is_async(enable);
     }
     if let Some(value) = options.get(b"enable_message_bus") {
         this.enable_message_bus.set(value.truthy());
@@ -614,11 +617,9 @@ fn set(call: &Call) {
 
 fn on(call: &Call) {
     let this = this(call);
-    let pool = checked(this);
-    let Some(this) = this else {
+    let Some((view, this)) = checked(this).zip(this) else {
         return;
     };
-    let view = handle(pool);
     if view.started() {
         fatal(
             E_WARNING,
@@ -685,8 +686,9 @@ fn unsupported(call: &Call, view: PoolRef<'_>) {
 }
 
 fn listen(call: &Call) {
-    let pool = checked(this(call));
-    let view = handle(pool);
+    let Some(view) = checked(this(call)) else {
+        return;
+    };
     if view.started() {
         fatal(
             E_WARNING,
@@ -717,9 +719,8 @@ fn listen(call: &Call) {
         clippy::cast_possible_truncation,
         reason = "upstream's int port and backlog"
     )]
-    let listened =
-        methods::listen_socket(handle(pool), kind, &host, port as c_int, backlog as c_int);
-    let socket = handle(pool).ipc_listener();
+    let listened = methods::listen_socket(view, kind, &host, port as c_int, backlog as c_int);
+    let socket = view.ipc_listener();
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
         socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
@@ -732,8 +733,9 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let pool = checked(this(call));
-    let view = handle(pool);
+    let Some(view) = checked(this(call)) else {
+        return;
+    };
     if i64::from(view.ipc_mode()) != IPC_SOCKET {
         return unsupported(call, view);
     }
@@ -751,8 +753,9 @@ fn write(call: &Call) {
 }
 
 fn send_message(call: &Call) {
-    let pool = checked(this(call));
-    let view = handle(pool);
+    let Some(view) = checked(this(call)) else {
+        return;
+    };
     if !view.started() {
         fatal(E_WARNING, &message!("process pool is not started."));
         call.set_bool(false);
@@ -795,11 +798,12 @@ fn pool_signals() -> [c_int; 6] {
 
 fn start(call: &Call) {
     let this = this(call);
-    let pool = checked(this);
-    let Some(this) = this else {
+    let Some((this, pool)) = this.zip(this.and_then(|this| this.pool.get())) else {
+        host::unconstructed();
         return;
     };
-    if handle(pool).started() {
+    let view = pool.handle();
+    if view.started() {
         fatal(E_WARNING, &message!("process pool is started"));
         call.set_bool(false);
         return;
@@ -813,11 +817,10 @@ fn start(call: &Call) {
             *old = host::signal_swap(*signo, SignalHandler::new(on_signal), false);
         }
     }
-    if !protocol(pool, this.enable_message_bus.get()) {
+    if !protocol(view, this.enable_message_bus.get()) {
         call.set_bool(false);
         return;
     }
-    let view = handle(pool);
     if !this.on_worker_start.is_set() && !this.on_message.is_set() {
         if view.is_async() {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
@@ -838,16 +841,16 @@ fn start(call: &Call) {
         call.set_bool(false);
         return;
     }
-    CURRENT.store(pool, Ordering::Release);
-    let record = handle(pool);
+    CURRENT.store(view.raw(), Ordering::Release);
     let with_message = this.on_message.is_set();
     if !with_message {
-        record.clear_main_loop();
+        view.clear_main_loop();
     }
     let with_exit = this.enable_coroutine.get() && this.on_worker_exit.is_set();
     let message: MessageFn = on_message;
     let exit: WorkerFn = on_worker_exit;
     let hooks = Hooks {
+        ptr: Some(pool.object.get().cast()),
         on_message: with_message.then_some(message),
         on_start: Some(on_start),
         on_shutdown: Some(on_shutdown),
@@ -856,14 +859,14 @@ fn start(call: &Call) {
         on_worker_exit: with_exit.then_some(exit),
         ..Hooks::default()
     };
-    // SAFETY: each hook reads the pool's `ptr` as the copy of its object `pool_new`
-    // stored (`owner`), which lives until `pool_free` destroys the pool.
-    unsafe { record.install(&hooks) };
-    if methods::start(handle(pool)) < 0 {
+    // SAFETY: each hook reads the pool's `ptr` as its `Pool`'s copy of its object
+    // (`owner`), which lives until the `Pool` drops, destroying the pool.
+    unsafe { view.install(&hooks) };
+    if methods::start(view) < 0 {
         call.set_bool(false);
         return;
     }
-    methods::wait(handle(pool));
+    methods::wait(view);
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
@@ -875,41 +878,34 @@ fn start(call: &Call) {
 
 /// The pool's protocol: messages over a bus whose packets are zend strings, or
 /// a stream.
-fn protocol(pool: Pool, message_bus: bool) -> bool {
+fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
     if !message_bus {
-        methods::set_protocol(handle(pool), PROTOCOL_STREAM);
+        methods::set_protocol(pool, PROTOCOL_STREAM);
         return true;
     }
-    if handle(pool).message_bus().is_null() && methods::create_message_bus(handle(pool)) != 0 {
+    if pool.message_bus().is_null() && methods::create_message_bus(pool) != 0 {
         return false;
     }
-    let bus = handle(pool).message_bus().cast::<BusHead>();
+    let bus = pool.message_bus().cast::<BusHead>();
     // SAFETY: the pool's message bus, whose allocator its next buffer uses.
     unsafe { (*bus).allocator = swoole_rs_phpswoole::sw_zend_string_allocator() };
-    methods::set_protocol(handle(pool), PROTOCOL_MESSAGE);
+    methods::set_protocol(pool, PROTOCOL_MESSAGE);
     true
 }
 
 fn detach(call: &Call) {
-    let pool = CURRENT.load(Ordering::Acquire);
-    if pool.is_null() {
-        call.set_bool(false);
-        return;
-    }
-    call.set_bool(methods::detach(handle(pool)));
+    call.set_bool(current().is_some_and(methods::detach));
 }
 
 fn get_process(call: &Call) {
-    let pool = CURRENT.load(Ordering::Acquire);
-    if pool.is_null() {
+    let Some(view) = current() else {
         call.set_bool(false);
         return;
-    }
+    };
     let Ok(mut id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         call.set_bool(false);
         return;
     };
-    let view = handle(pool);
     if id >= i64::from(view.worker_num()) {
         notice(E_WARNING, &message!("invalid worker_id[{id}]"));
         call.set_bool(false);
@@ -983,16 +979,14 @@ fn get_process(call: &Call) {
 }
 
 fn stop(_call: &Call) {
-    let pool = CURRENT.load(Ordering::Acquire);
-    if !pool.is_null() {
+    if let Some(pool) = current() {
         // SIGTERM's action: stop running and stop this worker.
         signal(pool, libc::SIGTERM);
     }
 }
 
 fn shutdown(call: &Call) {
-    let pool = CURRENT.load(Ordering::Acquire);
-    if pool.is_null() {
+    let Some(pool) = current() else {
         call.throw(
             exception(),
             c"The process pool is not started",
@@ -1000,8 +994,8 @@ fn shutdown(call: &Call) {
         );
         call.set_bool(false);
         return;
-    }
-    call.set_bool(methods::shutdown(handle(pool)));
+    };
+    call.set_bool(methods::shutdown(pool));
 }
 
 handlers! {

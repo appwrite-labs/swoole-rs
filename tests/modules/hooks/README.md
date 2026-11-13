@@ -82,8 +82,9 @@ read only outside a coroutine); the resolver list is Rust's
 (`swr_v1_core_name_resolver_add`, and `_remove` for the `each` that removes the
 user resolver); lookups go through `resolve::name_resolver_lookup`. The DNS
 requests drive the resolver record (`swr_v1_core_resolver_*`) as
-`network::gethostbyname`/`getaddrinfo` do, and `Address` is the header's inline
-calls to `swr_v1_clients_address_*` and `swr_v1_clients_url`. Excluded as in the
+`network::gethostbyname`/`getaddrinfo` do, and `Address` is crates/clients'
+`address::assign`, `url` and `address_string` with the `swr_v1_clients_address_*`
+exports. Excluded as in the
 GoogleTest run: `dns.lookup1`, `dns.lookup_ipv6` and `dns.bad_family` (external
 DNS and network) and `dns.cancel` (a lookup that misses the resolver cache).
 `address.record` is the former repo-owned `address_record.cc` check, with the

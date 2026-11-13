@@ -1,9 +1,11 @@
 //! Upstream's `core-tests/src/network/address.cpp`, one Rust function per TEST with the
-//! same inputs and expected values. `network::Address` is inline in the hybrid header
-//! over the `swr_v1_clients_address_*` and `swr_v1_clients_url` exports; `Address`
-//! here makes the same calls over the same record.
+//! same inputs and expected values. `Address` here is the same record over crates/clients'
+//! `address::assign`, `url` and `address_string` and the `swr_v1_clients_address_*`
+//! exports.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use swoole_rs_clients::{URL_PORT_RANGE, address};
+use swoole_rs_corebase::net_types::AddressStorage;
 
 use super::network_socket::make_socket;
 use super::{AF_INET6, ENOENT, errno, last_error};
@@ -24,8 +26,6 @@ const SW_ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
 const SW_ERROR_BAD_HOST_ADDR: c_int = 722;
 const SW_ERROR_BAD_PORT: c_int = 723;
 const SW_ERROR_BAD_SOCKET_TYPE: c_int = 724;
-const SWR_CLIENTS_URL_INVALID: c_int = -1;
-const SWR_CLIENTS_URL_PORT_RANGE: c_int = -2;
 const ECONNREFUSED: c_int = 111;
 const EAFNOSUPPORT: c_int = 97;
 const TEST_DOMAIN_BAIDU: &str = "www.baidu.com";
@@ -33,40 +33,16 @@ const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
 const TEST_HOST: &str = "127.0.0.1";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
-type Resolve = unsafe extern "C" fn(c_int, *const c_char, *mut c_char) -> c_int;
-
-/// `swr_v1_clients_url_plan`.
-#[repr(C)]
-struct UrlPlan {
-    outcome: c_int,
-    kind: c_int,
-    host_offset: usize,
-    host_length: usize,
-    port: c_int,
-}
-
 unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_assign(
-        address: *mut c_void,
-        length: *mut u32,
-        kind: c_int,
-        host: *const c_char,
-        host_length: usize,
-        port: c_int,
-        resolve: Option<Resolve>,
-    ) -> c_int;
-    fn swr_v1_clients_url(data: *const u8, length: usize) -> UrlPlan;
     fn swr_v1_clients_address_set_port(address: *mut Address, port: c_int);
     fn swr_v1_clients_address_loopback(address: *const Address) -> bool;
     fn swr_v1_clients_address_empty(address: *const Address) -> bool;
     fn swr_v1_clients_address_type(kind: c_int) -> *const c_char;
-    fn swr_v1_clients_address_string(family: c_int, address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
 unsafe extern "C" {
-    fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
 }
@@ -103,19 +79,10 @@ impl Address {
     ) -> bool {
         self.kind = kind;
         let host = CString::new(host).unwrap();
-        let resolve: Option<Resolve> = resolve_name.then_some(swr_v1_clients_gethostbyname);
-        // SAFETY: the record's union and length; a NUL-terminated host.
-        let error = unsafe {
-            swr_v1_clients_address_assign(
-                self.addr.as_mut_ptr().cast(),
-                &mut self.len,
-                kind,
-                host.as_ptr(),
-                host.as_bytes().len(),
-                port,
-                resolve,
-            )
-        };
+        // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
+        let storage = unsafe { &mut *self.addr.as_mut_ptr().cast::<AddressStorage>() };
+        let host = host.as_bytes_with_nul();
+        let error = address::assign(storage, &mut self.len, kind, host, port, resolve_name);
         if error != 0 {
             // SAFETY: sets this thread's last error.
             unsafe { swr_v1_core_set_last_error(error) };
@@ -126,20 +93,15 @@ impl Address {
 
     /// `assign(url)`.
     pub(super) fn assign_url(&mut self, url: &str) -> bool {
-        // SAFETY: `url` is readable for its length.
-        let plan = unsafe { swr_v1_clients_url(url.as_ptr(), url.len()) };
-        assert_ne!(
-            plan.outcome, SWR_CLIENTS_URL_PORT_RANGE,
-            "std::out_of_range(\"stoi\")"
-        );
-        if plan.outcome == SWR_CLIENTS_URL_INVALID {
+        let plan = swoole_rs_clients::url(url.as_bytes());
+        assert_ne!(plan, Err(URL_PORT_RANGE), "std::out_of_range(\"stoi\")");
+        let Ok((kind, host, port)) = plan else {
             // swoole_error_log(SW_LOG_NOTICE, SW_ERROR_BAD_HOST_ADDR, ...): the notice is below the log level.
             // SAFETY: sets this thread's last error.
             unsafe { swr_v1_core_set_last_error(SW_ERROR_BAD_HOST_ADDR) };
             return false;
-        }
-        let host = &url[plan.host_offset..plan.host_offset + plan.host_length];
-        self.assign(plan.kind, host, plan.port, true)
+        };
+        self.assign(kind, &url[host], port, true)
     }
 
     pub(super) fn get_port(&self) -> c_int {
@@ -294,8 +256,7 @@ fn bad_addr() {
     assert_eq!(last_error(), SW_ERROR_BAD_HOST_ADDR);
 
     let buf = [0u8; 16];
-    // SAFETY: 16 readable bytes.
-    assert!(unsafe { swr_v1_clients_address_string(AF_INET6 + 9, buf.as_ptr().cast()) }.is_null());
+    assert!(address::address_string(AF_INET6 + 9, &buf).is_null());
     assert_eq!(errno(), EAFNOSUPPORT);
 }
 
@@ -379,8 +340,8 @@ fn record() {
     assert_eq!(type_str(unknown.kind), c"Unknown");
     // SAFETY: sets errno for the check below.
     unsafe { *__errno_location() = 0 };
-    // SAFETY: v4's sockaddr is readable.
-    assert!(unsafe { swr_v1_clients_address_string(AF_UNIX, v4.addr.as_ptr().cast()) }.is_null());
+    let sockaddr: Vec<u8> = v4.addr.iter().flat_map(|word| word.to_ne_bytes()).collect();
+    assert!(address::address_string(AF_UNIX, &sockaddr).is_null());
     assert_eq!(errno(), EAFNOSUPPORT);
 }
 

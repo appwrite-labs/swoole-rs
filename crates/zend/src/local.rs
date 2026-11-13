@@ -11,6 +11,17 @@
 use crate::sys;
 use std::{ffi::c_int, marker::PhantomData};
 
+// What a [`Php`] reads of its thread's executor: each takes no argument, reads
+// one value and runs no PHP code. Private, so only a lease's methods call them.
+unsafe extern "C" {
+    safe fn swr_zend_facade_function_table() -> *mut sys::HashTable;
+    safe fn swr_zend_stream_vm_active() -> bool;
+    safe fn swr_zend_stream_default_timeout() -> sys::zend_long;
+    safe fn swr_zend_http_max_input_vars() -> sys::zend_long;
+    safe fn swr_zend_error_reporting() -> c_int;
+    safe fn swr_zend_vm_interrupt() -> *mut sys::zend_atomic_bool;
+}
+
 /// This thread runs PHP for `'a`: it executes only while it is the one thread
 /// running PHP (a thread-context coroutine that yields is parked until it holds the
 /// baton again). Neither `Send` nor `Sync`, so it stays on its thread.
@@ -31,46 +42,40 @@ impl<'a> Php<'a> {
     /// `EG(function_table)`: the functions the running request can call.
     #[must_use]
     pub fn function_table(self) -> &'a crate::Array {
-        // SAFETY: this thread runs PHP, whose executor has its function table.
-        let table = unsafe { sys::swr_zend_facade_function_table() };
-        // SAFETY: the executor's live table, which nothing frees while PHP runs.
-        unsafe { &*table.cast() }
+        // SAFETY: this thread runs PHP, whose executor has its function table,
+        // which nothing frees while PHP runs.
+        unsafe { &*swr_zend_facade_function_table().cast() }
     }
 
     /// `EG(active)`: whether the executor is running, so a coroutine can wait.
     #[must_use]
     pub fn vm_active(self) -> bool {
-        // SAFETY: this thread runs PHP; one executor flag is read.
-        unsafe { sys::swr_zend_stream_vm_active() }
+        swr_zend_stream_vm_active()
     }
 
     /// `FG(default_socket_timeout)`: the `default_socket_timeout` ini value, in seconds.
     #[must_use]
     pub fn default_socket_timeout(self) -> sys::zend_long {
-        // SAFETY: this thread runs PHP; one ini value is read.
-        unsafe { sys::swr_zend_stream_default_timeout() }
+        swr_zend_stream_default_timeout()
     }
 
     /// `PG(max_input_vars)`: the `max_input_vars` ini value.
     #[must_use]
     pub fn max_input_vars(self) -> sys::zend_long {
-        // SAFETY: this thread runs PHP; one ini value is read.
-        unsafe { sys::swr_zend_http_max_input_vars() }
+        swr_zend_http_max_input_vars()
     }
 
     /// `EG(error_reporting)`: the level `@` saves and restores.
     #[must_use]
     pub fn error_reporting(self) -> c_int {
-        // SAFETY: this thread runs PHP; one executor value is read.
-        unsafe { sys::swr_zend_error_reporting() }
+        swr_zend_error_reporting()
     }
 
     /// `&EG(vm_interrupt)`: this thread's executor's interrupt flag, which lives
     /// as long as its executor does. Only the address is taken.
     #[must_use]
     pub fn vm_interrupt(self) -> *mut sys::zend_atomic_bool {
-        // SAFETY: this thread runs PHP, so its executor globals exist.
-        unsafe { sys::swr_zend_vm_interrupt() }
+        swr_zend_vm_interrupt()
     }
 
     /// The handler of the internal function the running request calls `name`

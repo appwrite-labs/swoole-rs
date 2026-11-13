@@ -1,19 +1,44 @@
 //! `swoole::http_server`'s free helpers from `src/protocol/http.cc`, defined under
 //! their upstream (Itanium) symbols when the hybrid links this crate
 //! (`upstream-symbols`).
+use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::mem::MaybeUninit;
 
 use crate::bytes;
 
-/// `const char *get_status_message(int code)`.
+thread_local! {
+    static UNKNOWN: [Cell<u8>; 128] = const { [const { Cell::new(0) }; 128] };
+}
+/// `const char *get_status_message(int code)`. Known messages have immutable static
+/// backing. Unknown messages share this thread's 128-byte fallback until the next
+/// unknown call, as the pinned function's do. The pointer must not be used after its
+/// thread ends.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole11http_server18get_status_messageEi")
 )]
 #[must_use]
 pub extern "C" fn get_status_message(code: c_int) -> *const c_char {
-    crate::swr_v2_http_status_message(code)
+    let message = swoole_rs_http::status_message(code);
+    if let std::borrow::Cow::Borrowed(known) = message {
+        // The table's messages are C strings; the NUL follows the borrowed bytes.
+        return known.as_ptr().cast();
+    }
+    UNKNOWN.with(|unknown| {
+        // Each byte is a cell, so the pointer an earlier call returned stays usable
+        // while this one rewrites the text; the last cell keeps its NUL.
+        let length = message.len().min(unknown.len() - 1);
+        let text = message
+            .iter()
+            .copied()
+            .take(length)
+            .chain(std::iter::once(0));
+        for (to, from) in unknown.iter().zip(text) {
+            to.set(from);
+        }
+        unknown.as_ptr().cast::<c_char>()
+    })
 }
 
 /// `int get_method(const char *method_str, size_t method_len)`.
@@ -37,7 +62,7 @@ pub unsafe extern "C" fn get_method(method: *const c_char, length: usize) -> c_i
 )]
 #[must_use]
 pub extern "C" fn get_method_string(method: c_int) -> *const c_char {
-    crate::swr_v1_http_method_string(method)
+    swoole_rs_http::method_string(method).map_or(std::ptr::null(), std::ffi::CStr::as_ptr)
 }
 
 /// `bool parse_multipart_boundary(at, length, offset, out_boundary_str, out_boundary_len)`:

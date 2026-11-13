@@ -9,10 +9,10 @@ publish = false
 build = "build.rs"
 
 # tests/modules/coroutine/base.rs and tests/modules/clients/client.rs (#[path] modules of
-# main.rs) use swoole-rs-coroutine and swoole-rs-clients; cargo-machete reads only this
-# package's own directory.
+# main.rs) use swoole-rs-coroutine, swoole-rs-clients and swoole-rs-tls; cargo-machete reads
+# only this package's own directory.
 [package.metadata.cargo-machete]
-ignored = ["swoole-rs-clients", "swoole-rs-coroutine"]
+ignored = ["swoole-rs-clients", "swoole-rs-coroutine", "swoole-rs-tls"]
 
 [[bin]]
 name = "swoole-rs-hooks-system-tests"
@@ -31,3 +31,4 @@ swoole-rs-ossupport = { path = "../../../../crates/ossupport" }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-reactor = { path = "../../../../crates/reactor" }
 swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
+swoole-rs-tls = { path = "../../../../crates/tls" }
