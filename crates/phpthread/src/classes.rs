@@ -9,6 +9,7 @@ use crate::{
     table::Key,
 };
 use std::{cell::OnceCell, sync::Arc};
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::thread_arraylist;
 use swoole_rs_phpstubs::thread_map;
 use swoole_rs_phpstubs::thread_queue;
@@ -254,11 +255,7 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
             if unsafe {
                 swr_zend_handle_numeric_str(text.as_ptr().cast(), text.len(), &raw mut index)
             } {
-                #[expect(
-                    clippy::cast_possible_wrap,
-                    reason = "Zend's numeric keys fit zend_long"
-                )]
-                Some(Key::Int(index as i64))
+                Some(Key::Int(index.c_cast::<i64>()))
             } else {
                 Some(Key::Str(text.into()))
             }

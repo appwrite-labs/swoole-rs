@@ -1,6 +1,7 @@
 //! Object and imported-resource custody for Coroutine Socket.
 use super::{Data, Sock};
 use crate::native::{self, Co, NewSocket};
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{Owned, Value, bailout::Bailout, new_object, sys as z};
 
 /// Free the length callback, then the owned core socket after releasing any
@@ -127,17 +128,19 @@ pub(crate) unsafe fn import_stream(
 }
 
 /// The PHP constructor's complete core allocation/error path.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream narrows each zend_long to the C int constructor on Linux/macOS"
-)]
 pub(super) fn construct_core(
     domain: i64,
     kind: i64,
     protocol: i64,
 ) -> Result<Result<NewSocket, i32>, Bailout> {
     native::check_reactor()?;
-    let socket = native::make(-1, domain as i32, kind as i32, protocol as i32, true)?;
+    let socket = native::make(
+        -1,
+        domain.c_cast::<i32>(),
+        kind.c_cast::<i32>(),
+        protocol.c_cast::<i32>(),
+        true,
+    )?;
     // Copy the descriptor before destruction can change errno.
     if socket.co().fd() >= 0 {
         return Ok(Ok(socket));

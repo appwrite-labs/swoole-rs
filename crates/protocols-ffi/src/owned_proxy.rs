@@ -2,6 +2,7 @@
 //! owner and its packet buffer; the header keeps `create`'s C++ allocation and
 //! `handshake`'s `std::function` send.
 use std::ffi::{c_char, c_int};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
     socks_auth, socks_config, socks_connect, socks_negotiate, socks_strerror, socks_transition,
@@ -98,12 +99,7 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                     return result;
                 }
             };
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "native SOCKS packet API narrows its int target port to uint16_t"
-            )]
-            let port = fields.target_port as u16;
+            let port = fields.target_port.c_cast::<u16>();
             result.size = socks_connect(kind, address, port, buffer);
             if result.size == -2 {
                 result.size = -1;

@@ -7,6 +7,7 @@ use std::{
     ptr,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
@@ -97,11 +98,7 @@ fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
         USER_WORKER_ID.set(id + 1);
         id + config.worker_num.get() + config.task_worker_num.get()
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::get_worker takes a uint16_t"
-    )]
-    let Some(source) = serv.worker_record(id as u16) else {
+    let Some(source) = serv.worker_record(id.c_cast::<u16>()) else {
         return false;
     };
     *process = source.get();
@@ -123,11 +120,7 @@ pub(crate) fn worker_base() -> u32 {
         }
         let config = serv.config();
         let users = serv.user_worker_num();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "worker counts fit a uint32_t"
-        )]
-        let users = users as u32;
+        let users = users.c_cast::<u32>();
         config.worker_num.get() + config.task_worker_num.get() + users
     })
     .unwrap_or(1)

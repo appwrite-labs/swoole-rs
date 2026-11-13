@@ -6,6 +6,7 @@ use core::ffi::{c_int, c_void};
 use core::ptr::null_mut;
 use core::sync::atomic::Ordering;
 use std::sync::Arc;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{ExitStatus, start_check, swoole_get_worker_type};
@@ -162,12 +163,7 @@ fn threads(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_THREAD_SUPPORTED => u64::from(crate::THREAD_SUPPORTED.load(Ordering::Relaxed)),
         LOG_CALLOC_CONNECTIONS => {
             let max = ctx.tables().max_connection as usize;
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "upstream prints the size as an int"
-            )]
-            let size = (max * size_of::<ConnectionRecord>()) as c_int;
+            let size = (max * size_of::<ConnectionRecord>()).c_cast::<c_int>();
             swoole_rs_corebase::log::sys_warning(
                 c"Server::create_thread_factory",
                 format_args!("calloc[2]({size}) failed"),
@@ -315,11 +311,7 @@ fn server(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_STOPPING => u64::from(ctx.state().stopping.load(Ordering::Acquire)),
         OP_IS_MANAGER => u64::from(swoole_get_worker_type() == SW_MANAGER),
         OP_THREAD_REACTOR_NUM => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "`serv->reactor_num = serv->worker_num`, as upstream converts it"
-            )]
-            let reactor_num = config.worker_num.get() as u16;
+            let reactor_num = config.worker_num.get().c_cast::<u16>();
             serv.config().reactor_num.set(reactor_num);
             0
         }

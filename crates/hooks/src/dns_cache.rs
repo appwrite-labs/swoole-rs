@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::CCast;
 
 struct Entry<T> {
     value: T,
@@ -167,14 +168,10 @@ pub extern "C" fn swr_v1_hook_dns_cache_clear() {
 pub extern "C" fn swr_v1_hook_dns_cache_hit_ratio() -> f32 {
     let cache = cache();
     let total = cache.hits + cache.misses;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "upstream divides the counters as float"
-    )]
     if total == 0 {
         0.0
     } else {
-        cache.hits as f32 / total as f32
+        cache.hits.c_cast::<f32>() / total.c_cast::<f32>()
     }
 }
 

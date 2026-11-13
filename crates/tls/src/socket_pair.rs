@@ -9,6 +9,7 @@ use crate::upstream::{read_sync, socket_free, write_sync};
 use std::ffi::{CStr, c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option};
 use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buffer_size};
@@ -136,11 +137,7 @@ impl SocketPair {
 )]
 #[must_use]
 pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) -> bool {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Socket::set_buffer_size takes uint32_t"
-    )]
-    let size = size as u32;
+    let size = size.c_cast::<u32>();
     ends(this).into_iter().all(|socket| {
         socket.is_some_and(|socket| swr_v1_socket_buffer_size(socket.fd(), true, true, size))
     })

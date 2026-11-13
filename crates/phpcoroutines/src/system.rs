@@ -4,6 +4,7 @@
 //! by their own symbols; the resolver's lookups are crates/hooks'.
 use crate::host;
 use std::ffi::{CStr, CString, c_int, c_long};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
@@ -78,12 +79,8 @@ fn saturated(value: c_long) -> c_int {
 }
 
 /// C's implicit `long` to `int` conversion, as upstream's calls make it.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream's implicit long to int conversion"
-)]
 fn int(value: c_long) -> c_int {
-    value as c_int
+    value.c_cast::<c_int>()
 }
 
 swoole_rs_zend::handlers! {
@@ -279,9 +276,8 @@ fn getaddrinfo(call: &Call) {
 }
 
 /// Upstream's `(long)` cast of each `statvfs` field.
-#[expect(clippy::cast_possible_wrap, reason = "upstream's (long) cast")]
 fn field(value: impl Into<u64>) -> c_long {
-    value.into() as c_long
+    value.into().c_cast::<c_long>()
 }
 
 /// `statvfs(string $path)`.

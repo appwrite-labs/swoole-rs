@@ -2,6 +2,7 @@
 //! yielding (`System::sleep`), anything else as PHP would. The checks, the
 //! duration and the sleep are crates/hooks'.
 use crate::{Report, in_coroutine, report};
+use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::sleep::{
     CoroutineSleep, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep, swr_v1_hooks_sleep_until,
     swr_v1_hooks_usleep,
@@ -91,8 +92,7 @@ fn time_sleep_until(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-    let outcome = swr_v1_hooks_sleep_until(timestamp, TOP as f64, sleeper());
+    let outcome = swr_v1_hooks_sleep_until(timestamp, TOP.c_cast::<f64>(), sleeper());
     match outcome.status {
         INVALID => {
             let message = message!("must be between 0 and {TOP}");

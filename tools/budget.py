@@ -15,6 +15,8 @@
   fakes    `cfg(...not(test)...)`: code tests and Miri don't run, usually because a
            test build swaps in a stand-in. Pass the dependency in (an ops table, a
            closure, a trait) so tests run the shipped body (#3556)
+  casts    cast lints a `#[expect]` names: convert with `c_cast::<T>()` (corebase) where
+           upstream's C converts, or keep the value in the type it is used as (#3564)
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -54,6 +56,7 @@ KINDS = {
                         r"\((?:(?!&\s*(?:'\w+\s+)?mut\b)(?:[^()]|\((?:(?!&\s*(?:'\w+\s+)?mut\b)[^()])*\)))*\)"
                         r"\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
     'fakes': re.compile(r'\bcfg!?\([^\n]*\bnot\(\s*test\s*\)'),
+    'casts': re.compile(r'\bclippy::cast_(?:possible_truncation|sign_loss|possible_wrap|precision_loss)\b'),
 }
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')

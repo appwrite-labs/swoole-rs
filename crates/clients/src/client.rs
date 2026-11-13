@@ -19,6 +19,7 @@ use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
 #[cfg(not(test))]
 use swoole_rs_buffer::string::with_thread_buffer;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
     EventType, FdType, ResultCode, ReturnCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE,
     SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
@@ -1167,8 +1168,7 @@ pub fn set_proxy(
 ) {
     // Only read through, as `Handle`'s methods do.
     let this = Handle(core::ptr::from_ref(client).cast_mut());
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-    let port = port as c_int;
+    let port = port.c_cast::<c_int>();
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     let proxy = if http {
         Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
@@ -1461,12 +1461,8 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
     this.set_timeout(timeout);
     this.input_init();
     if this.has(ON_BUFFER_FULL) && this.get().high_watermark.get() == 0 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream's buffer_size * 0.8 into a uint32_t"
-        )]
-        let mark = (f64::from(this.socket().read(|socket| socket.output.buffer_size)) * 0.8) as u32;
+        let mark = (f64::from(this.socket().read(|socket| socket.output.buffer_size)) * 0.8)
+            .c_cast::<u32>();
         this.get().high_watermark.set(mark);
     }
     if inet_addr(this, host, port) < 0 {
@@ -1977,21 +1973,13 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.proxy_state(Proxy::Socks5) == SOCKS5_WAIT {
         let length = this.socks5_negotiate();
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream returns the send result as an int"
-        )]
-        return this.socks5_send(length) as c_int;
+        return this.socks5_send(length).c_cast::<c_int>();
     }
     if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
         let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream returns the send result as an int"
-        )]
-        return send(this, &request, 0) as c_int;
+        return send(this, &request, 0).c_cast::<c_int>();
     }
     if this.flag(OPEN_SSL) {
         if ssl_handshake(this) < 0 {

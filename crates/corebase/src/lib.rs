@@ -12,6 +12,8 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+mod c_cast;
+pub use c_cast::{CCast, CastFrom};
 pub mod constants;
 mod global;
 pub mod hook;
@@ -144,12 +146,7 @@ pub fn strtol(input: &[u8]) -> (i64, usize) {
 /// `sw_atoi`: [`strtol`] truncated to `int` as `static_cast<int>(long)` does.
 #[must_use]
 pub fn atoi(input: &[u8]) -> c_int {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "`static_cast<int>` of a `long` keeps its low 32 bits"
-    )]
-    let value = strtol(input).0 as c_int;
-    value
+    strtol(input).0.c_cast::<c_int>()
 }
 
 /// The successful, representable portion of `std::stoi`: [`strtol`], none where
@@ -367,13 +364,7 @@ pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_in
     }
     // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from the local.
     unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), output.cast(), length + 1) };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "a c_long has at most 20 digits"
-    )]
-    let length = bytes.len() as c_int;
-    length
+    bytes.len().c_cast::<c_int>()
 }
 
 /// Format backwards into `output`, NUL-terminated at its end; return the first digit's

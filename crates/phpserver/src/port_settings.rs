@@ -4,6 +4,7 @@
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{GetPackageLength, Protocol};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
@@ -182,11 +183,6 @@ fn sockets(s: &impl Source) -> Step {
 }
 
 /// The options after the WebSocket ones.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream's implicit conversions to the uint8_t fields"
-)]
 fn framing(s: &impl Source) -> Step {
     if let Some(on) = s.truth(c"open_http2_protocol") {
         s.config(|c| {
@@ -226,7 +222,7 @@ fn framing(s: &impl Source) -> Step {
     if let Some(kind) = s.bytes(c"package_length_type")? {
         // `str_v.val()[0]`: an empty string's NUL.
         let kind = kind.first().copied().unwrap_or(0);
-        let size = swoole_type_size(c_char::from_ne_bytes([kind])) as u8;
+        let size = swoole_type_size(c_char::from_ne_bytes([kind])).c_cast::<u8>();
         protocol(s, |p| {
             p.package_length_type = kind;
             p.package_length_size = size;
@@ -265,7 +261,7 @@ fn framing(s: &impl Source) -> Step {
         protocol(s, |p| {
             p.package_length_size = 0;
             p.package_length_type = 0;
-            p.package_length_offset = SW_IPC_BUFFER_SIZE as u16;
+            p.package_length_offset = SW_IPC_BUFFER_SIZE.c_cast::<u16>();
         });
         s.single_thread();
     }

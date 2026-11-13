@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+use swoole_rs_corebase::CCast;
 
 /// Native callbacks, fixed when the shared pool is first created.
 #[repr(C)]
@@ -75,13 +76,8 @@ fn expand(
 
 /// Upstream waits `static_cast<long>(max_idle_time) * 1000 * 1000` microseconds:
 /// whole seconds, so an idle time under one second retires immediately.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream truncates the idle time to whole seconds; only positive values reach here"
-)]
 fn idle_timeout(idle: f64) -> Duration {
-    Duration::from_secs(idle as u64)
+    Duration::from_secs(idle.c_cast::<u64>())
 }
 
 struct State {

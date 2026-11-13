@@ -4,6 +4,7 @@
 //! socket's I/O and cork effects are the caller's [`OutputEffects`].
 use std::io::Error;
 use std::os::raw::c_int;
+use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
 const WAIT: c_int = 2;
@@ -82,11 +83,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
         result.pop = true;
         return result;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream adds ssize_t to uint32_t offset"
-    )]
-    let advanced = offset.wrapping_add(sent as u32);
+    let advanced = offset.wrapping_add(sent.c_cast::<u32>());
     (result.set_offset, result.offset) = (true, advanced);
     if sent < rest.len() {
         (result.send_wait, result.code) = (true, ERR);

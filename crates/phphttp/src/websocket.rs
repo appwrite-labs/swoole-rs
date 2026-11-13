@@ -18,6 +18,7 @@ use std::{
     sync::Arc,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
 use swoole_rs_phpstubs::websocket as stubs;
@@ -360,9 +361,7 @@ impl<'a> FrameObject<'a> {
     /// properties, or the arguments around any other value.
     fn new(data: Option<&'a Value>, opcode: i64, flags: i64, code: i64) -> Self {
         let Some(frame) = data.filter(|value| value.instance_of(&FRAME)) else {
-            #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
-            #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
-            let code = code as u16;
+            let code = code.c_cast::<u16>();
             return Self {
                 opcode: byte(opcode),
                 flags: byte(flags & FLAGS_ALL),
@@ -389,9 +388,7 @@ impl<'a> FrameObject<'a> {
                 flags &= !FLAG_FIN;
             }
         }
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's uint16_t code")]
-        #[expect(clippy::cast_sign_loss, reason = "upstream's uint16_t code")]
-        let code = code as u16;
+        let code = code.c_cast::<u16>();
         Self {
             opcode,
             flags,
@@ -822,8 +819,7 @@ fn disconnect(call: &Call) {
         let fd = call.long(1, 0).ok()?;
         let code = call.long(2, CLOSE_NORMAL).ok()?;
         let reason = call.string(3, b"").ok()?;
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's int code")]
-        let frame = close_frame(code as i32, reason, 0)?;
+        let frame = close_frame(code.c_cast::<i32>(), reason, 0)?;
         if !push_frame(server, fd, frame.bytes()) {
             return Some(false);
         }

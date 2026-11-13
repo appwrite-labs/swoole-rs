@@ -17,6 +17,7 @@ use swoole_rs_clients::{
     pool::Pool,
     swr_v1_clients_port,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
@@ -558,8 +559,7 @@ pub(crate) fn settings(object: Obj<'_>) -> Option<&Array> {
 /// `php_swoole_client_new`: a pooled or new connection for `host:port`.
 fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, false)?;
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-    let int_port = port as i32;
+    let int_port = port.c_cast::<i32>();
     if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && swr_v1_clients_port(int_port, 0) == 0 {
         warn(ErrorKind::Fatal, "The port is invalid");
         set_last_error(INVALID_PARAMS);
@@ -755,14 +755,10 @@ fn connect(call: &Call) {
         }
         let error = last_error();
         let host = host.split(|&b| b == 0).next().unwrap_or_default();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream prints (int) port"
-        )]
         let message = format!(
             "connect to server[{}:{}] failed. Error: {}[{error}]",
             String::from_utf8_lossy(host),
-            port as i32,
+            port.c_cast::<i32>(),
             strerror(error),
         );
         warn(ErrorKind::Core, &message);
@@ -862,15 +858,10 @@ fn sendfile(call: &Call) {
         return call.set_bool(false);
     }
     set_last_error(0);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "C++'s (size_t) length"
-    )]
     let send = Op::Sendfile {
         file: &native::c_text(file),
         offset,
-        length: length as usize,
+        length: length.c_cast::<usize>(),
     };
     let Some(result) = bailed(io(conn.cli, send)) else {
         return call.set_bool(false);
@@ -908,9 +899,8 @@ fn receive(cli: Cli, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
 }
 
 /// C++'s implicit conversion of a PHP int to an `int` argument.
-#[expect(clippy::cast_possible_truncation, reason = "C++'s (int) conversion")]
 pub(crate) fn int(value: i64) -> c_int {
-    value as c_int
+    value.c_cast::<c_int>()
 }
 
 /// [`receive`] of at most `length` bytes into `buffer`'s room.
@@ -1056,11 +1046,7 @@ fn recv_length(
         call.set_zstring(ZString::new(frame.buffer.get(..header).unwrap_or_default()));
         return None;
     } else if length > i64::from(framing.package_max_length) {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream prints (int) buf_len"
-        )]
-        native::package_too_big(length as c_int);
+        native::package_too_big(length.c_cast::<c_int>());
         call.set_empty_string();
         return None;
     } else if length == have {

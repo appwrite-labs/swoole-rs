@@ -9,6 +9,7 @@ use crate::records::Lookup;
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::SeqCst;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_pop,
@@ -781,12 +782,7 @@ fn effects(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
         OP_WR_CLOSE => sign(o.handle()?.close(o.sock()?)),
         OP_WR_CLOSE_ERRNO => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "C++'s uint16_t close_errno"
-            )]
-            let errno = errno as u16;
+            let errno = errno.c_cast::<u16>();
             o.conn()?.set_close_errno(errno);
             let reactor = o.handle()?;
             sign(reactor.trigger_close(o.ctx.event.as_deref_mut()?))
@@ -963,11 +959,7 @@ fn native(o: &mut Objects<'_, '_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_WR_TIMER_DELAY => {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "C++'s implicit double to long"
-            )]
-            let delay = o.port()?.max_idle_time.get() as c_long;
+            let delay = (o.port()?.max_idle_time.get()).c_cast::<c_long>();
             let timer = o.sock()?.read(|s| s.output.send_timer);
             // SAFETY: the socket's live send timer.
             unsafe { swoole_timer_delay(timer.cast(), delay) };

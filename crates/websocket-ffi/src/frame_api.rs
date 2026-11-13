@@ -5,6 +5,7 @@
 //! (Itanium) symbol, and the file leaves the build.
 use std::ffi::{CStr, c_char, c_int};
 use std::mem::MaybeUninit;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
@@ -145,9 +146,7 @@ upstream! {
         if let Some(header) = header {
             pl.header_len = header;
         }
-        #[expect(clippy::cast_possible_truncation, reason = "a frame length fits ssize_t")]
-        let length = length as isize;
-        length
+        length.c_cast::<isize>()
     }
 
     "_ZN6swoole9websocket4maskEPcmPKc" =>
@@ -207,8 +206,7 @@ upstream! {
         frame.header[0] = (decoded.opcode & 15) | (flags & 16) | ((flags & 8) << 2) | ((flags & 4) << 4) | ((flags & FIN) << 7);
         frame.header[1] = (decoded.length_code & 127) | ((flags & MASK) << 2);
         if filled {
-            #[expect(clippy::cast_possible_truncation, reason = "Frame::header_length is a uint16_t")]
-            let header_length = decoded.header_length as u16;
+            let header_length = decoded.header_length.c_cast::<u16>();
             frame.header_length = header_length;
             frame.payload_length = decoded.payload_length;
         }

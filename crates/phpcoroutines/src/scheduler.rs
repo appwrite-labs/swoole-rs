@@ -8,6 +8,7 @@ use std::{
     mem::ManuallyDrop,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
 use swoole_rs_zend::{
@@ -215,12 +216,7 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
         let Some(flags) = value.applied_long() else {
             return;
         };
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream passes zend_long as uint32_t"
-        )]
-        set_hook_flags(flags as u32);
+        set_hook_flags(flags.c_cast::<u32>());
     }
     if let Some(value) = options.get(b"enable_preemptive_scheduler") {
         runtime::set_preemptive(value.truthy());

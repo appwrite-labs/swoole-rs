@@ -24,6 +24,7 @@ pub mod ws;
 
 use std::ffi::c_int;
 use std::ops::Range;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_address::{
     TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM, c_str, format_into,
 };
@@ -254,11 +255,7 @@ pub fn domain_encode(input: &[u8], output: &mut [u8]) -> i32 {
     let mut start = 0;
     for label in input.split(|&byte| byte == b'.') {
         // Upstream's (char) length byte: a label over 255 bytes wraps, as in C.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's (char) label length"
-        )]
-        let length_byte = label.len() as u8;
+        let length_byte = label.len().c_cast::<u8>();
         let slot = output.get_mut(start..=start + label.len());
         let Some((head, body)) = slot.and_then(<[u8]>::split_first_mut) else {
             return -1;

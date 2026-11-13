@@ -11,6 +11,7 @@ use std::io::{BufWriter, Write};
 use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
@@ -473,11 +474,7 @@ fn zdata_span(state: &State) -> (*const u8, usize) {
 fn url(state: &mut State, span: &[u8]) -> c_int {
     let (path, query) = request_url(span);
     state.request.path = estrndup(path);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Request::path_len is uint32_t"
-    )]
-    let path_len = path.len() as u32;
+    let path_len = path.len().c_cast::<u32>();
     state.request.path_len = path_len;
     if query.is_empty() {
         return 0;
@@ -660,11 +657,7 @@ fn on_headers_complete(state: &mut State) -> c_int {
     // The URI, and path_info, which is decoded.
     let (uri, decoded) = (ZString::new(path), ZString::url_decode(path));
     request.ext = request.path.cast_const().wrapping_add(ext);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Request::ext_len is uint32_t"
-    )]
-    let ext_len = (path_len - ext) as u32;
+    let ext_len = (path_len - ext).c_cast::<u32>();
     request.ext_len = ext_len;
 
     let method = method_name(state);
@@ -849,11 +842,7 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
 
 /// `Context::set_compression_method`.
 pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream truncates to uint32_t"
-    )]
-    let length = value.len() as u32 as usize;
+    let length = value.len().c_cast::<u32>() as usize;
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
     let method = compression(value.get(..length).unwrap_or(value), codecs);
     state.accept_compression = method > 0;

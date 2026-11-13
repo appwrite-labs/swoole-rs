@@ -28,6 +28,7 @@ static CONTEXT: CustomClass<Held> = CustomClass::new();
 /// list, as the rest of this file uses them.
 mod native {
     use std::ffi::{c_int, c_void};
+    use swoole_rs_corebase::CCast;
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
     use swoole_rs_zend::{Owned, Value};
 
@@ -55,11 +56,7 @@ mod native {
     ) {
         context.with_port = with_port;
         // `int` storage, as upstream's assignment.
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream stores the long in an int"
-        )]
-        let kind = kind as c_int;
+        let kind = kind.c_cast::<c_int>();
         context.kind = kind;
     }
 

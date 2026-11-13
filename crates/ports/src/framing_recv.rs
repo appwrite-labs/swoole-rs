@@ -526,6 +526,7 @@ pub const fn swoole_ntoh64(value: u64) -> u64 {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use swoole_rs_corebase::CCast;
 
     thread_local! {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
@@ -651,7 +652,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::cast_possible_wrap, reason = "upstream's (int64_t) casts")]
     #[expect(clippy::cognitive_complexity, reason = "one upstream TEST, kept whole")]
     fn unpack_formats() {
         // 8-bit
@@ -732,7 +732,7 @@ mod tests {
         );
         assert_eq!(
             swoole_unpack(b'Q', &data(&10_234_567_890_123_456_789u64.to_ne_bytes())),
-            10_234_567_890_123_456_789u64 as i64
+            10_234_567_890_123_456_789u64.c_cast::<i64>()
         );
         let j_be = 0x1234_5678_9ABC_DEF0u64.swap_bytes();
         assert_eq!(
@@ -753,7 +753,7 @@ mod tests {
         );
         assert_eq!(
             swoole_unpack(b'Q', &data(&u64::MAX.to_ne_bytes())),
-            u64::MAX as i64
+            u64::MAX.c_cast::<i64>()
         );
 
         // Machine-dependent int

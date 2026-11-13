@@ -1,4 +1,5 @@
 use super::*;
+use swoole_rs_corebase::CCast;
 
 /// A pool over a fresh `0xa5`-filled buffer of `plan.total` bytes plus one word.
 fn pool_in(plan: Layout, shared: bool, owned: bool) -> (Vec<u64>, *mut Fixed) {
@@ -27,7 +28,7 @@ fn fixed_pool_preserves_lifo_reuse_at_aligned_and_odd_table_widths() {
                     data.cast::<u8>(),
                     base.add(index * stride + mem::size_of::<Slice>())
                 );
-                ptr::write_bytes(data, index as u8, width as usize);
+                ptr::write_bytes(data, index.c_cast::<u8>(), width as usize);
                 entries.push(data);
             }
             assert!(alloc(&*pool).is_null());
@@ -211,12 +212,15 @@ fn normal_queue_changes_publish_only_mutable_header_fields() {
                 assert!(!value.is_null());
                 live.push(value);
                 assert_eq!(fixed(pool.read()), expected);
-                assert_eq!(pool.read().slice_use.get(), live.len() as u32);
+                assert_eq!(pool.read().slice_use.get(), live.len().c_cast::<u32>());
             }
             for (index, value) in live.iter().enumerate() {
                 assert!(free(&*pool, *value));
                 assert_eq!(fixed(pool.read()), expected);
-                assert_eq!(pool.read().slice_use.get(), count - index as u32 - 1);
+                assert_eq!(
+                    pool.read().slice_use.get(),
+                    count - index.c_cast::<u32>() - 1
+                );
             }
         }
     }

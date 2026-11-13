@@ -9,6 +9,7 @@ use std::mem::{MaybeUninit, offset_of};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{
@@ -289,11 +290,7 @@ impl TaskBuffer {
     pub fn pack(&mut self, data: &[u8]) -> bool {
         let id = swr_v1_core_current_task_id();
         swr_v1_core_set_current_task_id(id.wrapping_add(1));
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the worker id, narrowed to DataHead's int16_t reactor_id as upstream does"
-        )]
-        let reactor_id = swr_v1_worker_global_get(0) as i16;
+        let reactor_id = swr_v1_worker_global_get(0).c_cast::<i16>();
         self.head = DataHead {
             fd: id,
             msg_id: 0,
@@ -310,11 +307,7 @@ impl TaskBuffer {
         if !packed.ok {
             return false;
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "at most sizeof(PacketTask) or the pipe's capacity, in DataHead's uint32_t len"
-        )]
-        let len = packed.info_len as u32;
+        let len = packed.info_len.c_cast::<u32>();
         self.head.len = len;
         if packed.tmpfile {
             self.head.ext_flags |= TMPFILE;
@@ -340,12 +333,7 @@ impl EventData {
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
             let name = pkg.path().to_bytes();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "printf's int precision, as upstream's (int) cast"
-            )]
-            let precision = pkg.length as c_int;
+            let precision = pkg.length.c_cast::<c_int>();
             let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
             let name = name.get(..shown).unwrap_or(name);
             let line = [b"Task[tmpfile]=", name, b"\n"].concat();

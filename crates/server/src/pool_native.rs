@@ -7,14 +7,10 @@
 //!
 //! Each hook that can reach PHP runs inside the bailout trap crates/process sets
 //! up; the frames here hold nothing to drop, so the `longjmp` may cross them.
-#![expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "upstream's C conversions between ssize_t, size_t, uint32_t and int"
-)]
 use core::cell::{Cell, RefCell};
 use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::Worker as Record;
 
 use crate::objects::{Reactor, worker_pipe};
@@ -201,7 +197,7 @@ fn bus_deliver(pool: Pool<'_>) {
     let bus = bus_of(pool);
     let mut info = bus.head();
     let packet = bus.packet();
-    info.len = packet.length as u32;
+    info.len = packet.length.c_cast::<u32>();
     on_message(
         pool,
         &RecvData {
@@ -233,7 +229,7 @@ pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
 }
 
 fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
-    i64::from(bus_of(pool).alloc_buffer(size as usize))
+    i64::from(bus_of(pool).alloc_buffer(size.c_cast::<usize>()))
 }
 
 fn free_message_bus(pool: Pool<'_>) {
@@ -362,7 +358,7 @@ fn main_result(result: i64) -> c_int {
     if result == RAISE {
         raise_bailout();
     }
-    result as c_int
+    result.c_cast::<c_int>()
 }
 
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.
@@ -418,7 +414,7 @@ fn loop_ops(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
         OP_EVENT_WAIT => i64::from(swoole_rs_reactor::event_api::swoole_event_wait()),
         OP_EVENT_AVAILABLE => i64::from(swoole_event_is_available()),
         OP_WAITPID => i64::from(swoole_rs_reactor::wait_upstream::swoole_waitpid(
-            arg as c_int,
+            arg.c_cast::<c_int>(),
             Some(&mut 0),
             0,
         )),
@@ -428,7 +424,7 @@ fn loop_ops(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
 
 /// An object's address as an op's result, which the pool stores (null fails).
 fn address<T>(object: *mut T) -> i64 {
-    object.expose_provenance() as i64
+    object.expose_provenance().c_cast::<i64>()
 }
 
 /// `pool_call`'s lifecycle effects: the pool's objects.
@@ -438,8 +434,8 @@ fn objects(pool: Pool<'_>, op: u32, arg: u64) -> Option<i64> {
         OP_HAVE_MSGQUEUE => 1,
         OP_ALLOC_WORKERS => {
             // `arg` workers, which the pool counts once they're allocated.
-            let size = arg as usize * size_of::<WorkerRecord>();
-            address(mem_pool::alloc(size as u32))
+            let size = arg.c_cast::<usize>() * size_of::<WorkerRecord>();
+            address(mem_pool::alloc(size.c_cast::<u32>()))
         }
         OP_NEW_PIPES => address(Box::into_raw(Box::new(Pipes::new()))),
         OP_MAIN_LOOP => {
@@ -499,7 +495,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
         }
         OP_WORKER_INIT => {
             swr_v1_worker_init(worker);
-            worker.set_pid(std::process::id() as c_int);
+            worker.set_pid(std::process::id().c_cast::<c_int>());
             swoole_set_worker_type(SW_WORKER);
             swoole_set_worker_id(worker.id());
             swoole_set_worker_pid(worker.pid());
@@ -536,7 +532,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: u32, arg: u64) -> Option<i
             let add = |pipe| Reactor::thread().add(pipe, EVENT_READ);
             i64::from(worker_pipe(worker, false).map_or(-1, add))
         }
-        OP_PUSH_STOP => i64::from(push_stop(pool, worker.pid(), worker.id() as u16)),
+        OP_PUSH_STOP => i64::from(push_stop(pool, worker.pid(), worker.id().c_cast::<u16>())),
         OP_WORKER_ERROR => {
             let status = exit_status(arg);
             worker_report_error(worker, &status);
@@ -577,7 +573,7 @@ fn master_ops(pool: Pool<'_>, op: u32, arg: u64) -> i64 {
         OP_POP_MESSAGE => {
             return POOL_MESSAGE.with_borrow_mut(|message| {
                 if pop_message(pool, &mut message.0) > 0 {
-                    message.0.as_mut_ptr().expose_provenance() as i64
+                    message.0.as_mut_ptr().expose_provenance().c_cast::<i64>()
                 } else {
                     0
                 }
@@ -752,8 +748,7 @@ impl PoolNative for Native {
                 return -1;
             };
             let next = swoole_timer_get_next_msec();
-            #[expect(clippy::cast_precision_loss, reason = "msec2sec's (double) conversion")]
-            let timeout = next as f64 / 1000.0;
+            let timeout = next.c_cast::<f64>() / 1000.0;
             pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
             // SAFETY: the worker's pipe and the call's buffer.
             unsafe { socket_read_sync(pipe, c.data(), c.length()) }
@@ -766,7 +761,7 @@ impl PoolNative for Native {
             c.worker()
                 .and_then(|worker| worker_pipe(worker, false))
                 .map_or(-1, |pipe| {
-                    pipe.wait_event(next as c_int, EVENT_READ) as isize
+                    pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ) as isize
                 })
         });
     }
@@ -797,7 +792,7 @@ impl PoolNative for Native {
     fn message(&self, c: &mut PoolCall) {
         let info = DataHead {
             reactor_id: -1,
-            len: c.length() as u32,
+            len: c.length().c_cast::<u32>(),
             ..DataHead::default()
         };
         on_message(
@@ -864,7 +859,11 @@ impl PoolNative for Native {
             ),
             WARN_SEND => log::warning(
                 c"ProcessPool::dispatch",
-                format_args!("send {} bytes to worker#{} failed", a as c_int, b as c_int),
+                format_args!(
+                    "send {} bytes to worker#{} failed",
+                    a.c_cast::<c_int>(),
+                    b.c_cast::<c_int>()
+                ),
             ),
             _ => {}
         }

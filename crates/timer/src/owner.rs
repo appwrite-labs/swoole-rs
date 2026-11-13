@@ -10,6 +10,7 @@ use crate::{
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::{
@@ -342,11 +343,7 @@ impl Owner {
             REACTOR => {
                 // The live reactor the backend attached to.
                 let fields = ReactorPrepared::of(self.reactor.get()).fields;
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Reactor::timeout_msec is an int"
-                )]
-                let msec = msec as i32;
+                let msec = msec.c_cast::<i32>();
                 // SAFETY: its live fields.
                 unsafe { (*fields).timeout_msec = msec };
             }
