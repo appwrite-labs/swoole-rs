@@ -24,6 +24,17 @@ pub enum Failure {
     NoEof,
 }
 
+/// What a sync of the read String does before it refreshes the view: nothing, or it
+/// stores the view's length and offset, then grows the String to a size or drops that
+/// many leading bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferSync {
+    Get,
+    Store,
+    Extend(usize),
+    Reduce(usize),
+}
+
 struct Packet {
     socket: crate::co_socket::Co,
     view: ReadBuffer,
@@ -46,11 +57,11 @@ impl Packet {
         self.set_length(0);
         self.set_offset(0);
     }
-    fn sync(&mut self, action: u32, size: usize) {
-        (crate::co_io::host().read_buffer)(self.socket, &mut self.view, action, size);
+    fn sync(&mut self, sync: BufferSync) {
+        (crate::co_io::host().read_buffer)(self.socket, &mut self.view, sync);
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
-        self.sync(1, 0);
+        self.sync(BufferSync::Store);
         // SAFETY: the requested free space in the read String the view refreshed,
         // which the receive borrows.
         let buf =
@@ -61,14 +72,14 @@ impl Packet {
         self.receive(at, length, false)
     }
     fn fail(&mut self, kind: Failure, length: isize) {
-        self.sync(1, 0);
+        self.sync(BufferSync::Store);
         (crate::co_io::host().packet_fail)(self.socket, kind, length);
     }
     fn timed_out(&self) -> bool {
         self.socket.err_code() == libc::ETIMEDOUT
     }
     fn extend(&mut self, size: usize) {
-        self.sync(2, size);
+        self.sync(BufferSync::Extend(size));
     }
 
     /// `recv_packet_with_length_protocol`.
@@ -228,10 +239,10 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
         length_check: socket.open_length_check(),
         eof_check: socket.open_eof_check(),
     };
-    packet.sync(0, 0);
+    packet.sync(BufferSync::Get);
     let offset = packet.buffer().offset;
     if offset > 0 {
-        packet.sync(3, usize::try_from(offset).unwrap_or(0));
+        packet.sync(BufferSync::Reduce(usize::try_from(offset).unwrap_or(0)));
     }
     let received = if packet.length_check {
         packet.length_protocol()
@@ -248,7 +259,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
     if received <= 0 && !(packet.length_check && received < 0 && packet.timed_out()) {
         packet.clear();
     }
-    packet.sync(1, 0);
+    packet.sync(BufferSync::Store);
     timer.stop();
     received
 }
@@ -353,26 +364,27 @@ pub(crate) mod tests {
     pub(crate) fn read_buffer(
         socket: crate::co_socket::Co,
         view: &mut ReadBuffer,
-        action: u32,
-        size: usize,
+        sync: super::BufferSync,
     ) {
+        use super::BufferSync;
         let ctx = socket.resolve_context();
         let fake = unsafe { fake(ctx) };
-        if action == 0 {
-            fake.gets += 1;
+        match sync {
+            BufferSync::Get => fake.gets += 1,
+            _ => fake.buffer = *view,
         }
-        if action != 0 {
-            fake.buffer = *view;
-        }
-        if action == 2 {
-            fake.storage.resize(size, 0);
-            fake.buffer.str = fake.storage.as_mut_ptr();
-            fake.buffer.size = size;
-        }
-        if action == 3 {
-            fake.storage.copy_within(size..fake.buffer.length, 0);
-            fake.buffer.length -= size;
-            fake.buffer.offset = 0;
+        match sync {
+            BufferSync::Extend(size) => {
+                fake.storage.resize(size, 0);
+                fake.buffer.str = fake.storage.as_mut_ptr();
+                fake.buffer.size = size;
+            }
+            BufferSync::Reduce(size) => {
+                fake.storage.copy_within(size..fake.buffer.length, 0);
+                fake.buffer.length -= size;
+                fake.buffer.offset = 0;
+            }
+            BufferSync::Get | BufferSync::Store => {}
         }
         *view = fake.buffer;
     }
