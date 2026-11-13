@@ -9,8 +9,9 @@ use core::sync::atomic::Ordering;
 use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
-    SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
-    SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+    EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
+    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
+    SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_framing::recv::Mode;
@@ -121,6 +122,18 @@ impl Read<'_> {
         // SAFETY: the current buffer is live once a receive buffer or request made it
         // current; only calls on `self`, which the borrow excludes, touch it.
         unsafe { &mut *self.buffer }
+    }
+
+    /// Whether a payload of `length` bytes is all the socket's receive buffer holds and
+    /// at least half of what it has room for, so a worker in this thread may take the
+    /// buffer for the payload and not copy it (`SW_EVENT_DATA_POP_PTR`). A smaller
+    /// payload is cheaper to copy than to keep a whole buffer alive for.
+    fn whole_buffer(&mut self, length: u64) -> bool {
+        let string = self.string();
+        let (len, size) = (string.len() as u64, string.size() as u64);
+        length >= size / 2
+            && length == len
+            && ptr::eq(self.buffer, self.socket.read(|s| s.recv_buffer).cast())
     }
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
@@ -257,6 +270,11 @@ impl Connection for Read<'_> {
         let data = RecvData {
             info: DataHead {
                 len: u32::try_from(length).unwrap_or(u32::MAX),
+                flags: if self.whole_buffer(length) {
+                    SW_EVENT_DATA_POP_PTR as u8
+                } else {
+                    0
+                },
                 ext_flags: if dispatch == Dispatch::Upload {
                     UPLOAD_PREPROCESSED
                 } else {

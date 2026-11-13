@@ -40,6 +40,9 @@ const RECV_DATA: u8 = 0;
 const RECV_DGRAM: u8 = 1;
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
 const DATA_PTR: u8 = 1 << 1;
+/// `SW_EVENT_DATA_POP_PTR`: the payload is the whole receive buffer, which the worker
+/// may take.
+pub(crate) const POP_PTR: u8 = 1 << 6;
 /// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -199,9 +202,8 @@ pub(crate) fn dispatch(serv: view::Server<'_>, task: &mut SendData, direct: bool
         info.fd = c.session_id();
         info.server_fd = low16(c.server_fd());
     }
-    // Upstream marks a payload that is the whole receive buffer `SW_EVENT_DATA_POP_PTR`
-    // here, but `MessageBus::pass` replaces the flags of every payload with
-    // `SW_EVENT_DATA_PTR`, so no worker ever sees it.
+    // `MessageBus::pass` replaces the flags of every payload with `SW_EVENT_DATA_PTR`,
+    // so `SW_EVENT_DATA_POP_PTR` reaches a worker only through `receive_now`.
     if !direct || !receive_now(serv, task) {
         hybrid().base_pass(serv, task);
     }
@@ -255,7 +257,7 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         data: task.data.cast(),
     };
     if task.info.len > 0 {
-        recv.info.flags = DATA_PTR;
+        recv.info.flags = DATA_PTR | (task.info.flags & POP_PTR);
     }
     let slot = if dgram {
         ReceiveSlot::Packet
@@ -546,11 +548,16 @@ mod tests {
         // A datagram has no connection to check or update.
         let mut packet = send(9, RECV_DGRAM, 5);
         assert!(dispatch(serv, &mut packet, true));
+        // The worker hears that the payload is the reader's whole buffer.
+        let mut whole = send(c_long::from(conn.fd()), RECV_DATA, 5);
+        whole.info.flags = POP_PTR;
+        assert!(dispatch(serv, &mut whole, true));
         assert_eq!(
             heard(),
             [
                 (RECV_DATA, 1, 0, DATA_PTR, 5),
-                (RECV_DGRAM, 9, 0, DATA_PTR, 5)
+                (RECV_DGRAM, 9, 0, DATA_PTR, 5),
+                (RECV_DATA, 1, 0, DATA_PTR | POP_PTR, 5)
             ]
         );
 

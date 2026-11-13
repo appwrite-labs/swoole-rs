@@ -13,13 +13,14 @@ use crate::records::Lookup;
 use crate::view::Server;
 use crate::{Connection, MODE_PROCESS, ServerState};
 use core::ffi::{CStr, c_int};
+use std::io::IoSlice;
 use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
 };
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, steady_ms};
+use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
 
 /// `ServerEventType`.
 const SEND_FILE: u8 = 3;
@@ -89,20 +90,73 @@ fn sends_here(state: &ServerState, session_id: core::ffi::c_long) -> bool {
             .is_none_or(|session| session.reactor_bits() & 0xff == worker)
 }
 
-/// [`send`]'s direct write, made here when it needs nothing else: the verified
-/// connection has no overflow and its socket sends directly with no output buffer yet.
+/// [`send`] of `head` then `body` as one `writev(2)`, so a large body is not copied
+/// behind its head. `None`, with nothing sent, unless this worker writes straight to the
+/// session's socket ([`writes_now`]): the caller joins the two for [`send`]. What the
+/// socket does not take is queued, as [`send`] queues it.
+#[must_use]
+pub fn send_parts(
+    serv: Server<'_>,
+    session_id: core::ffi::c_long,
+    head: &[u8],
+    body: &[u8],
+) -> Option<bool> {
+    let state = serv.state();
+    if u64::from(serv.config().mode_) == MODE_PROCESS || !sends_here(state, session_id) {
+        return None;
+    }
+    let (conn, socket) = writes_now(state, session_id)?;
+    let parts = [IoSlice::new(head), IoSlice::new(body)];
+    let write = |fd| swoole_rs_tls::upstream::writev(fd, &parts);
+    // A failed write sent nothing: all of it is queued, where the reactor meets the error.
+    let sent = usize::try_from(record_write(socket, write, steady_ms)).unwrap_or(0);
+    let total = head.len() + body.len();
+    let done = if sent == total {
+        conn.set_last_send_time(microtime());
+        true
+    } else {
+        let head_left = head.get(sent..).unwrap_or_default();
+        let body_left = body.get(sent.saturating_sub(head.len())..);
+        [head_left, body_left.unwrap_or_default()]
+            .into_iter()
+            .filter(|left| !left.is_empty())
+            .all(|left| {
+                let info = DataHead {
+                    fd: session_id,
+                    kind: SEND_DATA,
+                    len: left.len().c_cast::<u32>(),
+                    ..DataHead::default()
+                };
+                to_connection(serv, &info, left, Some(0)) == SW_OK
+            })
+    };
+    if done {
+        crate::shared::count_send(state, session_id, total.c_cast::<u32>());
+    }
+    Some(done)
+}
+
+/// The session's verified connection and socket when a send can be written to the
+/// socket here and now: no overflow, and a socket that sends directly, without TLS and
+/// with no output buffer yet.
+fn writes_now(
+    state: &ServerState,
+    session_id: core::ffi::c_long,
+) -> Option<(Connection<'_>, Socket<'_>)> {
+    let conn = state.connection(session_id, Lookup::VerifiedTls)?;
+    let socket = conn.socket()?;
+    let queues = conn.overflow()
+        || socket.read(|record| {
+            !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
+        });
+    (!queues).then_some((conn, socket))
+}
+
+/// [`send`]'s direct write, made here when it needs nothing else ([`writes_now`]).
 /// `None` leaves the whole send to [`to_connection`]; otherwise `Socket::send`'s result
 /// after EINTR retries, and a complete send has set the connection's `last_send_time`.
 fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> Option<i64> {
-    let conn = state.connection(session_id, Lookup::VerifiedTls)?;
-    let socket = conn.socket()?;
-    if conn.overflow()
-        || socket.read(|record| {
-            !record.direct_send || !record.ssl().is_null() || !record.output.out_buffer.is_null()
-        })
-    {
-        return None;
-    }
+    let (conn, socket) = writes_now(state, session_id)?;
     let sent = loop {
         let sent = record_send(socket, Drain::new(data), 0, |_, _| -1, steady_ms);
         if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
@@ -506,6 +560,51 @@ mod tests {
         assert_eq!(a.read(5), b"hello");
         assert_eq!(a.queued(), 0, "nothing buffered");
         assert!(a.conn().last_send_time() > 0.0, "touched");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn parts_go_out_in_one_write_where_the_worker_writes_to_the_socket() {
+        let mut a = Accepted::new();
+        assert_eq!(
+            send_parts(a.serv(), 1, b"head", b"body"),
+            None,
+            "process mode sends through the factory"
+        );
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), Some(true));
+        assert_eq!(a.read(8), b"headbody");
+        assert_eq!(a.queued(), 0, "nothing buffered");
+        assert!(a.conn().last_send_time() > 0.0, "touched");
+        a.sock().edit(|s| s.direct_send = false);
+        assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), None);
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert!((&a.client).read(&mut [0; 1]).is_err(), "nothing sent");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn parts_the_socket_does_not_take_are_queued_in_order() {
+        let mut a = Accepted::new();
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        unsafe { a.serv().config_mut() }.mode_ = crate::MODE_BASE.c_cast();
+        // More than a loopback socket's buffers hold while the peer reads nothing.
+        let body: Vec<u8> = (0..16usize << 20).map(|at| at.to_le_bytes()[0]).collect();
+        assert_eq!(send_parts(a.serv(), 1, b"head", &body), Some(true));
+        let queued = a.queued() as usize;
+        assert!(queued > 0 && queued < body.len(), "the body's tail waits");
+        assert_eq!(a.conn().send_queued_bytes() as usize, queued);
+        assert!(
+            a.sock().read(|s| s.events & EVENT_WRITE != 0),
+            "waits to write"
+        );
+        let sent = 4 + body.len() - queued;
+        let got = a.read(sent);
+        assert_eq!(got.get(..4), Some(&b"head"[..]));
+        assert_eq!(got.get(4..), body.get(..sent - 4), "the body's start, once");
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert!((&a.client).read(&mut [0; 1]).is_err(), "and no more");
     }
 
     #[test]

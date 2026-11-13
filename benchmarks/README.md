@@ -103,8 +103,10 @@ that come back), `websocket-64k` (one 64 KiB frame echoed), `websocket-fragmente
 (1.26, 0.57, 0.73, 1.00 and 1.05), which the x86_64 merge tier never met (#2778).
 `http2-concurrent` measured 3.56 there until #2712 and 1.09 after it; 66,000 of its
 444,000 instructions a request were the static handler zero-filling a 4 KiB filename
-buffer for each of the 16 streams, which it no longer does. `websocket-64k` is two
-64 KiB copies on both engines, so its ratio stays near 1.0 on x86_64. The ratchet has
+buffer for each of the 16 streams, which it no longer does. `websocket-64k` was two
+64 KiB copies on both engines, so its ratio stayed near 1.0 on x86_64; the Cargo build now
+makes one, sending the pushed payload from the PHP string behind the frame's header in one
+`writev`. The ratchet has
 lowered all five since.
 
 `mysql` runs a prepared `SELECT` per request through hooked PDO mysql against

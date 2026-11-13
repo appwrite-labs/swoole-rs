@@ -492,7 +492,8 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
 }
 
 /// writev(2) of `vectors`.
-fn writev(fd: c_int, vectors: &[IoSlice<'_>]) -> isize {
+#[must_use]
+pub fn writev(fd: c_int, vectors: &[IoSlice<'_>]) -> isize {
     let count = vectors.len().c_cast::<c_int>();
     // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
     unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }

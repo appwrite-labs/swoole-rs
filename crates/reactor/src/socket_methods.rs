@@ -195,12 +195,33 @@ pub fn record_send(
     now: SteadyMs,
 ) -> isize {
     let (fd, _, dont_restart, secure) = io_of(socket);
-    let sent = loop {
-        let sent = if secure {
+    let write = || {
+        if secure {
             tls(socket, data)
         } else {
             data.send(fd, flags)
-        };
+        }
+    };
+    counted(socket, dont_restart, write, now)
+}
+
+/// [`record_send`]'s retries and counts around any `write` to the record's fd.
+pub fn record_write(socket: Socket<'_>, write: impl Fn(c_int) -> isize, now: SteadyMs) -> isize {
+    let (fd, _, dont_restart, _) = io_of(socket);
+    counted(socket, dont_restart, || write(fd), now)
+}
+
+/// `write`, retried on EINTR unless `dont_restart`, counted into `total_send_bytes`
+/// and, with a send timer, `last_sent_time`.
+#[inline(always)]
+fn counted(
+    socket: Socket<'_>,
+    dont_restart: bool,
+    write: impl Fn() -> isize,
+    now: SteadyMs,
+) -> isize {
+    let sent = loop {
+        let sent = write();
         if !(sent < 0 && interrupted() && !dont_restart) {
             break sent;
         }
