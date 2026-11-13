@@ -21,6 +21,7 @@ use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
+use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
@@ -177,16 +178,16 @@ impl HttpServer {
         found.or(default)
     }
 
-    /// A flag's or a number's setting (`SWR_HTTPBINDINGS_SETTING_*`).
-    fn apply(&self, kind: u32, value: i64) {
+    /// A flag's or a number's setting.
+    fn apply(&self, kind: Setting, value: i64) {
         match kind {
-            SETTING_COOKIE => self.parse_cookie.set(value != 0),
-            SETTING_POST => self.parse_post.set(value != 0),
-            SETTING_FILES => self.parse_files.set(value != 0),
-            SETTING_COMPRESSION => self.compression.set(value != 0),
-            SETTING_LEVEL => self.compression_level.set(value.c_cast::<i8>()),
-            SETTING_MINIMUM => self.compression_min_length.set(value.c_cast::<u32>()),
-            _ => {}
+            Setting::Cookie => self.parse_cookie.set(value != 0),
+            Setting::Post => self.parse_post.set(value != 0),
+            Setting::Files => self.parse_files.set(value != 0),
+            Setting::Compression => self.compression.set(value != 0),
+            Setting::Level => self.compression_level.set(value.c_cast::<i8>()),
+            Setting::Minimum => self.compression_min_length.set(value.c_cast::<u32>()),
+            Setting::Types | Setting::Websocket | Setting::Upload => {}
         }
     }
 
@@ -228,10 +229,10 @@ impl Drop for HttpServer {
     }
 }
 
-/// A text setting (`SWR_HTTPBINDINGS_SETTING_*`): `http_compression_types`
+/// A text setting: `http_compression_types`
 /// (reset by `None`, then one type per call) or `upload_tmp_dir`.
-fn text_setting(server: &HttpServer, kind: u32, text: Option<&[u8]>) {
-    if kind != SETTING_TYPES {
+fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
+    if kind != Setting::Types {
         *server.upload_tmp_dir.borrow_mut() = context::directory(text.unwrap_or_default());
         return;
     }
@@ -464,18 +465,6 @@ fn construct(call: &Call) {
     }
 }
 
-/// `SWR_HTTPBINDINGS_SETTING_*`.
-const SETTING_LOOKUP: u32 = 1;
-const SETTING_COOKIE: u32 = 2;
-const SETTING_POST: u32 = 3;
-const SETTING_FILES: u32 = 4;
-const SETTING_COMPRESSION: u32 = 5;
-const SETTING_LEVEL: u32 = 6;
-const SETTING_MINIMUM: u32 = 7;
-const SETTING_TYPES: u32 = 8;
-const SETTING_WEBSOCKET: u32 = 9;
-const SETTING_UPLOAD: u32 = 10;
-const SETTING_DONE: u32 = 11;
 /// `SW_ERROR_SSL_BAD_CLIENT`.
 const SSL_BAD_CLIENT: c_int = 1015;
 /// `SW_ACCEPT_RETRY_TIME`.
@@ -532,9 +521,7 @@ fn start(call: &Call) {
 }
 
 fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
-    use swoole_rs_httpbindings::{
-        AcceptErrors, Action, SettingsCursor, accept_loop, swr_v1_httpbindings_settings,
-    };
+    use swoole_rs_httpbindings::{AcceptErrors, accept_loop};
     let (Some(server), Some(props)) = (server_of(call), call.props(Some(&SERVER))) else {
         return Ok(None);
     };
@@ -558,31 +545,17 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(table) = settings.array() else {
         return Ok(None);
     };
-    let mut cursor = SettingsCursor::default();
-    let mut found = 0;
-    let mut value = None;
-    let compression = u32::from(COMPRESSION.load(Relaxed));
-    loop {
-        let mut action = Action::default();
-        if swr_v1_httpbindings_settings(Some(&mut cursor), compression, found, Some(&mut action))
-            != 0
-        {
-            return Ok(None);
+    for (kind, keys) in swoole_rs_httpbindings::settings(COMPRESSION.load(Relaxed)) {
+        if kind == Setting::Websocket {
+            server.apply_websocket(table);
+            continue;
         }
-        match action.kind {
-            SETTING_LOOKUP => {
-                value = table.get(action.text);
-                found = u32::from(value.is_some());
-            }
-            SETTING_DONE => break,
-            SETTING_WEBSOCKET => server.apply_websocket(table),
-            kind => match value
-                .map(|value| setting(server, kind, value))
-                .transpose()?
-            {
-                Some(Some(value)) => server.apply(kind, value),
-                _ => return Ok(None),
-            },
+        let Some(value) = keys.iter().find_map(|key| table.get(key)) else {
+            continue;
+        };
+        match setting(server, kind, value)? {
+            Some(value) => server.apply(kind, value),
+            None => return Ok(None),
         }
     }
     server.running.set(true);
@@ -607,10 +580,14 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     Ok(Some(accepted))
 }
 
-/// One `start` setting (`SWR_HTTPBINDINGS_SETTING_*`) from its value: a
+/// One `start` setting from its value: a
 /// flag's or a number's value for [`HttpServer::apply`], or `None` (no
 /// return value); an `E_ERROR` bails out.
-fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>, bailout::Bailout> {
+fn setting(
+    server: &HttpServer,
+    kind: Setting,
+    value: &Value,
+) -> Result<Option<i64>, bailout::Bailout> {
     let fatal = |message: String| {
         host::set_last_error(host::PHP_FATAL_ERROR);
         let message = CString::new(message).unwrap_or_default();
@@ -618,14 +595,14 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
     };
     let compression = COMPRESSION.load(Relaxed);
     let result = match kind {
-        SETTING_COOKIE | SETTING_POST | SETTING_FILES | SETTING_COMPRESSION => {
+        Setting::Cookie | Setting::Post | Setting::Files | Setting::Compression => {
             Some(i64::from(value.truthy()))
         }
-        SETTING_LEVEL if compression => Some(i64::from(
+        Setting::Level if compression => Some(i64::from(
             swoole_rs_httpbindings::swr_v1_httpbindings_server_level(value.long()),
         )),
-        SETTING_MINIMUM if compression => Some(value.long()),
-        SETTING_TYPES if compression => {
+        Setting::Minimum if compression => Some(value.long()),
+        Setting::Types if compression => {
             text_setting(server, kind, None);
             let Some(types) = value.array() else {
                 fatal("http_compression_types must be array".into())?;
@@ -637,12 +614,12 @@ fn setting(server: &HttpServer, kind: u32, value: &Value) -> Result<Option<i64>,
                     break;
                 }
                 if !kind.bytes().is_empty() {
-                    text_setting(server, SETTING_TYPES, Some(kind.bytes()));
+                    text_setting(server, Setting::Types, Some(kind.bytes()));
                 }
             }
             Some(0)
         }
-        SETTING_UPLOAD => {
+        Setting::Upload => {
             let dir = value.string();
             if bailout::pending() {
                 return Err(bailout::Bailout);
