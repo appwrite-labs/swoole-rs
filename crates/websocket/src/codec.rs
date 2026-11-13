@@ -182,8 +182,8 @@ pub struct Context {
     pub fragment_length: usize,
     pub package_max_length: usize,
     pub fragment_flags: u16,
-    pub has_fragment: u8,
-    pub closing: u8,
+    pub has_fragment: bool,
+    pub closing: bool,
 }
 
 #[repr(u32)]
@@ -238,7 +238,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     // Keep upstream's wire-size limits and unusual control offsets verbatim.
     // These are compatibility policy, not RFC validation.
     let (action, error) = match frame.opcode {
-        0 if context.has_fragment == 0 => (Reject, Error::Orphan),
+        0 if !context.has_fragment => (Reject, Error::Orphan),
         0 if context
             .fragment_length
             .checked_add(frame.payload_length)
@@ -251,7 +251,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
             (Finish, Error::None)
         }
         0 => (Append, Error::None),
-        1 | 2 if frame.flags & FIN == 0 && context.has_fragment != 0 => (Reject, Error::Overlap),
+        1 | 2 if frame.flags & FIN == 0 && context.has_fragment => (Reject, Error::Overlap),
         1 | 2 if frame.flags & FIN == 0 => (Start, Error::None),
         1 | 2 => (Dispatch, Error::None),
         9 | 10 if wire >= 127 => (Reject, Error::ControlTooBig),
@@ -267,7 +267,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
             (Control, Error::None)
         }
         8 if wire - 2 > 125 => (Reject, Error::CloseTooBig),
-        8 if context.closing != 0 => (ServerClose, Error::None),
+        8 if context.closing => (ServerClose, Error::None),
         8 => (ClientClose, Error::None),
         _ => (Unknown, Error::None),
     };

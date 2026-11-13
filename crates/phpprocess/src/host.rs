@@ -36,8 +36,7 @@ unsafe extern "C" {
 /// `SW_SOCK_UNIX_STREAM` and `SW_SOCK_UNIX_DGRAM`.
 const SOCK_UNIX_STREAM: c_int = 5;
 const SOCK_UNIX_DGRAM: c_int = 6;
-/// `Reactor::EXIT_CONDITION_SIGNAL_LISTENER` and `SW_ERROR_WRONG_OPERATION`.
-const EXIT_CONDITION_SIGNAL_LISTENER: c_int = 4;
+/// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = 509;
 
 /// `f` over the process's server (`sw_server()`), or `None` while it has none.
@@ -350,7 +349,10 @@ extern "C-unwind" fn listening(_event_num: &mut usize) -> bool {
 /// waits (setting it again replaces it with the same condition).
 pub(crate) fn signal_listen() {
     swoole_rs_phpswoole::check_reactor();
-    swoole_rs_reactor::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNAL_LISTENER, listening);
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(
+        swoole_rs_reactor::ExitCondition::SignalListener,
+        listening,
+    );
 }
 
 /// Outside thread builds, a process that is not a user worker forgets its

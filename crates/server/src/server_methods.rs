@@ -8,6 +8,7 @@ use crate::records::Lookup;
 use core::ffi::{c_int, c_long};
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::ServerEvent;
 
 use crate::hybrid::hybrid;
 use crate::view;
@@ -91,8 +92,6 @@ pub(crate) fn start_master_thread(
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<'_>) {
-    /// `Server::TASK_IPC_UNIXSOCK`.
-    const TASK_IPC_UNIXSOCK: u8 = 1;
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
@@ -100,7 +99,7 @@ pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<
     let config = serv.config();
     let workers = config.worker_num.get();
     // Task workers have pipes only when they talk over unix sockets.
-    let task_pipes = config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK;
+    let task_pipes = config.task_ipc() == Some(crate::TaskIpcMode::UnixSock);
     let total = if task_pipes {
         workers + config.task_worker_num.get()
     } else {
@@ -205,7 +204,7 @@ pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
 
 pub use crate::dispatch::{add_port, add_systemd_socket};
 
-pub use crate::send::{send, send_event_to_connection, send_to_connection};
+pub use crate::send::{send, send_event_to_connection, send_parts, send_to_connection};
 
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
@@ -292,19 +291,16 @@ pub fn close(serv: view::Server<'_>, session_id: c_long, reset: bool) -> bool {
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
 )]
-pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
+pub fn notify(serv: view::Server<'_>, conn: crate::Connection<'_>, event: ServerEvent) -> bool {
     let mut head = DataHead {
         fd: conn.fd().into(),
         reactor_id: conn.reactor_id().into(),
-        kind: event.c_cast::<u8>(),
+        kind: event.code(),
         server_fd: conn.server_fd().c_cast::<u16>(),
         ..DataHead::default()
     };
     hybrid().factory_notify(serv, &mut head)
 }
-
-/// `SW_SERVER_EVENT_PIPE_MESSAGE` (server.cc asserts it).
-const EVENT_PIPE_MESSAGE: u8 = 10;
 
 /// `Server::send_pipe_message(worker_id, msg)`: `msg` to that worker, through the master.
 pub fn send_pipe_message(
@@ -312,7 +308,7 @@ pub fn send_pipe_message(
     worker_id: u32,
     msg: &mut swoole_rs_process::task_file::TaskBuffer,
 ) -> bool {
-    msg.set_kind(EVENT_PIPE_MESSAGE);
+    msg.set_kind(ServerEvent::PipeMessage.code());
     hybrid().pipe_to_worker(serv, worker_id, msg)
 }
 
@@ -395,7 +391,10 @@ mod tests {
         conn.fd = 22;
         conn.reactor_id = 3;
         conn.server_fd = 0x1_0005;
-        assert!(notify(serv, (&mut conn).into(), 0x104), "notify result");
+        assert!(
+            notify(serv, (&mut conn).into(), ServerEvent::Close),
+            "notify result"
+        );
         assert_eq!(
             calls(),
             [Call::Notify(22, 3, 4, 5)],
@@ -407,7 +406,7 @@ mod tests {
         assert!(send_pipe_message(serv, 2, &mut message), "pipe result");
         assert_eq!(
             calls(),
-            [Call::Pipe(2, EVENT_PIPE_MESSAGE, 43)],
+            [Call::Pipe(2, ServerEvent::PipeMessage.code(), 43)],
             "the packed message goes to the worker as a pipe message, with its size"
         );
     }

@@ -7,8 +7,8 @@
 
 use std::ffi::c_int;
 
-use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::ConnectionRecord;
 
@@ -27,23 +27,23 @@ fn route<T>(
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    match swoole_rs_http::transport_route(conn.websocket_status.into(), conn.http2_stream.into()) {
-        1 => websocket(),
-        2 => http2(),
-        _ => {
-            let (host, port) = host_port(&conn.info);
-            log::error_log(
-                LOG_WARNING,
-                ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
-                c"protocol_status_error",
-                format_args!(
-                    "unexpected protocol status of session#{}<{host}:{port}>",
-                    conn.session_id
-                ),
-            );
-            error
-        }
+    if conn.websocket_status >= WebSocketStatus::Handshake {
+        return websocket();
     }
+    if conn.http2_stream {
+        return http2();
+    }
+    let (host, port) = host_port(&conn.info);
+    log::error_log(
+        LOG_WARNING,
+        ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
+        c"protocol_status_error",
+        format_args!(
+            "unexpected protocol status of session#{}<{host}:{port}>",
+            conn.session_id
+        ),
+    );
+    error
 }
 
 /// The host and port of an address that holds its socket type's member, as
@@ -72,8 +72,8 @@ pub mod exports {
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
     use swoole_rs_corebase::DataHead;
-    use swoole_rs_corebase::log;
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+    use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::{Drain, Socket, SocketRecord};
     use swoole_rs_server::{ConnectionRecord, view};
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
@@ -114,8 +114,6 @@ pub mod exports {
         pub(crate) data: *const u8,
     }
 
-    /// `websocket::STATUS_CLOSING`.
-    const STATUS_CLOSING: u8 = 4;
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
     const CLOSE_REPLY_MAX: usize = 2 + 2 + 125;
 
@@ -174,8 +172,8 @@ pub mod exports {
         // reaches until it deletes it.
         let mut buffered = unsafe { fragment.as_mut() };
         let mut context = Context {
-            has_fragment: u8::from(buffered.is_some()),
-            closing: u8::from(conn.websocket_status == STATUS_CLOSING),
+            has_fragment: buffered.is_some(),
+            closing: conn.websocket_status == WebSocketStatus::Closing,
             ..Context::default()
         };
         if let Some(fragment) = buffered.as_deref() {
@@ -260,7 +258,7 @@ pub mod exports {
                 return -1;
             }
             Action::ServerClose => {
-                conn.websocket_status = 0;
+                conn.websocket_status = WebSocketStatus::None;
                 return -1;
             }
             Action::Unknown => {
@@ -358,9 +356,9 @@ mod tests {
     use super::*;
 
     /// Pinned `http.cc`'s branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
-    fn pinned(websocket_status: u8, http2_stream: bool) -> u32 {
+    fn pinned(websocket_status: WebSocketStatus, http2_stream: bool) -> u32 {
         // `conn->websocket_status >= websocket::STATUS_HANDSHAKE`, then `conn->http2_stream`.
-        if websocket_status >= 2 {
+        if websocket_status.code() >= 2 {
             1
         } else if http2_stream {
             2
@@ -375,7 +373,7 @@ mod tests {
     #[test]
     fn routes_match_the_pinned_branches() {
         let mut cases = 0;
-        for websocket_status in 0..=u8::MAX {
+        for websocket_status in WebSocketStatus::ALL {
             for http2_stream in [false, true] {
                 // SAFETY: the record is plain integers, pointers and atomics.
                 let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
@@ -413,7 +411,7 @@ mod tests {
                 cases += 3;
             }
         }
-        assert_eq!(cases, 256 * 2 * 3);
+        assert_eq!(cases, WebSocketStatus::ALL.len() * 2 * 3);
         assert_eq!(WEBSOCKET_FRAME_HEADER_SIZE, 14);
     }
 }

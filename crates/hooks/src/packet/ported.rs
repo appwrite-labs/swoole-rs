@@ -4,7 +4,7 @@
 //! Rust's framing with the same inputs. `ported.txt` holds the pinned bodies'
 //! traces, one line per scenario, without their EOF scans and `String::clear`
 //! calls, which Rust performs itself.
-use super::{ReadBuffer, recv_packet};
+use super::{BufferSync, Failure, ReadBuffer, recv_packet};
 use crate::co_io::{HOST, Host, errno, set_errno};
 use crate::co_socket::{Co, CoSocket, TestSocket};
 use core::ffi::c_void;
@@ -59,9 +59,9 @@ unsafe extern "C-unwind" fn timer_del(_: *mut swoole_rs_timer::TimerNode) -> boo
     true
 }
 
-fn read_buffer(_: Co, view: &mut ReadBuffer, action: u32, size: usize) {
+fn read_buffer(_: Co, view: &mut ReadBuffer, sync: BufferSync) {
     with(|s| {
-        if action == 0 {
+        if sync == BufferSync::Get {
             s.trace.push("buffer:get".into());
             if s.buffer.is_none() {
                 s.trace.push("buffer:new:4".into());
@@ -73,21 +73,24 @@ fn read_buffer(_: Co, view: &mut ReadBuffer, action: u32, size: usize) {
             }
         }
         let buffer = s.buffer.as_mut().unwrap();
-        if action != 0 {
+        if sync != BufferSync::Get {
             buffer.length = view.length;
             buffer.offset = usize::try_from(view.offset).unwrap();
         }
-        if action == 2 {
-            s.trace.push(format!("buffer:extend:{size}"));
-            assert!(size >= buffer.length, "extend keeps the buffered bytes");
-            buffer.bytes.resize(size, 0);
-        }
-        if action == 3 {
-            s.trace.push(format!("buffer:reduce:{size}"));
-            assert!(size <= buffer.length, "reduce drops buffered bytes");
-            buffer.bytes.copy_within(size..buffer.length, 0);
-            buffer.length -= size;
-            buffer.offset = 0;
+        match sync {
+            BufferSync::Extend(size) => {
+                s.trace.push(format!("buffer:extend:{size}"));
+                assert!(size >= buffer.length, "extend keeps the buffered bytes");
+                buffer.bytes.resize(size, 0);
+            }
+            BufferSync::Reduce(size) => {
+                s.trace.push(format!("buffer:reduce:{size}"));
+                assert!(size <= buffer.length, "reduce drops buffered bytes");
+                buffer.bytes.copy_within(size..buffer.length, 0);
+                buffer.length -= size;
+                buffer.offset = 0;
+            }
+            BufferSync::Get | BufferSync::Store => {}
         }
         *view = ReadBuffer {
             length: buffer.length,
@@ -151,16 +154,16 @@ fn package_length(_: Co, n: u32, header: &mut u32) -> isize {
     })
 }
 
-fn packet_fail(_: Co, kind: u32, length: isize) {
+fn packet_fail(_: Co, kind: Failure, length: isize) {
     with(|s| {
         let (error, message) = match kind {
-            0 => (1781, "get package length failed"),
-            1 => {
+            Failure::LengthNotFound => (1781, "get package length failed"),
+            Failure::TooLarge => {
                 s.trace.extend(["address".into(), "port".into()]);
                 s.trace.push(format!("diagnostic:private:9602:{length}"));
                 (1782, "native diagnostic")
             }
-            _ => (1782, "no package eof, package_max_length exceeded"),
+            Failure::NoEof => (1782, "no package eof, package_max_length exceeded"),
         };
         s.trace.push(format!("error:{error}:{message}"));
         set_errno(error);

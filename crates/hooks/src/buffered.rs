@@ -3,7 +3,7 @@
 //! keeps the buffer, which it lends as `BufferFields`, and the `recv`.
 use crate::co_io::{available, host};
 use crate::co_socket::Co;
-use crate::packet::ReadBuffer;
+use crate::packet::{BufferSync, ReadBuffer};
 use crate::shutdown::READ;
 
 fn to_off(offset: usize) -> libc::off_t {
@@ -101,8 +101,8 @@ struct Context {
 }
 
 impl Context {
-    fn sync(&mut self, action: u32, size: usize) {
-        (host().read_buffer)(self.socket, &mut self.view, action, size);
+    fn sync(&mut self, sync: BufferSync) {
+        (host().read_buffer)(self.socket, &mut self.view, sync);
     }
 }
 
@@ -116,7 +116,7 @@ fn buffer(socket: Co) -> Context {
             str: core::ptr::null_mut(),
         },
     };
-    ctx.sync(0, 0);
+    ctx.sync(BufferSync::Get);
     ctx
 }
 
@@ -144,13 +144,13 @@ pub fn recv_buffered(socket: Co, out: &mut [u8]) -> isize {
         |length, offset, free| {
             ctx.view.length = length;
             ctx.view.offset = to_off(offset);
-            ctx.sync(1, 0);
+            ctx.sync(BufferSync::Store);
             (host().recv)(socket, free, false)
         },
     );
     ctx.view.length = length;
     ctx.view.offset = to_off(offset);
-    ctx.sync(1, 0);
+    ctx.sync(BufferSync::Store);
     result
 }
 

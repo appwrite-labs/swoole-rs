@@ -91,11 +91,36 @@ const OPEN_FLAGS: c_int =
     SocketFlag::SW_SOCK_NONBLOCK as c_int | SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const BUFFER_SIZE_BIG: usize = SW_BUFFER_SIZE_BIG as usize;
 
-/// How a constructor makes its `network::Socket` (`swr_v1_hook_co_socket_new`).
-pub const NEW_BY_FAMILY: c_int = 0;
-pub const NEW_BY_TYPE: c_int = 1;
-pub const NEW_FD_BY_TYPE: c_int = 2;
-pub const NEW_FD_BY_FAMILY: c_int = 3;
+/// How a constructor makes its `network::Socket` (`swr_v1_hook_co_socket_new`); the
+/// discriminants are `swoole_rs_co_socket.h`'s `SWR_CO_SOCKET_*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum New {
+    /// `Socket(domain, type, protocol)`.
+    ByFamily = 0,
+    /// `Socket(SocketType)`.
+    ByType = 1,
+    /// `Socket(fd, SocketType)`.
+    FdByType = 2,
+    /// `Socket(fd, domain, type, protocol)`.
+    FdByFamily = 3,
+}
+
+impl New {
+    const fn from_code(code: c_int) -> Option<Self> {
+        Some(match code {
+            0 => Self::ByFamily,
+            1 => Self::ByType,
+            2 => Self::FdByType,
+            3 => Self::FdByFamily,
+            _ => return None,
+        })
+    }
+
+    /// Whether it opens a new descriptor rather than adopting `fd`.
+    const fn opens(self) -> bool {
+        matches!(self, Self::ByFamily | Self::ByType)
+    }
+}
 
 /// What a constructor did, for native code: `OPENED` set unless socket(2) failed
 /// (errno holds why); `NODELAY_FAILED` when `TCP_NODELAY` could not be set (native
@@ -698,10 +723,10 @@ pub fn make_quiet(
     family: bool,
 ) -> (Co, u32) {
     let how = match (family, fd < 0) {
-        (true, true) => NEW_BY_FAMILY,
-        (true, false) => NEW_FD_BY_FAMILY,
-        (false, true) => NEW_BY_TYPE,
-        (false, false) => NEW_FD_BY_TYPE,
+        (true, true) => New::ByFamily,
+        (true, false) => New::FdByFamily,
+        (false, true) => New::ByType,
+        (false, false) => New::FdByType,
     };
     let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast();
@@ -731,10 +756,8 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
     drop(unsafe { Box::from_raw(socket) });
 }
 
-/// The public constructors, which initialise the record first:
-/// [`NEW_BY_FAMILY`] `Socket(domain, type, protocol)`, [`NEW_BY_TYPE`]
-/// `Socket(SocketType)`, [`NEW_FD_BY_TYPE`] `Socket(fd, SocketType)` and
-/// [`NEW_FD_BY_FAMILY`] `Socket(fd, domain, type, protocol)`. `owner` is the native
+/// The public constructors, which initialise the record first, by the [`New`] whose
+/// code `how` is (0, nothing opened, for any other). `owner` is the native
 /// `Socket`, which the new `network::Socket` points back to. Returns the bits above.
 /// `storage` holds one record, which needn't be initialized yet (a record already
 /// there is overwritten, not dropped); the native object owns it for its lifetime.
@@ -750,6 +773,9 @@ pub extern "C" fn swr_v1_hook_co_socket_new(
     protocol: c_int,
 ) -> u32 {
     let record = socket.write(CoSocket::new());
+    let Some(how) = New::from_code(how) else {
+        return 0;
+    };
     record.construct(owner, how, fd, socket_type, domain, kind, protocol)
 }
 
@@ -767,7 +793,7 @@ impl CoSocket {
     fn construct(
         &mut self,
         owner: *mut c_void,
-        how: c_int,
+        how: New,
         fd: c_int,
         socket_type: c_int,
         domain: c_int,
@@ -777,7 +803,7 @@ impl CoSocket {
         let socket = self;
         let mut result = OPENED;
         match how {
-            NEW_BY_FAMILY | NEW_FD_BY_FAMILY => {
+            New::ByFamily | New::FdByFamily => {
                 socket.sock_domain.set(domain);
                 socket.sock_type.set(kind);
                 socket.sock_protocol.set(protocol);
@@ -785,7 +811,7 @@ impl CoSocket {
                     .kind
                     .set(swoole_rs_reactor::swr_v1_socket_type(domain, kind));
             }
-            _ => {
+            New::ByType | New::FdByType => {
                 socket.kind.set(socket_type);
                 domain_and_type(
                     socket_type,
@@ -794,7 +820,7 @@ impl CoSocket {
                 );
             }
         }
-        let opened = if how == NEW_BY_FAMILY || how == NEW_BY_TYPE {
+        let opened = if how.opens() {
             socket.open(owner)
         } else {
             socket.adopt(fd, owner)
@@ -802,8 +828,8 @@ impl CoSocket {
         let Some(network) = opened else {
             return 0;
         };
-        if how != NEW_BY_FAMILY && how != NEW_BY_TYPE {
-            if how == NEW_FD_BY_TYPE && socket_type == SOCK_RAW {
+        if !how.opens() {
+            if how == New::FdByType && socket_type == SOCK_RAW {
                 return result;
             }
             result |= set_nonblock(network);
@@ -1023,7 +1049,19 @@ mod tests {
         assert!(socket.state.is_none());
     }
 
-    fn new(socket: &mut CoSocket, how: c_int, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
+    fn new(socket: &mut CoSocket, how: New, fd: c_int, ty: c_int, d: c_int, k: c_int) -> u32 {
+        new_by_code(socket, how as c_int, fd, ty, d, k)
+    }
+
+    /// [`swr_v1_hook_co_socket_new`] with a raw `how`, as native code passes it.
+    fn new_by_code(
+        socket: &mut CoSocket,
+        how: c_int,
+        fd: c_int,
+        ty: c_int,
+        d: c_int,
+        k: c_int,
+    ) -> u32 {
         let owner = (&raw mut *socket).cast();
         // The constructor writes the record again.
         socket.fini();
@@ -1074,7 +1112,7 @@ mod tests {
     #[test]
     fn a_tcp_socket_by_type_is_open_nonblocking_with_nodelay_and_the_length_protocol() {
         let mut socket = record();
-        assert_eq!(new(&mut socket, NEW_BY_TYPE, 0, 1, 0, 0), OPENED);
+        assert_eq!(new(&mut socket, New::ByType, 0, 1, 0, 0), OPENED);
         assert_eq!(
             (socket.sock_domain.get(), socket.sock_type.get()),
             (libc::AF_INET, libc::SOCK_STREAM)
@@ -1113,7 +1151,7 @@ mod tests {
         assert_eq!(
             new(
                 &mut socket,
-                NEW_BY_FAMILY,
+                New::ByFamily,
                 0,
                 0,
                 libc::AF_INET,
@@ -1133,10 +1171,30 @@ mod tests {
     )]
     fn an_unknown_type_fails_to_open() {
         let mut socket = record();
-        assert_eq!(new(&mut socket, NEW_BY_TYPE, 0, 99, 0, 0), 0);
+        assert_eq!(new(&mut socket, New::ByType, 0, 99, 0, 0), 0);
         assert!(socket.socket_ptr().is_null());
         assert_eq!(socket.sock_fd.get(), -1);
         release(socket);
+    }
+
+    /// An unknown constructor code from native code neither opens a socket nor adopts
+    /// the fd it was given.
+    #[test]
+    fn an_unknown_constructor_kind_opens_and_adopts_nothing() {
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        for how in [-1, 4] {
+            let mut socket = record();
+            assert_eq!(new_by_code(&mut socket, how, fd, 1, 0, 0), 0, "{how}");
+            assert!(socket.socket_ptr().is_null(), "{how}: no network socket");
+            assert_eq!(socket.sock_fd.get(), -1, "{how}: no fd");
+            release(socket);
+        }
+        // Still the caller's, untouched: blocking and open.
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
+            0
+        );
+        assert_eq!(unsafe { libc::close(fd) }, 0);
     }
 
     #[test]
@@ -1146,7 +1204,7 @@ mod tests {
         assert_eq!(
             new(
                 &mut socket,
-                NEW_FD_BY_FAMILY,
+                New::FdByFamily,
                 fd,
                 0,
                 libc::AF_INET,
@@ -1164,7 +1222,7 @@ mod tests {
 
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         let mut socket = record();
-        assert_eq!(new(&mut socket, NEW_FD_BY_TYPE, fd, SOCK_RAW, 0, 0), OPENED);
+        assert_eq!(new(&mut socket, New::FdByType, fd, SOCK_RAW, 0, 0), OPENED);
         assert_eq!(
             unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK,
             0
@@ -1186,7 +1244,7 @@ mod tests {
     #[test]
     fn reinit_swaps_the_socket_and_hands_back_the_old_one() {
         let mut socket = record();
-        new(&mut socket, NEW_BY_TYPE, 0, 1, 0, 0);
+        new(&mut socket, New::ByType, 0, 1, 0, 0);
         let first = socket.socket_ptr();
         let old = reinit(unsafe { Co::new(&raw mut *socket) }, 3).unwrap();
         assert_eq!(old, first);
@@ -1205,7 +1263,7 @@ mod tests {
     #[test]
     fn an_accepted_socket_inherits_the_servers_settings() {
         let mut server = record();
-        new(&mut server, NEW_BY_TYPE, 0, 1, 0, 0);
+        new(&mut server, New::ByType, 0, 1, 0, 0);
         server.open_eof_check.set(true);
         server.http2.set(true);
         server.ssl_is_server.set(true);
@@ -1239,7 +1297,7 @@ mod tests {
     #[test]
     fn peer_name_of_an_unconnected_socket_is_an_error() {
         let mut socket = record();
-        new(&mut socket, NEW_BY_TYPE, 0, 1, 0, 0);
+        new(&mut socket, New::ByType, 0, 1, 0, 0);
         let mut address: SocketAddress = unsafe { core::mem::zeroed() };
         let error = peer_name(unsafe { Co::new(&raw mut *socket) }, &mut address);
         assert_eq!(error, libc::ENOTCONN);

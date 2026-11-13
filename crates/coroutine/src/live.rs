@@ -3,7 +3,7 @@
 //! coroutines by id, from creation until close, kept in the scheduler itself so
 //! no lookup goes through a thread-local. Lists run newest first, the order
 //! upstream's map iterates in while its buckets keep one coroutine each.
-use crate::coroutine::{Co, STATE_END, STATE_INIT, STATE_RUNNING, STATE_WAITING, Scheduler};
+use crate::coroutine::{Co, Scheduler, State};
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
@@ -102,13 +102,12 @@ fn native(co: Co) -> *mut c_void {
 }
 
 /// `print_list`'s state label.
-fn state_label(state: i32) -> Option<&'static core::ffi::CStr> {
+fn state_label(state: State) -> &'static str {
     match state {
-        STATE_INIT => Some(c"[INIT]"),
-        STATE_WAITING => Some(c"[WAITING]"),
-        STATE_RUNNING => Some(c"[RUNNING]"),
-        STATE_END => Some(c"[END]"),
-        _ => None,
+        State::Init => "[INIT]",
+        State::Waiting => "[WAITING]",
+        State::Running => "[RUNNING]",
+        State::End => "[END]",
     }
 }
 
@@ -144,21 +143,18 @@ impl Scheduler {
     }
 
     /// `Coroutine::print_list`'s text: one `Coroutine\t<cid>\t<state>` line per
-    /// live coroutine; aborts on a state outside the four.
+    /// live coroutine.
     #[must_use]
     pub fn list_text(&self) -> String {
         let mut text = String::new();
         let mut before = c_long::MAX;
         while let Some((cid, co)) = self.older(before) {
             before = cid;
-            let state = co.with(|co| co.state);
-            let Some(label) = state_label(state) else {
-                swoole_rs_corebase::fatal("a live coroutine in an unknown state");
-            };
+            let label = state_label(co.with(|co| co.state));
             text.push_str("Coroutine\t");
             text.push_str(&cid.to_string());
             text.push('\t');
-            text.push_str(&label.to_string_lossy());
+            text.push_str(label);
             text.push('\n');
         }
         text
@@ -175,7 +171,7 @@ mod tests {
         unsafe { Co::of(co) }.unwrap()
     }
 
-    fn coroutine(native: usize, state: i32) -> Coroutine {
+    fn coroutine(native: usize, state: State) -> Coroutine {
         // SAFETY: all-zero is a valid Coroutine (null pointers, zero scalars).
         let mut co: Coroutine = unsafe { core::mem::zeroed() };
         co.native = native as *mut c_void;
@@ -187,9 +183,9 @@ mod tests {
     fn registry_finds_counts_and_walks_newest_first() {
         let mut s = scheduler();
         let sp = &raw mut s;
-        let mut a = coroutine(0xa0, STATE_RUNNING);
-        let mut b = coroutine(0xb0, STATE_WAITING);
-        let mut c = coroutine(0xc0, STATE_INIT);
+        let mut a = coroutine(0xa0, State::Running);
+        let mut b = coroutine(0xb0, State::Waiting);
+        let mut c = coroutine(0xc0, State::Init);
         // SAFETY: the scheduler and coroutines live on this frame.
         unsafe {
             assert_eq!((*sp).count(), 0);
@@ -227,8 +223,8 @@ mod tests {
     #[test]
     fn print_list_writes_one_line_each_newest_first() {
         let mut s = scheduler();
-        let mut a = coroutine(0, STATE_WAITING);
-        let mut b = coroutine(0, STATE_RUNNING);
+        let mut a = coroutine(0, State::Waiting);
+        let mut b = coroutine(0, State::Running);
         s.insert(7, co(&mut a));
         s.insert(9, co(&mut b));
         let text = s.list_text();
@@ -243,10 +239,9 @@ mod tests {
 
     #[test]
     fn labels_cover_the_states() {
-        assert_eq!(state_label(STATE_INIT), Some(c"[INIT]"));
-        assert_eq!(state_label(STATE_WAITING), Some(c"[WAITING]"));
-        assert_eq!(state_label(STATE_RUNNING), Some(c"[RUNNING]"));
-        assert_eq!(state_label(STATE_END), Some(c"[END]"));
-        assert_eq!(state_label(7), None);
+        assert_eq!(state_label(State::Init), "[INIT]");
+        assert_eq!(state_label(State::Waiting), "[WAITING]");
+        assert_eq!(state_label(State::Running), "[RUNNING]");
+        assert_eq!(state_label(State::End), "[END]");
     }
 }

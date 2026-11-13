@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use libc::{EAGAIN, EBUSY, EINVAL, ENOMEM, ENOSPC, ENOTSUP};
 use swoole_rs_corebase::sys::{errno, set_errno};
-use swoole_rs_locks::{Lock, SharedMutex};
+use swoole_rs_locks::{Kind, Lock, SharedMutex};
 
 /// The fault and what the faked calls counted, while this thread watches.
 #[derive(Clone, Copy)]
@@ -283,17 +283,20 @@ fn check(row: &Row, kind: i32, shared: bool, stage: i32, storage: u32) {
 /// `direct(kind, shared, stage)`: `Lock::private`, which owns its storage, or
 /// `Lock::shared` in storage made before the fault, as the gate's stack buffer was.
 fn direct(kind: i32, shared: bool, stage: i32) {
+    let Some(lock) = Kind::from_code(kind.into()) else {
+        unreachable!("a lock of kind {kind}");
+    };
     let row = if shared {
         let storage: &'static mut [AtomicU64] = Box::leak(
-            (0..Lock::words(kind))
+            (0..Lock::words(lock))
                 .map(|_| AtomicU64::new(0))
                 .collect::<Box<[_]>>(),
         );
         faulted(kind, stage, || {
-            (Lock::shared(kind, storage).is_some(), None)
+            (Lock::shared(lock, storage).is_some(), None)
         })
     } else {
-        faulted(kind, stage, || (Lock::private(kind).is_some(), None))
+        faulted(kind, stage, || (Lock::private(lock).is_some(), None))
     };
     check(&row, kind, shared, stage, u32::from(!shared));
 }

@@ -9,10 +9,11 @@ use core::sync::atomic::Ordering;
 use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
-    SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
-    SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+    EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
+    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
+    SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
@@ -24,13 +25,10 @@ use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
 use crate::http_routes::exports::{Frames, RecvData, dispatch_task};
-use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, readable};
+use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
-/// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
-const STATUS_HANDSHAKE: u8 = 2;
-const STATUS_ACTIVE: u8 = 3;
 /// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
 const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
@@ -47,7 +45,7 @@ struct Read<'a> {
     server: view::Server<'a>,
     /// The port, whose settings nothing writes while it serves.
     port: &'a PortConfig,
-    kind: u32,
+    kind: Readable,
     /// A WebSocket connection on a port with `open_websocket_protocol`: its
     /// frames go to [`Frames`], past the port protocol's callbacks.
     frames: bool,
@@ -67,7 +65,7 @@ pub(crate) unsafe fn on_read(
     reactor: Running<'_>,
     port: view::Port<'_>,
     event: &mut Event,
-    kind: u32,
+    kind: Readable,
 ) -> c_int {
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
@@ -93,9 +91,9 @@ pub(crate) unsafe fn on_read(
         kind,
         frames: false,
     };
-    if kind == ON_READ_HTTP {
-        read.frames =
-            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol.get();
+    if kind == Readable::Http {
+        read.frames = read.conn().websocket_status >= WebSocketStatus::Handshake
+            && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
     *event = read.event.get();
@@ -119,6 +117,18 @@ impl Read<'_> {
         // SAFETY: the current buffer is live once a receive buffer or request made it
         // current; only calls on `self`, which the borrow excludes, touch it.
         unsafe { &mut *self.buffer }
+    }
+
+    /// Whether a payload of `length` bytes is all the socket's receive buffer holds and
+    /// at least half of what it has room for, so a worker in this thread may take the
+    /// buffer for the payload and not copy it (`SW_EVENT_DATA_POP_PTR`). A smaller
+    /// payload is cheaper to copy than to keep a whole buffer alive for.
+    fn whole_buffer(&mut self, length: u64) -> bool {
+        let string = self.string();
+        let (len, size) = (string.len() as u64, string.size() as u64);
+        length >= size / 2
+            && length == len
+            && ptr::eq(self.buffer, self.socket.read(|s| s.recv_buffer).cast())
     }
 
     /// `socket->removed`: out of the reactor, as a close leaves it.
@@ -177,7 +187,7 @@ impl Connection for Read<'_> {
     }
 
     fn warn_recv(&mut self) {
-        let origin: &CStr = if self.kind == ON_READ_HTTP {
+        let origin: &CStr = if self.kind == Readable::Http {
             c"ListenPort::readable_callback_http"
         } else {
             c"ListenPort::readable_callback_raw"
@@ -253,6 +263,11 @@ impl Connection for Read<'_> {
         let data = RecvData {
             info: DataHead {
                 len: u32::try_from(length).unwrap_or(u32::MAX),
+                flags: if self.whole_buffer(length) {
+                    SW_EVENT_DATA_POP_PTR as u8
+                } else {
+                    0
+                },
                 ext_flags: if dispatch == Dispatch::Upload {
                     UPLOAD_PREPROCESSED
                 } else {
@@ -304,7 +319,7 @@ impl Connection for Read<'_> {
     fn upgrade(&mut self) -> Upgrade {
         let c = self.conn();
         Upgrade {
-            websocket: c.websocket_status >= STATUS_HANDSHAKE,
+            websocket: c.websocket_status >= WebSocketStatus::Handshake,
             upgraded: c.http_upgrade,
             http2_stream: c.http2_stream,
         }
@@ -312,7 +327,7 @@ impl Connection for Read<'_> {
 
     fn activate_websocket(&mut self) {
         let conn = self.conn();
-        conn.websocket_status = STATUS_ACTIVE;
+        conn.websocket_status = WebSocketStatus::Active;
         conn.http_upgrade = true;
     }
 

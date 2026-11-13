@@ -44,11 +44,36 @@ unsafe extern "C" {
     ) -> Option<&'a Value>;
 }
 
-/// `swHttpErrorStatusCode`.
-const CONNECT_FAILED: i64 = -1;
-const REQUEST_TIMEOUT: i64 = -2;
-const SERVER_RESET: i64 = -3;
-const SEND_FAILED: i64 = -4;
+/// `swHttpErrorStatusCode`: the negative `statusCode` a failed request leaves.
+#[derive(Clone, Copy)]
+enum ErrorStatus {
+    ConnectFailed = -1,
+    RequestTimeout = -2,
+    ServerReset = -3,
+    SendFailed = -4,
+}
+
+impl ErrorStatus {
+    const ALL: [(Self, &'static CStr); 4] = [
+        (
+            Self::ConnectFailed,
+            c"SWOOLE_HTTP_CLIENT_ESTATUS_CONNECT_FAILED",
+        ),
+        (
+            Self::RequestTimeout,
+            c"SWOOLE_HTTP_CLIENT_ESTATUS_REQUEST_TIMEOUT",
+        ),
+        (
+            Self::ServerReset,
+            c"SWOOLE_HTTP_CLIENT_ESTATUS_SERVER_RESET",
+        ),
+        (Self::SendFailed, c"SWOOLE_HTTP_CLIENT_ESTATUS_SEND_FAILED"),
+    ];
+
+    const fn code(self) -> i64 {
+        self as i64
+    }
+}
 /// `SW_ERROR_*`.
 const INVALID_PARAMS: c_int = 505;
 const NO_CONNECTION: c_int = 5001;
@@ -428,8 +453,12 @@ impl Client {
         self.props().long(c"statusCode", status);
     }
 
-    fn set_socket_error(&self, socket: Co, status: i64) {
-        socket.with_error(|code, message| self.set_error(code, message, status));
+    fn set_status(&self, status: ErrorStatus) {
+        self.props().long(c"statusCode", status.code());
+    }
+
+    fn set_socket_error(&self, socket: Co, status: ErrorStatus) {
+        socket.with_error(|code, message| self.set_error(code, message, status.code()));
     }
 
     /// `is_available`: connected, else errCode says no connection.
@@ -533,7 +562,7 @@ impl Client {
             Ok(zsocket) => zsocket,
             Err(error) => {
                 if !bailout::pending() {
-                    self.set_error(error, &strerror(error), CONNECT_FAILED);
+                    self.set_error(error, &strerror(error), ErrorStatus::ConnectFailed.code());
                 }
                 return false;
             }
@@ -545,7 +574,7 @@ impl Client {
         drop(self.conn.zsocket.replace(zsocket));
         self.conn.socket.set(Some(socket));
         if self.ssl && !socket.enable_ssl() {
-            self.set_socket_error(socket, CONNECT_FAILED);
+            self.set_socket_error(socket, ErrorStatus::ConnectFailed);
             self.close(true);
             return false;
         }
@@ -566,7 +595,7 @@ impl Client {
             Box::new(move |_| socket_closed(&conn, socket)),
         );
         if !socket.connect_http(&self.host, c_int::from(self.port)) {
-            self.set_socket_error(socket, CONNECT_FAILED);
+            self.set_socket_error(socket, ErrorStatus::ConnectFailed);
             self.close(true);
             return false;
         }
@@ -579,7 +608,7 @@ impl Client {
         if !self.co().is_some_and(Co::check_liveness) {
             if let Some(socket) = self.co() {
                 socket.check_bound(EVENT_RDWR);
-                self.set_socket_error(socket, SERVER_RESET);
+                self.set_socket_error(socket, ErrorStatus::ServerReset);
                 self.close(false);
             }
             let mut attempt = 0;
@@ -857,7 +886,7 @@ impl Client {
 
     fn send_failed(&self) -> bool {
         if let Some(socket) = self.co() {
-            self.set_socket_error(socket, SEND_FAILED);
+            self.set_socket_error(socket, ErrorStatus::SendFailed);
         }
         self.close(true);
         false
@@ -1018,11 +1047,11 @@ impl Client {
         if !success {
             let code = socket_error_properties(self.props(), socket);
             let status = if code == libc::ETIMEDOUT {
-                REQUEST_TIMEOUT
+                ErrorStatus::RequestTimeout
             } else {
-                SERVER_RESET
+                ErrorStatus::ServerReset
             };
-            self.props().long(c"statusCode", status);
+            self.set_status(status);
             self.close(true);
             return false;
         }
@@ -1031,7 +1060,7 @@ impl Client {
                 self.set_error(
                     HANDSHAKE_FAILED,
                     c"websocket handshake failed: invalid Upgrade/Connection/Sec-WebSocket-Accept headers",
-                    SERVER_RESET,
+                    ErrorStatus::ServerReset.code(),
                 );
                 self.close(true);
                 return false;
@@ -1095,7 +1124,7 @@ impl Client {
         }
         if kind == swoole_rs_zend::sys::IS_FALSE {
             let code = socket_error_properties(self.props(), socket);
-            self.props().long(c"statusCode", SERVER_RESET);
+            self.set_status(ErrorStatus::ServerReset);
             if code != libc::ETIMEDOUT {
                 self.close(true);
             }
@@ -1151,7 +1180,7 @@ impl Client {
             self.props().long(c"errCode", i64::from(last));
             self.props()
                 .bytes(c"errMsg", b"websocket handshake failed, cannot push data");
-            self.props().long(c"statusCode", CONNECT_FAILED);
+            self.set_status(ErrorStatus::ConnectFailed);
             return false;
         }
         let Some(socket) = self.co() else {
@@ -1181,7 +1210,7 @@ impl Client {
             }
             _ => {
                 socket_error_properties(self.props(), socket);
-                self.props().long(c"statusCode", SERVER_RESET);
+                self.set_status(ErrorStatus::ServerReset);
                 self.close(true);
                 false
             }
@@ -1617,16 +1646,8 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Http\\Client\\Exception")?;
     }
-    for (name, status) in [
-        (c"SWOOLE_HTTP_CLIENT_ESTATUS_CONNECT_FAILED", CONNECT_FAILED),
-        (
-            c"SWOOLE_HTTP_CLIENT_ESTATUS_REQUEST_TIMEOUT",
-            REQUEST_TIMEOUT,
-        ),
-        (c"SWOOLE_HTTP_CLIENT_ESTATUS_SERVER_RESET", SERVER_RESET),
-        (c"SWOOLE_HTTP_CLIENT_ESTATUS_SEND_FAILED", SEND_FAILED),
-    ] {
-        minit.long_constant(name, status);
+    for (status, name) in ErrorStatus::ALL {
+        minit.long_constant(name, status.code());
     }
     Ok(())
 }

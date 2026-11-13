@@ -25,41 +25,38 @@ use swoole_rs_zend::{
     bailout, message, report, sys::zval,
 };
 
-/// `SWR_PHPSERVER_FACT_*`.
-mod fact {
-    pub(super) const MODE: u32 = 1;
-    pub(super) const STARTED: u32 = 2;
-    pub(super) const SHUTDOWN: u32 = 3;
-    pub(super) const WORKER_THREAD: u32 = 4;
-    pub(super) const MASTER: u32 = 6;
-    pub(super) const THREAD_MODE: u32 = 7;
-    pub(super) const REACTOR: u32 = 8;
-    pub(super) const ENABLE_COROUTINE: u32 = 9;
-    pub(super) const SEND_YIELD: u32 = 10;
-    pub(super) const HAS_ON_CLOSE: u32 = 11;
-    pub(super) const UNSAFE_EVENTS: u32 = 12;
-    pub(super) const HASH_DISPATCH: u32 = 13;
-    pub(super) const CACHE_SESSION_ADDR: u32 = 14;
-    pub(super) const WORKER_NUM: u32 = 15;
-    pub(super) const TASK_WORKER_NUM: u32 = 16;
-    pub(super) const OUTPUT_BUFFER_SIZE: u32 = 17;
-    pub(super) const MAX_CONNECTION: u32 = 18;
+/// What [`fact`] answers of a server.
+#[derive(Clone, Copy)]
+enum Fact {
+    Started,
+    Shutdown,
+    WorkerThread,
+    Master,
+    ThreadMode,
+    Reactor,
+    EnableCoroutine,
+    SendYield,
+    HasOnClose,
+    UnsafeEvents,
+    HashDispatch,
+    CacheSessionAddr,
 }
 
-/// `SWR_PHPSERVER_INSTALL_*`.
-pub(crate) mod install {
-    pub(crate) const CONTROL: u32 = 1;
-    pub(crate) const TASK: u32 = 2;
-    pub(crate) const PIPE_MESSAGE: u32 = 3;
-    pub(crate) const BUFFER_EMPTY: u32 = 4;
-    pub(crate) const CLOSE: u32 = 5;
-    pub(crate) const HTTP_CLOSE: u32 = 6;
-    pub(crate) const RECEIVE: u32 = 7;
-    pub(crate) const HTTP_RECEIVE: u32 = 8;
-    pub(crate) const REDIS_RECEIVE: u32 = 9;
-    pub(crate) const USER_WORKER_START: u32 = 10;
-    pub(crate) const ALLOCATORS: u32 = 11;
-    pub(crate) const ADMIN_COMMANDS: u32 = 12;
+/// The callback groups [`put`] installs on a server.
+#[derive(Clone, Copy)]
+pub(crate) enum Install {
+    Control,
+    Task,
+    PipeMessage,
+    BufferEmpty,
+    Close,
+    HttpClose,
+    Receive,
+    HttpReceive,
+    RedisReceive,
+    UserWorkerStart,
+    Allocators,
+    AdminCommands,
 }
 
 /// Protocol flags (`protocols`, `PortFacts`).
@@ -98,10 +95,14 @@ const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_SERVER_UNRELATED_THREAD: c_int = 9016;
-/// `host.kind`.
-const KIND_HTTP: c_int = 1;
-const KIND_WEBSOCKET: c_int = 2;
-const KIND_REDIS: c_int = 3;
+/// What kind of Server an object is, its most derived class.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Server,
+    Http,
+    WebSocket,
+    Redis,
+}
 
 /// What `start()` checks of a `ListenPort`.
 struct PortFacts<'a> {
@@ -142,18 +143,18 @@ use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
 use swoole_rs_server::{Mode, SharedServer, admin_register};
 
-/// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
-fn kind(object: ServerObject<'_>) -> c_int {
+/// What kind of Server `object` is.
+fn kind(object: ServerObject<'_>) -> Kind {
     let value = object.value();
     let http = swoole_rs_phpswoole::families().map(|families| &families.http);
     if value.instance_of(&crate::server::REDIS_SERVER) {
-        KIND_REDIS
+        Kind::Redis
     } else if http.is_some_and(|http| value.instance_of((http.websocket_class)())) {
-        KIND_WEBSOCKET
+        Kind::WebSocket
     } else if http.is_some_and(|http| value.instance_of((http.server_class)())) {
-        KIND_HTTP
+        Kind::Http
     } else {
-        0
+        Kind::Server
     }
 }
 
@@ -170,7 +171,7 @@ fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
 /// worker, -1 `add_worker` failed, else the id.
 fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> i64 {
-    if fact(serv, fact::WORKER_THREAD) {
+    if fact(serv, Fact::WorkerThread) {
         if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
             return -2;
         }
@@ -180,9 +181,10 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
             worker.set_redirect_stdout(false);
             worker.set_redirect_stderr(false);
         }
+        let config = serv.config();
         return i64::from(id)
-            - number(serv, fact::WORKER_NUM)
-            - number(serv, fact::TASK_WORKER_NUM);
+            - i64::from(config.worker_num.get())
+            - i64::from(config.task_worker_num.get());
     }
     let mut added = -3;
     let add = || {
@@ -246,49 +248,31 @@ impl Default for Property {
     }
 }
 
-fn fact(serv: view::Server<'_>, id: u32) -> bool {
-    number(serv, id) != 0
-}
-
-/// The Server fact `id`: from its records, or C++ for what only it knows.
-fn number(serv: view::Server<'_>, id: u32) -> i64 {
+/// Fact `id` of `serv`: from its records, or the PHP layer's for what only it knows.
+fn fact(serv: view::Server<'_>, id: Fact) -> bool {
     let c = serv.config();
-    // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
-    let hash_dispatch = matches!(c.dispatch_mode.get(), 2 | 4 | 8);
     match id {
-        fact::MODE => c.mode_ as i64,
-        fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),
-        fact::STARTED => i64::from(serv.is_started()),
-        // SAFETY: a live server.
-        fact::SHUTDOWN => i64::from(serv.counters().shutdown.load(Ordering::Relaxed) != 0),
-        fact::MASTER => {
-            i64::from(crate::server::worker_type() == Some(crate::server::WorkerType::Master))
+        Fact::WorkerThread => serv.is_worker_thread(),
+        Fact::Started => serv.is_started(),
+        Fact::Shutdown => serv.counters().shutdown.load(Ordering::Relaxed) != 0,
+        Fact::Master => crate::server::worker_type() == Some(crate::server::WorkerType::Master),
+        Fact::ThreadMode => c.mode_ == Mode::Thread,
+        Fact::EnableCoroutine => c.enable_coroutine.get(),
+        Fact::SendYield => c.send_yield.get(),
+        Fact::HasOnClose => serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close),
+        Fact::UnsafeEvents => c.hash_dispatch() || c.enable_unsafe_event.get(),
+        Fact::HashDispatch => c.hash_dispatch(),
+        Fact::Reactor => !swoole_rs_corebase::thread_reactor().is_null(),
+        Fact::CacheSessionAddr => {
+            crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv))
         }
-        fact::THREAD_MODE => i64::from(c.mode_ == Mode::Thread),
-        fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
-        fact::SEND_YIELD => i64::from(c.send_yield.get()),
-        fact::HAS_ON_CLOSE => {
-            i64::from(serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close))
-        }
-        fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event.get()),
-        fact::HASH_DISPATCH => i64::from(hash_dispatch),
-        fact::WORKER_NUM => i64::from(c.worker_num.get()),
-        fact::TASK_WORKER_NUM => i64::from(c.task_worker_num.get()),
-        fact::OUTPUT_BUFFER_SIZE => i64::from(c.output_buffer_size.get()),
-        fact::REACTOR => i64::from(!swoole_rs_corebase::thread_reactor().is_null()),
-        // SAFETY: a live server.
-        fact::MAX_CONNECTION => i64::from(serv.max_connection()),
-        fact::CACHE_SESSION_ADDR => i64::from(
-            crate::dispatch::http().is_some_and(|http| (http.can_cache_session_addr)(serv)),
-        ),
-        _ => 0,
     }
 }
 
-fn put(serv: view::Server<'_>, which: u32) {
+fn put(serv: view::Server<'_>, which: Install) {
     match which {
-        install::ALLOCATORS => crate::dispatch::use_zend_strings(serv),
-        install::ADMIN_COMMANDS => admin_register(serv, php_memory),
+        Install::Allocators => crate::dispatch::use_zend_strings(serv),
+        Install::AdminCommands => admin_register(serv, php_memory),
         _ => crate::dispatch::install(serv, which),
     }
 }
@@ -533,7 +517,7 @@ impl Drop for ServerData {
             return;
         };
         let server = share.view();
-        if fact(server, fact::MASTER) {
+        if fact(server, Fact::Master) {
             crate::thread::free_setting(server);
             // Its shutdown callbacks run now, as they did before the delete. The
             // server is deleted with its last share: when Zend releases this
@@ -543,7 +527,7 @@ impl Drop for ServerData {
         } else if owns_shared() {
             // Never started, or a base-mode start returned: upstream keeps it to the
             // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
-            let orphan = !fact(server, fact::THREAD_MODE) && server.config().factory_.is_null();
+            let orphan = !fact(server, Fact::ThreadMode) && server.config().factory_.is_null();
             kept().push((share, orphan));
         }
         // A worker thread's share in the master's server just goes.
@@ -726,7 +710,7 @@ fn bind(call: &Call, share: &SharedServer) {
     }
     let props = Props::server(object);
     props.connections(share.clone(), ptr::null_mut());
-    props.long(c"mode", number(serv, fact::MODE));
+    props.long(c"mode", serv.config().mode_ as i64);
     if let Some(primary) = serv.port_at(0) {
         props.port_info(&PortInfo::of(primary), None);
     }
@@ -841,7 +825,7 @@ fn construct(call: &Call) {
 
 fn add_process(call: &Call) {
     let serv = server(call);
-    if !fact(serv, fact::WORKER_THREAD) && fact(serv, fact::STARTED) {
+    if !fact(serv, Fact::WorkerThread) && fact(serv, Fact::Started) {
         fatal(E_WARNING, c"server is running, cannot add process");
         return call.set_bool(false);
     }
@@ -855,7 +839,7 @@ fn add_process(call: &Call) {
         fatal(E_ERROR, c"object is not instanceof swoole_process");
         return call.set_bool(false);
     };
-    put(serv, install::USER_WORKER_START);
+    put(serv, Install::UserWorkerStart);
     // A copy holding its own reference, as upstream.
     let copy = Box::new(process.copy());
     let zcopy = copy.as_ptr();
@@ -883,7 +867,7 @@ fn add_process(call: &Call) {
 
 fn add_command(call: &Call) {
     let serv = server(call);
-    if fact(serv, fact::STARTED) {
+    if fact(serv, Fact::Started) {
         fatal(E_WARNING, c"server is running, can't add command");
         return call.set_bool(false);
     }
@@ -1076,15 +1060,15 @@ fn trapped(bailed: bool) -> Result<(), Stop> {
 
 /// `ServerObject::register_callback`.
 fn register_callback(object: ServerObject<'_>, serv: view::Server<'_>) {
-    put(serv, install::CONTROL);
+    put(serv, Install::Control);
     if object.callback(ServerCallback::Task).is_some() {
-        put(serv, install::TASK);
+        put(serv, Install::Task);
     }
     if object.callback(ServerCallback::PipeMessage).is_some() {
-        put(serv, install::PIPE_MESSAGE);
+        put(serv, Install::PipeMessage);
     }
-    if fact(serv, fact::SEND_YIELD) && fact(serv, fact::UNSAFE_EVENTS) {
-        put(serv, install::BUFFER_EMPTY);
+    if fact(serv, Fact::SendYield) && fact(serv, Fact::UnsafeEvents) {
+        put(serv, Install::BufferEmpty);
     }
 }
 
@@ -1147,52 +1131,53 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         text.push(reason.to_bytes());
         return stop(E_ERROR, text.as_cstr());
     }
-    if fact(serv, fact::ENABLE_COROUTINE) {
+    if fact(serv, Fact::EnableCoroutine) {
         crate::settings::set_reload_async(serv);
     }
-    if fact(serv, fact::SEND_YIELD)
-        && !fact(serv, fact::HAS_ON_CLOSE)
-        && fact(serv, fact::UNSAFE_EVENTS)
+    if fact(serv, Fact::SendYield)
+        && !fact(serv, Fact::HasOnClose)
+        && fact(serv, Fact::UnsafeEvents)
     {
-        put(serv, install::CLOSE);
+        put(serv, Install::Close);
     }
-    put(serv, install::ALLOCATORS);
+    put(serv, Install::Allocators);
     Props::own(object).long(c"master_pid", i64::from(std::process::id()));
     let kind = kind(object);
-    let http_server = kind == KIND_HTTP || kind == KIND_WEBSOCKET;
+    let http_server = kind == Kind::Http || kind == Kind::WebSocket;
     let ports = object.ports();
     let mut find_http_port = false;
     // `$this`'s `setting`, which its class declares, until its last write. Only
     // fatal errors are raised meanwhile, and they run no PHP code.
     let edited = Props::own(object).zend().and_then(|props| {
         props.edit_array(c"setting", |settings| {
-            for (key, id) in [
-                (c"worker_num", fact::WORKER_NUM),
-                (c"task_worker_num", fact::TASK_WORKER_NUM),
-                (c"output_buffer_size", fact::OUTPUT_BUFFER_SIZE),
-                (c"max_connection", fact::MAX_CONNECTION),
+            let c = serv.config();
+            for (key, value) in [
+                (c"worker_num", c.worker_num.get()),
+                (c"task_worker_num", c.task_worker_num.get()),
+                (c"output_buffer_size", c.output_buffer_size.get()),
+                (c"max_connection", serv.max_connection()),
             ] {
                 if !has_key(settings, key) {
-                    settings.insert_long(key.to_bytes(), number(serv, id));
+                    settings.insert_long(key.to_bytes(), i64::from(value));
                 }
             }
             if has_key(settings, c"admin_server") {
-                put(serv, install::ADMIN_COMMANDS);
+                put(serv, Install::AdminCommands);
             }
             let Some(first) = ports.first() else {
                 return Ok(false);
             };
             let primary = port_facts(first);
-            if kind == KIND_REDIS {
+            if kind == Kind::Redis {
                 settings.insert_bool(b"open_redis_protocol", true);
                 settings.insert_bool(b"open_http_protocol", false);
                 settings.insert_bool(b"open_mqtt_protocol", false);
                 settings.insert_bool(b"open_eof_check", false);
                 settings.insert_bool(b"open_length_check", false);
                 protocols(primary.port, REDIS, true);
-                put(serv, install::REDIS_RECEIVE);
+                put(serv, Install::RedisReceive);
             } else if http_server {
-                if kind == KIND_WEBSOCKET {
+                if kind == Kind::WebSocket {
                     if !isset(serv, primary.port, PortCallback::Message) {
                         return stop(E_ERROR, c"require onMessage callback");
                     }
@@ -1208,13 +1193,13 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                     settings.insert_bool(b"open_http2_protocol", true);
                     flags |= HTTP2;
                 }
-                if primary.protocols & WEBSOCKET != 0 || kind == KIND_WEBSOCKET {
+                if primary.protocols & WEBSOCKET != 0 || kind == Kind::WebSocket {
                     settings.insert_bool(b"open_websocket_protocol", true);
                     flags |= WEBSOCKET;
                 }
                 protocols(primary.port, flags, true);
                 find_http_port = true;
-                put(serv, install::HTTP_RECEIVE);
+                put(serv, Install::HttpReceive);
             } else {
                 if primary.dgram && !primary.ssl && !isset(serv, primary.port, PortCallback::Packet)
                 {
@@ -1225,7 +1210,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 {
                     return stop(E_ERROR, c"require onReceive callback");
                 }
-                put(serv, install::RECEIVE);
+                put(serv, Install::Receive);
             }
             Ok(true)
         })
@@ -1264,7 +1249,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config",
             );
         }
-        if port.protocols & HTTP2 != 0 && !fact(serv, fact::HASH_DISPATCH) {
+        if port.protocols & HTTP2 != 0 && !fact(serv, Fact::HashDispatch) {
             return stop(
                 E_ERROR,
                 c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true",
@@ -1303,13 +1288,13 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
         }
     }
     if find_http_port {
-        put(serv, install::HTTP_RECEIVE);
-        if fact(serv, fact::CACHE_SESSION_ADDR) {
-            put(serv, install::HTTP_CLOSE);
+        put(serv, Install::HttpReceive);
+        if fact(serv, Fact::CacheSessionAddr) {
+            put(serv, Install::HttpClose);
         }
     }
     if crate::server::THREAD.load(Ordering::Relaxed)
-        && fact(serv, fact::THREAD_MODE)
+        && fact(serv, Fact::ThreadMode)
         && let Err(bailout) = crate::thread::copy_setting(setting)
     {
         bailout.defer();
@@ -1334,11 +1319,11 @@ fn start(call: &Call) {
         Some(Err(bailout)) => return bailout.defer(),
         None => {}
     }
-    let refusal = if fact(serv, fact::STARTED) {
+    let refusal = if fact(serv, Fact::Started) {
         Some("The server is running, unable to execute {}->start()")
-    } else if fact(serv, fact::SHUTDOWN) {
+    } else if fact(serv, Fact::Shutdown) {
         Some("The server have been shutdown, unable to execute {}->start()")
-    } else if fact(serv, fact::REACTOR) {
+    } else if fact(serv, Fact::Reactor) {
         Some("The event-loop has already been created, unable to start {}")
     } else {
         None
@@ -1414,7 +1399,7 @@ pub fn php_swoole_server_send_yield(
         }
         let sent = server_methods::send(server, session_id, data);
         let yielded = !sent && swoole_rs_corebase::log::last_error() == SW_ERROR_OUTPUT_SEND_YIELD;
-        if yielded && fact(server, fact::SEND_YIELD) {
+        if yielded && fact(server, Fact::SendYield) {
             continue;
         }
         return Ok(sent);

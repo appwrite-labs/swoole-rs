@@ -4,12 +4,12 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering::SeqCst;
 
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front};
-use swoole_rs_corebase::{DataHead, log, microtime};
+use swoole_rs_corebase::{DataHead, ServerEvent, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{out_buffer, stream_event};
+use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::{SW_ERR, SW_OK, ServerState, view};
 
@@ -67,7 +67,7 @@ fn field<const N: usize>(message: &[u8], at: usize) -> [u8; N] {
 /// send time moves on.
 fn discard(state: &ServerState, message: &[u8]) -> bool {
     let [kind] = field(message, offset_of!(DataHead, kind));
-    if !stream_event(kind) {
+    if !ServerEvent::from_code(kind).is_some_and(ServerEvent::is_stream) {
         return false;
     }
     let fd = c_long::from_ne_bytes(field(message, offset_of!(DataHead, fd)));
@@ -106,9 +106,7 @@ mod tests {
     use swoole_rs_buffer::cpp::swr_cpp_buffer_count;
     use swoole_rs_reactor::SocketRecord;
 
-    /// `SW_SERVER_EVENT_SEND_DATA`, and `SW_SERVER_EVENT_RECV_DGRAM`, not a stream event.
-    const SEND_DATA: u8 = 2;
-    const RECV_DGRAM: u8 = 1;
+    use swoole_rs_corebase::ServerEvent::{RecvDgram, SendData};
     const FD_PIPE: c_int = 3;
 
     #[test]
@@ -122,10 +120,10 @@ mod tests {
     }
 
     /// A worker message of `kind` for `session`.
-    fn message(kind: u8, session: c_long, payload: &[u8]) -> Vec<u8> {
+    fn message(kind: ServerEvent, session: c_long, payload: &[u8]) -> Vec<u8> {
         let head = DataHead {
             fd: session,
-            kind,
+            kind: kind.code(),
             len: u32::try_from(payload.len()).unwrap(),
             ..DataHead::default()
         };
@@ -198,9 +196,9 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pipe_write_sends_every_queued_message() {
         let messages = [
-            message(SEND_DATA, 1, b"live"),
-            message(RECV_DGRAM, 9, b"dgram"),
-            message(SEND_DATA, 9, b"gone"),
+            message(SendData, 1, b"live"),
+            message(RecvDgram, 9, b"dgram"),
+            message(SendData, 9, b"gone"),
         ];
         let p = Pipe::new(&messages);
         assert_eq!(p.write(), int(SW_OK));
@@ -216,9 +214,9 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pipe_write_drops_closed_and_timed_out_sessions() {
         let messages = [
-            message(SEND_DATA, 1, b"closed"),
-            message(SEND_DATA, 9, b"gone"),
-            message(RECV_DGRAM, 9, b"dgram"),
+            message(SendData, 1, b"closed"),
+            message(SendData, 9, b"gone"),
+            message(RecvDgram, 9, b"dgram"),
         ];
         let p = Pipe::new(&messages);
         p.conn().closed().store(1, SeqCst);
@@ -235,7 +233,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_full_pipe_waits_and_a_closed_one_fails() {
-        let p = Pipe::new(&[message(SEND_DATA, 9, b"later")]);
+        let p = Pipe::new(&[message(SendData, 9, b"later")]);
         while p.ours.send(b"fill").is_ok() {}
         assert_eq!(
             p.write(),
@@ -243,7 +241,7 @@ mod tests {
             "it waits for the next writable event"
         );
         assert_eq!(p.queued(), 1, "with the message still queued");
-        let p = Pipe::new(&[message(SEND_DATA, 9, b"never")]);
+        let p = Pipe::new(&[message(SendData, 9, b"never")]);
         p.ours.shutdown(std::net::Shutdown::Write).unwrap();
         assert_eq!(p.write(), int(SW_ERR));
         assert_eq!(p.queued(), 1);

@@ -5,7 +5,7 @@
 //! `--fix-halfclose` (M15) builds have the `halfclose` feature (upstream's
 //! `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's read-event
 //! helpers, a resume skips closing connections, and a queued close stops reading.
-use crate::base_factory::{SEND_DATA, SendData, allocated};
+use crate::base_factory::{SendData, allocated};
 use crate::callbacks::{
     CallbackKind::{BufferEmpty, BufferFull},
     CallbackSlot,
@@ -16,20 +16,16 @@ use crate::records::Lookup;
 use crate::view::Server;
 use crate::{Connection, Mode, ServerState};
 use core::ffi::{CStr, c_int};
+use std::io::IoSlice;
 use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
 };
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, steady_ms};
+use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
 
-/// `ServerEventType`.
-const SEND_FILE: u8 = 3;
-const CLOSE: u8 = 4;
-const BUFFER_FULL: c_int = 13;
-const PAUSE_RECV: u8 = 11;
-const RESUME_RECV: u8 = 12;
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`.
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
@@ -57,7 +53,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
     let len = data.len().c_cast::<u32>();
     let info = DataHead {
         fd: session_id,
-        kind: SEND_DATA,
+        kind: ServerEvent::SendData.code(),
         len,
         ..DataHead::default()
     };
@@ -92,20 +88,73 @@ fn sends_here(state: &ServerState, session_id: core::ffi::c_long) -> bool {
             .is_none_or(|session| session.reactor_bits() & 0xff == worker)
 }
 
-/// [`send`]'s direct write, made here when it needs nothing else: the verified
-/// connection has no overflow and its socket sends directly with no output buffer yet.
+/// [`send`] of `head` then `body` as one `writev(2)`, so a large body is not copied
+/// behind its head. `None`, with nothing sent, unless this worker writes straight to the
+/// session's socket ([`writes_now`]): the caller joins the two for [`send`]. What the
+/// socket does not take is queued, as [`send`] queues it.
+#[must_use]
+pub fn send_parts(
+    serv: Server<'_>,
+    session_id: core::ffi::c_long,
+    head: &[u8],
+    body: &[u8],
+) -> Option<bool> {
+    let state = serv.state();
+    if serv.config().mode_ == Mode::Process || !sends_here(state, session_id) {
+        return None;
+    }
+    let (conn, socket) = writes_now(state, session_id)?;
+    let parts = [IoSlice::new(head), IoSlice::new(body)];
+    let write = |fd| swoole_rs_tls::upstream::writev(fd, &parts);
+    // A failed write sent nothing: all of it is queued, where the reactor meets the error.
+    let sent = usize::try_from(record_write(socket, write, steady_ms)).unwrap_or(0);
+    let total = head.len() + body.len();
+    let done = if sent == total {
+        conn.set_last_send_time(microtime());
+        true
+    } else {
+        let head_left = head.get(sent..).unwrap_or_default();
+        let body_left = body.get(sent.saturating_sub(head.len())..);
+        [head_left, body_left.unwrap_or_default()]
+            .into_iter()
+            .filter(|left| !left.is_empty())
+            .all(|left| {
+                let info = DataHead {
+                    fd: session_id,
+                    kind: ServerEvent::SendData.code(),
+                    len: left.len().c_cast::<u32>(),
+                    ..DataHead::default()
+                };
+                to_connection(serv, &info, left, Some(0)) == SW_OK
+            })
+    };
+    if done {
+        crate::shared::count_send(state, session_id, total.c_cast::<u32>());
+    }
+    Some(done)
+}
+
+/// The session's verified connection and socket when a send can be written to the
+/// socket here and now: no overflow, and a socket that sends directly, without TLS and
+/// with no output buffer yet.
+fn writes_now(
+    state: &ServerState,
+    session_id: core::ffi::c_long,
+) -> Option<(Connection<'_>, Socket<'_>)> {
+    let conn = state.connection(session_id, Lookup::VerifiedTls)?;
+    let socket = conn.socket()?;
+    let queues = conn.overflow()
+        || socket.read(|record| {
+            !record.direct_send || !record.ssl().is_null() || record.output.out_buffer.is_some()
+        });
+    (!queues).then_some((conn, socket))
+}
+
+/// [`send`]'s direct write, made here when it needs nothing else ([`writes_now`]).
 /// `None` leaves the whole send to [`to_connection`]; otherwise `Socket::send`'s result
 /// after EINTR retries, and a complete send has set the connection's `last_send_time`.
 fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> Option<i64> {
-    let conn = state.connection(session_id, Lookup::VerifiedTls)?;
-    let socket = conn.socket()?;
-    if conn.overflow()
-        || socket.read(|record| {
-            !record.direct_send || !record.ssl().is_null() || record.output.out_buffer.is_some()
-        })
-    {
-        return None;
-    }
+    let (conn, socket) = writes_now(state, session_id)?;
     let sent = loop {
         let sent = record_send(socket, Drain::new(data), 0, |_, _| -1, steady_ms);
         if sent >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
@@ -152,8 +201,9 @@ pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) 
 /// [`send_now`] already sent, short of all of it.
 fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> c_int {
     let state = serv.state();
-    let (kind, session) = (info.kind, info.fd);
-    let lookup = if kind == CLOSE {
+    let (kind, session) = (info.event(), info.fd);
+    let close = kind == Some(ServerEvent::Close);
+    let lookup = if close {
         Lookup::Verified
     } else {
         Lookup::VerifiedTls
@@ -161,11 +211,12 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     let found = state.connection(session, lookup);
     let Some((conn, sock)) = found.and_then(|conn| Some((conn, conn.socket()?))) else {
         let code = E::SW_ERROR_SESSION_NOT_EXIST;
-        if kind == SEND_DATA {
+        if kind == Some(ServerEvent::SendData) {
             let length = info.len;
             let m = format_args!("send {length} byte failed, session#{session} does not exist");
             error(LOG_TRACE, code, m);
         } else {
+            let kind = info.kind;
             let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
             error(LOG_TRACE, code, m);
         }
@@ -190,14 +241,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
         return SW_ERR;
     }
-    if kind == CLOSE && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
+    if close && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
         reactor.close(sock);
         return SW_OK;
     }
     let halfclose = cfg!(feature = "halfclose");
     let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
     let (reading, writing) = (events & EVENT_READ != 0, events & EVENT_WRITE != 0);
-    if kind == PAUSE_RECV {
+    if kind == Some(ServerEvent::PauseRecv) {
         if removed || !reading {
             return SW_OK;
         }
@@ -209,7 +260,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.change(sock, ChangeOp::Del, 0)
         };
     }
-    if kind == RESUME_RECV {
+    if kind == Some(ServerEvent::ResumeRecv) {
         let skip = if halfclose {
             let closing = conn.closed().load(core::sync::atomic::Ordering::Relaxed) != 0;
             closing || conn.peer_closed() || conn.close_queued() || notified || reading
@@ -227,17 +278,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.change(sock, ChangeOp::Add, EVENT_READ)
         };
     }
-    let mut data = data;
+    let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
     let out_empty = sock.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b)));
     if out_empty {
-        if kind == CLOSE {
+        if close {
             reactor.close(sock);
             return SW_OK;
         }
-        if kind != SEND_FILE
-            && sock.read(|s| s.direct_send)
-            && direct_send(conn, sock, &mut data, first)
-        {
+        if !file && sock.read(|s| s.direct_send) && direct_send(conn, sock, &mut data, first) {
             return SW_OK;
         }
         if sock.read(|s| s.output.out_buffer.is_none()) {
@@ -246,13 +294,13 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         }
     }
     let queued = || sock.read(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_length(b)));
-    if kind == CLOSE {
+    if close {
         sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
         conn.set_close_queued(true);
         if halfclose {
             reactor.interest(sock, Interest::RemoveRead, 0);
         }
-    } else if kind == SEND_FILE {
+    } else if file {
         if send_file(sock, data) < 0 {
             return 0;
         }
@@ -288,7 +336,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         let port = serv.port_by_server_fd(conn.server_fd());
         let high = port.map_or(u32::MAX, |port| port.config().buffer_high_watermark.get());
         if on_full && !conn.high_watermark() && queued() >= high {
-            crate::server_methods::notify(serv, conn, BUFFER_FULL);
+            crate::server_methods::notify(serv, conn, ServerEvent::BufferFull);
             conn.set_high_watermark(true);
         }
     }
@@ -409,7 +457,7 @@ mod tests {
             self.conn().socket().unwrap()
         }
         /// `send_to_connection` of an event of `kind` with `data` to `session`.
-        fn send(&self, kind: u8, session: i64, data: &[u8]) -> c_int {
+        fn send(&self, kind: ServerEvent, session: i64, data: &[u8]) -> c_int {
             let send = event(kind, session, data);
             // SAFETY: `data` is live for the call.
             unsafe { send_to_connection(self.serv(), &send) }
@@ -449,11 +497,11 @@ mod tests {
         0
     }
 
-    fn event(kind: u8, session: i64, data: &[u8]) -> SendData {
+    fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData {
         SendData {
             info: DataHead {
                 fd: session,
-                kind,
+                kind: kind.code(),
                 len: data.len().c_cast::<u32>(),
                 ..DataHead::default()
             },
@@ -465,8 +513,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_missing_session_fails() {
         let a = Accepted::new();
-        assert_eq!(a.send(SEND_DATA, 9, b"data"), SW_ERR);
-        assert_eq!(a.send(CLOSE, 9, b""), SW_ERR);
+        assert_eq!(a.send(ServerEvent::SendData, 9, b"data"), SW_ERR);
+        assert_eq!(a.send(ServerEvent::Close, 9, b""), SW_ERR);
     }
 
     #[test]
@@ -475,16 +523,16 @@ mod tests {
         let a = Accepted::new();
         a.conn().set_overflow(true);
         assert_eq!(
-            a.send(SEND_DATA, 1, b"data"),
+            a.send(ServerEvent::SendData, 1, b"data"),
             SW_OK,
             "process mode buffers it"
         );
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { a.serv().config_mut() };
         config.mode_ = Mode::Base;
-        assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"data"), SW_ERR);
         config.send_yield.set(true);
-        assert_eq!(a.send(SEND_DATA, 1, b"data"), SW_ERR);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"data"), SW_ERR);
         assert_eq!(
             log::last_error(),
             E::SW_ERROR_OUTPUT_SEND_YIELD as c_int,
@@ -502,11 +550,15 @@ mod tests {
             (true, false),
             "the master leaves it to a reactor thread"
         );
-        assert_eq!(a.send(PAUSE_RECV, 1, b""), SW_OK, "not reading");
-        assert_eq!(a.send(RESUME_RECV, 1, b""), SW_OK);
+        assert_eq!(a.send(ServerEvent::PauseRecv, 1, b""), SW_OK, "not reading");
+        assert_eq!(a.send(ServerEvent::ResumeRecv, 1, b""), SW_OK);
         assert_eq!(events(), (false, true), "reading");
-        assert_eq!(a.send(RESUME_RECV, 1, b""), SW_OK, "already reading");
-        assert_eq!(a.send(PAUSE_RECV, 1, b""), SW_OK);
+        assert_eq!(
+            a.send(ServerEvent::ResumeRecv, 1, b""),
+            SW_OK,
+            "already reading"
+        );
+        assert_eq!(a.send(ServerEvent::PauseRecv, 1, b""), SW_OK);
         assert_eq!(events(), (true, false), "removed");
     }
 
@@ -514,7 +566,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_direct_send_reaches_the_peer() {
         let mut a = Accepted::new();
-        assert_eq!(a.send(SEND_DATA, 1, b"hello"), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         assert_eq!(a.read(5), b"hello");
         assert_eq!(a.queued(), 0, "nothing buffered");
         assert!(a.conn().last_send_time() > 0.0, "touched");
@@ -522,10 +574,55 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn parts_go_out_in_one_write_where_the_worker_writes_to_the_socket() {
+        let mut a = Accepted::new();
+        assert_eq!(
+            send_parts(a.serv(), 1, b"head", b"body"),
+            None,
+            "process mode sends through the factory"
+        );
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
+        assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), Some(true));
+        assert_eq!(a.read(8), b"headbody");
+        assert_eq!(a.queued(), 0, "nothing buffered");
+        assert!(a.conn().last_send_time() > 0.0, "touched");
+        a.sock().edit(|s| s.direct_send = false);
+        assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), None);
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert!((&a.client).read(&mut [0; 1]).is_err(), "nothing sent");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn parts_the_socket_does_not_take_are_queued_in_order() {
+        let mut a = Accepted::new();
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
+        // More than a loopback socket's buffers hold while the peer reads nothing.
+        let body: Vec<u8> = (0..16usize << 20).map(|at| at.to_le_bytes()[0]).collect();
+        assert_eq!(send_parts(a.serv(), 1, b"head", &body), Some(true));
+        let queued = a.queued() as usize;
+        assert!(queued > 0 && queued < body.len(), "the body's tail waits");
+        assert_eq!(a.conn().send_queued_bytes() as usize, queued);
+        assert!(
+            a.sock().read(|s| s.events & EVENT_WRITE != 0),
+            "waits to write"
+        );
+        let sent = 4 + body.len() - queued;
+        let got = a.read(sent);
+        assert_eq!(got.get(..4), Some(&b"head"[..]));
+        assert_eq!(got.get(4..), body.get(..sent - 4), "the body's start, once");
+        assert!(a.client.set_nonblocking(true).is_ok());
+        assert!((&a.client).read(&mut [0; 1]).is_err(), "and no more");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn without_direct_send_the_data_is_buffered_for_the_write_event() {
         let a = Accepted::new();
         a.sock().edit(|s| s.direct_send = false);
-        assert_eq!(a.send(SEND_DATA, 1, b"hello"), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         assert_eq!(a.queued(), 5);
         assert_eq!(a.conn().send_queued_bytes(), 5);
         assert!(
@@ -533,7 +630,11 @@ mod tests {
             "waits to write"
         );
         a.conn().set_peer_closed(true);
-        assert_eq!(a.send(SEND_DATA, 1, b"more"), 0, "closed by the client");
+        assert_eq!(
+            a.send(ServerEvent::SendData, 1, b"more"),
+            0,
+            "closed by the client"
+        );
         assert_eq!(a.queued(), 5);
     }
 
@@ -542,7 +643,7 @@ mod tests {
     fn a_send_made_first_is_not_repeated() {
         let mut a = Accepted::new();
         let data = b"0123456789";
-        let info = event(SEND_DATA, 1, data).info;
+        let info = event(ServerEvent::SendData, 1, data).info;
         assert_eq!(
             send_now(a.live.state(), 1, data),
             Some(10),
@@ -572,7 +673,7 @@ mod tests {
         let callbacks = &a.live.state().callbacks;
         callbacks.set(crate::callbacks::Callback::BufferFull(full));
         calls();
-        assert_eq!(a.send(SEND_DATA, 1, b"abc"), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"abc"), SW_OK);
         let fd = a.conn().fd();
         assert_eq!(
             calls(),
@@ -585,10 +686,14 @@ mod tests {
             "past the high watermark"
         );
         assert!(a.conn().high_watermark());
-        assert_eq!(a.send(SEND_DATA, 1, b"de"), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"de"), SW_OK);
         assert_eq!(calls(), [], "already above the watermark");
         assert!(!a.conn().overflow());
-        assert_eq!(a.send(SEND_DATA, 1, b"f"), SW_OK, "buffered all the same");
+        assert_eq!(
+            a.send(ServerEvent::SendData, 1, b"f"),
+            SW_OK,
+            "buffered all the same"
+        );
         assert!(a.conn().overflow(), "the buffer was full");
         assert_eq!(a.queued(), 6);
     }
@@ -599,14 +704,14 @@ mod tests {
         let a = Accepted::new();
         a.closes();
         a.sock().edit(|s| s.direct_send = false);
-        assert_eq!(a.send(SEND_DATA, 1, b"hello"), SW_OK);
-        assert_eq!(a.send(CLOSE, 1, b""), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
+        assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert!(a.conn().close_queued(), "behind the output");
         assert_eq!(closed(), [], "not yet");
 
         let a = Accepted::new();
         a.closes();
-        assert_eq!(a.send(CLOSE, 1, b""), SW_OK);
+        assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert_eq!(closed(), [a.conn().fd()], "closed now");
     }
 
@@ -616,9 +721,9 @@ mod tests {
         let a = Accepted::new();
         a.closes();
         a.sock().edit(|s| s.direct_send = false);
-        assert_eq!(a.send(SEND_DATA, 1, b"hello"), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
         a.conn().set_close_force(true);
-        assert_eq!(a.send(CLOSE, 1, b""), SW_OK);
+        assert_eq!(a.send(ServerEvent::Close, 1, b""), SW_OK);
         assert_eq!(closed(), [a.conn().fd()], "closed with output still queued");
     }
 
@@ -634,12 +739,12 @@ mod tests {
         };
         let a = Accepted::new();
         let file = task(b"Cargo.toml");
-        assert_eq!(a.send(SEND_FILE, 1, &file), SW_OK);
+        assert_eq!(a.send(ServerEvent::SendFile, 1, &file), SW_OK);
         assert!(
             a.sock().read(|s| s.events & EVENT_WRITE != 0),
             "waits to write"
         );
-        assert_eq!(a.send(SEND_FILE, 1, &task(b"no-such-file")), 0);
+        assert_eq!(a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")), 0);
     }
 
     #[test]
@@ -657,7 +762,7 @@ mod tests {
             calls(),
             [Call::Finish(
                 1,
-                SEND_DATA,
+                ServerEvent::SendData.code(),
                 16,
                 0x0707_0707_0707_0707,
                 0x0707_0707_0707_0707,

@@ -8,11 +8,12 @@
 )]
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{swoole_get_worker_id, worker_type};
 use swoole_rs_process::worker_record::WorkerType;
 
-use crate::base_factory::{SendData, is_stream_event, low16};
+use crate::base_factory::{SendData, low16};
 use crate::callbacks::{CallbackKind, CallbackSlot, EventSlot};
 use crate::dispatch::schedule_worker;
 use crate::hybrid::hybrid;
@@ -36,18 +37,9 @@ pub(crate) enum Pipe {
 /// `Server::DISPATCH_RESULT_*`.
 const DISPATCH_DISCARD_PACKET: c_int = -1;
 const DISPATCH_CLOSE_CONNECTION: c_int = -2;
-/// `Server::DISPATCH_FDMOD`, `DISPATCH_IPMOD`, `DISPATCH_CO_CONN_LB`.
-const DISPATCH_FDMOD: u8 = 2;
-const DISPATCH_IPMOD: u8 = 4;
-const DISPATCH_CO_CONN_LB: u8 = 8;
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-/// `SW_SERVER_EVENT_*`.
-const EVENT_RECV_DATA: u8 = 0;
-const EVENT_SEND_DATA: u8 = 2;
-const EVENT_SEND_FILE: u8 = 3;
-const EVENT_CLOSE: u8 = 4;
 /// `SW_LOG_*`.
 const TRACE: c_int = 1;
 const NOTICE: c_int = 3;
@@ -63,14 +55,6 @@ const DATA_LENGTH_TOO_LARGE: c_int = 1203;
 /// A worker id, as `Server::get_worker(uint16_t)` narrows it.
 fn worker_id(id: i64) -> u16 {
     u16::try_from(id & 0xffff).unwrap_or_default()
-}
-
-/// Whether the dispatch mode binds a connection to one worker.
-fn hash_dispatch(config: &crate::ServerConfig) -> bool {
-    matches!(
-        config.dispatch_mode.get(),
-        DISPATCH_FDMOD | DISPATCH_IPMOD | DISPATCH_CO_CONN_LB
-    )
 }
 
 /// This process's worker id, as `swoole_get_worker_id()`'s `int`.
@@ -93,8 +77,8 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
         }
         return false;
     }
-    let kind = send.info.kind;
-    if is_stream_event(kind) {
+    let (kind, event) = (send.info.kind, send.info.event());
+    if event.is_some_and(ServerEvent::is_stream) {
         let conn = serv.state().connection(fd.into(), Lookup::ByFd);
         let Some(conn) = conn.filter(|conn| conn.is_active()) else {
             let m = format_args!("dispatch[type={kind}] failed, connection#{fd} is not active");
@@ -102,14 +86,16 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
             return false;
         };
         // The server closed it: drop the data, unless this is its forced close.
-        if conn.closed().load(Relaxed) != 0 && !(kind == EVENT_CLOSE && conn.close_force()) {
+        if conn.closed().load(Relaxed) != 0
+            && !(event == Some(ServerEvent::Close) && conn.close_force())
+        {
             return false;
         }
         send.info.fd = conn.session_id();
         send.info.server_fd = low16(conn.server_fd());
     }
     let target = worker_id(target.into());
-    if kind == EVENT_RECV_DATA
+    if event == Some(ServerEvent::RecvData)
         && let Some(worker) = serv.worker_record(target)
     {
         worker.count_dispatch();
@@ -121,7 +107,7 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
 /// thread that owns the connection.
 pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     let (state, config) = (serv.state(), serv.config());
-    let (session, len, kind) = (send.info.fd, send.info.len, send.info.kind);
+    let (session, len, event) = (send.info.fd, send.info.len, send.info.event());
     let size = config.output_buffer_size.get();
     if len > size {
         log::error_log(
@@ -135,7 +121,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
         );
         return false;
     }
-    let close = kind == EVENT_CLOSE;
+    let close = event == Some(ServerEvent::Close);
     let lookup = if close {
         Lookup::Verified
     } else {
@@ -154,10 +140,10 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
         log::error_log(TRACE, SESSION_CLOSED, c"ProcessFactory::finish", m);
         return false;
     }
-    if conn.overflow() && (kind == EVENT_SEND_DATA || kind == EVENT_SEND_FILE) {
+    if conn.overflow() && matches!(event, Some(ServerEvent::SendData | ServerEvent::SendFile)) {
         // `process_is_supported_send_yield`: the worker that owns the connection waits.
         let owner = || i64::from(schedule_worker(serv, conn.fd(), None)) == current_worker();
-        if config.send_yield.get() && hash_dispatch(config) && owner() {
+        if config.send_yield.get() && config.hash_dispatch() && owner() {
             log::set_last_error(OUTPUT_SEND_YIELD);
         } else {
             let m = format_args!("send failed, session={session} output buffer overflow");
@@ -202,7 +188,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     }
     // Only an active close may be in another worker's binding: forward it there.
     if conn.close_actively() {
-        let hash = hash_dispatch(config);
+        let hash = config.hash_dispatch();
         let worker = if hash {
             i64::from(schedule_worker(serv, conn.fd(), None))
         } else {
@@ -214,7 +200,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
         if !(is_worker && (!hash || worker == current_worker())) {
             let mut close = SendData {
                 info: DataHead {
-                    kind: EVENT_CLOSE,
+                    kind: ServerEvent::Close.code(),
                     fd: session,
                     reactor_id: i16::from(conn.reactor_id()),
                     ..DataHead::default()
@@ -252,7 +238,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     let close = SendData {
         info: DataHead {
             fd: session,
-            kind: EVENT_CLOSE,
+            kind: ServerEvent::Close.code(),
             ..DataHead::default()
         },
         data: core::ptr::null(),
@@ -266,11 +252,11 @@ mod tests {
     use crate::conn_io::tests::{accepted, session};
     use crate::hybrid::tests::{Call, calls};
 
-    fn send(fd: c_long, kind: u8, len: u32) -> SendData {
+    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData {
         SendData {
             info: DataHead {
                 fd,
-                kind,
+                kind: kind.code(),
                 len,
                 ..DataHead::default()
             },
@@ -284,18 +270,19 @@ mod tests {
         let (live, _clients) = accepted();
         let conn = session(&live, 1);
         let fd = c_long::from(conn.fd());
-        let mut data = send(fd, EVENT_RECV_DATA, 4);
+        let mut data = send(fd, ServerEvent::RecvData, 4);
         assert!(dispatch(live.server(), &mut data));
         // The fd became the session, and the worker its target.
         assert_eq!(data.info.fd, 1);
-        let [Call::Process(Pipe::Worker(_), 1, EVENT_RECV_DATA)] = calls()[..] else {
+        let [Call::Process(Pipe::Worker(_), 1, kind)] = calls()[..] else {
             panic!("one send to a worker");
         };
+        assert_eq!(kind, ServerEvent::RecvData.code());
         conn.closed().store(1, Relaxed);
         for (kind, force, sent) in [
-            (EVENT_RECV_DATA, true, false),
-            (EVENT_CLOSE, true, true),
-            (EVENT_CLOSE, false, false),
+            (ServerEvent::RecvData, true, false),
+            (ServerEvent::Close, true, true),
+            (ServerEvent::Close, false, false),
         ] {
             conn.set_close_force(force);
             assert_eq!(dispatch(live.server(), &mut send(fd, kind, 0)), sent);
@@ -304,7 +291,7 @@ mod tests {
         // A connection that isn't there.
         assert!(!dispatch(
             live.server(),
-            &mut send(9999, EVENT_RECV_DATA, 0)
+            &mut send(9999, ServerEvent::RecvData, 0)
         ));
         assert_eq!(calls(), []);
     }
@@ -315,21 +302,25 @@ mod tests {
         let (live, _clients) = accepted();
         let serv = live.server();
         serv.config().output_buffer_size.set(8);
-        assert!(!finish(serv, &send(1, EVENT_SEND_DATA, 9)));
-        assert!(!finish(serv, &send(99, EVENT_SEND_DATA, 1)));
+        assert!(!finish(serv, &send(1, ServerEvent::SendData, 9)));
+        assert!(!finish(serv, &send(99, ServerEvent::SendData, 1)));
         assert_eq!(calls(), []);
-        assert!(finish(serv, &send(1, EVENT_SEND_DATA, 1)));
+        assert!(finish(serv, &send(1, ServerEvent::SendData, 1)));
         assert_eq!(
             calls(),
-            [Call::Process(Pipe::Reactor(0), 1, EVENT_SEND_DATA)]
+            [Call::Process(
+                Pipe::Reactor(0),
+                1,
+                ServerEvent::SendData.code()
+            )]
         );
         let conn = session(&live, 1);
         conn.set_overflow(true);
-        assert!(!finish(serv, &send(1, EVENT_SEND_DATA, 1)));
+        assert!(!finish(serv, &send(1, ServerEvent::SendData, 1)));
         // A close still goes through an overflowing buffer.
-        assert!(finish(serv, &send(1, EVENT_CLOSE, 0)));
+        assert!(finish(serv, &send(1, ServerEvent::Close, 0)));
         conn.set_peer_closed(true);
-        assert!(!finish(serv, &send(1, EVENT_SEND_DATA, 1)));
+        assert!(!finish(serv, &send(1, ServerEvent::SendData, 1)));
     }
 
     #[test]
@@ -339,12 +330,20 @@ mod tests {
         let serv = live.server();
         // The master is no event worker: an active close goes to the bound worker.
         assert!(end(serv, 1, CLOSE_ACTIVELY));
-        let [Call::Process(Pipe::Close(_), 1, EVENT_CLOSE)] = calls()[..] else {
+        let [Call::Process(Pipe::Close(_), 1, kind)] = calls()[..] else {
             panic!("one forwarded close");
         };
+        assert_eq!(kind, ServerEvent::Close.code());
         // Otherwise the close goes to the reactor thread, once.
         assert!(end(serv, 2, 0));
-        assert_eq!(calls(), [Call::Process(Pipe::Reactor(0), 2, EVENT_CLOSE)]);
+        assert_eq!(
+            calls(),
+            [Call::Process(
+                Pipe::Reactor(0),
+                2,
+                ServerEvent::Close.code()
+            )]
+        );
         let conn = session(&live, 2);
         conn.closed().store(1, Relaxed);
         assert!(!end(serv, 2, 0));

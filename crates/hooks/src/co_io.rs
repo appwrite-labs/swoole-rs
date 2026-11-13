@@ -22,8 +22,8 @@ pub struct Host {
     pub timer_add: fn(Co, f64, bool) -> *mut c_void,
     /// Deletes a pending timer `timer_add` returned.
     pub timer_del: unsafe extern "C-unwind" fn(*mut swoole_rs_timer::TimerNode) -> bool,
-    /// The read String: 0 get, 1 store, 2 extend, 3 reduce; refreshes the view.
-    pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, u32, usize),
+    /// Syncs the read String with the view, then refreshes the view.
+    pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, crate::packet::BufferSync),
     /// `Socket::recv/recv_all` (all selects the latter) into the read String's
     /// free space.
     pub recv: fn(Co, &mut [u8], bool) -> isize,
@@ -31,7 +31,7 @@ pub struct Host {
     /// writes the header length.
     pub package_length: fn(Co, u32, &mut u32) -> isize,
     /// Packet error diagnostics, with the same kinds as the packet receive.
-    pub packet_fail: fn(Co, u32, isize),
+    pub packet_fail: fn(Co, crate::packet::Failure, isize),
 }
 
 #[cfg(not(test))]
@@ -173,17 +173,22 @@ mod native {
         });
     }
 
-    fn read_buffer(socket: Co, view: &mut ReadBuffer, action: u32, size: usize) {
+    fn read_buffer(socket: Co, view: &mut ReadBuffer, sync: crate::packet::BufferSync) {
+        use crate::packet::BufferSync;
         socket.with_buffer(false, |string| {
-            if action != 0 {
+            if sync != BufferSync::Get {
                 // SAFETY: the packet receive's view of this String counts only
                 // the bytes its receives wrote (crate::packet).
                 unsafe { string.set_len(view.length) };
                 string.set_offset(view.offset);
-                if action == 2 {
-                    string.extend(size);
-                } else if action == 3 {
-                    string.reduce(size.cast_signed() as i64);
+                match sync {
+                    BufferSync::Extend(size) => {
+                        string.extend(size);
+                    }
+                    BufferSync::Reduce(size) => {
+                        string.reduce(size.cast_signed() as i64);
+                    }
+                    BufferSync::Get | BufferSync::Store => {}
                 }
             }
             *view = ReadBuffer {
@@ -230,11 +235,12 @@ mod native {
     const NOT_FOUND: c_int = 1202;
     const LOG_WARNING: c_int = 4;
 
-    fn packet_fail(socket: Co, kind: u32, length: isize) {
+    fn packet_fail(socket: Co, kind: crate::packet::Failure, length: isize) {
         use super::Message;
+        use crate::packet::Failure;
         let (error, message) = match kind {
-            0 => (NOT_FOUND, Message::Static(c"get package length failed")),
-            1 => {
+            Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
+            Failure::TooLarge => {
                 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
@@ -254,7 +260,7 @@ mod native {
                 );
                 (TOO_LARGE, Message::LastError)
             }
-            _ => (
+            Failure::NoEof => (
                 TOO_LARGE,
                 Message::Static(c"no package eof, package_max_length exceeded"),
             ),

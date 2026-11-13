@@ -12,8 +12,8 @@ use libc::{EBUSY, ETIMEDOUT, LOCK_EX, LOCK_NB, LOCK_SH};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_locks::{
-    Barrier, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait, swr_v1_locks_atomic32,
-    swr_v1_locks_atomic64, swr_v1_locks_coroutine_backoff,
+    Barrier, Kind, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait,
+    swr_v1_locks_atomic32, swr_v1_locks_atomic64, swr_v1_locks_coroutine_backoff,
 };
 use swoole_rs_oracle::locks as reference;
 
@@ -59,7 +59,10 @@ fn wait_for(child: libc::pid_t) -> c_int {
 struct RustLock(Lock);
 
 impl RustLock {
-    fn new(kind: i32, shared: bool) -> Self {
+    fn new(code: i32, shared: bool) -> Self {
+        let Some(kind) = Kind::from_code(code.into()) else {
+            unreachable!("a lock of kind {code}");
+        };
         let lock = if shared {
             let words = Lock::words(kind);
             assert!(words * size_of::<AtomicU64>() <= 4096, "a page holds it");
@@ -71,7 +74,7 @@ impl RustLock {
             Lock::private(kind)
         };
         let Some(lock) = lock else {
-            unreachable!("a lock of kind {kind}");
+            unreachable!("a lock of kind {code}");
         };
         Self(lock)
     }
@@ -89,12 +92,12 @@ impl RustLock {
 #[cfg_attr(miri, ignore = "Miri can't call the C++ oracle")]
 fn layout() {
     assert_eq!(
-        Lock::words(MUTEX) * size_of::<AtomicU64>(),
+        Lock::words(Kind::Mutex) * size_of::<AtomicU64>(),
         reference::size(MUTEX)
     );
     assert_eq!(align_of::<AtomicU64>(), reference::align(MUTEX));
     assert_eq!(
-        Lock::words(RW_LOCK) * size_of::<AtomicU64>(),
+        Lock::words(Kind::RwLock) * size_of::<AtomicU64>(),
         reference::size(RW_LOCK)
     );
     assert_eq!(align_of::<AtomicU64>(), reference::align(RW_LOCK));
@@ -259,13 +262,11 @@ fn spin_matches_the_pinned_spinlock() {
 }
 
 /// `swr_v1_locks_size(99) == 0` and `swr_v1_locks_init(nullptr, 3, 0) == EINVAL`, as the
-/// safe constructors refuse them: no such kind, and no storage.
+/// safe API refuses them: no such kind, and no storage.
 #[test]
 fn unknown_kinds_and_missing_storage_are_refused() {
-    assert_eq!(Lock::words(99), 0);
-    assert!(Lock::private(99).is_none());
-    assert!(Lock::shared(99, &mut []).is_none());
-    assert!(Lock::shared(MUTEX, &mut []).is_none());
+    assert_eq!(Kind::from_code(99), None);
+    assert!(Lock::shared(Kind::Mutex, &mut []).is_none());
 }
 
 /// `shared_barrier<swoole::Barrier>()`, and the pinned one where it is the word barrier.

@@ -3,16 +3,24 @@
 //! kernel wait, the readiness order and the warnings; native code supplies the effects
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
-use crate::handlers;
+use crate::handlers::{self, Table};
 use crate::reactor_state::{before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 
-pub const POLL: u32 = 0;
-pub const EPOLL: u32 = 1;
-pub const KQUEUE: u32 = 2;
+/// Which kernel wait a reactor's backend runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackendKind {
+    Poll,
+    Epoll,
+    #[cfg_attr(
+        target_os = "linux",
+        expect(dead_code, reason = "only the BSDs open a kqueue backend")
+    )]
+    Kqueue,
+}
 
 /// The effects of one `wait()`. Every function receives `reactor`.
 pub(crate) struct WaitOps<'a> {
@@ -117,7 +125,7 @@ impl Event {
 
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
-    backend: u32,
+    backend: BackendKind,
     /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
     events: *const c_void,
     /// poll only: the socket each `pollfd` entry was built from.
@@ -184,9 +192,13 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
                 // upstream's Reactor::catch_error()
                 if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                     wait_failed(&run, entries);
-                    return if run.backend == POLL { 0 } else { -1 };
+                    return if run.backend == BackendKind::Poll {
+                        0
+                    } else {
+                        -1
+                    };
                 }
-                if run.backend == EPOLL
+                if run.backend == BackendKind::Epoll
                     && let Some(uring) = uring()
                     && (uring.interrupted)()
                 {
@@ -201,7 +213,11 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
                 continue;
             }
             core::cmp::Ordering::Greater => {
-                let count = if run.backend == POLL { entries } else { ready };
+                let count = if run.backend == BackendKind::Poll {
+                    entries
+                } else {
+                    ready
+                };
                 // The kernel filled the first `count` entries of `events`.
                 run.ready.set(count.unsigned_abs() as usize);
                 for index in 0..run.ready.get() {
@@ -223,7 +239,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
         return;
     }
     let (socket, fd, mask) = match ops.backend {
-        POLL => {
+        BackendKind::Poll => {
             let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
             // SAFETY: `index` is below poll's entry count, checked above.
             let pollfd = unsafe { pollfd.read() };
@@ -241,7 +257,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             (unsafe { socket.read() }, pollfd.fd, mask)
         }
         #[cfg(target_os = "linux")]
-        EPOLL => {
+        BackendKind::Epoll => {
             let event = ops.events.cast::<libc::epoll_event>().wrapping_add(index);
             // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read_unaligned() };
@@ -264,7 +280,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        KQUEUE => {
+        BackendKind::Kqueue => {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
             // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read() };
@@ -283,7 +299,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
 fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
-    for (kind, bit) in [(0, READ), (1, WRITE)] {
+    for (kind, bit) in [(Table::Read, READ), (Table::Write, WRITE)] {
         if mask & bit != 0 && live() && handle(ops, kind, fd_type) < 0 {
             handler_failed(ops, kind);
         }
@@ -293,8 +309,8 @@ fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
         if mask & (READ | WRITE) != 0 {
             return;
         }
-        if handle(ops, 2, fd_type) < 0 {
-            handler_failed(ops, 2);
+        if handle(ops, Table::Error, fd_type) < 0 {
+            handler_failed(ops, Table::Error);
         }
     }
     oneshot(ops, socket, live);
@@ -323,7 +339,11 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         if !live() {
             return;
         }
-        let kind = u32::from(filter != c_int::from(libc::EVFILT_READ));
+        let kind = if filter == c_int::from(libc::EVFILT_READ) {
+            Table::Read
+        } else {
+            Table::Write
+        };
         if handle(ops, kind, fd_type) < 0 {
             handler_failed(ops, kind);
         }
@@ -420,30 +440,30 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
         (fields.id, state.backend_fd, fields.max_event_num, timeout)
     });
     match ops.backend {
-        EPOLL => log::sys_warning(
+        BackendKind::Epoll => log::sys_warning(
             c"ReactorEpoll::wait",
             format_args!(
                 "[Reactor#{id}] epoll_wait(epfd={epfd}, max_events={max_event_num}, timeout={timeout}) failed"
             ),
         ),
-        KQUEUE => log::sys_warning(
+        BackendKind::Kqueue => log::sys_warning(
             c"ReactorKqueue::wait",
             format_args!("kevent(epfd={epfd}) failed "),
         ),
-        _ => log::sys_warning(
+        BackendKind::Poll => log::sys_warning(
             c"ReactorPoll::wait",
             format_args!("[Reactor#{id}] poll(nfds={entries}, timeout={timeout}) failed"),
         ),
     }
 }
 
-/// Warns that the read (0), write (1) or error (2) handler failed for the prepared event.
-fn handler_failed(ops: &Loop<'_>, kind: u32) {
+/// Warns that the read, write or error handler failed for the prepared event.
+fn handler_failed(ops: &Loop<'_>, kind: Table) {
     let event = ops.event.get();
     let fd = event.fd;
     let name = |names: [&'static str; 3]| names.get(kind as usize).copied().unwrap_or_default();
     match ops.backend {
-        EPOLL => {
+        BackendKind::Epoll => {
             let name = name(["EPOLLIN", "EPOLLOUT", "EPOLLERR"]);
             log::sys_warning(
                 c"ReactorEpoll::wait",
@@ -451,14 +471,14 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
             );
             return;
         }
-        KQUEUE => {
-            let name = if kind == 0 { "read" } else { "write" };
+        BackendKind::Kqueue => {
+            let name = if kind == Table::Read { "read" } else { "write" };
             log::sys_warning(
                 c"ReactorKqueue::wait",
                 format_args!("kqueue event {name} socket#{fd} handler failed"),
             );
         }
-        _ => {
+        BackendKind::Poll => {
             let name = name(["POLLIN", "POLLOUT", "POLLERR"]);
             log::sys_warning(
                 c"ReactorPoll::wait",
@@ -469,15 +489,10 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
     swoole_rs_corebase::swoole_print_backtrace_on_error();
 }
 
-/// Runs the prepared event's read (0), write (1) or error (2) handler, as upstream's
+/// Runs the prepared event's read, write or error handler, as upstream's
 /// `get_handler`/`get_error_handler`; a missing handler fails like one returning
 /// `SW_ERR` rather than calling null.
-fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
-    let kind = match kind {
-        0 => handlers::READ,
-        1 => handlers::WRITE,
-        _ => handlers::ERROR,
-    };
+fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> c_int {
     // The lookup's borrow of the tables ends here, before the handler runs.
     let Some(handler) = ops.reactor.handlers().dispatch(kind, fd_type) else {
         return -1;
@@ -514,7 +529,7 @@ fn registered(socket: Socket<'_>) -> bool {
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
-        if ops.backend == EPOLL {
+        if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             ops.reactor
                 .with(|state| state.record(socket, crate::ChangeOp::Del, 0));

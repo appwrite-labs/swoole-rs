@@ -2,7 +2,7 @@
 //! the HTTP/1 server's static responses, a 404 page, a 304, a directory
 //! listing or the file's ranges, sent to the connection.
 use crate::static_handler::{Effects, StaticHandler, page_404};
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, ServerEvent};
 use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange};
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
@@ -88,13 +88,9 @@ pub trait Exchange {
     /// `conn->socket->cork()`.
     fn cork(&self);
     /// `send_to_connection` of a `SendData` of event `kind` to the connection.
-    fn send(&self, kind: u8, data: &[u8]);
+    fn send(&self, kind: ServerEvent, data: &[u8]);
 }
 
-/// `SW_SERVER_EVENT_SEND_DATA`, `SW_SERVER_EVENT_SEND_FILE`, `SW_SERVER_EVENT_CLOSE`.
-pub const SEND_DATA: u8 = 2;
-pub const SEND_FILE: u8 = 3;
-pub const CLOSE: u8 = 4;
 /// `SW_HTTP_NOT_FOUND`, `SW_HTTP_PARTIAL_CONTENT`.
 const NOT_FOUND: i32 = 404;
 const PARTIAL_CONTENT: i32 = 206;
@@ -142,7 +138,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         header.status = &status;
         header.page = &page;
         header.content_length = signed(page.len());
-        exchange.send(SEND_DATA, &encode(&header));
+        exchange.send(ServerEvent::SendData, &encode(&header));
         return true;
     }
     let date = handler.date();
@@ -153,7 +149,7 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     if !since.is_empty() && handler.is_modified(&since) {
         header.head = StaticHead::NotModified;
         header.keep_alive = exchange.keep_alive();
-        exchange.send(SEND_DATA, &encode(&header));
+        exchange.send(ServerEvent::SendData, &encode(&header));
         return true;
     }
     // With http_index_files, the directory's index file becomes the file.
@@ -166,8 +162,8 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
         header.head = StaticHead::Autoindex;
         header.keep_alive = exchange.keep_alive();
         header.content_length = signed(body.len());
-        exchange.send(SEND_DATA, &encode(&header));
-        exchange.send(SEND_DATA, &body);
+        exchange.send(ServerEvent::SendData, &encode(&header));
+        exchange.send(ServerEvent::SendData, &body);
         return true;
     }
     // Upstream reads both as one call's arguments, in an order C++ leaves to the
@@ -203,25 +199,25 @@ pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
     let head_bytes = encode(&header);
     // tcp_nopush for the header and body.
     exchange.cork();
-    exchange.send(SEND_DATA, &head_bytes);
+    exchange.send(ServerEvent::SendData, &head_bytes);
     if !exchange.head() && !tasks.is_empty() {
         let filename = handler.filename();
         let mut file = SendfileTask::new(c_text(&filename));
         if tasks.len() > 1 {
             for task in &tasks {
-                exchange.send(SEND_DATA, c_text(&task.part_header));
-                exchange.send(SEND_FILE, file.at(task));
+                exchange.send(ServerEvent::SendData, c_text(&task.part_header));
+                exchange.send(ServerEvent::SendFile, file.at(task));
             }
-            exchange.send(SEND_DATA, &handler.end_part());
+            exchange.send(ServerEvent::SendData, &handler.end_part());
         } else if let [task] = tasks.as_slice()
             && task.length > 0
         {
-            exchange.send(SEND_FILE, file.at(task));
+            exchange.send(ServerEvent::SendFile, file.at(task));
         }
     }
     // Close the connection if keepalive is not used.
     if !exchange.keep_alive() {
-        exchange.send(CLOSE, &[]);
+        exchange.send(ServerEvent::Close, &[]);
     }
     true
 }
@@ -295,11 +291,11 @@ impl Exchange for Wire<'_> {
         // the cork: the read path that serves the request holds none across this call.
         swoole_rs_reactor::socket_upstream::socket_cork(unsafe { &mut (*socket).fields });
     }
-    fn send(&self, kind: u8, data: &[u8]) {
+    fn send(&self, kind: ServerEvent, data: &[u8]) {
         let info = swoole_rs_corebase::DataHead {
             fd: self.session_id,
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
-            kind,
+            kind: kind.code(),
             ..Default::default()
         };
         crate::send::send_event_to_connection(self.server, &info, data);
@@ -340,7 +336,7 @@ pub unsafe fn static_select(
 /// result, every traced call, every send's bytes and the request's final state.
 #[cfg(test)]
 mod tests {
-    use super::{CLOSE, Exchange, Handler, SEND_FILE, select};
+    use super::{Exchange, Handler, ServerEvent, select};
     use core::cell::{Cell, RefCell};
     use std::ffi::{c_char, c_void};
     use swoole_rs_http::HttpStaticTask;
@@ -513,7 +509,7 @@ mod tests {
         fn cork(&self) {
             self.note("cork");
         }
-        fn send(&self, kind: u8, data: &[u8]) {
+        fn send(&self, kind: ServerEvent, data: &[u8]) {
             self.note("send");
             if self.case.throw_on_send {
                 std::panic::resume_unwind(Box::new(Thrown));
@@ -525,15 +521,15 @@ mod tests {
             if self.sends.get() == self.case.toggle_method_on_send {
                 self.head.set(!self.head.get());
             }
-            let mut event = format!("E:73:{kind}:").into_bytes();
-            if kind == SEND_FILE {
+            let mut event = format!("E:73:{}:", kind.code()).into_bytes();
+            if kind == ServerEvent::SendFile {
                 let offset = i64::from_ne_bytes(data[..8].try_into().unwrap());
                 let length = usize::from_ne_bytes(data[8..16].try_into().unwrap());
                 let name = data[16..].split(|&b| b == 0).next().unwrap();
                 event.extend_from_slice(format!("{offset}:{length}:").as_bytes());
                 event.extend_from_slice(name);
                 event.extend_from_slice(format!(":{}", data.len()).as_bytes());
-            } else if kind != CLOSE {
+            } else if kind != ServerEvent::Close {
                 event.extend_from_slice(data);
             }
             self.events.borrow_mut().push(event);

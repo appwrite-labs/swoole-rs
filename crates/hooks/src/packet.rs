@@ -13,6 +13,28 @@ pub struct ReadBuffer {
     pub str: *mut u8,
 }
 
+/// Why a packet receive gave up, for the host's diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The protocol could not read a length from the header.
+    LengthNotFound,
+    /// The header's length exceeds `package_max_length`.
+    TooLarge,
+    /// The buffer filled to `package_max_length` with no EOF.
+    NoEof,
+}
+
+/// What a sync of the read String does before it refreshes the view: nothing, or it
+/// stores the view's length and offset, then grows the String to a size or drops that
+/// many leading bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferSync {
+    Get,
+    Store,
+    Extend(usize),
+    Reduce(usize),
+}
+
 struct Packet {
     socket: crate::co_socket::Co,
     view: ReadBuffer,
@@ -35,11 +57,11 @@ impl Packet {
         self.set_length(0);
         self.set_offset(0);
     }
-    fn sync(&mut self, action: u32, size: usize) {
-        (crate::co_io::host().read_buffer)(self.socket, &mut self.view, action, size);
+    fn sync(&mut self, sync: BufferSync) {
+        (crate::co_io::host().read_buffer)(self.socket, &mut self.view, sync);
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
-        self.sync(1, 0);
+        self.sync(BufferSync::Store);
         // SAFETY: the requested free space in the read String the view refreshed,
         // which the receive borrows.
         let buf =
@@ -49,15 +71,15 @@ impl Packet {
     fn recv(&mut self, at: usize, length: usize) -> isize {
         self.receive(at, length, false)
     }
-    fn fail(&mut self, kind: u32, length: isize) {
-        self.sync(1, 0);
+    fn fail(&mut self, kind: Failure, length: isize) {
+        self.sync(BufferSync::Store);
         (crate::co_io::host().packet_fail)(self.socket, kind, length);
     }
     fn timed_out(&self) -> bool {
         self.socket.err_code() == libc::ETIMEDOUT
     }
     fn extend(&mut self, size: usize) {
-        self.sync(2, size);
+        self.sync(BufferSync::Extend(size));
     }
 
     /// `recv_packet_with_length_protocol`.
@@ -92,7 +114,7 @@ impl Packet {
                 &mut header,
             );
             if packet < 0 {
-                self.fail(0, packet);
+                self.fail(Failure::LengthNotFound, packet);
                 return 0;
             }
             if packet == 0 {
@@ -103,7 +125,7 @@ impl Packet {
             }
             if packet.unsigned_abs() > protocol.package_max_length as usize {
                 self.clear();
-                self.fail(1, packet);
+                self.fail(Failure::TooLarge, packet);
                 return -1;
             }
             let wanted = packet.unsigned_abs();
@@ -164,7 +186,7 @@ impl Packet {
             }
             if buffer.length == maximum {
                 self.clear();
-                self.fail(2, 0);
+                self.fail(Failure::NoEof, 0);
                 return -1;
             }
             if buffer.length == buffer.size && buffer.size < maximum {
@@ -217,10 +239,10 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
         length_check: socket.open_length_check(),
         eof_check: socket.open_eof_check(),
     };
-    packet.sync(0, 0);
+    packet.sync(BufferSync::Get);
     let offset = packet.buffer().offset;
     if offset > 0 {
-        packet.sync(3, usize::try_from(offset).unwrap_or(0));
+        packet.sync(BufferSync::Reduce(usize::try_from(offset).unwrap_or(0)));
     }
     let received = if packet.length_check {
         packet.length_protocol()
@@ -237,7 +259,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
     if received <= 0 && !(packet.length_check && received < 0 && packet.timed_out()) {
         packet.clear();
     }
-    packet.sync(1, 0);
+    packet.sync(BufferSync::Store);
     timer.stop();
     received
 }
@@ -257,7 +279,7 @@ pub(crate) mod tests {
         storage: Vec<u8>,
         buffer: ReadBuffer,
         chunks: VecDeque<Vec<u8>>,
-        failures: Vec<u32>,
+        failures: Vec<super::Failure>,
         timed_out: bool,
         gets: usize,
         receives: usize,
@@ -306,7 +328,7 @@ pub(crate) mod tests {
         6 + (u32::from_be_bytes(bytes.try_into().unwrap())).c_cast::<isize>()
     }
 
-    unsafe extern "C" fn fail(context: *mut c_void, kind: u32, _: isize) {
+    unsafe fn fail(context: *mut c_void, kind: super::Failure) {
         unsafe { fake(context) }.failures.push(kind);
     }
 
@@ -342,26 +364,27 @@ pub(crate) mod tests {
     pub(crate) fn read_buffer(
         socket: crate::co_socket::Co,
         view: &mut ReadBuffer,
-        action: u32,
-        size: usize,
+        sync: super::BufferSync,
     ) {
+        use super::BufferSync;
         let ctx = socket.resolve_context();
         let fake = unsafe { fake(ctx) };
-        if action == 0 {
-            fake.gets += 1;
+        match sync {
+            BufferSync::Get => fake.gets += 1,
+            _ => fake.buffer = *view,
         }
-        if action != 0 {
-            fake.buffer = *view;
-        }
-        if action == 2 {
-            fake.storage.resize(size, 0);
-            fake.buffer.str = fake.storage.as_mut_ptr();
-            fake.buffer.size = size;
-        }
-        if action == 3 {
-            fake.storage.copy_within(size..fake.buffer.length, 0);
-            fake.buffer.length -= size;
-            fake.buffer.offset = 0;
+        match sync {
+            BufferSync::Extend(size) => {
+                fake.storage.resize(size, 0);
+                fake.buffer.str = fake.storage.as_mut_ptr();
+                fake.buffer.size = size;
+            }
+            BufferSync::Reduce(size) => {
+                fake.storage.copy_within(size..fake.buffer.length, 0);
+                fake.buffer.length -= size;
+                fake.buffer.offset = 0;
+            }
+            BufferSync::Get | BufferSync::Store => {}
         }
         *view = fake.buffer;
     }
@@ -379,9 +402,9 @@ pub(crate) mod tests {
         let at = unsafe { fake(ctx) }.buffer.str;
         unsafe { package_length(ctx, at, size, header) }
     }
-    pub(crate) fn failure(socket: crate::co_socket::Co, kind: u32, length: isize) {
+    pub(crate) fn failure(socket: crate::co_socket::Co, kind: super::Failure, _: isize) {
         let ctx = socket.resolve_context();
-        unsafe { fail(ctx, kind, length) };
+        unsafe { fail(ctx, kind) };
     }
 
     fn run(
@@ -432,7 +455,7 @@ pub(crate) mod tests {
         let wire = [&b"ab"[..], &[0, 0, 4, 0]].concat();
         let (results, fake) = run(&[&wire], 64, true, b"", 1024);
         assert_eq!(results, [-1]);
-        assert_eq!(fake.failures, [1]);
+        assert_eq!(fake.failures, [super::Failure::TooLarge]);
         assert_eq!(fake.buffer.length, 0);
     }
 
@@ -447,7 +470,7 @@ pub(crate) mod tests {
     fn eof_protocol_fails_at_the_maximum_without_a_delimiter() {
         let (results, fake) = run(&[b"0123456789abcdef"], 16, false, b"\r\n", 16);
         assert_eq!(results, [-1]);
-        assert_eq!(fake.failures, [2]);
+        assert_eq!(fake.failures, [super::Failure::NoEof]);
     }
 
     #[test]

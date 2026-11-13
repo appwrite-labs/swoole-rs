@@ -45,7 +45,6 @@ pub mod manager;
 mod master_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod objects;
-pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod pool_native;
 pub mod port_config;
@@ -83,7 +82,7 @@ pub use records::{
 
 pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 
-pub use config::{Mode, ServerConfig};
+pub use config::{DispatchMode, Mode, ServerConfig, TaskIpcMode};
 pub use layout::server_record_layout;
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside

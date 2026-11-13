@@ -12,14 +12,6 @@ typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
 typedef struct swr_v1_os_msg_queue swr_v1_os_msg_queue;
 #include "swoole_rs_process_views.h"
 
-enum swPipe_close_which {
-    SW_PIPE_CLOSE_MASTER = 1,
-    SW_PIPE_CLOSE_WORKER = 2,
-    SW_PIPE_CLOSE_READ = 3,
-    SW_PIPE_CLOSE_WRITE = 4,
-    SW_PIPE_CLOSE_BOTH = 0,
-};
-
 namespace swoole {
 class SocketPair {
   protected:
@@ -28,7 +20,6 @@ class SocketPair {
   public:
     ~SocketPair();
 
-    void clean() const;
     bool close(int which = 0);
 
     network::Socket *get_socket(bool _master) const {
@@ -39,7 +30,6 @@ class SocketPair {
         return master_socket != nullptr && worker_socket != nullptr;
     }
 
-    void set_timeout(double _timeout);
     void set_blocking(bool _blocking);
 };
 

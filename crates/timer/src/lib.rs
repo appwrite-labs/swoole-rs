@@ -53,8 +53,7 @@ pub struct TimerView {
     pub interval: i64,
     pub exec_count: u64,
     pub birth_round: u64,
-    pub removed: u32,
-    pub reserved: u32,
+    pub removed: bool,
     pub token: *mut c_void,
 }
 impl Default for TimerView {
@@ -65,8 +64,7 @@ impl Default for TimerView {
             interval: 0,
             exec_count: 0,
             birth_round: 0,
-            removed: 0,
-            reserved: 0,
+            removed: false,
             token: ptr::null_mut(),
         }
     }
@@ -77,8 +75,8 @@ pub struct TimerStats {
     pub count: usize,
     pub round: u64,
     pub active_id: i64,
-    pub selecting: u32,
-    pub closing: u32,
+    pub selecting: bool,
+    pub closing: bool,
 }
 
 // Keys are internally allocated monotonic IDs, never caller-selected hash keys.
@@ -205,7 +203,7 @@ impl Timer {
         if self.closing {
             return (CLOSING, none);
         }
-        let Some((index, mut view)) = self.find(id).filter(|(_, view)| view.removed == 0) else {
+        let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
             return (NOT_FOUND, none);
         };
         view.deadline = deadline;
@@ -219,11 +217,11 @@ impl Timer {
         if id <= 0 {
             return (INVALID, none);
         }
-        let Some((index, mut view)) = self.find(id).filter(|(_, view)| view.removed == 0) else {
+        let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
             return (NOT_FOUND, none);
         };
         if self.active_id == id {
-            view.removed = 1;
+            view.removed = true;
             self.heap.update(index, view);
             (DEFERRED, view)
         } else {
@@ -317,7 +315,7 @@ impl Timer {
         }
         let executions = view.exec_count.checked_add(1);
         self.active_id = 0;
-        let status = if view.removed != 0 || self.closing || view.interval == 0 {
+        let status = if view.removed || self.closing || view.interval == 0 {
             RELEASE
         } else if next.is_none() || executions.is_none() {
             RELEASE_OVERFLOW
@@ -364,8 +362,8 @@ impl Timer {
             count: self.heap.len(),
             round: self.round,
             active_id: self.active_id,
-            selecting: u32::from(self.selecting),
-            closing: u32::from(self.closing),
+            selecting: self.selecting,
+            closing: self.closing,
         }
     }
 
@@ -388,7 +386,7 @@ impl Timer {
     pub fn close(&mut self) {
         self.closing = true;
         if let Some((index, mut view)) = self.find(self.active_id) {
-            view.removed = 1;
+            view.removed = true;
             self.heap.update(index, view);
         }
     }
@@ -527,7 +525,7 @@ mod tests {
             if stats.active_id != 0 {
                 self.complete(stats.active_id, RELEASE);
             }
-            if stats.selecting != 0 {
+            if stats.selecting {
                 self.end();
             }
             while self.q().drain().0 == RELEASE {}
@@ -661,7 +659,7 @@ mod tests {
         assert_eq!(q.begin(10), OK);
         q.next(OK);
         assert_eq!(q.q().remove(a.id).0, DEFERRED);
-        assert_eq!(q.get(a.id).removed, 1);
+        assert!(q.get(a.id).removed);
         assert_eq!(q.q().remove(a.id), (NOT_FOUND, TimerView::default()));
         assert!(!q.q().idle(), "release would be PENDING");
         q.q().close();

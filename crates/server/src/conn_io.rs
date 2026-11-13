@@ -9,7 +9,9 @@
 use crate::Mode;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
+use swoole_rs_corebase::ServerEvent;
 
+use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
@@ -32,10 +34,6 @@ use crate::reactor_ops::{is_dgram, out_buffer, valid};
 use crate::records::{Connection, Lookup};
 use crate::view;
 
-/// `BufferChunk::Type`'s sendfile and close chunks.
-const KIND_SENDFILE: u64 = 1;
-const KIND_CLOSE: u64 = 2;
-
 /// `swReturnCode`'s handshake states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Handshake {
@@ -50,8 +48,6 @@ const SW_CONTINUE: c_int = 1;
 const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 const SW_ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
 const SW_READY: c_int = swoole_rs_corebase::constants::ReturnCode::SW_READY as c_int;
-/// `SW_SERVER_EVENT_CONNECT`.
-const EVENT_CONNECT: u8 = 5;
 /// The longest resume back-off, in milliseconds.
 const MAX_WAITING_TIME: u16 = 1024;
 
@@ -202,7 +198,7 @@ fn verify_ssl(
             let mut task = SendData {
                 info: DataHead {
                     fd: sock.fd().into(),
-                    kind: EVENT_CONNECT,
+                    kind: ServerEvent::Connect.code(),
                     reactor_id: reactor.handle().id().cast_signed(),
                     len: u32::try_from(len).unwrap_or(u32::MAX),
                     ..DataHead::default()
@@ -214,7 +210,7 @@ fn verify_ssl(
         Certificate::None => {
             let on_connect = state.callbacks.slot(CallbackKind::Connect);
             if on_connect.is_some_and(CallbackSlot::is_set) {
-                crate::server_methods::notify(serv, conn, c_int::from(EVENT_CONNECT));
+                crate::server_methods::notify(serv, conn, ServerEvent::Connect);
             }
         }
     }
@@ -319,9 +315,6 @@ const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
-/// `SW_SERVER_EVENT_CLOSE` and `_BUFFER_EMPTY`.
-const EVENT_CLOSE: u8 = 4;
-const EVENT_BUFFER_EMPTY: c_int = 14;
 
 /// Whether the socket has TLS whose handshake is not finished.
 fn handshaking(sock: Socket<'_>) -> bool {
@@ -363,7 +356,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         if handshaking(sock) {
             return close_connection(serv, reactor, Some(sock));
         }
-        crate::server_methods::notify(serv, conn, c_int::from(EVENT_CLOSE));
+        crate::server_methods::notify(serv, conn, ServerEvent::Close);
         conn.set_close_notify(false);
         return OK;
     } else if config.disable_notify.get() && conn.close_force() {
@@ -371,12 +364,12 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     }
     while let Some(kind) = sock.read(|s| {
         let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
-        Some(u64::from(swr_cpp_buffer_typed_front(buffer).kind))
+        Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let ret = match kind {
-            KIND_CLOSE => return reactor.close(sock),
-            KIND_SENDFILE => tls::socket_handle_sendfile(sock),
-            _ => {
+            EntryKind::Close => return reactor.close(sock),
+            EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
+            EntryKind::Data => {
                 let ret = tls::socket_handle_send(sock);
                 if ret == OK {
                     conn.set_send_queued_bytes(output(sock).0);
@@ -405,7 +398,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
     if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
         conn.set_high_watermark(false);
-        crate::server_methods::notify(serv, conn, EVENT_BUFFER_EMPTY);
+        crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
     let timer = sock.read(|s| s.output.send_timer);
     if !timer.is_null() {
@@ -454,7 +447,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     let mut head = DataHead {
         reactor_id: i16::try_from(reactor.handle().id()).unwrap_or_default(),
         fd: c_long::from(fd),
-        kind: EVENT_CLOSE,
+        kind: ServerEvent::Close.code(),
         ..DataHead::default()
     };
     // The connection is no longer available.
@@ -474,7 +467,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     !prequeue
         || config.mode_ != Mode::Process
-        || !matches!(config.dispatch_mode.get(), 2 | 4 | 8)
+        || !config.hash_dispatch()
         || dispatch_func
         || config.enable_coroutine.get()
         || conn.ssl()
@@ -720,7 +713,7 @@ pub(crate) mod tests {
         let fd = conn.fd();
         let event = conn.event(0, 0);
         assert_eq!(peer_close(serv, reactor, &event), 1);
-        let close = Call::Notify(c_long::from(fd), 0, EVENT_CLOSE, 0);
+        let close = Call::Notify(c_long::from(fd), 0, ServerEvent::Close.code(), 0);
         assert_eq!(calls(), [close]);
         assert!(conn.peer_closed(), "upstream: the connection is gone");
         assert!(conn.socket().unwrap().read(|s| s.close_notified));
@@ -824,7 +817,7 @@ pub(crate) mod tests {
         let close = Call::Notify(
             c_long::from(conn.fd()),
             0,
-            EVENT_CLOSE,
+            ServerEvent::Close.code(),
             conn.server_fd().c_cast(),
         );
         assert_eq!(calls(), [close]);

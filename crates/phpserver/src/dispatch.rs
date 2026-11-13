@@ -4,7 +4,7 @@
 //! `ctx`, see `swoole_rs_server::callbacks`); each re-raises a bailout it
 //! trapped last, from its outermost frame (docs/zend.md).
 use crate::callable::Callable;
-use crate::lifecycle::{PortCallback, ServerCallback};
+use crate::lifecycle::{Install, PortCallback, ServerCallback};
 use crate::lifecycle::{Props, ServerObject};
 use crate::server::DATA;
 use std::{
@@ -17,6 +17,7 @@ use std::{
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
+use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
@@ -548,8 +549,6 @@ const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int
 const UDP: c_int = 2;
 const UDP6: c_int = 4;
 const UNIX_DGRAM: c_int = 6;
-/// `websocket::STATUS_ACTIVE`.
-const WEBSOCKET_ACTIVE: u8 = 3;
 
 /// `RecvData`: the event's head, then its payload. Native code lends each
 /// receive slot its request for the call; its fields are private, so safe code
@@ -826,8 +825,7 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     let Some(conn) = server.by_session(session_id) else {
         return;
     };
-    let websocket_status = conn.websocket_status();
-    if websocket_status != WEBSOCKET_ACTIVE {
+    if conn.websocket_status() != WebSocketStatus::Active {
         let port = server.port_by_server_fd(c_int::from(info.server_fd));
         let websocket = port.is_some_and(|port| port.config().open_websocket_protocol.get());
         if websocket
@@ -948,14 +946,10 @@ pub(crate) fn port_hook(server: view::Server<'_>, hook: u32) {
     }
 }
 
-/// `SWR_PHPSERVER_INSTALL_*` that fills slots.
-pub(crate) fn install(server: view::Server<'_>, which: u32) {
-    use crate::lifecycle::install::{
-        BUFFER_EMPTY, CLOSE, CONTROL, HTTP_CLOSE, HTTP_RECEIVE, PIPE_MESSAGE, RECEIVE,
-        REDIS_RECEIVE, TASK, USER_WORKER_START,
-    };
+/// The slots an [`Install`] group fills.
+pub(crate) fn install(server: view::Server<'_>, which: Install) {
     let slots: &[Callback] = match which {
-        CONTROL => &[
+        Install::Control => &[
             Callback::Start(on_start),
             Callback::BeforeShutdown(on_before_shutdown),
             Callback::Shutdown(on_shutdown),
@@ -968,25 +962,22 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
             Callback::ManagerStop(on_manager_stop),
             Callback::WorkerError(on_worker_error_slot),
         ],
-        TASK => &[Callback::Task(on_task), Callback::Finish(on_finish)],
-        PIPE_MESSAGE => &[Callback::PipeMessage(on_pipe_message_slot)],
-        BUFFER_EMPTY => &[Callback::BufferEmpty(on_buffer_empty)],
-        CLOSE => &[Callback::Close(on_close)],
-        HTTP_CLOSE => &[Callback::Close(on_http_close)],
-        RECEIVE => &[Callback::Receive(on_receive)],
-        HTTP_RECEIVE => &[Callback::Receive(on_http_receive)],
-        REDIS_RECEIVE => &[Callback::Receive(on_redis_receive)],
-        USER_WORKER_START if server.has_callback(CallbackKind::UserWorkerStart) => &[],
-        USER_WORKER_START => &[Callback::UserWorkerStart(on_user_worker_start)],
-        _ => return,
+        Install::Task => &[Callback::Task(on_task), Callback::Finish(on_finish)],
+        Install::PipeMessage => &[Callback::PipeMessage(on_pipe_message_slot)],
+        Install::BufferEmpty => &[Callback::BufferEmpty(on_buffer_empty)],
+        Install::Close => &[Callback::Close(on_close)],
+        Install::HttpClose => &[Callback::Close(on_http_close)],
+        Install::Receive => &[Callback::Receive(on_receive)],
+        Install::HttpReceive => &[Callback::Receive(on_http_receive)],
+        Install::RedisReceive => &[Callback::Receive(on_redis_receive)],
+        Install::UserWorkerStart if server.has_callback(CallbackKind::UserWorkerStart) => &[],
+        Install::UserWorkerStart => &[Callback::UserWorkerStart(on_user_worker_start)],
+        Install::Allocators | Install::AdminCommands => return,
     };
     for &callback in slots {
         server.set_callback(callback);
     }
 }
-
-/// `SW_SERVER_EVENT_CLOSE`.
-const EVENT_CLOSE: u8 = 4;
 
 /// The `dispatch_func` setting: `callable`, which the config's slot holds until
 /// `release_dispatch_func`, picks the worker of each event from now on, in the
@@ -1066,7 +1057,7 @@ extern "C" fn on_dispatch(
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info().fd),
     };
-    let kind = send.map_or(EVENT_CLOSE, |send| send.info().kind);
+    let kind = send.map_or(ServerEvent::Close.code(), |send| send.info().kind);
     let mut args = [
         zserv,
         long_zval(session),

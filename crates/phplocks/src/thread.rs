@@ -4,7 +4,7 @@
 //! (crates/phpthread) share between threads through [`shared`] and
 //! [`shared_object`].
 use crate::{
-    lock::{KINDS, MUTEX, RW_LOCK, SPIN_LOCK, checked, lock_with},
+    lock::{checked, lock_with, names},
     word::{self, Holder},
 };
 use std::{
@@ -16,7 +16,7 @@ use std::{
     },
 };
 use swoole_rs_corebase::log::set_last_error;
-use swoole_rs_locks::Lock;
+use swoole_rs_locks::{Kind, Lock};
 use swoole_rs_phpstubs::{thread_atomic, thread_lock};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_ERROR, Minit, Owned, Value,
@@ -41,13 +41,8 @@ pub enum Resource {
 
 /// `LockResource(type)`: a spinlock or rwlock where the build has one, else a
 /// mutex.
-fn lock_kind(requested: i64, kinds: u32) -> i32 {
-    let has = |kind: i64| kinds & (1 << kind) != 0;
-    match requested {
-        SPIN_LOCK if has(SPIN_LOCK) => 5,
-        RW_LOCK if has(RW_LOCK) => 1,
-        _ => 3,
-    }
+fn lock_kind(requested: i64) -> Kind {
+    Kind::from_code(requested).unwrap_or(Kind::Mutex)
 }
 
 /// The classes whose objects share a [`Resource`].
@@ -198,15 +193,8 @@ pub fn thread_locks_minit(minit: &Minit) -> Result<(), Bailout> {
         ZEND_ACC_FINAL,
     );
     minit.register_object::<ThreadLock>(c"Swoole\\Thread\\Lock", &LOCK_METHODS.0, ZEND_ACC_FINAL);
-    let types = [
-        (c"MUTEX", MUTEX),
-        (c"RWLOCK", RW_LOCK),
-        (c"SPINLOCK", SPIN_LOCK),
-    ];
-    for (name, kind) in types {
-        if KINDS & (1 << kind) != 0 {
-            minit.class_constant_long(&LOCK, name, kind);
-        }
+    for &kind in Kind::ALL {
+        minit.class_constant_long(&LOCK, names(kind).0, kind.code());
     }
     minit.property_long(&LOCK, c"errCode", 0, ZEND_ACC_PUBLIC);
     Ok(())
@@ -270,12 +258,15 @@ fn lock_construct(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Ok(requested) = call.arity(0, 1).and_then(|()| call.long(1, MUTEX)) else {
+    let Ok(requested) = call
+        .arity(0, 1)
+        .and_then(|()| call.long(1, Kind::Mutex.code()))
+    else {
         return;
     };
     // Upstream throws a C++ exception, which terminates the process, when a
     // lock cannot be made.
-    let lock = Lock::private(lock_kind(requested, KINDS))
+    let lock = Lock::private(lock_kind(requested))
         .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread lock can't be made"));
     this.0.get_or_init(|| Arc::new(Resource::Lock(lock)));
 }
@@ -323,24 +314,25 @@ mod tests {
 
     #[test]
     fn lock_types_fall_back_to_a_mutex() {
-        let all = (1 << MUTEX) | (1 << RW_LOCK) | (1 << SPIN_LOCK);
+        #[cfg(target_os = "linux")]
         assert_eq!(
-            lock_kind(SPIN_LOCK, all),
-            5,
+            lock_kind(5),
+            Kind::Spin,
             "a spinlock where the build has one"
         );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(lock_kind(5), Kind::Mutex, "no spinlock: a mutex");
         assert_eq!(
-            lock_kind(RW_LOCK, all),
-            1,
+            lock_kind(1),
+            Kind::RwLock,
             "an rwlock where the build has one"
         );
-        assert_eq!(lock_kind(SPIN_LOCK, 1 << MUTEX), 3, "no spinlock: a mutex");
-        assert_eq!(lock_kind(42, all), 3, "an unknown type: a mutex");
+        assert_eq!(lock_kind(42), Kind::Mutex, "an unknown type: a mutex");
     }
 
     #[test]
     fn a_lock_resource_locks_and_is_destroyed_with_its_last_reference() {
-        let lock = Lock::private(3).expect("a mutex");
+        let lock = Lock::private(Kind::Mutex).expect("a mutex");
         let resource = Arc::new(Resource::Lock(lock));
         let Resource::Lock(lock) = &*resource else {
             unreachable!("made as a lock");

@@ -27,7 +27,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::{mem, slice};
-pub use typed::{Detached as TypedDetached, Front as TypedFront};
+pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
 const OK: i32 = 0;
 const EMPTY: i32 = 1;
@@ -345,7 +345,7 @@ mod tests {
             unsafe { &mut *self.0 }
         }
         pub(super) fn push(&self, token: *mut c_void) -> i32 {
-            unsafe { self.queue().push(1, token, Some(keep)) }
+            unsafe { self.queue().push(EntryKind::Sendfile, token, Some(keep)) }
         }
         pub(super) fn appendv(&self, parts: &[&[u8]], offset: u64) -> i32 {
             self.queue().appendv(parts.iter().copied(), offset)
@@ -528,7 +528,7 @@ mod tests {
         assert!(buffer.pop().is_null());
         assert_eq!(buffer.stats(), (1, 2));
         let view = buffer.view();
-        assert_eq!(view.kind, 1);
+        assert_eq!(view.kind, EntryKind::Sendfile);
         assert_eq!(view.token, token);
         assert!(view.data.is_null());
         assert_eq!(buffer.pop(), token);

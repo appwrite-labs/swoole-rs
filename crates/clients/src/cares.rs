@@ -29,7 +29,7 @@ unsafe extern "C" {
 /// `swoole_rs_coroutine::Coroutine`.
 mod co {
     use std::ffi::c_void;
-    use swoole_rs_coroutine::{Coroutine, STATE_WAITING};
+    use swoole_rs_coroutine::{Coroutine, State};
 
     pub(super) use swoole_rs_coroutine::{
         RC_CANCELED, RC_TIMEDOUT, resume, yield_resumed, yield_timed,
@@ -51,7 +51,7 @@ mod co {
         let co = co.cast::<Coroutine>();
         // SAFETY: a live coroutine's scalar field.
         let state = unsafe { (*co).state };
-        state == STATE_WAITING
+        state == State::Waiting
     }
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";

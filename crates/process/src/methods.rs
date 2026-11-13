@@ -554,27 +554,26 @@ static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_utilities::Logger> =
     std::sync::atomic::AtomicPtr::new(ptr::null_mut());
 
 /// The process logger's `new Logger()` on `SwooleG.stdout`, `->reopen()`, `->close()`
-/// and `delete` (corebase's `LOGGER_*`), which `swoole_init` registers for corebase's
-/// lifecycles.
+/// and `delete`, which `swoole_init` registers for corebase's lifecycles.
 #[cfg(feature = "upstream-symbols")]
-pub fn logger_op(op: c_int) {
+pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     use std::sync::atomic::Ordering::Relaxed;
-    use swoole_rs_corebase::native::{LOGGER_CLOSE, LOGGER_NEW, LOGGER_REOPEN};
+    use swoole_rs_corebase::native::LoggerOp;
     use swoole_rs_utilities::{Logger, process_logger};
     match op {
-        LOGGER_NEW => {
+        LoggerOp::New => {
             let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
             let logger = Logger::new(stdout, swr_logger_host);
             LOGGER.store(Box::into_raw(Box::new(logger)), Relaxed);
             swoole_rs_corebase::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
         }
-        LOGGER_REOPEN => process_logger().into_iter().for_each(Logger::reopen),
-        LOGGER_CLOSE => process_logger().into_iter().for_each(Logger::close),
-        _ => {
+        LoggerOp::Reopen => process_logger().into_iter().for_each(Logger::reopen),
+        LoggerOp::Close => process_logger().into_iter().for_each(Logger::close),
+        LoggerOp::Delete => {
             swoole_rs_corebase::swr_v1_core_set_logger(ptr::null_mut());
             let logger = LOGGER.swap(ptr::null_mut(), Relaxed);
             if !logger.is_null() {
-                // SAFETY: the logger LOGGER_NEW made, taken once.
+                // SAFETY: the logger `LoggerOp::New` made, taken once.
                 drop(unsafe { Box::from_raw(logger) });
             }
         }

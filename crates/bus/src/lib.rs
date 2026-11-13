@@ -512,10 +512,10 @@ impl Bus {
         ) else {
             return false;
         };
-        while writer.mode != COMPLETE {
+        while writer.mode != Mode::Complete {
             let chunk = writer.next_chunk();
             head.flags = chunk.flags;
-            if chunk.mode == EMPTY {
+            if chunk.mode == Mode::Empty {
                 head.len = 0;
             }
             let iov = [
@@ -532,16 +532,16 @@ impl Bus {
                     iov_len: chunk.length as usize,
                 },
             ];
-            let count = if chunk.mode == EMPTY { 1 } else { 2 };
+            let count = if chunk.mode == Mode::Empty { 1 } else { 2 };
             let sent = send(iov.get(..count).unwrap_or_default());
             // Chunks accept any nonnegative write; direct writes need every byte.
-            let success = if chunk.mode == CHUNKS {
+            let success = if chunk.mode == Mode::Chunks {
                 sent >= 0
             } else {
                 sent.cast_unsigned() == HEAD + chunk.length as usize
             };
-            let smaller = !success && chunk.mode != EMPTY && reduce();
-            if writer.complete(success, smaller) < 0 {
+            let smaller = !success && chunk.mode != Mode::Empty && reduce();
+            if !writer.complete(success, smaller) {
                 return false;
             }
             head.flags = writer.flags;
@@ -550,10 +550,16 @@ impl Bus {
     }
 }
 
-const EMPTY: u8 = 0;
-const DIRECT: u8 = 1;
-const CHUNKS: u8 = 2;
-const COMPLETE: u8 = 3;
+/// How a [`BusWriter`] sends what is left: only the head (no payload), the payload
+/// in one write, in chunks of at most its maximum, or nothing (done).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    Empty,
+    Direct,
+    Chunks,
+    Complete,
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct BusWriter {
@@ -562,14 +568,14 @@ struct BusWriter {
     maximum: u32,
     minimum: u32,
     flags: u8,
-    mode: u8,
+    mode: Mode,
 }
 #[derive(Clone, Copy, Debug, Default)]
 struct BusChunk {
     offset: u32,
     length: u32,
     flags: u8,
-    mode: u8,
+    mode: Mode,
 }
 
 impl BusWriter {
@@ -592,16 +598,16 @@ impl BusWriter {
         if !has_payload || length == 0 {
             writer.remaining = 0;
         } else if !always && length <= maximum {
-            writer.mode = DIRECT;
+            writer.mode = Mode::Direct;
         } else {
-            writer.mode = CHUNKS;
+            writer.mode = Mode::Chunks;
             writer.flags = CHUNK | BEGIN;
         }
         Some(writer)
     }
 
     fn next_chunk(&self) -> BusChunk {
-        let length = if self.mode == CHUNKS {
+        let length = if self.mode == Mode::Chunks {
             self.remaining.min(self.maximum)
         } else {
             self.remaining
@@ -610,7 +616,7 @@ impl BusWriter {
             offset: self.offset,
             length,
             flags: self.flags
-                | if self.mode == CHUNKS && self.remaining <= self.maximum {
+                | if self.mode == Mode::Chunks && self.remaining <= self.maximum {
                     END
                 } else {
                     0
@@ -619,32 +625,35 @@ impl BusWriter {
         }
     }
 
-    fn complete(&mut self, success: bool, reduce: bool) -> i32 {
+    /// Records the current chunk's write: on success, moves past it; on failure, when
+    /// `reduce` freed the way, retries it in chunks of the minimum. False when the
+    /// write failed and cannot be retried smaller.
+    fn complete(&mut self, success: bool, reduce: bool) -> bool {
         if !success {
             if !reduce || self.maximum <= self.minimum {
-                return -1;
+                return false;
             }
             self.maximum = self.minimum;
-            if self.mode == DIRECT {
-                self.mode = CHUNKS;
+            if self.mode == Mode::Direct {
+                self.mode = Mode::Chunks;
                 self.flags = CHUNK | BEGIN;
             } else {
                 self.flags &= !END;
             }
-            return 1;
+            return true;
         }
         let chunk = self.next_chunk();
         self.flags = chunk.flags & !BEGIN;
-        if self.mode == CHUNKS {
+        if self.mode == Mode::Chunks {
             self.remaining -= chunk.length;
             self.offset += chunk.length;
         } else {
             self.remaining = 0;
         }
         if self.remaining == 0 {
-            self.mode = COMPLETE;
+            self.mode = Mode::Complete;
         }
-        0
+        true
     }
 }
 
@@ -1103,16 +1112,16 @@ mod tests {
     #[test]
     fn reduction_retries_current_chunk_and_preserves_begin_end() {
         let mut writer = BusWriter::new(2000, 4096, 1024, true, false).unwrap();
-        assert_eq!(writer.next_chunk().mode, DIRECT);
-        assert_eq!(writer.complete(false, true), 1);
+        assert_eq!(writer.next_chunk().mode, Mode::Direct);
+        assert!(writer.complete(false, true));
         let first = writer.next_chunk();
         assert_eq!((first.length, first.flags), (1024, 12));
-        assert_eq!(writer.complete(true, false), 0);
+        assert!(writer.complete(true, false));
         let last = writer.next_chunk();
         assert_eq!((last.offset, last.length, last.flags), (1024, 976, 20));
-        assert_eq!(writer.complete(false, true), -1);
-        assert_eq!(writer.complete(true, false), 0);
-        assert_eq!(writer.mode, COMPLETE);
+        assert!(!writer.complete(false, true));
+        assert!(writer.complete(true, false));
+        assert_eq!(writer.mode, Mode::Complete);
         assert_eq!(size_of::<BusHead>(), 40);
     }
 
