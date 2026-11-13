@@ -22,6 +22,7 @@ use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
 use swoole_rs_timer::{swoole_timer_del, swoole_timer_delay};
+use swoole_rs_tls::Accept;
 use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
 
@@ -43,11 +44,6 @@ enum Handshake {
     Ready,
 }
 
-/// `swReturnCode` values.
-const SW_CONTINUE: c_int = 1;
-const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
-const SW_ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
-const SW_READY: c_int = swoole_rs_corebase::constants::ReturnCode::SW_READY as c_int;
 /// The longest resume back-off, in milliseconds.
 const MAX_WAITING_TIME: u16 = 1024;
 
@@ -169,11 +165,9 @@ fn verify_ssl(
         return Handshake::Continue;
     }
     match tls::socket_ssl_accept(sock) {
-        SW_READY => {}
-        SW_CONTINUE => return Handshake::Continue,
-        SW_WAIT => return Handshake::Wait,
-        SW_ERROR => return Handshake::Error,
-        _ => swoole_rs_corebase::fatal("an unknown TLS handshake state"),
+        Accept::Ready => {}
+        Accept::Wait => return Handshake::Wait,
+        Accept::Error => return Handshake::Error,
     }
     let state = serv.state();
     let Some(conn) = state.connection(c_long::from(sock.fd()), Lookup::ByFd) else {
