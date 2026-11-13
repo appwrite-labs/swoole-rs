@@ -227,12 +227,12 @@ pub(super) unsafe fn socket_ssl_create(
     log(format!("ssl session {flags}"));
     OK
 }
-pub(super) fn socket_ssl_connect(_: Socket<'_>) -> c_int {
+pub(super) fn socket_ssl_connect(_: Socket<'_>) -> bool {
     log("ssl connect");
     if mock(|m| m.ssl_connect_ready) {
         sock().tls.state = SSL_STATE_READY;
     }
-    OK
+    true
 }
 pub(super) fn socket_ssl_verify(_: Socket<'_>, allow_self_signed: bool) -> bool {
     log(format!("ssl verify {allow_self_signed}"));

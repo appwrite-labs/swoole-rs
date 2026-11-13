@@ -1239,7 +1239,7 @@ fn ssl_handshake(this: Handle) -> c_int {
             socket_ssl_set_host_name(this.socket(), name);
         }
     }
-    if socket_ssl_connect(this.socket()) < 0 {
+    if !socket_ssl_connect(this.socket()) {
         return ERR;
     }
     if this.tls_state() == SSL_STATE_READY {

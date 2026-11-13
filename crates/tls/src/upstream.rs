@@ -6,10 +6,10 @@
 //! `socket.cc` no longer defines them.
 use crate::handle::CText;
 use crate::{
-    Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslHandshakeResult, SslIoResult,
-    swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
-    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv,
-    swr_v1_socket_ssl_send, swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
+    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, swr_v1_socket_ssl_accept,
+    swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect, swr_v1_socket_ssl_error_reason,
+    swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv, swr_v1_socket_ssl_send,
+    swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
@@ -17,7 +17,7 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, ReturnCode, SocketFlag};
+use swoole_rs_corebase::constants::{EventType, SocketFlag};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
@@ -52,7 +52,6 @@ const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const BUFFER_EMPTY: i32 = 1;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
-const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
 const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
 const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
@@ -309,9 +308,9 @@ pub fn ssl_send(socket: Socket<'_>, data: &[u8]) -> isize {
     ssl_send_drain(socket, Drain::new(data))
 }
 
-fn handshake(result: SslHandshakeResult) {
-    if result.last_error != 0 {
-        log::set_last_error(result.last_error);
+fn handshake(last_error: c_int) {
+    if last_error != 0 {
+        log::set_last_error(last_error);
     }
 }
 
@@ -324,11 +323,11 @@ fn error_reason_text() -> (c_int, String) {
 
 /// `ReturnCode Socket::ssl_accept()`: `SW_ERROR` without an SSL.
 #[must_use]
-pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
+pub fn socket_ssl_accept(socket: Socket<'_>) -> Accept {
     let Some(result) = with_tls(socket, |record| record.dtls, swr_v1_socket_ssl_accept) else {
-        return ERROR;
+        return Accept::Error;
     };
-    handshake(result);
+    handshake(result.last_error);
     if result.log == HandshakeLog::BadClient {
         let (reason, error) = error_reason_text();
         let (host, port) = socket.read(|record| peer(&record.info));
@@ -347,17 +346,17 @@ pub fn socket_ssl_accept(socket: Socket<'_>) -> c_int {
     result.code
 }
 
-/// `int Socket::ssl_connect()`: `SW_ERR` without an SSL.
+/// `int Socket::ssl_connect()` is `SW_OK`: false without an SSL.
 #[must_use]
-pub fn socket_ssl_connect(socket: Socket<'_>) -> c_int {
+pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
     let Some(result) = with_tls(
         socket,
         |_| (),
         |tls, ssl, ()| swr_v1_socket_ssl_connect(tls, ssl),
     ) else {
-        return -1;
+        return false;
     };
-    handshake(result);
+    handshake(result.last_error);
     if let HandshakeLog::Failed(ssl_error) = result.log {
         let error = crate::pop_error();
         let message = crate::error_string(error);
