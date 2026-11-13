@@ -20,6 +20,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpruntime::co;
+use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
 use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
@@ -126,11 +127,6 @@ const WEBSOCKET_PACK_FAILED: c_int = 8505;
 const WEBSOCKET_INCOMPLETE_PACKET: c_int = 8507;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-
-/// The callbacks the handshake and frames call (`SW_SERVER_CB_*`).
-const ON_BEFORE_HANDSHAKE_RESPONSE: c_int = 6;
-const ON_OPEN: c_int = 7;
-const ON_MESSAGE: c_int = 8;
 
 /// `SW_OK`/`SW_ERR`.
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
@@ -872,14 +868,14 @@ handlers! {
 fn dispatch(
     server: view::Server<'_>,
     server_fd: c_int,
-    event: c_int,
+    event: PortCallback,
     args: &mut [zval],
     fd: zend_long,
 ) -> Result<(), bailout::Bailout> {
     if crate::server::call_port(server, server_fd, event, args)? == Some(false) {
         let name = match event {
-            ON_BEFORE_HANDSHAKE_RESPONSE => "onBeforeHandshakeResponse",
-            ON_OPEN => "onOpen",
+            PortCallback::BeforeHandshakeResponse => "onBeforeHandshakeResponse",
+            PortCallback::Open => "onOpen",
             _ => "onMessage",
         };
         host::notice(&format!("Swoole\\WebSocket\\Server->{name} handler error"));
@@ -928,7 +924,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         set(object, FD, scalar(IS_LONG, fd));
     }
     let mut args = [zserv(), frame.into_zval()];
-    if let Err(bailout) = dispatch(server, server_fd, ON_MESSAGE, &mut args, fd) {
+    if let Err(bailout) = dispatch(server, server_fd, PortCallback::Message, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
         let _kept = data.into_zval();
         return Err(bailout);
@@ -1008,7 +1004,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
         dispatch(
             server,
             conn.server_fd,
-            ON_BEFORE_HANDSHAKE_RESPONSE,
+            PortCallback::BeforeHandshakeResponse,
             &mut args,
             fd,
         )?;
@@ -1039,7 +1035,7 @@ fn on_open(server: view::Server<'_>, mut context: Ctx) -> Result<(), bailout::Ba
         return Ok(());
     };
     let mut args = [zserv(), context.state().request.zobject.value];
-    dispatch(server, conn.server_fd, ON_OPEN, &mut args, fd)
+    dispatch(server, conn.server_fd, PortCallback::Open, &mut args, fd)
 }
 
 /// `swoole_websocket_onRequest`, the default `onRequest`: 400 and close.

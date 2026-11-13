@@ -415,7 +415,8 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     c.set_close_queued(true);
     socket.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
     // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
-    !cfg!(feature = "halfclose") || reactor.interest(socket, 4, 0) == 0
+    !cfg!(feature = "halfclose")
+        || reactor.interest(socket, swoole_rs_reactor::Interest::RemoveRead, 0) == 0
 }
 
 /// `BaseFactory::finish`: send here, or forward data and files to the session's worker.

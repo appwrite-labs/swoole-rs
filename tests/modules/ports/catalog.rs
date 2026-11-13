@@ -70,7 +70,7 @@ fn check_event(name: &[u8], folded: bool, checks: &mut u64) {
     let expected = pinned_event(name, folded);
     let actual = event(name, folded);
     assert_eq!(
-        actual.map(|(index, _)| index),
+        actual.map(|(callback, _)| callback.index()),
         expected.as_ref().map(|&(index, _)| index),
         "{name:?} folded={folded}"
     );

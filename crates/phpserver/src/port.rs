@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, OnceCell, RefCell},
-    ffi::{c_int, c_void},
+    ffi::c_void,
     ptr,
     sync::atomic::Ordering,
 };
@@ -21,7 +21,7 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
-const CALLBACKS: usize = 12;
+const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 
 /// `swoole::ServerPortProperty`: the port's callables and its server. The
 /// server's dispatch reads it through the port's link, and PHP code a method
@@ -37,8 +37,8 @@ pub struct PortProperty {
 
 impl PortProperty {
     /// `callbacks[kind]`: the callable, a reference the call holds, or none.
-    pub(crate) fn callback(&self, kind: c_int) -> Option<Callable> {
-        let slot = self.callbacks.get(usize::try_from(kind).ok()?)?;
+    pub(crate) fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
+        let slot = self.callbacks.get(kind.index())?;
         slot.borrow().clone()
     }
 }
@@ -285,7 +285,7 @@ fn on(call: &Call) {
     }
     // The property write, the release and the create can each run PHP that
     // calls on() again, so no borrow of the slot lives across them.
-    let Some(slot) = slots.get(index) else {
+    let Some(slot) = slots.get(index.index()) else {
         return call.set_bool(false);
     };
     drop(slot.take());
@@ -303,7 +303,7 @@ fn on(call: &Call) {
         Some(callable)
     };
     drop(kept);
-    let event = i32::try_from(index).unwrap_or(-1);
+    let event = i32::try_from(index.index()).unwrap_or(-1);
     crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event));
     call.set_bool(true);
 }

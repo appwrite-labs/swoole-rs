@@ -467,7 +467,12 @@ mod tests {
             (*fields).running = true;
             let mut socket = crate::SocketRecord::with_fd(3, 0);
             assert_eq!(
-                crate::reactor_state::tests::record(owner, &raw mut socket, 0, 512),
+                crate::reactor_state::tests::record(
+                    owner,
+                    &raw mut socket,
+                    crate::ChangeOp::Add,
+                    512
+                ),
                 0
             );
             assert!(!if_exit(running(owner)));

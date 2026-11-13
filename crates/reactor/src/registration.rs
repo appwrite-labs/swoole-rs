@@ -46,21 +46,21 @@ mod epoll {
         interest as u32
     }
 
-    /// `epoll_ctl` for add (0), set (1) or del (2) of `fd` with `socket` as its token,
+    /// `epoll_ctl` for `op` of `fd` with `socket` as its token,
     /// which the kernel keeps as a number; the kernel's result. The wait loop reads the
     /// token back as the socket `swr_v1_reactor_change`'s caller keeps live while it is
     /// registered.
     pub(crate) fn epoll_ctl(
         epfd: c_int,
-        op: u32,
+        op: crate::ChangeOp,
         fd: c_int,
         socket: *mut c_void,
         events: c_int,
     ) -> c_int {
         let op = match op {
-            0 => libc::EPOLL_CTL_ADD,
-            1 => libc::EPOLL_CTL_MOD,
-            _ => libc::EPOLL_CTL_DEL,
+            crate::ChangeOp::Add => libc::EPOLL_CTL_ADD,
+            crate::ChangeOp::Set => libc::EPOLL_CTL_MOD,
+            crate::ChangeOp::Del => libc::EPOLL_CTL_DEL,
         };
         let mut event = libc::epoll_event {
             events: interest(events),
@@ -87,10 +87,16 @@ mod epoll {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let epfd = libc::epoll_create1(0);
                 let token = 7 as *mut c_void;
-                assert_eq!(epoll_ctl(epfd, 0, fds[0], token, SW_EVENT_READ), 0);
-                assert_eq!(epoll_ctl(epfd, 1, fds[0], token, SW_EVENT_WRITE), 0);
-                assert_eq!(epoll_ctl(epfd, 2, fds[0], token, 0), 0);
-                assert_eq!(epoll_ctl(epfd, 2, fds[0], token, 0), -1);
+                assert_eq!(
+                    epoll_ctl(epfd, crate::ChangeOp::Add, fds[0], token, SW_EVENT_READ),
+                    0
+                );
+                assert_eq!(
+                    epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], token, SW_EVENT_WRITE),
+                    0
+                );
+                assert_eq!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, 0), 0);
+                assert_eq!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, 0), -1);
                 libc::close(epfd);
                 libc::close(fds[0]);
                 libc::close(fds[1]);

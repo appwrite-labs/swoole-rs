@@ -577,12 +577,17 @@ pub(crate) const fn before_wait(fields: &mut ReactorFields) {
 }
 
 impl ReactorState {
-    /// `Reactor::_add` (0), `_set` (1) and `_del` (2): the registry and the socket's
-    /// flags together. -2 when add cannot allocate, leaving the flags alone.
-    pub(crate) fn record(&mut self, socket: Socket<'_>, op: u32, events: c_int) -> c_int {
+    /// `Reactor::_add`, `_set` and `_del`: the registry and the socket's flags
+    /// together. -2 when add cannot allocate, leaving the flags alone.
+    pub(crate) fn record(
+        &mut self,
+        socket: Socket<'_>,
+        op: crate::ChangeOp,
+        events: c_int,
+    ) -> c_int {
         socket.edit(|record| {
             match op {
-                0 => {
+                crate::ChangeOp::Add => {
                     let result = self.registry.put(record.fd, socket.as_ptr().cast(), events);
                     if result != 0 {
                         return result;
@@ -590,11 +595,11 @@ impl ReactorState {
                     record.events = events;
                     record.removed = false;
                 }
-                1 => {
+                crate::ChangeOp::Set => {
                     record.events = events;
                     self.registry.set(record.fd, events);
                 }
-                _ => {
+                crate::ChangeOp::Del => {
                     record.events = 0;
                     record.removed = true;
                     self.registry.remove(record.fd);
@@ -626,7 +631,7 @@ pub(crate) mod tests {
     pub(crate) unsafe fn record(
         owner: *mut ReactorState,
         socket: *mut SocketRecord,
-        op: u32,
+        op: crate::ChangeOp,
         events: c_int,
     ) -> c_int {
         unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
@@ -652,16 +657,19 @@ pub(crate) mod tests {
             assert!((*fields).ready);
             assert_eq!((*state.owner).backend_limit, 4);
             let mut socket = SocketRecord::with_fd(123, 0);
-            assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
+            assert_eq!(
+                record(state.owner, &raw mut socket, crate::ChangeOp::Add, 512),
+                0
+            );
             assert_eq!(socket.events, 512);
             assert!(!socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 1
             );
-            record(state.owner, &raw mut socket, 1, 1024);
+            record(state.owner, &raw mut socket, crate::ChangeOp::Set, 1024);
             assert_eq!(socket.events, 1024);
-            record(state.owner, &raw mut socket, 2, 0);
+            record(state.owner, &raw mut socket, crate::ChangeOp::Del, 0);
             assert_eq!(socket.events, 0);
             assert!(socket.removed);
             assert_eq!(
@@ -693,13 +701,16 @@ pub(crate) mod tests {
                 let mut fds = [0; 2];
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let mut socket = SocketRecord::with_fd(fds[0], 0);
-                assert_eq!(record(state.owner, &raw mut socket, 0, 512), 0);
+                assert_eq!(
+                    record(state.owner, &raw mut socket, crate::ChangeOp::Add, 512),
+                    0
+                );
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
                     assert_eq!(
                         crate::registration::epoll_ctl(
                             descriptor,
-                            0,
+                            crate::ChangeOp::Add,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
                             512

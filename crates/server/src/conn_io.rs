@@ -154,7 +154,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
         conn.set_waiting_time(1);
         if resume_timer(serv, conn, sock) {
-            reactor.interest(sock, 4, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
         }
     }
     retval
@@ -217,7 +217,9 @@ fn verify_ssl(
             }
         }
     }
-    if state.config_ref().enable_delay_receive.get() && reactor.change(sock, 2, 0) < 0 {
+    if state.config_ref().enable_delay_receive.get()
+        && reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) < 0
+    {
         return Handshake::Error;
     }
     Handshake::Ready
@@ -302,7 +304,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'_>) {
         }
     }
     // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, 2, 0);
+    Reactor::thread().interest(socket, swoole_rs_reactor::Interest::AddRead, 0);
     conn.set_timer(core::ptr::null_mut());
 }
 
@@ -419,9 +421,9 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
         // A notified close no longer reads: it only drains.
         if BUILT_PREQUEUE {
-            reactor.interest(sock, 5, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite, 0);
         } else {
-            reactor.change(sock, 1, SW_EVENT_READ);
+            reactor.change(sock, swoole_rs_reactor::ChangeOp::Set, SW_EVENT_READ);
         }
     }
     OK
@@ -439,7 +441,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if reactor.change(sock, 2, 0) != 0 {
+    if reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) != 0 {
         return ERR;
     }
     if conn.close_queued() {
@@ -510,7 +512,12 @@ pub(crate) fn close_connection(
             queue_close(conn, sock);
         }
         let events = sock.read(|s| what_event_want(s, SW_EVENT_WRITE));
-        if reactor.change(sock, u32::from(!removed), events) == OK {
+        let op = if removed {
+            swoole_rs_reactor::ChangeOp::Add
+        } else {
+            swoole_rs_reactor::ChangeOp::Set
+        };
+        if reactor.change(sock, op, events) == OK {
             return OK;
         }
     }
@@ -520,7 +527,7 @@ pub(crate) fn close_connection(
         unsafe { delete_string(websocket.cast()) };
         conn.set_websocket_buffer(core::ptr::null_mut());
     }
-    if !removed && reactor.change(sock, 2, 0) < 0 {
+    if !removed && reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) < 0 {
         return ERR;
     }
     count_close(state, port, reactor);
@@ -647,7 +654,11 @@ pub(crate) mod tests {
         let conn = live.state().connection(id, Lookup::Verified).unwrap();
         let sock = conn.socket().unwrap();
         if sock.read(|s| s.removed) {
-            assert_eq!(live.reactor().change(sock, 0, SW_EVENT_READ), OK);
+            assert_eq!(
+                live.reactor()
+                    .change(sock, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ),
+                OK
+            );
         }
         conn
     }
@@ -782,7 +793,11 @@ pub(crate) mod tests {
         let conn = session(&live, 1);
         queue(conn, b"queued");
         let sock = conn.socket().unwrap();
-        reactor.change(sock, 1, SW_EVENT_READ | SW_EVENT_WRITE);
+        reactor.change(
+            sock,
+            swoole_rs_reactor::ChangeOp::Set,
+            SW_EVENT_READ | SW_EVENT_WRITE,
+        );
         assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
         let mut got = [0; 6];
         client.read_exact(&mut got).unwrap();

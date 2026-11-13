@@ -43,9 +43,6 @@ const NONBLOCK: u32 = 1 << 2;
 const CALLBACK: u32 = 1 << 3;
 const COROUTINE: u32 = 1 << 5;
 const NOREPLY: u32 = 1 << 7;
-/// `SW_SERVER_CB_onTask`, `SW_SERVER_CB_onFinish`.
-const ON_TASK: c_int = 7;
-const ON_FINISH: c_int = 8;
 /// `SW_MAX_CONCURRENT_TASK`, `SW_TASKWAIT_TIMEOUT`.
 const MAX_CONCURRENT_TASK: u32 = 1024;
 const TASKWAIT_TIMEOUT: f64 = 0.5;
@@ -698,14 +695,17 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         4
     };
     let retval = Owned::default();
-    let called = crate::lifecycle::callback(ON_TASK).map_or(Ok(false), |cb| {
-        invoke(
-            &cb,
-            args.get_mut(..argc).unwrap_or_default(),
-            retval.as_ptr(),
-            facts.task_coroutine,
-        )
-    });
+    let called = crate::lifecycle::callback(crate::lifecycle::ServerCallback::Task).map_or(
+        Ok(false),
+        |cb| {
+            invoke(
+                &cb,
+                args.get_mut(..argc).unwrap_or_default(),
+                retval.as_ptr(),
+                facts.task_coroutine,
+            )
+        },
+    );
     let outcome = match called {
         Ok(false) => handler_error("onTask"),
         called => called.map(drop),
@@ -747,7 +747,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         }
         cb
     } else {
-        crate::lifecycle::callback(ON_FINISH)
+        crate::lifecycle::callback(crate::lifecycle::ServerCallback::Finish)
     };
     let Some(cb) = cb else {
         let outcome = event_warning(c"require 'onFinish' callback");

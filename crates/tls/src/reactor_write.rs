@@ -12,17 +12,14 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Drain, Event, FlushEffects, Running, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects,
-    WriteError, WritePayload,
+    Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, SocketRecord,
+    WriteEffects, WriteError, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-/// `Reactor::interest` kinds.
-const ADD_WRITE: u32 = 3;
-const REMOVE_WRITE: u32 = 5;
 
 /// One write: the reactor, the socket and the payload. Only [`write`], whose caller
 /// promises a live reactor, builds one, so it stays live while it does.
@@ -71,7 +68,14 @@ impl WriteEffects for Write<'_> {
     fn watch_writable(&self) {
         if self.socket.read(|record| record.events) & SW_EVENT_WRITE == 0 {
             // SAFETY: `reactor->add_write_event(socket)` on the live reactor.
-            unsafe { reactor_interest(self.reactor, self.socket.as_ptr(), ADD_WRITE, 0) };
+            unsafe {
+                reactor_interest(
+                    self.reactor,
+                    self.socket.as_ptr(),
+                    Interest::AddWrite.code(),
+                    0,
+                )
+            };
         }
     }
 }
@@ -215,7 +219,14 @@ impl FlushEffects for Flush<'_> {
 
     fn remove_write_event(&self) {
         // SAFETY: `reactor->remove_write_event(socket)` on the flush's live reactor.
-        unsafe { reactor_interest(self.reactor.as_ptr(), self.socket.as_ptr(), REMOVE_WRITE, 0) };
+        unsafe {
+            reactor_interest(
+                self.reactor.as_ptr(),
+                self.socket.as_ptr(),
+                Interest::RemoveWrite.code(),
+                0,
+            )
+        };
     }
 
     fn wait_writable(&self) -> c_int {
