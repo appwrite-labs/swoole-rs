@@ -107,7 +107,7 @@ impl Handler for MethodCall {
         let current = unsafe { &mut *frame.as_ptr() };
         pushed.prev_execute_data = current.call;
         current.call = call;
-        frame.jump(op.at.wrapping_add(1));
+        frame.skip(1);
         CONTINUE
     }
 }
