@@ -31,20 +31,19 @@ use crate::ops::{
     LOG_MAX_CONNECTION_MINIMUM, LOG_NO_IDLE_WORKER, LOG_NOT_REGULAR, LOG_PORT_CREATED,
     LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA,
     LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME,
-    LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, LOG_STAT,
-    LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER,
-    OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
-    OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE,
-    OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK,
-    OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY,
-    OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN,
-    OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET,
-    OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_ST_ROOT_PATH,
-    OP_ST_TIMER, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
-    OP_WRONG_OPERATION,
+    LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
+    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD,
+    OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND,
+    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH,
+    OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE,
+    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS,
+    OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND,
+    OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET,
+    OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY,
+    OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -54,9 +53,9 @@ use crate::ops::{
     OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER, OP_SIGNAL_ACTIVE,
     OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
 };
-use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH, OP_ST_PIPE_BIND};
+use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
 use crate::ops::{
-    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_ST_PIPE_FD, OP_WORKER_IDLE,
+    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_WORKER_IDLE,
 };
 use crate::ops::{
     OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_OUT_EMPTY, OP_PORT_REACTOR_DEL, OP_REACTOR_STOP,
@@ -80,7 +79,6 @@ use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
     RUN_STOP_WORKER_THREADS,
 };
-use swoole_rs_tls::socket_pair::SocketPair;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
 const SW_LOG_TRACE: c_int = 1;
@@ -217,10 +215,6 @@ impl<'a> Objects<'a> {
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
         // SAFETY: the ops reading it pass a live socket.
         unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
-    }
-    /// [`Objects::data_bytes`] as text.
-    fn data(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(self.data_bytes())
     }
     /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
     fn filename(&self) -> std::borrow::Cow<'_, str> {
@@ -887,29 +881,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_ST_ROOT_TOO_LONG => {
-            let m = format_args!(
-                "The length of document_root must be less than {}",
-                libc::PATH_MAX
-            );
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_NAME_TOO_LONG,
-                c"Server::set_document_root",
-                m,
-            );
-            0
-        }
-        LOG_ST_ROOT_MISSING => {
-            let m = format_args!("document_root[{}] does not exist", o.data());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_DIR_NOT_EXIST,
-                c"Server::set_document_root",
-                m,
-            );
-            0
-        }
         LOG_BASE_ALLOC_CONNECTIONS => {
             let size = o.tables().max_connection as usize * size_of::<ConnectionRecord>();
             log::sys_warning(
@@ -1033,7 +1004,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SENDFILE_NAME_LEN => u64::from(o.ctx.length),
         OP_SENDFILE_NAME_MAX => (IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1) as u64,
         OP_SENDFILE_OFFSET => sign(o.ctx.offset),
-        OP_ST_ROOT_PATH => o.ctx.data as u64,
         OP_SC_ADVANCE => {
             #[expect(clippy::cast_possible_truncation, reason = "a length within the data")]
             let step = arg as u32;
@@ -1175,11 +1145,6 @@ fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 port.set_package_max_length(BUFFER_MIN_SIZE);
             }
             u64::from(port.config().protocol.get().package_max_length)
-        }
-        OP_ST_PIPE_BIND => {
-            let fd = c_int::try_from(arg).ok()?;
-            o.tables().connection_at(fd)?.set_object(o.ctx.object);
-            0
         }
         op => return lifecycle(o, op, arg),
     })
@@ -1446,16 +1411,6 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.reactor().close(o.sock()?);
             0
         }
-        OP_ST_PIPE_FD => {
-            // SAFETY: the context's live `UnixSocket`.
-            let pair = unsafe { &*o.ctx.object.cast::<SocketPair>() };
-            let end = if arg == 0 {
-                pair.master_end()
-            } else {
-                pair.worker_end()
-            };
-            sign(end?.fd())
-        }
         // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
             if let Some(pipe) = o.config().command_pipe() {
@@ -1551,7 +1506,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_LC_DAEMON, OP_LC_FACTORY_START,
         OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS, OP_MASTER_START, OP_MASTER_TIMER,
-        OP_MAX_SOCKETS, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
+        OP_MAX_SOCKETS, OP_ST_FINISH, OP_STORE_LISTEN, OP_SYSTEMD_FDS,
     };
     use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
@@ -1628,15 +1583,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         // SAFETY: reads the environment.
         OP_SYSTEMD_FDS => sign(swoole_get_systemd_listen_fds()),
-        OP_ST_INIT_PIPE => {
-            // SAFETY: the bus handle `init_pipe_sockets` lends for the operation.
-            let bus = unsafe { *o.ctx.object.cast::<crate::objects::Bus>() };
-            let id = u16::try_from(arg).unwrap_or(u16::MAX);
-            let serv = o.server();
-            bus.init_pipe_socket(serv.worker_pipe(id, true)?.fd());
-            bus.init_pipe_socket(serv.worker_pipe(id, false)?.fd());
-            0
-        }
         op => return closing(o, op, arg),
     })
 }
@@ -2311,23 +2257,10 @@ mod tests {
     }
 
     #[test]
-    fn pipe_fd_and_datagram_ip_key_read_their_records() {
+    fn datagram_ip_key_reads_its_record() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        // SAFETY: plain records, for which zero is valid.
-        let (mut master, mut worker): (SocketRecord, SocketRecord) =
-            unsafe { (core::mem::zeroed(), core::mem::zeroed()) };
-        master.fd = 7;
-        worker.fd = 8;
-        let mut pair = SocketPair {
-            blocking: false,
-            timeout: 0.0,
-            socks: [8, 7],
-            master_socket: &raw mut master,
-            worker_socket: &raw mut worker,
-        };
-        ctx.object = (&raw mut pair).cast();
-        // SAFETY: as above.
+        // SAFETY: a plain record, for which zero is valid.
         let mut packet: DgramPacket = unsafe { core::mem::zeroed() };
         packet.socket_addr.kind = 2;
         packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
@@ -2340,14 +2273,6 @@ mod tests {
         ctx.server_fd = -1;
         // SAFETY: the context's records are live above; no connection has fd -1.
         unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_PIPE_FD, 0),
-                Some(7)
-            );
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_ST_PIPE_FD, 1),
-                Some(8)
-            );
             assert_eq!(
                 answer(&raw mut ctx, None, &*state, OP_IP_KEY, 0),
                 Some(0x0a00_0001)
