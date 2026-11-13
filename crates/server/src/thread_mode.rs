@@ -178,7 +178,10 @@ pub fn set_worker_thread_start(start: Option<WorkerThreadStart>) {
 /// # Safety
 /// `run(context)` is the thread's body, safe to call on this thread.
 unsafe fn worker_thread_start(thread: &Thread, run: WorkerMain, context: *mut c_void) {
-    match *lock(&WORKER_THREAD_START) {
+    // Copied out: a guard in the match would be held while the body runs, and every
+    // other thread's start would wait for it.
+    let start = *lock(&WORKER_THREAD_START);
+    match start {
         Some(start) => start(thread, run, context),
         // SAFETY: per the caller.
         None => unsafe { run(context) },
@@ -207,6 +210,8 @@ mod tests {
         static RAN: AtomicBool = AtomicBool::new(false);
         unsafe extern "C" fn run(context: *mut c_void) {
             assert_eq!(context.addr(), 0x10);
+            // Other threads can start while this body runs.
+            assert!(WORKER_THREAD_START.try_lock().is_ok());
             RAN.store(true, Ordering::Release);
         }
         fn hook(thread: &Thread, run: WorkerMain, context: *mut c_void) {
