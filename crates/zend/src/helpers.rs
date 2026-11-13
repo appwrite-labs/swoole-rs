@@ -38,9 +38,9 @@ unsafe extern "C" {
     safe fn swr_zend_tsrm_is_main_thread() -> bool;
     /// PHP's clock: no arguments, no PHP state.
     safe fn php_time() -> time_t;
-    /// `is_numeric_string(text, len, lval, dval, false)`: it reads the lent bytes
-    /// (an `IoSlice` is an iovec) and writes the two numbers; errors are off, so
-    /// it raises nothing.
+    /// `is_numeric_string(text, len, lval, dval, false)` over a terminated copy of
+    /// the lent bytes (an `IoSlice` is an iovec), which it writes the two numbers
+    /// from; errors are off, so it raises nothing.
     safe fn swr_bytes_numeric(text: IoSlice<'_>, lval: &mut i64, dval: &mut f64) -> u8;
 }
 

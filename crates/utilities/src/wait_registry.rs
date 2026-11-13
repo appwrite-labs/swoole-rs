@@ -180,14 +180,16 @@ pub fn swr_v1_utils_wait_registry_size() -> usize {
 /// Zero and adopt `memory` as the registry: words shared with every process that
 /// waits, lent for the program's life. False when they are too few.
 pub fn swr_v1_utils_wait_registry_init(memory: &'static mut [AtomicU64]) -> bool {
-    let registry = memory.as_mut_ptr().cast::<Registry>();
-    if size_of_val(memory) < size_of::<Registry>() || !registry.is_aligned() {
+    if size_of_val(memory) < size_of::<Registry>()
+        || !memory.as_ptr().cast::<Registry>().is_aligned()
+    {
         return false;
     }
     for word in memory.iter_mut() {
         *word.get_mut() = 0;
     }
-    REGISTRY.store(registry, Ordering::SeqCst);
+    // Taken last: a reborrow of `memory` after it would invalidate the pointer.
+    REGISTRY.store(memory.as_mut_ptr().cast::<Registry>(), Ordering::SeqCst);
     true
 }
 

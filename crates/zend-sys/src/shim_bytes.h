@@ -12,8 +12,9 @@
 /* zend_hash_func: the hash a zend_string of these bytes caches. */
 zend_ulong swr_bytes_hash(struct iovec key);
 
-/* is_numeric_string(text, len, lval, dval, false): IS_LONG, IS_DOUBLE or 0, with
- * `*lval` or `*dval` filled; errors off, so nothing is raised. */
+/* is_numeric_string(text, len, lval, dval, false) over a NUL-terminated copy of the
+ * bytes: IS_LONG, IS_DOUBLE or 0, with `*lval` or `*dval` filled; errors off, so
+ * nothing is raised. */
 uint8_t swr_bytes_numeric(struct iovec text, zend_long *lval, double *dval);
 
 /* php_url_encode: a new string, as urlencode() encodes the bytes. */
