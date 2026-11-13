@@ -193,7 +193,7 @@ pub(crate) fn by_cid(cid: c_long) -> Co {
 fn task(co: Co) -> Option<Ctx> {
     let task = live_or_none(state(co))?.task;
     // SAFETY: a coroutine's task is null or its context, set by `context::open`
-    // and live until `context::on_close`, which runs as the coroutine ends.
+    // and live until the close callback (`context::on_swap`), which runs as the coroutine ends.
     unsafe { Ctx::of(task) }
 }
 
@@ -316,12 +316,10 @@ pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
     (stack.cast(), size)
 }
 
-/// Switch out of `co`, the running coroutine. The caller's frames must own
-/// nothing that needs a drop, as for [`resume`].
+/// Switch out of `co`, the running coroutine. What the caller's frames own is
+/// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
 pub(crate) fn yield_(co: Co) {
-    // SAFETY: this thread's running coroutine; its frames own nothing that
-    // needs a drop, as this function's contract says.
-    unsafe { swoole_rs_coroutine::suspend(co) };
+    swoole_rs_coroutine::suspend(co);
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -332,9 +330,7 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 /// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
 /// `RC_CANCELED` or another when resumed).
 pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
-    // SAFETY: callers pass the running coroutine, and their frames own nothing
-    // that needs a drop (as for `yield_`).
-    unsafe { swoole_rs_coroutine::yield_timed(co, timeout) }
+    swoole_rs_coroutine::yield_timed(co, timeout)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
@@ -401,7 +397,7 @@ impl Coroutine {
 }
 
 /// `co->yield()` of the running coroutine, until it is woken; nothing outside
-/// one. As [`yield_`], the caller's frames must own nothing that needs a drop.
+/// one. As [`yield_`], what the caller's frames own is leaked if nothing wakes it.
 pub fn suspend() {
     let co = current();
     if !co.is_null() {

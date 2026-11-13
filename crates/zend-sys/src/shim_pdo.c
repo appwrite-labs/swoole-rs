@@ -10,12 +10,13 @@ bool swr_zend_pdo_loaded(void) {
 }
 
 bool swr_zend_pdo_declared(const char *name) {
-    return zend_hash_str_find(&php_pdo_get_dbh_ce()->constants_table, name, strlen(name)) != NULL;
+    zend_class_entry *ce = php_pdo_get_dbh_ce();
+    return ce && zend_hash_str_find(&ce->constants_table, name, strlen(name)) != NULL;
 }
 
 bool swr_zend_pdo_declare_long(const char *name, zend_long value) {
     /* Zend raises a fatal error for either, which would bail out of the caller. */
-    if (swr_zend_pdo_declared(name) || strcasecmp(name, "class") == 0) {
+    if (!php_pdo_get_dbh_ce() || swr_zend_pdo_declared(name) || strcasecmp(name, "class") == 0) {
         return false;
     }
 #if PHP_VERSION_ID >= 80500

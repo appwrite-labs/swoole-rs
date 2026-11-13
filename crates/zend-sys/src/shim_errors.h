@@ -12,10 +12,6 @@ int swr_zend_try_zend_error(int level, const char *message);
 
 /* A C or C++ reporter (Swoole's php_swoole_*error macros live in C++). */
 int swr_zend_try_report(void (*report)(const char *message), const char *message);
-int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
-                             int flag, const char *message);
-int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
-                             bool flag, const char *message);
 
 /* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message): a
  * reporter for the calls above and swoole_rs_zend::host::function_call, which run it in a trap. */
@@ -41,8 +37,4 @@ int swr_zend_try_ptr_dtor(zval *value);
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value);
 int swr_zend_try_hash_clean(HashTable *table);
 int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value);
-/* zend_read_property(scope, object, name, length, 1, rv): a subclass's __get
- * runs PHP. *out is the property, or rv; NULL after a bailout. */
-int swr_zend_try_read_property(zend_class_entry *scope, zend_object *object, const char *name,
-                               size_t length, zval *rv, zval **out);
 #endif

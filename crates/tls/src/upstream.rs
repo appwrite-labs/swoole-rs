@@ -823,15 +823,15 @@ pub(crate) fn buffer_check(status: i32) {
     }
 }
 
-/// A socket's `out_buffer` queue, null without one: `Buffer`'s first member is its
-/// Rust handle.
+/// A socket's `out_buffer` queue, null without one.
 pub(crate) fn out_queue(socket: Socket<'_>) -> *mut swoole_rs_buffer::Buffer {
-    let buffer = socket.read(|record| record.output.out_buffer);
-    if buffer.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: a socket's output buffer is a live `Buffer`, which only the socket frees.
-    unsafe { *buffer.cast::<*mut swoole_rs_buffer::Buffer>() }
+    socket.read(|record| {
+        let buffer = record.output.buffer();
+        buffer.map_or(
+            std::ptr::null_mut(),
+            swoole_rs_buffer::cpp::CppBuffer::queue,
+        )
+    })
 }
 
 /// `f` over the socket's queue (None without one).
@@ -958,9 +958,9 @@ pub fn socket_sendfile_async(
         return -1;
     };
     let request = Box::into_raw(request);
-    if socket.read(|record| record.output.out_buffer.is_null()) {
+    if socket.read(|record| record.output.out_buffer.is_none()) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
-        socket.edit(|record| record.output.out_buffer = buffer.cast());
+        socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
     let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
     let status = with_queue(socket, |queue| {
@@ -1115,10 +1115,12 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
         let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
             return;
         };
-        let (timers, buffers) = record.read(|record| {
+        // The buffers leave the record here and go below, after the timers and outside
+        // the record's borrow: an entry's disposer runs as its buffer goes.
+        let (timers, buffers) = record.edit(|record| {
             (
                 [record.recv_timer, record.output.send_timer],
-                [record.in_buffer, record.output.out_buffer],
+                [record.in_buffer.take(), record.output.out_buffer.take()],
             )
         });
         for timer in timers {
@@ -1127,12 +1129,8 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
                 unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
             }
         }
-        for buffer in buffers {
-            if !buffer.is_null() {
-                // SAFETY: the socket owns each `new Buffer`.
-                unsafe { swoole_rs_buffer::cpp::delete_buffer(buffer.cast()) };
-            }
-        }
+        // `delete in_buffer; delete out_buffer`.
+        drop(buffers);
         if let Some((_, reactor)) = swoole_rs_reactor::socket_upstream::event_reactor() {
             if record.read(|record| record.fd != -1 && !record.removed) {
                 // `swoole_event_del(this)` on the thread's reactor, which logs a failure.
@@ -1441,10 +1439,9 @@ mod tests {
     #[test]
     fn queued_file_and_data_drain_through_the_handlers() {
         let (mut left, right) = pair();
-        let queue = Box::into_raw(swoole_rs_buffer::Buffer::create(65536).unwrap());
-        // `Buffer`'s only member is its Rust handle.
-        let mut native = Box::new(queue);
-        left.output.out_buffer = (&raw mut *native).cast();
+        let native = swoole_rs_buffer::cpp::new_buffer(65536);
+        let queue = native.queue();
+        left.output.out_buffer = Some(native);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let socket = &raw mut left;
         let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
@@ -1462,7 +1459,8 @@ mod tests {
         assert_eq!(socket_handle_send(handle), 0);
         assert_eq!(read_all(&right, 4), b"tail");
         assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");
-        assert!(unsafe { Box::from_raw(queue) }.release().is_ok());
+        // The queue is released with its `Buffer`, which ends the test if it can't be.
+        drop(left.output.out_buffer.take());
         std::fs::remove_file(path).unwrap();
         unsafe { libc::close(left.fd) };
         unsafe { libc::close(right.fd) };

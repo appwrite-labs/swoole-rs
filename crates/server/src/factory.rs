@@ -79,7 +79,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
             swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, manager));
         }
         Step::JoinReactorThreads => crate::reactor_thread::join_reactor_threads(serv),
-        Step::FactoryShutdown => _ = shutdown(state),
+        Step::FactoryShutdown => _ = shutdown(serv),
         Step::ReleasePipeBuffers => state.message_bus().free_buffer(),
         Step::ClosePorts => {
             for &port in state.tables_ref().ports() {
@@ -170,27 +170,22 @@ extern "C" fn accept_command_result(
 }
 use crate::{MODE_PROCESS, MODE_THREAD};
 
-/// `swoole::Factory` (upstream's `swoole_server.h`): its server, then thread mode's manager state
-/// (`crates/server/src/thread_mode.rs`), null in the other modes.
-#[repr(C)]
+/// `swoole::Factory` (upstream's `swoole_server.h`): thread mode's manager state
+/// (`crates/server/src/thread_mode.rs`), none in the other modes. Its members take the
+/// server whose `factory_` it is, so it keeps no pointer back to it.
 pub(crate) struct Factory {
-    server: *mut c_void,
     manager: Option<Box<ThreadManager>>,
 }
 
-/// A factory over `serv`, with thread mode's `manager` or none.
-pub(crate) fn new(serv: *mut c_void, manager: Option<Box<ThreadManager>>) -> *mut c_void {
-    Box::into_raw(Box::new(Factory {
-        server: serv,
-        manager,
-    }))
-    .cast()
+/// A server's factory, with thread mode's `manager` or none.
+pub(crate) fn new(manager: Option<Box<ThreadManager>>) -> *mut c_void {
+    Box::into_raw(Box::new(Factory { manager })).cast()
 }
 
 /// `new ThreadFactory(serv)`: a factory whose manager holds `threads` threads, one
 /// for each worker and the manager.
-pub(crate) fn new_thread(serv: *mut c_void, threads: usize) -> *mut c_void {
-    new(serv, Some(Box::new(ThreadManager::new(threads))))
+pub(crate) fn new_thread(threads: usize) -> *mut c_void {
+    new(Some(Box::new(ThreadManager::new(threads))))
 }
 
 /// Thread mode's manager of the factory at `factory`; none for another mode's.
@@ -222,14 +217,6 @@ fn of(state: &ServerState) -> (*mut c_void, u64) {
     (config.factory_, u64::from(config.mode_))
 }
 
-/// The server of `factory`.
-fn base(factory: *mut c_void) -> crate::view::Server<'static> {
-    // SAFETY: the server's live factory, whose server outlives it.
-    let serv = unsafe { (*factory.cast::<Factory>()).server };
-    // SAFETY: as above.
-    unsafe { crate::view::Server::from_raw(serv) }
-}
-
 /// `factory_->start()`.
 pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
     match of(serv.state()) {
@@ -240,9 +227,9 @@ pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
 }
 
 /// `factory_->shutdown()`.
-pub(crate) fn shutdown(state: &ServerState) -> bool {
-    match of(state) {
-        (factory, MODE_PROCESS) => crate::process_factory::native::shutdown(base(factory)),
+pub(crate) fn shutdown(serv: crate::view::Server<'_>) -> bool {
+    match of(serv.state()) {
+        (_, MODE_PROCESS) => crate::process_factory::native::shutdown(serv),
         (factory, MODE_THREAD) => {
             // SAFETY: the server's live factory.
             if let Some(manager) = unsafe { manager(factory) } {
@@ -255,54 +242,43 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
 }
 
 /// `factory_->dispatch(task)`.
-pub(crate) fn dispatch(state: &ServerState, task: *mut c_void) -> bool {
-    let (factory, mode) = of(state);
-    // SAFETY: the live task the caller lends, which nothing else borrows.
-    let task = unsafe { &mut *task.cast::<SendData>() };
-    if mode == MODE_PROCESS {
-        crate::process_factory::dispatch(base(factory), task)
+pub(crate) fn dispatch(serv: crate::view::Server<'_>, task: &mut SendData) -> bool {
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        crate::process_factory::dispatch(serv, task)
     } else {
-        crate::base_factory::dispatch(base(factory), task, false)
+        crate::base_factory::dispatch(serv, task, false)
     }
 }
 
 /// `factory_->finish(data)`.
-pub(crate) fn finish(state: &ServerState, data: *mut c_void) -> bool {
-    let (factory, mode) = of(state);
-    // SAFETY: the live send the caller lends.
-    let send = unsafe { &*data.cast::<SendData>() };
-    if mode == MODE_PROCESS {
-        crate::process_factory::finish(base(factory), send)
+pub(crate) fn finish(serv: crate::view::Server<'_>, send: &SendData) -> bool {
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        crate::process_factory::finish(serv, send)
     } else {
-        crate::base_factory::finish(base(factory), send)
+        crate::base_factory::finish(serv, send)
     }
 }
 
 /// `factory_->notify(info)`.
-pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
-    match of(state) {
-        (factory, MODE_PROCESS) => {
-            // A dispatch of the event with no data.
-            let mut task = SendData {
-                // SAFETY: the live event the caller hears.
-                info: unsafe { *info.cast::<DataHead>() },
-                data: ptr::null(),
-            };
-            crate::process_factory::dispatch(base(factory), &mut task)
-        }
-        (factory, _) => {
-            // SAFETY: the live event the caller lends, which nothing else borrows.
-            let head = unsafe { &mut *info.cast::<DataHead>() };
-            crate::base_factory::notify(base(factory), head)
-        }
+pub(crate) fn notify(serv: crate::view::Server<'_>, head: &mut DataHead) -> bool {
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        // A dispatch of the event with no data.
+        let mut task = SendData {
+            info: *head,
+            data: ptr::null(),
+        };
+        crate::process_factory::dispatch(serv, &mut task)
+    } else {
+        crate::base_factory::notify(serv, head)
     }
 }
 
 /// `factory_->end(session_id, flags)`.
-pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool {
-    match of(state) {
-        (factory, MODE_PROCESS) => crate::process_factory::end(base(factory), session_id, flags),
-        (factory, _) => crate::base_factory::end(base(factory), session_id, flags),
+pub(crate) fn end(serv: crate::view::Server<'_>, session_id: c_long, flags: c_int) -> bool {
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        crate::process_factory::end(serv, session_id, flags)
+    } else {
+        crate::base_factory::end(serv, session_id, flags)
     }
 }
 
@@ -311,15 +287,15 @@ pub(crate) struct Linked;
 
 impl crate::hybrid::Hybrid for Linked {
     fn factory_end(&self, serv: crate::view::Server<'_>, session_id: c_long, flags: c_int) -> bool {
-        end(serv.state(), session_id, flags)
+        end(serv, session_id, flags)
     }
 
     fn factory_notify(&self, serv: crate::view::Server<'_>, head: &mut DataHead) -> bool {
-        notify(serv.state(), ptr::from_mut(head).cast())
+        notify(serv, head)
     }
 
     fn factory_dispatch(&self, serv: crate::view::Server<'_>, send: &mut SendData) -> bool {
-        dispatch(serv.state(), ptr::from_mut(send).cast())
+        dispatch(serv, send)
     }
 
     fn base_pass(&self, serv: crate::view::Server<'_>, send: &SendData) {
@@ -338,8 +314,8 @@ impl crate::hybrid::Hybrid for Linked {
         crate::process_factory::native::create(serv)
     }
 
-    fn factory_new(&self, serv: crate::view::Server<'_>) -> *mut c_void {
-        new(serv.raw(), None)
+    fn factory_new(&self, _: crate::view::Server<'_>) -> *mut c_void {
+        new(None)
     }
 
     fn task_pool(
@@ -387,13 +363,12 @@ impl crate::hybrid::Hybrid for Linked {
         &self,
         serv: crate::view::Server<'_>,
         reactor: crate::reactor_handle::Reactor,
-        port: *mut c_void,
-        pkt: &mut crate::reactor_entry::DgramPacket,
-        length: u32,
+        port: crate::view::Port<'_>,
+        peer: &swoole_rs_corebase::net_types::SocketAddress,
+        data: &[u8],
     ) -> c_int {
         let single_thread = serv.state().config_ref().single_thread.get();
-        // SAFETY: the server's DTLS port the datagram arrived on, on its reactor.
-        unsafe { crate::dtls::on_packet(serv, single_thread, reactor, port, pkt, length) }
+        crate::dtls::on_packet(serv, single_thread, reactor, port, peer, data)
     }
 
     fn dtls_read(
@@ -413,18 +388,14 @@ impl crate::hybrid::Hybrid for Linked {
     ) -> bool {
         /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
         const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
-        let worker = serv.worker(u16::try_from(worker_id).unwrap_or(u16::MAX));
-        let bytes = message.bytes();
-        // SAFETY: one of the server's workers, and the message's bytes, which live
-        // for the call.
-        let sent = unsafe {
-            swoole_rs_process::methods::send_pipe_message(
-                worker,
-                bytes.as_ptr(),
-                bytes.len(),
-                PIPE_MASTER_NONBLOCK,
-            )
+        let Some(worker) = serv.worker_record(u16::try_from(worker_id).unwrap_or(u16::MAX)) else {
+            return false;
         };
+        let sent = swoole_rs_process::methods::send_pipe_message(
+            worker,
+            message.bytes(),
+            PIPE_MASTER_NONBLOCK,
+        );
         sent > 0
     }
 
@@ -489,7 +460,7 @@ impl crate::hybrid::Hybrid for Linked {
         serv: crate::view::Server<'_>,
         send: &mut crate::base_factory::SendData,
     ) -> bool {
-        finish(serv.state(), (&raw mut *send).cast())
+        finish(serv, send)
     }
 
     fn process_send(

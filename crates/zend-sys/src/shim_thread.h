@@ -8,23 +8,18 @@
 /* zend_array_is_list. */
 bool swr_zend_array_is_list(const zend_array *array);
 
-/* ZEND_HASH_FOREACH_KEY_VAL with ZVAL_DEREF: `key` is null for an int key. */
-void swr_zend_hash_foreach_kv(const HashTable *table,
-                              void (*each)(zend_string *key, zend_ulong index, zval *value, void *context),
-                              void *context);
-
 /* SW_HASHTABLE_FOREACH_START2's step, without ZVAL_DEREF: the element at or after
  * `*position` (null past the end), with its string key in `*key` (null for an int
  * key, which goes in `*index`); `*position` moves past it. Start at 0. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index);
 
 /* _zend_handle_numeric_str: whether a string key is a canonical integer. */
-bool swr_zend_handle_numeric_str(const char *key, size_t length, zend_ulong *index);
+bool swr_zend_handle_numeric_str(const zend_string *key, zend_ulong *index);
 
 /* zend_dval_to_lval_safe. */
 zend_long swr_zend_dval_to_lval_safe(double value);
 
-/* Z_RES_HANDLE_P. */
+/* Z_RES_HANDLE_P of a resource zval; 0 for any other. */
 zend_long swr_zend_resource_handle(const zval *value);
 
 /* is_numeric_string(text, length, &lval, &dval, false): IS_LONG, IS_DOUBLE or 0. */

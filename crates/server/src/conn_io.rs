@@ -61,7 +61,8 @@ pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) 
 }
 
 /// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-type OnRead = unsafe extern "C-unwind" fn(*mut c_void, *mut c_void, *mut Event) -> c_int;
+type OnRead =
+    extern "C-unwind" fn(swoole_rs_reactor::Running<'_>, view::Port<'_>, &mut Event) -> c_int;
 
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
@@ -125,8 +126,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let Some(on_read) = on_read else {
         return ERR;
     };
-    // SAFETY: this thread's reactor, the port and its event.
-    let retval = unsafe { on_read(reactor.ptr(), port.raw(), raw) };
+    // SAFETY: the reactor's event, which no reference is used through during the read.
+    let retval = on_read(reactor.handle(), port, unsafe { &mut *raw });
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
@@ -574,8 +575,8 @@ fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
 
 /// Queues a close behind the socket's output.
 fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
-    if sock.read(|s| s.output.out_buffer.is_null()) {
-        let buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+    if sock.read(|s| s.output.out_buffer.is_none()) {
+        let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
         sock.edit(|s| s.output.out_buffer = buffer);
     }
     sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
@@ -761,17 +762,10 @@ pub(crate) mod tests {
     /// `bytes` queued on the connection's socket.
     pub(crate) fn queue(conn: Connection<'_>, bytes: &[u8]) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(0);
+        buffer.append(bytes);
         conn.socket()
             .unwrap()
-            .edit(|s| s.output.out_buffer = buffer.cast());
-        // SAFETY: the socket's live buffer and the bytes.
-        unsafe {
-            swoole_rs_buffer::cpp::swr_cpp_buffer_append(
-                &*buffer,
-                bytes.as_ptr(),
-                bytes.len().try_into().unwrap(),
-            );
-        }
+            .edit(|s| s.output.out_buffer = Some(buffer));
     }
 
     #[test]

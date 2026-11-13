@@ -20,6 +20,17 @@ unsafe extern "C" {
     safe fn swr_zend_http_max_input_vars() -> sys::zend_long;
     safe fn swr_zend_error_reporting() -> c_int;
     safe fn swr_zend_vm_interrupt() -> *mut sys::zend_atomic_bool;
+    /// `CG(function_table)`'s function `name`, or null.
+    safe fn swr_zend_compiled_function_find(
+        name: crate::helpers::CText<'_>,
+    ) -> *mut sys::zend_function;
+    safe fn swr_zend_objects_top() -> u32;
+    safe fn swr_zend_resource_count() -> u32;
+    /// Whether the executor's object store holds a live object with class-name
+    /// handlers at `handle`, any `u32`; `out`, if given, then holds it with a
+    /// reference of its own, in place of what it held, which is not released
+    /// (false, with `out` untouched, once the object's free has begun).
+    safe fn swr_zend_objects_copy(handle: u32, out: Option<&crate::Owned>) -> bool;
 }
 
 /// This thread runs PHP for `'a`: it executes only while it is the one thread
@@ -76,6 +87,40 @@ impl<'a> Php<'a> {
     #[must_use]
     pub fn vm_interrupt(self) -> *mut sys::zend_atomic_bool {
         swr_zend_vm_interrupt()
+    }
+
+    /// `zend::get_function(CG(function_table), name)`: the function this
+    /// thread's compiler knows as `name` (lower case), or null.
+    #[must_use]
+    pub fn compiled_function(self, name: &std::ffi::CStr) -> *mut sys::zend_function {
+        swr_zend_compiled_function_find(name.into())
+    }
+
+    /// `EG(objects_store).top`: one past the highest object handle in use.
+    #[must_use]
+    pub fn objects_top(self) -> u32 {
+        swr_zend_objects_top()
+    }
+
+    /// `zend_array_count(&EG(regular_list))`: the request's open resources.
+    #[must_use]
+    pub fn resource_count(self) -> u32 {
+        swr_zend_resource_count()
+    }
+
+    /// Whether the executor's object store holds a live object at `handle`
+    /// (Swoole's `object_valid`).
+    #[must_use]
+    pub fn object_live(self, handle: u32) -> bool {
+        swr_zend_objects_copy(handle, None)
+    }
+
+    /// The live object the executor's store holds at `handle`, with a
+    /// reference of its own; None for no such object, or one being freed.
+    #[must_use]
+    pub fn object_at(self, handle: u32) -> Option<crate::Owned> {
+        let found = crate::Owned::default();
+        swr_zend_objects_copy(handle, Some(&found)).then_some(found)
     }
 
     /// The handler of the internal function the running request calls `name`

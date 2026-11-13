@@ -1,15 +1,10 @@
 /* Declarations for shim_values.c; included by shim.h. */
 #ifndef SWOOLE_RS_ZEND_SHIM_VALUES_H
 #define SWOOLE_RS_ZEND_SHIM_VALUES_H
-/* array_init / OBJ_RELEASE / GC_ADDREF: inline functions and macros. */
+/* array_init / OBJ_RELEASE: an inline function and a macro. */
 void swr_zend_array_init(zval *target);
 void swr_zend_object_release(zend_object *object);
-void swr_zend_object_addref(zend_object *object);
-
-/* zval_get_long, whose slow path's signature depends on the PHP version. */
-zend_long swr_zval_get_long(const zval *value);
-
-
-/* zend_is_true, whose return type depends on the PHP version. */
-bool swr_zend_is_true(const zval *value);
+/* zend_get_type_by_const of a value's type (IS_NULL to IS_RESOURCE); NULL for
+ * any other code, which Zend's switch does not name. */
+const char *swr_zend_type_name(uint32_t kind);
 #endif

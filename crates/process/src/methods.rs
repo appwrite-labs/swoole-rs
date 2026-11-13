@@ -4,14 +4,15 @@
 
 use crate::task_file::Packed;
 use crate::worker_record::{Worker, WorkerType};
-use std::ffi::{CStr, c_char, c_int, c_void};
+#[cfg(any(feature = "upstream-symbols", test))]
+use std::ffi::CStr;
+use std::ffi::{c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::CCast;
 
-use crate::pool::{
-    raise_bailout, swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_respond,
-    swr_v1_process_pool_ipc_set_listener, swr_v1_process_worker_send,
-};
+use crate::pool::{raise_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send};
+#[cfg(any(feature = "upstream-symbols", test))]
+use crate::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
 use crate::process_pool::{
     PoolNative, PoolRecord, PoolRef, RAISE, Run, run_op, swr_v1_process_pool_create,
     swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push, swr_v1_process_pool_push_event,
@@ -227,42 +228,25 @@ pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
     pool.running() && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
 }
 
-/// `Worker::send_pipe_message(buf, n, flags)`: through its pool's queue or the pipe
-/// end `flags` names.
-///
-/// # Safety
-/// `worker` is a live worker of a live pool; `data` holds `length` initialized bytes.
+/// `Worker::send_pipe_message(buf, n, flags)` of `data`: through its pool's queue or
+/// the pipe end `flags` names. -1 for a worker no pool holds, which upstream
+/// doesn't send through.
 #[must_use]
-pub unsafe fn send_pipe_message(
-    worker: *const WorkerRecord,
-    data: *const u8,
-    length: usize,
-    flags: c_int,
-) -> isize {
+pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> isize {
     /// `SW_PIPE_MASTER`.
     const PIPE_MASTER: c_int = 1;
-    // SAFETY: the caller lends a live worker.
-    let worker = unsafe { Worker::new(worker) };
-    let pool = worker.pool();
+    let Some(pool) = worker.pool_ref() else {
+        return -1;
+    };
     let id = worker.id();
     let pipe = if flags & PIPE_MASTER != 0 {
         worker.pipe_master()
     } else {
         worker.pipe_worker()
     };
-    // SAFETY: the worker's pool is live.
-    let queue = unsafe { (*pool.cast::<PoolRecord>()).use_msgqueue };
-    // SAFETY: as the caller guarantees.
-    unsafe { swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, length, flags) }
+    let queue = pool.use_msgqueue();
+    swr_v1_process_worker_send(native(), pool, pipe, queue, id, data, flags)
 }
-
-/// `make_server_socket(type, host, port, backlog)`: a native socket, or null.
-pub type MakeServerSocket<T> = unsafe extern "C-unwind" fn(
-    kind: c_int,
-    host: *const c_char,
-    port: c_int,
-    backlog: c_int,
-) -> *mut T;
 
 #[cfg(feature = "upstream-symbols")]
 // crates/tls defines it under its upstream symbol; declared, since
@@ -271,7 +255,7 @@ unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
     fn make_server_socket(
         kind: c_int,
-        host: *const c_char,
+        host: *const std::ffi::c_char,
         port: c_int,
         backlog: c_int,
     ) -> *mut c_void;
@@ -296,23 +280,22 @@ pub fn listen_socket(
     port: c_int,
     backlog: c_int,
 ) -> c_int {
-    // SAFETY: `make_server_socket` returns a native socket or null.
-    unsafe { listen(pool.record(), kind, host, port, backlog, make_server_socket) }
+    listen(pool.record(), host, port, || {
+        // SAFETY: crates/tls's `make_server_socket` over a NUL-terminated host, read
+        // for the call: a native socket the caller owns, or null.
+        unsafe { make_server_socket(kind, host.as_ptr(), port, backlog) }
+    })
 }
 
-/// Both `listen`s, over `make`: only an `SW_IPC_SOCKET` pool has a stream
+/// Both `listen`s, over `make`, which makes the listener (a native socket the pool
+/// then owns and frees, or null): only an `SW_IPC_SOCKET` pool has a stream
 /// listener, which it records with its address.
-///
-/// # Safety
-/// `make` returns a native socket or null.
-#[must_use]
-pub unsafe fn listen<T>(
+#[cfg(any(feature = "upstream-symbols", test))]
+fn listen(
     pool: &PoolRecord,
-    kind: c_int,
     host: &CStr,
     port: c_int,
-    backlog: c_int,
-    make: MakeServerSocket<T>,
+    make: impl FnOnce() -> *mut c_void,
 ) -> c_int {
     if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
         // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
@@ -330,13 +313,12 @@ pub unsafe fn listen<T>(
     {
         return -1;
     }
-    // SAFETY: as the caller guarantees.
-    let socket = unsafe { make(kind, host.as_ptr(), port, backlog) };
+    let socket = make();
     if socket.is_null() {
         return -1;
     }
     // The pool now owns the listener.
-    pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, socket.cast()));
+    pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, socket));
     0
 }
 
@@ -364,18 +346,16 @@ pub fn response(pool: PoolRef<'_>, data: &[u8]) -> c_int {
 #[must_use]
 pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     use swoole_rs_corebase::DataHead;
-    // crates/bus' write and crates/tls's; declared, since both depend on
-    // this crate.
+    // crates/bus' write; declared, since it depends on this crate.
     unsafe extern "C" {
         fn swr_v1_bus_write(
             bus: *mut c_void,
             socket: *mut c_void,
             head: *mut DataHead,
-            data: *const c_char,
+            data: *const std::ffi::c_char,
         ) -> bool;
-        #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
-        fn send_async(socket: *mut c_void, data: *const c_void, length: usize) -> isize;
     }
+    let handle = pool;
     let pool = pool.record();
     // `get_worker`: the pool's record for `worker_id`.
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
@@ -387,8 +367,10 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     let pipe = worker.pipe_master();
     let length = message.len();
     if pool.message_bus.is_null() {
-        // SAFETY: the worker's pipe and the caller's bytes.
-        return unsafe { send_async(pipe, message.as_ptr().cast(), length) } != 0;
+        // `pipe_master->send_async(message)`: the pipe's write, through the event
+        // loop while one is available.
+        let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
+        return swr_v1_process_worker_send(native(), handle, pipe, false, id, message, flags) != 0;
     }
     let mut head = DataHead {
         reactor_id: swoole_get_worker_id().c_cast::<i16>(),
@@ -661,12 +643,7 @@ pub(crate) mod tests {
 
     static LISTENER: u8 = 0;
 
-    unsafe extern "C-unwind" fn make(
-        kind: c_int,
-        _: *const c_char,
-        port: c_int,
-        _: c_int,
-    ) -> *mut c_void {
+    fn make(kind: c_int, port: c_int) -> *mut c_void {
         if kind == 1 && port == 9501 {
             (&raw const LISTENER).cast_mut().cast()
         } else {
@@ -683,8 +660,7 @@ pub(crate) mod tests {
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
         pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
-        // SAFETY: the pool is live and the host a NUL-terminated string.
-        let refused = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
+        let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert_eq!(
             refused, -1,
             "an SW_IPC_UNIXSOCK pool has no stream listener"
@@ -700,16 +676,14 @@ pub(crate) mod tests {
             "the upstream warning"
         );
         pool.ipc_mode = crate::process_pool::IpcMode::Socket;
-        // SAFETY: as above.
-        let failed = unsafe { listen(&pool, 1, c"127.0.0.1", 9502, 8, make) };
+        let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
         assert_eq!(failed, -1, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
             swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc }).is_null(),
             "none kept"
         );
-        // SAFETY: as above.
-        let listened = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
+        let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
         assert_eq!(listened, 0, "listening");
         // SAFETY: the pool's IPC state.
         let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });

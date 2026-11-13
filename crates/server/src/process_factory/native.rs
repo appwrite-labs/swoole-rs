@@ -3,7 +3,7 @@
 //! workers, and the [`Pipe`] writes.
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::log;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{
     ExitStatus, kill_all_workers, swoole_set_worker_id, swoole_set_worker_pid,
@@ -24,8 +24,8 @@ const REGISTRY_USER: c_int = 2;
 const PIPE_MASTER: c_int = 1;
 
 /// `new ReactorThread[count]()`, each bus over the allocator of the server's.
-pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> *mut c_void {
-    ThreadRecord::new_array(count.into(), state.message_bus().allocator())
+pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> Box<[ThreadRecord]> {
+    ThreadRecord::new_array(count, state.message_bus())
 }
 
 /// Initializes or destroys the reactor threads' and the manager's barriers.
@@ -51,7 +51,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     // SAFETY: the server's tables, which only setup and teardown write, while the
     // master is the server's only thread; nothing reads them while this lives.
     let tables = unsafe { &mut *state.tables() };
-    tables.reactor_threads = threads;
+    tables.install_reactor_threads(threads);
     if list.is_null() {
         let size = size_of::<ConnectionRecord>();
         let m = format_args!("sw_shm_calloc({max}, {size}) for connection_list failed");
@@ -61,18 +61,16 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     tables.connection_list = list;
     tables.reactor_pipe_num = u16::try_from(pipes & 0xffff).unwrap_or_default();
     barriers(serv, true);
-    crate::factory::new(serv.raw(), None)
+    crate::factory::new(None)
 }
 
 /// `Server::destroy_process_factory`.
 pub(crate) fn destroy(serv: view::Server<'_>) {
-    // SAFETY: as `create`'s, for its one statement.
-    unsafe { &mut *serv.state().tables() }
-        .connection_list
-        .free();
-    let (tables, config) = (serv.state().tables_ref(), serv.config());
-    // SAFETY: the array `create` made, not used again.
-    unsafe { ThreadRecord::delete_array(tables.reactor_threads, config.reactor_num.get().into()) };
+    // SAFETY: as `create`'s: the workers and reactor threads are gone, and nothing
+    // reads the tables while this lives.
+    let tables = unsafe { &mut *serv.state().tables() };
+    tables.connection_list.free();
+    drop(tables.take_reactor_threads());
     barriers(serv, false);
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {
@@ -223,7 +221,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             // This reactor thread's bus, and its copy of the worker's pipe.
             let thread = state
                 .tables_ref()
-                .reactor_threads
+                .reactor_threads_ptr()
                 .cast::<ThreadRecord>()
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
@@ -255,16 +253,8 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let Some(target) = serv.worker_record(id) else {
                 return false;
             };
-            let head = (&raw const send.info).cast::<u8>();
-            // SAFETY: a worker of the live server and a head of the size passed.
-            let sent = unsafe {
-                swoole_rs_process::methods::send_pipe_message(
-                    target.raw(),
-                    head,
-                    size_of::<DataHead>(),
-                    PIPE_MASTER,
-                )
-            };
+            let head = swoole_rs_process::process_pool::head_view(&send.info);
+            let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
             sent > 0
         }
     }

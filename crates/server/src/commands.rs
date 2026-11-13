@@ -112,7 +112,7 @@ pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8
 /// pipe the request came from.
 pub(crate) fn call_command_handler(
     serv: crate::view::Server<'_>,
-    bus: crate::objects::Bus,
+    bus: crate::objects::Bus<'_>,
     worker_id: u16,
     sock: Option<Socket<'_>>,
 ) {
@@ -137,7 +137,7 @@ pub(crate) fn answer(
     handler: &CommandHandler,
     serv: crate::view::Server<'_>,
     message: &[u8],
-    (bus, sock): (crate::objects::Bus, Socket<'_>),
+    (bus, sock): (crate::objects::Bus<'_>, Socket<'_>),
     fd: i64,
     reactor_id: u16,
 ) -> bool {

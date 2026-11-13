@@ -36,6 +36,7 @@ impl Scheduler {
         self.live.as_deref()
     }
 
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn insert(&mut self, cid: c_long, co: Co) {
         let live = self.live.get_or_insert_default();
         let at = live.at(cid);

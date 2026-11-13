@@ -20,7 +20,10 @@ int swr_zend_try_facade_name(zval *value, zend_string **result) {
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-uint32_t swr_zval_facade_refcount(const zval *value) { return zval_refcount_p(value); }
+uint32_t swr_zval_facade_refcount(const zval *value) {
+    uint8_t type = Z_TYPE_P(value);
+    return type >= IS_STRING && type <= IS_REFERENCE ? GC_REFCOUNT(Z_COUNTED_P(value)) : 0;
+}
 
 int swr_zend_try_facade_throw(zend_class_entry *ce, const char *message, zend_long code) {
     volatile int bailed = 0;

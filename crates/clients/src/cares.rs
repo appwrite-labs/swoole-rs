@@ -23,9 +23,11 @@ use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
 /// `swoole_rs_coroutine::Coroutine`.
 mod co {
     use std::ffi::c_void;
-    use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, STATE_WAITING};
+    use swoole_rs_coroutine::{Coroutine, STATE_WAITING};
 
-    pub(super) use swoole_rs_coroutine::{resume, yield_ex};
+    pub(super) use swoole_rs_coroutine::{
+        RC_CANCELED, RC_TIMEDOUT, resume, yield_resumed, yield_timed,
+    };
 
     /// `Coroutine::get_current_safe()`.
     pub(super) fn current() -> *mut c_void {
@@ -39,23 +41,11 @@ mod co {
         co
     }
 
-    fn record(co: *mut c_void) -> (i32, i32) {
-        let co = co.cast::<Coroutine>();
-        // SAFETY: a live coroutine's scalar fields.
-        let co = unsafe { &*co };
-        (co.state, co.resume_code)
-    }
-
     pub(super) fn suspending(co: *mut c_void) -> bool {
-        record(co).0 == STATE_WAITING
-    }
-
-    pub(super) fn canceled(co: *mut c_void) -> bool {
-        record(co).1 == RC_CANCELED
-    }
-
-    pub(super) fn timedout(co: *mut c_void) -> bool {
-        record(co).1 == RC_TIMEDOUT
+        let co = co.cast::<Coroutine>();
+        // SAFETY: a live coroutine's scalar field.
+        let state = unsafe { (*co).state };
+        state == STATE_WAITING
     }
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
@@ -337,12 +327,15 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         unsafe { sdk::ares_gethostbyname(channel, domain, family, Some(host), state) };
         let done = query.error.get() != 0 || query.completed.get();
         if !done {
-            // SAFETY: this is the query's existing current coroutine; no Rust reference spans suspension.
-            unsafe { co::yield_ex(coroutine, timeout) };
-            if co::canceled(coroutine) {
+            // `co->yield_ex(timeout)` of the query's coroutine, which is the running
+            // one; no Rust reference spans the suspension. The code is the resume code
+            // the coroutine holds as it runs again.
+            let code = co::yield_timed(coroutine, timeout);
+            _ = co::yield_resumed(code);
+            if code == co::RC_CANCELED {
                 // SAFETY: cancel synchronously invokes only callbacks on this live query.
                 unsafe { sdk::ares_cancel(channel) };
-            } else if co::timedout(coroutine) {
+            } else if code == co::RC_TIMEDOUT {
                 // SAFETY: process SDK timeouts before recording the original timeout status.
                 unsafe { sdk::ares_process_fd(channel, -1, -1) };
                 // Record timeout after SDK callbacks, matching original order.

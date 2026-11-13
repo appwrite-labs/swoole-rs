@@ -54,9 +54,7 @@ impl Co {
             return false;
         }
         set_err(self, libc::ECANCELED);
-        let co = self.with_state(|state| state.co(event));
-        // SAFETY: the coroutine bound for `event`, parked in its wait on this socket.
-        unsafe { (NATIVE.resume)(co) };
+        crate::co_io::resume_bound(self, event);
         true
     }
 
@@ -325,7 +323,7 @@ mod tests {
                 timer.stop();
                 return false;
             }
-            if (sys.option)(s.sock_fd(), unsafe { &mut (*s.raw()).err_code }) < 0
+            if (sys.option)(s.sock_fd(), unsafe { &mut *(*s.raw()).err_code.as_ptr() }) < 0
                 || s.err_code() != 0
             {
                 set_err(s, s.err_code());
@@ -426,7 +424,7 @@ mod tests {
             Box::new(|owner| unsafe { release(core::ptr::null_mut(), owner) }),
         );
         unsafe { socket.0.record() }.timeouts.connect = 1.0;
-        socket.0.err_code = 9;
+        socket.0.err_code.set(9);
         let mut ids: [Box<c_long>; 3] = [Box::new(5), Box::new(7), Box::new(11)];
         let cos = [&raw mut *ids[0], &raw mut *ids[1], &raw mut *ids[2]];
         setup(&mut socket, &cos);
@@ -439,16 +437,16 @@ mod tests {
             result,
             effects: take(),
             state: (
-                socket.0.sock_fd,
+                socket.0.sock_fd.get(),
                 flags,
-                socket.0.err_code,
+                socket.0.err_code.get(),
                 unsafe { socket.0.record() }.output.close_wait,
                 id(state, READ),
                 id(state, WRITE),
                 errno(),
             ),
         };
-        socket.0.sock_fd = 100;
+        socket.0.sock_fd.set(100);
         unsafe { (*state).bind(READ | WRITE, core::ptr::null_mut()) };
         outcome
     }
@@ -497,7 +495,7 @@ mod tests {
             let mode = k / 128;
             let setup = move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
                 set_flags(s, (k / 4) % 2 == 1, (k / 16) % 2 == 1, (k / 32) % 2 == 1);
-                s.0.sock_fd = if (k / 8) % 2 == 1 { -1 } else { 77 };
+                s.0.sock_fd.set(if (k / 8) % 2 == 1 { -1 } else { 77 });
                 if (k / 64) % 2 == 1 {
                     unsafe {
                         s.0.record()
@@ -580,7 +578,7 @@ mod tests {
                 k / 48 == 1,
             );
             let setup = move |s: &mut TestSocket, cos: &[*mut c_long; 3]| {
-                s.0.sock_fd = if closed { -1 } else { 77 };
+                s.0.sock_fd.set(if closed { -1 } else { 77 });
                 set_flags(s, connected, false, false);
                 bind(s, bindings, cos);
                 let (state, other) = (s.state(), cos[2]);
@@ -644,7 +642,7 @@ mod tests {
             let (option, admission) = (u32::try_from((k / 40) % 4).unwrap(), k / 160);
             let setup = move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
                 if admission == 1 {
-                    s.0.sock_fd = -1;
+                    s.0.sock_fd.set(-1);
                 }
                 if admission == 2 {
                     unsafe { s.0.record() }.output.close_wait = true;
@@ -687,7 +685,7 @@ mod tests {
             compare(
                 k + 1232,
                 &move |s: &mut TestSocket, _: &[*mut c_long; 3]| {
-                    s.0.sock_fd = if closed { -1 } else { 77 }
+                    s.0.sock_fd.set(if closed { -1 } else { 77 });
                 },
                 &|s| s.check_liveness(),
                 &|s| upstream_liveness(s),

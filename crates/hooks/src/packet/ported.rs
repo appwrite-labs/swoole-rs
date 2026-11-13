@@ -188,9 +188,9 @@ fn length_scenario(s: &mut Script, socket: &mut CoSocket, mode: usize, variant: 
         bytes: 0,
         capacity: 4,
     };
-    let p = &mut socket.protocol;
-    socket.open_length_check = true;
-    socket.open_eof_check = variant & 2 != 0;
+    let p = socket.protocol.get_mut();
+    socket.open_length_check.set(true);
+    socket.open_eof_check.set(variant & 2 != 0);
     s.timer_ok = variant & 4 == 0;
     if variant & 1 != 0 || mode == 11 {
         // A custom length function: no size, no type.
@@ -221,8 +221,8 @@ fn eof_scenario(s: &mut Script, socket: &mut CoSocket, mode: usize, variant: usi
         bytes: usize::from(variant & 1 != 0),
         capacity: 4,
     };
-    let p = &mut socket.protocol;
-    socket.open_eof_check = variant & 2 == 0;
+    let p = socket.protocol.get_mut();
+    socket.open_eof_check.set(variant & 2 == 0);
     s.timer_ok = variant & 4 == 0;
     s.input = b"ab\r\ncd".to_vec();
     s.reads = vec![2; 6];
@@ -283,8 +283,8 @@ fn raw_scenario(s: &mut Script, k: usize) -> Seed {
 fn run(scenario: usize) -> String {
     let mut socket = TestSocket::new();
     let record = &mut *socket.0;
-    unsafe { (*record.socket).fields.timeouts.read = 1.0 };
-    let p = &mut record.protocol;
+    unsafe { (*record.socket.get()).fields.timeouts.read = 1.0 };
+    let p = record.protocol.get_mut();
     (p.package_length_offset, p.package_length_size) = (0, 2);
     (p.package_max_length, p.package_length_type) = (16, b'N');
     p.package_eof[..2].copy_from_slice(b"\r\n");

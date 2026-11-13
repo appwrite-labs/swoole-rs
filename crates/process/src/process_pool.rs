@@ -79,9 +79,10 @@ pub struct PoolRecord {
     // them through the getters below and writes them only through the `unsafe`
     // setters. So are the hooks above and `ptr`, which the hooks read: their owner
     // installs them together ([`PoolRef::install`]).
-    /// Null, or the box `create` made.
-    pub(crate) registry: *mut WorkerRegistry,
-    pub(crate) queue: *mut c_void,
+    /// The registry `create` made, which `destroy` (or dropping the record) frees.
+    pub(crate) registry: Option<Box<WorkerRegistry>>,
+    /// A message-queue pool's queue, which goes as the registry does.
+    pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc: *mut PoolIpc,
     pub(crate) message_box: *mut c_void,
     pub(crate) message_bus: *mut c_void,
@@ -138,8 +139,8 @@ impl PoolRecord {
             round_id: AtomicU32::new(0),
             workers: ptr::null_mut(),
             pipes: ptr::null_mut(),
-            registry: ptr::null_mut(),
-            queue: ptr::null_mut(),
+            registry: None,
+            queue: None,
             ipc: ptr::null_mut(),
             message_box: ptr::null_mut(),
             message_bus: ptr::null_mut(),
@@ -170,7 +171,9 @@ impl PoolRecord {
     /// The `SysV` message queue of a message-queue pool, or null.
     #[must_use]
     pub fn queue(&self) -> *mut c_void {
-        self.queue
+        self.queue.as_deref().map_or(ptr::null_mut(), |queue| {
+            ptr::from_ref(queue).cast_mut().cast()
+        })
     }
 
     /// The pool's IPC state, or null before `create`.
@@ -264,14 +267,16 @@ impl PoolRecord {
     #[must_use]
     pub fn registry(&self) -> *mut WorkerRegistry {
         self.registry
+            .as_deref()
+            .map_or(ptr::null_mut(), |registry| {
+                ptr::from_ref(registry).cast_mut()
+            })
     }
 
-    /// `f` over the registry `create` made; `None` before it.
-    pub(crate) fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
-        // SAFETY: `registry` is crate-private: null, or the box `create` made until
-        // `destroy` frees it. Only these calls reach it, one at a time, so nothing else
-        // borrows it while `f` runs.
-        unsafe { self.registry.as_mut() }.map(f)
+    /// `f` over the registry `create` made; `None` before it. No `f` reaches
+    /// `destroy`, which frees it.
+    pub(crate) fn with_registry<R>(&self, f: impl FnOnce(&WorkerRegistry) -> R) -> Option<R> {
+        self.registry.as_deref().map(f)
     }
 }
 
@@ -375,12 +380,22 @@ impl<'a> PoolRef<'a> {
             .unwrap_or(false)
     }
 
-    /// `f` over the pool's message queue; `None` without one.
+    /// `f` over the pool's message queue; `None` without one. Only this type's queue
+    /// reads borrow it, and none of them reaches `destroy`, which frees it.
     fn with_queue<R>(self, f: impl FnOnce(&swoole_rs_ossupport::QueueRecord) -> R) -> Option<R> {
-        let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
-        // SAFETY: null, or the pool's boxed queue, which `destroy` frees with the pool.
-        // Only this type's queue reads borrow it, and none of them reaches `destroy`.
-        unsafe { queue.as_ref() }.map(f)
+        self.record().queue.as_deref().map(f)
+    }
+
+    /// The registry `create` made, or null.
+    #[must_use]
+    pub fn registry(self) -> *mut WorkerRegistry {
+        self.record().registry()
+    }
+
+    /// The `SysV` message queue of a message-queue pool, or null.
+    #[must_use]
+    pub fn queue(self) -> *mut c_void {
+        self.record().queue()
     }
 
     /// The pool's worker at `index`, or `None` past `worker_num`.
@@ -735,31 +750,25 @@ const _: () = assert!(
 );
 
 /// `head`'s bytes, in its C layout.
-fn head_bytes(head: &DataHead) -> [u8; EVENT_DATA] {
-    macro_rules! at {
-        ($field:ident) => {
-            core::mem::offset_of!(DataHead, $field)
-        };
-    }
-    let mut bytes = [0; EVENT_DATA];
-    let fields: [(usize, &[u8]); 10] = [
-        (at!(fd), &head.fd.to_ne_bytes()),
-        (at!(msg_id), &head.msg_id.to_ne_bytes()),
-        (at!(len), &head.len.to_ne_bytes()),
-        (at!(reactor_id), &head.reactor_id.to_ne_bytes()),
-        (at!(kind), &[head.kind]),
-        (at!(flags), &[head.flags]),
-        (at!(server_fd), &head.server_fd.to_ne_bytes()),
-        (at!(ext_flags), &head.ext_flags.to_ne_bytes()),
-        (at!(reserved), &head.reserved.to_ne_bytes()),
-        (at!(time), &head.time.to_ne_bytes()),
-    ];
-    for (at, field) in fields {
-        if let Some(to) = bytes.get_mut(at..at + field.len()) {
-            to.copy_from_slice(field);
-        }
-    }
-    bytes
+#[must_use]
+pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
+    // Every byte of a `DataHead` is a field's: its fields end where the next begins.
+    const _: () = assert!(
+        core::mem::offset_of!(DataHead, time) + size_of::<f64>() == EVENT_DATA
+            && core::mem::offset_of!(DataHead, msg_id) == 8
+            && core::mem::offset_of!(DataHead, len) == 16
+            && core::mem::offset_of!(DataHead, reactor_id) == 20
+            && core::mem::offset_of!(DataHead, kind) == 22
+            && core::mem::offset_of!(DataHead, flags) == 23
+            && core::mem::offset_of!(DataHead, server_fd) == 24
+            && core::mem::offset_of!(DataHead, ext_flags) == 26
+            && core::mem::offset_of!(DataHead, reserved) == 28
+            && core::mem::offset_of!(DataHead, time) == 32,
+        "DataHead has no padding"
+    );
+    // SAFETY: a live head of `EVENT_DATA` initialized bytes (no padding, checked
+    // above), borrowed as long as the head; bytes have no alignment.
+    unsafe { &*ptr::from_ref(head).cast() }
 }
 
 /// A pool effect, which `crates/server/src/pool_native.rs` answers; the process-wide
@@ -1181,8 +1190,6 @@ getters!(
     pub on_worker_message: Option<EventFn>,
     pub workers: *mut WorkerRecord,
     pub pipes: *mut c_void,
-    pub registry: *mut WorkerRegistry,
-    pub queue: *mut c_void,
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,
     pub message_bus: *mut c_void,
@@ -1222,8 +1229,8 @@ setters!(
     pub scheduler_warning / set_scheduler_warning: bool,
     pub(crate) workers / set_workers: *mut WorkerRecord,
     pub(crate) pipes / set_pipes: *mut c_void,
-    pub(crate) registry / set_registry: *mut WorkerRegistry,
-    pub(crate) queue / set_queue: *mut c_void,
+    pub(crate) registry / set_registry: Option<Box<WorkerRegistry>>,
+    pub(crate) queue / set_queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc / set_ipc: *mut PoolIpc,
     pub(crate) message_box / set_message_box: *mut c_void,
     pub(crate) message_bus / set_message_bus: *mut c_void,
@@ -1233,8 +1240,9 @@ setters!(
     pub is_async / set_is_async: bool,
     pub warning_time / set_warning_time: i64,
     pub schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
-    // The object the hooks read and the hooks, which `install` writes together.
-    ptr / set_ptr: *mut c_void,
+    // The object the hooks read and the hooks, which `install` writes together (and
+    // the server's startup, for its event pool).
+    pub(crate) ptr / set_ptr: *mut c_void,
     on_start / set_on_start: Option<PoolFn>,
     on_shutdown / set_on_shutdown: Option<PoolFn>,
     on_message / set_on_message: Option<MessageFn>,
@@ -1282,7 +1290,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `f` over the pool's registry ([`PoolRecord::with_registry`]).
-    fn with_registry<R>(&self, f: impl FnOnce(&mut WorkerRegistry) -> R) -> Option<R> {
+    fn with_registry<R>(&self, f: impl FnOnce(&WorkerRegistry) -> R) -> Option<R> {
         self.record().with_registry(f)
     }
 
@@ -1322,14 +1330,18 @@ impl<H: PoolHost> Pool<'_, H> {
                 let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
                     return SW_ERR;
                 };
-                self.set_queue(Box::into_raw(queue).cast());
+                self.set_queue(Some(queue));
             }
             IpcMode::UnixSock => {
                 let pipes = pointer(self.op(Op::NewPipes, 0));
                 self.set_pipes(pipes);
                 for index in 0..worker_num {
                     if self.on(self.worker(index), Op::NewPipe, 0) == 0 {
-                        // The failed pipe freed the list.
+                        // The failed pipe freed the list, and with it the pipes of
+                        // the workers before this one.
+                        for made in 0..index {
+                            self.worker_at(made).clear_pipes();
+                        }
                         self.set_pipes(ptr::null_mut());
                         return SW_ERR;
                     }
@@ -1338,14 +1350,14 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::Socket => self.set_use_socket(true),
             IpcMode::None => {}
         }
-        self.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
+        self.set_registry(Some(Box::default()));
         self.set_ipc(pool_ipc_new(mode == IpcMode::Socket));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
         self.set_max_packet_size(packet_limit(self.use_msgqueue(), SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
-            self.worker_at(index).set_pool(self.p.raw().cast());
+            self.worker_at(index).join(self.p);
         }
         SW_OK
     }
@@ -1438,7 +1450,7 @@ impl<H: PoolHost> Pool<'_, H> {
         for index in 0..self.worker_num() {
             let worker = self.worker_at(index);
             let id = u32::from(self.start_id()) + index;
-            worker.set_pool(self.p.raw().cast());
+            worker.join(self.p);
             worker.set_id(id);
             worker.set_kind(self.kind());
             self.on(worker.raw(), Op::UnlimitPipes, 0);
@@ -1790,7 +1802,7 @@ impl<H: PoolHost> Pool<'_, H> {
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
             ..*head
         };
-        let message = [&head_bytes(&head)[..], data].concat();
+        let message = [&head_view(&head)[..], data].concat();
         if self.h.push_box(&message) < 0 {
             return SW_ERR;
         }
@@ -1848,19 +1860,16 @@ impl<H: PoolHost> Pool<'_, H> {
                 .filter(|&index| index < self.worker_num())
                 .map(|index| self.worker_at(index))
         };
-        // SAFETY: the pool's own records, and their pipes.
-        let sent = unsafe {
-            crate::pool::pool_dispatch(
-                native,
-                self.p.raw().cast(),
-                workers,
-                self.start_id(),
-                self.use_msgqueue(),
-                worker_id,
-                event,
-                blocking,
-            )
-        };
+        let sent = crate::pool::pool_dispatch(
+            native,
+            self.p,
+            workers,
+            self.start_id(),
+            self.use_msgqueue(),
+            worker_id,
+            event,
+            blocking,
+        );
         if sent { SW_OK } else { SW_ERR }
     }
 
@@ -1884,12 +1893,7 @@ impl<H: PoolHost> Pool<'_, H> {
             self.op(Op::FreePipes, 0);
             self.set_pipes(ptr::null_mut());
         }
-        let queue = self.queue().cast::<swoole_rs_ossupport::QueueRecord>();
-        if !queue.is_null() {
-            // SAFETY: the pool's boxed queue, freed once.
-            drop(unsafe { Box::from_raw(queue) });
-        }
-        self.set_queue(ptr::null_mut());
+        self.set_queue(None);
         let ipc = self.ipc();
         if !ipc.is_null() {
             // SAFETY: the pool's IPC state, the box `pool_ipc_new` leaked (the field is
@@ -1899,11 +1903,7 @@ impl<H: PoolHost> Pool<'_, H> {
             pool_ipc_free(*ipc, |socket| self.h.close(socket));
         }
         self.set_ipc(ptr::null_mut());
-        if !self.registry().is_null() {
-            // SAFETY: the pool's boxed registry, freed once.
-            drop(unsafe { Box::from_raw(self.registry()) });
-        }
-        self.set_registry(ptr::null_mut());
+        self.set_registry(None);
         self.h.free_box();
         if !self.message_bus().is_null() {
             self.op(Op::FreeMessageBus, 0);
@@ -2378,9 +2378,9 @@ mod tests {
         assert_eq!(record(&mut pool).protocol_type, PROTOCOL_TASK);
         assert_eq!(pool.max_packet_size(), SW_INPUT_BUFFER_SIZE);
         assert_eq!(pool.max_wait_time(), SW_WORKER_MAX_WAIT_TIME);
-        assert!(!pool.registry().is_null());
+        assert!(!pool.p.registry().is_null());
         pool.destroy();
-        assert!(pool.registry().is_null() && pool.ipc().is_null());
+        assert!(pool.p.registry().is_null() && pool.ipc().is_null());
     }
 
     #[test]
@@ -2456,7 +2456,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::Fork, 4321);
         let mut pool = fixture.pool(script);
-        pool.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
+        pool.set_registry(Some(Box::default()));
         let worker = pool.worker(0);
         assert_eq!(pool.spawn(worker).ok(), Some(4321));
         assert_eq!(pool.worker_by_pid(4321), worker);
@@ -2611,7 +2611,7 @@ mod tests {
     fn an_unknown_child_is_reported() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        pool.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
+        pool.set_registry(Some(Box::default()));
         assert!(!pool.reap(99, 0));
         assert_eq!(pool.h.log, [(Op::Log(Log::UnknownChild), 99)]);
         pool.destroy();

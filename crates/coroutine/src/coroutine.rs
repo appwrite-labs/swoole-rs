@@ -53,7 +53,7 @@ pub struct Coroutine {
 }
 
 impl Coroutine {
-    /// A record before [`Scheduler::register`] seeds it.
+    /// A record before `Scheduler::register` seeds it.
     pub const IDLE: Self = Self {
         native: ptr::null_mut(),
         cid: 0,
@@ -151,17 +151,19 @@ pub const ON_CLOSE: u32 = 2;
 
 impl Scheduler {
     /// Takes the next id, seeds `co` (which `native` embeds) and makes it live.
-    /// Returns whether the scheduler needs activating.
+    /// Returns its handle (none for a null `co`) and whether the scheduler needs
+    /// activating.
     ///
     /// # Safety
     /// `co` is writable, not borrowed, and stays put until it is released.
-    pub unsafe fn register(
+    #[cfg(any(test, feature = "upstream-symbols"))]
+    pub(crate) unsafe fn register(
         &mut self,
         co: *mut Coroutine,
         native: *mut c_void,
         init_msec: c_long,
         now: c_long,
-    ) -> bool {
+    ) -> (Option<Co>, bool) {
         self.last_cid = self.last_cid.wrapping_add(1);
         // SAFETY: the caller lends `co` exclusively; it may be uninitialised.
         unsafe {
@@ -173,14 +175,15 @@ impl Scheduler {
                 ..Coroutine::IDLE
             });
         }
-        if let Some(co) = NonNull::new(co) {
-            self.insert(self.last_cid, Co(co));
+        let co = Co::link(co);
+        if let Some(co) = co {
+            self.insert(self.last_cid, co);
         }
         let count = self.count() as u64;
         if count > self.peak_num {
             self.peak_num = count;
         }
-        !self.activated
+        (co, !self.activated)
     }
 
     /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
@@ -212,7 +215,9 @@ impl Scheduler {
 /// A live coroutine: registered (or being registered) and not yet destroyed.
 /// Coroutines linked from a live one (its origin, children and siblings) are
 /// live too, since a close unlinks them first. Each access borrows it for one
-/// closure, so no reference to one spans a hook, which may change it.
+/// closure, so no reference to one spans a hook, which may change it. It is the
+/// record's address, as the timer carries it.
+#[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Co(NonNull<Coroutine>);
 
@@ -622,10 +627,10 @@ pub(crate) mod tests {
         let (mut a, mut b, mut c) = (blank(), blank(), blank());
         // SAFETY: the coroutines live on this frame past their removal.
         unsafe {
-            assert!(s.register(&raw mut a, ptr::null_mut(), 5, 9));
+            assert!(s.register(&raw mut a, ptr::null_mut(), 5, 9).1);
             assert_eq!(a.cid, 1);
             s.activated = true;
-            assert!(!s.register(&raw mut b, ptr::null_mut(), 5, 9));
+            assert!(!s.register(&raw mut b, ptr::null_mut(), 5, 9).1);
             assert_eq!(s.peak_num, 2);
             assert_eq!(
                 (b.cid, b.state, b.init_msec, b.switch_usec),
@@ -633,7 +638,7 @@ pub(crate) mod tests {
             );
             s.remove(1);
             s.remove(2);
-            assert!(!s.register(&raw mut c, ptr::null_mut(), 0, 0));
+            assert!(!s.register(&raw mut c, ptr::null_mut(), 0, 0).1);
             assert_eq!((c.cid, s.peak_num, s.count()), (3, 2, 1));
             s.remove(3);
             s.last_cid = c_long::MAX;

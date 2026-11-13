@@ -65,9 +65,7 @@ fn instance() -> Option<Rc<Uring>> {
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
 fn suspend(co: *mut c_void, event: *mut c_void) {
-    // SAFETY: the running coroutine, suspended in `event`'s operation, whose
-    // frames own nothing with a destructor.
-    unsafe { swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event)) };
+    swoole_rs_coroutine::yield_with_cancel(co, move |_| uring::cancel(&HOST, event));
 }
 
 fn submit_failed() {

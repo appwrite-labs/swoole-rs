@@ -1,7 +1,6 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
-use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_append, swr_cpp_buffer_new};
 use swoole_rs_reactor::{Socket, SocketFields};
 
 /// `SSLContext::TLS_HOST_NAME`'s string slot.
@@ -496,11 +495,9 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
 fn async_send_raises_buffer_full_at_the_high_watermark() {
     let client = client(1, true, true);
     // Ten bytes queued on the socket.
-    let mut storage = Box::new(core::mem::MaybeUninit::<CppBuffer>::uninit());
-    swr_cpp_buffer_new(&mut storage, 1024);
-    let queue = Box::into_raw(storage).cast::<CppBuffer>();
-    unsafe { swr_cpp_buffer_append(&*queue, [0_u8; 10].as_ptr(), 10) };
-    sock().output.out_buffer = queue.cast();
+    let queue = swoole_rs_buffer::cpp::new_buffer(1024);
+    queue.append(&[0_u8; 10]);
+    sock().output.out_buffer = Some(queue);
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 8);
     assert_eq!(send(Handle(client), b"data", 0), 4);

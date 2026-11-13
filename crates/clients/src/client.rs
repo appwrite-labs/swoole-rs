@@ -556,12 +556,12 @@ impl Handle {
 
     /// `socket->get_out_buffer_length()`.
     fn queued(self) -> u32 {
-        let buffer = self.socket().read(|socket| socket.output.out_buffer);
-        if buffer.is_null() {
-            return 0;
-        }
-        // SAFETY: the socket's live output Buffer.
-        swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
+        self.socket().read(|socket| {
+            let buffer = socket.output.buffer();
+            buffer.map_or(0, |buffer| {
+                swoole_rs_buffer::cpp::swr_cpp_buffer_length(buffer)
+            })
+        })
     }
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.

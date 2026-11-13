@@ -180,15 +180,15 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
-    /// `Server::accept_dtls_connection` of the datagram `pkt`, `length` bytes, that
+    /// `Server::accept_dtls_connection` of the datagram `data` from `peer` that
     /// arrived on the DTLS port `port` of `reactor`, then its handshake.
     fn dtls_accept(
         &self,
         _serv: Server<'_>,
         _reactor: crate::reactor_handle::Reactor,
-        _port: *mut core::ffi::c_void,
-        _pkt: &mut crate::reactor_entry::DgramPacket,
-        _length: u32,
+        _port: crate::view::Port<'_>,
+        _peer: &swoole_rs_corebase::net_types::SocketAddress,
+        _data: &[u8],
     ) -> c_int {
         missing()
     }
@@ -412,11 +412,11 @@ pub(crate) mod tests {
             &self,
             _: Server<'_>,
             _: crate::reactor_handle::Reactor,
-            _: *mut core::ffi::c_void,
-            _: &mut crate::reactor_entry::DgramPacket,
-            length: u32,
+            _: crate::view::Port<'_>,
+            _: &swoole_rs_corebase::net_types::SocketAddress,
+            data: &[u8],
         ) -> c_int {
-            hear(Call::DtlsAccept(length));
+            hear(Call::DtlsAccept(u32::try_from(data.len()).unwrap()));
             0
         }
 

@@ -6,7 +6,7 @@
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
 //! whose pointers head the object (crates/server/src/state.rs), as the
 //! `swr_v1_port_config` is a `ListenPort`. Each new server
-//! checks this file's copies of those layouts with `swr_v1_server_record_layout`. The methods the
+//! checks this file's copies of those layouts with `server_record_layout`. The methods the
 //! cases call are crates/server's `server_methods`. The fixtures read the request line
 //! and headers where upstream's ran llhttp; the client is core-tests' httplib
 //! (client.rs). An assertion in a server callback cannot unwind through the server's
@@ -539,13 +539,6 @@ unsafe extern "C-unwind" {
 
     fn swr_v1_server_new(mode: c_int) -> *mut c_void;
     fn swr_v1_server_delete(serv: *mut c_void);
-    fn swr_v1_server_record_layout(
-        kind: u32,
-        size: usize,
-        alignment: usize,
-        offsets: *const usize,
-        count: usize,
-    ) -> bool;
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 }
 
@@ -604,10 +597,7 @@ impl Port {
 }
 
 fn check_layout(kind: u32, size: usize, alignment: usize, offsets: &[usize]) {
-    // SAFETY: `offsets` is readable for its length.
-    let matches = unsafe {
-        swr_v1_server_record_layout(kind, size, alignment, offsets.as_ptr(), offsets.len())
-    };
+    let matches = swoole_rs_server::server_record_layout(kind, size, alignment, offsets);
     assert!(matches, "record {kind}'s layout differs from the hybrid's");
 }
 

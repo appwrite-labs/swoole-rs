@@ -687,8 +687,8 @@ mod tests {
             unsafe { init(&raw mut (*native).record) };
             let mut object = Self(native);
             let record = object.record();
-            record.socket = SocketRecord::with_fd(-1, 6).into_raw();
-            record.sock_fd = 100;
+            record.socket.set(SocketRecord::with_fd(-1, 6).into_raw());
+            record.sock_fd.set(100);
             record.socket_mut().object = native.cast();
             object
         }
@@ -699,7 +699,7 @@ mod tests {
             unsafe { Co::of(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.record().socket.cast()) }
+            unsafe { Event::new(-1, 0, 6, self.record().socket.get().cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -709,7 +709,7 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.record().socket);
+                SocketRecord::free(self.record().socket.get());
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }
@@ -721,7 +721,7 @@ mod tests {
     }
     impl SocketMut for CoSocket {
         fn socket_mut(&mut self) -> &mut SocketFields {
-            unsafe { &mut *self.socket }
+            unsafe { &mut *self.socket.get() }
         }
     }
 
@@ -735,7 +735,7 @@ mod tests {
     fn a_readable_event_resumes_the_reader_and_clears_the_error() {
         install();
         let mut object = Object::new();
-        object.record().err_code = libc::EAGAIN;
+        object.record().err_code.set(libc::EAGAIN);
         let mut co: c_long = 3;
         object.bind(READ, &raw mut co);
         let mut event = object.event();
@@ -743,7 +743,7 @@ mod tests {
             readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
             0
         );
-        assert_eq!(object.record().err_code, 0);
+        assert_eq!(object.record().err_code.get(), 0);
         assert_eq!(take(), ["last-error:0", "resume:3"]);
         // Nobody writes: a writable event wakes no one.
         assert_eq!(
@@ -775,8 +775,8 @@ mod tests {
         let mut object = Object::new();
         let path = c"/nonexistent/swoole-rs-sendfile";
         assert!(!object.co().sendfile(path, 0, 0));
-        assert_eq!(object.record().err_code, libc::ENOENT);
-        let message = unsafe { CStr::from_ptr(object.record().err_msg) };
+        assert_eq!(object.record().err_code.get(), libc::ENOENT);
+        let message = unsafe { CStr::from_ptr(object.record().err_msg.get()) };
         assert_eq!(
             message.to_str().unwrap(),
             format!(
@@ -803,7 +803,7 @@ mod tests {
         install();
         let mut object = Object::new();
         assert!(object.co().accept(0.0).is_none());
-        assert_eq!(object.record().err_code, libc::EBADF);
+        assert_eq!(object.record().err_code.get(), libc::EBADF);
         assert!(!take().iter().any(|entry| entry == "accepted"));
     }
 
@@ -818,10 +818,10 @@ mod tests {
     fn listen_stores_the_backlog_and_reports_a_closed_socket() {
         install();
         let mut object = Object::new();
-        object.record().sock_fd = -1;
+        object.record().sock_fd.set(-1);
         assert!(!object.co().listen(0));
-        assert_eq!(object.record().err_code, libc::EBADF);
-        assert_eq!(object.record().backlog, 0);
+        assert_eq!(object.record().err_code.get(), libc::EBADF);
+        assert_eq!(object.record().backlog.get(), 0);
     }
 
     #[test]

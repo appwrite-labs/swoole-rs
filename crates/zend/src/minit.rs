@@ -1,23 +1,74 @@
 //! MINIT's registrations, safe behind the token Zend's MINIT hands a family:
 //! constants, classes and their function aliases.
 use crate::{
-    Class, Owned,
+    Class, ClassEntry, Owned, Value,
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
+    helpers::CText,
     sys::{
-        CONST_PERSISTENT, HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern,
-        zend_class_entry, zend_class_implements, zend_declare_class_constant_long,
-        zend_declare_property, zend_declare_property_string, zend_function_entry, zend_long,
-        zend_object_handlers, zend_register_bool_constant, zend_register_double_constant,
-        zend_register_long_constant, zend_register_string_constant,
+        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern, zend_class_entry,
+        zend_class_implements, zend_function, zend_function_entry, zend_long, zend_object_handlers,
     },
 };
 use std::{
-    ffi::{CStr, c_int},
+    ffi::{CStr, c_int, c_void},
     marker::PhantomData,
     mem::offset_of,
 };
+
+// MINIT's registrations (shim_minit.h), each over NUL-terminated names, a
+// registered class or plain values, and total: it registers, or does nothing
+// and says so where Zend would warn or raise a fatal error. None runs PHP code.
+// Private, so only a [`Minit`]'s methods call them: at MINIT, on its thread.
+unsafe extern "C" {
+    safe fn swr_zend_minit_long_constant(name: CText<'_>, value: zend_long, module: c_int) -> bool;
+    safe fn swr_zend_minit_double_constant(name: CText<'_>, value: f64, module: c_int) -> bool;
+    safe fn swr_zend_minit_bool_constant(name: CText<'_>, value: bool, module: c_int) -> bool;
+    safe fn swr_zend_minit_string_constant(
+        name: CText<'_>,
+        value: CText<'_>,
+        module: c_int,
+    ) -> bool;
+    safe fn swr_zend_minit_class_constant_long(
+        class: ClassEntry<'static>,
+        name: CText<'_>,
+        value: zend_long,
+    ) -> bool;
+    safe fn swr_zend_minit_class_constant_string(
+        class: ClassEntry<'static>,
+        name: CText<'_>,
+        value: CText<'_>,
+    ) -> bool;
+    /// It copies `value` unless that is refcounted.
+    safe fn swr_zend_minit_property(
+        class: ClassEntry<'static>,
+        name: CText<'_>,
+        value: &Value,
+        access: c_int,
+    ) -> bool;
+    safe fn swr_zend_minit_property_string(
+        class: ClassEntry<'static>,
+        name: CText<'_>,
+        value: CText<'_>,
+        access: c_int,
+    );
+    safe fn swr_zend_minit_sensitive_parameter(
+        class: ClassEntry<'static>,
+        method: CText<'_>,
+        offset: u32,
+    ) -> bool;
+    /// `CG(function_table)`'s function `name`, or null: one lookup in the
+    /// compiler's table.
+    safe fn swr_zend_compiled_function_find(name: CText<'_>) -> *mut zend_function;
+    /// The native scopes' hooks (`native/corebase/swoole_rs_zend_guard.h`): two
+    /// process-wide function pointers are stored, for scopes entered later,
+    /// which call them with no arguments.
+    safe fn swr_zend_guard_register(
+        context: extern "C" fn() -> *mut c_void,
+        resume: extern "C" fn(),
+    );
+}
 
 unsafe extern "C" {
     /// SPL's classes: null until its MINIT, which runs before that of any
@@ -85,60 +136,24 @@ impl Minit {
         }
     }
 
-    /// `SW_REGISTER_LONG_CONSTANT`.
+    /// `SW_REGISTER_LONG_CONSTANT`: nothing when a constant has the name already.
     pub fn long_constant(&self, name: &CStr, value: zend_long) {
-        // SAFETY: MINIT, with the module's number; Zend copies the name.
-        unsafe {
-            zend_register_long_constant(
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-                persistent(),
-                self.module,
-            );
-        }
+        swr_zend_minit_long_constant(name.into(), value, self.module);
     }
 
-    /// `SW_REGISTER_DOUBLE_CONSTANT`.
+    /// `SW_REGISTER_DOUBLE_CONSTANT`, as [`Self::long_constant`].
     pub fn double_constant(&self, name: &CStr, value: f64) {
-        // SAFETY: MINIT, with the module's number; Zend copies the name.
-        unsafe {
-            zend_register_double_constant(
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-                persistent(),
-                self.module,
-            );
-        }
+        swr_zend_minit_double_constant(name.into(), value, self.module);
     }
 
-    /// `REGISTER_BOOL_CONSTANT`, persistent.
+    /// `REGISTER_BOOL_CONSTANT`, persistent, as [`Self::long_constant`].
     pub fn bool_constant(&self, name: &CStr, value: bool) {
-        // SAFETY: MINIT, with the module's number; Zend copies the name.
-        unsafe {
-            zend_register_bool_constant(
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-                persistent(),
-                self.module,
-            );
-        }
+        swr_zend_minit_bool_constant(name.into(), value, self.module);
     }
 
-    /// `REGISTER_STRING_CONSTANT`, persistent.
+    /// `REGISTER_STRING_CONSTANT`, persistent, as [`Self::long_constant`].
     pub fn string_constant(&self, name: &CStr, value: &CStr) {
-        // SAFETY: MINIT, with the module's number; Zend copies the name and value.
-        unsafe {
-            zend_register_string_constant(
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr(),
-                persistent(),
-                self.module,
-            );
-        }
+        swr_zend_minit_string_constant(name.into(), value.into(), self.module);
     }
 
     /// `zend_string_init_interned(text, len, 1)` into `slot`: MINIT's strings
@@ -306,19 +321,42 @@ impl Minit {
         );
     }
 
-    /// `zend_declare_class_constant_long` on a registered class.
+    /// `zend_declare_class_constant_long` on a registered class: nothing when
+    /// the class has the constant already, or for the name `class`.
     /// # Panics
     /// `class` is not registered.
     pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name.
-        unsafe {
-            zend_declare_class_constant_long(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-            );
-        }
+        swr_zend_minit_class_constant_long(declared(class), name.into(), value);
+    }
+
+    /// `zend_declare_class_constant_string`, as [`Self::class_constant_long`].
+    /// # Panics
+    /// `class` is not registered.
+    pub fn class_constant_string(&self, class: &Class, name: &CStr, value: &CStr) {
+        swr_zend_minit_class_constant_string(declared(class), name.into(), value.into());
+    }
+
+    /// `zend_add_parameter_attribute(method, offset, SensitiveParameter)`: PHP
+    /// hides argument `offset` (from 0) of `class`'s `method` (lower case) in
+    /// backtraces. Nothing when the class has no such method or parameter.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn sensitive_parameter(&self, class: &Class, method: &CStr, offset: u32) {
+        swr_zend_minit_sensitive_parameter(declared(class), method.into(), offset);
+    }
+
+    /// `zend::get_function(CG(function_table), name)`: the function the
+    /// compiler knows as `name` (lower case), or null.
+    #[must_use]
+    pub fn compiled_function(&self, name: &CStr) -> *mut zend_function {
+        swr_zend_compiled_function_find(name.into())
+    }
+
+    /// `swr_zend_guard_register`: what names the running native scope
+    /// (`context`), and what a whole-thread exit runs before it bails out
+    /// (`resume`), from now on.
+    pub fn guard_register(&self, context: extern "C" fn() -> *mut c_void, resume: extern "C" fn()) {
+        swr_zend_guard_register(context, resume);
     }
 
     /// `zend_declare_property_long` with `access` (`ZEND_ACC_*`) flags.
@@ -360,33 +398,14 @@ impl Minit {
     )]
     fn property(&self, class: &Class, name: &CStr, value: &Owned, access: u32) {
         assert!(value.kind() < IS_STRING, "a scalar default");
-        // SAFETY: MINIT, with a registered class; Zend copies the name and
-        // the scalar zval.
-        unsafe {
-            zend_declare_property(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr(),
-                flags(access),
-            );
-        }
+        swr_zend_minit_property(declared(class), name.into(), value, flags(access));
     }
 
     /// `zend_declare_property_string` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_string(&self, class: &Class, name: &CStr, value: &CStr, access: u32) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name and value.
-        unsafe {
-            zend_declare_property_string(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
-                value.as_ptr(),
-                flags(access),
-            );
-        }
+        swr_zend_minit_property_string(declared(class), name.into(), value.into(), flags(access));
     }
 
     /// A registered class, to extend.
@@ -454,11 +473,6 @@ impl Minit {
     }
 }
 
-/// `CONST_PERSISTENT` as the `int` the register functions take.
-fn persistent() -> c_int {
-    c_int::try_from(CONST_PERSISTENT).unwrap_or(c_int::MAX)
-}
-
 /// `ZEND_ACC_*` flags as the `int` the declare functions take.
 fn flags(value: u32) -> c_int {
     c_int::try_from(value).unwrap_or(c_int::MAX)
@@ -480,6 +494,12 @@ fn registered(class: &Class) -> *mut zend_class_entry {
     let entry = class.entry();
     assert!(!entry.is_null(), "a registered class");
     entry
+}
+
+/// `class`, checking it is registered: an internal class, which lives for the
+/// process.
+fn declared(class: &Class) -> ClassEntry<'static> {
+    ClassEntry(registered(class), PhantomData)
 }
 
 /// `methods` as a table pointer, checking its `PHP_FE_END`.

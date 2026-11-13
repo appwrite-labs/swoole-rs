@@ -324,12 +324,11 @@ pub(crate) fn warn(fatal: bool, message: &str) {
 /// `zend_throw_exception_ex(swoole_socket_coro_exception_ce, code, ...)`.
 fn throw(code: c_int, message: &str) {
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: the registered exception and owned diagnostic string remain live through the trapped throw.
-    if unsafe { z::swr_zend_try_facade_throw(EXCEPTION.entry(), message.as_ptr(), i64::from(code)) }
-        != 0
-    {
-        Bailout.defer();
-    }
+    swoole_rs_zend::bailout::defer(swoole_rs_zend::throw_trapped(
+        Some(&EXCEPTION),
+        &message,
+        i64::from(code),
+    ));
 }
 
 /// `swoole_pagesize()`.
@@ -962,13 +961,11 @@ pub fn create_socket(kind: i32) -> Option<Owned> {
     created(owner::create_kind(kind))
 }
 
-/// `php_swoole_create_socket_from_fd(fd, type)`, none as [`create_socket`].
-/// # Safety
-/// The caller gives up `fd`, which the new object owns.
+/// `php_swoole_create_socket_from_fd(fd, type)`, none as [`create_socket`]. The
+/// caller gives up `fd`, which the new object owns.
 #[must_use]
-pub unsafe fn create_from_fd(fd: i32, kind: i32) -> Option<Owned> {
-    // SAFETY: per the caller.
-    created(unsafe { owner::from_fd(fd, kind) })
+pub fn create_from_fd(fd: i32, kind: i32) -> Option<Owned> {
+    created(owner::from_fd(fd, kind))
 }
 
 /// `php_swoole_dup_socket(fd, type)`: an object over a duplicate of `fd`,

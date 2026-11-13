@@ -15,7 +15,9 @@
 //! `longjmp` never crosses a Rust frame.
 use crate::process_pool::IpcMode;
 use crate::worker_record::Worker as Record;
-use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
+#[cfg(any(feature = "upstream-symbols", test))]
+use std::ffi::CStr;
+use std::ffi::{CString, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -48,7 +50,7 @@ const MTYPE: usize = size_of::<c_long>();
 
 /// `SW_PIPE_MASTER` and `SW_PIPE_NONBLOCK`.
 const PIPE_MASTER: c_int = 1;
-const PIPE_NONBLOCK: c_int = 2;
+pub(crate) const PIPE_NONBLOCK: c_int = 2;
 
 /// A warning native code formats (`PoolNative::warn`); `errno` is the failed
 /// call's where the message is a system warning.
@@ -722,6 +724,7 @@ pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(*mut c_void)) {
 
 /// Record a stream listener's address before it is created: false when the pool
 /// has no stream socket.
+#[cfg(any(feature = "upstream-symbols", test))]
 pub(crate) fn swr_v1_process_pool_ipc_address(ipc: &mut PoolIpc, host: &CStr, port: c_int) -> bool {
     let Some(stream) = ipc.stream.as_mut() else {
         return false;
@@ -789,6 +792,7 @@ pub fn swr_v1_process_pool_ipc_send_sync(ipc: Option<&PoolIpc>, data: &[u8]) -> 
 }
 
 /// Keep the listener the native side created; `socket` is a native socket it now owns.
+#[cfg(any(feature = "upstream-symbols", test))]
 pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *mut c_void) {
     if let Some(stream) = ipc.stream.as_mut() {
         stream.socket = socket;
@@ -915,44 +919,42 @@ pub(crate) fn idle(worker: Record<'_>) -> bool {
     worker.is_idle()
 }
 
-/// `Worker::send_pipe_message`: through the pool's queue (as `mtype` worker id + 1)
-/// when it has one, else the master's or the worker's end of the pipe.
-///
-/// # Safety
-/// The pool is live; `pipe` is the chosen pipe end (unused with a queue); `data`
-/// holds `length` initialized bytes, at most `sizeof(EventData)` with a queue.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the flat list of the former C export; `send_pipe_message` and `pool_dispatch` call it"
-)]
-pub unsafe fn swr_v1_process_worker_send(
+/// `Worker::send_pipe_message` of `data`: through the pool's queue (as `mtype`
+/// worker id + 1) when it has one, else `pipe`, the master's or the worker's end of
+/// worker `worker_id`'s pipe ([`Record::pipe_master`], [`Record::pipe_worker`]).
+pub(crate) fn swr_v1_process_worker_send(
     native: &dyn PoolNative,
-    pool: *mut c_void,
+    pool: crate::process_pool::PoolRef<'_>,
     pipe: *mut c_void,
     queue: bool,
     worker_id: u32,
-    data: *const u8,
-    length: usize,
+    data: &[u8],
     flags: c_int,
 ) -> isize {
-    let mut call = PoolCall::new(pool, ptr::null_mut());
+    let length = data.len();
+    let mut call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
     if queue {
         let mut message = vec![0u64; (MTYPE + length).div_ceil(8)];
         if let Some(mtype) = message.first_mut() {
             *mtype = u64::from(worker_id) + 1;
         }
         let base = message.as_mut_ptr().cast::<u8>();
-        // SAFETY: the caller's bytes fit after `mtype`.
-        unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
+        // SAFETY: the words hold `MTYPE + length` bytes, so `data` fits after `mtype`.
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), base.wrapping_add(MTYPE), length) };
         // The queue's push, which cannot reach PHP.
-        return if call.pool().queue_push(&message, length) {
+        return if pool.queue_push(&message, length) {
             length.cast_signed()
         } else {
             -1
         };
     }
+    if pipe.is_null() {
+        // A worker without a pipe, which upstream doesn't send through.
+        return -1;
+    }
+    // A worker's pipe end, a live socket (the record's invariant).
     call.socket = pipe;
-    call.data = data.cast_mut().cast();
+    call.data = data.as_ptr().cast_mut().cast();
     call.length = length;
     call.flags = flags & PIPE_NONBLOCK;
     // The native pipe write, which cannot reach PHP.
@@ -964,17 +966,13 @@ pub unsafe fn swr_v1_process_worker_send(
 /// `ProcessPool::dispatch`/`dispatch_sync` to a worker's pipe or queue: offset
 /// the chosen worker `*target` by `start_id`, and send `event` (`blocking`: wait
 /// for the pipe). False after reporting a failed send.
-///
-/// # Safety
-/// The pool is live; each worker `workers` returns is one of its records, whose
-/// master pipe end is the pool's.
 #[expect(
     clippy::too_many_arguments,
     reason = "the flat list of the former C export; `Pool::dispatch` is the one caller"
 )]
-pub unsafe fn pool_dispatch<'a>(
+pub(crate) fn pool_dispatch<'a>(
     native: &dyn PoolNative,
-    pool: *mut c_void,
+    pool: crate::process_pool::PoolRef<'_>,
     workers: impl Fn(usize) -> Option<Record<'a>>,
     start_id: u16,
     queue: bool,
@@ -986,7 +984,7 @@ pub unsafe fn pool_dispatch<'a>(
     *target += c_int::from(start_id);
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
     let Some(worker) = workers(index) else {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
         native.warn(
             &call,
             Warning::Send {
@@ -998,21 +996,9 @@ pub unsafe fn pool_dispatch<'a>(
     };
     let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
-    // SAFETY: as the caller guarantees; `event` lends its bytes.
-    let sent = unsafe {
-        swr_v1_process_worker_send(
-            native,
-            pool,
-            pipe,
-            queue,
-            id,
-            event.as_ptr(),
-            event.len(),
-            flags,
-        )
-    };
+    let sent = swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags);
     if sent < 0 {
-        let call = PoolCall::new(pool, ptr::null_mut());
+        let call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
         native.warn(
             &call,
             Warning::Send {
@@ -1388,18 +1374,17 @@ mod tests {
         let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
         let mut target = 5;
         let event = [0u8; 4];
-        let sent = unsafe {
-            pool_dispatch(
-                &Scripted,
-                ptr::null_mut(),
-                |index| workers.get(index).copied(),
-                0,
-                false,
-                &mut target,
-                &event,
-                false,
-            )
-        };
+        let mut pool = crate::process_pool::PoolRecord::empty();
+        let sent = pool_dispatch(
+            &Scripted,
+            (&mut pool).into(),
+            |index| workers.get(index).copied(),
+            0,
+            false,
+            &mut target,
+            &event,
+            false,
+        );
         assert!(!sent);
         assert_eq!(
             with(|s| s.warnings.clone()),

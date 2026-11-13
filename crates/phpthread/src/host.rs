@@ -52,8 +52,8 @@ pub(crate) fn co_socket_cast(object: &Value) -> Option<(c_int, c_int)> {
 /// A coroutine socket of type `kind` over `fd`, which it takes; `None` on
 /// failure.
 pub(crate) fn co_socket_create(fd: c_int, kind: c_int) -> Option<Owned> {
-    // SAFETY: a descriptor the new socket takes, in a request.
-    unsafe { swoole_rs_phpclients::create_from_fd(fd, kind) }
+    // A descriptor the new socket takes, in a request.
+    swoole_rs_phpclients::create_from_fd(fd, kind)
 }
 
 /// A duplicate of an ext/sockets Socket's descriptor: -1 after throwing

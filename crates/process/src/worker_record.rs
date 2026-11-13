@@ -74,6 +74,15 @@ impl WorkerType {
 
 /// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
 /// pointer and atomic fields are opaque storage here.
+///
+/// `pool` and the pipe ends are private: `pool` is null or a live pool, and
+/// `pipe_master`, `pipe_worker` and `pipe_current` are each null or a live native
+/// socket, for as long as this process sends through the record or a copy of it.
+/// Only [`Worker::set_pool`] and [`Worker::set_pipes`], whose callers say so, write
+/// them with anything but null or each other, so [`Worker::pool_ref`] and the sends
+/// over it trust them. The records are shared memory, and each process owns its
+/// own sockets at these addresses: a process that frees its pipes leaves the fields
+/// to the others, and sends through the record no more.
 #[repr(C)]
 pub struct WorkerRecord {
     pub(crate) pid: c_int,
@@ -97,10 +106,10 @@ pub struct WorkerRecord {
     pub response_count: i64,
     pub coroutine_num: usize,
     pub lock: Option<&'static SharedMutex>,
-    pub pipe_object: *mut c_void,
-    pub pipe_master: *mut c_void,
-    pub pipe_worker: *mut c_void,
-    pub pipe_current: *mut c_void,
+    pipe_object: *mut c_void,
+    pipe_master: *mut c_void,
+    pipe_worker: *mut c_void,
+    pipe_current: *mut c_void,
     ptr: *mut c_void,
 }
 
@@ -143,11 +152,10 @@ impl WorkerRecord {
         }
     }
 
-    /// Makes the record `pool`'s worker `id`, of `kind`.
-    pub fn place(&mut self, pool: *mut c_void, id: u32, kind: u8) {
-        self.pool = pool;
-        self.id = id;
-        self.kind = kind;
+    /// The native pipe object that owns the worker's two ends, or null.
+    #[must_use]
+    pub fn pipe_object(&self) -> *mut c_void {
+        self.pipe_object
     }
 
     /// The worker's id (its slot in the worker pool).
@@ -238,17 +246,31 @@ impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
     }
 }
 
+impl<'a> From<&'a core::cell::UnsafeCell<WorkerRecord>> for Worker<'a> {
+    /// The record a cell keeps live for `'a`: its owner reaches it only through
+    /// handles like this one, which read and write a field at a time.
+    fn from(record: &'a core::cell::UnsafeCell<WorkerRecord>) -> Self {
+        Self {
+            raw: record.get(),
+            life: core::marker::PhantomData,
+        }
+    }
+}
+
 macro_rules! field {
-    ($(#[$doc:meta])* $get:ident, $set:ident, $field:ident: $ty:ty) => {
+    ($(#[$doc:meta])* $get:ident, $field:ident: $ty:ty) => {
         $(#[$doc])*
         #[must_use]
         pub fn $get(self) -> $ty {
             // SAFETY: `new`'s contract: a live record; only the field is read.
             unsafe { (*self.raw).$field }
         }
+    };
+    ($(#[$doc:meta])* $get:ident, $vis:vis $set:ident, $field:ident: $ty:ty) => {
+        field!($(#[$doc])* $get, $field: $ty);
 
         $(#[$doc])*
-        pub fn $set(self, value: $ty) {
+        $vis fn $set(self, value: $ty) {
             // SAFETY: `new`'s contract: a live record whose owner orders this write;
             // only the field is written.
             unsafe { (*self.raw).$field = value };
@@ -256,7 +278,7 @@ macro_rules! field {
     };
 }
 
-impl Worker<'_> {
+impl<'a> Worker<'a> {
     /// The record at `raw`.
     ///
     /// # Safety
@@ -289,99 +311,240 @@ impl Worker<'_> {
         self.raw
     }
 
-    /// A copy of the whole record. Its bytes are copied around the status, which
-    /// its worker may be storing meanwhile, and the status is loaded atomically.
+    /// A copy of the whole record, a field at a time: the status, which its worker
+    /// may be storing meanwhile, and the concurrency are loaded atomically.
     #[must_use]
     pub fn get(self) -> WorkerRecord {
-        let mut copy = WorkerRecord::empty();
-        let (from, to) = (self.raw.cast::<u8>(), (&raw mut copy).cast::<u8>());
-        let status = core::mem::offset_of!(WorkerRecord, status);
-        let after = status + size_of::<AtomicU8>();
-        // SAFETY: `new`'s contract: a live record, whose bytes before the status are
-        // copied into `copy`'s, a separate record of the same layout.
-        unsafe { to.copy_from_nonoverlapping(from, status) };
-        // SAFETY: as above, the bytes after the status, to the record's end.
-        unsafe {
-            to.wrapping_add(after).copy_from_nonoverlapping(
-                from.wrapping_add(after),
-                size_of::<WorkerRecord>() - after,
-            );
-        };
-        *copy.status.get_mut() = self.status_slot().load(Ordering::Relaxed);
-        copy
+        WorkerRecord {
+            pid: self.pid(),
+            id: self.id(),
+            pool: self.pool(),
+            queue: self.queue(),
+            shared: self.shared(),
+            redirect_stdout: self.redirect_stdout(),
+            redirect_stdin: self.redirect_stdin(),
+            redirect_stderr: self.redirect_stderr(),
+            status: AtomicU8::new(self.status_slot().load(Ordering::Relaxed)),
+            kind: self.kind(),
+            msgqueue_mode: self.msgqueue_mode(),
+            child_process: self.child_process(),
+            concurrency: AtomicU32::new(self.concurrency().load(Ordering::Relaxed)),
+            start_time: self.start_time(),
+            dispatch_count: self.dispatch_count(),
+            request_count: self.request_count(),
+            response_count: self.response_count(),
+            coroutine_num: self.coroutine_num(),
+            lock: self.lock(),
+            pipe_object: self.pipe_object(),
+            pipe_master: self.pipe_master(),
+            pipe_worker: self.pipe_worker(),
+            pipe_current: self.pipe_current(),
+            ptr: self.user_data(),
+        }
+    }
+
+    /// `*worker = record`, a field at a time: the record becomes a copy of
+    /// another, whose pool and pipes (live while that one is sent through) it then
+    /// shares.
+    pub fn put(self, record: WorkerRecord) {
+        let WorkerRecord {
+            pid,
+            id,
+            pool,
+            queue,
+            shared,
+            redirect_stdout,
+            redirect_stdin,
+            redirect_stderr,
+            status,
+            kind,
+            msgqueue_mode,
+            child_process,
+            concurrency,
+            start_time,
+            dispatch_count,
+            request_count,
+            response_count,
+            coroutine_num,
+            lock,
+            pipe_object,
+            pipe_master,
+            pipe_worker,
+            pipe_current,
+            ptr,
+        } = record;
+        self.set_pid(pid);
+        self.set_id(id);
+        self.write_pool(pool);
+        self.set_queue(queue);
+        self.set_shared(shared);
+        self.set_redirect_stdout(redirect_stdout);
+        self.set_redirect_stdin(redirect_stdin);
+        self.set_redirect_stderr(redirect_stderr);
+        self.status_slot()
+            .store(status.into_inner(), Ordering::Relaxed);
+        self.set_kind(kind);
+        self.set_msgqueue_mode(msgqueue_mode);
+        self.set_child_process(child_process);
+        self.concurrency()
+            .store(concurrency.into_inner(), Ordering::Relaxed);
+        self.set_start_time(start_time);
+        self.set_dispatch_count(dispatch_count);
+        self.set_request_count(request_count);
+        self.set_response_count(response_count);
+        self.write_coroutine_num(coroutine_num);
+        self.set_lock(lock);
+        self.write_pipe_object(pipe_object);
+        self.write_pipe_master(pipe_master);
+        self.write_pipe_worker(pipe_worker);
+        self.write_pipe_current(pipe_current);
+        self.set_user_data(ptr);
     }
 
     field!(
         /// The worker's kind (C++ `type`: `SW_EVENT_WORKER`/`SW_TASK_WORKER`/…).
-        kind, set_kind, kind: u8
+        kind, pub set_kind, kind: u8
     );
     field!(
         /// The worker's id (its slot in the worker pool, `WorkerId`).
-        id, set_id, id: u32
+        id, pub set_id, id: u32
     );
     field!(
         /// The worker's mutex.
-        lock, set_lock, lock: Option<&'static SharedMutex>
+        lock, pub set_lock, lock: Option<&'static SharedMutex>
     );
     field!(
         /// The worker's process (or thread) id.
-        pid, set_pid, pid: c_int
+        pid, pub set_pid, pid: c_int
     );
     field!(
         /// The worker's message queue, or null.
-        queue, set_queue, queue: *mut c_void
+        queue, pub set_queue, queue: *mut c_void
     );
     field!(
         /// The worker's `msgqueue_mode`.
-        msgqueue_mode, set_msgqueue_mode, msgqueue_mode: u8
+        msgqueue_mode, pub set_msgqueue_mode, msgqueue_mode: u8
     );
     field!(
-        /// The worker's pool (a native `ProcessPool`).
-        pool, set_pool, pool: *mut c_void
+        /// The worker's pool (a native `ProcessPool`), or null: [`Worker::pool_ref`]'s.
+        pool, write_pool, pool: *mut c_void
+    );
+    field!(
+        /// Whether the record is a copy of a server's worker, whose pipe it shares.
+        shared, pub set_shared, shared: bool
+    );
+    field!(
+        /// Whether this process is the worker's forked child.
+        child_process, pub set_child_process, child_process: bool
     );
     field!(
         /// Whether the worker's stdin goes to /dev/null when it starts.
-        redirect_stdin, set_redirect_stdin, redirect_stdin: bool
+        redirect_stdin, pub set_redirect_stdin, redirect_stdin: bool
     );
     field!(
         /// Whether the worker's stdout goes to /dev/null when it starts.
-        redirect_stdout, set_redirect_stdout, redirect_stdout: bool
+        redirect_stdout, pub set_redirect_stdout, redirect_stdout: bool
     );
     field!(
         /// Whether the worker's stderr goes to /dev/null when it starts.
-        redirect_stderr, set_redirect_stderr, redirect_stderr: bool
+        redirect_stderr, pub set_redirect_stderr, redirect_stderr: bool
     );
     field!(
         /// `Worker::ptr`: what its owner keeps there (a user worker's process object).
-        user_data, set_user_data, ptr: *mut c_void
+        user_data, pub set_user_data, ptr: *mut c_void
     );
     field!(
-        /// The master's end of the worker's pipe (a native socket), or null.
-        pipe_master, set_pipe_master, pipe_master: *mut c_void
+        /// The master's end of the worker's pipe (a live native socket), or null.
+        pipe_master, write_pipe_master, pipe_master: *mut c_void
     );
     field!(
-        /// The worker's end of its pipe (a native socket), or null.
-        pipe_worker, set_pipe_worker, pipe_worker: *mut c_void
+        /// The worker's end of its pipe (a live native socket), or null.
+        pipe_worker, write_pipe_worker, pipe_worker: *mut c_void
     );
     field!(
         /// The native pipe object that owns the worker's two ends, or null.
-        pipe_object, set_pipe_object, pipe_object: *mut c_void
+        pipe_object, write_pipe_object, pipe_object: *mut c_void
     );
     field!(
+        /// The end of its pipe this process uses (a live native socket), or null.
+        pipe_current, write_pipe_current, pipe_current: *mut c_void
+    );
+
+    /// The worker's live pool, or `None` for a record no pool holds.
+    #[must_use]
+    pub fn pool_ref(self) -> Option<crate::process_pool::PoolRef<'a>> {
+        let pool = self.pool().cast::<crate::process_pool::PoolRecord>();
+        if pool.is_null() {
+            return None;
+        }
+        // SAFETY: the record's invariant: a pool only `set_pool` and `join` write,
+        // live for as long as the record is sent through, so for the handle's `'a`.
+        Some(unsafe { crate::process_pool::PoolRef::new(pool) })
+    }
+
+    /// Makes the record one of `pool`'s workers.
+    ///
+    /// # Safety
+    /// `pool` stays live for as long as this process sends through this record or a
+    /// copy of it.
+    pub unsafe fn set_pool(self, pool: crate::process_pool::PoolRef<'_>) {
+        self.write_pool(pool.raw().cast());
+    }
+
+    /// [`Worker::set_pool`] for this crate's pool operations, over the pool that
+    /// owns the record's array or was lent it for as long as itself: `create`,
+    /// `start_check` and the server's startup.
+    pub(crate) fn join(self, pool: crate::process_pool::PoolRef<'_>) {
+        self.write_pool(pool.raw().cast());
+    }
+
+    /// Gives the worker its pipe: the native pipe object that owns the two ends,
+    /// the master's end and the worker's. The current end is left as it is.
+    ///
+    /// # Safety
+    /// `master` and `end` are each null or a native socket that stays live for as
+    /// long as this process sends through this record or a copy of it, or until the
+    /// record's pipes are set or cleared again.
+    pub unsafe fn set_pipes(self, object: *mut c_void, master: *mut c_void, end: *mut c_void) {
+        self.write_pipe_object(object);
+        self.write_pipe_master(master);
+        self.write_pipe_worker(end);
+    }
+
+    /// Forgets the worker's pipe, which its owner is about to free.
+    pub fn clear_pipes(self) {
+        let null = core::ptr::null_mut();
+        self.write_pipe_object(null);
+        self.write_pipe_master(null);
+        self.write_pipe_worker(null);
+        self.write_pipe_current(null);
+    }
+
+    /// `pipe_current = pipe_master` (`master`) or `pipe_worker`: the end this
+    /// process reads and writes.
+    pub fn use_pipe(self, master: bool) {
+        self.write_pipe_current(if master {
+            self.pipe_master()
+        } else {
+            self.pipe_worker()
+        });
+    }
+
+    field!(
         /// `worker->request_count`.
-        request_count, set_request_count, request_count: i64
+        request_count, pub set_request_count, request_count: i64
     );
     field!(
         /// `worker->response_count`.
-        response_count, set_response_count, response_count: i64
+        response_count, pub set_response_count, response_count: i64
     );
     field!(
         /// `worker->dispatch_count`.
-        dispatch_count, set_dispatch_count, dispatch_count: i64
+        dispatch_count, pub set_dispatch_count, dispatch_count: i64
     );
     field!(
         /// `worker->start_time`.
-        start_time, set_start_time, start_time: i64
+        start_time, pub set_start_time, start_time: i64
     );
 
     /// `Server::stats()`'s worker counters: request, response and dispatch
@@ -420,12 +583,10 @@ impl Worker<'_> {
         unsafe { &(*self.raw).status }
     }
 
-    /// `worker->coroutine_num`.
-    #[must_use]
-    pub fn coroutine_num(self) -> usize {
-        // SAFETY: `new`'s contract: a live record, for longer than this read.
-        unsafe { (*self.raw).coroutine_num }
-    }
+    field!(
+        /// `worker->coroutine_num`.
+        coroutine_num, write_coroutine_num, coroutine_num: usize
+    );
 
     /// `worker->concurrency`, now.
     #[must_use]
@@ -541,7 +702,7 @@ pub fn copy_for_process(
         worker.pipe_object = core::ptr::null_mut();
     }
     if pool.ipc_mode == IpcMode::MsgQueue && pool.on_message.is_none() {
-        worker.queue = pool.queue;
+        worker.queue = pool.queue();
         worker.msgqueue_mode = MSGQUEUE_BALANCE;
     }
     *copy = worker;
@@ -568,11 +729,6 @@ mod tests {
     // the right field.
     #[test]
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
-        extern "C-unwind" fn on_message(
-            _: crate::process_pool::PoolRef<'_>,
-            _: &crate::process_pool::RecvData,
-        ) {
-        }
         let mut fds: [c_int; 2] = [7, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         workers[1].id = u32::MAX;
@@ -607,14 +763,36 @@ mod tests {
             7
         );
         assert!(copy.pipe_current.is_null());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no msgget")]
+    fn a_queue_pools_process_balances_over_the_pools_queue() {
+        extern "C-unwind" fn on_message(
+            _: crate::process_pool::PoolRef<'_>,
+            _: &crate::process_pool::RecvData,
+        ) {
+        }
+        let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
+        let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
+        pool.workers = workers.as_mut_ptr();
+        pool.worker_num = 2;
+        let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
         pool.ipc_mode = IpcMode::MsgQueue;
-        pool.queue = 3 as *mut c_void;
+        pool.queue = Some(Box::new(swoole_rs_ossupport::QueueRecord::new(
+            libc::IPC_PRIVATE,
+            false,
+            0,
+        )));
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             -1
         );
-        assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue, 2));
+        assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue(), 2));
+        if let Some(queue) = pool.queue.as_deref_mut() {
+            queue.destroy();
+        }
         pool.on_message = Some(on_message);
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),

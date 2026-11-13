@@ -3,10 +3,10 @@
 #define SWOOLE_RS_ZEND_SHIM_STDEXT_H
 #include "php.h"
 
-/* zend_hash_str_find_ptr(EG(function_table), name) and, at MINIT, of
- * CG(function_table). */
+/* zend_hash_str_find_ptr(EG(function_table), name) and, of the NUL-terminated
+ * `name`, of CG(function_table): null for no such function. */
 zend_function *swr_zend_function_find(const char *name, size_t length);
-zend_function *swr_zend_compiled_function_find(const char *name, size_t length);
+zend_function *swr_zend_compiled_function_find(const char *name);
 
 /* zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL) inside
  * zend_try: 1 if it bailed out. */
@@ -19,17 +19,10 @@ int swr_zend_try_lookup_class(zend_string *name, zend_class_entry **ce);
 /* zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, fn, num_args, object). */
 zend_execute_data *swr_zend_push_nested_call(zend_function *fn, uint32_t num_args, void *object);
 
-/* &EG(uninitialized_zval). */
-
 /* sapi_module.treat_data(PARSE_STRING, text, array): `text` is emalloc'd and
  * the SAPI frees it. */
 void swr_zend_treat_string(char *text, zval *array);
 
-/* ZEND_HASH_FOREACH_KEY_VAL: `key` is NULL for an integer key; `each` returns
- * false to stop. */
-void swr_zend_hash_foreach_key(const HashTable *table,
-                               bool (*each)(zend_ulong index, zend_string *key, zval *value, void *context),
-                               void *context);
 int swr_zend_try_stdext_nogc_dtor(zval *);
 int swr_zend_try_stdext_cannot_add(void);
 #endif

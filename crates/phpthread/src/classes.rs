@@ -17,11 +17,20 @@ use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Minit, Owned, Value as ZValue, bailout, new_object,
     sys::{
         IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL,
-        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_dval_to_lval_safe,
-        swr_zend_handle_numeric_str, swr_zend_resource_handle, zend_ulong,
+        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_dval_to_lval_safe, zend_long, zend_ulong,
         zend_use_resource_as_offset,
     },
 };
+
+unsafe extern "C" {
+    /// `_zend_handle_numeric_str`: whether a live string is a canonical integer,
+    /// which `index` then holds. It reads the string only.
+    safe fn swr_zend_handle_numeric_str(key: &swoole_rs_zend::ZStr, index: &mut zend_ulong)
+    -> bool;
+    /// `Z_RES_HANDLE_P`: the handle of the resource a live zval holds, read
+    /// only; 0 for any other value.
+    safe fn swr_zend_resource_handle(value: &ZValue) -> zend_long;
+}
 use swoole_rs_zend::{method_table, sys as z};
 
 /// An object's reference to its shared table or queue, unset until
@@ -249,15 +258,12 @@ fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
 fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
     match key.kind() {
         IS_STRING => {
-            let text = key.str()?.bytes();
+            let text = key.str()?;
             let mut index: zend_ulong = 0;
-            // SAFETY: a live string and a writable local.
-            if unsafe {
-                swr_zend_handle_numeric_str(text.as_ptr().cast(), text.len(), &raw mut index)
-            } {
+            if swr_zend_handle_numeric_str(text, &mut index) {
                 Some(Key::Int(index.c_cast::<i64>()))
             } else {
-                Some(Key::Str(text.into()))
+                Some(Key::Str(text.bytes().into()))
             }
         }
         IS_LONG => key.as_long().map(Key::Int),
@@ -272,8 +278,7 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
         IS_RESOURCE => {
             // SAFETY: a resource zval; Zend's warning.
             unsafe { zend_use_resource_as_offset(key.as_ptr()) };
-            // SAFETY: as above.
-            Some(Key::Int(unsafe { swr_zend_resource_handle(key.as_ptr()) }))
+            Some(Key::Int(swr_zend_resource_handle(key)))
         }
         _ => {
             // Both of upstream's errors, in its order.

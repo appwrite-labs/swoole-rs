@@ -34,16 +34,6 @@ int swr_zend_try_report(void (*report)(const char *message), const char *message
     SWR_TRAP(report(message));
 }
 
-int swr_zend_try_report_code(void (*report)(int code, int flag, const char *message), int code,
-                             int flag, const char *message) {
-    SWR_TRAP(report(code, flag, message));
-}
-
-int swr_zend_try_report_flag(void (*report)(int level, bool flag, const char *message), int level,
-                             bool flag, const char *message) {
-    SWR_TRAP(report(level, flag, message));
-}
-
 #define SWR_TRY_PARSE(name, type, slow)                                                    \
     int name(zval *arg, type *out, uint32_t number, bool *parsed) {                      \
         *parsed = false;                                                                   \
@@ -68,12 +58,6 @@ int swr_zend_try_get_double(zval *value, double *out) {
 int swr_zend_try_get_string(zval *value, zend_string **out) {
     *out = ZSTR_EMPTY_ALLOC();
     SWR_TRAP(*out = zval_get_string(value));
-}
-
-int swr_zend_try_read_property(zend_class_entry *scope, zend_object *object, const char *name,
-                               size_t length, zval *rv, zval **out) {
-    *out = NULL;
-    SWR_TRAP(*out = zend_read_property(scope, object, name, length, 1, rv));
 }
 
 int swr_zend_try_ptr_dtor(zval *value) {

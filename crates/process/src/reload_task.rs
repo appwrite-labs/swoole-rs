@@ -233,7 +233,7 @@ pub(crate) mod tests {
         let mut records = [*WorkerRecord::boxed(), *WorkerRecord::boxed()];
         for (index, record) in records.iter_mut().enumerate() {
             record.set_pid(100 + c_int::try_from(index).unwrap());
-            record.place(std::ptr::null_mut(), u32::try_from(index).unwrap(), 0);
+            record.set_id(u32::try_from(index).unwrap());
         }
         let mut task = ReloadTask::default();
         task.add_workers(&records);

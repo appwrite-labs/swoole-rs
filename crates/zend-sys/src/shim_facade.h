@@ -6,6 +6,8 @@
 int swr_zend_try_facade_truth(zval *, bool *);
 int swr_zend_try_facade_callable(zval *, zend_fcall_info_cache *, bool *);
 int swr_zend_try_facade_name(zval *, zend_string **);
+/* zval_refcount_p of a zval that holds a counted value (a string, array, object,
+ * resource or reference); 0 for any other. */
 uint32_t swr_zval_facade_refcount(const zval *);
 
 int swr_zend_try_facade_throw(zend_class_entry *, const char *, zend_long);

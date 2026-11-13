@@ -251,41 +251,38 @@ unsafe extern "C" {
     ) -> c_long;
 }
 
-/// A native `std::string`: its `c_str()` and `length()`.
-#[repr(C)]
+/// A native `std::string`, borrowed: its `c_str()` (none when unset) and `length()`.
 #[derive(Clone, Copy, Debug)]
-pub struct TlsStr {
-    pub data: *const c_char,
-    pub length: usize,
+pub struct TlsStr<'a> {
+    text: Option<&'a CStr>,
+    length: usize,
 }
 
-impl From<swoole_rs_corebase::CoreStringView> for TlsStr {
-    fn from(value: swoole_rs_corebase::CoreStringView) -> Self {
+impl<'a> From<&'a StringSlot> for TlsStr<'a> {
+    fn from(slot: &'a StringSlot) -> Self {
         Self {
-            data: value.data,
-            length: value.length,
+            text: Some(slot.c_str()),
+            length: slot.bytes().len(),
         }
     }
 }
 
-impl TlsStr {
+impl<'a> TlsStr<'a> {
     /// An unset string.
     const NONE: Self = Self {
-        data: ptr::null(),
+        text: None,
         length: 0,
     };
 
-    const fn is_empty(self) -> bool {
+    /// `empty()`.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
         self.length == 0
     }
 
     /// The `c_str()`, None when unset.
-    fn c_str(&self) -> Option<&CStr> {
-        if self.data.is_null() {
-            return None;
-        }
-        // SAFETY: `data` is a NUL-terminated `c_str()` that outlives the call that lent it.
-        Some(unsafe { CStr::from_ptr(self.data) })
+    const fn c_str(&self) -> Option<&'a CStr> {
+        self.text
     }
 
     /// What `%s` prints: the bytes before the first NUL.
@@ -295,7 +292,7 @@ impl TlsStr {
     }
 
     /// The `c_str()`, or None when empty (upstream passes null for an unset path).
-    fn path(&self) -> Option<CText<'_>> {
+    fn path(&self) -> Option<CText<'a>> {
         if self.is_empty() {
             None
         } else {
@@ -311,16 +308,16 @@ pub type Warn = fn(function: &CStr, message: &str);
 /// `configuration`.
 #[repr(C)]
 #[derive(Debug)]
-pub struct TlsConfig {
-    pub ciphers: TlsStr,
-    pub ecdh_curve: TlsStr,
-    pub dhparam: TlsStr,
-    pub cert_file: TlsStr,
-    pub key_file: TlsStr,
-    pub passphrase: TlsStr,
-    pub client_cert_file: TlsStr,
-    pub cafile: TlsStr,
-    pub capath: TlsStr,
+pub struct TlsConfig<'a> {
+    pub ciphers: TlsStr<'a>,
+    pub ecdh_curve: TlsStr<'a>,
+    pub dhparam: TlsStr<'a>,
+    pub cert_file: TlsStr<'a>,
+    pub key_file: TlsStr<'a>,
+    pub passphrase: TlsStr<'a>,
+    pub client_cert_file: TlsStr<'a>,
+    pub cafile: TlsStr<'a>,
+    pub capath: TlsStr<'a>,
     /// In: the configured mask. Out (create): zero becomes every TLS version.
     pub protocols: u32,
     pub verify_depth: u8,
@@ -346,7 +343,7 @@ pub(crate) struct PasswordBinding {
 }
 
 struct Method<'a> {
-    config: &'a TlsConfig,
+    config: &'a TlsConfig<'a>,
     ctx: &'a SslCtx,
     function: &'static CStr,
     password: Option<PasswordBinding>,
@@ -358,13 +355,13 @@ type Options = u64;
 #[cfg(not(ossl300))]
 type Options = std::ffi::c_ulong;
 
-fn warn(config: &TlsConfig, function: &CStr, message: &[u8]) {
+fn warn(config: &TlsConfig<'_>, function: &CStr, message: &[u8]) {
     let text: Vec<u8> = message.iter().copied().filter(|&b| b != 0).collect();
     (config.warn)(function, &String::from_utf8_lossy(&text));
 }
 
 /// Upstream's `ssl_error`: pops one error and appends its reason and code.
-fn ssl_error(config: &TlsConfig, function: &CStr, message: &[u8]) {
+fn ssl_error(config: &TlsConfig<'_>, function: &CStr, message: &[u8]) {
     let code = crate::pop_error();
     let reason = crate::reason_string(code).map_or(b"(null)".as_slice(), CStr::to_bytes);
     let code = code.c_cast::<c_long>();
@@ -385,7 +382,7 @@ impl Method<'_> {
     }
 
     /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
-    fn load_verify_locations(&self, file: TlsStr, path: TlsStr) -> c_int {
+    fn load_verify_locations(&self, file: TlsStr<'_>, path: TlsStr<'_>) -> c_int {
         SSL_CTX_load_verify_locations(self.ctx, file.path(), path.path())
     }
 
@@ -635,7 +632,7 @@ impl Method<'_> {
     }
 }
 
-fn quoted(prefix: &[u8], value: TlsStr, suffix: &[u8]) -> Vec<u8> {
+fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
     [prefix, &value.text(), suffix].concat()
 }
 
@@ -923,9 +920,9 @@ fn drain_errors() {
 }
 
 /// # Safety
-/// Config's strings and any password binding remain live throughout the borrowed context.
+/// Any password binding remains live throughout the borrowed context.
 pub(crate) unsafe fn create_context(
-    config: &mut TlsConfig,
+    config: &mut TlsConfig<'_>,
     password: Option<PasswordBinding>,
 ) -> Option<SslContext> {
     let method = if config.protocols & DTLS != 0 {
@@ -960,7 +957,7 @@ mod tests {
     ///
     /// # Safety
     /// `config`'s strings are NUL-terminated and outlive the call.
-    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig) -> Option<SslContext> {
+    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig<'_>) -> Option<SslContext> {
         // SAFETY: forwards the caller's live configuration view.
         unsafe { create_context(config, None) }
     }
@@ -972,7 +969,7 @@ mod tests {
             /// # Safety
             /// `ctx` is a live context and `config`'s strings are NUL-terminated and
             /// outlive the call.
-            unsafe fn $name(ctx: &SslCtx, config: &TlsConfig) -> bool {
+            unsafe fn $name(ctx: &SslCtx, config: &TlsConfig<'_>) -> bool {
                 Method {
                     config,
                     ctx,
@@ -1017,21 +1014,20 @@ mod tests {
             .push(format!("{}(): {message}", function.to_string_lossy()));
     }
 
-    struct Owned(Vec<CString>);
+    /// Configuration strings, leaked so that each view is `'static`.
+    struct Owned;
 
     impl Owned {
-        fn str(&mut self, value: &str) -> TlsStr {
-            let value = CString::new(value).unwrap();
-            let view = TlsStr {
-                data: value.as_ptr(),
-                length: value.as_bytes().len(),
-            };
-            self.0.push(value);
-            view
+        fn str(value: &str) -> TlsStr<'static> {
+            let value: &'static CStr = Box::leak(CString::new(value).unwrap().into_boxed_c_str());
+            TlsStr {
+                text: Some(value),
+                length: value.to_bytes().len(),
+            }
         }
 
-        fn config(&mut self) -> TlsConfig {
-            let empty = self.str("");
+        fn config() -> TlsConfig<'static> {
+            let empty = Self::str("");
             TlsConfig {
                 ciphers: empty,
                 ecdh_curve: empty,
@@ -1061,8 +1057,7 @@ mod tests {
     #[test]
     fn protocols_and_options() {
         let _guard = SERIAL.lock().unwrap();
-        let mut owned = Owned(Vec::new());
-        let mut config = owned.config();
+        let mut config = Owned::config();
         unsafe {
             let ctx = swr_v1_tls_context_create(&mut config).unwrap();
             assert_eq!(config.protocols, ALL, "zero means every version");
@@ -1089,9 +1084,8 @@ mod tests {
     fn failures_log_like_upstream() {
         let _guard = SERIAL.lock().unwrap();
         take_log();
-        let mut owned = Owned(Vec::new());
-        let mut config = owned.config();
-        config.cert_file = owned.str("/nonexistent/m21.pem");
+        let mut config = Owned::config();
+        config.cert_file = Owned::str("/nonexistent/m21.pem");
         unsafe { ERR_clear_error() };
         let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
         assert!(ctx.is_none());
@@ -1104,8 +1098,8 @@ mod tests {
             "{log:?}"
         );
 
-        let mut config = owned.config();
-        config.ciphers = owned.str("M21-nonexistent-cipher");
+        let mut config = Owned::config();
+        config.ciphers = Owned::str("M21-nonexistent-cipher");
         let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
         assert!(ctx.is_none());
         let log = take_log();
@@ -1120,16 +1114,15 @@ mod tests {
     fn direct_methods() {
         let _guard = SERIAL.lock().unwrap();
         take_log();
-        let mut owned = Owned(Vec::new());
-        let mut config = owned.config();
+        let mut config = Owned::config();
         unsafe {
             let context = SSL_CTX_new(TLS_method()).unwrap();
             let ctx = &*context;
-            config.ecdh_curve = owned.str("auto");
+            config.ecdh_curve = Owned::str("auto");
             assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
-            config.ecdh_curve = owned.str("prime256v1");
+            config.ecdh_curve = Owned::str("prime256v1");
             assert!(swr_v1_tls_set_ecdh_curve(ctx, &config));
-            config.ecdh_curve = owned.str("M21-nonexistent-curve");
+            config.ecdh_curve = Owned::str("M21-nonexistent-curve");
             assert!(!swr_v1_tls_set_ecdh_curve(ctx, &config));
             assert_eq!(
                 take_log(),
@@ -1138,21 +1131,21 @@ mod tests {
                 ]
             );
 
-            config.dhparam = owned.str("/nonexistent/m21-dh.pem");
+            config.dhparam = Owned::str("/nonexistent/m21-dh.pem");
             assert!(!swr_v1_tls_set_dhparam(ctx, &config));
             let log = take_log();
             assert!(log[0].starts_with(
                 "SSLContext::set_dhparam(): BIO_new_file(/nonexistent/m21-dh.pem) failed"
             ));
 
-            config.client_cert_file = owned.str("/nonexistent/m21-ca.pem");
+            config.client_cert_file = Owned::str("/nonexistent/m21-ca.pem");
             config.verify_depth = 3;
             assert!(!swr_v1_tls_set_client_certificate(ctx, &config));
             assert_eq!(SSL_CTX_get_verify_mode(ctx.as_ptr()), SSL_VERIFY_PEER);
             assert_eq!(SSL_CTX_get_verify_depth(ctx.as_ptr()), 3);
             take_log();
 
-            config.cafile = owned.str("/nonexistent/m21-ca.pem");
+            config.cafile = Owned::str("/nonexistent/m21-ca.pem");
             assert!(!swr_v1_tls_set_capath(ctx, &config));
             assert_eq!(
                 take_log(),

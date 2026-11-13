@@ -4,17 +4,34 @@ use crate::{
     Call, Invalid,
     bailout::{self, Bailout},
     sys::{
-        IS_LONG, swr_zend_callable, swr_zend_callable_hold, swr_zend_callable_release,
-        swr_zend_callable_release_quiet, swr_zend_efree, zend_fcall_info_cache, zend_value, zval,
+        IS_LONG, swr_zend_callable, swr_zend_callable_release, swr_zend_callable_release_quiet,
+        zend_fcall_info_cache, zend_value, zval,
     },
     value::emalloc,
 };
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
 
+// What takes one of this module's handles whole. Each handle is its record's
+// pointer (`repr(transparent)`), made only here, so C receives a live record in
+// the state the handle's type says; none of these runs PHP code.
+unsafe extern "C" {
+    /// `sw_zend_fci_cache_persist`: one more reference to the object and the
+    /// closure of the function `parse` resolved. The handle is spent: `keep`
+    /// makes the [`Callable`] of the same record.
+    safe fn swr_zend_callable_hold(parsed: Parsed);
+    /// `efree` of the record of a callable that holds nothing.
+    #[link_name = "swr_zend_efree"]
+    safe fn discard(parsed: Parsed);
+    /// `efree` of the record of a callable whose references were released.
+    #[link_name = "swr_zend_efree"]
+    safe fn free_released(callable: Callable);
+}
+
 /// An emalloc'd `swr_zend_callable`, laid out as Swoole's `zend::Function`, so
 /// C++ can call it as one, that holds its arguments, object and closure
 /// ([`Parsed::keep`]).
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Callable(*mut swr_zend_callable);
 
 /// A callable [`Callable::parse`] read from a call, whose arguments, object and
@@ -22,6 +39,7 @@ pub struct Callable(*mut swr_zend_callable);
 /// [`Parsed::discard`] frees it. Releasing it as a `Callable` would release
 /// references it never took.
 #[derive(Debug)]
+#[repr(transparent)]
 pub struct Parsed(*mut swr_zend_callable);
 
 impl Callable {
@@ -97,8 +115,8 @@ impl Callable {
             // SAFETY: the release body is C; the callable was kept.
             unsafe { bailout::trap(swr_zend_callable_release, self.0.cast()) }
         };
-        // SAFETY: emalloc'd by `parse`.
-        unsafe { swr_zend_efree(self.0.cast()) };
+        // Emalloc'd by `parse`, and released above.
+        free_released(self);
         released
     }
 }
@@ -152,9 +170,9 @@ impl Parsed {
             let total = (count + lead) as u32;
             callable.fci.param_count = total;
         }
-        // SAFETY: a parsed callable.
-        unsafe { swr_zend_callable_hold(self.0) };
-        Callable(self.0)
+        let record = self.0;
+        swr_zend_callable_hold(self);
+        Callable(record)
     }
 
     /// The callable for C++ (`zend::Function *`), which is [`Parsed::keep`]'s
@@ -166,8 +184,8 @@ impl Parsed {
 
     /// Free a callable that was never kept.
     pub fn discard(self) {
-        // SAFETY: emalloc'd by `parse`; nothing was taken from the frame.
-        unsafe { swr_zend_efree(self.0.cast()) };
+        // Emalloc'd by `parse`; nothing was taken from the frame.
+        discard(self);
     }
 }
 

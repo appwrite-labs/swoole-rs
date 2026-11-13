@@ -137,8 +137,8 @@ mod request {
         ERRNO.set(0);
         r.parse_header_info();
         let (offset, boundary) = r.form.as_deref().map_or((-1, 0), |form| {
-            let (at, boundary) = form.boundary();
-            (at as i64 - data as i64, i64::from(boundary))
+            let boundary = form.boundary();
+            (boundary.offset as i64, boundary.length as i64)
         });
         // SAFETY: the caller's output.
         unsafe {

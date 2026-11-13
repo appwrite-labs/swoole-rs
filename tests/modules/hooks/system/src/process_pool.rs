@@ -480,8 +480,14 @@ unsafe fn worker_send_pipe_message(
     n: usize,
     flags: c_int,
 ) -> isize {
-    // SAFETY: as the caller guarantees.
-    unsafe { pm::send_pipe_message(worker.cast(), data, n, flags) }
+    // SAFETY: as the caller guarantees: a live worker and `n` bytes at `data`.
+    let (worker, data) = unsafe {
+        (
+            WorkerHandle::new(worker.cast()),
+            std::slice::from_raw_parts(data, n),
+        )
+    };
+    pm::send_pipe_message(worker, data, flags)
 }
 
 unsafe fn worker_shutdown(worker: *mut Worker) {

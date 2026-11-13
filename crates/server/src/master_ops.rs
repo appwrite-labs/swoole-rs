@@ -15,7 +15,7 @@ pub(crate) struct DgramPacket {
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
+pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_> {
     let thread_mode = u64::from(state.config_ref().mode_) == MODE_THREAD;
     let bus = if thread_mode {
         swoole_rs_corebase::thread_message_bus()

@@ -318,18 +318,24 @@ pub(crate) mod tests {
     ) -> crate::co_socket::TestSocket {
         crate::co_io::test_host::install();
         let mut socket = crate::co_socket::TestSocket::new();
-        socket.0.resolve_context = core::ptr::from_mut(fake).cast();
-        socket.0.open_length_check = length_check;
-        socket.0.open_eof_check = !eof.is_empty();
-        socket.0.err_code = if fake.timed_out { libc::ETIMEDOUT } else { 0 };
-        let p = &mut socket.0.protocol;
+        socket
+            .0
+            .resolve_context
+            .set(core::ptr::from_mut(fake).cast());
+        socket.0.open_length_check.set(length_check);
+        socket.0.open_eof_check.set(!eof.is_empty());
+        socket
+            .0
+            .err_code
+            .set(if fake.timed_out { libc::ETIMEDOUT } else { 0 });
+        let p = socket.0.protocol.get_mut();
         p.package_eof[..eof.len()].copy_from_slice(eof);
         p.package_eof_len = eof.len().c_cast::<u8>();
         p.package_length_type = b'N';
         p.package_length_size = 4;
         p.package_length_offset = 2;
         p.package_max_length = max_length;
-        unsafe { (*socket.0.socket).fields.timeouts.read = -1.0 };
+        unsafe { (*socket.0.socket.get()).fields.timeouts.read = -1.0 };
         socket
     }
 
@@ -524,11 +530,11 @@ pub(crate) mod tests {
     fn unavailable_record_reads_do_not_allocate_or_receive() {
         let mut fake = buffered_fake();
         let mut socket = socket_for(&mut fake, false, b"", 1024);
-        socket.0.sock_fd = -1;
+        socket.0.sock_fd.set(-1);
         let mut out = [0; 1];
         assert_eq!(recv_buffered(socket.co(), &mut out), -1);
         assert_eq!(recv_packet(socket.co(), 0.0), -1);
-        assert_eq!(socket.0.err_code, libc::EBADF);
+        assert_eq!(socket.0.err_code.get(), libc::EBADF);
         assert_eq!((fake.gets, fake.receives), (0, 0));
     }
 

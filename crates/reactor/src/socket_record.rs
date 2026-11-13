@@ -91,7 +91,8 @@ pub struct SocketFields {
     pub timeouts: SocketTimeouts,
     pub last_received_time: f64,
     pub last_sent_time: f64,
-    pub in_buffer: *mut c_void,
+    /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
+    pub in_buffer: Option<Box<swoole_rs_buffer::cpp::CppBuffer>>,
     pub recv_buffer: *mut c_void,
     pub recv_timer: *mut c_void,
     pub total_recv_bytes: usize,
@@ -226,8 +227,9 @@ impl SocketRecord {
     /// not borrowed.
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: every field is an integer, a float, a raw pointer, a union of C
-        // address structs or the borrow count, all of which are valid zeroed.
+        // SAFETY: every field is an integer, a float, a raw pointer, an optional box
+        // (none when null), a union of C address structs or the borrow count, all of
+        // which are valid zeroed.
         let mut socket: Self = unsafe { std::mem::zeroed() };
         socket.timeouts = SOCKET_DEFAULTS.timeouts();
         socket
@@ -406,12 +408,21 @@ impl SocketFields {
         self.fd == -1 || sys::close(self.fd) == 0
     }
 
-    /// `Socket::dup`: a copy of every field, owning `dup(fd)`, not borrowed. It
-    /// shares this record's SSL, as upstream's copy does.
+    /// `Socket::dup`: a copy of every field but the buffers, which stay this record's
+    /// own, owning `dup(fd)`, not borrowed. It shares this record's SSL, as upstream's
+    /// copy does.
     #[must_use]
     pub fn dup(&self) -> *mut SocketRecord {
+        let output = SocketOutput {
+            out_buffer: None,
+            ..self.output
+        };
         let mut copy = SocketRecord {
-            fields: Self { ..*self },
+            fields: Self {
+                output,
+                in_buffer: None,
+                ..*self
+            },
             borrows: AtomicU32::new(0),
         };
         copy.fd = sys::dup(copy.fd);
@@ -485,7 +496,7 @@ mod tests {
         assert_eq!(socket.timeouts.connect, 10.0);
         assert_eq!(socket.timeouts.read, 60.0);
         assert_eq!(socket.fd, 0);
-        assert!(socket.object.is_null() && socket.output.out_buffer.is_null());
+        assert!(socket.object.is_null() && socket.output.out_buffer.is_none());
     }
 
     #[test]

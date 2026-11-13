@@ -4,8 +4,9 @@
 
 #include "shim.h"
 
-/* The slot offset of a declared property of `ce` (0 if it has none). */
-uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name, size_t length);
+/* The slot offset of the property `ce` declares as the NUL-terminated `name`
+ * (0 if it has none). */
+uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name);
 /* array_init_size on the property slot at `offset` of `object`. */
 zval *swr_zend_http_property_array(zend_object *object, uint32_t offset, uint32_t size);
 /* estrndup. */

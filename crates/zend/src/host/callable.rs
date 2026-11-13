@@ -238,12 +238,9 @@ fn factory(
     allow_null: bool,
     exception: Option<&crate::Class>,
 ) -> Result<Option<Box<Callable>>, bailout::Bailout> {
-    let exception = exception.map_or(ptr::null_mut(), crate::Class::entry);
     let throw = |message: Vec<u8>| {
         let message = CString::new(message).unwrap_or_default();
-        // SAFETY: a registered exception class or null (Zend's default); Zend
-        // copies the message, and the shim traps a bailout.
-        deferred(unsafe { sys::swr_zend_try_facade_throw(exception, message.as_ptr(), 505) });
+        bailout::defer(crate::error::throw_trapped(exception, &message, 505));
     };
     if let Some(name) = name
         && candidate.is_none_or(Value::is_null)
@@ -266,10 +263,7 @@ fn factory(
     drop(handle);
     bailout::outcome(())?;
     if let Some(name) = name {
-        // SAFETY: Zend returns a static type name for a live candidate.
-        let kind = unsafe { sys::zend_zval_type_name(candidate.as_ptr()) };
-        // SAFETY: Zend returned a static NUL-terminated type name.
-        let kind = unsafe { CStr::from_ptr(kind) }.to_bytes();
+        let kind = candidate.type_name().to_bytes();
         throw([name, b" must be of type callable, ", kind, b" given"].concat());
     }
     bailout::outcome(None)

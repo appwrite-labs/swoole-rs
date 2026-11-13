@@ -367,21 +367,17 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, ar
     }
 }
 
-/// One receive of `mode` into `buffer`.
+/// One receive of `mode` from `socket` into `buffer`.
 ///
 /// # Safety
-/// The live protocol, socket and buffer, as upstream's methods take them.
+/// The live protocol and buffer, as upstream's methods take them.
 #[inline(always)]
 pub(crate) unsafe fn receive<K: Packages>(
     protocol: *const Protocol,
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     buffer: *mut CppString,
     mode: Mode,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
     let mut r = With::<K>(
         Recv {
             mode,
@@ -413,31 +409,26 @@ pub(crate) unsafe fn receive<K: Packages>(
     status
 }
 
-/// `int Protocol::recv_with_length_protocol(Socket *, String *) const`.
-fn recv_with_length_protocol(
-    protocol: *const Protocol,
-    socket: *mut SocketRecord,
-    buffer: *mut CppString,
-) -> c_int {
-    // SAFETY: the live protocol, socket and input buffer `Framing::new` asks for.
-    unsafe { receive::<Callbacks>(protocol, socket, buffer, Mode::Length) }
-}
-
+/// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`.
-fn recv_with_eof_protocol(
+fn client_recv<const LENGTH: bool>(
     protocol: *const Protocol,
     socket: *mut SocketRecord,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: the live protocol, socket and input buffer `Framing::new` asks for.
-    unsafe { receive::<Callbacks>(protocol, socket, buffer, Mode::Eof) }
+    // SAFETY: the live socket `Framing::new` asks for.
+    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
+        return -1;
+    };
+    let mode = if LENGTH { Mode::Length } else { Mode::Eof };
+    // SAFETY: the live protocol and input buffer `Framing::new` asks for.
+    unsafe { receive::<Callbacks>(protocol, socket, buffer, mode) }
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
 /// (`swoole_rs_clients::client::set_framing`).
 // SAFETY: both receive a client's live protocol, socket and input buffer.
-pub const FRAMING: Framing =
-    unsafe { Framing::new(recv_with_length_protocol, recv_with_eof_protocol) };
+pub const FRAMING: Framing = unsafe { Framing::new(client_recv::<true>, client_recv::<false>) };
 
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
 ///
@@ -575,11 +566,9 @@ mod tests {
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = Some(default_length_func);
-        let status =
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
-        let status =
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -589,8 +578,7 @@ mod tests {
         });
         unsafe { libc::close(peer) };
         // The peer's close ends the next receive.
-        let status =
-            recv_with_length_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
         unsafe { libc::close(socket.fd) };
@@ -603,7 +591,7 @@ mod tests {
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
         buffer.extend(64);
-        let status = recv_with_eof_protocol(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<false>(&raw const protocol, &raw mut socket, &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.len(), 1);

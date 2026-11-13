@@ -39,13 +39,14 @@ mod zval;
 pub use access::{key_ptr, set_key};
 pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
-pub use class::{Class, ClassEntry, unset_property_deny};
+pub use class::{Class, ClassEntry, lookup_class, unset_property_deny};
 pub use descriptor::{
     FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
     restore_shutdown, with_unlimited_stack,
 };
 pub use error::{
-    E_ERROR, E_WARNING, Message, report, throw_error, type_error, type_name, zend_error,
+    E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,
+    zend_error,
 };
 pub use function::{Function, create_object_deny};
 pub use helpers::{

@@ -162,7 +162,11 @@ fn activate() -> Result<(), Bailout> {
         let flags = CONFIG.with(|c| c.hook_flags.get());
         host::hook(flags);
     }
-    host::attach(context::on_yield, context::on_resume, context::on_close);
+    host::attach(
+        context::on_swap::<{ context::ON_YIELD }>,
+        context::on_swap::<{ context::ON_RESUME }>,
+        context::on_swap::<{ context::ON_CLOSE }>,
+    );
     ACTIVATED.with(|a| a.set(true));
     Ok(())
 }

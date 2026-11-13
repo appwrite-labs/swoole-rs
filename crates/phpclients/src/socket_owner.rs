@@ -80,10 +80,9 @@ pub(crate) fn create_kind(kind: i32) -> Result<Option<Owned>, Bailout> {
     checked_object(native::make(-1, 0, kind, 0, false)?)
 }
 
-/// A new socket object that owns `fd`, of a native Swoole socket kind.
-/// # Safety
-/// The caller gives up `fd`.
-pub(crate) unsafe fn from_fd(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
+/// A new socket object of a native Swoole socket kind that owns `fd`, which the
+/// caller gives up (as [`native::make`] takes any descriptor it is handed).
+pub(crate) fn from_fd(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
     checked_object(native::make(fd, 0, kind, 0, false)?)
 }
 
@@ -100,21 +99,19 @@ pub(super) fn duplicate(fd: i32, kind: i32) -> Result<Option<Owned>, Bailout> {
             Ok(None)
         };
     }
-    // SAFETY: the new duplicate, which nothing else owns.
-    unsafe { from_fd(duplicate, kind) }
+    // The new duplicate, which nothing else owns.
+    from_fd(duplicate, kind)
 }
 
 /// Import retains the stream reference and its original descriptor mode after object creation.
-/// # Safety
 /// `fd` is the stream's descriptor, which the object takes over.
-pub(crate) unsafe fn import_stream(
+pub(crate) fn import_stream(
     fd: i32,
     kind: i32,
     nonblock: i32,
     stream: &Value,
 ) -> Result<Option<Owned>, Bailout> {
-    // SAFETY: per the caller.
-    let Some(object) = (unsafe { from_fd(fd, kind) })? else {
+    let Some(object) = from_fd(fd, kind)? else {
         return Ok(None);
     };
     let sock = Sock::of(&object).unwrap_or_else(|| unreachable!("a socket object"));

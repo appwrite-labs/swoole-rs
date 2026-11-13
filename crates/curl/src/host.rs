@@ -142,12 +142,10 @@ pub(crate) fn current() -> *mut c_void {
     swoole_rs_coroutine::current_native()
 }
 
-/// `co->yield_ex(timeout)`, then whether it was canceled.
-/// # Safety
-/// `co` is the running coroutine; the caller's frames own nothing with a destructor.
-pub(crate) unsafe fn yield_(co: *mut c_void, timeout: f64) -> bool {
-    // SAFETY: per the caller.
-    let code = unsafe { swoole_rs_coroutine::yield_timed(co, timeout) };
+/// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), then
+/// whether it was canceled.
+pub(crate) fn yield_(co: *mut c_void, timeout: f64) -> bool {
+    let code = swoole_rs_coroutine::yield_timed(co, timeout);
     // `yield_ex`: the last error of a timeout or a cancel.
     !swoole_rs_coroutine::yield_resumed(code) && code == RC_CANCELED
 }

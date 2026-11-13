@@ -15,11 +15,9 @@ const SW_WAIT: c_int = 2;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub struct SocketOutput {
-    /// `Buffer *out_buffer`: null or the live `Buffer` the socket owns, which only
-    /// this crate reads (`buffer`).
-    pub out_buffer: *mut c_void,
+    /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
+    pub out_buffer: Option<Box<CppBuffer>>,
     /// `TimerNode *send_timer`.
     pub send_timer: *mut c_void,
     pub buffer_size: u32,
@@ -30,12 +28,10 @@ pub struct SocketOutput {
 }
 
 impl SocketOutput {
-    /// `out_buffer`, or `None` without one. Crate-private: a block built outside a
-    /// socket record could hold any pointer.
-    pub(crate) fn buffer(&self) -> Option<&CppBuffer> {
-        // SAFETY: only called on a socket record's block, whose output buffer is null
-        // or the live `Buffer` it owns.
-        unsafe { self.out_buffer.cast::<CppBuffer>().as_ref() }
+    /// `out_buffer`, or `None` without one.
+    #[must_use]
+    pub fn buffer(&self) -> Option<&CppBuffer> {
+        self.out_buffer.as_deref()
     }
 
     /// `Buffer::empty(out_buffer)`: none, or no entries.
@@ -97,19 +93,19 @@ pub unsafe fn swr_v1_reactor_write(
 ) -> WriteResult {
     let length = payload.length;
     // Making the socket nonblocking leaves the queue as it is.
-    let (output, held) = socket.read(|record| {
-        let buffer = record.output.buffer();
-        let held = buffer
+    let (mut buffer_size, nonblock, ssl_send, held) = socket.read(|record| {
+        let output = &record.output;
+        let held = output
+            .buffer()
             .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
             .map(|buffer| swr_cpp_buffer_length(buffer));
-        (record.output, held)
+        (output.buffer_size, output.nonblock, output.ssl_send, held)
     });
-    let mut buffer_size = output.buffer_size;
     if buffer_size == 0 {
         buffer_size = default_buffer_size;
         socket.edit(|record| record.output.buffer_size = buffer_size);
     }
-    if !output.nonblock {
+    if !nonblock {
         ops.set_nonblock();
     }
     // Upstream compares `(uint32_t) _len`.
@@ -125,7 +121,7 @@ pub unsafe fn swr_v1_reactor_write(
             };
         }
     } else {
-        if !output.ssl_send {
+        if !ssl_send {
             loop {
                 sent = ops.send();
                 if sent > 0 {
@@ -143,7 +139,7 @@ pub unsafe fn swr_v1_reactor_write(
                 }
             }
         }
-        if socket.read(|record| record.output.out_buffer.is_null()) {
+        if socket.read(|record| record.output.out_buffer.is_none()) {
             ops.create_buffer();
         }
         ops.watch_writable();
@@ -175,7 +171,7 @@ mod tests {
     use super::*;
     use crate::SocketRecord;
     use std::cell::RefCell;
-    use swoole_rs_buffer::cpp::{delete_buffer, new_buffer, swr_cpp_buffer_append};
+    use swoole_rs_buffer::cpp::new_buffer;
 
     #[derive(Default)]
     struct Native {
@@ -207,7 +203,7 @@ mod tests {
                 n.record as *mut SocketRecord
             });
             let socket = unsafe { Socket::from_ptr(record) }.unwrap();
-            socket.edit(|record| record.output.out_buffer = new_buffer(0).cast());
+            socket.edit(|record| record.output.out_buffer = Some(new_buffer(0)));
         }
         fn watch_writable(&self) {
             NATIVE.with_borrow_mut(|n| n.trace.push("watch"));
@@ -215,15 +211,20 @@ mod tests {
     }
 
     /// Writes `data` from a socket whose output block is `output`, which the write
-    /// updates; a buffer the write creates is measured, then freed.
+    /// updates; a buffer the write creates is measured, then freed, and one `output`
+    /// held goes back to it.
     fn run(
         output: &mut SocketOutput,
         data: &[u8],
         sends: Vec<isize>,
         errno: c_int,
     ) -> (WriteResult, Vec<&'static str>, u32) {
+        let had_buffer = output.out_buffer.is_some();
         let mut record = SocketRecord::new();
-        record.output = *output;
+        record.output = SocketOutput {
+            out_buffer: output.out_buffer.take(),
+            ..*output
+        };
         let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
         NATIVE.with_borrow_mut(|n| {
             *n = Native {
@@ -244,11 +245,13 @@ mod tests {
             .output
             .buffer()
             .map_or(0, |buffer| swr_cpp_buffer_length(buffer));
-        if output.out_buffer.is_null() && !record.output.out_buffer.is_null() {
-            unsafe { delete_buffer(record.output.out_buffer.cast()) };
-            record.output.out_buffer = std::ptr::null_mut();
+        if !had_buffer {
+            record.output.out_buffer = None;
         }
-        *output = record.output;
+        *output = SocketOutput {
+            out_buffer: record.output.out_buffer.take(),
+            ..record.output
+        };
         (
             result,
             NATIVE.with_borrow_mut(|n| std::mem::take(&mut n.trace)),
@@ -258,7 +261,7 @@ mod tests {
 
     fn socket() -> SocketOutput {
         SocketOutput {
-            out_buffer: std::ptr::null_mut(),
+            out_buffer: None,
             send_timer: std::ptr::null_mut(),
             buffer_size: 0,
             close_wait: false,
@@ -328,11 +331,11 @@ mod tests {
         };
         assert_eq!(run(&mut s, b"abc", vec![], 0).0, failed(1));
         let held_buffer = new_buffer(0);
-        unsafe { swr_cpp_buffer_append(&*held_buffer, b"12345".as_ptr(), 5) };
+        held_buffer.append(b"12345");
         let mut s = SocketOutput {
             nonblock: true,
             buffer_size: 6,
-            out_buffer: held_buffer.cast(),
+            out_buffer: Some(held_buffer),
             ..socket()
         };
         let overflow = WriteResult {
@@ -344,11 +347,10 @@ mod tests {
         let mut s = SocketOutput {
             nonblock: true,
             buffer_size: 64,
-            out_buffer: held_buffer.cast(),
+            out_buffer: s.out_buffer.take(),
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"ab", vec![], 0);
         assert_eq!((r, trace, held), (done(2), vec![], 7));
-        unsafe { delete_buffer(held_buffer) };
     }
 }

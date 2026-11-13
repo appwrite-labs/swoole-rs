@@ -275,7 +275,7 @@ mod tests {
         unsafe { socket.0.record() }.timeouts.write = 1.0;
         RESULTS.set(results.iter().copied().collect());
         if failure == 1 {
-            socket.0.sock_fd = -1;
+            socket.0.sock_fd.set(-1);
         }
         TIMER_OK.set(failure != 2);
         // A woken wait runs the installed barrier while it keeps waiting.
@@ -294,8 +294,8 @@ mod tests {
             core::ptr::null_mut()
         };
         let result = transfer(socket.co(), flags, Buffer::new(at, 8, event), &mut call);
-        let error = socket.0.err_code;
-        socket.0.sock_fd = 100;
+        let error = socket.0.err_code.get();
+        socket.0.sock_fd.set(100);
         let events = take()
             .into_iter()
             .filter(|e| !e.starts_with("last-error"))
@@ -538,7 +538,7 @@ mod tests {
         }
         install();
         let mut socket = TestSocket::new();
-        socket.0.sock_fd = -1;
+        socket.0.sock_fd.set(-1);
         assert_eq!(
             unsafe {
                 let s = socket.co();
@@ -547,6 +547,6 @@ mod tests {
             -1
         );
         assert!(!take().iter().any(|e| e.starts_with("recvfrom")));
-        socket.0.sock_fd = 100;
+        socket.0.sock_fd.set(100);
     }
 }

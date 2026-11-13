@@ -10,7 +10,6 @@ use swoole_rs_zend::{
     Call, Message, Value, ZString,
     bailout::{self, Bailout},
     handlers,
-    sys::swr_zval_facade_refcount,
 };
 
 handlers! {
@@ -21,6 +20,9 @@ unsafe extern "C" {
     fn php_printf(format: *const c_char, ...) -> usize;
     /// `EG(exit_status) = status`: one value of the executor's is written.
     safe fn swr_zend_set_exit_status(status: c_int);
+    /// `zval_refcount_p`: the count of what a live zval holds, read only; 0 for
+    /// a value that holds nothing counted.
+    safe fn swr_zval_facade_refcount(value: &Value) -> u32;
 }
 
 /// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
@@ -40,7 +42,6 @@ fn implicit_fn(call: &Call) {
     let Ok(name) = call.arity(1, 2).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    let args = call.zval(2);
     let arg = call.value(2);
     let is = |candidate: &[u8]| name.eq_ignore_ascii_case(candidate);
     if is(b"fatal_error") {
@@ -56,8 +57,10 @@ fn implicit_fn(call: &Call) {
         #[expect(clippy::disallowed_methods, reason = "the script called abort()")]
         std::process::abort();
     } else if is(b"refcount") {
-        // SAFETY: upstream's zval_refcount_p of the second argument, which must be refcounted.
-        call.set_long(i64::from(unsafe { swr_zval_facade_refcount(args) }));
+        // Upstream's zval_refcount_p of the second argument.
+        call.set_long(i64::from(
+            arg.map_or(0, |arg| swr_zval_facade_refcount(arg)),
+        ));
     } else if is(b"func_handler") {
         let lookup = arg.map_or_else(|| ZString::new(b""), Value::string);
         // Upstream reads any function as internal; one PHP code defines has no handler.

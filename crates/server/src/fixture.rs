@@ -52,12 +52,11 @@ impl LiveServer {
     pub(crate) fn new() -> Self {
         let mut sessions: Vec<SessionRecord> = free_slots(SESSIONS);
         let mut connections: Vec<ConnectionRecord> = free_slots(CONNECTIONS);
-        let state = Box::new(ServerState::with_tables(ServerTables {
-            session_list: naming_at(sessions.as_mut_ptr()),
-            connection_list: naming_at(connections.as_mut_ptr()),
-            max_connection: u32::try_from(CONNECTIONS).unwrap_or(u32::MAX),
-            ..ServerTables::default()
-        }));
+        let mut tables = ServerTables::default();
+        tables.session_list = naming_at(sessions.as_mut_ptr());
+        tables.connection_list = naming_at(connections.as_mut_ptr());
+        tables.max_connection = u32::try_from(CONNECTIONS).unwrap_or(u32::MAX);
+        let state = Box::new(ServerState::with_tables(tables));
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
         let mut shared: Box<ServerShared> = Box::new(unsafe { core::mem::zeroed() });
@@ -86,9 +85,9 @@ impl LiveServer {
             .socket
             .store(listener.cast(), core::sync::atomic::Ordering::Relaxed);
         settings.gs.set((&raw mut *port_counters).cast());
-        // SAFETY: a live port, listed until the fixture frees it with the state; no other
-        // thread reads the list.
-        unsafe { state.push_port(port.cast()) };
+        // SAFETY: the port boxed above, listed until the fixture frees it with the state;
+        // no other thread reads the list.
+        let _ = unsafe { state.push_port(Box::from_raw(port)) };
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.tables_ref().connection_at(fd).unwrap();
         slot.set_fd(fd);

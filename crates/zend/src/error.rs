@@ -2,14 +2,20 @@
 use crate::{
     Call, Class,
     bailout::{self, Bailout},
-    sys::{
-        IS_NULL, IS_RESOURCE, zend_get_type_by_const, zend_long, zend_throw_error, zend_type_error,
-    },
+    helpers::CText,
+    sys::{zend_long, zend_throw_error, zend_type_error},
 };
 use std::{
     ffi::{CStr, CString},
     ptr,
 };
+
+unsafe extern "C" {
+    /// `zend_get_type_by_const(kind)` for a value's type (`IS_NULL` to
+    /// `IS_RESOURCE`): one of Zend's static names, or null (`None`) for any
+    /// other code. It reads nothing else.
+    safe fn swr_zend_type_name(kind: u32) -> Option<CText<'static>>;
+}
 
 /// `zend_throw_error(NULL, "%s", message)`: an `Error`. Like [`Class::throw`], from a
 /// handler or a callback Zend runs under one: with a frame executing, Zend only sets
@@ -25,17 +31,28 @@ pub fn type_error(message: &CStr) {
     unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
 }
 
+/// `zend_throw_exception(class, message, code)` inside `zend_try`: an exception
+/// of `class` (Zend's `Exception` for None, or a class not registered).
+/// # Errors
+/// Zend bailed out: with no frame executing it reports the exception at once.
+pub fn throw_trapped(
+    class: Option<&Class>,
+    message: &CStr,
+    code: zend_long,
+) -> Result<(), Bailout> {
+    let entry = class.map_or(ptr::null_mut(), Class::entry);
+    // SAFETY: a registered exception class or null; Zend copies the message,
+    // and the shim traps a bailout.
+    bailout::trapped(unsafe {
+        crate::sys::swr_zend_try_facade_throw(entry, message.as_ptr(), code)
+    })
+}
+
 /// `zend_get_type_by_const(kind)`: Zend's name of a value's type (`IS_NULL` to
 /// `IS_RESOURCE`), or None for any other code.
 #[must_use]
 pub fn type_name(kind: u32) -> Option<&'static CStr> {
-    if !(IS_NULL..=IS_RESOURCE).contains(&kind) {
-        return None;
-    }
-    // SAFETY: a value type, each of which Zend's switch names.
-    let name = unsafe { zend_get_type_by_const(kind.cast_signed()) };
-    // SAFETY: null, or one of Zend's static NUL-terminated names.
-    (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) })
+    swr_zend_type_name(kind).map(CText::get)
 }
 
 impl Call {

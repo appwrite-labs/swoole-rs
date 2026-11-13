@@ -323,8 +323,7 @@ impl Multi {
                     return EXEC_NEEDS_COROUTINE;
                 }
                 self.co.set(co);
-                // SAFETY: the running coroutine.
-                canceled = unsafe { host::yield_(co, -1.0) };
+                canceled = host::yield_(co, -1.0);
                 self.co.set(ptr::null_mut());
                 if canceled {
                     set_last_error(CO_CANCELED);
@@ -474,8 +473,7 @@ impl Multi {
             return 0;
         }
         self.co.set(co);
-        // SAFETY: the running coroutine.
-        unsafe { host::yield_(co, timeout) };
+        host::yield_(co, timeout);
         self.co.set(ptr::null_mut());
         self.ready()
     }
