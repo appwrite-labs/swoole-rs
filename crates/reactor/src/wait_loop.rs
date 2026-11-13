@@ -3,7 +3,7 @@
 //! kernel wait, the readiness order and the warnings; native code supplies the effects
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
-use crate::handlers;
+use crate::handlers::{self, Table};
 use crate::reactor_state::{before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
@@ -299,7 +299,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
 fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
-    for (kind, bit) in [(0, READ), (1, WRITE)] {
+    for (kind, bit) in [(Table::Read, READ), (Table::Write, WRITE)] {
         if mask & bit != 0 && live() && handle(ops, kind, fd_type) < 0 {
             handler_failed(ops, kind);
         }
@@ -309,8 +309,8 @@ fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
         if mask & (READ | WRITE) != 0 {
             return;
         }
-        if handle(ops, 2, fd_type) < 0 {
-            handler_failed(ops, 2);
+        if handle(ops, Table::Error, fd_type) < 0 {
+            handler_failed(ops, Table::Error);
         }
     }
     oneshot(ops, socket, live);
@@ -339,7 +339,11 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         if !live() {
             return;
         }
-        let kind = u32::from(filter != c_int::from(libc::EVFILT_READ));
+        let kind = if filter == c_int::from(libc::EVFILT_READ) {
+            Table::Read
+        } else {
+            Table::Write
+        };
         if handle(ops, kind, fd_type) < 0 {
             handler_failed(ops, kind);
         }
@@ -453,8 +457,8 @@ fn wait_failed(ops: &Loop<'_>, entries: c_int) {
     }
 }
 
-/// Warns that the read (0), write (1) or error (2) handler failed for the prepared event.
-fn handler_failed(ops: &Loop<'_>, kind: u32) {
+/// Warns that the read, write or error handler failed for the prepared event.
+fn handler_failed(ops: &Loop<'_>, kind: Table) {
     let event = ops.event.get();
     let fd = event.fd;
     let name = |names: [&'static str; 3]| names.get(kind as usize).copied().unwrap_or_default();
@@ -468,7 +472,7 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
             return;
         }
         BackendKind::Kqueue => {
-            let name = if kind == 0 { "read" } else { "write" };
+            let name = if kind == Table::Read { "read" } else { "write" };
             log::sys_warning(
                 c"ReactorKqueue::wait",
                 format_args!("kqueue event {name} socket#{fd} handler failed"),
@@ -485,15 +489,10 @@ fn handler_failed(ops: &Loop<'_>, kind: u32) {
     swoole_rs_corebase::swoole_print_backtrace_on_error();
 }
 
-/// Runs the prepared event's read (0), write (1) or error (2) handler, as upstream's
+/// Runs the prepared event's read, write or error handler, as upstream's
 /// `get_handler`/`get_error_handler`; a missing handler fails like one returning
 /// `SW_ERR` rather than calling null.
-fn handle(ops: &Loop<'_>, kind: u32, fd_type: c_int) -> c_int {
-    let kind = match kind {
-        0 => handlers::READ,
-        1 => handlers::WRITE,
-        _ => handlers::ERROR,
-    };
+fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> c_int {
     // The lookup's borrow of the tables ends here, before the handler runs.
     let Some(handler) = ops.reactor.handlers().dispatch(kind, fd_type) else {
         return -1;
