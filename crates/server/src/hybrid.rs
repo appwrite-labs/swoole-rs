@@ -6,6 +6,7 @@ use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::task_file::TaskBuffer;
 
+use crate::commands::CommandSend;
 use crate::view::Server;
 
 /// What the hybrid links. Each default is a build without it: the reactor threads
@@ -59,6 +60,11 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// `Server::command`'s request to another process: whether it went.
+    fn command_send(&self, _serv: Server<'_>, _request: &CommandSend<'_>) -> bool {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -107,6 +113,8 @@ pub(crate) mod tests {
         Thread0Shutdown,
         BeforeShutdown,
         Reload(bool),
+        /// The action, process, command, request and message length.
+        CommandSend(i32, u32, i32, i64, usize),
     }
 
     thread_local! {
@@ -168,6 +176,17 @@ pub(crate) mod tests {
 
         fn reload(&self, _: Server<'_>, all_workers: bool) -> bool {
             hear(Call::Reload(all_workers))
+        }
+
+        fn command_send(&self, _: Server<'_>, c: &CommandSend<'_>) -> bool {
+            let (action, process, command) = (c.action, c.process_id, c.command_id);
+            hear(Call::CommandSend(
+                action,
+                process,
+                command,
+                c.request_id,
+                c.message.len(),
+            ))
         }
     }
 }

@@ -309,7 +309,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// `OP_ALLOC_PORT_GS`, `OP_HTTP_DEFAULTS`, `OP_ALLOC_WORKERS`, `OP_CREATE_FACTORY`,
 /// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_CONNECTION_NUMS`,
 /// `OP_ALLOC_PORT_CONNECTION_NUMS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
-/// `OP_STREAM_PORT`, `OP_ST_PIPE_COMMAND_NEW`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
+/// `OP_STREAM_PORT`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
 /// `OP_CLEAR_SEND_YIELD`, `OP_CLEAR_MAX_QUEUED`, `OP_SEND_TIMEOUT_MIN`), and `destroy`
 /// once the factory has joined its threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
 /// `OP_DESTROY_TASK_WORKERS`, `OP_FREE_SERVER`); else `None`.
@@ -461,17 +461,6 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 config().task_results.free();
             }
             u64::from(ready)
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_ST_PIPE_COMMAND_NEW => {
-            use swoole_rs_tls::socket_pair::{drop, unix_socket};
-            let mut built = Box::new(unix_socket(false, libc::SOCK_DGRAM));
-            if built.master_socket.is_null() || built.worker_socket.is_null() {
-                drop(&mut built);
-                return Some(0);
-            }
-            config().pipe_command = Box::into_raw(built).cast();
-            1
         }
         // `Server::destroy_base_factory()`: the connection list and the connection counts.
         OP_DESTROY_FACTORY if arg == MODE_BASE => {
@@ -1716,30 +1705,15 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-#[repr(C)]
-struct EventData {
-    info: swoole_rs_corebase::DataHead,
-    data: [u8; IPC_BUFFER_SIZE],
-}
-
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-const _: () = assert!(
-    size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
-    "sizeof(EventData)"
-);
-
 /// The ops over the server's ports, timers, barriers, command pipe and message
 /// bus, which build or call a native `ListenPort`, `Barrier` or `UnixSocket`;
 /// else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
-        EVENT_COMMAND_REQUEST, OP_MANAGER_BARRIER, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_SOCKET,
-        OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER, OP_ST_CMD_SEND,
+        OP_MANAGER_BARRIER, OP_PORT_IMPORT, OP_PORT_NEW, OP_PORT_SOCKET, OP_REACTOR_BARRIER,
+        OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
     };
-    use swoole_rs_process::command::{TO_MANAGER, TO_REACTOR_THREAD, TO_TASK_WORKER};
     /// `SW_SOCK_SSL`.
     const SOCK_SSL: c_int = 1 << 9;
     use crate::server_object::{barrier, port_delete, port_new};
@@ -1816,79 +1790,6 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.port_socket()?
                 .edit(|socket| socket_set_fd_option(socket, 1, 1));
             1
-        }
-        OP_ST_CMD_SEND => {
-            // SAFETY: the `CommandSend` `arg` lends.
-            let c = unsafe { &*ptr_of::<crate::commands::CommandSend>(arg) };
-            let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
-            let head = |info: &mut swoole_rs_corebase::DataHead| {
-                info.kind = EVENT_COMMAND_REQUEST.c_cast::<u8>();
-                info.fd = c.request_id;
-                info.server_fd = c.command_id.c_cast::<u16>();
-            };
-            if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
-                let mut buf = EventData {
-                    info: swoole_rs_corebase::DataHead::default(),
-                    data: [0; IPC_BUFFER_SIZE],
-                };
-                let sent = if c.action == TO_TASK_WORKER {
-                    // SAFETY: a writable `EventData` and the message's bytes.
-                    unsafe {
-                        swoole_rs_process::task_file::task_pack(
-                            (&raw mut buf).cast(),
-                            c.message.as_ptr().cast(),
-                            c.message.len(),
-                        )
-                    }
-                } else {
-                    // As much of the message as the buffer holds.
-                    let (message, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
-                    buf.info.len = u32::try_from(message.len()).unwrap_or(u32::MAX);
-                    let (data, _) = buf.data.split_at_mut(message.len());
-                    data.copy_from_slice(message);
-                    true
-                };
-                head(&mut buf.info);
-                if !sent {
-                    return Some(0);
-                }
-                // SAFETY: the head and the `len` bytes after it, which nothing writes while
-                // they are sent.
-                let task = unsafe {
-                    swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast())
-                };
-                let sent = if c.action == TO_TASK_WORKER {
-                    let mut dst = c_int::from(process_id);
-                    let (gs, pool) = (o.gs(), o.server().task_pool_ref());
-                    swoole_rs_process::task_sync::count_task(
-                        &gs.tasking_num,
-                        &gs.task_count,
-                        || {
-                            let sent =
-                                swoole_rs_process::methods::dispatch(pool, task, &mut dst, false);
-                            Ok(sent == 0)
-                        },
-                    )
-                    .unwrap_or(false)
-                } else {
-                    let pool = o.server().event_pool_ref();
-                    let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
-                    swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0
-                };
-                return Some(u64::from(sent));
-            }
-            let mut info = swoole_rs_corebase::DataHead {
-                reactor_id: process_id.cast_signed(),
-                ..Default::default()
-            };
-            head(&mut info);
-            // The worker's pipe: its worker end to a reactor thread, else its master end.
-            let to_worker = c.action != TO_REACTOR_THREAD;
-            let Some(pipe) = o.server().worker_pipe(process_id, to_worker) else {
-                return Some(0);
-            };
-            // The bus sets the head's length to the message's.
-            u64::from(o.state.message_bus().write(pipe, &mut info, c.message))
         }
         _ => return None,
     })

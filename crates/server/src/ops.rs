@@ -614,17 +614,8 @@ pub const OP_CC_FINISH: u32 = 976;
 pub const LOG_CC_LINGER: u32 = 990;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
-/// `Server::add_command`: arg a `commands::AddCommand`.
-pub const RUN_ST_ADD_COMMAND: u32 = 300;
 /// `Server::send`: context session, data and length.
 pub const RUN_ST_SEND: u32 = 308;
-/// `Server::command`: arg a `commands::SendCommand`.
-pub const RUN_ST_COMMAND: u32 = 312;
-
-/// Writes the command request at arg (a `commands::CommandSend`) to its process;
-/// whether it went. A new command pipe, whether it is ready.
-pub const OP_ST_CMD_SEND: u32 = 1000;
-pub const OP_ST_PIPE_COMMAND_NEW: u32 = 1001;
 /// `gs->concurrency`: subtract arg; read; set 0.
 pub const OP_ST_GS_CONCURRENCY_SUB: u32 = 1020;
 pub const OP_ST_GS_CONCURRENCY: u32 = 1021;

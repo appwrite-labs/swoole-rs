@@ -372,7 +372,7 @@ impl ServerConfig {
         self.ipc_max_size.store(size, Relaxed);
     }
 
-    /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
+    /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self
             .pipe_command

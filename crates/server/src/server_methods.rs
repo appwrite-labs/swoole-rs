@@ -603,23 +603,6 @@ pub fn send_pipe_message(
     hybrid().pipe_to_worker(serv, worker_id, msg)
 }
 
-/// Runs a command `operation` over the host of a `Server` method whose context lends
-/// `serv` and nothing else, as [`run_on`] does an operation by number; true, as the
-/// runner's `SW_ERR` narrows to, when a native fault stops it.
-fn over_server(
-    serv: view::Server<'_>,
-    operation: impl FnOnce(&mut crate::Native<'_, '_>) -> crate::Effect<bool>,
-) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    let mut host = crate::Native {
-        state: Some(serv.state()),
-        master: &raw mut ctx,
-        server: Some(serv),
-        reactor: None,
-    };
-    operation(&mut host).unwrap_or(true)
-}
-
 /// `Server::add_command(name, accepted_process_types, handler)`: whether the
 /// command joined. The server keeps the handler for its life.
 pub fn swr_v1_server_add_command(
@@ -633,7 +616,7 @@ pub fn swr_v1_server_add_command(
         accepted_types,
         handler,
     };
-    over_server(serv, |h| crate::commands::add_command(h, &add))
+    crate::commands::add_command(serv, &add)
 }
 
 /// `Server::command(process_id, process_type, name, message, callback)`: whether
@@ -654,7 +637,7 @@ pub fn swr_v1_server_command(
         message,
         callback,
     };
-    over_server(serv, |h| crate::commands::command(h, &send))
+    crate::commands::command(&send)
 }
 
 /// `Server::call_command_callback(request_id, message)`: the reply to `request_id`
