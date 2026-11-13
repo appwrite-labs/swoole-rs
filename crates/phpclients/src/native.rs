@@ -16,6 +16,7 @@ use swoole_rs_clients::{
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
+use swoole_rs_phpswoole::length::Named;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::Socket as Net;
@@ -535,12 +536,13 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
     let Ok(Some(callable)) = owned_callable(value) else {
         return;
     };
+    let named = Named::new(callable);
     socket.0.edit_protocol(|protocol| {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
-        protocol.private_data_1 = Rc::as_ptr(&callable).cast_mut().cast();
+        protocol.private_data_1 = named.as_ptr();
     });
     // The destructor may reach the socket, so it runs between the edits.
-    let old = socket_extra::replace_length_owner(socket.handle(), Some(callable));
+    let old = socket_extra::replace_length_owner(socket.handle(), Some(Rc::new(named)));
     if free_owner(old).is_err() {
         return;
     }

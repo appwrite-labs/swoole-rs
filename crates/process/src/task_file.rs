@@ -5,7 +5,7 @@
 //! `Server::task_dump` prints it.
 use std::ffi::{CStr, c_int, c_void};
 use std::marker::PhantomData;
-use std::mem::offset_of;
+use std::mem::{MaybeUninit, offset_of};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
@@ -100,11 +100,11 @@ struct PacketTask {
 
 impl PacketTask {
     /// Writes its bytes to the start of `to`, as upstream copies the struct.
-    fn write(&self, to: &mut [u8]) {
+    fn write(&self, to: &mut [MaybeUninit<u8>]) {
         let (length, name) = to.split_at_mut(size_of::<usize>());
-        length.copy_from_slice(&self.length.to_ne_bytes());
+        length.write_copy_of_slice(&self.length.to_ne_bytes());
         if let Some(name) = name.get_mut(..TASK_TMP_PATH_SIZE) {
-            name.copy_from_slice(&self.tmpfile);
+            name.write_copy_of_slice(&self.tmpfile);
         }
     }
 
@@ -181,10 +181,10 @@ fn spill(fd: c_int, data: &[u8]) -> bool {
 /// otherwise a temp file created from `template` (an mkstemp pattern), whose
 /// path and length are written into `dest` (at least `sizeof(PacketTask)` bytes)
 /// as a `PacketTask`.
-fn pack_payload(dest: &mut [u8], data: &[u8], template: &CStr) -> TaskPack {
+fn pack_payload(dest: &mut [MaybeUninit<u8>], data: &[u8], template: &CStr) -> TaskPack {
     let fits = data.len() < dest.len();
     if let Some(inline) = dest.get_mut(..data.len()).filter(|_| fits) {
-        inline.copy_from_slice(data);
+        inline.write_copy_of_slice(data);
         return TaskPack {
             ok: true,
             tmpfile: false,
@@ -229,34 +229,59 @@ pub struct EventData {
     data: [u8; IPC_PAYLOAD],
 }
 
-/// `SW_SERVER_EVENT_TASK`.
-const EVENT_TASK: u8 = 8;
-const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
-const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
+/// An `EventData` to pack a task into. Its payload starts uninitialized, as a
+/// stack `swoole::EventData` does, and only [`Self::pack`] sets the head's `len`,
+/// so the bytes it counts are always written.
+#[repr(C)]
+pub struct TaskBuffer {
+    head: DataHead,
+    data: [MaybeUninit<u8>; IPC_PAYLOAD],
+}
 
-impl EventData {
-    /// `Server::task_dump`: the header, and the temporary file's name if it has one.
-    pub fn dump(&self) {
-        let mut buf = [0_u8; 1024];
-        datahead_dump(&self.head, &mut buf);
-        let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
-        swoole_rs_corebase::sys::print(text.to_bytes());
-        if self.head.ext_flags & TMPFILE != 0 {
-            let pkg = PacketTask::read(&self.data);
-            // Upstream prints the payload's length in bytes of the file's name; a
-            // negative `(int)` precision prints all of it.
-            let name = pkg.path().to_bytes();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "printf's int precision, as upstream's (int) cast"
-            )]
-            let precision = pkg.length as c_int;
-            let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
-            let name = name.get(..shown).unwrap_or(name);
-            let line = [b"Task[tmpfile]=", name, b"\n"].concat();
-            swoole_rs_corebase::sys::print(&line);
+const _: () = assert!(
+    size_of::<DataHead>() == 40,
+    "`TaskBuffer::bytes` reads the head as bytes, so it has no padding"
+);
+
+impl Default for TaskBuffer {
+    fn default() -> Self {
+        Self {
+            head: DataHead::default(),
+            data: [MaybeUninit::uninit(); IPC_PAYLOAD],
         }
+    }
+}
+
+impl TaskBuffer {
+    /// The head, as `pack` and the flag setters left it.
+    #[must_use]
+    pub fn head(&self) -> &DataHead {
+        &self.head
+    }
+
+    /// `info.ext_flags |= flags`.
+    pub fn add_flags(&mut self, flags: u16) {
+        self.head.ext_flags |= flags;
+    }
+
+    /// `info.type = kind`.
+    pub fn set_kind(&mut self, kind: u8) {
+        self.head.kind = kind;
+    }
+
+    /// The buffer, for an operation that reads `EventData::size()` bytes of it.
+    #[must_use]
+    pub fn as_mut_ptr(&mut self) -> *mut c_void {
+        std::ptr::from_mut(self).cast()
+    }
+
+    /// `EventData::size()` bytes: the head, then the payload it counts.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        let size = size_of::<DataHead>() + self.head.len as usize;
+        // SAFETY: the head has no padding, and `pack`, the one writer of `len`,
+        // wrote the `len` payload bytes after it, within the buffer.
+        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast::<u8>(), size) }
     }
 
     /// `Server::task_pack`: a task header from this worker, with `data` inline or
@@ -298,7 +323,38 @@ impl EventData {
     }
 }
 
-/// [`EventData::pack`] into the task at `task`.
+/// `SW_SERVER_EVENT_TASK`.
+const EVENT_TASK: u8 = 8;
+const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
+const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
+
+impl EventData {
+    /// `Server::task_dump`: the header, and the temporary file's name if it has one.
+    pub fn dump(&self) {
+        let mut buf = [0_u8; 1024];
+        datahead_dump(&self.head, &mut buf);
+        let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
+        swoole_rs_corebase::sys::print(text.to_bytes());
+        if self.head.ext_flags & TMPFILE != 0 {
+            let pkg = PacketTask::read(&self.data);
+            // Upstream prints the payload's length in bytes of the file's name; a
+            // negative `(int)` precision prints all of it.
+            let name = pkg.path().to_bytes();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_possible_wrap,
+                reason = "printf's int precision, as upstream's (int) cast"
+            )]
+            let precision = pkg.length as c_int;
+            let shown = usize::try_from(precision).map_or(name.len(), |n| n.min(name.len()));
+            let name = name.get(..shown).unwrap_or(name);
+            let line = [b"Task[tmpfile]=", name, b"\n"].concat();
+            swoole_rs_corebase::sys::print(&line);
+        }
+    }
+}
+
+/// [`TaskBuffer::pack`] into the task at `task`.
 ///
 /// # Safety
 /// `task` is a writable `EventData`; `data` lends `length` readable bytes.
@@ -309,8 +365,9 @@ pub unsafe fn task_pack(task: *mut EventHead, data: *const c_void, length: usize
         // SAFETY: as the caller promises.
         unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
     };
-    // SAFETY: as the caller promises.
-    unsafe { &mut *task.cast::<EventData>() }.pack(data)
+    // SAFETY: as the caller promises; a `TaskBuffer` is an `EventData` whose
+    // payload may be uninitialized.
+    unsafe { &mut *task.cast::<TaskBuffer>() }.pack(data)
 }
 
 /// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
@@ -429,7 +486,10 @@ impl<'a> Packed<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PacketTask, TaskFileRead, TaskPack, pack_payload, read_file, spill};
+    use super::{
+        DataHead, EVENT_TASK, PacketTask, TaskBuffer, TaskFileRead, TaskPack, pack_payload,
+        read_file, spill,
+    };
     use crate::methods::tests::{install, logged};
     use std::ffi::CString;
 
@@ -494,9 +554,38 @@ mod tests {
     }
 
     #[test]
+    fn a_task_buffer_is_upstreams_event_data() {
+        // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
+        assert_eq!(
+            size_of::<TaskBuffer>() as u64,
+            crate::process_pool::SW_IPC_MAX_SIZE
+        );
+        assert_eq!(align_of::<TaskBuffer>(), 8);
+    }
+
+    #[test]
+    fn a_task_buffer_counts_the_payload_it_packs() {
+        let mut buf = TaskBuffer::default();
+        assert_eq!(
+            buf.bytes().len(),
+            size_of::<DataHead>(),
+            "an empty buffer is its head"
+        );
+        assert!(buf.pack(b"abc"));
+        buf.add_flags(1 << 2);
+        let bytes = buf.bytes();
+        assert_eq!(bytes.len(), size_of::<DataHead>() + 3);
+        assert_eq!(&bytes[size_of::<DataHead>()..], b"abc");
+        assert_eq!(
+            (buf.head().len, buf.head().kind, buf.head().ext_flags),
+            (3, EVENT_TASK, 1 << 2)
+        );
+    }
+
+    #[test]
     fn packs_a_small_payload_inline() {
         let data = b"a small task payload";
-        let mut dest = vec![0u8; 300];
+        let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300];
         let template = CString::new("/unused/XXXXXX").unwrap();
         let out = pack_payload(&mut dest, data, &template);
         assert_eq!(
@@ -507,6 +596,7 @@ mod tests {
                 info_len: data.len()
             }
         );
+        let dest: Vec<u8> = dest.iter().map(|b| unsafe { b.assume_init() }).collect();
         assert_eq!(&dest[..data.len()], data);
     }
 
@@ -521,7 +611,7 @@ mod tests {
         )
         .unwrap();
         let payload = vec![0xAB_u8; 500];
-        let mut dest = vec![0u8; 300]; // smaller than the payload, so it spills to a file
+        let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300]; // smaller than the payload, so it spills to a file
         let out = pack_payload(&mut dest, &payload, &template);
         assert_eq!(
             out,
@@ -532,6 +622,7 @@ mod tests {
             }
         );
         // Decode the PacketTask { length, tmpfile } written into dest by byte offset.
+        let dest: Vec<u8> = dest.iter().map(|b| unsafe { b.assume_init() }).collect();
         let length = usize::from_ne_bytes(dest[..size_of::<usize>()].try_into().unwrap());
         assert_eq!(length, payload.len());
         let path_bytes = &dest[size_of::<usize>()..];
@@ -543,7 +634,7 @@ mod tests {
 
     fn pack_large(template: &CString) -> TaskPack {
         let payload = vec![0xAB_u8; 500];
-        let mut dest = vec![0u8; 300];
+        let mut dest = vec![std::mem::MaybeUninit::new(0u8); 300];
         pack_payload(&mut dest, &payload, template)
     }
 
