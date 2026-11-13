@@ -24,7 +24,7 @@ void swr_v1_core_swoole_init(void);
  * swoole::DataHead::dump. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
- * swoole_exit and swoole_get_systemd_listen_fds. */
+ * and swoole_exit. */
 /* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
  * of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
