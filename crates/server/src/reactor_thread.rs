@@ -1,19 +1,19 @@
 //! Reactor threads: the datagram path and dispatch to workers, the worker pipe
 //! protocol, heartbeats and the threads' lifecycle.
-use crate::ops::{
-    LOG_RECVFROM, OP_DTLS_ACCEPT, OP_ERRNO, OP_FACTORY_DISPATCH, OP_MODE, OP_PACKET_INIT,
-    OP_PACKET_TASK, OP_PORT_DTLS, OP_RECVFROM,
-};
-use core::ffi::{c_int, c_long};
+use core::ffi::{c_int, c_long, c_void};
 
+use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::Socket;
+use swoole_rs_reactor::{Event, Socket};
 
+use crate::base_factory::SendData;
+use crate::hybrid::hybrid;
+use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{Connection, Lookup};
-use crate::{Host, MODE_BASE, SW_ERR, SW_OK, ServerState, view};
+use crate::{MODE_BASE, ServerState, view};
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
@@ -23,35 +23,86 @@ const FD_DGRAM_SERVER: c_int = 2;
 const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 
+/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_OK` and `SW_ERR`.
+const RECV_DGRAM: u8 = 1;
+const SW_OK: c_int = 0;
+const SW_ERR: c_int = -1;
+
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
 
-/// `ReactorThread_onPacketReceived`: dispatch datagrams until the socket would block.
-pub(crate) fn packet_received<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    h.get(OP_PACKET_INIT)?;
+/// `ReactorThread_onPacketReceived`: dispatch the datagrams on the event's socket, a
+/// UDP port's, until it would block. Each is read into this thread's buffer.
+pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+    let (buffer, size) =
+        swoole_rs_buffer::string::with_thread_buffer(|b| (b.as_mut_ptr().cast(), b.size()));
+    receive_packets(serv, reactor, event.fd(), buffer, size)
+}
+
+/// [`packet_received`] from `fd` into the `size` bytes at `buffer`, which are aligned
+/// for a [`DgramPacket`] and live, and which nothing else borrows, for the call.
+fn receive_packets(
+    serv: view::Server<'_>,
+    reactor: Reactor,
+    fd: c_int,
+    buffer: *mut c_void,
+    size: usize,
+) -> c_int {
+    let state = serv.state();
+    // The event's fd is a listening socket's, whose slot holds its port.
+    let Some(conn) = state.connection(fd.into(), Lookup::ByFd) else {
+        return SW_ERR;
+    };
+    let (kind, port) = (conn.socket_type(), conn.object());
+    // SAFETY: the datagram server's connection, whose object is its live port.
+    let dtls = unsafe { crate::port_config::of(port) }.is_dtls();
+    let head = size_of::<DgramPacket>();
+    let mut task = SendData {
+        info: DataHead {
+            server_fd: crate::base_factory::low16(fd),
+            reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
+            kind: RECV_DGRAM,
+            time: microtime(),
+            ..DataHead::default()
+        },
+        data: buffer.cast_const().cast(),
+    };
+    let base = u64::from(state.config_ref().mode_) == MODE_BASE;
     loop {
-        let n = h.signed(OP_RECVFROM)?;
-        if n <= 0 {
-            if h.get(OP_ERRNO)? == u64::from(libc::EAGAIN.cast_unsigned()) {
-                return Ok(SW_OK);
+        // SAFETY: the caller's buffer, which holds a packet head and its datagram.
+        let pkt = unsafe { &mut *buffer.cast::<DgramPacket>() };
+        pkt.socket_type = kind;
+        let address = &mut pkt.socket_addr;
+        address.kind = kind;
+        address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
+        let (storage, len) = ((&raw mut address.addr).cast(), &raw mut address.len);
+        let data = buffer.wrapping_byte_add(head);
+        // SAFETY: the buffer's room after the packet head, and the address's storage.
+        let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, size - head, 0, storage, len) };
+        let Ok(length @ 1..) = u32::try_from(n) else {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
+                return SW_OK;
             }
-            h.get(LOG_RECVFROM)?;
-            return Ok(SW_ERR);
+            log::sys_warning(
+                c"ReactorThread_onPacketReceived",
+                format_args!("recvfrom({fd}) failed"),
+            );
+            return SW_ERR;
+        };
+        if dtls {
+            return hybrid().dtls_accept(serv, reactor, port, pkt, length);
         }
-        let length = n.cast_unsigned();
-        if h.is(OP_PORT_DTLS)? {
-            return Ok(h.op(OP_DTLS_ACCEPT, length)?.cast_signed());
-        }
-        let task = h.op(OP_PACKET_TASK, length)?;
-        // Base mode hands it to this process's worker as it does a connection's data.
-        let dispatched = if h.get(OP_MODE)? == MODE_BASE {
-            let task = core::ptr::with_exposed_provenance_mut(usize::try_from(task).unwrap_or(0));
-            crate::base_factory::dispatch(h, task, true)?
+        pkt.length = length;
+        task.info.fd = pkt.sender();
+        task.info.len = u32::try_from(head).unwrap_or(0).saturating_add(length);
+        let dispatched = if base {
+            // Base mode hands it to this process's worker as it does a connection's data.
+            crate::base_factory::dispatch(serv, &mut task, true)
         } else {
-            h.get(OP_FACTORY_DISPATCH)? != 0
+            hybrid().factory_dispatch(serv, &mut task)
         };
         if !dispatched {
-            return Ok(SW_ERR);
+            return SW_ERR;
         }
     }
 }
@@ -180,55 +231,73 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
     }
 }
 
-/// The reactor-thread operations of `crate::run`.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    Ok(match operation {
-        crate::ops::RUN_PACKET_RECEIVED => packet_received(h)?,
-        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::Script;
+
+    /// A UDP socket listed as a datagram port of `live`, as `store_listen_socket`
+    /// leaves one, and a client that sends to it.
+    fn udp_port(live: &crate::fixture::LiveServer) -> (std::net::UdpSocket, std::net::UdpSocket) {
+        let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
+        let slot = live.state().tables_ref().connection_at(fd).unwrap();
+        slot.set_fd(fd);
+        slot.set_socket_type(2); // SW_SOCK_UDP
+        slot.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.connect(server.local_addr().unwrap()).unwrap();
+        (server, client)
+    }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn datagrams_until_eagain() {
-        let mut s = Script::with(&[
-            (OP_ERRNO, libc::EAGAIN.cast_unsigned().into()),
-            (OP_FACTORY_DISPATCH, 1),
-        ])
-        .queue(OP_RECVFROM, &[10, 20, u64::MAX]);
-        assert_eq!(packet_received(&mut s).unwrap(), SW_OK, "drained");
-        assert_eq!(s.args(OP_PACKET_TASK), vec![10, 20], "each datagram");
-        assert_eq!(s.called(OP_FACTORY_DISPATCH), 2, "through the factory");
-
-        let mut s = Script::with(&[(OP_ERRNO, 5)]).queue(OP_RECVFROM, &[u64::MAX]);
-        assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "recvfrom failed");
-        assert_eq!(s.called(LOG_RECVFROM), 1, "warned");
-
-        let mut s = Script::with(&[(OP_FACTORY_DISPATCH, 0), (OP_RECVFROM, 3)]);
-        assert_eq!(packet_received(&mut s).unwrap(), SW_ERR, "dispatch failed");
-
-        // Base mode dispatches the task itself; with no worker here, through the bus.
-        let mut task = crate::base_factory::SendData {
-            info: swoole_rs_corebase::DataHead {
-                kind: 1, // SW_SERVER_EVENT_RECV_DGRAM
-                ..swoole_rs_corebase::DataHead::default()
-            },
-            data: core::ptr::null(),
+        use crate::hybrid::tests::{Call, calls};
+        let live = crate::fixture::LiveServer::new();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let (server, client) = udp_port(&live);
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
+        let mut buffer = vec![0_u64; 1024];
+        let (at, size) = (buffer.as_mut_ptr().cast(), buffer.len() * 8);
+        // Each pass drains what has arrived; loopback may deliver a datagram late.
+        let received = |count: usize| {
+            let mut heard = Vec::new();
+            for _ in 0..1000 {
+                assert_eq!(
+                    receive_packets(serv, reactor, fd, at, size),
+                    SW_OK,
+                    "drained"
+                );
+                heard.extend(calls());
+                if heard.len() >= count {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            heard
         };
-        let address = (&raw mut task).expose_provenance() as u64;
-        let mut s = Script::with(&[
-            (OP_ERRNO, libc::EAGAIN.cast_unsigned().into()),
-            (OP_MODE, MODE_BASE),
-            (OP_PACKET_TASK, address),
-        ])
-        .queue(OP_RECVFROM, &[5, u64::MAX]);
-        assert_eq!(packet_received(&mut s).unwrap(), SW_OK);
-        assert_eq!(s.called(OP_FACTORY_DISPATCH), 0, "not the factory");
-        assert_eq!(s.called(crate::ops::OP_BASE_PASS), 1, "the worker's bus");
+        drop(calls());
+        client.send(b"one").unwrap();
+        client.send(b"three").unwrap();
+        // An IPv4 sender's session is its address.
+        let sender = c_long::from(u32::from_ne_bytes([127, 0, 0, 1]).cast_signed());
+        let head = u32::try_from(size_of::<DgramPacket>()).unwrap();
+        let each = [
+            Call::Dispatch(sender, RECV_DGRAM, head + 3),
+            Call::Dispatch(sender, RECV_DGRAM, head + 5),
+        ];
+        assert_eq!(received(2), each, "each datagram, through the factory");
+
+        // Base mode hands it to this worker; with none here, through the bus.
+        // SAFETY: the fixture's state, on this thread only.
+        unsafe { (*live.state().config()).mode_ = u8::try_from(MODE_BASE).unwrap() };
+        client.send(b"two").unwrap();
+        assert_eq!(received(1), [Call::BasePass(sender, RECV_DGRAM, head + 3)]);
+
+        let no_port = receive_packets(serv, reactor, -1, at, size);
+        assert_eq!(no_port, SW_ERR, "no port");
+        assert_eq!(calls(), []);
     }
 
     /// The live server with session 1 accepted. The reactor records the fds its

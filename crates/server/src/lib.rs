@@ -142,15 +142,7 @@ pub(crate) trait Host {
     fn float(&mut self, op: u32) -> Effect<f64> {
         Ok(f64::from_bits(self.get(op)?))
     }
-    fn state(&mut self) -> Effect<&ServerState>;
-    /// `swoole_get_worker_id()`.
-    fn worker_id(&mut self) -> Effect<u64> {
-        self.get(ops::OP_WORKER_ID)
-    }
 }
-
-/// The state of a server without one, which native code never passes.
-static NO_STATE: std::sync::LazyLock<ServerState> = std::sync::LazyLock::new(ServerState::new);
 
 struct Native<'a, 'c> {
     state: Option<&'a ServerState>,
@@ -201,36 +193,6 @@ impl Host for Native<'_, '_> {
         // An op no record answers: 0, as master.cc's `default:` was.
         Ok(0)
     }
-
-    fn worker_id(&mut self) -> Effect<u64> {
-        // The process crate owns the worker record; no native call is needed.
-        Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
-    }
-
-    // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
-    #[inline(always)]
-    fn state(&mut self) -> Effect<&ServerState> {
-        // Lazily: naming `NO_STATE` checks its `LazyLock`.
-        Ok(self.state.unwrap_or_else(|| &NO_STATE))
-    }
-}
-
-/// `operation` over a reactor-thread context without [`run`]'s match: the reads,
-/// writes and dispatches every message takes, whose detour through `run`'s frame
-/// cost about 120 instructions a message.
-#[inline(always)]
-pub(crate) fn run_reactor_with<'s, 'c>(
-    context: &'s mut reactor_ops::ReactorContext<'c>,
-    state: &'s ServerState,
-    operation: impl FnOnce(&mut Native<'s, 'c>) -> Effect<i64>,
-) -> i64 {
-    operation(&mut Native {
-        state: Some(state),
-        master: core::ptr::null_mut(),
-        server: None,
-        reactor: Some(context),
-    })
-    .unwrap_or(SW_ERR)
 }
 
 /// Runs one operation for a `Server` method (`server_methods`) over its context,
@@ -280,7 +242,8 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             startup::destroy(h)?;
             SW_OK
         }
-        _ => reactor_thread::run(h, operation, arg)?,
+        ops::RUN_BASE_CREATE => base_factory::create(h)?,
+        _ => SW_ERR,
     })
 }
 
@@ -288,7 +251,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
 pub(crate) mod script {
     //! A scripted server: answers facts from a table and records every op.
     use super::Host;
-    use crate::ServerState;
     use std::collections::HashMap;
 
     #[derive(Default)]
@@ -297,7 +259,6 @@ pub(crate) mod script {
         /// Answers consumed in order before `facts` for ops called repeatedly.
         pub queued: HashMap<u32, Vec<u64>>,
         pub log: Vec<(u32, u64)>,
-        pub state: ServerState,
     }
 
     impl Script {
@@ -332,9 +293,6 @@ pub(crate) mod script {
                 return Ok(answers.remove(0));
             }
             Ok(self.facts.get(&op).copied().unwrap_or(0))
-        }
-        fn state(&mut self) -> crate::Effect<&crate::ServerState> {
-            Ok(&self.state)
         }
     }
 }

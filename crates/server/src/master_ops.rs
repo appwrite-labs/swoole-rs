@@ -8,15 +8,14 @@ use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::WorkerType;
 
-use swoole_rs_buffer::cpp::swr_cpp_buffer_empty;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 
 use crate::callbacks::{
     CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK,
 };
 use crate::hybrid::hybrid;
+use crate::ops::OP_MASTER_THREAD;
 use crate::ops::OP_PIPE_COMMAND_ADD;
 use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
@@ -35,7 +34,6 @@ use crate::ops::{
     OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER,
 };
 use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
-use crate::ops::{OP_MASTER_THREAD, OP_OUT_EMPTY};
 use crate::port_config::PortConfig;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use crate::port_config::methods;
@@ -131,11 +129,6 @@ impl<'a> Objects<'a> {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
     }
-    /// The live socket native code passes as `arg`.
-    fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
-        // SAFETY: the ops reading it pass a live socket.
-        unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
-    }
 }
 
 /// Answers `op` when it is one of this module's, else `None`.
@@ -161,56 +154,17 @@ pub(crate) unsafe fn answer<'a>(
     // SAFETY: per the caller; nothing else touches the context during the op.
     let ctx = unsafe { &mut *ctx };
     let mut o = Objects { ctx, server, state };
-    connection(&mut o, op, arg).or_else(|| ops(&mut o, op, arg))
+    connection(&mut o, op).or_else(|| ops(&mut o, op, arg))
 }
 
-/// The ops each connection makes as it is closed (`Server::close`,
-/// `base_factory::end`), answered where they are made: inlined into a call with a
-/// constant op, each folds to its arm, where [`ops`]' match and the stages it falls
-/// through to cost about 40 instructions an op (#2748).
+/// The ops each connection makes as it is closed (`Server::close`), answered where
+/// they are made: inlined into a call with a constant op, each folds to its arm,
+/// where [`ops`]' match and the stages it falls through to cost about 40
+/// instructions an op (#2748).
 #[inline(always)]
-fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+fn connection(o: &mut Objects<'_>, op: u32) -> Option<u64> {
     Some(match op {
         OP_PORT_IDLE_TIME => o.port().max_idle_time.get().to_bits(),
-        OP_OUT_EMPTY => {
-            let socket = Objects::arg_socket(arg)?;
-            let empty = |s: &SocketFields| {
-                crate::reactor_ops::out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b))
-            };
-            u64::from(socket.read(empty))
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_ON_CLOSE => {
-            // SAFETY: the close event `base_factory::end` lends at `arg` for the op.
-            let event = unsafe { &*(arg as *const swoole_rs_corebase::DataHead) };
-            // SAFETY: the context's live server (`answer`'s contract), read as it was
-            // before the slot took a handle: `o.server` would test for one.
-            let serv = unsafe { crate::view::Server::from_raw(o.ctx.serv) };
-            let callbacks = &o.state.callbacks;
-            callbacks.event(crate::callbacks::EventSlot::Close, serv, event);
-            0
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_CLOSE_SOCKET => {
-            let reactor = swoole_rs_corebase::thread_reactor();
-            let socket = arg as *mut SocketRecord;
-            // SAFETY: this thread's live reactor and a session socket of it.
-            sign(unsafe { crate::reactor_entry::close_connection(reactor, socket) })
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_QUEUE_CLOSE => {
-            // A live session socket of this thread's reactor.
-            let socket = Objects::arg_socket(arg)?;
-            socket.read(|s| {
-                crate::reactor_ops::out_buffer(s)
-                    .map(|b| swoole_rs_buffer::cpp::swr_cpp_buffer_typed_close(b))
-            });
-            // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
-            u64::from(
-                !cfg!(feature = "halfclose")
-                    || crate::reactor_handle::Reactor::thread().interest(socket, 4, 0) == 0,
-            )
-        }
         _ => return None,
     })
 }
@@ -857,7 +811,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             (methods().close)(*port);
             0
         }
-        op => return sends(o, op, arg),
+        op => return factory_ops(o, op, arg),
     })
 }
 
@@ -875,8 +829,7 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
     unsafe { crate::objects::Bus::of(bus) }
 }
 
-/// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
-/// of it.
+/// Base mode's message bus takes `send`, then `worker_accept_event` of it.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
     let bus = worker_message_bus(serv.state());
@@ -885,68 +838,32 @@ pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factor
     crate::event_worker_ops::accept_event(serv, &mut head);
 }
 
-/// The send ops that call a `Server` or `Socket` method crates/server,
-/// crates/process or crates/tls defines; else `None`.
+/// The message bus writes `send` to the pipe of the worker that owns its session.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FORWARD, OP_SEND_HERE};
-    use swoole_rs_corebase::DataHead;
-    // The `SendData` native code lends at arg.
-    let lent = || {
-        // SAFETY: as above.
-        unsafe { &*(arg as *const crate::base_factory::SendData) }
-    };
-    Some(match op {
-        OP_SEND_HERE => {
-            // SAFETY: the live `SendData` the send path lends.
-            let send = unsafe { &*o.ctx.send.cast::<crate::base_factory::SendData>() };
-            // SAFETY: its data.
-            sign(unsafe { crate::server_methods::send_to_connection(o.server(), send) })
-        }
-        OP_ACCEPT_EVENT => {
-            // SAFETY: the `DataHead` native code lends at arg.
-            let info = unsafe { &mut *(arg as *mut DataHead) };
-            crate::event_worker_ops::accept_event(o.server(), info);
-            0
-        }
-        OP_BASE_PASS => {
-            base_pass(o.server(), lent());
-            0
-        }
-        OP_FORWARD => forward(o, lent()),
-        op => return factory_ops(o, op, arg),
-    })
-}
-
-/// `OP_FORWARD`: the worker message bus writes `send` to the pipe of the worker
-/// that owns its session.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn forward(o: &Objects<'_>, send: &crate::base_factory::SendData) -> u64 {
-    let Some(session) = o.state.session(send.info.fd) else {
-        return 0;
+pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) -> bool {
+    let state = serv.state();
+    let Some(session) = state.session(send.info.fd) else {
+        return false;
     };
     let id = session.reactor_bits() & 0xff;
-    let Some(pipe) = o
-        .server()
-        .worker_pipe(u16::try_from(id).unwrap_or(u16::MAX), true)
-    else {
-        return 0;
+    let Some(pipe) = serv.worker_pipe(u16::try_from(id).unwrap_or(u16::MAX), true) else {
+        return false;
     };
-    let bus = worker_message_bus(o.state);
-    let socket = if u64::from(o.config().mode_) == MODE_THREAD {
+    let bus = worker_message_bus(state);
+    let socket = if u64::from(state.config_ref().mode_) == MODE_THREAD {
         bus.pipe_socket(pipe)
     } else {
         Some(pipe)
     };
     let Some(socket) = socket else {
-        return 0;
+        return false;
     };
     let mut info = send.info;
     // SAFETY: a live pipe socket and the send it writes.
-    u64::from(unsafe {
+    unsafe {
         bus.rust()
             .send(socket.as_ptr(), &mut info, send.data.cast())
-    })
+    }
 }
 
 /// The ops over the server's factory and task pool: the process factory's and

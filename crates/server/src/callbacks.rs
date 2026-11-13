@@ -2,7 +2,7 @@
 //! Rust owns the slots. A slot holds `invoke(ctx, ...)` and the `drop(ctx)` that
 //! frees `ctx`. Rust answers the presence facts and clears slots;
 //! native code still makes the calls.
-use crate::ops::{OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_ON_CLOSE, OP_HAS_ON_CONNECT};
+use crate::ops::{OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_ON_CONNECT};
 use crate::reactor_entry::RecvData;
 use crate::view::Server;
 use crate::{ConnectionRecord, ServerState};
@@ -234,7 +234,10 @@ const SERVER_SLOTS: [u32; 7] = [
 ];
 
 /// The slots of a `void (Server *, DataInfo *)` signature ([`EventFn`]).
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(dead_code, reason = "only the hybrid raises connect and buffer events")
+)]
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum EventSlot {
@@ -245,12 +248,44 @@ pub(crate) enum EventSlot {
 }
 
 /// The slots of an `int (Server *, RecvData *)` signature ([`ReceiveFn`]).
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum ReceiveSlot {
     Receive = CB_RECEIVE,
     Packet = CB_PACKET,
+}
+
+/// The typed calls the server makes in every build (see the impl below).
+impl ServerCallbacks {
+    /// `serv->onX(serv, info)` for an event slot; nothing when it is empty. Inlined,
+    /// so a constant slot folds to its address as the caller's own lookup did.
+    #[inline(always)]
+    pub(crate) fn event(&self, slot: EventSlot, serv: Server<'_>, info: &DataHead) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &DataHead);
+        let Some(slot) = self.slot(slot as u32) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: an event slot holds null or a `void (*)(void *, Server *, DataInfo *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv, info);
+        }
+    }
+
+    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
+    /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
+    #[inline(always)]
+    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &RecvData) -> c_int;
+        let Some(slot) = self.slot(slot as u32) else {
+            return -1;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a receive slot holds null or an `int (*)(void *, Server *, RecvData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        invoke.map_or(-1, |invoke| invoke(slot.ctx.load(Relaxed), serv, data))
+    }
 }
 
 /// The slots of an `int (Server *, EventData *)` signature ([`TaskFn`]).
@@ -294,36 +329,6 @@ impl ServerCallbacks {
         if let Some(invoke) = invoke {
             invoke(slot.ctx.load(Relaxed), serv);
         }
-    }
-
-    /// `serv->onX(serv, info)` for an event slot; nothing when it is empty. Inlined,
-    /// so a constant slot folds to its address as the caller's own lookup did.
-    #[inline(always)]
-    pub(crate) fn event(&self, slot: EventSlot, serv: Server<'_>, info: &DataHead) {
-        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &DataHead);
-        let Some(slot) = self.slot(slot as u32) else {
-            return;
-        };
-        let invoke = slot.invoke.load(Relaxed);
-        // SAFETY: an event slot holds null or a `void (*)(void *, Server *, DataInfo *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        if let Some(invoke) = invoke {
-            invoke(slot.ctx.load(Relaxed), serv, info);
-        }
-    }
-
-    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
-    /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
-    #[inline(always)]
-    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
-        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>, &RecvData) -> c_int;
-        let Some(slot) = self.slot(slot as u32) else {
-            return -1;
-        };
-        let invoke = slot.invoke.load(Relaxed);
-        // SAFETY: a receive slot holds null or an `int (*)(void *, Server *, RecvData *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        invoke.map_or(-1, |invoke| invoke(slot.ctx.load(Relaxed), serv, data))
     }
 
     /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
@@ -429,7 +434,6 @@ pub(crate) fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64>
     };
     Some(match op {
         OP_HAS_ON_CONNECT => set(CB_CONNECT),
-        OP_HAS_ON_CLOSE => set(CB_CLOSE),
         OP_CALLBACK => match u32::try_from(arg) {
             Ok(index @ CB_CONNECT..=CB_PACKET) => set(index),
             _ => 0,
@@ -523,7 +527,6 @@ mod tests {
         fill(state.callbacks.slot(CB_TASK).unwrap());
         fill(state.callbacks.slot(CB_DISPATCH_FUNC).unwrap());
         assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(1));
-        assert_eq!(native_fact(&state, OP_HAS_ON_CLOSE, 0), Some(0));
         assert_eq!(
             native_fact(&state, OP_CALLBACK, u64::from(CB_TASK)),
             Some(1)

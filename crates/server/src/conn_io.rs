@@ -617,13 +617,13 @@ fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
 
     /// The live server with sessions 1 and 2 accepted, and their clients.
-    fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
+    pub(crate) fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
         let live = LiveServer::new();
         let clients = [live.connect(), live.connect()];
         // SAFETY: the fixture's listener, live for the event.
@@ -634,7 +634,7 @@ mod tests {
     }
 
     /// Session `id`, which its reactor thread reads.
-    fn session(live: &LiveServer, id: c_long) -> Connection<'_> {
+    pub(crate) fn session(live: &LiveServer, id: c_long) -> Connection<'_> {
         let conn = live.state().connection(id, Lookup::Verified).unwrap();
         let sock = conn.socket().unwrap();
         if sock.read(|s| s.removed) {
@@ -649,7 +649,7 @@ mod tests {
         edit(unsafe { &mut *live.state().config() });
     }
 
-    fn closed(conn: Connection<'_>) -> bool {
+    pub(crate) fn closed(conn: Connection<'_>) -> bool {
         !conn.is_active() && conn.closed().load(Relaxed) == 1 && conn.socket().is_none()
     }
 
@@ -756,7 +756,7 @@ mod tests {
     }
 
     /// `bytes` queued on the connection's socket.
-    fn queue(conn: Connection<'_>, bytes: &[u8]) {
+    pub(crate) fn queue(conn: Connection<'_>, bytes: &[u8]) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(0);
         conn.socket()
             .unwrap()

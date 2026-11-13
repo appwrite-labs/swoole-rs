@@ -16,21 +16,12 @@ pub const RUN_DESTROY: u32 = 19;
 // Reactor threads (`src/server/reactor_thread.cc`); context reactor and its thread.
 /// `ReactorThread_onRead`: context event, socket and connection; arg the `conn_io` read facts.
 pub const RUN_RT_READ: u32 = 20;
-/// `ReactorThread_onPacketReceived`: context event.
-pub const RUN_PACKET_RECEIVED: u32 = 21;
 /// `Server::dispatch_task`: context socket, connection and received data.
 pub const RUN_DISPATCH_TASK: u32 = 30;
 
 // `BaseFactory` (`src/server/base.cc`, `crates/server/src/base_factory.rs`).
 /// `Server::create_base_factory`: 1 with the factory in the context.
 pub const RUN_BASE_CREATE: u32 = 43;
-/// `BaseFactory::notify(arg)`: arg the `DataHead`.
-pub const RUN_BASE_NOTIFY: u32 = 44;
-/// `BaseFactory::end`: arg the session id, with the close flags from bit 48.
-pub const RUN_BASE_END: u32 = 45;
-/// `BaseFactory::finish(arg)`, `BaseFactory::dispatch(arg)`: arg and context the `SendData`.
-pub const RUN_BASE_FINISH: u32 = 46;
-pub const RUN_BASE_DISPATCH: u32 = 47;
 /// One native op, arg the op: the operands are in the context (`server_methods.rs`).
 pub const RUN_NATIVE_OP: u32 = 48;
 
@@ -218,16 +209,6 @@ pub const FIELD_TASK_IPC_MODE: u32 = 6;
 pub const FIELD_CPU_NUM: u32 = 7;
 
 // Reactor threads. Ops 0-144 keep their meaning where master.cc's reactor-thread ops answer them.
-/// Fills the datagram task header.
-pub const OP_PACKET_INIT: u32 = 259;
-/// `recvfrom` into the packet; the `ssize_t`.
-pub const OP_RECVFROM: u32 = 260;
-/// The datagram's port is DTLS; accepts the DTLS session (arg the length) and returns
-/// `onPacketReceived`'s result.
-pub const OP_PORT_DTLS: u32 = 261;
-pub const OP_DTLS_ACCEPT: u32 = 262;
-/// Fills the task for the datagram of arg bytes; the task's address.
-pub const OP_PACKET_TASK: u32 = 263;
 pub const OP_HAVE_DGRAM: u32 = 264;
 /// Port arg's fd.
 pub const OP_PORT_FD: u32 = 265;
@@ -254,11 +235,8 @@ pub const OP_CONN_HEALTHY: u32 = 301;
 pub const OP_PORT_LISTEN: u32 = 303;
 /// `recv_queued_bytes` -= arg.
 pub const OP_QUEUE_SUB: u32 = 325;
-pub const OP_FACTORY_DISPATCH: u32 = 326;
 /// The `Server *` the thread entries take.
 pub const OP_SERVER: u32 = 328;
-
-pub const LOG_RECVFROM: u32 = 350;
 
 // `ServerEventType` values on the reactor pipe.
 pub const EVENT_CLOSE_FORCE: u32 = 6;
@@ -285,27 +263,6 @@ pub const OP_ALLOC_PORT_CONNECTION_NUMS: u32 = 503;
 pub const OP_NEW_BASE_FACTORY: u32 = 504;
 /// `swoole_get_worker_id()`.
 pub const OP_WORKER_ID: u32 = 505;
-/// `worker_accept_event` of the `DataHead` at arg.
-pub const OP_ACCEPT_EVENT: u32 = 506;
-/// `onReceive` of the `RecvData` at arg: whether it returned `SW_OK`.
-pub const OP_ON_RECEIVE: u32 = 507;
-/// The worker message bus takes the `SendData` at arg, then `worker_accept_event` of it.
-pub const OP_BASE_PASS: u32 = 508;
-/// The `SendData` at arg written to the pipe of its session's worker; whether it was.
-pub const OP_FORWARD: u32 = 509;
-/// `onClose` is set; it runs with the `DataHead` at arg.
-pub const OP_HAS_ON_CLOSE: u32 = 510;
-pub const OP_ON_CLOSE: u32 = 511;
-/// The output buffer of the socket at arg is empty; `close_connection` of it, the result;
-/// a close chunk queued behind its output, then (`--fix-halfclose`) its read event removed:
-/// whether that succeeded.
-pub const OP_OUT_EMPTY: u32 = 512;
-pub const OP_CLOSE_SOCKET: u32 = 513;
-pub const OP_QUEUE_CLOSE: u32 = 514;
-/// `send_to_connection` of the context send, the result.
-pub const OP_SEND_HERE: u32 = 515;
-/// `onPacket` of the `RecvData` at arg: whether it returned `SW_OK`.
-pub const OP_ON_PACKET: u32 = 516;
 
 pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
