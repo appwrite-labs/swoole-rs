@@ -1110,8 +1110,7 @@ fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: c_int) -> bool {
 
 /// Optionally `clear_protocol()`, then turn on each protocol in `flags`.
 fn protocols(port: view::Port<'_>, flags: u32, clear: bool) {
-    // SAFETY: a live port, which only start() touches meanwhile.
-    let c = unsafe { port.config_mut() };
+    let c = port.config();
     if clear {
         swoole_rs_ports::methods::clear_protocol(c);
     }

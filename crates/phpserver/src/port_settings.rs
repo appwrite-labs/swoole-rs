@@ -90,8 +90,8 @@ fn set_eof(s: &impl Source, eof: &[u8]) -> Step {
     // The low byte: a `uint8_t`.
     let eof_len = eof.len().to_le_bytes()[0];
     let copied = s.config(|c| {
-        c.protocol.package_eof_len = eof_len;
-        let destination = c.protocol.package_eof.get_mut(..eof.len());
+        c.protocol.get_mut().package_eof_len = eof_len;
+        let destination = c.protocol.get_mut().package_eof.get_mut(..eof.len());
         destination.map(|destination| destination.copy_from_slice(eof))
     });
     if eof_len == 0 {
@@ -156,7 +156,7 @@ fn sockets(s: &impl Source) -> Step {
     }
     if let Some(on) = s.truth(c"open_eof_split") {
         s.config(|c| {
-            c.protocol.split_by_eof = on;
+            c.protocol.get_mut().split_by_eof = on;
             c.open_eof_check.set(c.open_eof_check.get() | on);
         });
     }
@@ -222,8 +222,8 @@ fn framing(s: &impl Source) -> Step {
         let kind = kind.first().copied().unwrap_or(0);
         let size = swoole_type_size(c_char::from_ne_bytes([kind])) as u8;
         s.config(|c| {
-            c.protocol.package_length_type = kind;
-            c.protocol.package_length_size = size;
+            c.protocol.get_mut().package_length_type = kind;
+            c.protocol.get_mut().package_length_size = size;
         });
         if size == 0 {
             return Err(s.fatal(
@@ -234,7 +234,12 @@ fn framing(s: &impl Source) -> Step {
     }
     if let Some(v) = s.long(c"package_length_offset")? {
         let error = c"'package_length_offset' value is too large";
-        offset(s, v, |c| &mut c.protocol.package_length_offset, error)?;
+        offset(
+            s,
+            v,
+            |c| &mut c.protocol.get_mut().package_length_offset,
+            error,
+        )?;
     }
     let body = match s.long(c"package_body_offset")? {
         Some(v) => Some(v),
@@ -242,27 +247,32 @@ fn framing(s: &impl Source) -> Step {
     };
     if let Some(v) = body {
         let error = c"'package_body_offset' value is too large";
-        offset(s, v, |c| &mut c.protocol.package_body_offset, error)?;
+        offset(
+            s,
+            v,
+            |c| &mut c.protocol.get_mut().package_body_offset,
+            error,
+        )?;
     }
     if let Some((callable, owner)) = s.callable(c"package_length_func")? {
         let length_func = s.length_func();
         let previous = s.config(|c| {
-            c.protocol.get_package_length = Some(length_func);
-            c.protocol.private_data_1 = callable;
-            c.length_owner.replace(owner)
+            c.protocol.get_mut().get_package_length = Some(length_func);
+            c.protocol.get_mut().private_data_1 = callable;
+            c.length_owner.replace(Some(owner))
         });
         if let Some(previous) = previous {
             s.release(previous);
         }
         s.config(|c| {
-            c.protocol.package_length_size = 0;
-            c.protocol.package_length_type = 0;
-            c.protocol.package_length_offset = SW_IPC_BUFFER_SIZE as u16;
+            c.protocol.get_mut().package_length_size = 0;
+            c.protocol.get_mut().package_length_type = 0;
+            c.protocol.get_mut().package_length_offset = SW_IPC_BUFFER_SIZE as u16;
         });
         s.single_thread();
     }
     if let Some(v) = s.size(c"package_max_length")? {
-        s.config(|c| c.protocol.package_max_length = u32_of(v));
+        s.config(|c| c.protocol.get_mut().package_max_length = u32_of(v));
     }
     Ok(())
 }
@@ -743,7 +753,7 @@ mod tests {
             assert!(apply(&table, &mut c).is_ok());
             assert_eq!(c.open_tcp_nodelay.get(), on);
             assert_eq!(c.open_tcp_keepalive.get(), on);
-            assert_eq!(c.protocol.split_by_eof, on);
+            assert_eq!(c.protocol.get_mut().split_by_eof, on);
             assert_eq!(
                 c.open_eof_check.get(),
                 on,
@@ -813,7 +823,7 @@ mod tests {
             }
             assert_eq!(c.buffer_high_watermark.get(), u32_of(v));
             assert_eq!(c.buffer_low_watermark.get(), u32_of(v));
-            assert_eq!(c.protocol.package_max_length, u32_of(v));
+            assert_eq!(c.protocol.get_mut().package_max_length, u32_of(v));
             for n in [
                 c.tcp_defer_accept.get(),
                 c.tcp_keepidle.get(),
@@ -854,14 +864,17 @@ mod tests {
             let eof = vec![b'x'; length];
             let table = Table::default().with("package_eof", text(&eof));
             let result = apply(&table, &mut c);
-            assert_eq!(c.protocol.package_eof_len, length.to_le_bytes()[0]);
+            assert_eq!(
+                c.protocol.get_mut().package_eof_len,
+                length.to_le_bytes()[0]
+            );
             let trace = table.trace.borrow().join(";");
             match length {
                 0 | 256 => assert!(trace.ends_with("fatal1:package_eof cannot be an empty string")),
                 9 | 264 => assert!(trace.ends_with("fatal1:package_eof max length is 8")),
                 _ => {
                     assert!(result.is_ok());
-                    assert_eq!(&c.protocol.package_eof[..length], &eof[..]);
+                    assert_eq!(&c.protocol.get_mut().package_eof[..length], &eof[..]);
                 }
             }
             assert_eq!(result.is_ok(), matches!(length, 1 | 8));
@@ -882,10 +895,10 @@ mod tests {
             let table = Table::default().with("package_length_type", text(kind));
             let result = apply(&table, &mut c);
             assert_eq!(
-                c.protocol.package_length_type,
+                c.protocol.get_mut().package_length_type,
                 kind.first().copied().unwrap_or(0)
             );
-            assert_eq!(c.protocol.package_length_size, width);
+            assert_eq!(c.protocol.get_mut().package_length_size, width);
             assert_eq!(result.is_ok(), width != 0);
         }
     }
@@ -904,9 +917,9 @@ mod tests {
                 let table = Table::default().with(key, fixture(v));
                 let result = apply(&table, &mut c);
                 let field = if key == "package_length_offset" {
-                    c.protocol.package_length_offset
+                    c.protocol.get_mut().package_length_offset
                 } else {
-                    c.protocol.package_body_offset
+                    c.protocol.get_mut().package_body_offset
                 };
                 assert_eq!(i64::from(field), expected);
                 assert_eq!(result.is_ok(), expected <= limit);
@@ -918,25 +931,25 @@ mod tests {
             .with("package_body_offset", fixture(3))
             .with("package_body_start", fixture(5));
         assert!(apply(&table, &mut c).is_ok());
-        assert_eq!(c.protocol.package_body_offset, 3);
+        assert_eq!(c.protocol.get_mut().package_body_offset, 3);
     }
 
     #[test]
     fn package_length_func_replaces_the_framing() {
         let mut c = port();
         let previous: Box<dyn std::any::Any> = Box::new(7_usize);
-        c.length_owner = Some(Box::new(previous));
+        c.length_owner.set(Some(Box::new(previous)));
         let table = Table::default().with("package_length_func", fixture(9));
         assert!(apply(&table, &mut c).is_ok());
-        assert_eq!(c.protocol.private_data_1.addr(), 9);
-        assert_eq!(c.protocol.package_length_size, 0);
-        assert_eq!(c.protocol.package_length_type, 0);
+        assert_eq!(c.protocol.get_mut().private_data_1.addr(), 9);
+        assert_eq!(c.protocol.get_mut().package_length_size, 0);
+        assert_eq!(c.protocol.get_mut().package_length_type, 0);
         assert_eq!(
-            usize::from(c.protocol.package_length_offset),
+            usize::from(c.protocol.get_mut().package_length_offset),
             SW_IPC_BUFFER_SIZE
         );
         assert_eq!(
-            c.protocol.get_package_length.map(|f| f as usize),
+            c.protocol.get_mut().get_package_length.map(|f| f as usize),
             Some(length_func as GetPackageLength as usize)
         );
         let trace = table.trace.borrow().join(";");
@@ -976,7 +989,7 @@ mod tests {
         assert!(apply(&table, &mut c).is_ok());
         assert_eq!(c.backlog.get(), 9);
         assert_eq!(c.tcp_keepidle.get(), 7);
-        assert_eq!(c.protocol.package_max_length, 3);
+        assert_eq!(c.protocol.get_mut().package_max_length, 3);
     }
 
     fn warning(_function: &CStr, _message: &str) {}

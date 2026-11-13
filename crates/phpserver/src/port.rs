@@ -13,7 +13,7 @@ use std::{
 };
 use swoole_rs_phpstubs::server_port;
 use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
-use swoole_rs_server::{SharedServer, port_config, view};
+use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, message,
     sys::{ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC},
@@ -107,20 +107,17 @@ impl PortData {
             }
             self.property.bound.set(false);
         }
-        let port = self.port.get();
-        if !port.is_null() {
-            if crate::lifecycle::owns_shared() {
-                let owner = {
-                    // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
-                    let config = unsafe { port_config::of(port) };
-                    config.protocol.private_data_1 = ptr::null_mut();
-                    config.length_owner.take()
-                };
-                // Out of the port first: a destructor this runs may reach it again.
-                drop(owner);
-            }
-            self.port.set(ptr::null_mut());
+        if let Some(port) = self.port()
+            && crate::lifecycle::owns_shared()
+        {
+            let config = port.config();
+            config
+                .protocol
+                .update(|protocol| protocol.private_data_1 = ptr::null_mut());
+            // Out of the port first: a destructor this runs may reach it again.
+            drop(config.length_owner.replace(None));
         }
+        self.port.set(ptr::null_mut());
     }
 }
 

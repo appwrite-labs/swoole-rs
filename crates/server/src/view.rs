@@ -607,21 +607,6 @@ impl ServerState {
     }
 }
 
-/// A setter for a field of a port's settings, which writes through the port's pointer
-/// and forms no reference to the settings. Crate-private: the master's startup ops
-/// call them, before any reader holds a `&PortConfig` from [`Port::config`], and the
-/// reactor thread that binds a datagram port records itself (`set_thread_id`).
-macro_rules! port_setter {
-    ($(#[$doc:meta])* $set:ident: $($field:ident).+: $ty:ty) => {
-        $(#[$doc])*
-        pub(crate) fn $set(self, value: $ty) {
-            // SAFETY: a live port, whose writers its server keeps apart from readers
-            // (`from_raw`); only the field is written.
-            unsafe { (*self.raw.as_ptr().cast::<PortConfig>()).$($field).+ = value };
-        }
-    };
-}
-
 /// A live `ListenPort`, borrowed for `'a`: its settings' box
 /// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
 /// reads it then allows are safe, as [`Server`]'s are.
@@ -660,18 +645,20 @@ impl<'a> Port<'a> {
         unsafe { &*self.raw.as_ptr().cast::<PortConfig>() }
     }
 
-    port_setter!(
-        /// `port->gs = gs`: the port's slot in `port_gs_list`.
-        set_gs: gs: *mut c_void
-    );
-    port_setter!(
-        /// `port->protocol.package_max_length = length`.
-        set_package_max_length: protocol.package_max_length: u32
-    );
-    port_setter!(
-        /// `port->thread_id = thread`: the reactor thread that reads a datagram port.
-        set_thread_id: thread_id: libc::pthread_t
-    );
+    /// `port->gs = gs`: the port's slot in `port_gs_list`.
+    pub(crate) fn set_gs(self, gs: *mut c_void) {
+        self.config().gs.set(gs);
+    }
+    /// `port->protocol.package_max_length = length`.
+    pub(crate) fn set_package_max_length(self, length: u32) {
+        self.config()
+            .protocol
+            .update(|protocol| protocol.package_max_length = length);
+    }
+    /// `port->thread_id = thread`: the reactor thread that reads a datagram port.
+    pub(crate) fn set_thread_id(self, thread: libc::pthread_t) {
+        self.config().thread_id.set(thread);
+    }
 
     /// The port's settings, to write.
     ///
@@ -781,17 +768,17 @@ mod tests {
         let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
         let mut counters = PortCounters::default();
         counters.connection_num.store(99, Ordering::Relaxed);
-        let mut port = PortConfig::boxed(0);
-        port.gs = (&raw mut counters).cast();
+        let port = PortConfig::boxed(0);
+        port.gs.set((&raw mut counters).cast());
         unsafe { serv.config_mut() }.worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
         let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
         counters.connection_nums = crate::records::tests::naming(&mut cells);
-        port.gs = (&raw mut counters).cast();
+        port.gs.set((&raw mut counters).cast());
         assert_eq!(serv.port_connections(&port), 8);
         unsafe { serv.config_mut() }.worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
-        port.gs = core::ptr::null_mut();
+        port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         unsafe { crate::state::free_state(state) };
     }

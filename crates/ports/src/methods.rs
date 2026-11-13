@@ -154,7 +154,7 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
 pub(crate) fn create_socket(port: *mut c_void) -> c_int {
     // SAFETY: a live port of the server, which `PortMethods` takes.
     let config = unsafe { port_config::of(port) };
-    let serv = config.protocol.private_data_2;
+    let serv = config.protocol.get().private_data_2;
     // SAFETY: the port's live server, when it has one.
     let reuse_port = cfg!(target_os = "linux")
         && !serv.is_null()
@@ -293,7 +293,7 @@ pub(crate) fn get_protocols(config: &PortConfig) -> &'static CStr {
 }
 
 /// `ListenPort::clear_protocol()`.
-pub fn clear_protocol(config: &mut PortConfig) {
+pub fn clear_protocol(config: &PortConfig) {
     config.open_eof_check.set(false);
     config.open_length_check.set(false);
     config.open_http_protocol.set(false);
@@ -360,7 +360,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
     if datagram && !dtls() {
         return;
     }
-    let protocol = &mut config.protocol;
+    let protocol = config.protocol.get_mut();
     let c = &CALLBACKS;
     config.on_read = if config.open_eof_check.get() {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
@@ -420,7 +420,7 @@ pub fn init_protocol(config: &mut PortConfig) {
 /// most the first eight.
 pub fn set_eof_protocol(config: &mut PortConfig, eof: &[u8], find_from_right: bool) {
     config.open_eof_check.set(true);
-    let protocol = &mut config.protocol;
+    let protocol = config.protocol.get_mut();
     protocol.split_by_eof = !find_from_right;
     let length = eof.len().min(protocol.package_eof.len());
     for (slot, &byte) in protocol.package_eof.iter_mut().zip(eof) {
@@ -444,7 +444,7 @@ pub fn set_length_protocol(
     body_offset: u32,
 ) {
     config.open_length_check.set(true);
-    let protocol = &mut config.protocol;
+    let protocol = config.protocol.get_mut();
     protocol.package_length_type = length_type.to_ne_bytes()[0];
     protocol.package_length_size = swoole_rs_corebase::swoole_type_size(length_type) as u8;
     protocol.package_length_offset = length_offset as u16;
@@ -455,7 +455,7 @@ pub fn set_length_protocol(
 /// sets it, a network-order u32 before the body.
 pub fn set_stream_protocol(config: &mut PortConfig) {
     config.open_length_check.set(true);
-    let protocol = &mut config.protocol;
+    let protocol = config.protocol.get_mut();
     protocol.get_package_length = Some(CALLBACKS.default_length);
     protocol.package_length_type = b'N';
     protocol.package_length_size = 4;
@@ -753,7 +753,7 @@ mod tests {
             server.enable_reuse_port.set(true);
             let head: &mut [*mut c_void; 2] =
                 Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
-            unsafe { (*config).protocol.private_data_2 = head.as_mut_ptr().cast() };
+            unsafe { (*config).protocol.get_mut().private_data_2 = head.as_mut_ptr().cast() };
         }
         unsafe {
             (*config).r#type = kind;
@@ -897,7 +897,7 @@ mod tests {
     fn a_new_port_has_the_constructor_defaults() {
         let mut port = Fresh::new();
         let config = port.config();
-        let p = &config.protocol;
+        let p = config.protocol.get();
         assert_eq!(config.object_id, 0, "object id");
         assert_eq!(p.package_length_type, b'N', "length type");
         assert_eq!(p.package_length_size, 4, "length size");
@@ -932,13 +932,13 @@ mod tests {
             for right in [false, true] {
                 let mut port = Fresh::new();
                 let config = port.config();
-                config.protocol.package_eof = *b"xxxxxxxx";
+                config.protocol.get_mut().package_eof = *b"xxxxxxxx";
                 let value: Vec<u8> = (0..length).map(|i| (i % 256) as u8).collect();
                 set_eof_protocol(config, &value, right);
                 let kept = length.min(8);
                 let mut eof = *b"xxxxxxxx";
                 eof[..kept].copy_from_slice(&value[..kept]);
-                let p = &config.protocol;
+                let p = config.protocol.get();
                 assert!(config.open_eof_check.get(), "eof check on");
                 assert_eq!(p.split_by_eof, !right, "split unless from the right");
                 assert_eq!(usize::from(p.package_eof_len), kept, "length {length}");
@@ -955,13 +955,13 @@ mod tests {
         let mut port = Fresh::new();
         let config = port.config();
         let sentinel = length::<17> as GetPackageLength as usize;
-        config.protocol.get_package_length = Some(length::<17>);
+        config.protocol.get_mut().get_package_length = Some(length::<17>);
         for kind in 0..=255u8 {
             for offset in edges {
                 for body in edges {
                     let c_kind = c_char::from_ne_bytes([kind]);
                     set_length_protocol(config, offset, c_kind, body);
-                    let p = &config.protocol;
+                    let p = config.protocol.get();
                     let size = swoole_rs_corebase::swoole_type_size(c_kind);
                     assert!(config.open_length_check.get(), "length check on");
                     assert_eq!(p.package_length_type, kind, "type");
@@ -992,18 +992,18 @@ mod tests {
         let mut port = Fresh::new();
         let config = port.config();
         for iteration in 0..256u32 {
-            config.protocol.get_package_length = Some(length::<17>);
+            config.protocol.get_mut().get_package_length = Some(length::<17>);
             let kind = c_char::from_ne_bytes([iteration as u8]);
             set_length_protocol(config, iteration * 257, kind, u32::MAX - iteration);
             let eof = vec![iteration as u8; (iteration % 17) as usize];
             set_eof_protocol(config, &eof, iteration % 2 == 1);
             let eof_before = (
-                config.protocol.split_by_eof,
-                config.protocol.package_eof_len,
-                config.protocol.package_eof,
+                config.protocol.get_mut().split_by_eof,
+                config.protocol.get_mut().package_eof_len,
+                config.protocol.get_mut().package_eof,
             );
             set_stream_protocol(config);
-            let p = &config.protocol;
+            let p = config.protocol.get();
             assert!(
                 config.open_length_check.get() && config.open_eof_check.get(),
                 "both checks on"
@@ -1068,10 +1068,10 @@ mod tests {
             config.open_mqtt_protocol.set(flags & MQTT != 0);
             config.open_redis_protocol.set(flags & REDIS != 0);
             if flags & UNTYPED != 0 {
-                config.protocol.package_length_type = 0;
+                config.protocol.get_mut().package_length_type = 0;
             }
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
-            let p = &config.protocol;
+            let p = config.protocol.get();
             assert_eq!(config.on_read, on_read, "{flags}: reader");
             assert_eq!(
                 package(p.on_package),
@@ -1103,9 +1103,13 @@ mod tests {
             let mut port = Fresh::new();
             let config = port.config();
             config.open_eof_check.set(true);
-            config.protocol.package_eof_len = eof_len;
+            config.protocol.get_mut().package_eof_len = eof_len;
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
-            assert_eq!(config.protocol.package_eof_len, kept, "SW_DATA_EOF_MAXLEN");
+            assert_eq!(
+                config.protocol.get_mut().package_eof_len,
+                kept,
+                "SW_DATA_EOF_MAXLEN"
+            );
         }
         for (kind, dtls, initialized) in [
             (2, false, false),
@@ -1176,11 +1180,11 @@ mod tests {
 
         let config = unsafe { port_config::of(at) };
         config.open_eof_check.set(true);
-        config.protocol.package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
+        config.protocol.get_mut().package_eof_len = u8::try_from(SW_DATA_EOF_MAXLEN + 10).unwrap();
         init_protocol(config);
         assert_eq!(c"eof", get_protocols(config));
         assert_eq!(
-            u32::from(config.protocol.package_eof_len),
+            u32::from(config.protocol.get_mut().package_eof_len),
             SW_DATA_EOF_MAXLEN
         );
 
