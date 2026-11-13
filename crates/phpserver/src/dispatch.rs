@@ -22,7 +22,7 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_server::callbacks::{CB_USER_WORKER_START, Callback, Ctx};
+use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
@@ -976,7 +976,7 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
         RECEIVE => &[Callback::Receive(on_receive)],
         HTTP_RECEIVE => &[Callback::Receive(on_http_receive)],
         REDIS_RECEIVE => &[Callback::Receive(on_redis_receive)],
-        USER_WORKER_START if server.has_callback(CB_USER_WORKER_START) => &[],
+        USER_WORKER_START if server.has_callback(CallbackKind::UserWorkerStart) => &[],
         USER_WORKER_START => &[Callback::UserWorkerStart(on_user_worker_start)],
         _ => return,
     };

@@ -1,8 +1,5 @@
 //! Creating, checking, starting and destroying a server.
-use crate::callbacks::{
-    CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_PACKET, CB_RECEIVE, CB_SHUTDOWN,
-    CB_START, CB_TASK, CallbackSlot,
-};
+use crate::callbacks::{CallbackKind, CallbackSlot, ServerSlot};
 use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
@@ -306,10 +303,10 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
         );
         if !hashed && !config.enable_unsafe_event.get() {
             for (id, event) in [
-                (CB_CONNECT, "onConnect"),
-                (CB_CLOSE, "onClose"),
-                (CB_BUFFER_FULL, "onBufferFull"),
-                (CB_BUFFER_EMPTY, "onBufferEmpty"),
+                (CallbackKind::Connect, "onConnect"),
+                (CallbackKind::Close, "onClose"),
+                (CallbackKind::BufferFull, "onBufferFull"),
+                (CallbackKind::BufferEmpty, "onBufferEmpty"),
             ] {
                 if let Some(slot) = callbacks.slot(id).filter(|slot| slot.is_set()) {
                     let m =
@@ -326,7 +323,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     } else {
         config.max_queued_bytes.set(0);
     }
-    if config.task_worker_num.get() > 0 && !has(CB_TASK) {
+    if config.task_worker_num.get() > 0 && !has(CallbackKind::Task) {
         invalid_callback(format_args!("require 'onTask' callback"));
         return ERR;
     }
@@ -361,7 +358,7 @@ fn invalid_callback(message: core::fmt::Arguments<'_>) {
 fn check_port(
     config: &crate::ServerConfig,
     port: view::Port<'_>,
-    has: impl Fn(u32) -> bool,
+    has: impl Fn(CallbackKind) -> bool,
 ) -> bool {
     let settings = port.config();
     if settings.protocol.get().package_max_length < BUFFER_MIN_SIZE {
@@ -370,11 +367,11 @@ fn check_port(
     let dgram = matches!(settings.r#type, 2 | 4 | 6);
     let stream = matches!(settings.r#type, 1 | 3 | 5);
     let ssl = settings.ssl != 0;
-    if ((dgram && ssl) || stream) && !has(CB_RECEIVE) {
+    if ((dgram && ssl) || stream) && !has(CallbackKind::Receive) {
         invalid_callback(format_args!("require 'onReceive' callback"));
         return false;
     }
-    if dgram && !ssl && !has(CB_PACKET) {
+    if dgram && !ssl && !has(CallbackKind::Packet) {
         invalid_callback(format_args!("require 'onPacket' callback"));
         return false;
     }
@@ -437,7 +434,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
     {
         set_master_pid(gs);
     }
-    state.callbacks.call_server(CB_START, serv);
+    state.callbacks.call_server(ServerSlot::Start, serv);
     hybrid().step(serv, Step::EventWait)
 }
 
@@ -512,7 +509,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
         gs.start.store(0, SeqCst);
         gs.shutdown.store(1, SeqCst);
     }
-    state.callbacks.call_server(CB_SHUTDOWN, serv);
+    state.callbacks.call_server(ServerSlot::Shutdown, serv);
     match mode {
         MODE_BASE => destroy_base_factory(state),
         MODE_PROCESS => _ = hybrid().step(serv, Step::DestroyProcessFactory),
@@ -596,7 +593,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_runs_the_factory_protocols_then_the_mode() {
         let live = LiveServer::new();
-        on(&live, CB_RECEIVE);
+        on(&live, CallbackKind::Receive);
         let base = [
             CreateEventPool,
             CreatePipeBuffers,
@@ -636,7 +633,7 @@ mod tests {
         calls();
         assert_eq!(start(live.server()), ERR, "TCP needs onReceive");
         assert_eq!(live.counters().start.load(Relaxed), 0, "not claimed");
-        on(&live, CB_RECEIVE);
+        on(&live, CallbackKind::Receive);
         live.counters().start.store(1, SeqCst);
         assert_eq!(start(live.server()), ERR, "only one server");
         assert_eq!(calls(), [], "nothing started");
@@ -667,11 +664,11 @@ mod tests {
         unsafe { &mut *live.state().config() }
     }
 
-    fn on(live: &LiveServer, id: u32) {
+    fn on(live: &LiveServer, id: CallbackKind) {
         crate::callbacks::tests::on(live.state().callbacks.slot(id).unwrap());
     }
 
-    fn is_on(live: &LiveServer, id: u32) -> bool {
+    fn is_on(live: &LiveServer, id: CallbackKind) -> bool {
         live.state().callbacks.slot(id).unwrap().is_set()
     }
 
@@ -804,10 +801,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_check_drops_callbacks_unsafe_for_the_dispatch_mode() {
-        const UNSAFE: [u32; 4] = [CB_CONNECT, CB_CLOSE, CB_BUFFER_FULL, CB_BUFFER_EMPTY];
+        const UNSAFE: [CallbackKind; 4] = [
+            CallbackKind::Connect,
+            CallbackKind::Close,
+            CallbackKind::BufferFull,
+            CallbackKind::BufferEmpty,
+        ];
         let live = LiveServer::new();
         let arm = |dispatch_mode| {
-            for id in UNSAFE.into_iter().chain([CB_RECEIVE]) {
+            for id in UNSAFE.into_iter().chain([CallbackKind::Receive]) {
                 on(&live, id);
             }
             config(&live).dispatch_mode.set(dispatch_mode);
@@ -820,7 +822,7 @@ mod tests {
             UNSAFE.iter().all(|&id| !is_on(&live, id)),
             "unsafe callbacks cleared"
         );
-        assert!(is_on(&live, CB_RECEIVE), "onReceive stays");
+        assert!(is_on(&live, CallbackKind::Receive), "onReceive stays");
         assert!(config(&live).disable_notify.get(), "notify off");
         assert!(!config(&live).send_yield.get(), "round robin cannot yield");
 
@@ -843,7 +845,7 @@ mod tests {
         config(&live).task_worker_num.set(1);
         assert_eq!(start_check(live.server()), ERR, "task workers need onTask");
         assert_eq!(config(&live).max_queued_bytes.get(), 0, "base mode");
-        on(&live, CB_TASK);
+        on(&live, CallbackKind::Task);
         assert_eq!(start_check(live.server()), OK, "onTask set");
     }
 
@@ -853,7 +855,7 @@ mod tests {
         let live = LiveServer::new();
         let port = live.port();
         assert_eq!(start_check(live.server()), ERR, "TCP needs onReceive");
-        on(&live, CB_RECEIVE);
+        on(&live, CallbackKind::Receive);
         config(&live).heartbeat_check_interval.set(60);
         config(&live).send_timeout.set(0.0001);
         state_port(&live).set_package_max_length(1024);
@@ -886,7 +888,7 @@ mod tests {
         // A UDP port.
         unsafe { (*(&raw const *port).cast_mut()).r#type = 2 };
         assert_eq!(start_check(live.server()), ERR, "UDP needs onPacket");
-        on(&live, CB_PACKET);
+        on(&live, CallbackKind::Packet);
         assert_eq!(start_check(live.server()), OK, "onPacket set");
     }
 

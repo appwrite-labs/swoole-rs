@@ -22,7 +22,7 @@ use swoole_rs_reactor::{Event, Running, Socket};
 
 use super::{HANDLER_IGNORE, Wait};
 use crate::callbacks::{
-    CB_BEFORE_SHUTDOWN, CB_WORKER_EXIT, CallbackSlot, EventSlot, ReceiveSlot, TaskSlot, WorkerSlot,
+    CallbackKind, CallbackSlot, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot,
 };
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
@@ -388,7 +388,9 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
             let pool = crate::shared::ServerShared::of(serv).event_pool();
             if worker.id() == 0 && !pool.running {
                 global_hook(serv, worker, HOOK_BEFORE_SERVER_SHUTDOWN);
-                serv.state().callbacks.call_server(CB_BEFORE_SHUTDOWN, serv);
+                serv.state()
+                    .callbacks
+                    .call_server(ServerSlot::BeforeShutdown, serv);
             }
             unread(reactor, worker_pipe(worker, true));
             for port in serv.ports() {
@@ -454,7 +456,7 @@ extern "C-unwind" fn try_to_exit() {
 fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
     let callbacks = &serv.state().callbacks;
     let on_exit = callbacks
-        .slot(CB_WORKER_EXIT)
+        .slot(CallbackKind::WorkerExit)
         .is_some_and(CallbackSlot::is_set);
     let mut called = false;
     loop {

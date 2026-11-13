@@ -469,7 +469,7 @@ impl crate::hybrid::Hybrid for Linked {
     fn before_shutdown(&self, serv: crate::view::Server<'_>) {
         serv.call_hook(crate::view::ServerHook::BeforeShutdown);
         let callbacks = &serv.state().callbacks;
-        callbacks.call_server(crate::callbacks::CB_BEFORE_SHUTDOWN, serv);
+        callbacks.call_server(crate::callbacks::ServerSlot::BeforeShutdown, serv);
     }
 
     fn reload(&self, serv: crate::view::Server<'_>, all_workers: bool) -> bool {

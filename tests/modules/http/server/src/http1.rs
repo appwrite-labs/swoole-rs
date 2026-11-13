@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_server::callbacks::CallbackKind as Slot;
 use swoole_rs_server::{ConnectionRecord, ServerText, StaticCollection, server_methods, view};
 
 use crate::client::{Client, USER_AGENT};
@@ -70,17 +71,6 @@ const TEXT_GROUP: ServerText = ServerText::Group;
 const LOCATIONS: StaticCollection = StaticCollection::Locations;
 const INDEX_FILES: StaticCollection = StaticCollection::IndexFiles;
 const COMPRESSION_TYPES: StaticCollection = StaticCollection::CompressionTypes;
-
-// Callback slots, in callbacks.rs's order.
-const CB_CONNECT: usize = 0;
-const CB_CLOSE: usize = 1;
-const CB_BUFFER_FULL: usize = 2;
-const CB_BUFFER_EMPTY: usize = 3;
-const CB_RECEIVE: usize = 5;
-const CB_START: usize = 7;
-const CB_WORKER_START: usize = 16;
-const CB_DISPATCH_FUNC: usize = 21;
-const CB_COUNT: usize = 22;
 
 // `get_connection_by_session_id`'s lookup kind.
 const BY_SESSION: u32 = 1;
@@ -661,19 +651,18 @@ impl Server {
         unsafe { &mut *self.head().config }
     }
 
-    fn slot(self, slot: usize) -> &'static mut Callback {
-        assert!(slot < CB_COUNT);
-        // SAFETY: the server's slots, `CB_COUNT` of them.
-        unsafe { &mut *self.head().callbacks.add(slot) }
+    fn slot(self, slot: Slot) -> &'static mut Callback {
+        // SAFETY: the server's slots, one per `Slot`.
+        unsafe { &mut *self.head().callbacks.add(slot as usize) }
     }
 
     /// `serv.onX = fn`, for a slot that holds no closure to drop.
-    fn set_callback(self, slot: usize, invoke: *const c_void) {
+    fn set_callback(self, slot: Slot, invoke: *const c_void) {
         self.set_closure(slot, invoke, std::ptr::null_mut());
     }
 
     /// `serv.onX = [ctx](...) {...}`: `invoke(ctx, ...)`, with nothing to drop.
-    fn set_closure(self, slot: usize, invoke: *const c_void, ctx: *mut c_void) {
+    fn set_closure(self, slot: Slot, invoke: *const c_void, ctx: *mut c_void) {
         *self.slot(slot) = Callback {
             invoke,
             ctx,
@@ -682,7 +671,7 @@ impl Server {
     }
 
     /// `serv.onX == nullptr`.
-    fn callback_is_empty(self, slot: usize) -> bool {
+    fn callback_is_empty(self, slot: Slot) -> bool {
         self.slot(slot).invoke.is_null()
     }
 
@@ -1026,9 +1015,9 @@ fn test_base_server(test: fn(Server)) {
 
     serv.create();
 
-    serv.set_callback(CB_WORKER_START, base_on_worker_start as *const c_void);
-    serv.set_callback(CB_CLOSE, on_close as *const c_void);
-    serv.set_callback(CB_RECEIVE, base_on_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, base_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Close, on_close as *const c_void);
+    serv.set_callback(Slot::Receive, base_on_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -1105,10 +1094,10 @@ fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
 
     server.create();
 
-    server.set_callback(CB_START, ignore_server as *const c_void);
-    server.set_callback(CB_CLOSE, on_close as *const c_void);
-    server.set_callback(CB_CONNECT, ignore_event as *const c_void);
-    server.set_callback(CB_RECEIVE, http_on_receive as *const c_void);
+    server.set_callback(Slot::Start, ignore_server as *const c_void);
+    server.set_callback(Slot::Close, on_close as *const c_void);
+    server.set_callback(Slot::Connect, ignore_event as *const c_void);
+    server.set_callback(Slot::Receive, http_on_receive as *const c_void);
 
     server
 }
@@ -1171,7 +1160,7 @@ fn test_proxy_server() -> Server {
 
     server.create();
 
-    server.set_callback(CB_RECEIVE, proxy_on_receive as *const c_void);
+    server.set_callback(Slot::Receive, proxy_on_receive as *const c_void);
 
     server
 }
@@ -1491,16 +1480,21 @@ unsafe extern "C" fn return_zero(_: *mut c_void, _: *mut c_void, _: *mut DataHea
 
 fn redundant_callback() {
     let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
-    for slot in [CB_CONNECT, CB_CLOSE, CB_BUFFER_FULL, CB_BUFFER_EMPTY] {
+    for slot in [
+        Slot::Connect,
+        Slot::Close,
+        Slot::BufferFull,
+        Slot::BufferEmpty,
+    ] {
         server.set_callback(slot, return_zero as *const c_void);
     }
 
     fork_with(|| {
         server.start();
-        assert!(server.callback_is_empty(CB_CONNECT));
-        assert!(server.callback_is_empty(CB_CLOSE));
-        assert!(server.callback_is_empty(CB_BUFFER_FULL));
-        assert!(server.callback_is_empty(CB_BUFFER_EMPTY));
+        assert!(server.callback_is_empty(Slot::Connect));
+        assert!(server.callback_is_empty(Slot::Close));
+        assert!(server.callback_is_empty(Slot::BufferFull));
+        assert!(server.callback_is_empty(Slot::BufferEmpty));
     });
 
     sleep(2.0);
@@ -1584,7 +1578,7 @@ fn chunked() {
     let server = test_http_server(DISPATCH_FDMOD, 1, MODE_BASE);
     *CHUNKED_SERVER.lock().unwrap() = Some(server);
 
-    server.set_callback(CB_START, chunked_on_start as *const c_void);
+    server.set_callback(Slot::Start, chunked_on_start as *const c_void);
 
     server.start();
     join_client();
@@ -1639,7 +1633,7 @@ unsafe extern "C" fn dispatch_error(
 
 fn dispatch_func_return_error_worker_id() {
     let server = default_http_server();
-    server.set_callback(CB_DISPATCH_FUNC, dispatch_error as *const c_void);
+    server.set_callback(Slot::DispatchFunc, dispatch_error as *const c_void);
     fork_with(|| {
         server.start();
     });

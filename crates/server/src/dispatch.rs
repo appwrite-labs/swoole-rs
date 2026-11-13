@@ -1,7 +1,7 @@
 //! Choosing a worker, sends from workers, and listen ports.
 use crate::MODE_PROCESS;
 use crate::base_factory::SendData;
-use crate::callbacks::{CB_DISPATCH_FUNC, CallbackSlot};
+use crate::callbacks::{CallbackKind, CallbackSlot};
 use crate::port_config::{PortConfig, methods};
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
@@ -36,7 +36,7 @@ const SYSTEMD_FDS_START: c_int = 3;
 pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> c_int {
     let state = serv.state();
     let key = c_long::from(fd);
-    let dispatch_func = state.callbacks.slot(CB_DISPATCH_FUNC);
+    let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc);
     if dispatch_func.is_some_and(CallbackSlot::is_set) {
         // SAFETY: null, or the table's live slot of the fd, read for the call.
         let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };

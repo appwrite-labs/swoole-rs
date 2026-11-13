@@ -361,7 +361,7 @@ pub(crate) fn incoming(
     if !serv.config().enable_delay_receive.get() && reactor.add(sock, EVENT_READ) < 0 {
         return ERR;
     }
-    if serv.has_callback(crate::callbacks::CB_CONNECT)
+    if serv.has_callback(crate::callbacks::CallbackKind::Connect)
         && !crate::server_methods::notify(serv, conn, EVENT_CONNECT)
     {
         return ERR;
