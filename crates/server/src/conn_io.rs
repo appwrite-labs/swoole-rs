@@ -887,6 +887,7 @@ pub(crate) mod tests {
         );
         assert_eq!(reads(), [], "nothing read");
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 0);
+        assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 0);
     }
 
     #[test]
