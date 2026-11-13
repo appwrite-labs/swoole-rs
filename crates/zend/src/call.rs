@@ -402,13 +402,12 @@ impl Call {
     /// [`Call::array_ref`], ...) is used afterwards: what it held is released.
     #[inline]
     pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
+        // Per the caller, nothing borrows what the slot holds: it reads null
+        // while that is released, then takes over the value.
         let slot = self.arg_value(n).referent();
         // SAFETY: a passed argument's live slot, for the call.
         let held = unsafe { &*slot.cast::<Value>() };
-        // SAFETY: per the caller, nothing borrows what it holds, released here.
-        unsafe { held.release() };
-        // SAFETY: as above; the slot takes over the value.
-        unsafe { slot.write(value.into_zval()) };
+        held.lend(|old| *old = value);
     }
 
     /// `Z_PARAM_OBJECT_OF_CLASS`'s report of argument `n` (1-based), which is

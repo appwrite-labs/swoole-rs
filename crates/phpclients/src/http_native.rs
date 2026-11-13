@@ -4,7 +4,7 @@
 //! ([`WebSocket`]); the name resolver's context is still C++.
 use crate::{native::Co, socket::Sock};
 use libc::c_int;
-use std::{ffi::CStr, sync::OnceLock};
+use std::{ffi::CStr, mem::MaybeUninit, sync::OnceLock};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{ProxyState, log};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
@@ -167,10 +167,11 @@ impl Co {
 
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.
     pub(crate) fn send_buffered(self, data: &[u8]) -> bool {
-        let buffer = self.write_buffer();
-        buffer.clear();
-        buffer.append(data);
-        self.send_all(buffer.view())
+        self.with_write_buffer(|buffer| {
+            buffer.clear();
+            buffer.append(data);
+        });
+        self.send_all(data)
     }
 
     /// `send_all(data)`: whether all went.
@@ -188,25 +189,31 @@ impl Co {
         Written((!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) }))
     }
 
-    /// The write or read buffer, made on first use.
-    fn buffer<'a>(self, write: bool) -> &'a mut CppString {
-        // SAFETY: the live socket's buffer, which lives as long.
-        unsafe { &mut *self.handle().buffer(write) }
+    /// `f` over `get_write_buffer()`, made on first use.
+    pub(crate) fn with_write_buffer<R>(self, f: impl FnOnce(&mut CppString) -> R) -> R {
+        self.handle().with_buffer(true, f)
     }
 
-    /// `get_write_buffer()`, made on first use.
-    pub(crate) fn write_buffer<'a>(self) -> &'a mut CppString {
-        self.buffer(true)
+    /// `f` over `get_read_buffer()`, made on first use.
+    pub(crate) fn with_input<R>(self, f: impl FnOnce(&mut CppString) -> R) -> R {
+        self.handle().with_buffer(false, f)
     }
 
-    /// `get_read_buffer()`, made on first use.
-    pub(crate) fn input<'a>(self) -> &'a mut CppString {
-        self.buffer(false)
-    }
-
-    /// `recv` into the read buffer's room past its length.
+    /// `recv` into the read buffer's room past its length. The receive isn't lent
+    /// the buffer: under `io_uring`, TLS stages its own reads in it.
     pub(crate) fn recv_input(self) -> isize {
-        self.handle().recv(self.input().spare())
+        let (at, room) = self.with_input(|input| {
+            let length = input.len();
+            (
+                input.as_mut_ptr().wrapping_add(length),
+                input.size() - length,
+            )
+        });
+        // SAFETY: the room past the read buffer's length, which the socket keeps
+        // allocated while it is open; no other reference to it outlives a
+        // `with_buffer` call, so the receive's is the only one.
+        let room = unsafe { std::slice::from_raw_parts_mut(at.cast::<MaybeUninit<u8>>(), room) };
+        self.handle().recv(room)
     }
 
     /// A read `TimeoutController` (0: the default read timeout).

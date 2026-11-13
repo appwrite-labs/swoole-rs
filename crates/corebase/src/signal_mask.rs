@@ -23,16 +23,13 @@ fn empty() -> libc::sigset_t {
 
 fn full() -> libc::sigset_t {
     let mut all = empty();
-    // SAFETY: `all` is a valid set.
-    unsafe { libc::sigfillset(&raw mut all) };
+    crate::sys::sigfillset(&mut all);
     all
 }
 
 /// `pthread_sigmask(how, set, old)`, warning as `origin` when it fails.
-fn set_mask(how: libc::c_int, set: &libc::sigset_t, old: Option<&mut libc::sigset_t>) -> bool {
-    let old = old.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-    // SAFETY: a valid set, and a valid or null out-set.
-    let error = unsafe { libc::pthread_sigmask(how, set, old) };
+fn set_mask(how: libc::c_int, set: libc::sigset_t, old: Option<&mut libc::sigset_t>) -> bool {
+    let error = crate::sys::pthread_sigmask(how, Some(&set), old);
     if error != 0 {
         let call = if how == libc::SIG_BLOCK {
             "SIG_BLOCK"
@@ -59,7 +56,7 @@ pub fn signal_block_all() -> bool {
         return false;
     }
     let mut previous = empty();
-    if !set_mask(libc::SIG_BLOCK, &full(), Some(&mut previous)) {
+    if !set_mask(libc::SIG_BLOCK, full(), Some(&mut previous)) {
         return false;
     }
     PREVIOUS.set(Some(previous));
@@ -73,7 +70,7 @@ pub fn signal_unblock_all() {
         return;
     }
     let previous = PREVIOUS.get().unwrap_or_else(empty);
-    if set_mask(libc::SIG_SETMASK, &previous, None) {
+    if set_mask(libc::SIG_SETMASK, previous, None) {
         BLOCKING_ALL.set(false);
     }
 }
@@ -88,7 +85,7 @@ pub fn signal_blocking_all() -> bool {
 /// [`restore_after_fork`].
 pub(crate) fn block_for_fork() -> libc::sigset_t {
     let mut previous = empty();
-    set_mask(libc::SIG_BLOCK, &full(), Some(&mut previous));
+    set_mask(libc::SIG_BLOCK, full(), Some(&mut previous));
     previous
 }
 
@@ -96,20 +93,18 @@ pub(crate) fn block_for_fork() -> libc::sigset_t {
 /// dropped the parent's handlers, keeps blocked what both `previous` and that reset
 /// left blocked (it unblocks signalfd's signals), and a signal sent meanwhile
 /// arrives now.
-pub(crate) fn restore_after_fork(previous: &libc::sigset_t, child: bool) {
-    let mut keep = *previous;
+pub(crate) fn restore_after_fork(previous: libc::sigset_t, child: bool) {
+    let mut keep = previous;
     if child {
         let mut now = empty();
-        set_mask(libc::SIG_BLOCK, &empty(), Some(&mut now));
+        set_mask(libc::SIG_BLOCK, empty(), Some(&mut now));
         for signo in 1..NSIG {
-            // SAFETY: a valid set.
-            if unsafe { libc::sigismember(&raw const now, signo) } != 1 {
-                // SAFETY: a valid set.
-                unsafe { libc::sigdelset(&raw mut keep, signo) };
+            if crate::sys::sigismember(&now, signo) != 1 {
+                crate::sys::sigdelset(&mut keep, signo);
             }
         }
     }
-    set_mask(libc::SIG_SETMASK, &keep, None);
+    set_mask(libc::SIG_SETMASK, keep, None);
 }
 
 /// Runs `start` with every signal blocked, then puts back this thread's mask, so

@@ -11,7 +11,7 @@ use crate::packet::recv_packet;
 use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
 use core::ffi::{c_char, c_int};
-use core::ptr::null_mut;
+use core::ptr::{from_ref, null, null_mut};
 
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
@@ -520,8 +520,11 @@ impl Co {
         let context = self.resolve_context().cast::<NameResolverContext>();
         // SAFETY: null or the context its owner set, which outlives the socket's connect.
         let resolve = unsafe { context.as_mut() }.unwrap_or(&mut fallback);
-        let proxies = self.with_extra(|extra| extra.proxies).unwrap_or_default();
-        // SAFETY: each null or a live owner, which stays put while the socket connects.
+        let proxy = |owner: &Option<Box<ProxyState>>| owner.as_deref().map_or(null(), from_ref);
+        let proxies = self.with_extra(|extra| extra.proxies.each_ref().map(proxy));
+        let proxies = proxies.unwrap_or_default();
+        // SAFETY: each null or the socket's own proxy, which stays put while the socket
+        // connects: no `set_proxy` runs meanwhile.
         let [socks5, http] = proxies.map(|owner| unsafe { owner.as_ref() });
         let mut live = Live {
             socket: self,
@@ -539,32 +542,30 @@ impl Co {
     /// No connect of the socket is running.
     pub fn set_proxy(self, http: bool, host: &[u8], port: c_int, user: &[u8], password: &[u8]) {
         let proxy = if http {
-            Box::into_raw(swoole_rs_http_ffi::http_proxy(host, port, user, password))
+            Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
         } else {
             match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
-                0 => null_mut(),
+                0 => None,
                 config => {
                     let owner = ProxyState::new(true);
                     owner.configure([host, user, password], port, config == 2, self.kind());
-                    Box::into_raw(owner)
+                    Some(owner)
                 }
             }
         };
-        let old = self
-            .with_extra(|extra| {
-                let [socks5, http_proxy] = &mut extra.proxies;
-                core::mem::replace(if http { http_proxy } else { socks5 }, proxy)
-            })
-            .unwrap_or(proxy);
-        // SAFETY: the replaced proxy, released once.
-        unsafe { swoole_rs_corebase::swr_v1_core_proxy_free(old) };
+        // The replaced proxy goes with the statement, once the metadata's loan has ended.
+        self.with_extra(|extra| {
+            let [socks5, http_proxy] = &mut extra.proxies;
+            core::mem::replace(if http { http_proxy } else { socks5 }, proxy)
+        });
     }
 
     /// The socket's HTTP proxy owner, or null.
     #[must_use]
     pub fn http_proxy(self) -> *mut ProxyState {
-        self.with_extra(|extra| extra.proxies[1])
-            .unwrap_or(null_mut())
+        self.with_extra(|extra| extra.proxies[1].as_deref().map_or(null(), from_ref))
+            .unwrap_or(null())
+            .cast_mut()
     }
 }
 

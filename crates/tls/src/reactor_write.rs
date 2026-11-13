@@ -11,8 +11,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Event, FlushEffects, ReactorPrepared, Running, SOCKET_DEFAULTS, Socket, SocketRecord,
-    WriteEffects, WritePayload,
+    Event, FlushEffects, Running, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -188,10 +187,8 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn close(&self) -> c_int {
-        // The flush's live reactor.
-        let fields = ReactorPrepared::of(self.reactor.as_ptr()).fields;
-        // SAFETY: `reactor->close`, set at construction.
-        let Some(close) = (unsafe { (*fields).close }) else {
+        // `reactor->close`, set at construction.
+        let Some(close) = self.reactor.close() else {
             return -1;
         };
         // SAFETY: `reactor->close(reactor, socket)`.

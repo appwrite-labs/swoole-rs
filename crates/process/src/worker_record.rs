@@ -277,6 +277,18 @@ impl Worker<'_> {
         pool, set_pool, pool: *mut c_void
     );
     field!(
+        /// Whether the worker's stdin goes to /dev/null when it starts.
+        redirect_stdin, set_redirect_stdin, redirect_stdin: bool
+    );
+    field!(
+        /// Whether the worker's stdout goes to /dev/null when it starts.
+        redirect_stdout, set_redirect_stdout, redirect_stdout: bool
+    );
+    field!(
+        /// Whether the worker's stderr goes to /dev/null when it starts.
+        redirect_stderr, set_redirect_stderr, redirect_stderr: bool
+    );
+    field!(
         /// `Worker::ptr`: what its owner keeps there (a user worker's process object).
         user_data, set_user_data, ptr: *mut c_void
     );

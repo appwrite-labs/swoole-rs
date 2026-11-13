@@ -1179,7 +1179,9 @@ mod tests {
     fn nested_extra_borrow_panics() {
         let mut socket = TestSocket::new();
         let co = socket.co();
-        co.with_extra(|outer| co.with_extra(|inner| inner.proxies = outer.proxies));
+        co.with_extra(|outer| {
+            co.with_extra(|inner| inner.proxies = core::mem::take(&mut outer.proxies))
+        });
     }
 
     #[test]
@@ -1201,7 +1203,7 @@ mod tests {
             co.with_buffer(false, |read| {
                 co.with_buffer(true, |write| read.size() + write.size())
             });
-            co.with_extra(|extra| extra.proxies);
+            co.with_extra(|extra| extra.proxies.each_ref().map(Option::is_some));
             state.want = 1;
         });
         assert_eq!(co.with_state(|state| state.want), 1);

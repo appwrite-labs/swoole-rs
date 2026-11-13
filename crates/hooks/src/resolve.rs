@@ -49,15 +49,18 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
 
 /// `async::handler_gethostbyname`: the request's address, on a pool thread.
 extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
-    // SAFETY: only `run` dispatches it, over a live request record the pool's copy
-    // holds a reference to.
-    (event.retval, event.error) = resolver::host(unsafe { &*event.data });
+    // Only `run` dispatches it, with a request.
+    if let Some(result) = event.record().map(resolver::host) {
+        (event.retval, event.error) = result;
+    }
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
 extern "C" fn handler_getaddrinfo(event: &mut AsyncEvent) {
-    // SAFETY: as for `handler_gethostbyname`.
-    (event.retval, event.error) = resolver::lookup(unsafe { &*event.data });
+    // As `handler_gethostbyname`.
+    if let Some(result) = event.record().map(resolver::lookup) {
+        (event.retval, event.error) = result;
+    }
 }
 
 /// `coroutine::async(handler, event, timeout)` over `request`: the completion's

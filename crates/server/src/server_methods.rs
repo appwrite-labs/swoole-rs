@@ -71,18 +71,12 @@ impl NativeContext<'_> {
     }
 }
 
-/// Runs `op` over `ctx`: straight into Rust, or the tests' fake runner.
-///
-/// # Safety
-/// `ctx.serv` is a live `Server`, and the other fields are what `op` reads.
-unsafe fn run(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
-    #[cfg(not(test))]
-    let run = crate::run_method;
-    #[cfg(test)]
-    let run = tests::fake;
-    // SAFETY: as the caller guarantees.
-    unsafe { run(op, arg, ctx) }
-}
+// Runs `op` over `ctx`, whose `serv` is a live `Server` and whose other fields are what
+// `op` reads: straight into Rust, or the tests' fake runner.
+#[cfg(not(test))]
+use crate::run_method as run;
+#[cfg(test)]
+use tests::fake as run;
 
 /// Runs `op` with `arg` over a context that lends `serv` and nothing else.
 fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {

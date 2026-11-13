@@ -299,16 +299,15 @@ fn not_found(s: &impl Source, prefix: &[u8], file: &[u8]) -> Stop {
 }
 
 /// `php_swoole_server_set_ssl_option`: the context's certificate and key.
-fn files(s: &impl Source, owner: *const OwnedTlsContext) -> Step {
+fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
     for (key, which, prefix) in [
         (c"ssl_cert_file", Text::CertFile, &b"ssl cert file["[..]),
         (c"ssl_key_file", Text::KeyFile, b"ssl key file["),
     ] {
-        if let Some(file) = s.bytes(key)? {
-            // SAFETY: the port's live context, which nothing else writes during set().
-            if !unsafe { tls::set_text(owner, which, &file) } {
-                return Err(not_found(s, prefix, &file));
-            }
+        if let Some(file) = s.bytes(key)?
+            && !owner.set_text(which, &file)
+        {
+            return Err(not_found(s, prefix, &file));
         }
     }
     Ok(())
@@ -316,11 +315,11 @@ fn files(s: &impl Source, owner: *const OwnedTlsContext) -> Step {
 
 /// The TLS options of an SSL port, then its SNI contexts and `ssl_init()`.
 pub(crate) fn tls(s: &impl Source, owner: *const OwnedTlsContext, dgram: bool) -> Step {
-    files(s, owner)?;
-    // SAFETY: as in `files`.
-    let set = |value| unsafe { tls::set_value(owner, value) };
-    // SAFETY: as above.
-    let text = |which, value: &[u8]| unsafe { tls::set_text(owner, which, value) };
+    // SAFETY: the port's live context, which nothing else reaches during set().
+    let owner = unsafe { tls::Lent::new(owner) };
+    files(s, &owner)?;
+    let set = |value| owner.set_value(value);
+    let text = |which, value: &[u8]| owner.set_text(which, value);
     if let Some(on) = s.truth(c"ssl_compress") {
         set(Value::DisableCompress(!on));
     }
@@ -459,7 +458,9 @@ impl Source for Zend<'_> {
                 },
                 port: self.port,
             };
-            files(&item, context.as_ptr())?;
+            // SAFETY: the fresh duplicate, which nothing else reaches until `sni_add`
+            // takes it.
+            files(&item, &unsafe { tls::Lent::new(context.as_ptr()) })?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));

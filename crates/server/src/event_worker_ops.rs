@@ -26,7 +26,6 @@ use swoole_rs_process::workers::ops::{
     OP_WORKER_STOP_CALLBACK, OP_WORKER_TYPE,
 };
 
-use crate::ConnectionRecord;
 use crate::callbacks::{
     CB_BEFORE_SHUTDOWN, CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CONNECT, CB_WORKER_EXIT,
     CB_WORKER_START, CB_WORKER_STOP, CallbackSlot,
@@ -49,7 +48,7 @@ struct Context<'a> {
     worker: *mut WorkerRecord,
     info: *mut DataHead,
     reactor: crate::reactor_handle::Reactor,
-    conn: *mut ConnectionRecord,
+    conn: Option<crate::Connection<'a>>,
     status: *const c_void,
     socket: Option<swoole_rs_reactor::Socket<'a>>,
 }
@@ -245,7 +244,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             .at(fd)
             .filter(|conn| crate::reactor_ops::valid(Some(*conn)));
         let valid = conn.is_some();
-        ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
+        ctx.conn = conn;
         return Some(u64::from(valid));
     }
     let conn = ctx.conn()?;

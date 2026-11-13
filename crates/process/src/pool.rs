@@ -703,17 +703,10 @@ pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
     }))
 }
 
-/// Free the state; `close` frees the listener. A listener's address is a socket
-/// file, unlinked as upstream does (a TCP host is unlinked too, harmlessly).
-///
-/// # Safety
-/// `ipc` is null or a live handle, not used afterwards.
-pub unsafe fn pool_ipc_free(ipc: *mut PoolIpc, close: impl FnOnce(*mut c_void)) {
-    if ipc.is_null() {
-        return;
-    }
-    // SAFETY: the caller hands back the handle `_new` leaked.
-    let ipc = unsafe { Box::from_raw(ipc) };
+/// Free the state, which the caller takes back from the handle [`pool_ipc_new`]
+/// leaked; `close` frees the listener. A listener's address is a socket file,
+/// unlinked as upstream does (a TCP host is unlinked too, harmlessly).
+pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(*mut c_void)) {
     if let Some(stream) = ipc.stream
         && !stream.socket.is_null()
     {
@@ -1053,7 +1046,7 @@ mod tests {
                 Some(&b"ab"[..])
             );
             (*ipc).stream.as_mut().unwrap().connection = ptr::null_mut();
-            pool_ipc_free(ipc, |_| {});
+            pool_ipc_free(*Box::from_raw(ipc), |_| {});
         }
     }
 
@@ -1065,7 +1058,7 @@ mod tests {
             assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
             assert!(pool_ipc_address(&*ipc).is_none());
             assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
-            pool_ipc_free(ipc, |_| {});
+            pool_ipc_free(*Box::from_raw(ipc), |_| {});
         }
     }
 
@@ -1266,7 +1259,7 @@ mod tests {
         // SAFETY: a live handle; the scripted hooks read no pool or worker.
         assert_eq!(unsafe { pool_run(&Scripted, &pool_loop, protocol) }, DONE);
         // SAFETY: as above.
-        unsafe { pool_ipc_free(ipc, |_| {}) };
+        pool_ipc_free(*unsafe { Box::from_raw(ipc) }, |_| {});
         with(std::mem::take)
     }
 

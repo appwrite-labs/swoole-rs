@@ -6,8 +6,9 @@ use crate::context::{PasswordBinding, copy_password, create_context};
 use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     ffi::{CStr, c_char, c_int, c_void},
+    marker::PhantomData,
     sync::Arc,
 };
 use swoole_rs_corebase::StringSlot;
@@ -154,14 +155,13 @@ impl TlsContext {
         let owner = core::ptr::NonNull::new(swr_v1_tls_owner_new().owner.cast_mut());
         Self(owner.unwrap_or_else(|| std::process::abort()))
     }
-    /// A new owner holding `texts`, each set as [`set_text`] sets it.
+    /// A new owner holding `texts`, each set as [`Lent::set_text`] sets it.
     #[must_use]
     pub fn with_texts(texts: &[(Text, &[u8])]) -> Self {
         let context = Self::new();
         for &(which, value) in texts {
-            // SAFETY: the fresh owner, which nothing else holds yet, so the caller's
-            // `value` is none of its strings.
-            _ = unsafe { set_text(context.as_ptr(), which, value) };
+            // SAFETY: the fresh owner, which nothing else holds yet.
+            _ = unsafe { Lent::new(context.as_ptr()) }.set_text(which, value);
         }
         context
     }
@@ -221,18 +221,26 @@ pub unsafe fn owner_fields<'a>(owner: *const OwnedTlsContext) -> &'a OwnedTlsFie
 pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreStringView {
     owner.strings[TLS_HOST_NAME].view()
 }
+/// `tls_host_name`'s bytes, borrowed from the owner. Whoever sets the name holds the
+/// owner exclusively ([`set_text`]'s contract, and the native setters'), so no write
+/// overlaps a borrow safe code holds.
+#[must_use]
+pub fn owner_host_name(owner: &OwnedTlsContext) -> &[u8] {
+    owner.strings[TLS_HOST_NAME].bytes()
+}
 /// An owner whose caller serializes it: the borrow every operation here takes once,
-/// instead of each field access promising it again.
-struct Lent<'a>(&'a OwnedTlsContext);
+/// instead of each field access promising it again. It is not `Sync`, so only the
+/// thread holding it writes through it.
+pub struct Lent<'a>(&'a OwnedTlsContext, PhantomData<Cell<()>>);
 impl Lent<'_> {
     /// # Safety
     /// `owner` is live while the guard is, and until the guard goes only its holder
     /// reaches the owner's fields and retained password: no other thread does, and
     /// what the holder calls meanwhile (OpenSSL, the logger, native code reading its
     /// view) runs while no borrow the guard lent is in use.
-    unsafe fn new(owner: *const OwnedTlsContext) -> Self {
+    pub unsafe fn new(owner: *const OwnedTlsContext) -> Self {
         // SAFETY: as the caller promises.
-        Self(unsafe { &*owner })
+        Self(unsafe { &*owner }, PhantomData)
     }
     fn fields(&self) -> &OwnedTlsFields {
         // SAFETY: the guard's contract: nothing writes the fields while it lends them.
@@ -282,16 +290,13 @@ unsafe extern "C" fn slot_password(
 ) -> c_int {
     // SAFETY: per the caller.
     let passphrase = unsafe { &*slot.cast::<StringSlot>() }.bytes_with_nul();
-    // SAFETY: per the caller.
-    unsafe { copy_password(buffer, capacity, passphrase) }
+    let capacity = usize::try_from(capacity).unwrap_or(0);
+    // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
+    let buffer = unsafe { crate::upstream::slots(buffer.cast(), capacity) };
+    copy_password(buffer, passphrase)
 }
-/// # Safety
-/// owner is live/exclusive, and its logger does not throw.
-pub unsafe fn swr_v1_tls_owner_create(owner: *const OwnedTlsContext) -> bool {
-    // SAFETY: as the caller promises.
-    create(&mut unsafe { Lent::new(owner) })
-}
-/// [`swr_v1_tls_owner_create`] over the lent owner, whose logger does not throw.
+/// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
+/// held: false when OpenSSL makes none. The owner's logger does not throw.
 fn create(owner: &mut Lent<'_>) -> bool {
     let state = owner.0;
     // `configuration` copies the fields, so no borrow of them is kept across
@@ -325,7 +330,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
 ///
 /// # Safety
-/// `context` is a live owner, as for `swr_v1_tls_owner_create`.
+/// `context` is live/exclusive, and its logger does not throw.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10SSLContext6createEv")
@@ -334,7 +339,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
 pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> bool {
     crate::swoole_ssl_init();
     // SAFETY: as the caller promises.
-    unsafe { swr_v1_tls_owner_create(context) }
+    create(&mut unsafe { Lent::new(context) })
 }
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
@@ -571,68 +576,71 @@ fn readable(path: &[u8], origin: &CStr, what: &str) -> bool {
     found
 }
 
-/// Write the text setting into the owner: false for a certificate or key file
-/// that can't be read.
-/// # Safety
-/// owner is live and exclusive, and `value` is none of its own strings.
-pub unsafe fn set_text(owner: *const OwnedTlsContext, which: Text, value: &[u8]) -> bool {
-    // SAFETY: as the caller promises.
-    let mut owner = unsafe { Lent::new(owner) };
-    let state = owner.0;
-    // The slot, and for a file its setter's log origin and name.
-    let (slot, file) = match which {
-        Text::CertFile => (&state.strings[4], Some((c"set_cert_file", "cert"))),
-        Text::KeyFile => (&state.strings[5], Some((c"set_key_file", "key"))),
-        Text::ClientCertFile => (
-            &state.strings[7],
-            Some((c"set_client_cert_file", "client cert")),
-        ),
-        Text::Passphrase => (&state.strings[PASSPHRASE], None),
-        Text::HostName => (&state.strings[TLS_HOST_NAME], None),
-        Text::Cafile => (&state.strings[9], None),
-        Text::Capath => (&state.strings[10], None),
-        Text::Ciphers => (&state.strings[0], None),
-        Text::EcdhCurve => (&state.strings[1], None),
-        Text::DhParam => (&state.strings[3], None),
-    };
-    if let Some((origin, what)) = file
-        && !readable(value, origin, what)
-    {
-        return false;
+impl Lent<'_> {
+    /// Write the text setting into the owner: false for a certificate or key file
+    /// that can't be read.
+    #[must_use]
+    pub fn set_text(&self, which: Text, value: &[u8]) -> bool {
+        let state = self.0;
+        // The slot, and for a file its setter's log origin and name.
+        let (slot, file) = match which {
+            Text::CertFile => (&state.strings[4], Some((c"set_cert_file", "cert"))),
+            Text::KeyFile => (&state.strings[5], Some((c"set_key_file", "key"))),
+            Text::ClientCertFile => (
+                &state.strings[7],
+                Some((c"set_client_cert_file", "client cert")),
+            ),
+            Text::Passphrase => (&state.strings[PASSPHRASE], None),
+            Text::HostName => (&state.strings[TLS_HOST_NAME], None),
+            Text::Cafile => (&state.strings[9], None),
+            Text::Capath => (&state.strings[10], None),
+            Text::Ciphers => (&state.strings[0], None),
+            Text::EcdhCurve => (&state.strings[1], None),
+            Text::DhParam => (&state.strings[3], None),
+        };
+        if let Some((origin, what)) = file
+            && !readable(value, origin, what)
+        {
+            return false;
+        }
+        // SAFETY: a stable slot of the exclusive owner. `value` borrows none of its
+        // strings: they are private to this crate, which lends no borrow of them out.
+        // The stored value keeps every byte.
+        let status = unsafe { slot.set_shared(value) };
+        // An allocation refusal, which std::bad_alloc ends.
+        if status != 0 {
+            std::process::abort();
+        }
+        if matches!(which, Text::HostName) {
+            self.edit(|fields| fields.disable_tls_host_name = value.is_empty().into());
+        }
+        true
     }
-    // SAFETY: a stable slot of the exclusive owner, which `value` is not; the stored
-    // value keeps every byte.
-    let status = unsafe { slot.set_shared(value) };
-    // An allocation refusal, which std::bad_alloc ends.
-    if status != 0 {
-        std::process::abort();
-    }
-    if matches!(which, Text::HostName) {
-        owner.fields_mut().disable_tls_host_name = value.is_empty().into();
-    }
-    true
-}
 
-/// Write the scalar setting into the owner.
-/// # Safety
-/// owner is live and exclusive.
-pub unsafe fn set_value(owner: *const OwnedTlsContext, value: Value) {
-    // SAFETY: as the caller promises.
-    let mut owner = unsafe { Lent::new(owner) };
-    let fields = owner.fields_mut();
-    match value {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream assigns the long to a uint32_t"
-        )]
-        Value::Protocols(value) => fields.protocols = value as u32,
-        Value::DisableCompress(value) => fields.disable_compress = value.into(),
-        Value::VerifyPeer(value) => fields.verify_peer = value.into(),
-        Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),
-        Value::VerifyDepth(value) => fields.verify_depth = value,
-        Value::Grease(value) => fields.grease = value,
-        Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value.into(),
+    /// Write the scalar setting into the owner.
+    pub fn set_value(&self, value: Value) {
+        self.edit(|fields| match value {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "upstream assigns the long to a uint32_t"
+            )]
+            Value::Protocols(value) => fields.protocols = value as u32,
+            Value::DisableCompress(value) => fields.disable_compress = value.into(),
+            Value::VerifyPeer(value) => fields.verify_peer = value.into(),
+            Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),
+            Value::VerifyDepth(value) => fields.verify_depth = value,
+            Value::Grease(value) => fields.grease = value,
+            Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value.into(),
+        });
+    }
+
+    /// `f` over the owner's fields, which takes no other borrow of them.
+    fn edit(&self, f: impl FnOnce(&mut OwnedTlsFields)) {
+        // SAFETY: the guard's contract, on its one thread: only its holder reaches the
+        // fields, and every borrow of them the guard lends ends inside a method of its
+        // own, none of which is running `f`.
+        f(unsafe { &mut *self.0.fields.get() });
     }
 }
 
@@ -681,32 +689,33 @@ mod tests {
         unsafe {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
+            let lent = Lent::new(owner);
             let text = |index: usize| {
                 let view = swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]);
                 std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
             };
-            assert!(set_text(owner, Text::HostName, b"example.test"));
+            assert!(lent.set_text(Text::HostName, b"example.test"));
             assert_eq!(text(8), b"example.test");
             assert_eq!((*prepared.fields).disable_tls_host_name, 0);
-            assert!(set_text(owner, Text::HostName, b""));
+            assert!(lent.set_text(Text::HostName, b""));
             assert_eq!((*prepared.fields).disable_tls_host_name, 1);
-            assert!(set_text(owner, Text::Ciphers, b"HIGH"));
+            assert!(lent.set_text(Text::Ciphers, b"HIGH"));
             assert_eq!(text(0), b"HIGH");
-            assert!(!set_text(owner, Text::CertFile, b"/nonexistent/cert.pem"));
+            assert!(!lent.set_text(Text::CertFile, b"/nonexistent/cert.pem"));
             assert_eq!(has_files(&*owner), (false, false));
             let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-            assert!(set_text(owner, Text::KeyFile, manifest.as_bytes()));
+            assert!(lent.set_text(Text::KeyFile, manifest.as_bytes()));
             assert_eq!(has_files(&*owner), (false, true));
             // access(2) reads the path up to its first NUL, and the slot keeps every byte.
             let cut = [manifest.as_bytes(), b"\0tail"].concat();
-            assert!(set_text(owner, Text::KeyFile, &cut));
+            assert!(lent.set_text(Text::KeyFile, &cut));
             assert_eq!(text(5), cut);
             let missing = [b"/nonexistent/key.pem\0", manifest.as_bytes()].concat();
-            assert!(!set_text(owner, Text::KeyFile, &missing));
+            assert!(!lent.set_text(Text::KeyFile, &missing));
             assert_eq!(text(5), cut, "a refused path leaves the slot as it was");
-            set_value(owner, Value::Protocols(1 << 3));
-            set_value(owner, Value::VerifyDepth(7));
-            set_value(owner, Value::VerifyPeer(true));
+            lent.set_value(Value::Protocols(1 << 3));
+            lent.set_value(Value::VerifyDepth(7));
+            lent.set_value(Value::VerifyPeer(true));
             assert_eq!((*prepared.fields).protocols, 1 << 3);
             assert_eq!((*prepared.fields).verify_depth, 7);
             assert_eq!((*prepared.fields).verify_peer, 1);
@@ -807,7 +816,7 @@ mod tests {
                 ),
                 0
             );
-            assert!(swr_v1_tls_owner_create(source.owner));
+            assert!(create(&mut Lent::new(source.owner)));
             let context = (*source.fields).context_ptr();
             assert_eq!(
                 swr_v1_tls_owner_assign(destination.owner, source.owner).status,
@@ -859,7 +868,7 @@ mod tests {
                 ),
                 0
             );
-            assert!(swr_v1_tls_owner_create(owner));
+            assert!(create(&mut Lent::new(owner)));
             let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
             assert!(password_binding_matches(ctx, slot, slot_password));

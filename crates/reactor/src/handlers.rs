@@ -19,6 +19,7 @@ macro_rules! field {
     ($(#[$doc:meta])* $get:ident, $set:ident, $field:ident: $ty:ty) => {
         $(#[$doc])*
         #[cfg(unix)]
+        #[inline]
         #[must_use]
         pub fn $get(self) -> $ty {
             self.with(|state| state.fields.$field)
@@ -26,6 +27,7 @@ macro_rules! field {
 
         $(#[$doc])*
         #[cfg(unix)]
+        #[inline]
         pub fn $set(self, value: $ty) {
             self.with(|state| state.fields.$field = value);
         }

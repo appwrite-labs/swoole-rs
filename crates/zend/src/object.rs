@@ -48,25 +48,6 @@ impl<T> Object<T> {
         std
     }
 
-    /// Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: the class creates `Object<T>`s
-    /// with `create` and frees them with `free`.
-    /// # Safety
-    /// `create` returns the `std` of a new `Object<T>` (one [`Self::create`]
-    /// made), and `free` destroys the standard object
-    /// it is given ([`Self::dtor`]) without freeing it:
-    /// Zend then frees the allocation at `std - OFFSET`.
-    pub unsafe fn install(
-        entry: &mut zend_class_entry,
-        handlers: &mut zend_object_handlers,
-        create: unsafe extern "C" fn(*mut zend_class_entry) -> *mut zend_object,
-        free: unsafe extern "C" fn(*mut zend_object),
-    ) {
-        // SAFETY: a registered entry, written at MINIT.
-        unsafe { swr_zend_class_set_create_object(entry, Some(create)) };
-        handlers.free_obj = Some(free);
-        handlers.offset = c_int::try_from(Self::OFFSET).unwrap_or(c_int::MAX);
-    }
-
     /// Where the data of the object around `std` sits, for callers that keep
     /// no reference to it across PHP code (cells, or raw field access).
     #[must_use]
@@ -76,29 +57,9 @@ impl<T> Object<T> {
         std.wrapping_byte_sub(Self::OFFSET).cast()
     }
 
-    /// The data of the object around `std` (`fetch_object(std)->data`).
-    /// # Safety
-    /// `std` is the `std` of a live `Object<T>`, and no other reference to its
-    /// data is live while the result is.
-    #[must_use]
-    #[inline]
-    pub unsafe fn data<'a>(std: *mut zend_object) -> &'a mut T {
-        let this = std.wrapping_byte_sub(Self::OFFSET).cast::<Self>();
-        // SAFETY: per the caller, `this` is the live object around `std`.
-        unsafe { &mut (*this).data }
-    }
-
     #[must_use]
     pub fn std(this: *mut Self) -> *mut zend_object {
         this.wrapping_byte_add(Self::OFFSET).cast()
-    }
-
-    /// The last step of a `free_obj` handler.
-    /// # Safety
-    /// `std` is a live object Zend is freeing.
-    pub unsafe fn dtor(std: *mut zend_object) {
-        // SAFETY: per the caller.
-        unsafe { zend_object_std_dtor(std) };
     }
 }
 
@@ -276,9 +237,13 @@ pub(crate) fn install_custom<T: Custom>(
 ) {
     handlers.clone_obj = None;
     handlers.unset_property = Some(crate::unset_property_deny);
-    // SAFETY: `create::<T>` makes `Object<T>`s with `Object::create`, and
-    // `free::<T>` ends with `zend_object_std_dtor`.
-    unsafe { Object::<T>::install(entry, handlers, create::<T>, free::<T>) };
+    // Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: `create::<T>` makes `Object<T>`s
+    // with `Object::create`, and `free::<T>` ends with `zend_object_std_dtor`
+    // without freeing the object: Zend then frees the allocation at `std - OFFSET`.
+    // SAFETY: a registered entry, written at MINIT.
+    unsafe { swr_zend_class_set_create_object(entry, Some(create::<T>)) };
+    handlers.free_obj = Some(free::<T>);
+    handlers.offset = c_int::try_from(Object::<T>::OFFSET).unwrap_or(c_int::MAX);
     if T::DESTRUCTS {
         handlers.dtor_obj = Some(destruct::<T>);
     }
@@ -311,7 +276,7 @@ impl Props<'_> {
 
     /// `Z_OBJCE_P`: the object's own class.
     #[inline]
-    fn class(self) -> *mut zend_class_entry {
+    pub(crate) fn class(self) -> *mut zend_class_entry {
         // SAFETY: a live object, per `new`.
         unsafe { (*self.1).ce }
     }
@@ -390,16 +355,20 @@ impl Props<'_> {
     /// property `name` ([`Props::array_slot`]); nothing when `settings` is no array.
     #[inline]
     pub fn merge(self, name: &CStr, settings: &Value) {
-        if let Some(slot) = self.array_slot(name) {
-            // SAFETY: an array slot of a live object, which nothing else
-            // borrows: it serves this one merge, which separates the array
-            // first and traps a replaced value's `__destruct`.
-            unsafe { ArrayMut::from_ptr(slot.as_ptr()) }.merge_array(settings);
-        }
+        // The array is lent out of its property for the merge, so a replaced
+        // value's `__destruct` can't free or replace it meanwhile.
+        self.edit_array(name, |array| array.merge_array(settings));
     }
 }
 
 impl<'a> Props<'a> {
+    /// `Z_OBJCE_P` as a handle: the object's own class, which outlives it.
+    #[must_use]
+    #[inline]
+    pub fn class_entry(self) -> crate::ClassEntry<'a> {
+        crate::ClassEntry(self.class(), PhantomData)
+    }
+
     /// `sw_zend_read_property_ex`: the slot of the instance property the
     /// object's class declares as `name` (an uninitialised typed property reads
     /// as null), or None for no such property.

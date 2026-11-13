@@ -34,7 +34,9 @@ mod c {
     // SAFETY: POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or writes the one object its
     // reference names. `calloc` and `strndup` return null or a fresh
-    // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone.
+    // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
+    // `sigset_t` is plain bits the set calls read or write whole, and a signal number
+    // outside the set is an error they return.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn shutdown(fd: c_int, how: c_int) -> c_int;
@@ -66,6 +68,17 @@ mod c {
         pub(crate) safe fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int)
         -> pid_t;
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
+        /// Stores the head of a new list, which `freeifaddrs` frees, when it returns 0.
+        pub(crate) safe fn getifaddrs(list: &mut *mut libc::ifaddrs) -> c_int;
+        pub(crate) safe fn sigfillset(set: &mut libc::sigset_t) -> c_int;
+        pub(crate) safe fn sigdelset(set: &mut libc::sigset_t, signo: c_int) -> c_int;
+        pub(crate) safe fn sigismember(set: &libc::sigset_t, signo: c_int) -> c_int;
+        /// Changes only the calling thread's mask.
+        pub(crate) safe fn pthread_sigmask(
+            how: c_int,
+            set: Option<&libc::sigset_t>,
+            old: Option<&mut libc::sigset_t>,
+        ) -> c_int;
         pub(crate) safe fn srandom(seed: c_uint);
         /// This thread's errno slot, live for the thread.
         #[cfg_attr(
@@ -79,7 +92,7 @@ mod c {
         pub(crate) safe fn errno_location() -> *mut c_int;
     }
 }
-pub(crate) use c::{calloc, srandom, uname};
+pub(crate) use c::{calloc, pthread_sigmask, sigdelset, sigfillset, sigismember, srandom, uname};
 
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
@@ -456,8 +469,7 @@ impl Interfaces {
     #[must_use]
     pub fn new() -> Option<Self> {
         let mut list = std::ptr::null_mut();
-        // SAFETY: a writable out-pointer.
-        (unsafe { libc::getifaddrs(&raw mut list) } == 0).then_some(Self(list))
+        (c::getifaddrs(&mut list) == 0).then_some(Self(list))
     }
 
     /// The entries, in the list's order.
