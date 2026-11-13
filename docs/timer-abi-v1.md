@@ -17,7 +17,7 @@ clock, runtime or thread.
 
 - One owner thread per handle; no concurrent calls.
 - The opaque non-null token is never dereferenced or freed by Rust. A successful
-  add takes custody of one native node; only `RELEASE` or `RELEASE_OVERFLOW`
+  add takes custody of one native node; only `Release` or `ReleaseOverflow`
   hands it back. Get/next views are copied metadata.
 - No operation invokes a callback, destructor, Zend function or exception.
   Allocation is fallible and arithmetic is checked.
@@ -41,55 +41,57 @@ No callback, Zend jump or bailout continuation runs under a Rust frame
 
 ## Operations
 
-A failing operation returns the default (zeroed) view; only statuses that carry
-metadata return a filled one. Reserved fields are always zero. `end`'s delay
-defaults to -1. ID 0 means no active node; real IDs start at 1.
+`add`, `get`, `update`, `remove`, `begin`, `next`, `complete`, `end`, `ids` and
+`drain` return a [`Status`](../crates/timer/src/lib.rs). A failing operation
+returns the default (zeroed) view; only statuses that carry metadata return a
+filled one. Reserved fields are always zero. `end`'s delay defaults to -1. ID 0
+means no active node; real IDs start at 1.
 
 - **idle**: an empty, non-selecting queue, the only one its owner frees. Freeing
   never disposes tokens.
 - **add**: `now >= 0`, `delay > 0`, `persistent` 0 or 1, non-null token.
   Deadline is checked `now + delay`; interval = delay for repeats, 0 for
   one-shots. New entries have `exec_count` 0, the current birth round, removed 0.
-  IDs span 1..`INT64_MAX`; exhaustion is `OVERFLOW`. Capacity is reserved before
-  mutation, so `NOMEM` changes nothing logical. `CLOSING` rejects adds.
-- **get**: absent ID is `NOT_FOUND`; IDs <= 0 are `INVALID`. An active removed
+  IDs span 1..`INT64_MAX`; exhaustion is `Overflow`. Capacity is reserved before
+  mutation, so `NoMem` changes nothing logical. `Closing` rejects adds.
+- **get**: absent ID is `NotFound`; IDs <= 0 are `Invalid`. An active removed
   entry stays visible and counted until complete.
 - **update**: sets a nonnegative absolute deadline on a retained, non-removed
-  ID, including the active one. Removed is `NOT_FOUND`, closing is `CLOSING`.
+  ID, including the active one. Removed is `NotFound`, closing is `Closing`.
   No allocation. Birth round and interval are unchanged.
-- **remove**: absent or already removed is `NOT_FOUND`. Inactive entries are
-  detached with `RELEASE`. The active entry is marked removed and returns
-  `DEFERRED`; its token is held until complete.
+- **remove**: absent or already removed is `NotFound`. Inactive entries are
+  detached with `Release`. The active entry is marked removed and returns
+  `Deferred`; its token is held until complete.
 - **begin**: requires time >= 0, an open queue and no selection (nested begin is
-  `BUSY`). Time may not go backwards relative to the last accepted add/begin
-  (`INVALID`). Captures `now` once for the selection. Round `UINT64_MAX` is
-  `OVERFLOW`.
-- **next**: requires a selection and no active ID (`INVALID`/`BUSY`). A closing
-  queue returns `CLOSING`. Returns `EMPTY` if the heap is empty, the head
+  `Busy`). Time may not go backwards relative to the last accepted add/begin
+  (`Invalid`). Captures `now` once for the selection. Round `UINT64_MAX` is
+  `Overflow`.
+- **next**: requires a selection and no active ID (`Invalid`/`Busy`). A closing
+  queue returns `Closing`. Returns `Empty` if the heap is empty, the head
   deadline is after the captured time, or the head was born in the current
   round (which blocks everything behind it, as upstream). Otherwise marks the
   entry active and returns its view. Equal deadlines fire in upstream's order:
   the heap ranks by deadline alone and sifts as `swoole::Heap` does, stopping on
   a tie, so three equal timers run A/C/B. Insertion order (A/B/C) woke
   coroutines in orders upstream never produces (api-fuzz, #2382; #2409).
-- **complete**: requires the exact active ID, otherwise `INVALID` with no change.
+- **complete**: requires the exact active ID, otherwise `Invalid` with no change.
   A removed entry, closing queue or one-shot detaches that ID (even if the
-  callback moved it off the head) with `RELEASE`. A retained repeat advances
+  callback moved it off the head) with `Release`. A retained repeat advances
   from its current deadline until strictly after the captured time, coalescing
   missed intervals with quotient arithmetic, and increments `exec_count` once.
-  If deadline or count would overflow, it is detached with `RELEASE_OVERFLOW`.
+  If deadline or count would overflow, it is detached with `ReleaseOverflow`.
 - **end**: requires a selection and no active ID. Clears the selection,
   increments the round, returns -1 if empty or closing, otherwise
   `max(1, head_deadline - captured_now)`.
 - **stats**: count (including active removed), round, active, selecting, closing.
 - **ids** (test-only): returns the retained count. A slice shorter than it returns
-  `CAPACITY` without writing IDs; an empty slice is a sizing query. IDs come in
+  `Capacity` without writing IDs; an empty slice is a sizing query. IDs come in
   unspecified order. Callers snapshot IDs before running callbacks and
   resolve each again.
 - **close**: idempotent; marks the active node removed; rejects add/update/begin
   but allows get/remove/stats/ids/complete/end/drain.
-- **drain**: requires closing. Detaches one inactive entry (`RELEASE`), returns
-  `EMPTY` when none remain, or `DEFERRED` if only the active entry remains.
+- **drain**: requires closing. Detaches one inactive entry (`Release`), returns
+  `Empty` when none remain, or `Deferred` if only the active entry remains.
 
 ## Differences from upstream
 

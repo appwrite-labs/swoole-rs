@@ -4,9 +4,9 @@
 //! Rust-owned record over this crate's queue, and its nodes. C++ sees both only
 //! through pointers.
 use crate::{
-    BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerView,
-    absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend, swr_v1_timer_delay_deadline,
-    swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec, swr_v1_timer_system_set,
+    Status, Timer as Queue, TimerView, absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend,
+    swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec,
+    swr_v1_timer_system_set,
 };
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_long, c_void};
@@ -200,8 +200,8 @@ impl TimerNode {
 }
 
 /// A queue status that only a broken invariant returns (upstream threw).
-fn check(status: i32) {
-    if status != OK {
+fn check(status: Status) {
+    if status != Status::Ok {
         swoole_rs_corebase::fatal("a timer queue operation failed");
     }
 }
@@ -399,10 +399,10 @@ impl Owner {
             .queue
             .borrow_mut()
             .add(now, msec, persistent, node.cast());
-        if status != OK {
+        if status != Status::Ok {
             warning(
                 c"add",
-                format_args!("Rust timer add failed: status={status}"),
+                format_args!("Rust timer add failed: status={status:?}"),
             );
             // SAFETY: the node was never handed to the queue.
             drop(unsafe { Box::from_raw(node) });
@@ -421,11 +421,11 @@ impl Owner {
     pub(crate) fn remove(&self, id: c_long) -> bool {
         let (status, view) = self.queue.borrow_mut().remove(id);
         match status {
-            DEFERRED => {
+            Status::Deferred => {
                 apply(&view);
                 true
             }
-            RELEASE => {
+            Status::Release => {
                 self.release(applied(&view));
                 true
             }
@@ -440,11 +440,11 @@ impl Owner {
         let (status, view) = {
             let mut queue = self.queue.borrow_mut();
             match queue.update(id, exec_msec) {
-                (OK, view) => (OK, view),
+                (Status::Ok, view) => (Status::Ok, view),
                 _ => queue.get(id),
             }
         };
-        if status == OK {
+        if status == Status::Ok {
             apply(&view);
         }
     }
@@ -457,7 +457,7 @@ impl Owner {
             return;
         };
         let (status, view) = self.queue.borrow_mut().update(id, deadline);
-        if status == OK {
+        if status == Status::Ok {
             apply(&view);
         }
     }
@@ -466,12 +466,12 @@ impl Owner {
     fn complete(&self, id: i64) {
         let (status, view) = self.queue.borrow_mut().complete(id);
         match status {
-            OK => {
+            Status::Ok => {
                 apply(&view);
             }
-            RELEASE | RELEASE_OVERFLOW => {
+            Status::Release | Status::ReleaseOverflow => {
                 self.release(applied(&view));
-                if status == RELEASE_OVERFLOW {
+                if status == Status::ReleaseOverflow {
                     warning(c"select", format_args!("Rust timer repeat limit exceeded"));
                 }
             }
@@ -482,7 +482,7 @@ impl Owner {
     /// Ends the selection and arms the next wakeup; false if Rust refused.
     fn end(&self) -> bool {
         let (status, delay) = self.queue.borrow_mut().end();
-        if status != OK {
+        if status != Status::Ok {
             return false;
         }
         self.next_msec.set(delay);
@@ -503,13 +503,13 @@ impl Owner {
             return;
         }
         let begin = self.queue.borrow_mut().begin(now);
-        if begin == BUSY || begin == CLOSING {
+        if begin == Status::Busy || begin == Status::Closing {
             return;
         }
         check(begin);
         loop {
             let (status, view) = self.queue.borrow_mut().select_next();
-            if status == EMPTY || status == CLOSING {
+            if status == Status::Empty || status == Status::Closing {
                 break;
             }
             check(status);
@@ -529,7 +529,7 @@ impl Owner {
             self.complete(view.id);
         }
         if !self.end() {
-            check(CLOSING);
+            check(Status::Closing);
         }
     }
 
@@ -550,11 +550,11 @@ impl Owner {
                 let mut queue = self.queue.borrow_mut();
                 let stats = queue.stats();
                 let (status, view) = if stats.active_id == 0 {
-                    (RELEASE, TimerView::default())
+                    (Status::Release, TimerView::default())
                 } else {
                     queue.complete(stats.active_id)
                 };
-                if status != RELEASE {
+                if status != Status::Release {
                     swoole_rs_corebase::fatal("a timer completed without releasing");
                 }
                 if stats.selecting {
@@ -568,13 +568,13 @@ impl Owner {
         }
         let status = loop {
             let (status, view) = self.queue.borrow_mut().drain();
-            if status != RELEASE {
+            if status != Status::Release {
                 break status;
             }
             self.release(applied(&view));
         };
         // The record's drop frees the drained queue.
-        if status != EMPTY || !self.queue.borrow().idle() {
+        if status != Status::Empty || !self.queue.borrow().idle() {
             swoole_rs_corebase::fatal("a timer queue still busy when dropped");
         }
     }
