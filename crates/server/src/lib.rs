@@ -281,10 +281,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
             startup::destroy(h)?;
             SW_OK
         }
-        _ => match reactor_io::run(h, operation, arg)? {
-            Some(result) => result,
-            None => reactor_thread::run(h, operation, arg)?,
-        },
+        _ => reactor_thread::run(h, operation, arg)?,
     })
 }
 

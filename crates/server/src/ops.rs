@@ -421,39 +421,12 @@ pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
 
-// Reactor threads' close, peer-close and pipe-write paths and thread setup
-// (`crates/server/src/reactor_io.rs`); far from the other ranges.
-pub const RUN_RT_PIPE_WRITE: u32 = 200;
-pub const RUN_RT_INIT: u32 = 201;
-pub const OP_RT_BUF_EMPTY: u32 = 900;
-pub const OP_RT_FRONT: u32 = 901;
-pub const OP_RT_FRONT_STREAM: u32 = 902;
-pub const OP_RT_FRONT_CONN: u32 = 903;
-pub const OP_RT_TOUCH_SEND: u32 = 904;
-pub const OP_RT_FRONT_CONN_CLOSED: u32 = 905;
-pub const LOG_RT_CLOSED_BY_SERVER: u32 = 906;
-pub const OP_RT_DISCARD_TIMEOUT: u32 = 907;
-pub const LOG_RT_DISCARD: u32 = 908;
-pub const OP_RT_POP: u32 = 909;
-pub const OP_RT_SEND_FRONT: u32 = 910;
-pub const OP_RT_CATCH_WAIT: u32 = 911;
-pub const OP_RT_REMOVE_WRITE: u32 = 912;
-pub const LOG_RT_SET_WRITE: u32 = 913;
-pub const OP_RT_SETUP: u32 = 914;
-pub const OP_RT_DGRAM_BIND: u32 = 915;
-pub const OP_RT_INIT_REACTOR: u32 = 916;
-pub const OP_RT_INIT_PIPE_SOCKETS: u32 = 917;
-pub const OP_RT_THREAD_WORKER: u32 = 918;
-pub const OP_RT_HEARTBEAT_TIMER: u32 = 919;
-pub const OP_RT_HAS_PIPE_COMMAND: u32 = 920;
-pub const OP_RT_PIPE_COMMAND: u32 = 921;
-pub const OP_RT_BUS_SETUP: u32 = 922;
-pub const OP_RT_ADD_WORKER_PIPE: u32 = 923;
-
 // A connection's read, write and close paths (`crates/server/src/conn_io.rs`); the
 // context holds the reactor, event, socket, connection and port.
 /// `ReactorThread_onWrite`: arg the write facts.
 pub const RUN_RT_WRITE: u32 = 211;
+/// `reactor->remove_write_event(event socket)`.
+pub const OP_RT_REMOVE_WRITE: u32 = 912;
 /// `ReactorThread_onClose`: arg the peer-close facts.
 pub const RUN_PEER_CLOSE: u32 = 212;
 /// `Server::close_connection`: context reactor and socket.

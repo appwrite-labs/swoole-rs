@@ -1,159 +1,252 @@
-//! Reactor threads' worker-pipe write path and a reactor thread's setup (`src/server/reactor_thread.cc`). The context holds the
-//! server, the reactor, its thread and, per operation, the event, socket and
-//! connection.
-use crate::ops::{
-    FIELD_HEARTBEAT_INTERVAL, LOG_RT_CLOSED_BY_SERVER, LOG_RT_DISCARD, LOG_RT_SET_WRITE, OP_FIELD,
-    OP_HAVE_DGRAM, OP_MODE, OP_PORT_COUNT, OP_PORT_DGRAM, OP_PORT_FD, OP_REACTOR_NUM,
-    OP_RT_ADD_WORKER_PIPE, OP_RT_BUF_EMPTY, OP_RT_BUS_SETUP, OP_RT_CATCH_WAIT, OP_RT_DGRAM_BIND,
-    OP_RT_DISCARD_TIMEOUT, OP_RT_FRONT, OP_RT_FRONT_CONN, OP_RT_FRONT_CONN_CLOSED,
-    OP_RT_FRONT_STREAM, OP_RT_HAS_PIPE_COMMAND, OP_RT_HEARTBEAT_TIMER, OP_RT_INIT_PIPE_SOCKETS,
-    OP_RT_INIT_REACTOR, OP_RT_PIPE_COMMAND, OP_RT_POP, OP_RT_REMOVE_WRITE, OP_RT_SEND_FRONT,
-    OP_RT_SETUP, OP_RT_THREAD_WORKER, OP_RT_TOUCH_SEND, OP_WORKER_NUM, RUN_RT_INIT,
-    RUN_RT_PIPE_WRITE,
-};
-use crate::{Host, MODE_THREAD, SW_ERR, SW_OK};
+//! Reactor threads' worker-pipe write path (`src/server/reactor_thread.cc`).
+use core::ffi::{c_int, c_long};
+use core::mem::offset_of;
+use core::sync::atomic::Ordering::SeqCst;
 
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
-    Ok(Some(match operation {
-        RUN_RT_PIPE_WRITE => pipe_write(h)?,
-        RUN_RT_INIT => init(h, arg)?,
-        _ => return Ok(None),
-    }))
-}
+use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_pop, swr_cpp_buffer_typed_front};
+use swoole_rs_corebase::{DataHead, log, microtime};
+use swoole_rs_error::ErrorCode as E;
+use swoole_rs_reactor::{Event, Socket};
+
+use crate::reactor_handle::Reactor;
+use crate::reactor_ops::{out_buffer, stream_event};
+use crate::records::Lookup;
+use crate::{SW_ERR, SW_OK, ServerState, view};
+
+/// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_WAIT`.
+const SW_LOG_NOTICE: c_int = 3;
+const SW_LOG_WARNING: c_int = 4;
+const SW_WAIT: c_int = 2;
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
 /// those for connections the server already closed.
-fn pipe_write<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    while !h.is(OP_RT_BUF_EMPTY)? {
-        h.get(OP_RT_FRONT)?;
-        if h.is(OP_RT_FRONT_STREAM)? {
-            let discard = if h.is(OP_RT_FRONT_CONN)? {
-                h.get(OP_RT_TOUCH_SEND)?;
-                let closed = h.is(OP_RT_FRONT_CONN_CLOSED)?;
-                if closed {
-                    h.get(LOG_RT_CLOSED_BY_SERVER)?;
-                }
-                closed
-            } else if h.is(OP_RT_DISCARD_TIMEOUT)? {
-                h.get(LOG_RT_DISCARD)?;
-                true
-            } else {
-                false
-            };
-            if discard {
-                h.get(OP_RT_POP)?;
-                continue;
-            }
-        }
-        if h.signed(OP_RT_SEND_FRONT)? < 0 {
-            return Ok(if h.is(OP_RT_CATCH_WAIT)? {
+pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+    let Some(sock) = event.socket() else {
+        return int(SW_ERR);
+    };
+    while let Some(front) = sock.read(|s| {
+        let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
+        Some(swr_cpp_buffer_typed_front(buffer))
+    }) {
+        // SAFETY: the front entry's bytes, a worker message that stays queued, and
+        // so live, until this thread pops it.
+        let message = unsafe { core::slice::from_raw_parts(front.data, front.length as usize) };
+        if !discard(serv.state(), message) && swoole_rs_tls::upstream::send(sock, message, 0) < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return int(if sock.catch_error(errno) == SW_WAIT {
                 SW_OK
             } else {
                 SW_ERR
             });
         }
-        h.get(OP_RT_POP)?;
+        pop(sock);
     }
-    if h.signed(OP_RT_REMOVE_WRITE)? < 0 {
-        h.get(LOG_RT_SET_WRITE)?;
+    if reactor.interest(sock, 5, 0) < 0 {
+        let m = format_args!("reactor->set({}) failed", event.fd());
+        log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }
-    Ok(SW_OK)
+    int(SW_OK)
 }
 
-/// `ReactorThread::init`: a reactor thread's handlers, its UDP ports, worker
-/// pipes and message bus.
-fn init<H: Host>(h: &mut H, id: u64) -> crate::Effect<i64> {
-    h.op(OP_RT_SETUP, id)?;
-    // Listen on this thread's UDP ports.
-    if h.is(OP_HAVE_DGRAM)? {
-        let reactors = h.get(OP_REACTOR_NUM)?;
-        for port in 0..h.get(OP_PORT_COUNT)? {
-            if h.op(OP_PORT_DGRAM, port)? == 0 {
-                continue;
-            }
-            let fd = h.op(OP_PORT_FD, port)?.cast_signed();
-            if reactors == 0 || fd.rem_euclid(reactors.cast_signed()).cast_unsigned() != id {
-                continue;
-            }
-            if h.op(OP_RT_DGRAM_BIND, port)?.cast_signed() < 0 {
-                return Ok(SW_ERR);
-            }
+fn int(ret: i64) -> c_int {
+    c_int::try_from(ret).unwrap_or(-1)
+}
+
+fn pop(sock: Socket<'_>) {
+    sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_pop(b)));
+}
+
+/// `N` bytes of `message` at `at`, zero past its end.
+fn field<const N: usize>(message: &[u8], at: usize) -> [u8; N] {
+    let bytes = message.get(at..).and_then(|rest| rest.get(..N));
+    bytes.and_then(|b| b.try_into().ok()).unwrap_or([0; N])
+}
+
+/// Whether the worker's `message` is for a session the server already closed, or
+/// one that's gone while the server discards timed-out data. A live session's last
+/// send time moves on.
+fn discard(state: &ServerState, message: &[u8]) -> bool {
+    let [kind] = field(message, offset_of!(DataHead, kind));
+    if !stream_event(kind) {
+        return false;
+    }
+    let fd = c_long::from_ne_bytes(field(message, offset_of!(DataHead, fd)));
+    let origin = c"ReactorThread_onPipeWrite";
+    if let Some(conn) = state.connection(fd, Lookup::VerifiedTls) {
+        conn.set_last_send_time(microtime());
+        let closed = conn.closed().load(SeqCst) != 0;
+        if closed {
+            let m = format_args!("Session#{fd} is closed by server");
+            let code = E::SW_ERROR_SESSION_CLOSED_BY_SERVER as c_int;
+            log::error_log(SW_LOG_NOTICE, code, origin, m);
         }
+        closed
+    } else if state.config_ref().discard_timeout_request.get() {
+        let len = u32::from_ne_bytes(field(message, offset_of!(DataHead, len)));
+        let m = format_args!("[1] ignore data[{len} bytes] received from session#{fd}");
+        let code = E::SW_ERROR_SESSION_DISCARD_TIMEOUT_DATA as c_int;
+        log::error_log(SW_LOG_WARNING, code, origin, m);
+        true
+    } else {
+        false
     }
-    h.get(OP_RT_INIT_REACTOR)?;
-    h.get(OP_RT_INIT_PIPE_SOCKETS)?;
-    if h.get(OP_MODE)? == MODE_THREAD {
-        h.get(OP_RT_THREAD_WORKER)?;
-        if h.op(OP_FIELD, u64::from(FIELD_HEARTBEAT_INTERVAL))? > 0 {
-            h.get(OP_RT_HEARTBEAT_TIMER)?;
-        }
-    }
-    if h.is(OP_RT_HAS_PIPE_COMMAND)? {
-        h.get(OP_RT_PIPE_COMMAND)?;
-    }
-    if !h.is(OP_RT_BUS_SETUP)? {
-        return Ok(SW_ERR);
-    }
-    let reactors = h.get(OP_REACTOR_NUM)?;
-    for worker in 0..h.get(OP_WORKER_NUM)? {
-        if reactors == 0 || worker % reactors != id {
-            continue;
-        }
-        if h.op(OP_RT_ADD_WORKER_PIPE, worker)?.cast_signed() < 0 {
-            return Ok(SW_ERR);
-        }
-    }
-    Ok(SW_OK)
+}
+
+/// Whether reactor thread `id` of `reactors` owns `n`, a port's fd or a worker id.
+pub(crate) fn owns(n: i64, reactors: u16, id: u16) -> bool {
+    reactors != 0 && n.rem_euclid(i64::from(reactors)) == i64::from(id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::Script;
+    use crate::fixture::LiveServer;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixDatagram;
+    use swoole_rs_buffer::cpp::{swr_cpp_buffer_append, swr_cpp_buffer_count};
+    use swoole_rs_reactor::SocketRecord;
 
-    fn go(h: &mut Script, operation: u32, arg: u64) -> i64 {
-        run(h, operation, arg).unwrap().unwrap()
+    /// `SW_SERVER_EVENT_SEND_DATA`, and `SW_SERVER_EVENT_RECV_DGRAM`, not a stream event.
+    const SEND_DATA: u8 = 2;
+    const RECV_DGRAM: u8 = 1;
+    const FD_PIPE: c_int = 3;
+
+    #[test]
+    fn owns_splits_ports_and_workers_across_threads() {
+        // Thread 1 of 2 binds the datagram ports at fds 5 and 7 and takes workers 1 and 3.
+        let owned =
+            |ns: &[i64]| -> Vec<i64> { ns.iter().copied().filter(|&n| owns(n, 2, 1)).collect() };
+        assert_eq!(owned(&[4, 5, 7]), vec![5, 7]);
+        assert_eq!(owned(&[0, 1, 2, 3]), vec![1, 3]);
+        assert!(!owns(0, 0, 0));
+    }
+
+    /// A worker message of `kind` for `session`.
+    fn message(kind: u8, session: c_long, payload: &[u8]) -> Vec<u8> {
+        let head = DataHead {
+            fd: session,
+            kind,
+            len: u32::try_from(payload.len()).unwrap(),
+            ..DataHead::default()
+        };
+        // SAFETY: the head's bytes; it has no padding.
+        let head = unsafe {
+            core::slice::from_raw_parts((&raw const head).cast::<u8>(), size_of::<DataHead>())
+        };
+        [head, payload].concat()
+    }
+
+    /// The live server with session 1 accepted, and a worker pipe: the reactor's end,
+    /// whose output queue holds the messages, and the worker's.
+    struct Pipe {
+        live: LiveServer,
+        _client: std::net::TcpStream,
+        ours: UnixDatagram,
+        theirs: UnixDatagram,
+        sock: Socket<'static>,
+    }
+
+    impl Pipe {
+        fn new(messages: &[Vec<u8>]) -> Self {
+            let live = LiveServer::new();
+            let client = live.connect();
+            // SAFETY: the fixture's listener, live for the event.
+            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            crate::connection::accept(live.server(), live.reactor(), &event);
+            let (ours, theirs) = UnixDatagram::pair().unwrap();
+            ours.set_nonblocking(true).unwrap();
+            theirs.set_nonblocking(true).unwrap();
+            let sock = Box::new(SocketRecord::with_fd(ours.as_raw_fd(), FD_PIPE)).into_socket();
+            let buffer = swoole_rs_buffer::cpp::new_buffer(0);
+            sock.edit(|s| s.output.out_buffer = buffer.cast());
+            for m in messages {
+                // SAFETY: the socket's live buffer and `m`'s bytes.
+                unsafe { swr_cpp_buffer_append(&*buffer, m.as_ptr(), m.len().try_into().unwrap()) };
+            }
+            Self {
+                live,
+                _client: client,
+                ours,
+                theirs,
+                sock,
+            }
+        }
+        fn write(&self) -> c_int {
+            // SAFETY: the pipe's live record.
+            let event =
+                unsafe { Event::new(self.ours.as_raw_fd(), 0, FD_PIPE, self.sock.as_ptr().cast()) };
+            pipe_write(self.live.server(), self.live.reactor(), &event)
+        }
+        fn conn(&self) -> crate::records::Connection<'_> {
+            self.live.state().connection(1, Lookup::Verified).unwrap()
+        }
+        fn queued(&self) -> usize {
+            self.sock
+                .read(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_count(b)))
+        }
+        /// The worker's messages so far.
+        fn received(&self) -> Vec<Vec<u8>> {
+            let mut got = Vec::new();
+            let mut buf = [0; 256];
+            while let Ok(n) = self.theirs.recv(&mut buf) {
+                got.push(buf.get(..n).unwrap().to_vec());
+            }
+            got
+        }
     }
 
     #[test]
-    fn pipe_write_drops_closed_sessions_and_stops_when_the_pipe_is_full() {
-        let mut h = Script::with(&[
-            (OP_RT_FRONT_STREAM, 1),
-            (OP_RT_FRONT_CONN, 1),
-            (OP_RT_CATCH_WAIT, 1),
-        ])
-        .queue(OP_RT_BUF_EMPTY, &[0, 0, 1])
-        .queue(OP_RT_FRONT_CONN_CLOSED, &[1, 0])
-        .queue(OP_RT_SEND_FRONT, &[u64::MAX]);
-        assert_eq!(go(&mut h, RUN_RT_PIPE_WRITE, 0), SW_OK);
-        assert_eq!(h.called(LOG_RT_CLOSED_BY_SERVER), 1);
-        assert_eq!(h.called(OP_RT_POP), 1);
-        assert_eq!(h.called(OP_RT_REMOVE_WRITE), 0);
-        let mut h = Script::with(&[(OP_RT_FRONT_STREAM, 1), (OP_RT_DISCARD_TIMEOUT, 1)])
-            .queue(OP_RT_BUF_EMPTY, &[0, 1]);
-        go(&mut h, RUN_RT_PIPE_WRITE, 0);
-        assert_eq!(
-            (h.called(LOG_RT_DISCARD), h.called(OP_RT_SEND_FRONT)),
-            (1, 0)
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn pipe_write_sends_every_queued_message() {
+        let messages = [
+            message(SEND_DATA, 1, b"live"),
+            message(RECV_DGRAM, 9, b"dgram"),
+            message(SEND_DATA, 9, b"gone"),
+        ];
+        let p = Pipe::new(&messages);
+        assert_eq!(p.write(), int(SW_OK));
+        assert_eq!(p.received(), messages);
+        assert_eq!(p.queued(), 0);
+        assert!(
+            p.conn().last_send_time() > 0.0,
+            "a live session's send time moves on"
         );
-        assert_eq!(h.called(OP_RT_REMOVE_WRITE), 1);
     }
 
     #[test]
-    fn init_binds_only_this_threads_ports_and_pipes() {
-        let mut h = Script::with(&[
-            (OP_HAVE_DGRAM, 1),
-            (OP_REACTOR_NUM, 2),
-            (OP_PORT_COUNT, 3),
-            (OP_PORT_DGRAM, 1),
-            (OP_WORKER_NUM, 4),
-            (OP_RT_BUS_SETUP, 1),
-        ])
-        .queue(OP_PORT_FD, &[4, 5, 7]);
-        assert_eq!(go(&mut h, RUN_RT_INIT, 1), SW_OK);
-        assert_eq!(h.args(OP_RT_DGRAM_BIND), vec![1, 2]);
-        assert_eq!(h.args(OP_RT_ADD_WORKER_PIPE), vec![1, 3]);
-        let mut h = Script::default();
-        assert_eq!(go(&mut h, RUN_RT_INIT, 0), SW_ERR);
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn pipe_write_drops_closed_and_timed_out_sessions() {
+        let messages = [
+            message(SEND_DATA, 1, b"closed"),
+            message(SEND_DATA, 9, b"gone"),
+            message(RECV_DGRAM, 9, b"dgram"),
+        ];
+        let p = Pipe::new(&messages);
+        p.conn().closed().store(1, SeqCst);
+        p.live
+            .state()
+            .config_ref()
+            .discard_timeout_request
+            .set(true);
+        assert_eq!(p.write(), int(SW_OK));
+        assert_eq!(p.received(), messages.get(2..).unwrap());
+        assert_eq!(p.queued(), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn a_full_pipe_waits_and_a_closed_one_fails() {
+        let p = Pipe::new(&[message(SEND_DATA, 9, b"later")]);
+        while p.ours.send(b"fill").is_ok() {}
+        assert_eq!(
+            p.write(),
+            int(SW_OK),
+            "it waits for the next writable event"
+        );
+        assert_eq!(p.queued(), 1, "with the message still queued");
+        let p = Pipe::new(&[message(SEND_DATA, 9, b"never")]);
+        p.ours.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(p.write(), int(SW_ERR));
+        assert_eq!(p.queued(), 1);
     }
 }

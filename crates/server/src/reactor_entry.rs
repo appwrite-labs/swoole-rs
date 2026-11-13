@@ -11,7 +11,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE};
+use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
@@ -167,7 +167,10 @@ pub extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    int(run(RUN_RT_PIPE_WRITE, 0, &mut context(reactor, event)))
+    let reactor = Reactor::running(reactor);
+    // SAFETY: the handler is registered only on server reactors.
+    let serv = unsafe { server(reactor) };
+    crate::reactor_io::pipe_write(serv, reactor, event)
 }
 
 /// `ReactorThread_onRead`: a connection is readable.
