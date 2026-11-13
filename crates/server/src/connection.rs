@@ -730,6 +730,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn max_connection_bounds() {
         let live = LiveServer::new();
         let before = live.server().max_connection();
