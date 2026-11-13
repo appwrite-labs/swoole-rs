@@ -34,6 +34,9 @@ same target.
 
 ## WebSocket kernel (feature value 1)
 
+Only Rust calls this kernel (`crates/websocket-ffi`'s frame codec), so no C header declares it; a
+C caller would add the prototype beside the C that uses it.
+
 - `int32_t swr_v1_ws_mask(data, length, key)`: XORs `data` in place with a
   four-byte key. Returns 0, or -1 for null/oversized input. Length 0 is a no-op
   and allows null. The key is copied first, so it may alias the payload. Byte
