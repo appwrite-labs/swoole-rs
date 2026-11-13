@@ -201,7 +201,7 @@ fn port_frames(server: view::Server<'_>, fd: zend_long) -> Option<u8> {
 fn port_protocol(server: view::Server<'_>, server_fd: c_int) -> Option<Arc<Vec<u8>>> {
     server
         .port_of_server_fd(server_fd)
-        .and_then(|port| port.websocket_protocol.cloned())
+        .and_then(|port| port.websocket_protocol.get())
 }
 
 /// A boolean setting's value, when set and not null.

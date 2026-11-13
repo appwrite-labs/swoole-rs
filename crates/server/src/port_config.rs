@@ -1,5 +1,5 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
-use crate::config::{Setting, Shared};
+use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -97,7 +97,7 @@ pub struct PortConfig {
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
-    pub websocket_protocol: Shared<Option<std::sync::Arc<Vec<u8>>>>,
+    pub websocket_protocol: Published<Vec<u8>>,
     /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
     pub host: Box<StringSlot>,
     /// `ListenPort::protocol`, which native code reads and writes by reference.
@@ -128,8 +128,8 @@ pub struct TlsState {
     pub dtls: Mutex<DtlsSessions>,
 }
 
-/// A port's DTLS sessions by fd: each session and the port's context.
-pub type DtlsSessions = std::collections::HashMap<c_int, (*mut DtlsSession, TlsContext)>;
+/// A port's DTLS sessions, a few at most: each fd, its session and the port's context.
+pub type DtlsSessions = Vec<(c_int, *mut DtlsSession, TlsContext)>;
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
 pub type LengthOwner = Box<Box<dyn core::any::Any>>;
@@ -262,7 +262,7 @@ impl PortConfig {
             gs: Shared::new(core::ptr::null_mut()),
             ptr: AtomicPtr::new(core::ptr::null_mut()),
             websocket_frames: Setting::new(0),
-            websocket_protocol: Shared::new(None),
+            websocket_protocol: Published::default(),
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
             on_read: core::ptr::null_mut(),
