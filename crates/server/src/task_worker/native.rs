@@ -1,6 +1,7 @@
 //! The task pool's native side: its callbacks (`TaskWorker_*`), the coroutine loop
 //! over its pipe, the commands sent to it and `Server::finish`, which sends a task's
 //! result back to the worker that dispatched it.
+use crate::Mode;
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -195,7 +196,7 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
 /// `Server::worker_signal_init`, leaving SIGPIPE to a task's own code; none in
 /// thread mode, where the process's signals are the master's.
 fn signal_init(serv: view::Server<'_>) {
-    if u64::from(serv.config().mode_) == crate::MODE_THREAD {
+    if serv.config().mode_ == Mode::Thread {
         return;
     }
     let none = crate::event_worker::HANDLER_NONE;

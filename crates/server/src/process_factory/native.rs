@@ -1,6 +1,7 @@
 //! The process-mode factory's native side: its reactor threads, barriers,
 //! connections and message box, the manager's start and stop, forking event and user
 //! workers, and the [`Pipe`] writes.
+use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::{DataHead, log};
@@ -161,7 +162,7 @@ pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         return pid;
     }
     enter_child(worker, WorkerType::Event);
-    if u64::from(serv.config().mode_) == crate::MODE_BASE {
+    if serv.config().mode_ == Mode::Base {
         _ = serv.event_pool_ref().call_main_loop(worker);
     } else {
         _ = crate::event_worker::native::start_event_worker(serv, worker);

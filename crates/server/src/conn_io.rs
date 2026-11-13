@@ -6,6 +6,7 @@
 //! `SW_HALFCLOSE_PREQUEUE`): a synchronous process worker keeps its ordered response
 //! after a clean FIN, `close_notified` is the terminal read state, and a TLS close notify
 //! still owed is queued behind the output (`native/halfclose/prequeue.md`).
+use crate::Mode;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
@@ -143,7 +144,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     }
     let config = state.config_ref();
     let max = config.max_queued_bytes.get();
-    let process = u64::from(config.mode_) == crate::MODE_PROCESS;
+    let process = config.mode_ == Mode::Process;
     if process && max != 0 && conn.recv_queued_bytes().load(SeqCst) > max {
         conn.set_waiting_time(1);
         if resume_timer(serv, conn, sock) {
@@ -333,7 +334,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     let config = state.config_ref();
     let fd = event.fd();
     let port = serv.port_by_fd(fd).map(view::Port::config);
-    if u64::from(config.mode_) == crate::MODE_PROCESS {
+    if config.mode_ == Mode::Process {
         debug_assert_eq!(
             fd % c_int::from(config.reactor_num.get()),
             c_int::from(reactor.handle().id()),
@@ -462,7 +463,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
         .slot(CallbackKind::DispatchFunc)
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     !prequeue
-        || u64::from(config.mode_) != crate::MODE_PROCESS
+        || config.mode_ != Mode::Process
         || !matches!(config.dispatch_mode.get(), 2 | 4 | 8)
         || dispatch_func
         || config.enable_coroutine.get()
@@ -594,7 +595,7 @@ fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: R
     };
     gs.close_count.fetch_add(1, SeqCst);
     port.close_count.fetch_add(1, SeqCst);
-    if u64::from(state.config_ref().mode_) == crate::MODE_BASE {
+    if state.config_ref().mode_ == Mode::Base {
         let id = usize::from(reactor.handle().id());
         for cells in [gs.cells(), port.cells()] {
             // SAFETY: base mode's per-reactor counts, one per reactor.
@@ -761,7 +762,7 @@ pub(crate) mod tests {
             assert!(fin_ends(true, state, conn));
             set(conn, false);
         }
-        configure(&live, |c| c.mode_ = u8::try_from(crate::MODE_BASE).unwrap());
+        configure(&live, |c| c.mode_ = Mode::Base);
         assert!(fin_ends(true, state, conn), "base mode");
     }
 
@@ -917,7 +918,7 @@ pub(crate) mod tests {
         read(serv, reactor, &mut conn.event(0, 0));
         assert_eq!(conn.waiting_time(), 0, "at the limit");
         conn.recv_queued_bytes().store(9, SeqCst);
-        configure(&live, |c| c.mode_ = u8::try_from(crate::MODE_BASE).unwrap());
+        configure(&live, |c| c.mode_ = Mode::Base);
         read(serv, reactor, &mut conn.event(0, 0));
         assert_eq!(conn.waiting_time(), 0, "base mode");
         assert_eq!(reads().len(), 3);

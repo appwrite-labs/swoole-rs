@@ -10,7 +10,7 @@ use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::{EVENT_READ, Reactor};
 use crate::records::ConnectionRecord;
-use crate::{Connection, MODE_BASE, view};
+use crate::{Connection, Mode, view};
 
 /// `SW_ACCEPT_MAX_COUNT`, `SW_MAX_CONNECTION`, `SW_SESSION_LIST_SIZE`; native asserts each.
 const ACCEPT_MAX_COUNT: u32 = 64;
@@ -133,7 +133,7 @@ pub fn add<'a>(
     let fd = sock.fd();
     let conn = state.tables_ref().connection_at(fd)?;
     // C++'s ReactorId (uint8_t).
-    let reactor_id = if u64::from(config.mode_) == MODE_BASE {
+    let reactor_id = if config.mode_ == Mode::Base {
         swoole_rs_process::methods::swoole_get_worker_id().c_cast::<u8>()
     } else {
         (fd % c_int::from(config.reactor_num.get())).c_cast::<u8>()
@@ -238,7 +238,7 @@ pub fn add<'a>(
     if let Some(port_gs) = port_gs {
         port_gs.accept_count.fetch_add(1, Relaxed);
     }
-    if u64::from(config.mode_) == MODE_BASE {
+    if config.mode_ == Mode::Base {
         // Base mode counts connections per worker; the reactor id is the accepting worker's.
         let at = usize::from(reactor_id);
         for cell in [

@@ -1,6 +1,7 @@
 //! The event worker's native side: the events it receives from the message bus, its
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
+use crate::Mode;
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
@@ -29,10 +30,6 @@ use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
-/// `Server::Mode`.
-const MODE_BASE: u8 = 1;
-const MODE_PROCESS: u8 = 2;
-const MODE_THREAD: u8 = 3;
 /// `Reactor::PRIORITY_TRY_EXIT`, `PRIORITY_WORKER_CALLBACK`; `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const PRIORITY_TRY_EXIT: c_int = 4;
 const PRIORITY_WORKER_CALLBACK: c_int = 6;
@@ -158,7 +155,7 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
     worker.set_status(WorkerStatus::Idle);
     // The maximum number of requests: the worker exits.
     if worker.exceeded_max_request() {
-        if config.mode_ == MODE_THREAD {
+        if config.mode_ == Mode::Thread {
             // This reactor thread's reactor, and its own record.
             let reactor = Reactor::thread();
             let id = usize::from(reactor.handle().id());
@@ -255,7 +252,7 @@ pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) 
         }
     }
     worker.set_status(WorkerStatus::Idle);
-    if config.mode_ == MODE_PROCESS {
+    if config.mode_ == Mode::Process {
         serv.state()
             .tables_ref()
             .session_list
@@ -374,7 +371,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     unread_in_bus(serv, reactor, worker_pipe(worker, false));
     let event_worker = worker_type() == Some(WorkerType::Event);
     match config.mode_ {
-        MODE_BASE if event_worker => {
+        Mode::Base if event_worker => {
             let pool = crate::shared::ServerShared::of(serv).event_pool();
             if worker.id() == 0 && !pool.running {
                 global_hook(serv, worker, HOOK_BEFORE_SERVER_SHUTDOWN);
@@ -395,8 +392,8 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
             });
             crate::control::clear_timer(serv);
         }
-        MODE_BASE => {}
-        MODE_PROCESS => {
+        Mode::Base => {}
+        Mode::Process => {
             let pid = std::process::id().cast_signed();
             let id = u16::try_from(worker.id()).unwrap_or(u16::MAX);
             if push_stop(serv.event_pool_ref(), pid, id) < 0 {
@@ -404,7 +401,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
                 log::sys_warning(c"Server::stop_async_worker", m);
             }
         }
-        MODE_THREAD if event_worker => {
+        Mode::Thread if event_worker => {
             // Thread mode forwards through the master pipes, which may be watched for
             // writes: stop reading them before the thread exits.
             let me = reactor.handle().id();
@@ -425,8 +422,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
                 }
             });
         }
-        MODE_THREAD => {}
-        _ => swoole_rs_corebase::fatal("stop_async_worker in an unknown mode"),
+        Mode::Thread => {}
     }
     reactor.handle().set_wait_exit(true);
     swoole_rs_reactor::swr_v1_event_set_end_callback(PRIORITY_TRY_EXIT, try_to_exit);
@@ -508,7 +504,7 @@ extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int 
 
 /// `Server::worker_signal_init()`.
 pub fn worker_signal_init(serv: view::Server<'_>) {
-    if serv.config().mode_ == MODE_THREAD {
+    if serv.config().mode_ == Mode::Thread {
         return;
     }
     for (signo, handler) in super::signals(HANDLER_IGNORE) {
@@ -598,11 +594,11 @@ pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
     let reactor = Reactor::thread();
     reactor.handle().set_destroyed(true);
     let mode = serv.config().mode_;
-    if mode != MODE_BASE && mode != MODE_THREAD {
+    if mode != Mode::Base && mode != Mode::Thread {
         return;
     }
     crate::reactor_thread::each_connection(serv.state(), |conn| {
-        if mode == MODE_BASE || u32::from(conn.reactor_id()) == worker.id() {
+        if mode == Mode::Base || u32::from(conn.reactor_id()) == worker.id() {
             crate::conn_io::close_connection(serv, reactor, conn.socket());
         }
     });
@@ -700,7 +696,7 @@ fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
     let outcome = swoole_rs_process::affinity::worker_affinity(
         worker_id,
         available,
-        config.mode_ == MODE_THREAD,
+        config.mode_ == Mode::Thread,
     );
     match outcome {
         Err(AffinityError::Get(error)) => log::sys_warning_errno(

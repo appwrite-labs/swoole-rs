@@ -1,6 +1,7 @@
 //! The `Server` methods over its worker arrays that were `src/server/master.cc`'s.
 //! Each reads the Rust-owned configuration straight from the `Server` ([`crate::view`]).
 
+use crate::Mode;
 use core::ffi::c_int;
 use core::mem::MaybeUninit;
 use swoole_rs_locks::SharedMutex;
@@ -66,7 +67,7 @@ pub fn reset_worker_counter(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `Server::abort_worker(worker)`: reset its counters and, in base mode, retire its sessions.
 pub fn abort_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     reset_worker_counter(serv, worker);
-    if u64::from(serv.config().mode_) == crate::MODE_BASE {
+    if serv.config().mode_ == Mode::Base {
         serv.state().retire_sessions(worker.id());
     }
 }
@@ -171,7 +172,7 @@ mod tests {
         let state = crate::swr_v1_server_state_new();
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
         let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
-        unsafe { serv.config_mut() }.mode_ = 1;
+        unsafe { serv.config_mut() }.mode_ = Mode::Base;
         unsafe { serv.config_mut() }.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());

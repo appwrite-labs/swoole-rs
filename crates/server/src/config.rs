@@ -265,7 +265,29 @@ pub struct ServerConfig {
     pub recv_buffer_size: usize,
     pub message_queue_key: Setting<u64>,
     /// `Server::Mode`, fixed by the constructor.
-    pub mode_: u8,
+    pub mode_: Mode,
+}
+
+/// `Server::Mode`: where connections and workers run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Mode {
+    Base = 1,
+    Process = 2,
+    Thread = 3,
+}
+
+impl Mode {
+    /// The mode of a `Server::Mode` code.
+    #[must_use]
+    pub const fn from_code(code: i64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Base),
+            2 => Some(Self::Process),
+            3 => Some(Self::Thread),
+            _ => None,
+        }
+    }
 }
 
 impl Default for ServerConfig {
@@ -344,7 +366,7 @@ impl Default for ServerConfig {
             recv_buffer_allocator: AtomicPtr::default(),
             recv_buffer_size: 65_536,
             message_queue_key: Setting::new(0),
-            mode_: 0,
+            mode_: Mode::Base,
         }
     }
 }

@@ -1,16 +1,16 @@
 //! Signals, the master timer and shutdown.
+use crate::Mode;
 use crate::hybrid::hybrid;
 use crate::reactor_handle::Reactor;
 use crate::view::Server;
-use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD};
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::AtomicI64;
 use core::sync::atomic::Ordering::{Relaxed, Release};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 
-fn mode(serv: Server<'_>) -> u64 {
-    u64::from(serv.config().mode_)
+fn mode(serv: Server<'_>) -> Mode {
+    serv.config().mode_
 }
 
 fn warn(code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
@@ -34,22 +34,22 @@ pub fn shutdown(serv: Server<'_>) -> bool {
     }
     let mode = mode(serv);
     // A worker thread masks signals; the master thread stops itself.
-    if mode == MODE_THREAD && swoole_rs_corebase::thread_kind() == THREAD_MASTER {
+    if mode == Mode::Thread && swoole_rs_corebase::thread_kind() == THREAD_MASTER {
         stop_master_thread(serv);
         return true;
     }
-    if mode == MODE_PROCESS {
+    if mode == Mode::Process {
         return hybrid().send_shutdown(serv);
     }
     // A worker thread that asks may exit before the master sees the signal; marked
     // stopping now, the manager does not respawn it. `running` stays set until the
     // master handles the SIGTERM, which it ignores once the server is not running.
-    if mode == MODE_THREAD {
+    if mode == Mode::Thread {
         serv.state().stopping.store(true, Release);
     }
     let gs = serv.counters();
     let manager = gs.manager_pid.load(Relaxed);
-    let pid = if mode == MODE_BASE && manager != 0 {
+    let pid = if mode == Mode::Base && manager != 0 {
         manager
     } else {
         gs.master_pid.load(Relaxed)
@@ -109,7 +109,7 @@ fn reopen_log() {
 /// the manager is told to reopen its own.
 fn reopen_logger(serv: Server<'_>) {
     reopen_log();
-    if mode(serv) == MODE_PROCESS {
+    if mode(serv) == Mode::Process {
         let manager = serv.counters().manager_pid.load(Relaxed);
         swoole_rs_process::os::kill(manager, libc::SIGWINCH);
     }
@@ -117,7 +117,7 @@ fn reopen_logger(serv: Server<'_>) {
 
 /// `Server::signal_handler_shutdown`.
 fn signal_shutdown(serv: Server<'_>) {
-    if mode(serv) == MODE_BASE {
+    if mode(serv) == Mode::Base {
         if serv.counters().manager_pid.load(Relaxed) > 0 {
             serv.state().set_running(false);
         } else {
@@ -134,7 +134,7 @@ fn signal_shutdown(serv: Server<'_>) {
 
 /// `Server::signal_handler_child_exit`: reap and report the manager's exit.
 fn child_exit(serv: Server<'_>) -> bool {
-    if !serv.state().running() || mode(serv) == MODE_BASE {
+    if !serv.state().running() || mode(serv) == Mode::Base {
         return false;
     }
     let mut status: c_int = 0;
@@ -155,7 +155,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
     reactor.handle().set_wait_exit(true);
     let mode = mode(serv);
     for (index, port) in serv.ports().iter().enumerate() {
-        if matches!(port.config().r#type, 2 | 4 | 6) && mode != MODE_BASE {
+        if matches!(port.config().r#type, 2 | 4 | 6) && mode != Mode::Base {
             continue;
         }
         let removed = port.with_socket(|s| s.read(|s| s.removed));
@@ -176,10 +176,10 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
     if serv.config().max_wait_time.get() > 0 {
         exit_after_max_wait_time(serv);
     }
-    if mode == MODE_THREAD {
+    if mode == Mode::Thread {
         hybrid().thread_mode(serv, crate::thread_mode::ThreadOp::StopWorkers);
     }
-    if mode == MODE_PROCESS && serv.config().single_thread.get() {
+    if mode == Mode::Process && serv.config().single_thread.get() {
         hybrid().thread0_shutdown(serv);
     }
 }
@@ -269,7 +269,7 @@ pub(crate) fn init_signals(serv: Server<'_>) {
     let h = hybrid();
     h.step(serv, Ignore(libc::SIGPIPE));
     h.step(serv, Ignore(libc::SIGHUP));
-    let child = if mode(serv) == MODE_PROCESS {
+    let child = if mode(serv) == Mode::Process {
         libc::SIGCHLD
     } else {
         libc::SIGIO
@@ -297,9 +297,9 @@ mod tests {
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
 
-    fn set_mode(live: &LiveServer, mode: u64) {
+    fn set_mode(live: &LiveServer, mode: Mode) {
         // SAFETY: the fixture's config, which nothing else reads meanwhile.
-        unsafe { (*live.state().config()).mode_ = u8::try_from(mode).unwrap() };
+        unsafe { (*live.state().config()).mode_ = mode };
     }
 
     /// A pid no process has: `kill` fails with `ESRCH`.
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(calls(), [Call::SendShutdown], "by pipe, no signal");
 
         // Base mode signals the manager, or the master without one.
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         let gs = live.counters();
         let mut master = sleeper();
         gs.master_pid.store(pid(&master), Relaxed);
@@ -346,7 +346,7 @@ mod tests {
         assert!(!shutdown(serv), "kill failed");
 
         // A worker thread marks the server stopping, then signals the master.
-        set_mode(&live, MODE_THREAD);
+        set_mode(&live, Mode::Thread);
         live.state().set_running(true);
         let mut master = sleeper();
         gs.master_pid.store(pid(&master), Relaxed);
@@ -386,7 +386,7 @@ mod tests {
         let live = LiveServer::new();
         let serv = live.server();
         calls();
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         live.state().set_running(true);
         live.counters().manager_pid.store(3, Relaxed);
         signal_shutdown(serv);
@@ -399,7 +399,7 @@ mod tests {
         assert_eq!(calls(), [Call::StopSingleWorker], "a single worker exits");
         assert!(live.state().running(), "running untouched");
 
-        set_mode(&live, MODE_PROCESS);
+        set_mode(&live, Mode::Process);
         signal_shutdown(serv);
         assert_eq!(
             calls(),
@@ -437,7 +437,7 @@ mod tests {
             "max_wait_time"
         );
 
-        set_mode(&live, MODE_THREAD);
+        set_mode(&live, Mode::Thread);
         stop_master_thread(serv);
         let stop = crate::thread_mode::ThreadOp::StopWorkers;
         assert_eq!(calls(), [Call::ThreadMode(stop)], "the worker threads stop");
@@ -476,7 +476,7 @@ mod tests {
     fn signals_dispatch() {
         let live = LiveServer::new();
         let serv = live.server();
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         calls();
         dispatch(serv, libc::SIGUSR1);
         dispatch(serv, libc::SIGUSR2);
@@ -511,7 +511,7 @@ mod tests {
     fn signal_set() {
         use crate::hybrid::Step::{Handle, Ignore};
         let live = LiveServer::new();
-        set_mode(&live, MODE_BASE);
+        set_mode(&live, Mode::Base);
         calls();
         init_signals(live.server());
         let expected = [
@@ -531,7 +531,7 @@ mod tests {
             expected,
             "SIGIO outside process mode, SIGRTMIN last"
         );
-        set_mode(&live, MODE_PROCESS);
+        set_mode(&live, Mode::Process);
         init_signals(live.server());
         assert_eq!(
             calls()[2],
