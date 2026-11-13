@@ -218,8 +218,8 @@ pub extern "C-unwind" fn swoole_clean() {
     if let Some(host) = native::host() {
         (host.signal_clear)();
         swoole_thread_clean(true);
-        (host.logger)(native::LOGGER_CLOSE);
-        (host.logger)(native::LOGGER_DELETE);
+        (host.logger)(native::LoggerOp::Close);
+        (host.logger)(native::LoggerOp::Delete);
         (host.delete_pool)();
     }
     crate::config_state::reset();
@@ -277,12 +277,12 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     if flags & FORK_EXEC == 0 {
         // The pool starts its own pages at its first use here (crates/memory's `current`).
-        (host.logger)(native::LOGGER_REOPEN);
+        (host.logger)(native::LoggerOp::Reopen);
         if (host.event_available)() {
             (host.event_free)();
         }
     } else {
-        (host.logger)(native::LOGGER_CLOSE);
+        (host.logger)(native::LoggerOp::Close);
     }
     (host.signal_clear)();
     crate::signal_mask::restore_after_fork(previous, true);
@@ -403,7 +403,7 @@ mod tests {
             delete_buffer: || {},
             delete_pool: || {},
             logger: |op| {
-                if op == native::LOGGER_REOPEN {
+                if op == native::LoggerOp::Reopen {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             },
