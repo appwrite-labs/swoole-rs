@@ -14,6 +14,7 @@ use std::{
     mem,
     ptr::{self, NonNull},
 };
+use swoole_rs_coroutine::State;
 use swoole_rs_zend::sys::{
     IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
     swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
@@ -41,12 +42,6 @@ pub(crate) const INVALID: usize = usize::MAX;
 /// `zend_function.type`: `ZEND_INTERNAL_FUNCTION` and `ZEND_USER_FUNCTION`.
 pub(crate) const INTERNAL_FUNCTION: u8 = 1;
 pub(crate) const USER_FUNCTION: u8 = 2;
-
-/// `Coroutine::State`.
-const STATE_INIT: c_int = 0;
-const STATE_WAITING: c_int = 1;
-const STATE_RUNNING: c_int = 2;
-const STATE_END: c_int = 3;
 
 /// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry.
 #[repr(C)]
@@ -569,17 +564,10 @@ fn fiber_status(ctx: Ctx) -> zend_fiber_status {
         return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
     }
     match host::state_of(ctx.co()) {
-        STATE_INIT => zend_fiber_status_ZEND_FIBER_STATUS_INIT,
-        STATE_WAITING => zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
-        STATE_RUNNING => zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
-        STATE_END => zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
-        _ => {
-            host::fatal_error(
-                swoole_rs_zend::E_ERROR,
-                c"Unexpected state when get fiber status",
-            );
-            zend_fiber_status_ZEND_FIBER_STATUS_DEAD
-        }
+        State::Init => zend_fiber_status_ZEND_FIBER_STATUS_INIT,
+        State::Waiting => zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
+        State::Running => zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
+        State::End => zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
     }
 }
 

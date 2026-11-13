@@ -12,10 +12,16 @@
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
 
-pub const STATE_INIT: i32 = 0;
-pub const STATE_WAITING: i32 = 1;
-pub const STATE_RUNNING: i32 = 2;
-pub const STATE_END: i32 = 3;
+/// `Coroutine::State`. C++ reads it inline as an `int32_t`; Rust does every write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum State {
+    Init = 0,
+    Waiting = 1,
+    Running = 2,
+    End = 3,
+}
+
 pub const RC_OK: i32 = 0;
 pub const RC_TIMEDOUT: i32 = -1;
 pub const RC_CANCELED: i32 = -2;
@@ -36,7 +42,7 @@ pub type SwapCallback = Option<Routine>;
 pub struct Coroutine {
     pub native: *mut c_void,
     pub cid: c_long,
-    pub state: i32,
+    pub state: State,
     pub resume_code: i32,
     pub task: *mut c_void,
     /// The waiting yield's [`Canceler`], null when it can't be canceled.
@@ -57,7 +63,7 @@ impl Coroutine {
     pub const IDLE: Self = Self {
         native: ptr::null_mut(),
         cid: 0,
-        state: STATE_INIT,
+        state: State::Init,
         resume_code: RC_OK,
         task: ptr::null_mut(),
         cancel_fn: ptr::null_mut(),
@@ -318,7 +324,7 @@ fn link(co: Co, origin: Option<Co>) {
 fn enter(s: Sched, co: Co) {
     link(co, Co::link(s.with(|s| s.current)));
     s.with(|s| s.current = co.ptr());
-    co.with(|co| co.state = STATE_RUNNING);
+    co.with(|co| co.state = State::Running);
 }
 
 /// `co`, the current coroutine, closes: its origin is current again.
@@ -391,7 +397,7 @@ fn switch_in(s: Sched, co: Co) {
     let ended = (hooks.swap_in)(co);
     if ended {
         // `co` ended and is current again: it closes.
-        co.with(|co| co.state = STATE_END);
+        co.with(|co| co.state = State::End);
         notify(on_close, co);
         debug_assert!(
             s.with(|s| s.current) == co.ptr(),
@@ -420,7 +426,7 @@ fn switch_in(s: Sched, co: Co) {
 pub(crate) fn yield_(s: Sched, co: Co) {
     let (hooks, [on_yield, _, _]) = effects(s);
     co.with(|co| {
-        co.state = STATE_WAITING;
+        co.state = State::Waiting;
         co.resume_code = RC_OK;
     });
     notify(on_yield, co);
@@ -465,7 +471,7 @@ pub(crate) fn resume(s: Sched, co: Co) {
     let Some(on_resume) = on_resume else {
         return;
     };
-    co.with(|co| co.state = STATE_RUNNING);
+    co.with(|co| co.state = State::Running);
     notify(on_resume, co);
     start(s, co, true);
 }
@@ -629,7 +635,7 @@ pub(crate) mod tests {
             assert_eq!(s.peak_num, 2);
             assert_eq!(
                 (b.cid, b.state, b.init_msec, b.switch_usec),
-                (2, STATE_INIT, 5, 9)
+                (2, State::Init, 5, 9)
             );
             s.remove(1);
             s.remove(2);
@@ -747,7 +753,7 @@ pub(crate) mod tests {
             assert_eq!((*sp).current, a);
             assert_eq!(swr_v1_coroutine_run(sp, b), 2);
             swr_v1_coroutine_yield(sp, b);
-            assert_eq!(((*sp).current, (*b).state), (a, STATE_WAITING));
+            assert_eq!(((*sp).current, (*b).state), (a, State::Waiting));
             // a yields with a cancel function, which is cleared once resumed.
             swr_v1_coroutine_yield_cancelable(sp, a, 7 as *mut c_void);
             assert!((*sp).current.is_null() && (*a).cancel_fn.is_null());
@@ -794,7 +800,7 @@ pub(crate) mod tests {
             swr_v1_coroutine_bailout(sp);
             assert!((*sp).bailout && (*sp).current.is_null());
             // Upstream charges a when it runs b and again when it yields.
-            assert_eq!(((*a).state, (*a).execute_usec), (STATE_WAITING, 200));
+            assert_eq!(((*a).state, (*a).execute_usec), (State::Waiting, 200));
             swr_v1_coroutine_resume(sp, b);
             // A switch back that did not end runs the callback.
             swr_v1_coroutine_run(sp, b);
