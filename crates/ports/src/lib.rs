@@ -6,7 +6,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::CStr;
 
 use swoole_rs_server::port_config::PortMethods;
 
@@ -29,47 +28,6 @@ const _: () = {
         "AtomicU32 alignment must match u32"
     );
 };
-
-/// The protocol setup branch `flags` select: EOF, then length, HTTP, MQTT and Redis.
-fn protocol(flags: u32, length_type: u8) -> u32 {
-    if flags & 1 != 0 && flags & 2 == 0 {
-        0
-    } else if flags & 4 != 0 {
-        1
-    } else if flags & 8 != 0 {
-        if length_type != 0 { 2 } else { 10 }
-    } else if flags & 16 != 0 {
-        match (flags & 32 != 0, flags & 64 != 0) {
-            (true, true) => 6,
-            (true, false) => 4,
-            (false, true) => 5,
-            (false, false) => 3,
-        }
-    } else if flags & 128 != 0 {
-        7
-    } else if flags & 256 != 0 {
-        8
-    } else {
-        9
-    }
-}
-
-fn protocol_name(flags: u32) -> &'static CStr {
-    if flags & 1 != 0 {
-        return c"dgram";
-    }
-    match protocol(flags, 1) {
-        1 => c"eof",
-        2 => c"length",
-        3 => c"http",
-        4 => c"http|http2",
-        5 => c"http|websocket",
-        6 => c"http|http2|websocket",
-        7 => c"mqtt",
-        8 => c"redis",
-        _ => c"raw",
-    }
-}
 
 /// Registers the `ListenPort` methods the server calls; `swoole_init` does this.
 pub fn register_methods() {
