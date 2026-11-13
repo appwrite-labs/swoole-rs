@@ -13,8 +13,8 @@ use swoole_rs_buffer::cpp::{
     CppBuffer, new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_pop,
     swr_cpp_buffer_typed_close, swr_cpp_buffer_typed_front,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_buffer::string::delete_string;
+use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
@@ -174,15 +174,6 @@ fn stream_event(kind: u8) -> bool {
 }
 
 pub(crate) use swoole_rs_ossupport::pthread_self;
-
-/// `f` over this thread's buffer (`sw_tg_buffer()`), which a datagram or a
-/// certificate is read into.
-pub(crate) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
-    swoole_rs_corebase::lend_thread_buffer(|| {
-        // SAFETY: the calling thread's live buffer, lent to `f` alone.
-        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
-    })
-}
 
 /// A socket's output buffer, or `None` without one.
 pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
