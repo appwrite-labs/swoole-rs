@@ -23,9 +23,6 @@ const INVALID_PARAMS: c_int = 505;
 /// `swr_v1_timer_backend`'s modes.
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
-/// `Reactor::PRIORITY_TIMER` and `Reactor::EXIT_CONDITION_TIMER`.
-const PRIORITY_TIMER: c_int = 0;
-const EXIT_CONDITION_TIMER: c_int = 0;
 
 /// `swoole::TimerCallback`: `void (*)(Timer *, TimerNode *)`.
 pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node: *mut TimerNode);
@@ -587,8 +584,11 @@ impl Owner {
 /// Hooks this thread's timer to the thread's reactor: select after each loop
 /// round, keep the loop while a timer is pending, and free the timer with it.
 fn attach() {
-    swr_v1_event_set_end_callback(PRIORITY_TIMER, crate::wrapper::swoole_timer_select);
-    swr_v1_event_set_exit_condition(EXIT_CONDITION_TIMER, idle);
+    swr_v1_event_set_end_callback(
+        swoole_rs_reactor::Priority::Timer,
+        crate::wrapper::swoole_timer_select,
+    );
+    swr_v1_event_set_exit_condition(swoole_rs_reactor::ExitCondition::Timer, idle);
     event_api::on_destroy(destroyed);
 }
 

@@ -17,18 +17,60 @@ pub type EndFn = extern "C-unwind" fn();
 /// may change for the conditions after it.
 pub type ExitFn = extern "C-unwind" fn(&mut usize) -> bool;
 
-/// `Reactor::PRIORITY_*`: `PRIORITY_IOURING_SUBMIT` (7) is the last.
-const PRIORITY_DEFER_TASK: c_int = 1;
-const PRIORITY_IDLE_TASK: c_int = 2;
-pub(crate) const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
-const PRIORITY_TRY_EXIT: c_int = 4;
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-const PRIORITY_MALLOC_TRIM: c_int = 5;
-const END_SLOTS: usize = 8;
-/// `Reactor::EXIT_CONDITION_*`: 0 to 9, then `DEFAULT` (999) and `USER_AFTER_DEFAULT`.
-const EXIT_CONDITION_DEFER_TASK: c_int = 1;
-const EXIT_CONDITION_DEFAULT: c_int = 999;
-const EXIT_SLOTS: usize = 12;
+/// `Reactor::EndCallback` (`PRIORITY_*`): the order the end callbacks run in, the
+/// `io_uring` submit last because the others may queue entries for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Priority {
+    Timer,
+    DeferTask,
+    IdleTask,
+    SignalCallback,
+    TryExit,
+    MallocTrim,
+    WorkerCallback,
+    IouringSubmit,
+}
+
+impl Priority {
+    const ALL: [Self; 8] = [
+        Self::Timer,
+        Self::DeferTask,
+        Self::IdleTask,
+        Self::SignalCallback,
+        Self::TryExit,
+        Self::MallocTrim,
+        Self::WorkerCallback,
+        Self::IouringSubmit,
+    ];
+
+    /// The priority upstream numbers `code`, as native code passes it.
+    fn from_code(code: c_int) -> Option<Self> {
+        usize::try_from(code)
+            .ok()
+            .and_then(|slot| Self::ALL.get(slot).copied())
+    }
+}
+
+/// `Reactor::ExitCondition` (`EXIT_CONDITION_*`), in the order the loop asks them:
+/// upstream numbers the last two 999 and 1000.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitCondition {
+    Timer,
+    DeferTask,
+    WaitPid,
+    CoSignalListener,
+    SignalListener,
+    AioTask,
+    Signalfd,
+    UserBeforeDefault,
+    ForcedTermination,
+    Iouring,
+    Default,
+    UserAfterDefault,
+}
+
+const END_SLOTS: usize = Priority::ALL.len();
+const EXIT_SLOTS: usize = ExitCondition::UserAfterDefault as usize + 1;
 
 #[derive(Clone, Copy)]
 enum End {
@@ -61,57 +103,40 @@ pub(crate) struct Callbacks {
     exit: [Option<Exit>; EXIT_SLOTS],
 }
 
-fn end_slot(key: c_int) -> Option<usize> {
-    usize::try_from(key).ok().filter(|&slot| slot < END_SLOTS)
-}
-
-fn exit_slot(key: c_int) -> Option<usize> {
-    match key {
-        0..=9 => usize::try_from(key).ok(),
-        999 => Some(10),
-        1000 => Some(11),
-        _ => None,
-    }
-}
-
 impl Callbacks {
-    fn set_end(&mut self, key: c_int, end: Option<End>) {
-        let slot = end_slot(key).and_then(|slot| self.end.get_mut(slot));
-        debug_assert!(slot.is_some(), "end callback {key}");
-        if let Some(slot) = slot {
+    fn set_end(&mut self, key: Priority, end: Option<End>) {
+        if let Some(slot) = self.end.get_mut(key as usize) {
             *slot = end;
         }
     }
 
-    fn set_exit(&mut self, key: c_int, exit: Option<Exit>) -> bool {
-        let slot = exit_slot(key).and_then(|slot| self.exit.get_mut(slot));
-        debug_assert!(slot.is_some(), "exit condition {key}");
-        slot.and_then(|slot| std::mem::replace(slot, exit))
+    fn set_exit(&mut self, key: ExitCondition, exit: Option<Exit>) -> bool {
+        self.exit
+            .get_mut(key as usize)
+            .and_then(|slot| std::mem::replace(slot, exit))
             .is_some()
     }
 
     #[cfg(test)]
-    fn has_exit(&self, key: c_int) -> bool {
-        exit_slot(key)
-            .and_then(|slot| self.exit.get(slot))
-            .is_some_and(Option::is_some)
+    fn has_exit(&self, key: ExitCondition) -> bool {
+        self.exit.get(key as usize).is_some_and(Option::is_some)
     }
 }
 
 /// Installs the built-ins upstream's constructor sets, after its create hook.
 pub(crate) fn install_builtins(callbacks: &mut Callbacks) {
-    callbacks.set_end(PRIORITY_DEFER_TASK, Some(End::Defer));
-    callbacks.set_exit(EXIT_CONDITION_DEFER_TASK, Some(Exit::Defer));
-    callbacks.set_end(PRIORITY_IDLE_TASK, Some(End::Idle));
+    callbacks.set_end(Priority::DeferTask, Some(End::Defer));
+    callbacks.set_exit(ExitCondition::DeferTask, Some(Exit::Defer));
+    callbacks.set_end(Priority::IdleTask, Some(End::Idle));
     if swoole_rs_corebase::swoole_is_main_thread() {
-        callbacks.set_end(PRIORITY_SIGNAL_CALLBACK, Some(End::Signal));
+        callbacks.set_end(Priority::SignalCallback, Some(End::Signal));
     }
-    callbacks.set_end(PRIORITY_TRY_EXIT, Some(End::TryExit));
+    callbacks.set_end(Priority::TryExit, Some(End::TryExit));
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     if swoole_rs_corebase::swoole_is_main_thread() {
-        callbacks.set_end(PRIORITY_MALLOC_TRIM, Some(End::MallocTrim));
+        callbacks.set_end(Priority::MallocTrim, Some(End::MallocTrim));
     }
-    callbacks.set_exit(EXIT_CONDITION_DEFAULT, Some(Exit::Default));
+    callbacks.set_exit(ExitCondition::Default, Some(Exit::Default));
 }
 
 /// `Reactor::execute_end_callbacks(timed_out)`. A callback may change the reactor, which
@@ -192,38 +217,46 @@ pub extern "C" fn swr_v1_reactor_set_end(
     id: c_int,
     callback: Option<EndFn>,
 ) {
-    owner.callbacks.set_end(id, callback.map(End::Call));
+    let priority = Priority::from_code(id);
+    debug_assert!(priority.is_some(), "end callback {id}");
+    if let Some(priority) = priority {
+        owner.callbacks.set_end(priority, callback.map(End::Call));
+    }
 }
 
 /// `Reactor::set_exit_condition(id, condition)`, or `remove_exit_condition(id)` without
 /// one: whether one was set before.
-fn swr_v1_reactor_set_exit(owner: &mut ReactorState, id: c_int, condition: Option<ExitFn>) -> bool {
+fn swr_v1_reactor_set_exit(
+    owner: &mut ReactorState,
+    id: ExitCondition,
+    condition: Option<ExitFn>,
+) -> bool {
     owner.callbacks.set_exit(id, condition.map(Exit::Call))
 }
 
 /// `sw_reactor()->set_end_callback(id, callback)`.
-pub fn swr_v1_event_set_end_callback(id: c_int, callback: EndFn) {
+pub fn swr_v1_event_set_end_callback(id: Priority, callback: EndFn) {
     if let Some(reactor) = running() {
         reactor.with(|owner| owner.callbacks.set_end(id, Some(End::Call(callback))));
     }
 }
 
 /// `sw_reactor()->erase_end_callback(id)`.
-pub fn swr_v1_event_erase_end_callback(id: c_int) {
+pub fn swr_v1_event_erase_end_callback(id: Priority) {
     if let Some(reactor) = running() {
         reactor.with(|owner| owner.callbacks.set_end(id, None));
     }
 }
 
 /// `sw_reactor()->set_exit_condition(id, condition)`.
-pub fn swr_v1_event_set_exit_condition(id: c_int, condition: ExitFn) {
+pub fn swr_v1_event_set_exit_condition(id: ExitCondition, condition: ExitFn) {
     if let Some(reactor) = running() {
         reactor.with(|owner| swr_v1_reactor_set_exit(owner, id, Some(condition)));
     }
 }
 
 /// `sw_reactor()->remove_exit_condition(id)`.
-pub fn swr_v1_event_remove_exit_condition(id: c_int) {
+pub fn swr_v1_event_remove_exit_condition(id: ExitCondition) {
     if let Some(reactor) = running() {
         reactor.with(|owner| swr_v1_reactor_set_exit(owner, id, None));
     }
@@ -302,11 +335,26 @@ mod tests {
         // SAFETY: the test's live state, borrowed for one change.
         unsafe { &mut (*OWNER.get()).callbacks }
     }
-    fn set_end(key: c_int, call: EndFn) {
-        callbacks().set_end(key, Some(End::Call(call)));
+    /// The priority and exit condition upstream numbers `key` (below 10).
+    fn priority(key: c_int) -> Priority {
+        let Some(priority) = Priority::from_code(key) else {
+            unreachable!("end callback {key}");
+        };
+        priority
     }
-    fn set_exit(key: c_int, call: ExitFn) {
-        callbacks().set_exit(key, Some(Exit::Call(call)));
+    fn condition(key: usize) -> ExitCondition {
+        use ExitCondition::*;
+        let all = [Timer, DeferTask, WaitPid, CoSignalListener, SignalListener];
+        let Some(&condition) = all.get(key) else {
+            unreachable!("exit condition {key}");
+        };
+        condition
+    }
+    fn set_end(key: c_int, call: EndFn) {
+        callbacks().set_end(priority(key), Some(End::Call(call)));
+    }
+    fn set_exit(key: usize, call: ExitFn) {
+        callbacks().set_exit(condition(key), Some(Exit::Call(call)));
     }
     /// A fresh state with no callbacks, as `OWNER`.
     fn with_state(test: impl FnOnce(*mut ReactorState)) {
@@ -343,7 +391,7 @@ mod tests {
         push(1);
         set_end(2, end2);
         set_end(0, end0);
-        callbacks().set_end(3, None);
+        callbacks().set_end(priority(3), None);
     }
 
     /// The former callbacks gate: an empty store, end callbacks in key order with
@@ -354,8 +402,8 @@ mod tests {
             assert!(if_exit(running(owner)));
             execute_end(running(owner), false);
             assert!(!(*owner).fields.timed_out);
-            assert!(!callbacks().has_exit(1));
-            assert!(!callbacks().set_exit(1, None));
+            assert!(!callbacks().has_exit(condition(1)));
+            assert!(!callbacks().set_exit(condition(1), None));
             swr_v1_reactor_set_end(&mut *owner, 1, None);
             assert_eq!(take(), []);
 
@@ -411,7 +459,7 @@ mod tests {
     extern "C-unwind" fn exit_mutating(n: &mut usize) -> bool {
         push(1);
         set_exit(2, exit3);
-        callbacks().set_exit(3, None);
+        callbacks().set_exit(condition(3), None);
         *n += 7;
         true
     }
@@ -424,12 +472,12 @@ mod tests {
             set_exit(3, exit3);
             set_exit(1, exit1);
             set_exit(2, exit2);
-            assert!(callbacks().has_exit(2));
+            assert!(callbacks().has_exit(condition(2)));
             assert!(!if_exit(running(owner)));
             assert_eq!(take(), [1, 2]);
-            assert!(callbacks().set_exit(2, None));
-            assert!(!callbacks().set_exit(2, None));
-            assert!(!callbacks().has_exit(2));
+            assert!(callbacks().set_exit(condition(2), None));
+            assert!(!callbacks().set_exit(condition(2), None));
+            assert!(!callbacks().has_exit(condition(2)));
             assert!(if_exit(running(owner)));
             assert_eq!(take(), [1, 3]);
         });

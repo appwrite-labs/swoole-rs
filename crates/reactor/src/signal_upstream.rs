@@ -23,11 +23,6 @@ const FD_SIGNAL: c_int = 9;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const LOG_WARNING: c_int = 4;
 const UNREGISTERED_SIGNAL: c_int = 721;
-/// `Reactor::EXIT_CONDITION_SIGNALFD` and `Reactor::PRIORITY_SIGNAL_CALLBACK`.
-#[cfg(target_os = "linux")]
-const EXIT_CONDITION_SIGNALFD: c_int = 6;
-#[cfg(target_os = "linux")]
-const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
 
 use swoole_rs_process::signal::Callback as SignalHandler;
 
@@ -137,10 +132,7 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{
-        EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
-        c_void, socket_free,
-    };
+    use super::{EVENT_READ, FD_SIGNAL, OPS, c_int, c_void, socket_free};
     use crate::event_api::{
         FdHandler, event_add, event_del, swoole_event_isset_handler, swoole_event_set_fd_handler,
     };
@@ -216,12 +208,12 @@ mod descriptor {
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
         swoole_event_set_fd_handler::<Read>(FD_SIGNAL, EVENT_READ);
-        crate::swr_v1_event_set_exit_condition(EXIT_CONDITION_SIGNALFD, exit_condition);
+        crate::swr_v1_event_set_exit_condition(crate::ExitCondition::Signalfd, exit_condition);
         crate::event_api::on_destroy(destroyed);
     }
 
     pub(super) fn erase_end() {
-        crate::swr_v1_event_erase_end_callback(PRIORITY_SIGNAL_CALLBACK);
+        crate::swr_v1_event_erase_end_callback(crate::Priority::SignalCallback);
     }
 
     pub(super) static OPS_DESCRIPTOR: DescriptorOps = DescriptorOps {
