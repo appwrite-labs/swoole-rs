@@ -86,7 +86,8 @@ impl<T> Pool<T> {
     /// How many tokens `key` holds, or `None` without an entry.
     #[must_use]
     pub fn queued(&self, key: &[u8]) -> Option<usize> {
-        self.queues.get(key).map(VecDeque::len)
+        let queue = self.queues.get(key)?;
+        Some(queue.len())
     }
 
     /// The oldest token under `key`, retaining the entry when it empties.
