@@ -4,10 +4,12 @@
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
-use swoole_rs_corebase::net_types::GetPackageLength;
+use std::sync::Arc;
+use swoole_rs_corebase::net_types::{GetPackageLength, Protocol};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
+use swoole_rs_server::view;
 use swoole_rs_tls::{self as tls, OwnedTlsContext, Text, Value};
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message};
 
@@ -43,7 +45,7 @@ pub(crate) trait Source {
     fn ssl_init(&self) -> bool;
     /// `f` over the port's settings, borrowed for `f` alone. `f` runs no PHP
     /// code; every read above can, and that code may `set()` the same port.
-    fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R;
+    fn config<R>(&self, f: impl FnOnce(&PortConfig) -> R) -> R;
 }
 
 fn u8_of(v: i64) -> u8 {
@@ -89,9 +91,9 @@ pub(crate) fn is_dgram(kind: c_int) -> bool {
 fn set_eof(s: &impl Source, eof: &[u8]) -> Step {
     // The low byte: a `uint8_t`.
     let eof_len = eof.len().to_le_bytes()[0];
-    let copied = s.config(|c| {
-        c.protocol.get_mut().package_eof_len = eof_len;
-        let destination = c.protocol.get_mut().package_eof.get_mut(..eof.len());
+    let copied = protocol(s, |p| {
+        p.package_eof_len = eof_len;
+        let destination = p.package_eof.get_mut(..eof.len());
         destination.map(|destination| destination.copy_from_slice(eof))
     });
     if eof_len == 0 {
@@ -103,10 +105,15 @@ fn set_eof(s: &impl Source, eof: &[u8]) -> Step {
     Ok(())
 }
 
+/// `f` over the port's protocol, which then replaces it.
+fn protocol<R>(s: &impl Source, f: impl FnOnce(&mut Protocol) -> R) -> R {
+    s.config(|c| c.protocol.update(f))
+}
+
 /// `package_length_offset` and `package_body_offset`: published, then checked.
-fn offset(s: &impl Source, v: i64, field: fn(&mut PortConfig) -> &mut u16, error: &CStr) -> Step {
+fn offset(s: &impl Source, v: i64, field: fn(&mut Protocol) -> &mut u16, error: &CStr) -> Step {
     let v = u16_of(v);
-    s.config(|c| *field(c) = v);
+    protocol(s, |p| *field(p) = v);
     if usize::from(v) > SW_IPC_BUFFER_SIZE {
         return Err(s.fatal(E_ERROR, error));
     }
@@ -156,7 +163,7 @@ fn sockets(s: &impl Source) -> Step {
     }
     if let Some(on) = s.truth(c"open_eof_split") {
         s.config(|c| {
-            c.protocol.get_mut().split_by_eof = on;
+            c.protocol.update(|p| p.split_by_eof = on);
             c.open_eof_check.set(c.open_eof_check.get() | on);
         });
     }
@@ -221,9 +228,9 @@ fn framing(s: &impl Source) -> Step {
         // `str_v.val()[0]`: an empty string's NUL.
         let kind = kind.first().copied().unwrap_or(0);
         let size = swoole_type_size(c_char::from_ne_bytes([kind])) as u8;
-        s.config(|c| {
-            c.protocol.get_mut().package_length_type = kind;
-            c.protocol.get_mut().package_length_size = size;
+        protocol(s, |p| {
+            p.package_length_type = kind;
+            p.package_length_size = size;
         });
         if size == 0 {
             return Err(s.fatal(
@@ -234,12 +241,7 @@ fn framing(s: &impl Source) -> Step {
     }
     if let Some(v) = s.long(c"package_length_offset")? {
         let error = c"'package_length_offset' value is too large";
-        offset(
-            s,
-            v,
-            |c| &mut c.protocol.get_mut().package_length_offset,
-            error,
-        )?;
+        offset(s, v, |p| &mut p.package_length_offset, error)?;
     }
     let body = match s.long(c"package_body_offset")? {
         Some(v) => Some(v),
@@ -247,32 +249,29 @@ fn framing(s: &impl Source) -> Step {
     };
     if let Some(v) = body {
         let error = c"'package_body_offset' value is too large";
-        offset(
-            s,
-            v,
-            |c| &mut c.protocol.get_mut().package_body_offset,
-            error,
-        )?;
+        offset(s, v, |p| &mut p.package_body_offset, error)?;
     }
     if let Some((callable, owner)) = s.callable(c"package_length_func")? {
         let length_func = s.length_func();
         let previous = s.config(|c| {
-            c.protocol.get_mut().get_package_length = Some(length_func);
-            c.protocol.get_mut().private_data_1 = callable;
+            c.protocol.update(|p| {
+                p.get_package_length = Some(length_func);
+                p.private_data_1 = callable;
+            });
             c.length_owner.replace(Some(owner))
         });
         if let Some(previous) = previous {
             s.release(previous);
         }
-        s.config(|c| {
-            c.protocol.get_mut().package_length_size = 0;
-            c.protocol.get_mut().package_length_type = 0;
-            c.protocol.get_mut().package_length_offset = SW_IPC_BUFFER_SIZE as u16;
+        protocol(s, |p| {
+            p.package_length_size = 0;
+            p.package_length_type = 0;
+            p.package_length_offset = SW_IPC_BUFFER_SIZE as u16;
         });
         s.single_thread();
     }
     if let Some(v) = s.size(c"package_max_length")? {
-        s.config(|c| c.protocol.get_mut().package_max_length = u32_of(v));
+        protocol(s, |p| p.package_max_length = u32_of(v));
     }
     Ok(())
 }
@@ -297,7 +296,7 @@ fn websocket(s: &impl Source) -> Step {
         }
     }
     if let Some(protocol) = s.bytes(c"websocket_subprotocol")? {
-        s.config(|c| c.websocket_protocol = Some(Box::new(protocol)));
+        s.config(|c| c.websocket_protocol.set(Some(Arc::new(protocol))));
     }
     Ok(())
 }
@@ -380,7 +379,7 @@ pub(crate) fn tls(s: &impl Source, owner: *const OwnedTlsContext, dgram: bool) -
 /// The settings array of a PHP `set()` call, for a bound port.
 pub(crate) struct Zend<'a> {
     pub(crate) settings: Settings<'a>,
-    pub(crate) port: *mut c_void,
+    pub(crate) port: view::Port<'a>,
 }
 
 impl Source for Zend<'_> {
@@ -470,7 +469,7 @@ impl Source for Zend<'_> {
             let Some(vht) = value.array() else {
                 return Err(self.fatal(E_WARNING, c"invalid SNI_cert setting"));
             };
-            let context = self.config(|c| context_dup(c));
+            let context = self.config(context_dup);
             let item = Zend {
                 settings: Settings {
                     serv: self.settings.serv,
@@ -493,10 +492,8 @@ impl Source for Zend<'_> {
         self.config(swoole_rs_ports::lifecycle::ssl_init)
     }
 
-    fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R {
-        // SAFETY: a bound port, live for set(); the borrow ends with `f`, which runs
-        // no PHP code, so no other borrow of the settings is live meanwhile.
-        f(unsafe { swoole_rs_server::port_config::of(self.port) })
+    fn config<R>(&self, f: impl FnOnce(&PortConfig) -> R) -> R {
+        f(self.port.config())
     }
 }
 
@@ -621,8 +618,8 @@ mod tests {
             self.trace.borrow_mut().push("ssl_init".into());
             true
         }
-        fn config<R>(&self, f: impl FnOnce(&mut PortConfig) -> R) -> R {
-            f(unsafe { self.config.get().unwrap().as_mut() })
+        fn config<R>(&self, f: impl FnOnce(&PortConfig) -> R) -> R {
+            f(unsafe { self.config.get().unwrap().as_ref() })
         }
     }
 
@@ -968,7 +965,7 @@ mod tests {
         assert!(apply(&table, &mut c).is_ok());
         assert_eq!(c.websocket_frames.get(), 5);
         assert_eq!(
-            c.websocket_protocol.as_deref().map(Vec::as_slice),
+            c.websocket_protocol.cloned().as_deref().map(Vec::as_slice),
             Some(&b"chat"[..])
         );
     }

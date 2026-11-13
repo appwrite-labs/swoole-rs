@@ -9,13 +9,14 @@
 //! (`dtls_sessions`), each with a reference to its context.
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
-use std::collections::HashMap;
+use std::sync::{MutexGuard, PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
-use swoole_rs_server::port_config::{self, PortConfig};
+use swoole_rs_server::port_config::{self, DtlsSessions, PortConfig, TlsState};
+use swoole_rs_server::view;
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
     DtlsSession, OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext,
@@ -36,35 +37,22 @@ const SSL_CREATE_SESSION_FAILED: c_int = 1020;
 const TLSEXT_OK: c_int = 0;
 const TLSEXT_NOACK: c_int = 3;
 
-/// What `ListenPort` kept in C++ containers.
-struct TlsState {
-    /// `sni_contexts`, in insertion order: the name and a reference to its context.
-    sni: Vec<(Vec<u8>, TlsContext)>,
-    /// `dtls_sessions` by fd: each session and its reference to the port's context.
-    dtls: HashMap<c_int, (*mut DtlsSession, TlsContext)>,
-}
-
-/// The port's TLS state, made on first use.
-fn state(config: &mut PortConfig) -> &mut TlsState {
-    let state = config.tls.get_or_insert_with(|| {
-        Box::new(Box::new(TlsState {
-            sni: Vec::new(),
-            dtls: HashMap::new(),
-        }))
-    });
-    // Only this module stores the state, so it is always a `TlsState`.
-    state
-        .downcast_mut()
-        .unwrap_or_else(|| std::process::abort())
-}
-
-/// The port's SNI contexts; none before the state exists.
-fn sni(config: &PortConfig) -> &[(Vec<u8>, TlsContext)] {
-    let state = config
+/// The port's SNI contexts, read.
+fn sni(config: &PortConfig) -> RwLockReadGuard<'_, Vec<(Vec<u8>, TlsContext)>> {
+    config
         .tls
-        .as_ref()
-        .and_then(|state| state.downcast_ref::<TlsState>());
-    state.map_or(&[], |state| &state.sni)
+        .sni
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The port's DTLS sessions.
+fn dtls(config: &PortConfig) -> MutexGuard<'_, DtlsSessions> {
+    config
+        .tls
+        .dtls
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// `edit`'s result over the fields of the live `context`.
@@ -78,7 +66,7 @@ fn edit<R>(context: &OwnedTlsContext, edit: impl FnOnce(&mut OwnedTlsFields) -> 
 /// Releases the port's context and its TLS state with the SNI contexts.
 pub(crate) fn tls_free(config: &mut PortConfig) {
     config.ssl_context = None;
-    config.tls = None;
+    *config.tls = TlsState::default();
 }
 
 /// `ListenPort::dup_ssl_context()`: a new context with the port's settings.
@@ -135,11 +123,15 @@ pub(crate) fn context_create(
 
 /// `ListenPort::ssl_add_sni_cert(name, ctx)`: creates the context (both files
 /// required) and stores it under `name` unless the name is taken.
-pub fn sni_add(config: &mut PortConfig, name: &[u8], context: TlsContext) -> bool {
+pub fn sni_add(config: &PortConfig, name: &[u8], context: TlsContext) -> bool {
     let added = context_create(config, &context, false);
-    let state = state(config);
-    if added && !state.sni.iter().any(|(stored, _)| stored == name) {
-        state.sni.push((name.to_vec(), context));
+    let mut sni = config
+        .tls
+        .sni
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    if added && !sni.iter().any(|(stored, _)| stored == name) {
+        sni.push((name.to_vec(), context));
     }
     added
 }
@@ -147,7 +139,7 @@ pub fn sni_add(config: &mut PortConfig, name: &[u8], context: TlsContext) -> boo
 /// `ListenPort::ssl_init()`: the port's context (no files allowed when SNI
 /// contexts exist), and the SNI callback when they do.
 #[must_use]
-pub fn ssl_init(config: &mut PortConfig) -> bool {
+pub fn ssl_init(config: &PortConfig) -> bool {
     let Some(context) = config.ssl_context.clone() else {
         return false;
     };
@@ -184,9 +176,9 @@ pub(crate) fn ssl_context_init(port: *mut c_void) -> bool {
     });
     // crates/tls requires OpenSSL 3, which has DTLS.
     if matches!(config.r#type, 2 | 4 | 6) {
-        let dtls = SslVersion::SW_SSL_DTLS as u32;
-        edit(&context, |fields| fields.protocols = dtls);
-        state(config).dtls.clear();
+        let protocols = SslVersion::SW_SSL_DTLS as u32;
+        edit(&context, |fields| fields.protocols = protocols);
+        dtls(config).clear();
     }
     true
 }
@@ -230,9 +222,13 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
     let port = ssl.ex_data(swr_v1_tls_port_index());
     // SAFETY: the port the handshake's connection belongs to, live while it serves:
     // only a port's own contexts hold this callback, and `ssl_create` names the port
-    // on each SSL it makes from one.
-    let config = unsafe { port_config::of(port) };
-    let Some((_, context)) = sni(config)
+    // on each SSL it makes from one. Handshakes on every reactor thread read it at
+    // once, through `&` only.
+    let Some(port) = (unsafe { view::Port::from_raw(port) }) else {
+        return TLSEXT_NOACK;
+    };
+    let sni = sni(port.config());
+    let Some((_, context)) = sni
         .iter()
         .find(|(cert, _)| sni_wildcard_matches(name, cert))
     else {
@@ -244,16 +240,18 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
 }
 
 /// The port's DTLS session on `fd`; null if none.
-pub(crate) fn dtls_session(config: &mut PortConfig, fd: c_int) -> *mut DtlsSession {
-    let dtls = &state(config).dtls;
-    dtls.get(&fd).map_or(ptr::null_mut(), |entry| entry.0)
+pub(crate) fn dtls_session(config: &PortConfig, fd: c_int) -> *mut DtlsSession {
+    dtls(config)
+        .get(&fd)
+        .map_or(ptr::null_mut(), |entry| entry.0)
 }
 
 /// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
 /// Nothing uses the session afterwards.
-pub(crate) fn dtls_free(config: &mut PortConfig, fd: c_int) {
-    let dtls = &mut state(config).dtls;
-    if let Some((session, _context)) = dtls.remove(&fd) {
+pub(crate) fn dtls_free(config: &PortConfig, fd: c_int) {
+    // Out of the map first, its lock released.
+    let removed = dtls(config).remove(&fd);
+    if let Some((session, _context)) = removed {
         // SAFETY: the session the port owned, released once before its context.
         unsafe { swr_v1_tls_dtls_free(session) };
     }
@@ -278,7 +276,7 @@ pub(crate) fn dtls_create(port: *mut c_void, sock: *mut SocketRecord) -> *mut Dt
         unsafe { swr_v1_tls_dtls_free(session) };
         return ptr::null_mut();
     }
-    state(config).dtls.insert(sock.fd(), (session, context));
+    dtls(config).insert(sock.fd(), (session, context));
     session
 }
 
@@ -344,7 +342,7 @@ pub(crate) fn close(port: *mut c_void) {
     let config = unsafe { port_config::of(port) };
     if config.ssl != 0 {
         config.ssl_context = None;
-        state(config).dtls.clear();
+        dtls(config).clear();
     }
     if !config.socket.is_null() {
         // SAFETY: the port's live socket, which nothing uses after.
@@ -369,17 +367,18 @@ mod tests {
         let config = swoole_rs_server::port_config::swr_v1_port_config_new(0);
         let config = unsafe { &mut *config };
         assert_eq!(super::sni(config).len(), 0);
-        super::state(config)
+        config
+            .tls
             .sni
+            .write()
+            .unwrap()
             .push((b"a".to_vec(), swoole_rs_tls::TlsContext::new()));
-        super::state(config)
-            .dtls
-            .insert(3, (core::ptr::null_mut(), swoole_rs_tls::TlsContext::new()));
+        super::dtls(config).insert(3, (core::ptr::null_mut(), swoole_rs_tls::TlsContext::new()));
         assert_eq!(super::sni(config).len(), 1);
-        assert_eq!(super::state(config).dtls.len(), 1);
+        assert_eq!(super::dtls(config).len(), 1);
         super::tls_free(config);
-        assert!(config.tls.is_none());
         assert_eq!(super::sni(config).len(), 0);
+        assert_eq!(super::dtls(config).len(), 0);
         drop(unsafe { Box::from_raw(config) });
     }
 

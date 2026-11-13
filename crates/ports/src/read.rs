@@ -582,7 +582,6 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
 pub(crate) mod tests {
     use super::*;
     use core::ffi::{CStr, c_void};
-    use std::collections::VecDeque;
 
     /// The effects a [`Fake`] records.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -608,7 +607,8 @@ pub(crate) mod tests {
         static_handler: bool,
         buf: Buffer,
         req: Request,
-        incoming: VecDeque<Vec<u8>>,
+        /// The chunks still to receive, the next one last.
+        incoming: Vec<Vec<u8>>,
         bytes: Vec<u8>,
         request: bool,
         max: u64,
@@ -715,7 +715,7 @@ pub(crate) mod tests {
                 str: core::ptr::null_mut(),
             },
             req: Request::new(request_native),
-            incoming: chunks.iter().map(|c| c.to_vec()).collect(),
+            incoming: chunks.iter().rev().map(|c| c.to_vec()).collect(),
             bytes: vec![0; 64],
             request: false,
             max: 1024,
@@ -740,7 +740,7 @@ pub(crate) mod tests {
     impl Connection for Fake {
         /// Into the current buffer; what doesn't fit arrives next.
         fn recv(&mut self, whole: bool) -> i64 {
-            let Some(mut chunk) = self.incoming.pop_front() else {
+            let Some(mut chunk) = self.incoming.pop() else {
                 return -1;
             };
             let buffer = unsafe { &mut *self.current };
@@ -748,7 +748,7 @@ pub(crate) mod tests {
             let n = chunk.len().min(buffer.size - start);
             unsafe { buffer.str.add(start).copy_from(chunk.as_ptr(), n) };
             if n < chunk.len() {
-                self.incoming.push_front(chunk.split_off(n));
+                self.incoming.push(chunk.split_off(n));
             }
             i64::try_from(n).unwrap()
         }
@@ -949,7 +949,7 @@ pub(crate) mod tests {
             f.dispatched.is_empty() && f.incoming.is_empty(),
             "waits for the body"
         );
-        f.incoming.push_back(b"cd".to_vec());
+        f.incoming.insert(0, b"cd".to_vec());
         run(ON_READ_HTTP, &mut f);
         assert_eq!(
             f.dispatched,

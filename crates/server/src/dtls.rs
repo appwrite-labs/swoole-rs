@@ -222,7 +222,7 @@ pub(crate) unsafe fn on_packet(
 
 /// `ReactorThread_onRead` on a DTLS port, whose settings are `port`: the next datagram
 /// on `sock` goes to the session on `fd`; whether a pending handshake failed.
-pub(crate) fn on_read(port: &mut port_config::PortConfig, sock: Socket<'_>, fd: c_int) -> bool {
+pub(crate) fn on_read(port: &port_config::PortConfig, sock: Socket<'_>, fd: c_int) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
     // SAFETY: a `dtls::Buffer` header and its payload; the session frees it.
     let buffer = unsafe { libc::malloc(2 + size) }.cast::<u16>();

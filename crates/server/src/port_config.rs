@@ -2,7 +2,7 @@
 use crate::config::{Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
@@ -35,9 +35,9 @@ pub struct PortMethods {
     /// `create_dtls_session(sock)` on a DTLS port; null if it fails to initialize.
     pub dtls_create: fn(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession,
     /// The DTLS session on an fd; null if none.
-    pub dtls_session: fn(&mut PortConfig, c_int) -> *mut DtlsSession,
+    pub dtls_session: fn(&PortConfig, c_int) -> *mut DtlsSession,
     /// Frees the DTLS session on an fd, if any.
-    pub dtls_free: fn(&mut PortConfig, c_int),
+    pub dtls_free: fn(&PortConfig, c_int),
 }
 
 static METHODS: OnceLock<PortMethods> = OnceLock::new();
@@ -97,7 +97,7 @@ pub struct PortConfig {
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
-    pub websocket_protocol: Option<Box<Vec<u8>>>,
+    pub websocket_protocol: Shared<Option<std::sync::Arc<Vec<u8>>>>,
     /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
     pub host: Box<StringSlot>,
     /// `ListenPort::protocol`, which native code reads and writes by reference.
@@ -107,15 +107,29 @@ pub struct PortConfig {
     /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
     /// Rust owner), or none: a nullable `SSLContext *` to native code.
     pub ssl_context: Option<TlsContext>,
-    /// The TLS state crates/ports owns (the SNI contexts and the DTLS sessions);
-    /// `ListenPort`'s destructor releases it with the context. A thin box, as
-    /// native code's mirror holds a `void *` here.
-    pub tls: Option<Box<Box<dyn core::any::Any>>>,
+    /// The SNI contexts and DTLS sessions crates/ports keeps; `ListenPort`'s
+    /// destructor releases them with the context. A thin box, as native code's
+    /// mirror holds a `void *` here.
+    pub tls: Box<TlsState>,
     /// The owner of the callable `protocol.private_data_1` names, when the port
     /// has a `package_length_func`. A thin box: native code's mirror holds a
     /// `void *` here.
     pub length_owner: Shared<Option<LengthOwner>>,
 }
+
+/// What `ListenPort` kept in C++ containers, each entry with a reference to its
+/// context. Handshakes on any reactor thread read the SNI contexts while `set()`
+/// adds to them, so each is behind a lock.
+#[derive(Default)]
+pub struct TlsState {
+    /// `sni_contexts`, in insertion order: the name and its context.
+    pub sni: RwLock<Vec<(Vec<u8>, TlsContext)>>,
+    /// `dtls_sessions`.
+    pub dtls: Mutex<DtlsSessions>,
+}
+
+/// A port's DTLS sessions by fd: each session and the port's context.
+pub type DtlsSessions = std::collections::HashMap<c_int, (*mut DtlsSession, TlsContext)>;
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
 pub type LengthOwner = Box<Box<dyn core::any::Any>>;
@@ -248,12 +262,12 @@ impl PortConfig {
             gs: Shared::new(core::ptr::null_mut()),
             ptr: AtomicPtr::new(core::ptr::null_mut()),
             websocket_frames: Setting::new(0),
-            websocket_protocol: None,
+            websocket_protocol: Shared::new(None),
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
             on_read: core::ptr::null_mut(),
             ssl_context: None,
-            tls: None,
+            tls: Box::default(),
             length_owner: Shared::new(None),
         })
     }
