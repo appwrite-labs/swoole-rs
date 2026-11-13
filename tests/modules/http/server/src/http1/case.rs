@@ -221,7 +221,8 @@ pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_ch
     let which = match index {
         CERT_FILE => swoole_rs_tls::Text::CertFile,
         KEY_FILE => swoole_rs_tls::Text::KeyFile,
-        _ => swoole_rs_tls::Text::ClientCertFile,
+        CLIENT_CERT_FILE => swoole_rs_tls::Text::ClientCertFile,
+        other => unreachable!("SSL path {other}"),
     };
     // SAFETY: a live context, which only the case's thread configures.
     let context = unsafe { swoole_rs_tls::Lent::new(context.cast()) };

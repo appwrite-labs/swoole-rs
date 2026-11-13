@@ -203,6 +203,21 @@ fn numeric_host_owner_and_independent_records() {
     assert_eq!(other.record().fields().family, AF_INET6);
 }
 
+/// The record's part of `rust_dns_request.native_output_append_exception_is_contained`:
+/// an `AF_INET6` result read back as its text, offline.
+#[test]
+fn an_ipv6_result_reads_back_as_its_text() {
+    let request = Request::new(AF_INET6, SOCK_STREAM, b"::1");
+    let record = request.record();
+    FAKE.set(Some(Fake::Filled));
+    assert_eq!(record.lookup(|_| unreachable!("a known family")), 0);
+    FAKE.set(None);
+    assert_eq!(
+        record.addresses(),
+        [b"5a5a:5a5a:5a5a:5a5a:5a5a:5a5a:5a5a:5a5a".to_vec()]
+    );
+}
+
 /// `rust_dns_request.hints_vectors_and_failure_publication`: a failed lookup publishes
 /// its error and keeps the previous count and addresses.
 #[test]
