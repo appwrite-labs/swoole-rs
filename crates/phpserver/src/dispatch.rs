@@ -15,7 +15,6 @@ use std::{
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_process::methods::ExitStatus;
@@ -1114,38 +1113,28 @@ extern "C" fn on_dispatch(
 }
 
 /// `php_swoole_server_length_func`: a port's `package_length_func($data)`.
-/// # Safety
-/// `protocol` is a port's live protocol whose `private_data_1` is the
-/// callable its settings made; `packet` the bytes so far.
-pub(crate) unsafe extern "C" fn length_func(
-    protocol: *const Protocol,
-    _socket: *mut c_void,
-    packet: &mut PacketLength,
-) -> isize {
-    // SAFETY: per the caller.
-    let owner = unsafe { (*protocol).private_data_1 }.cast::<callable::Callable>();
-    // SAFETY: the slot's live reference (`Source::callable`), borrowed: the
-    // slot keeps it.
-    let slot = ManuallyDrop::new(unsafe { Rc::from_raw(owner) });
-    // Its own reference where the slot is this thread's, so a `set()` the
-    // callable runs drops only the slot's. A thread-mode worker reads the
-    // master's slot and leaves its count alone.
-    let held = crate::lifecycle::owns_shared().then(|| Rc::clone(&slot));
-    let cache = slot.cache_ptr();
-    let mut data = Owned::string(ZString::new(packet.bytes())).into_zval();
-    let retval = Owned::default();
-    let mut result = -1;
-    match call_unlimited(cache, std::slice::from_mut(&mut data), retval.as_ptr()) {
-        Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
-        Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
-        Err(_) => Bailout.defer(),
+pub(crate) struct Length;
+
+impl swoole_rs_phpswoole::length::PackageLength for Length {
+    /// A thread-mode worker reads the master's slot and leaves its count alone.
+    fn owns() -> bool {
+        crate::lifecycle::owns_shared()
     }
-    // Released first: `finish` may jump over this frame.
-    drop(retval);
-    dtor(&mut data);
-    drop(held);
-    bailout::finish();
-    result
+
+    fn length(callable: &callable::Callable, bytes: &[u8]) -> isize {
+        let mut data = Owned::string(ZString::new(bytes)).into_zval();
+        let retval = Owned::default();
+        let mut result = -1;
+        let args = std::slice::from_mut(&mut data);
+        match call_unlimited(callable.cache_ptr(), args, retval.as_ptr()) {
+            Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
+            Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
+            Err(_) => Bailout.defer(),
+        }
+        drop(retval);
+        dtor(&mut data);
+        result
+    }
 }
 
 /// The "`<class>->on<event> handler error`" warning of a failed call.
