@@ -3,9 +3,9 @@
 //! `swoole_get_objects()` and `swoole_get_object_by_handle()`.
 use std::{ops::Range, ptr::NonNull};
 use swoole_rs_zend::{
-    Call, Php, handlers, set_object,
+    Call, Owned, OwnedArray, Php, handlers,
     sys::{
-        add_next_index_object, swr_zend_object_addref, swr_zend_objects_get, swr_zend_objects_top,
+        swr_zend_object_addref, swr_zend_objects_get, swr_zend_objects_top,
         swr_zend_resource_count, zend_object,
     },
 };
@@ -28,10 +28,11 @@ struct Live(NonNull<zend_object>);
 
 impl Live {
     /// The object, with a new reference for the caller to hand on.
-    fn retained(&self) -> *mut zend_object {
+    fn retained(&self) -> Owned {
         // SAFETY: a live object.
         unsafe { swr_zend_object_addref(self.0.as_ptr()) };
-        self.0.as_ptr()
+        // SAFETY: the live object, with the reference just added.
+        unsafe { Owned::object(self.0.as_ptr()) }
     }
 }
 
@@ -62,11 +63,11 @@ fn objects(call: &Call) {
         call.set_bool(false);
         return;
     }
-    call.set_array();
+    let mut array = OwnedArray::default();
     for object in live_objects(call.php(), 0..u32::MAX) {
-        // SAFETY: the array in the return slot takes the new reference.
-        unsafe { add_next_index_object(call.return_value(), object.retained()) };
+        array.push(object.retained());
     }
+    call.set_owned(array.into_owned());
 }
 
 /// `handle` as a slot of a store whose top is `top`; a negative handle names
@@ -90,8 +91,7 @@ fn object_by_handle(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the return slot is writable, and takes the new reference.
-    unsafe { set_object(call.return_value(), object.retained()) };
+    call.set_owned(object.retained());
 }
 
 #[cfg(test)]

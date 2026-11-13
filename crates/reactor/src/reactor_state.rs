@@ -260,8 +260,8 @@ impl ReactorState {
     fn open_backend(&mut self, kind: c_int, count: c_int) -> bool {
         #[cfg(target_os = "linux")]
         if kind == 1 {
-            // SAFETY: the fixed hint matches the original epoll_create argument.
-            self.backend_fd = unsafe { libc::epoll_create(512) };
+            // Upstream's fixed size hint.
+            self.backend_fd = swoole_rs_corebase::sys::epoll_create(512);
         }
         #[cfg(any(
             target_os = "macos",

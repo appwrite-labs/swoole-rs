@@ -524,11 +524,11 @@ macro_rules! operations {
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
-        fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
+        $vis:vis fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
     )*) => {$(
         $(#[$doc])*
         #[must_use]
-        pub fn $name(host: &Host, $($arg: $ty),*) -> $ret {
+        $vis fn $name(host: &Host, $($arg: $ty),*) -> $ret {
             let entry = $entry.build();
             // SAFETY: the entry's only pointers are the borrowed arguments', which
             // outlive the request: it completes before `request` returns.
@@ -540,23 +540,35 @@ macro_rules! safe_operations {
 
 safe_operations! {
     #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
-    fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
+    pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as u32).flags(flags), std::convert::identity;
     #[expect(clippy::cast_possible_truncation, reason = "liburing stores the size_t length in an unsigned")]
-    fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
+    pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len() as u32).flags(flags), std::convert::identity;
-    fn close_fd(fd: c_int) -> c_int,
+    pub fn close_fd(fd: c_int) -> c_int,
         timeout -1.0, opcode::Close::new(Fd(fd)), int;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
-    fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
+    pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
         timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
     #[expect(clippy::cast_possible_truncation, reason = "upstream passes size_t to liburing's unsigned nbytes")]
-    fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
+    pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
         timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len() as c_uint).offset(u64::MAX), std::convert::identity;
-    fn futex_wait(futex: &AtomicU32) -> c_int,
+    pub fn futex_wait(futex: &AtomicU32) -> c_int,
         timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
-    fn futex_wakeup(futex: &AtomicU32) -> c_int,
+    pub fn futex_wakeup(futex: &AtomicU32) -> c_int,
         timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
+    /// `IORING_OP_TIMEOUT` for `ts`.
+    fn timer(ts: &Timespec) -> isize,
+        timeout -1.0, opcode::Timeout::new(ts), std::convert::identity;
+    /// `IORING_OP_STATX` of `path` under `dfd` into `buf`.
+    fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> isize,
+        timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), std::convert::identity;
+    /// `IORING_OP_WAITID` into `info`.
+    fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut libc::siginfo_t, timeout: f64) -> c_int,
+        timeout timeout, opcode::WaitId::new(idtype, id, options).infop(info), int;
+    /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
+    fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
+        timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
 }
 
 operations! {
@@ -602,10 +614,7 @@ pub fn sleep(host: &Host, seconds: f64) -> c_int {
 
 /// Upstream's `sleep(tv_sec, tv_nsec)`, which `sleep(seconds)` converts to.
 fn sleep_timespec(host: &Host, ts: libc::timespec) -> c_int {
-    let ts = kernel_timespec(ts);
-    let timeout = opcode::Timeout::new(&raw const ts).build();
-    // SAFETY: `ts` outlives the request.
-    unsafe { request(host, -1.0, timeout) };
+    let _expired = timer(host, &kernel_timespec(ts));
     if errno() == libc::ETIME { 0 } else { -1 }
 }
 
@@ -744,13 +753,7 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
 
 fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
     let mut buf: libc::statx = swoole_rs_corebase::sys::zeroed();
-    let mask = libc::STATX_BASIC_STATS | libc::STATX_BTIME;
-    let statx = opcode::Statx::new(Fd(dfd), path.as_ptr(), (&raw mut buf).cast())
-        .flags(flags)
-        .mask(mask)
-        .build();
-    // SAFETY: `buf` and `path` outlive the request.
-    let ret = unsafe { request(host, -1.0, statx) };
+    let ret = statx_into(host, dfd, path, flags, &mut buf);
     if ret == 0 {
         statx_to_stat(&buf, stat);
     }
@@ -768,6 +771,7 @@ pub fn stat(host: &Host, path: &CStr, stat: &mut libc::stat) -> c_int {
 }
 
 /// `waitpid` through `IORING_OP_WAITID`; `WNOHANG` stays a plain waitpid(2).
+#[must_use]
 pub fn waitpid(
     host: &Host,
     pid: libc::pid_t,
@@ -776,9 +780,7 @@ pub fn waitpid(
     timeout: f64,
 ) -> libc::pid_t {
     if options & libc::WNOHANG != 0 {
-        let stat_loc = stat_loc.map_or(ptr::null_mut(), ptr::from_mut);
-        // SAFETY: null or the caller's status word.
-        return unsafe { libc::waitpid(pid, stat_loc, options) };
+        return os::waitpid(pid, stat_loc, options);
     }
     let mut info: libc::siginfo_t = swoole_rs_corebase::sys::zeroed();
     let (idtype, id) = if pid > 0 {
@@ -787,11 +789,7 @@ pub fn waitpid(
         (libc::P_ALL, 0)
     };
     let options = if options == 0 { libc::WEXITED } else { options };
-    let waitid = opcode::WaitId::new(idtype, id, options)
-        .infop(&raw mut info)
-        .build();
-    // SAFETY: `info` outlives the request.
-    let rc = int(unsafe { request(host, timeout, waitid) });
+    let rc = waitid(host, idtype, id, options, &mut info, timeout);
     if rc == -1 {
         return rc;
     }
@@ -810,9 +808,12 @@ pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
         return os::poll(core::slice::from_mut(pollfd), timeout);
     }
     let (descriptor, events) = (pollfd.fd, pollfd.events);
-    let poll = opcode::PollAdd::new(Fd(descriptor), events.cast_unsigned().into()).build();
-    // SAFETY: the request carries no pointers.
-    let rc = int(unsafe { request(host, f64::from(timeout) / 1000.0, poll) });
+    let rc = poll_add(
+        host,
+        descriptor,
+        events.cast_unsigned().into(),
+        f64::from(timeout) / 1000.0,
+    );
     if rc > 0 {
         #[expect(clippy::cast_possible_truncation, reason = "upstream's revents = rc")]
         let revents = rc as libc::c_short;

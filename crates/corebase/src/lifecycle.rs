@@ -269,7 +269,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         std::thread::sleep(std::time::Duration::from_secs(1));
     };
     if pid > 0 || flags & FORK_DAEMON != 0 {
-        crate::signal_mask::restore_after_fork(&previous, false);
+        crate::signal_mask::restore_after_fork(previous, false);
         return pid;
     }
     if read(|thread| !thread.timer.is_null()) {
@@ -286,7 +286,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     // SAFETY: the forked child's only thread, which owns the signal handlers.
     unsafe { (host.signal_clear)() };
-    crate::signal_mask::restore_after_fork(&previous, true);
+    crate::signal_mask::restore_after_fork(previous, true);
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
         // SAFETY: the after-fork hooks take no argument.
         unsafe { crate::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };

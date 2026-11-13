@@ -43,8 +43,12 @@ unsafe extern "C" {
     pub fn ares_process_fd(channel: *mut Channel, read: c_int, write: c_int);
     pub fn ares_cancel(channel: *mut Channel);
     pub fn ares_destroy(channel: *mut Channel);
-    pub fn ares_strerror(code: c_int) -> *const c_char;
-    pub fn swrs_cares_metadata() -> *const Metadata;
+    /// The status's description: one of c-ares' static strings (`unknown` for a code it
+    /// doesn't know), never null. It reads only the code.
+    pub safe fn ares_strerror(code: c_int) -> *const c_char;
+    /// The shim's constant table (`sdk.c`): a `static const` of this layout, which it
+    /// only returns the address of.
+    pub safe fn swrs_cares_metadata() -> &'static Metadata;
     pub fn swrs_cares_init(
         channel: *mut *mut Channel,
         lookups: *const c_char,

@@ -17,6 +17,9 @@ unsafe extern "C" {
     /// Leaves the process at once, running no exit handler and no destructor.
     #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
     safe fn _exit(status: c_int) -> !;
+    /// Forks and leaves the parent, as `daemon(3)`.
+    #[cfg(all(feature = "upstream-symbols", not(target_vendor = "apple")))]
+    safe fn daemon(nochdir: c_int, noclose: c_int) -> c_int;
     safe fn setgid(gid: libc::gid_t) -> c_int;
     safe fn setuid(uid: libc::uid_t) -> c_int;
     #[link_name = "pthread_self"]
@@ -103,8 +106,7 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     if swoole_rs_corebase::swoole_fork(FORK_PRECHECK) < 0 {
         return -1;
     }
-    // SAFETY: daemon has no memory preconditions.
-    let rv = unsafe { libc::daemon(nochdir, noclose) };
+    let rv = daemon(nochdir, noclose);
     if rv == 0 {
         // SAFETY: the after-fork hooks take no argument.
         unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };

@@ -2,10 +2,11 @@
 //! callback arguments refer to the native module's real NTS globals or ZTS id.
 use crate::module::INI_OFFSETS;
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     ptr,
 };
 use swoole_rs_zend::{
+    Minit,
     bailout::{self, Bailout},
     sys::{
         OnUpdateBool, OnUpdateLong, swr_zend_try_module_ini, zend_ini_boolean_displayer_cb,
@@ -54,9 +55,8 @@ const fn entry(
     }
 }
 
-// MINIT initializes each callback's globals argument before Zend copies these
-// process-lifetime definitions. No request or callback mutates the definitions.
-static mut ENTRIES: [zend_ini_entry_def; 11] = [
+// The definitions, less each callback's globals argument, which MINIT knows.
+const ENTRIES: [zend_ini_entry_def; 11] = [
     entry(c"swoole.enable_library", c"On", INI_OFFSETS[0], false, true),
     entry(
         c"swoole.enable_fiber_mock",
@@ -111,22 +111,20 @@ static mut ENTRIES: [zend_ini_entry_def; 11] = [
     },
 ];
 
-/// Register the module's real INI entries, including native Zend update handlers.
-/// # Safety
-/// Called once by module startup after its globals constructor. `globals` is the
-/// process-lifetime address of `swoole_globals` (NTS) or `swoole_globals_id` (ZTS).
-pub unsafe fn swr_v1_phpswoole_register_ini(globals: *mut c_void, number: c_int, kind: c_int) {
-    let entries = ptr::addr_of_mut!(ENTRIES).cast::<zend_ini_entry_def>();
-    for index in 0..10 {
-        // One of the eleven definitions.
-        let entry = entries.wrapping_add(index);
-        // SAFETY: startup alone writes this in-bounds definition's callback
-        // argument, which Zend does not borrow until registration below.
-        unsafe { (*entry).mh_arg2 = globals };
+/// Register the module's real INI entries, including native Zend update handlers,
+/// after making the module globals they write (`swoole_globals`, or its id under ZTS).
+pub(crate) fn register(minit: &Minit, kind: c_int) {
+    let globals = crate::module::globals_init();
+    // Zend keeps each definition it registers: these live as long as the process.
+    let entries = Box::leak(Box::new(ENTRIES));
+    // All but the terminator.
+    for entry in &mut entries[..10] {
+        entry.mh_arg2 = globals;
     }
-    // SAFETY: all definitions and their NTS/ZTS callback arguments have process lifetime;
-    // the native leaf traps Zend allocation/update-handler bailouts below this frame.
-    let bailed = unsafe { swr_zend_try_module_ini(entries, number, kind) };
+    // SAFETY: MINIT, as the token says; the terminated definitions and the globals
+    // their handlers write have process lifetime; the native leaf traps Zend
+    // allocation/update-handler bailouts below this frame.
+    let bailed = unsafe { swr_zend_try_module_ini(entries.as_ptr(), minit.module(), kind) };
     bailout::defer(if bailed == 0 { Ok(()) } else { Err(Bailout) });
     bailout::finish();
 }

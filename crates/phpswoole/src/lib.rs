@@ -41,7 +41,6 @@ pub use entry::{module_entry, swr_v1_phpswoole_fatal_exit};
 pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
-pub use ini::swr_v1_phpswoole_register_ini;
 pub use interfaces::sys_warning;
 pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
@@ -181,10 +180,7 @@ fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
     ] {
         minit.long_constant(name, value);
     }
-    let globals = module::globals_init();
-    // SAFETY: MINIT, once, after the globals' constructor, with their
-    // process-lifetime address.
-    unsafe { ini::swr_v1_phpswoole_register_ini(globals, minit.module(), kind) };
+    ini::register(minit, kind);
 }
 
 /// `php_swoole_check_reactor()`: this thread's event loop, unless the request

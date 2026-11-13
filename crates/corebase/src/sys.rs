@@ -67,6 +67,46 @@ mod c {
         -> pid_t;
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
         pub(crate) safe fn srandom(seed: c_uint);
+        /// `sigemptyset(3)`: `set` without a signal.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigemptyset14")]
+        pub safe fn sigemptyset(set: &mut libc::sigset_t) -> c_int;
+        /// `sigfillset(3)`: `set` with every signal.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigfillset14")]
+        pub safe fn sigfillset(set: &mut libc::sigset_t) -> c_int;
+        /// `sigaddset(3)`: -1 with errno set for a number that names no signal.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigaddset14")]
+        pub safe fn sigaddset(set: &mut libc::sigset_t, signo: c_int) -> c_int;
+        /// `sigdelset(3)`: -1 with errno set for a number that names no signal.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigdelset14")]
+        pub safe fn sigdelset(set: &mut libc::sigset_t, signo: c_int) -> c_int;
+        /// `sigismember(3)`: 1, 0, or -1 with errno set for a number that names no signal.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigismember14")]
+        pub safe fn sigismember(set: &libc::sigset_t, signo: c_int) -> c_int;
+        /// `sigprocmask(2)`: changes the mask by `set`, when given, and stores the mask
+        /// from before in `old`, when given.
+        #[cfg_attr(target_os = "netbsd", link_name = "__sigprocmask14")]
+        pub safe fn sigprocmask(
+            how: c_int,
+            set: Option<&libc::sigset_t>,
+            old: Option<&mut libc::sigset_t>,
+        ) -> c_int;
+        /// `pthread_sigmask(3)`, as `sigprocmask` for the calling thread: 0 or an error
+        /// number.
+        pub safe fn pthread_sigmask(
+            how: c_int,
+            set: Option<&libc::sigset_t>,
+            old: Option<&mut libc::sigset_t>,
+        ) -> c_int;
+        /// `signalfd(2)`: a new descriptor for -1, else `fd` with the new mask.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn signalfd(fd: c_int, mask: &libc::sigset_t, flags: c_int) -> c_int;
+        /// `epoll_create(2)`.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_create(size: c_int) -> c_int;
+        /// glibc's `malloc_trim(3)`, which takes the allocator's own locks: 1 when it
+        /// gave memory back to the system.
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        pub safe fn malloc_trim(pad: usize) -> c_int;
         /// This thread's errno slot, live for the thread.
         #[cfg_attr(
             any(target_os = "linux", target_os = "android"),
@@ -79,7 +119,14 @@ mod c {
         pub(crate) safe fn errno_location() -> *mut c_int;
     }
 }
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub use c::malloc_trim;
 pub(crate) use c::{calloc, srandom, uname};
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub use c::{epoll_create, signalfd};
+pub use c::{
+    pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
+};
 
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.

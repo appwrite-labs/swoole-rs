@@ -454,8 +454,15 @@ fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
 /// `if_indextoname`: the interface's name into `request`.
 #[cfg(not(target_os = "linux"))]
 fn interface_name(_fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
-    // SAFETY: the request's IFNAMSIZ name.
-    !unsafe { libc::if_indextoname(index, request.ifr_name.as_mut_ptr()) }.is_null()
+    // SAFETY: libc's own declaration: it writes at most `IF_NAMESIZE` bytes, the
+    // name's size, and returns the name or null.
+    unsafe extern "C" {
+        safe fn if_indextoname(
+            index: c_uint,
+            name: &mut [c_char; libc::IF_NAMESIZE],
+        ) -> *mut c_char;
+    }
+    !if_indextoname(index, &mut request.ifr_name).is_null()
 }
 
 /// `php_if_index_to_addr4`: the interface's IPv4 address (any for 0).

@@ -40,7 +40,7 @@ use swoole_rs_reactor::{
 use swoole_rs_tls::ssl_context_create;
 #[cfg(not(test))]
 use swoole_rs_tls::upstream::{
-    self as net, socket_free, socket_sendfile_async, socket_sendfile_sync, socket_ssl_check_host,
+    self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_check_host,
     socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_verify,
 };
 use swoole_rs_tls::{
@@ -49,7 +49,7 @@ use swoole_rs_tls::{
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, net, ops, socket_free, socket_sendfile_async, socket_sendfile_sync,
+    async_dispatch, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
     socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
     socket_ssl_verify, ssl_context_create, swoole_event_write, thread_buffer, writable_callback,
 };
@@ -197,9 +197,14 @@ unsafe extern "C" {
     #[link_name = "_ZN6swoole11Socks5Proxy5admitEmm"]
     safe fn socks5_admit(user_length: usize, password_length: usize) -> c_int;
     /// `Socks5Proxy::pack_negotiate_request()` into the proxy's buffer. A
-    /// `Socks5Proxy` is its owner pointer.
+    /// `Socks5Proxy` is its owner's reference, and crates/protocols-ffi defines this
+    /// as a safe fn over one.
     #[link_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv"]
-    fn socks5_pack_negotiate(proxy: *const *mut c_void) -> isize;
+    #[expect(
+        improper_ctypes,
+        reason = "the proxy state is opaque behind its reference; Rust defines both sides"
+    )]
+    safe fn socks5_pack_negotiate(proxy: &&ProxyState) -> isize;
     /// `Socks5Proxy::handshake_step(data, length)`: the size of the answer it
     /// packed, 0 when none is due, -1 on failure.
     #[link_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm"]
@@ -607,10 +612,9 @@ impl Handle {
 
     /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
     fn socks5_negotiate(self) -> usize {
-        let owner = self.get().socks5.as_ptr().cast();
-        // SAFETY: the live SOCKS5 proxy, whose buffer the request is packed into.
-        let length = unsafe { socks5_pack_negotiate(owner) };
-        length.cast_unsigned()
+        // The SOCKS5 proxy, whose buffer the request is packed into.
+        let proxy = self.proxy(Proxy::Socks5);
+        proxy.map_or(0, |proxy| socks5_pack_negotiate(&proxy).cast_unsigned())
     }
 
     /// Send the first `length` bytes of the SOCKS5 proxy's packet buffer, copied
@@ -1755,8 +1759,7 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> c_int {
     let sent = if is_async {
         socket_sendfile_async(socket, file, offset, length)
     } else {
-        // SAFETY: a NUL-terminated path.
-        unsafe { socket_sendfile_sync(socket, file.as_ptr(), offset, length) }
+        sendfile_sync(socket, file, offset, length)
     };
     if sent < 0 {
         log::set_last_error(errno());
