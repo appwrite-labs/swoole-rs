@@ -96,7 +96,7 @@ pub(crate) fn create_worker_pipes(serv: view::Server<'_>) -> bool {
 
 /// `ProcessFactory::start`: the workers' pipes, then the manager.
 pub(crate) fn start(serv: view::Server<'_>) -> bool {
-    create_worker_pipes(serv) && crate::manager_ops::start_manager_process(serv) == 0
+    create_worker_pipes(serv) && crate::manager::native::start_manager_process(serv) == 0
 }
 
 /// `ProcessFactory::shutdown`: SIGTERM the manager and wait for it. False, as

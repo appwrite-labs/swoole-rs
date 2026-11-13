@@ -5,17 +5,12 @@
 //! runs each operation and asks crates/server for each fact or effect through its
 //! context's [`Answer`], reading facts afresh.
 mod log;
-mod manager;
 pub mod ops;
 pub mod thread;
 
 pub(crate) const SW_OK: i64 = 0;
 pub(crate) const SW_ERR: i64 = -1;
 
-/// `Server::Mode`.
-pub(crate) const MODE_BASE: u64 = 1;
-pub(crate) const MODE_PROCESS: u64 = 2;
-pub(crate) const MODE_THREAD: u64 = 3;
 /// `SW_EVENT_WORKER`.
 pub(crate) const EVENT_WORKER: u64 = crate::worker_record::WorkerType::Event as u64;
 
@@ -145,12 +140,6 @@ fn effect(op: u32) -> Option<u64> {
 /// operation's return value as upstream's C++ function returns it.
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {
-        ops::RUN_START_MANAGER
-        | ops::RUN_MANAGER_MAIN
-        | ops::RUN_MANAGER_SIGNAL
-        | ops::RUN_RESTART_WORKER
-        | ops::RUN_READ_WORKER_MESSAGE
-        | ops::RUN_RELOAD => manager::run(h, operation, arg),
         ops::RUN_THREAD_MANAGER_WAIT
         | ops::RUN_THREAD_RELOAD
         | ops::RUN_THREAD_TERMINATE_MANAGER
@@ -163,26 +152,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
         | ops::RUN_DESTROY_THREAD_FACTORY
         | ops::RUN_THREAD_ID => thread::run(h, operation, arg),
         _ => SW_ERR,
-    }
-}
-
-/// `signal_init`'s handler kinds for `OP_SIGNAL_SET`.
-pub(crate) const HANDLER_NONE: u64 = 0;
-pub(crate) const HANDLER_OWN: u64 = 2;
-/// `OP_SIGNAL_SET`'s stand-in for SIGRTMIN, which only native code can name.
-pub(crate) const SIGNAL_RTMIN: i32 = -1;
-
-pub(crate) fn set_signal<H: Host + ?Sized>(h: &mut H, signo: i32, handler: u64) {
-    h.op(
-        ops::OP_SIGNAL_SET,
-        u64::from(signo.cast_unsigned()) | (handler << 32),
-    );
-}
-
-/// `set_signal` for each (signal, handler) in turn.
-pub(crate) fn set_signal_all<H: Host + ?Sized>(h: &mut H, signals: &[(i32, u64)]) {
-    for &(signo, handler) in signals {
-        set_signal(h, signo, handler);
     }
 }
 

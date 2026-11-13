@@ -41,8 +41,7 @@ mod hybrid;
 mod json;
 mod layout;
 pub mod local_addr;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod manager_ops;
+pub mod manager;
 mod master_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod objects;

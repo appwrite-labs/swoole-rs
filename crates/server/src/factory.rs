@@ -108,7 +108,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
         Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
-        Step::StartManager => return crate::manager_ops::start_manager_process(serv),
+        Step::StartManager => return crate::manager::native::start_manager_process(serv),
         Step::EventInit => return swoole_rs_reactor::swoole_event_init(0),
         Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
@@ -474,7 +474,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn reload(&self, serv: crate::view::Server<'_>, all_workers: bool) -> bool {
-        crate::manager_ops::reload(serv, all_workers)
+        crate::manager::native::reload(serv, all_workers)
     }
 
     fn command_send(

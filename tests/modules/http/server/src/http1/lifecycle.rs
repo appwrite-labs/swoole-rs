@@ -13,7 +13,7 @@ use swoole_rs_clients::client::{
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::callbacks as cb;
-use swoole_rs_server::{event_worker, manager_ops, task_worker, worker_methods};
+use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -167,7 +167,7 @@ fn pid() -> c_int {
 
 /// `serv->reload(reload_all_workers)`.
 fn reload(serv: Server, reload_all_workers: bool) -> bool {
-    manager_ops::reload(serv.view(), reload_all_workers)
+    manager::native::reload(serv.view(), reload_all_workers)
 }
 
 fn shutdown(serv: Server) -> bool {
@@ -831,7 +831,7 @@ fn restart_worker_process() {
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
-    _ = manager_ops::restart_worker_process(serv.view(), &fake_exit);
+    _ = manager::native::restart_worker_process(serv.view(), &fake_exit);
 
     wait_all_child_processes();
 
