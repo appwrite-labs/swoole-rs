@@ -542,13 +542,13 @@ fn set_error_reason(state: &mut State, reason: &'static &'static str) {
 }
 
 /// `swoole_http_token_list_contains_value(at, length, "websocket")`, with
-/// its pointer-sized fast comparison.
-fn contains_websocket(value: &[u8]) -> i32 {
+/// its pointer-sized fast comparison; `None` when the value is too long to scan.
+fn contains_websocket(value: &[u8]) -> Option<bool> {
     match token_list_fast(value, c"websocket") {
-        Some(found) => i32::from(found),
+        Some(found) => Some(found),
         // The scan copies the value into `sw_tg_buffer()`, which it must fit.
-        None if value.len() >= STACK_BUFFER_SIZE => -1,
-        None => i32::from(token_list_contains(value, b"websocket")),
+        None if value.len() >= STACK_BUFFER_SIZE => None,
+        None => Some(token_list_contains(value, b"websocket")),
     }
 }
 
@@ -599,11 +599,11 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
             }
             state.parse.header_value_len += length;
             match contains_websocket(value_) {
-                -1 => {
+                None => {
                     set_error_reason(state, &"Upgrade header value exceeds the maximum length");
                     return USER;
                 }
-                1 => {
+                Some(true) => {
                     state.websocket = true;
                     if !websocket_connection(state) {
                         let message = format!("session[{}] is closed", state.fd);
@@ -616,7 +616,7 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
                         return -1;
                     }
                 }
-                _ => {}
+                Some(false) => {}
             }
         }
         RequestHeader::Form => state.request.post_form_urlencoded = true,
