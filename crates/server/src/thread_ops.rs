@@ -92,7 +92,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             port.config()
                 .thread_id
                 .set(crate::reactor_ops::pthread_self());
-            if handle.change(socket, 0, SW_EVENT_READ) < 0 {
+            if handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) < 0 {
                 return Some(-1);
             }
         }
@@ -198,7 +198,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
             return -1;
         }
         if let Some(socket) = serv.port_socket_at(index) {
-            reactor.change(socket, 0, SW_EVENT_READ);
+            reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ);
         }
     }
     methods::store_listen_socket(serv);
@@ -441,7 +441,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     let bus = thread.message_bus();
     for w in (0..config.worker_num.get()).filter(|&w| owns(i64::from(w), reactors, id)) {
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker(serv, w)?, true)) {
-            reactor.interest(sock, 4, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
         }
     }
     each_connection(state, |conn| {
@@ -450,7 +450,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         };
         let reading = !conn.peer_closed() && !sock.read(|s| s.removed);
         if reading && owns(i64::from(conn.fd()), reactors, id) {
-            reactor.interest(sock, 4, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
         }
     });
     reactor.handle().set_wait_exit(true);

@@ -35,10 +35,10 @@ pub(crate) fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
 }
 
 /// The `interest` kind [`add_or_update`] adds for `event`, if it names one.
-fn direction(event: c_int) -> Option<u32> {
+fn direction(event: c_int) -> Option<crate::Interest> {
     match event {
-        EVENT_READ => Some(2),
-        EVENT_WRITE => Some(3),
+        EVENT_READ => Some(crate::Interest::AddRead),
+        EVENT_WRITE => Some(crate::Interest::AddWrite),
         _ => None,
     }
 }
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_i
 }
 
 /// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; -1 without one.
-fn change(socket: crate::Socket<'static>, op: u32, events: c_int) -> c_int {
+fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) -> c_int {
     running().map_or(-1, |reactor| {
         crate::reactor_upstream::change(reactor, socket, op, events)
     })
@@ -99,14 +99,14 @@ fn change(socket: crate::Socket<'static>, op: u32, events: c_int) -> c_int {
 /// a reactor.
 #[must_use]
 pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> c_int {
-    change(socket, 0, events)
+    change(socket, crate::ChangeOp::Add, events)
 }
 
 /// `int swoole_event_set(Socket *socket, int events)` of a socket that is never freed
 /// while registered (kqueue's set registers its address again); -1 without a reactor.
 #[must_use]
 pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> c_int {
-    change(socket, 1, events)
+    change(socket, crate::ChangeOp::Set, events)
 }
 
 /// `int swoole_event_del(Socket *socket)`: -1 without a reactor. Any live socket: a
@@ -487,8 +487,8 @@ mod tests {
         // SW_EVENT_READ is 512 and SW_EVENT_WRITE 1024; nothing else is accepted.
         for event in -2048..=2048 {
             let expected = match event {
-                512 => Some(2),
-                1024 => Some(3),
+                512 => Some(crate::Interest::AddRead),
+                1024 => Some(crate::Interest::AddWrite),
                 _ => None,
             };
             assert_eq!(direction(event), expected, "{event}");

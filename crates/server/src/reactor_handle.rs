@@ -9,12 +9,8 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reactor_set_handler};
-use swoole_rs_reactor::{Handler, ReactorPrepared, Running, Socket};
+use swoole_rs_reactor::{ChangeOp, Handler, Interest, ReactorPrepared, Running, Socket};
 
-/// `Reactor::change`'s add and del, `Reactor::interest`'s `remove_read_event`.
-const ADD: u32 = 0;
-const DEL: u32 = 2;
-const REMOVE_READ: u32 = 4;
 /// `SW_EVENT_READ`.
 pub(crate) const EVENT_READ: c_int =
     swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
@@ -46,27 +42,27 @@ impl Reactor {
         // reference to its state outlives the call it is passed to.
         unsafe { Running::new(self.0) }
     }
-    /// `Reactor::change`'s `op` (0 add, 1 set, 2 del) of `sock` with `events`.
-    pub(crate) fn change(self, sock: Socket<'_>, op: u32, events: c_int) -> c_int {
+    /// `Reactor::change`'s `op` of `sock` with `events`.
+    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> c_int {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock.as_ptr(), op, events) }
+        unsafe { reactor_change(self.0, sock.as_ptr(), op.code(), events) }
     }
-    /// `Reactor::interest`'s `kind` (2 add read, 3 add write, 4 remove read) of `sock`.
-    pub(crate) fn interest(self, sock: Socket<'_>, kind: u32, events: c_int) -> c_int {
+    /// `Reactor::interest`'s `kind` of `sock`.
+    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> c_int {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_interest(self.0, sock.as_ptr(), kind, events) }
+        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), events) }
     }
     /// `reactor->add(sock, events)`.
     pub(crate) fn add(self, sock: Socket<'_>, events: c_int) -> c_int {
-        self.change(sock, ADD, events)
+        self.change(sock, ChangeOp::Add, events)
     }
     /// `reactor->del(sock)`.
     pub(crate) fn del(self, sock: Socket<'_>) -> c_int {
-        self.change(sock, DEL, 0)
+        self.change(sock, ChangeOp::Del, 0)
     }
     /// `reactor->remove_read_event(sock)`.
     pub(crate) fn unread(self, sock: Socket<'_>) {
-        let _ = self.interest(sock, REMOVE_READ, 0);
+        let _ = self.interest(sock, Interest::RemoveRead, 0);
     }
     /// The reactor's own `close` of `sock`, when it has one.
     pub(crate) fn close(self, sock: Socket<'_>) -> c_int {

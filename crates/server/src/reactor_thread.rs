@@ -348,8 +348,11 @@ mod tests {
         assert_eq!(handled(), [("told", fd)], "the worker is told");
         assert!(session(&live).close_force());
         let conn = session(&live);
-        live.reactor()
-            .change(conn.socket().unwrap(), 0, SW_EVENT_READ);
+        live.reactor().change(
+            conn.socket().unwrap(),
+            swoole_rs_reactor::ChangeOp::Add,
+            SW_EVENT_READ,
+        );
         assert_eq!(close(serv, reactor, 1), 0);
         assert_eq!(handled(), [], "a forced close closes now");
         assert!(!conn.is_active() && conn.socket().is_none());

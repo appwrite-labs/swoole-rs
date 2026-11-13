@@ -19,8 +19,66 @@ const SW_ERROR_EVENT_ADD_FAILED: c_int = 801;
 const SW_ERROR_EVENT_UPDATE_FAILED: c_int = 802;
 const SW_ERROR_SOCKET_NOT_EXISTS: c_int = 6003;
 
-const ADD: u32 = 0;
-const SET: u32 = 1;
+/// `Reactor::change`'s operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum ChangeOp {
+    Add,
+    Set,
+    Del,
+}
+
+impl ChangeOp {
+    /// The op's `uint32_t` in upstream's `Reactor::change`.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self as u32
+    }
+
+    /// An op from upstream's `uint32_t`: 0 add, 1 set, any other del.
+    #[must_use]
+    pub const fn from_code(op: u32) -> Self {
+        match op {
+            0 => Self::Add,
+            1 => Self::Set,
+            _ => Self::Del,
+        }
+    }
+}
+
+/// `Reactor::interest`'s kinds: `add_event` and `del_event` of an event, then
+/// `add_read_event`, `add_write_event`, `remove_read_event` and `remove_write_event`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Interest {
+    AddEvent,
+    DelEvent,
+    AddRead,
+    AddWrite,
+    RemoveRead,
+    RemoveWrite,
+}
+
+impl Interest {
+    /// The kind's `uint32_t` in upstream's `Reactor::interest`.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        self as u32
+    }
+
+    /// A kind from upstream's `uint32_t`; any past the last is `remove_write_event`.
+    #[must_use]
+    pub const fn from_code(kind: u32) -> Self {
+        match kind {
+            0 => Self::AddEvent,
+            1 => Self::DelEvent,
+            2 => Self::AddRead,
+            3 => Self::AddWrite,
+            4 => Self::RemoveRead,
+            _ => Self::RemoveWrite,
+        }
+    }
+}
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -39,7 +97,7 @@ struct Change {
     log: ChangeLog,
     socket: Seen,
     id: u16,
-    op: u32,
+    op: ChangeOp,
     events: c_int,
 }
 
@@ -71,7 +129,7 @@ impl Change {
     fn epoll(&self, epfd: c_int, token: *mut c_void) -> bool {
         let (socket, id) = (&self.socket, self.id);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
-        if self.op > SET && socket.removed {
+        if self.op == ChangeOp::Del && socket.removed {
             self.warn(
                 c"ReactorEpoll::del",
                 SW_ERROR_EVENT_REMOVE_FAILED,
@@ -88,7 +146,7 @@ impl Change {
         let error = errno();
         let events = self.events;
         match self.op {
-            ADD => self.warn(
+            ChangeOp::Add => self.warn(
                 c"ReactorEpoll::add",
                 0,
                 error,
@@ -96,7 +154,7 @@ impl Change {
                     "[Reactor#{id}] epoll_ctl(epfd={epfd}, EPOLL_CTL_ADD, fd={fd}, fd_type={fd_type}, events={events}) failed"
                 ),
             ),
-            SET => self.warn(
+            ChangeOp::Set => self.warn(
                 c"ReactorEpoll::set",
                 0,
                 error,
@@ -104,7 +162,7 @@ impl Change {
                     "[Reactor#{id}] epoll_ctl(epfd={epfd}, EPOLL_CTL_MOD, fd={fd}, fd_type={fd_type}, events={events}) failed"
                 ),
             ),
-            _ => {
+            ChangeOp::Del => {
                 self.removal_failed(error);
                 // Closed before removal: the registry entry still goes.
                 if error == libc::EBADF || error == libc::ENOENT {
@@ -135,7 +193,7 @@ impl Change {
         let (socket, id) = (&self.socket, self.id);
         let fd = socket.fd;
         match self.op {
-            ADD => {
+            ChangeOp::Add => {
                 let failed = registration::kqueue_add(kq, fd, token, self.events);
                 if failed != 0 {
                     let filter = if failed == 1 { "read" } else { "write" };
@@ -151,7 +209,7 @@ impl Change {
                 }
                 failed == 0
             }
-            SET => {
+            ChangeOp::Set => {
                 let failed = registration::kqueue_set(kq, fd, token, self.events);
                 if failed != 0 {
                     let added = failed == 1 || failed == 3;
@@ -172,7 +230,7 @@ impl Change {
                 }
                 failed == 0
             }
-            _ => {
+            ChangeOp::Del => {
                 if socket.removed {
                     self.warn(
                         c"ReactorKqueue::del",
@@ -198,51 +256,55 @@ impl Change {
         let (fd, fd_type) = (socket.fd, socket.fd_type);
         let exists = !state.registry.get(fd).is_null();
         let (origin, code, message) = match self.op {
-            ADD if exists => (
+            ChangeOp::Add if exists => (
                 c"ReactorPoll::add",
                 SW_ERROR_EVENT_ADD_FAILED,
                 format!(
                     "[Reactor#{id}] failed to add events[fd={fd}, fd_type={fd_type}, events={events}], the socket#{fd} is already exists"
                 ),
             ),
-            ADD if usize::try_from(state.backend_limit).ok() == Some(state.registry.count()) => (
-                c"ReactorPoll::add",
-                SW_ERROR_EVENT_ADD_FAILED,
-                format!(
-                    "too many sockets, the max events is {}",
-                    state.backend_limit
-                ),
-            ),
-            SET if !exists => (
+            ChangeOp::Add
+                if usize::try_from(state.backend_limit).ok() == Some(state.registry.count()) =>
+            {
+                (
+                    c"ReactorPoll::add",
+                    SW_ERROR_EVENT_ADD_FAILED,
+                    format!(
+                        "too many sockets, the max events is {}",
+                        state.backend_limit
+                    ),
+                )
+            }
+            ChangeOp::Set if !exists => (
                 c"ReactorPoll::set",
                 SW_ERROR_SOCKET_NOT_EXISTS,
                 format!(
                     "[Reactor#{id}] failed to set events[fd={fd}, fd_type={fd_type}, events={events}], the socket#{fd} has already been removed"
                 ),
             ),
-            ADD | SET => return true,
-            _ if socket.removed => (
+            ChangeOp::Add | ChangeOp::Set => return true,
+            ChangeOp::Del if socket.removed => (
                 c"ReactorPoll::del",
                 SW_ERROR_SOCKET_NOT_EXISTS,
                 format!(
                     "[Reactor#{id}] failed to delete events[fd={fd}, fd_type={fd_type}], the socket#{fd} has already been removed"
                 ),
             ),
-            _ if !exists => (
+            ChangeOp::Del if !exists => (
                 c"ReactorPoll::del",
                 SW_ERROR_SOCKET_NOT_EXISTS,
                 format!(
                     "[Reactor#{id}] failed to delete events[fd={fd}, fd_type={fd_type}], the socket#{fd} is not exists"
                 ),
             ),
-            _ => return true,
+            ChangeOp::Del => return true,
         };
         self.warn(origin, code, errno(), &message);
         false
     }
 }
 
-/// `Reactor::add` (op 0), `set` (1) or `del` (2) of `socket` with `events` on the state's
+/// `Reactor::add` (op 0), `set` (1) or `del` (any other) of `socket` with `events` on the state's
 /// backend: 0, -1 after logging the failure through `log` (or for a null socket), or -2 when
 /// add cannot allocate.
 ///
@@ -272,7 +334,7 @@ pub unsafe fn swr_v1_reactor_change(
             silent_remove: record.silent_remove,
         }),
         id: state.fields.id,
-        op,
+        op: ChangeOp::from_code(op),
         events,
     };
     let token = socket.as_ptr().cast::<c_void>();
@@ -293,33 +355,36 @@ pub unsafe fn swr_v1_reactor_change(
     if !done {
         return -1;
     }
-    state.record(socket, op, events)
+    state.record(socket, change.op, events)
 }
 
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// What a `Reactor` interest helper asks of [`swr_v1_reactor_change`], as upstream decides
-/// from the socket's events: `add_event` (kind 0) and `del_event` (1) of `event`, then
-/// `add_read_event` (2), `add_write_event` (3), `remove_read_event` (4) and
-/// `remove_write_event` (5). The op and its events, or `None` when nothing changes.
-pub(crate) fn interest_change(record: Socket<'_>, kind: u32, event: c_int) -> Option<(u32, c_int)> {
+/// from the socket's events: the op and its events, or `None` when nothing changes.
+pub(crate) fn interest_change(
+    record: Socket<'_>,
+    kind: Interest,
+    event: c_int,
+) -> Option<(ChangeOp, c_int)> {
+    use Interest::{AddEvent, AddRead, AddWrite, DelEvent, RemoveRead, RemoveWrite};
     let events = record.read(|record| record.events);
-    let (other, own) = if kind.is_multiple_of(2) {
+    let (other, own) = if matches!(kind, AddRead | RemoveRead) {
         (SW_EVENT_WRITE, SW_EVENT_READ)
     } else {
         (SW_EVENT_READ, SW_EVENT_WRITE)
     };
     let (op, events) = match kind {
-        0 if events & event == 0 => (SET, events | event),
-        1 if events & event != 0 => (SET, events & !event),
-        0 | 1 => return None,
-        2 | 3 if events & other != 0 => (SET, events | own),
-        2 | 3 => (ADD, own),
-        _ if events & other != 0 => (SET, events & !own),
-        _ => (2, 0),
+        AddEvent if events & event == 0 => (ChangeOp::Set, events | event),
+        DelEvent if events & event != 0 => (ChangeOp::Set, events & !event),
+        AddEvent | DelEvent => return None,
+        AddRead | AddWrite if events & other != 0 => (ChangeOp::Set, events | own),
+        AddRead | AddWrite => (ChangeOp::Add, own),
+        RemoveRead | RemoveWrite if events & other != 0 => (ChangeOp::Set, events & !own),
+        RemoveRead | RemoveWrite => (ChangeOp::Del, 0),
     };
-    if op == SET && kind >= 2 {
+    if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
         // Upstream writes the socket's events before the set, so they stay when it fails.
         record.edit(|record| record.events = events);
     }
@@ -484,29 +549,29 @@ mod tests {
             let interest = |socket: &mut SocketRecord, kind, event| {
                 let record = Socket::from_ptr(socket).unwrap();
                 interest_change(record, kind, event).map_or(0, |(op, events)| {
-                    swr_v1_reactor_change(state.owner, socket, op, events, log)
+                    swr_v1_reactor_change(state.owner, socket, op.code(), events, log)
                 })
             };
             // add_write_event on a new socket adds it for writing; add_read_event sets both.
-            assert_eq!(interest(&mut socket, 3, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::AddWrite, 0), 0);
             assert_eq!(socket.events, SW_EVENT_WRITE);
-            assert_eq!(interest(&mut socket, 2, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::AddRead, 0), 0);
             assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE);
             // add_event of a bit it has, and del_event of one it lacks, change nothing.
-            assert_eq!(interest(&mut socket, 0, SW_EVENT_READ), 0);
-            assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
-            assert_eq!(interest(&mut socket, 0, 1 << 11), 0);
+            assert_eq!(interest(&mut socket, Interest::AddEvent, SW_EVENT_READ), 0);
+            assert_eq!(interest(&mut socket, Interest::DelEvent, 1 << 11), 0);
+            assert_eq!(interest(&mut socket, Interest::AddEvent, 1 << 11), 0);
             assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE | (1 << 11));
-            assert_eq!(interest(&mut socket, 1, 1 << 11), 0);
+            assert_eq!(interest(&mut socket, Interest::DelEvent, 1 << 11), 0);
             // remove_read_event keeps the write interest; remove_write_event then deletes it.
-            assert_eq!(interest(&mut socket, 4, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::RemoveRead, 0), 0);
             assert_eq!(socket.events, SW_EVENT_WRITE);
-            assert_eq!(interest(&mut socket, 5, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::RemoveWrite, 0), 0);
             assert_eq!((socket.events, socket.removed), (0, true));
             // A failed set keeps the events upstream wrote first.
             let mut missing = SocketRecord::with_fd(21, 5);
             missing.events = SW_EVENT_READ;
-            assert_eq!(interest(&mut missing, 3, 0), -1);
+            assert_eq!(interest(&mut missing, Interest::AddWrite, 0), -1);
             assert_eq!(missing.events, SW_EVENT_READ | SW_EVENT_WRITE);
             assert_eq!(logged()[0].0, "ReactorPoll::set");
             assert_eq!(
