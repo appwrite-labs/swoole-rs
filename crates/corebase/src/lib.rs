@@ -61,6 +61,7 @@ pub use lifecycle::{
     swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global, swr_v1_core_timer_slot,
     thread_async_threads, thread_id, thread_kind, thread_message_bus, thread_reactor, thread_timer,
 };
+pub use log::fatal;
 pub use random::{random_bytes, swoole_random_string};
 pub use thread::*;
 
@@ -194,7 +195,7 @@ pub fn get_env(name: &CStr) -> Option<c_int> {
     let name = std::ffi::OsStr::from_bytes(name.to_bytes());
     let value = std::env::var_os(name)?;
     let Some(output) = parse_stoi(value.as_bytes()) else {
-        std::process::abort();
+        crate::fatal("an environment variable that std::stoi can't parse");
     };
     Some(output)
 }

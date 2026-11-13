@@ -203,7 +203,7 @@ fn task(call: &Call) -> &TaskData {
     call.custom::<TaskData>().unwrap_or_else(|| {
         invalid(this_class(call));
         // The `E_ERROR` bailed out of this frame.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 
@@ -231,7 +231,7 @@ pub(crate) fn task_server(call: &Call) -> view::Server<'_> {
         || {
             invalid(this_class(call));
             // The `E_ERROR` bailed out of this frame.
-            std::process::abort()
+            swoole_rs_corebase::fatal("E_ERROR returned")
         },
         SharedServer::view,
     )
@@ -558,7 +558,7 @@ pub(crate) fn server(call: &Call) -> view::Server<'_> {
     crate::lifecycle::ServerObject::this_server(call).unwrap_or_else(|| {
         invalid(this_class(call));
         // The `E_ERROR` bailed out of this frame.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 
@@ -1044,7 +1044,7 @@ fn iterator(call: &Call) -> (&Iterator, view::Server<'_>) {
     bound.unwrap_or_else(|| {
         // An `E_ERROR`, which does not return; the frames own nothing.
         invalid(this_class(call));
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 

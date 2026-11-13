@@ -547,7 +547,7 @@ pub(crate) fn attach(
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("no reactor for the coroutine host");
     }
     swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
@@ -626,7 +626,7 @@ pub(crate) fn absolute_msec() -> c_long {
 pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::swoole_event_defer_value(value).is_err() {
-        std::process::abort();
+        swoole_rs_corebase::fatal("no reactor to defer to");
     }
 }
 

@@ -516,7 +516,7 @@ unsafe extern "C" fn handle_socket(
     match action {
         CURL_POLL_IN | CURL_POLL_OUT | CURL_POLL_INOUT => multi.set_event(sockfd, action),
         CURL_POLL_REMOVE => multi.del_event(sockfd),
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("curl asked for an unknown poll action"),
     }
 }
 

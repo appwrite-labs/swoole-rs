@@ -63,7 +63,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
             .or_else(|| worker(ctx, op))
             .or_else(|| connection(ctx, op, arg))
             .or_else(|| pipe(ctx, op))
-            .unwrap_or_else(|| std::process::abort())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown reactor-process op"))
     }
 }
 

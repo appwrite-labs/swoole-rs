@@ -45,7 +45,7 @@ impl Thread {
     pub fn start(&self, body: impl FnOnce() + Send + 'static) -> Result<(), c_int> {
         let mut handle = self.handle();
         if handle.is_some() {
-            std::process::abort();
+            crate::fatal("a thread started twice");
         }
         let body: *mut Body = Box::into_raw(Box::new(Box::new(body)));
         // SAFETY: a `Box<Body>` parameter is ABI-compatible with the `*mut c_void`

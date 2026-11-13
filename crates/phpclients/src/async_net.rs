@@ -206,7 +206,7 @@ fn event(object: Obj, kind: c_int, data: *const c_char, length: usize) -> Result
         }
         ON_BUFFER_FULL => execute(object, BUFFER_FULL),
         ON_BUFFER_EMPTY => execute(object, BUFFER_EMPTY),
-        _ => std::process::abort(),
+        _ => swoole_rs_corebase::fatal("an unknown async client event"),
     }
 }
 

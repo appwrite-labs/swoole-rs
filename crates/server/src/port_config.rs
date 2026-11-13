@@ -56,7 +56,9 @@ pub unsafe fn set_methods(methods: PortMethods) {
 /// registers them, so their absence aborts.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn methods() -> &'static PortMethods {
-    METHODS.get().unwrap_or_else(|| std::process::abort())
+    METHODS
+        .get()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("port methods are not registered"))
 }
 #[repr(C)]
 pub struct PortConfig {

@@ -447,7 +447,9 @@ impl Handle {
     }
 
     fn socket(self) -> Socket<'static> {
-        self.get().socket().unwrap_or_else(|| std::process::abort())
+        self.get()
+            .socket()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a connected client has no socket"))
     }
 
     fn socket_type(self) -> c_int {
@@ -521,7 +523,9 @@ impl Handle {
     /// The TLS context's view; TLS is on.
     fn tls(self) -> OwnedTlsPrepared {
         let tls = self.get().tls.get();
-        swr_v1_tls_owner_view(tls.unwrap_or_else(|| std::process::abort()))
+        swr_v1_tls_owner_view(
+            tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
+        )
     }
 
     /// `edit` over the context's fields and a copy of the record; TLS is on.
@@ -1867,7 +1871,9 @@ fn on_read(this: Handle) -> c_int {
     let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
         // `swoole_init` registered them before any client existed.
-        let framing = FRAMING.get().unwrap_or_else(|| std::process::abort());
+        let framing = FRAMING
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         let protocol = this.protocol();

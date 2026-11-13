@@ -57,7 +57,9 @@ pub(crate) fn install_native() {
 pub(crate) fn host() -> &'static Host {
     // swoole_init installs it (stdio::swr_v1_hook_install) before any socket
     // operation runs.
-    HOST.get().copied().unwrap_or_else(|| std::process::abort())
+    HOST.get()
+        .copied()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("the hook table is not installed"))
 }
 
 /// This thread's table.
@@ -522,7 +524,7 @@ pub(crate) fn timer_fired(socket: Co, event: u32) {
         let [read, write] = &mut state.timers;
         let slot = if event == READ { read } else { write };
         if slot.is_null() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a timeout fired with no timer armed");
         }
         *slot = ptr::null_mut();
         state.co(event)

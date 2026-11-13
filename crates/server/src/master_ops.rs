@@ -149,7 +149,8 @@ struct Objects<'a> {
 impl<'a> Objects<'a> {
     /// The context's live server.
     fn server(&self) -> crate::view::Server<'a> {
-        self.server.unwrap_or_else(|| std::process::abort())
+        self.server
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a master op without a server"))
     }
     fn config(&self) -> &crate::ServerConfig {
         self.state.config_ref()
@@ -165,7 +166,7 @@ impl<'a> Objects<'a> {
     fn conn(&self) -> crate::Connection<'_> {
         // SAFETY: the ops reading it run with a live connection in the context.
         let conn = unsafe { crate::Connection::from_ptr(self.ctx.conn.cast()) };
-        conn.unwrap_or_else(|| std::process::abort())
+        conn.unwrap_or_else(|| swoole_rs_corebase::fatal("a master op without a connection"))
     }
     fn sock(&self) -> Option<Socket<'_>> {
         // SAFETY: the ops reading it run with a live socket in the context.
@@ -276,7 +277,7 @@ impl<'a> Objects<'a> {
     fn buffer(&mut self) -> &mut [u8; IPC_BUFFER_SIZE] {
         match self.ctx.buffer.as_deref_mut() {
             Some(buffer) => &mut buffer.0,
-            None => std::process::abort(),
+            None => swoole_rs_corebase::fatal("a master op without an IPC buffer"),
         }
     }
 }
@@ -1503,7 +1504,7 @@ fn thread_mode(serv: crate::view::Server<'_>, operation: u32) -> i64 {
     #[cfg(not(all(feature = "upstream-symbols", not(test))))]
     {
         let _ = (serv, operation);
-        std::process::abort()
+        swoole_rs_corebase::fatal("no native server ops without upstream-symbols")
     }
 }
 
@@ -1519,7 +1520,7 @@ fn stop_single_worker(serv: crate::view::Server<'_>) {
     #[cfg(not(all(feature = "upstream-symbols", not(test))))]
     {
         let _ = serv;
-        std::process::abort()
+        swoole_rs_corebase::fatal("no native server ops without upstream-symbols")
     }
 }
 
@@ -2474,7 +2475,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             port.port = o.ctx.number;
             if port.host.set(o.host().to_bytes()) < 0 {
                 // `throw std::bad_alloc()`, which nothing catches.
-                std::process::abort();
+                swoole_rs_corebase::fatal("out of memory storing a port's host");
             }
             if arg != 0 {
                 port.r#type = o.ctx.socket_type & !SOCK_SSL;

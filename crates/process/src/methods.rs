@@ -39,7 +39,7 @@ fn native() -> &'static dyn PoolNative {
         swr_v1_process_pool_native()
     }
     #[cfg(not(all(feature = "upstream-symbols", not(test))))]
-    std::process::abort()
+    swoole_rs_corebase::fatal("no native process pool without upstream-symbols")
 }
 
 /// A method's C++ return type, from the `i64` an export returns.

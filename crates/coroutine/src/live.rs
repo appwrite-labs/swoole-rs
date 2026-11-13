@@ -152,7 +152,7 @@ impl Scheduler {
             before = cid;
             let state = co.with(|co| co.state);
             let Some(label) = state_label(state) else {
-                std::process::abort();
+                swoole_rs_corebase::fatal("a live coroutine in an unknown state");
             };
             text.push_str("Coroutine\t");
             text.push_str(&cid.to_string());

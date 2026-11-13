@@ -545,7 +545,7 @@ pub mod pool {
     pub fn init() {
         let page = swoole_rs_corebase::constants::SW_GLOBAL_MEMORY_PAGESIZE;
         let Ok(fresh) = GlobalMemory::new(page, true) else {
-            std::process::abort();
+            swoole_rs_corebase::fatal("the global memory pool can't be created");
         };
         let pool = fresh.pool.swap(ptr::null_mut(), SeqCst);
         let installed = POOL
@@ -580,7 +580,8 @@ pub mod pool {
     /// the process aborts.
     #[must_use]
     pub fn alloc(size: u32) -> *mut c_void {
-        POOL.alloc(size).unwrap_or_else(|_| std::process::abort())
+        POOL.alloc(size)
+            .unwrap_or_else(|_| swoole_rs_corebase::fatal("no memory pool to allocate from"))
     }
 
     /// `sw_mem_pool()->get_memory_size()`, or 0 before `swoole_init`.

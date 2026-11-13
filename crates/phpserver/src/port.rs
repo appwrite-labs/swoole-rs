@@ -169,7 +169,7 @@ pub(crate) fn bound_port(object: &Value) -> view::Port<'_> {
         // Only this class's `create_object` makes the Server's Port objects.
         crate::server::invalid(c"Swoole\\Server\\Port");
         // The `E_ERROR` above bailed out.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 
@@ -225,7 +225,7 @@ fn data(call: &Call) -> &PortData {
     call.custom().unwrap_or_else(|| {
         invalid(call);
         // The `E_ERROR` above bailed out.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 
@@ -241,7 +241,7 @@ fn bound_server(call: &Call) -> view::Server<'_> {
     data(call).server().unwrap_or_else(|| {
         invalid(call);
         // The `E_ERROR` above bailed out.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     })
 }
 
@@ -343,7 +343,7 @@ fn set(call: &Call) {
     let port = data(call).port().unwrap_or_else(|| {
         invalid(call);
         // The `E_ERROR` above bailed out.
-        std::process::abort()
+        swoole_rs_corebase::fatal("E_ERROR returned")
     });
     let serv = bound_server(call);
     if apply_settings(port, serv, settings).is_err() {

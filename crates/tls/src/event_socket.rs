@@ -19,7 +19,7 @@ impl EventSocket {
         // SAFETY: the new record, which this owns until `free`; the reactor reaches it only
         // through the calls below.
         let Some(socket) = (unsafe { Socket::from_ptr(record) }) else {
-            std::process::abort()
+            swoole_rs_corebase::fatal("make_socket_fd returned null")
         };
         socket.edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
         Self(socket)

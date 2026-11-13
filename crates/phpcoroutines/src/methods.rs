@@ -212,7 +212,7 @@ impl Join {
         };
         if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
             // Upstream dereferences `sw_reactor()` here unchecked.
-            std::process::abort();
+            swoole_rs_corebase::fatal("no reactor to defer the resume to");
         }
     }
 

@@ -88,14 +88,16 @@ fn socket(s: &SocketFields) -> Socket {
 /// The collected item `index`; `run` asks only below the count it was given.
 fn nth<T>(items: &[*mut T], index: u64) -> *mut T {
     let item = usize::try_from(index).ok().and_then(|i| items.get(i));
-    item.copied().unwrap_or_else(|| std::process::abort())
+    item.copied()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command index past its items"))
 }
 
 /// A live socket of the server's.
 fn live<'a>(socket: *mut c_void) -> Handle<'a> {
     // SAFETY: sockets the server, its pools and its reactor hold are live while
     // a command runs.
-    unsafe { Handle::from_ptr(socket.cast()) }.unwrap_or_else(|| std::process::abort())
+    unsafe { Handle::from_ptr(socket.cast()) }
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command on a dead socket"))
 }
 
 /// This thread's reactor's sockets, if it has a reactor.
@@ -142,7 +144,9 @@ impl Live<'_> {
         let item = usize::try_from(index)
             .ok()
             .and_then(|i| self.connections.get(i));
-        item.copied().unwrap_or_else(|| std::process::abort())
+        item.copied().unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("an admin command index past its connections")
+        })
     }
 }
 
@@ -160,7 +164,9 @@ impl Facts for Live<'_> {
         let index = usize::try_from(index).unwrap_or(usize::MAX);
         // One of the pool's live workers: `run` asks only below its count.
         let worker = self.pool(task).worker(index);
-        let worker = worker.unwrap_or_else(|| std::process::abort());
+        let worker = worker.unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("an admin command index past the pool's workers")
+        });
         // SAFETY: the worker's live `UnixSocket`.
         let pipe = unsafe { &*worker.pipe_object().cast::<SocketPair>() };
         let end = if master {
@@ -168,7 +174,10 @@ impl Facts for Live<'_> {
         } else {
             pipe.worker_end()
         };
-        end.unwrap_or_else(|| std::process::abort()).read(socket)
+        end.unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("an admin command on a worker without a pipe")
+        })
+        .read(socket)
     }
 
     fn has_reactor(&mut self) -> bool {
@@ -238,7 +247,9 @@ impl Facts for Live<'_> {
         let conn = self.connection_record(index);
         let config = self.serv.port_of_server_fd(conn.server_fd());
         // A connection's port is live while a command runs, as `live`'s sockets are.
-        let config = config.unwrap_or_else(|| std::process::abort());
+        let config = config.unwrap_or_else(|| {
+            swoole_rs_corebase::fatal("an admin command on a connection without a port")
+        });
         let listener = live(config.socket).read(|s| s.info);
         let (received, sent) =
             live(conn.socket_ptr()).read(|s| (s.total_recv_bytes, s.total_send_bytes));

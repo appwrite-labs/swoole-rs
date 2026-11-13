@@ -341,7 +341,7 @@ impl<'a> ServerObject<'a> {
         call.this_value().and_then(Self::of).unwrap_or_else(|| {
             crate::server::invalid(crate::server::this_class(call));
             // The `E_ERROR` bailed out of this frame.
-            std::process::abort()
+            swoole_rs_corebase::fatal("E_ERROR returned")
         })
     }
 

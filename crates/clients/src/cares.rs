@@ -269,7 +269,7 @@ unsafe extern "C" fn host(
         };
         // c-ares runs on a thread whose reactor is live.
         if event_api::swoole_event_defer_value(task).is_err() {
-            std::process::abort();
+            swoole_rs_corebase::fatal("c-ares finished on a thread with no reactor");
         }
         // A completion was queued, so further SDK callbacks cannot enqueue it again.
         query.coroutine.set(ptr::null_mut());

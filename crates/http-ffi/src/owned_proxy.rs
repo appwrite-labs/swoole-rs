@@ -14,7 +14,7 @@ pub fn http_proxy(host: &[u8], port: i32, user: &[u8], password: &[u8]) -> Box<P
     let authenticated = !user.is_empty() && !password.is_empty();
     let result = proxy.configure([host, user, password], port, authenticated, -1);
     if result.status != 0 {
-        std::process::abort();
+        swoole_rs_corebase::fatal("the HTTP proxy settings can't be stored");
     }
     proxy
 }

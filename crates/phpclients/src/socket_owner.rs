@@ -37,7 +37,9 @@ pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
         if unsafe { (*stream).is_persistent() } != 0 {
             flags |= z::PHP_STREAM_FREE_CLOSE_PERSISTENT;
         }
-        let flags = i32::try_from(flags).unwrap_or_else(|_| std::process::abort());
+        let flags = i32::try_from(flags).unwrap_or_else(|_| {
+            swoole_rs_corebase::fatal("PHP stream close flags overflow an int")
+        });
         // SAFETY: PHP owns this stream; retain its resource slot while closing it inside zend_try.
         if unsafe { z::swr_zend_try_stream_free(stream, flags) } != 0 {
             return Err(Bailout);

@@ -187,7 +187,7 @@ pub unsafe extern "C-unwind" fn swoole_event_write(
     let reactor = current();
     // The constructor sets it; upstream calls it unchecked.
     let Some(write) = field(|fields| fields.write).flatten() else {
-        std::process::abort()
+        swoole_rs_corebase::fatal("the reactor has no write function")
     };
     // SAFETY: as the caller promises.
     unsafe { write(reactor, socket, data, len) }
@@ -208,7 +208,7 @@ pub unsafe extern "C-unwind" fn swoole_event_writev(
 ) -> isize {
     let reactor = current();
     let Some(writev) = field(|fields| fields.writev).flatten() else {
-        std::process::abort()
+        swoole_rs_corebase::fatal("the reactor has no writev function")
     };
     // SAFETY: as the caller promises.
     unsafe { writev(reactor, socket, iov, iovcnt) }

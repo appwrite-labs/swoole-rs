@@ -92,7 +92,8 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         if let Some(value) = effect(ctx, op, arg) {
             return value;
         }
-        connection(ctx, op, arg).unwrap_or_else(|| std::process::abort())
+        connection(ctx, op, arg)
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown event worker op"))
     }
 }
 

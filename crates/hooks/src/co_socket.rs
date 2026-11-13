@@ -355,7 +355,9 @@ impl Co {
         // SAFETY: `new`'s contract: a live record; only the field is borrowed, and
         // what the state lends sits in an `UnsafeCell`, which the borrow doesn't cover.
         let bound = unsafe { &(*self.0).state };
-        let bound = bound.as_deref().unwrap_or_else(|| std::process::abort());
+        let bound = bound
+            .as_deref()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
         let _loan = Loan::take(&bound.lent, part);
         f(bound)
     }

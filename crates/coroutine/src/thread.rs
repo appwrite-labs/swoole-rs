@@ -171,7 +171,7 @@ impl Drop for Started {
     fn drop(&mut self) {
         // A panic can't cross the entry's extern "C" frame, so join never errs.
         if let Some(Err(_)) = self.handle.take().map(JoinHandle::join) {
-            std::process::abort();
+            swoole_rs_corebase::fatal("a coroutine thread's join failed");
         }
     }
 }

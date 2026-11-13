@@ -1173,7 +1173,7 @@ pub fn sendfile_sync(
 /// nothing catches, so the process ends either way; here it aborts.
 pub(crate) fn buffer_check(status: i32) {
     if status != 0 {
-        std::process::abort();
+        swoole_rs_corebase::fatal("a send queue operation failed");
     }
 }
 
@@ -1233,7 +1233,9 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
     let output = with_queue(record, |queue| {
         handle_send_owned(
             record,
-            queue.unwrap_or_else(|| std::process::abort()),
+            queue.unwrap_or_else(|| {
+                swoole_rs_corebase::fatal("handle_send on a socket without a send queue")
+            }),
             &hooks,
         )
     });
@@ -1261,10 +1263,10 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     let hooks = Output(socket);
     let front = with_queue(socket, |queue| queue.map(|queue| queue.front()));
     let Some(Ok(front)) = front else {
-        std::process::abort();
+        swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
     };
     if front.kind != SENDFILE_TOKEN {
-        std::process::abort();
+        swoole_rs_corebase::fatal("sendfile's queued entry is not a file");
     }
     // SAFETY: a sendfile token: only `socket_sendfile_async` queues one, as a request
     // the queue keeps until the pop below.
@@ -1288,7 +1290,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
         match with_queue(socket, |queue| queue.map(swoole_rs_buffer::Buffer::pop)) {
             Some(Ok(detached)) => detached.dispose(),
             Some(Err(BUFFER_EMPTY)) => {}
-            _ => std::process::abort(),
+            _ => swoole_rs_corebase::fatal("popping the send queue failed"),
         }
     }
     result.code

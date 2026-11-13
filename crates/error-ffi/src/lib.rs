@@ -197,6 +197,10 @@ pub extern "C" fn swoole_ignore_error(code: i32) {
             b"swoole_ignore_error: out of memory\n",
         )
         .ok();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the line above says why; this crate sits below corebase"
+        )]
         std::process::abort();
     }
 }

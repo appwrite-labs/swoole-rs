@@ -104,11 +104,13 @@ impl<'a> Context<'a> {
     }
     /// The task pool, which the ops reading it run with.
     fn pool(&self) -> PoolRef<'a> {
-        self.pool.unwrap_or_else(|| std::process::abort())
+        self.pool
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a task op without a pool"))
     }
     /// The worker, which the ops reading it run with.
     fn worker(&self) -> Worker<'a> {
-        self.worker.unwrap_or_else(|| std::process::abort())
+        self.worker
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a task op without a worker"))
     }
     fn task(&self) -> &DataHead {
         // SAFETY: the ops reading it run with a live task.
@@ -189,7 +191,7 @@ impl swoole_rs_process::workers::Answer for Context<'_> {
         if let Some(value) = native::native(ctx, op, arg) {
             return value;
         }
-        result(ctx, op).unwrap_or_else(|| std::process::abort())
+        result(ctx, op).unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown task op"))
     }
 }
 

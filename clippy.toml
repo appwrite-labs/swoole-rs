@@ -14,3 +14,6 @@ disallowed-types = [
   { path = "std::collections::LinkedList", reason = "use a Vec or a flat::Table" },
   { path = "std::collections::VecDeque", reason = "use a ring over a fixed array, or a flat::Table" },
 ]
+disallowed-methods = [
+  { path = "std::process::abort", reason = "use swoole_rs_corebase::log::fatal, which logs the reason and location first" },
+]

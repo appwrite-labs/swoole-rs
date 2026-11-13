@@ -72,7 +72,7 @@ impl Sockets {
         // Out of memory: abort, as upstream's map insert.
         self.0
             .insert(key, registered)
-            .unwrap_or_else(|_| std::process::abort())
+            .unwrap_or_else(|_| swoole_rs_corebase::fatal("out of memory registering an event"))
     }
 }
 
