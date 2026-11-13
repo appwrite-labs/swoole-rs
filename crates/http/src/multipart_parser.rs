@@ -5,16 +5,20 @@
 /// `MPPE_PAUSED`: a callback's result that stops [`MultipartParser::execute`] early.
 pub const MPPE_PAUSED: i32 = 1;
 
-/// `enum multipart_error`, the `error_reason` values.
-pub const MPPE_OK: u8 = 0;
-pub const MPPE_UNKNOWN: u8 = 2;
-pub const MPPE_BOUNDARY_END_NO_CRLF: u8 = 3;
-pub const MPPE_BAD_START_BOUNDARY: u8 = 4;
-pub const MPPE_INVALID_HEADER_FIELD_CHAR: u8 = 5;
-pub const MPPE_INVALID_HEADER_VALUE_CHAR: u8 = 6;
-pub const MPPE_BAD_PART_END: u8 = 7;
-pub const MPPE_END_BOUNDARY_NO_DASH: u8 = 8;
-pub const MPPE_HEADER_VALUE_INCOMPLETE: u8 = 9;
+/// `enum multipart_error` past `MPPE_OK`: why the last call failed. The parser
+/// never sets `Paused` or `Unknown`, which only have messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultipartError {
+    Paused,
+    Unknown,
+    BoundaryEndNoCrlf,
+    BadStartBoundary,
+    InvalidHeaderFieldChar,
+    InvalidHeaderValueChar,
+    BadPartEnd,
+    EndBoundaryNoDash,
+    HeaderValueIncomplete,
+}
 
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
@@ -76,10 +80,10 @@ pub struct MultipartParser {
     boundary_length: u8,
     index: usize,
     state: State,
-    /// Where the last error was, its `MPPE_*` reason, the byte expected (0 for none)
-    /// and the byte found.
+    /// Where the last error was, its reason (`None` for `MPPE_OK`), the byte expected
+    /// (0 for none) and the byte found.
     pub error_i: usize,
-    pub error_reason: u8,
+    pub error_reason: Option<MultipartError>,
     pub error_expected: u8,
     pub error_unexpected: u8,
 }
@@ -109,7 +113,7 @@ impl MultipartParser {
             index: 0,
             state: State::Start,
             error_i: 0,
-            error_reason: MPPE_OK,
+            error_reason: None,
             error_expected: 0,
             error_unexpected: 0,
         }
@@ -132,17 +136,21 @@ impl MultipartParser {
     /// `multipart_parser_error_msg`: the last error, as upstream words it.
     #[must_use]
     pub fn error_message(&self) -> Vec<u8> {
-        let head: &[u8] = match self.error_reason {
-            MPPE_OK => return Vec::new(),
-            MPPE_PAUSED_REASON => return b"parser paused".to_vec(),
-            MPPE_UNKNOWN => return b"parser unknown".to_vec(),
-            MPPE_BOUNDARY_END_NO_CRLF => b"no CRLF at first boundary end: ",
-            MPPE_BAD_START_BOUNDARY => b"first boundary mismatching: ",
-            MPPE_INVALID_HEADER_FIELD_CHAR => b"invalid char in header field: ",
-            MPPE_INVALID_HEADER_VALUE_CHAR => b"invalid char in header value: ",
-            MPPE_BAD_PART_END => b"no next part or final hyphen: expecting CR or '-' ",
-            MPPE_END_BOUNDARY_NO_DASH => b"bad final hyphen: ",
-            _ => return b"parser abort".to_vec(),
+        use MultipartError as E;
+        let Some(reason) = self.error_reason else {
+            return Vec::new();
+        };
+        let head: &[u8] = match reason {
+            E::Paused => return b"parser paused".to_vec(),
+            E::Unknown => return b"parser unknown".to_vec(),
+            E::BoundaryEndNoCrlf => b"no CRLF at first boundary end: ",
+            E::BadStartBoundary => b"first boundary mismatching: ",
+            E::InvalidHeaderFieldChar => b"invalid char in header field: ",
+            E::InvalidHeaderValueChar => b"invalid char in header value: ",
+            E::BadPartEnd => b"no next part or final hyphen: expecting CR or '-' ",
+            E::EndBoundaryNoDash => b"bad final hyphen: ",
+            // Upstream's message switch has no case for it.
+            E::HeaderValueIncomplete => return b"parser abort".to_vec(),
         };
         let mut text = head.to_vec();
         match self.error_expected {
@@ -168,14 +176,14 @@ impl MultipartParser {
         text
     }
 
-    fn fail(&mut self, reason: u8, at: usize, found: u8) -> Step {
+    fn fail(&mut self, reason: MultipartError, at: usize, found: u8) -> Step {
         self.error_unexpected = found;
         self.error_i = at;
-        self.error_reason = reason;
+        self.error_reason = Some(reason);
         Step::Return(-1)
     }
 
-    fn expect(&mut self, reason: u8, expected: u8, at: usize, found: u8) -> Step {
+    fn expect(&mut self, reason: MultipartError, expected: u8, at: usize, found: u8) -> Step {
         self.error_expected = expected;
         self.fail(reason, at, found)
     }
@@ -237,14 +245,14 @@ impl MultipartParser {
                         if c == b'-' {
                             self.state = State::PartDataFinalHyphen;
                         } else if c != CR {
-                            return self.expect(MPPE_BOUNDARY_END_NO_CRLF, CR, i, c);
+                            return self.expect(MultipartError::BoundaryEndNoCrlf, CR, i, c);
                         }
                         self.index += 1;
                         return Step::Next;
                     }
                     if self.index == length + 1 {
                         if c != LF {
-                            return self.expect(MPPE_BOUNDARY_END_NO_CRLF, LF, i, c);
+                            return self.expect(MultipartError::BoundaryEndNoCrlf, LF, i, c);
                         }
                         self.index = 0;
                         self.state = State::HeaderFieldStart;
@@ -253,7 +261,7 @@ impl MultipartParser {
                     }
                     let expected = self.boundary_byte(self.index);
                     if c != expected {
-                        return self.expect(MPPE_BAD_START_BOUNDARY, expected, i, c);
+                        return self.expect(MultipartError::BadStartBoundary, expected, i, c);
                     }
                     self.index += 1;
                     return Step::Next;
@@ -274,7 +282,7 @@ impl MultipartParser {
                     }
                     let lower = c | 0x20;
                     if c != b'-' && !lower.is_ascii_lowercase() {
-                        return self.fail(MPPE_INVALID_HEADER_FIELD_CHAR, i, c);
+                        return self.fail(MultipartError::InvalidHeaderFieldChar, i, c);
                     }
                     if is_last {
                         let result = parts.on_header_field(span(*mark, i + 1));
@@ -284,7 +292,7 @@ impl MultipartParser {
                 }
                 State::HeadersAlmostDone => {
                     if c != LF {
-                        return self.expect(MPPE_INVALID_HEADER_VALUE_CHAR, LF, i, c);
+                        return self.expect(MultipartError::InvalidHeaderValueChar, LF, i, c);
                     }
                     self.state = State::PartDataStart;
                     return Step::Next;
@@ -303,13 +311,13 @@ impl MultipartParser {
                         return done(result, i + 1).unwrap_or(Step::Next);
                     }
                     if is_last {
-                        return self.expect(MPPE_HEADER_VALUE_INCOMPLETE, CR, i, c);
+                        return self.expect(MultipartError::HeaderValueIncomplete, CR, i, c);
                     }
                     return Step::Next;
                 }
                 State::HeaderValueAlmostDone => {
                     if c != LF {
-                        return self.expect(MPPE_INVALID_HEADER_VALUE_CHAR, LF, i, c);
+                        return self.expect(MultipartError::InvalidHeaderValueChar, LF, i, c);
                     }
                     self.state = State::HeaderFieldStart;
                     return Step::Next;
@@ -381,7 +389,7 @@ impl MultipartParser {
                         self.state = State::PartDataEnd;
                         return done(parts.on_part_data_end(), i + 1).unwrap_or(Step::Next);
                     }
-                    return self.fail(MPPE_BAD_PART_END, i, c);
+                    return self.fail(MultipartError::BadPartEnd, i, c);
                 }
                 State::PartDataFinalHyphen => {
                     if c == b'-' {
@@ -389,7 +397,7 @@ impl MultipartParser {
                         let result = parts.on_body_end(self.boundary());
                         return done(result, i).unwrap_or(Step::Next);
                     }
-                    return self.expect(MPPE_END_BOUNDARY_NO_DASH, b'-', i, c);
+                    return self.expect(MultipartError::EndBoundaryNoDash, b'-', i, c);
                 }
                 State::PartDataEnd => {
                     if c == LF {
@@ -397,16 +405,13 @@ impl MultipartParser {
                         let result = parts.on_part_data_begin(self.boundary());
                         return done(result, i + 1).unwrap_or(Step::Next);
                     }
-                    return self.expect(MPPE_END_BOUNDARY_NO_DASH, b'-', i, c);
+                    return self.expect(MultipartError::EndBoundaryNoDash, b'-', i, c);
                 }
                 State::End => return Step::Next,
             }
         }
     }
 }
-
-/// `MPPE_PAUSED` as an `error_reason`: nothing in the parser sets it.
-const MPPE_PAUSED_REASON: u8 = 1;
 
 #[cfg(test)]
 mod tests {
@@ -498,7 +503,7 @@ mod tests {
         );
         assert_eq!(parts.events, whole()[..=pause], "events up to the pause");
         assert_eq!(parser.state, state, "state after the pause");
-        assert_eq!(parser.error_reason, MPPE_OK, "a pause is not an error");
+        assert_eq!(parser.error_reason, None, "a pause is not an error");
         parts.pause = None;
         let rest = &BODY[consumed..];
         assert_eq!(parser.execute(&mut parts, rest), len(rest), "resumed");
