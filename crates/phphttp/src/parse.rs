@@ -5,7 +5,7 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Slot, State};
-use std::ffi::{CStr, c_char, c_int};
+use std::ffi::{c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::os::fd::FromRawFd;
@@ -23,7 +23,7 @@ use swoole_rs_zend::sys::{
     swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
     swr_zend_http_upload, zval,
 };
-use swoole_rs_zend::{Class, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
+use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -247,8 +247,10 @@ const HEADER_KEYS: [Key; 8] = [
 
 static KEYS: [Interned; 25] = [const { Interned::new() }; 25];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
-/// ... and `server`, `header` and `fd`.
-static OFFSETS: [AtomicU32; 8] = [const { AtomicU32::new(0) }; 8];
+/// ... and `server` and `header`.
+static PROPERTIES: [Declared; 7] = [const { Declared::new() }; 7];
+/// `Swoole\Http\Request`'s declared `fd` slot.
+pub(crate) static REQUEST_FD: Declared = Declared::new();
 pub(crate) static CAPABILITIES: AtomicU32 = AtomicU32::new(0);
 
 /// The interned key, None before MINIT.
@@ -275,7 +277,7 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
     for (slot, name) in KEYS.iter().zip(KEY_NAMES) {
         minit.intern(slot, name);
     }
-    for (slot, name) in OFFSETS.iter().zip([
+    for (property, name) in PROPERTIES.iter().zip([
         c"get",
         c"post",
         c"cookie",
@@ -283,31 +285,17 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
         c"tmpfiles",
         c"server",
         c"header",
-        c"fd",
     ]) {
-        slot.store(property_offset(&crate::request::REQUEST, name), Relaxed);
+        property.resolve(&crate::request::REQUEST, name);
     }
-}
-
-/// The slot of `class`'s declared property `name` (`OBJ_PROP`'s offset), 0
-/// when it declares none.
-/// # Panics
-/// The class is not registered.
-pub(crate) fn property_offset(class: &Class, name: &CStr) -> u32 {
-    assert!(!class.entry().is_null(), "a registered class");
-    class.property_offset(name)
-}
-
-/// `Swoole\Http\Request`'s declared `fd` slot.
-pub(crate) fn fd_offset() -> u32 {
-    OFFSETS[7].load(Relaxed)
+    REQUEST_FD.resolve(&crate::request::REQUEST, c"fd");
 }
 
 /// `Swoole\Http\Request`'s declared `tmpfiles` slot.
 pub(crate) fn tmpfiles_offset() -> u32 {
-    OFFSETS
+    PROPERTIES
         .get(Property::TmpFiles as usize)
-        .map_or(0, |offset| offset.load(Relaxed))
+        .map_or(0, Declared::offset)
 }
 
 /// `swoole_http_init_and_read_property`: the array behind a property slot,
@@ -323,15 +311,15 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
         Property::Server => &mut request.zserver,
         Property::Header => &mut request.zheader,
     };
-    let offset = OFFSETS
-        .get(which as usize)
-        .map_or(0, |offset| offset.load(Relaxed));
+    let Some(property) = PROPERTIES.get(which as usize) else {
+        return ptr::null_mut();
+    };
     let size = if matches!(which, Property::Server) {
         HT_MIN_SIZE << 1
     } else {
         HT_MIN_SIZE
     };
-    slot.init_array(&request.zobject, offset, size)
+    slot.init_array(&request.zobject, property, size)
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.

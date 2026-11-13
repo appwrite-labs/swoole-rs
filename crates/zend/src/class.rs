@@ -1,10 +1,10 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::{
-    Minit, Parent, ZStr,
+    Minit, Parent, Value, ZStr,
     sys::{
         HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry,
         zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers,
-        zend_string, zend_throw_error, zend_throw_exception,
+        zend_string, zend_throw_error, zend_throw_exception, zval,
     },
 };
 use std::{
@@ -12,7 +12,7 @@ use std::{
     marker::PhantomData,
     mem::offset_of,
     ptr,
-    sync::atomic::{AtomicPtr, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 unsafe extern "C" {
@@ -23,12 +23,15 @@ unsafe extern "C" {
     /// tables, and runs no PHP code.
     safe fn swr_zend_instanceof(class: ClassEntry<'_>, parent: ClassEntry<'_>) -> bool;
     /// `zend_property_info::offset` of the property the live class declares as
-    /// `name`, or 0 for none: it reads the class's property table, which no
-    /// PHP code changes, and `name`.
+    /// `name`, or 0 for none or a typed or static one: it reads the class's
+    /// property table, which no PHP code changes, and `name`.
     safe fn swr_zend_http_property_offset(
         class: ClassEntry<'_>,
         name: crate::helpers::CText<'_>,
     ) -> u32;
+    /// `array_init_size(target, size)`: `target` holds a new, empty array in
+    /// place of what it held, which is not released. No PHP code runs.
+    safe fn swr_zend_array_init_size(target: &Value, size: u32);
 }
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
@@ -268,15 +271,6 @@ impl Class {
         unsafe { zend_throw_exception(entry, message.as_ptr(), code) };
     }
 
-    /// The offset of the slot of the instance property this class declares as
-    /// `name` (`zend_property_info::offset`); 0 for no such property, or before
-    /// MINIT registers the class.
-    #[must_use]
-    pub fn property_offset(&self, name: &CStr) -> u32 {
-        self.handle()
-            .map_or(0, |class| swr_zend_http_property_offset(class, name.into()))
-    }
-
     /// The registered class as a handle: it lives for the process. None
     /// before MINIT registers it.
     #[must_use]
@@ -371,4 +365,91 @@ fn text(string: *const zend_string) -> *const c_char {
     string
         .wrapping_byte_add(offset_of!(zend_string, val))
         .cast()
+}
+
+/// An untyped instance property a registered class declares, as the offset of
+/// its slot (`OBJ_PROP`) in every object of the class or of a subclass, which
+/// keeps its parent's slots and may not type them. Found once in MINIT, then
+/// read without a name lookup. Untyped, the slot takes any value.
+pub struct Declared {
+    class: AtomicPtr<zend_class_entry>,
+    offset: AtomicU32,
+}
+
+impl Default for Declared {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Declared {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            class: AtomicPtr::new(ptr::null_mut()),
+            offset: AtomicU32::new(0),
+        }
+    }
+
+    /// MINIT, once `class` is registered: its property `name`. Without such
+    /// an untyped instance property, [`Declared::get`] finds none.
+    pub fn resolve(&self, class: &Class, name: &CStr) {
+        let Some(entry) = class.handle() else { return };
+        let offset = swr_zend_http_property_offset(entry, name.into());
+        self.offset.store(offset, Ordering::Relaxed);
+        self.class.store(entry.as_ptr(), Ordering::Release);
+    }
+
+    /// The slot's offset; 0 for none, or before MINIT.
+    #[must_use]
+    #[inline]
+    pub fn offset(&self) -> u32 {
+        self.offset.load(Ordering::Relaxed)
+    }
+
+    /// `OBJ_PROP(Z_OBJ_P(object), offset)`: the slot in `object`, an object of
+    /// the class or of a subclass; None for any other value, or before MINIT.
+    #[must_use]
+    #[inline]
+    pub fn get<'a>(&self, object: &'a Value) -> Option<&'a Value> {
+        let std = object.object()?;
+        let own = object.class_entry()?;
+        let class = self.class.load(Ordering::Acquire);
+        let offset = self.offset();
+        if offset == 0
+            || class.is_null()
+            || own.as_ptr() != class && !own.instance_of(ClassEntry(class, PhantomData))
+        {
+            return None;
+        }
+        let slot = std.wrapping_byte_add(offset as usize).cast::<zval>();
+        // SAFETY: an object of the class that declares the property at this
+        // offset (a registered class, so not null), which keeps the slot while
+        // `object` holds it; `Value` is a transparent zval.
+        unsafe { Value::from_ptr(slot) }
+    }
+
+    /// `ZVAL_COPY_VALUE` of `value` into `object`'s slot (see
+    /// [`Declared::get`]), which takes its reference, as
+    /// `zend_update_property` does once it has found the slot, but without
+    /// releasing what the slot held: for a fresh object, whose default (a
+    /// number, null or an interned string) needs no release. Without a slot,
+    /// `value` is dropped.
+    #[inline]
+    pub fn init(&self, object: &Value, value: crate::Owned) {
+        if let Some(slot) = self.get(object) {
+            // SAFETY: the slot just found, which takes any value; `value`
+            // gives its reference up to it.
+            unsafe { slot.as_ptr().write(value.into_zval()) };
+        }
+    }
+
+    /// `array_init_size` in `object`'s slot (see [`Declared::get`]), which
+    /// is not released first: the new array, or None without a slot.
+    #[inline]
+    pub fn init_array<'a>(&self, object: &'a Value, size: u32) -> Option<&'a Value> {
+        let slot = self.get(object)?;
+        swr_zend_array_init_size(slot, size);
+        Some(slot)
+    }
 }

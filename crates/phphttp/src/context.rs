@@ -10,16 +10,15 @@ use std::{
     ffi::{CStr, CString, c_int},
     ptr::{self, NonNull},
     rc::Rc,
-    sync::atomic::{AtomicU32, Ordering::Relaxed},
+    sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
-    Owned, Value, ZStr,
+    Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{IS_LONG, swr_zend_efree, swr_zend_http_release_objects, zend_object, zend_value, zval},
-    value,
+    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zval},
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
@@ -69,14 +68,11 @@ impl Ctx {
 }
 
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).
-static RESPONSE_FD: AtomicU32 = AtomicU32::new(0);
+static RESPONSE_FD: Declared = Declared::new();
 
 /// MINIT, once `Swoole\Http\Response` is registered.
 pub(crate) fn response_minit() {
-    RESPONSE_FD.store(
-        parse::property_offset(&crate::response::RESPONSE, c"fd"),
-        Relaxed,
-    );
+    RESPONSE_FD.resolve(&crate::response::RESPONSE, c"fd");
 }
 
 /// The class of a context's object.
@@ -94,8 +90,7 @@ pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut z
         Kind::Response => &*crate::response::RESPONSE,
     };
     // The context keeps the object's reference.
-    slot.value = class.create_object().into_zval();
-    slot.ptr = &raw mut slot.value;
+    slot.put(class.create_object());
     let object = slot.get()?;
     match kind {
         Kind::Request => object.custom::<crate::request::Data>()?.0.set(Some(ctx)),
@@ -104,16 +99,14 @@ pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut z
     object.object()
 }
 
-/// A new object in `slot`, pointing at `ctx`, with its `fd` property (the
-/// slot at `offset`) set.
-fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, offset: u32, fd: i64) {
-    let Some(std) = new_object(slot, kind, ctx) else {
-        return;
-    };
-    // The declared property's slot, `OBJ_PROP(std, offset)`.
-    let property = std.wrapping_byte_add(offset as usize).cast::<zval>();
-    // SAFETY: a fresh object's declared slot, holding nothing to release.
-    unsafe { value::set(property, zend_value { lval: fd }, IS_LONG) };
+/// A new object in `slot`, pointing at `ctx`, with its declared `fd`
+/// property set.
+fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, property: &Declared, fd: i64) {
+    if new_object(slot, kind, ctx).is_some()
+        && let Some(object) = slot.get()
+    {
+        property.init(object, Owned::long(fd));
+    }
 }
 
 /// `swoole_http_context_new`: a new context with its request and response
@@ -128,14 +121,14 @@ pub(crate) fn context_new(fd: i64) -> Ctx {
         &mut state.request.zobject,
         Kind::Request,
         held,
-        parse::fd_offset(),
+        &parse::REQUEST_FD,
         fd,
     );
     object(
         &mut state.response.zobject,
         Kind::Response,
         held,
-        RESPONSE_FD.load(Relaxed),
+        &RESPONSE_FD,
         fd,
     );
     parse::property(state, Property::Server);
@@ -349,7 +342,7 @@ pub(crate) fn after_response(mut ctx: Ctx) {
 /// `Context::is_available`: the response can still reach its peer.
 pub(crate) fn available(mut ctx: Ctx) -> bool {
     let state = ctx.state();
-    if state.response.zobject.ptr.is_null() {
+    if state.response.zobject.get().is_none() {
         return false;
     }
     if co_socket(state) {
@@ -382,8 +375,8 @@ impl Release {
     pub(crate) fn new(mut ctx: Ctx) -> Self {
         let state = ctx.state();
         Self {
-            request: state.request.zobject.ptr,
-            response: state.response.zobject.ptr,
+            request: state.request.zobject.as_ptr(),
+            response: state.response.zobject.as_ptr(),
             begun: 0,
         }
     }
@@ -436,8 +429,8 @@ pub(crate) fn release_objects(ctx: Ctx) -> Result<(), Bailout> {
 /// was the last hold on it, or another object or stream still has one.
 pub(crate) unsafe fn free(mut ctx: Ctx) {
     let state = ctx.state();
-    if !state.request.zobject.ptr.is_null()
-        || !state.response.zobject.ptr.is_null()
+    if state.request.zobject.get().is_some()
+        || state.response.zobject.get().is_some()
         || state.stream_id > 0
     {
         return;

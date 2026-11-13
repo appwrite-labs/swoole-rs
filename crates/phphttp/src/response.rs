@@ -11,7 +11,6 @@ use crate::{
 };
 use std::{
     ffi::{CString, c_int, c_void},
-    ptr,
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_corebase::CCast;
@@ -84,7 +83,7 @@ fn release(mut ctx: Ctx) -> bool {
             bailed = send::end(ctx, None).is_err();
         }
     }
-    ctx.state().response.zobject.ptr = ptr::null_mut();
+    ctx.state().response.zobject.clear();
     // SAFETY: a live context, which the response no longer holds.
     unsafe { context::free(ctx) };
     bailed
@@ -737,7 +736,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let _made = context::new_object(slot, context::Kind::Response, held);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it.
-    unsafe { call.set_value(slot.value) };
+    unsafe { call.set_value(slot.copy_value()) };
     let Some(props) = slot.get().and_then(|value| value.props(Some(&RESPONSE))) else {
         return;
     };

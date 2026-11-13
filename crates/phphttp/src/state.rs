@@ -5,52 +5,54 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     rc::Rc,
 };
-use swoole_rs_zend::{
-    ArrayMut, Owned, Props, Value,
-    sys::{swr_zend_http_property_array, zend_object, zval},
-};
+use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
 
-/// A `zval *` and the `zval` it points at once set (`Request`'s pairs).
-#[repr(C)]
-pub(crate) struct Slot {
-    pub(crate) ptr: *mut zval,
-    pub(crate) value: zval,
+/// A context's request or response object, or one of the request's arrays:
+/// empty until the context sets it (`Request`'s pairs of a `zval *` and the
+/// `zval` it points at).
+#[repr(transparent)]
+pub(crate) struct Slot(Kept);
+
+impl std::ops::Deref for Slot {
+    type Target = Kept;
+
+    fn deref(&self) -> &Kept {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Slot {
+    fn deref_mut(&mut self) -> &mut Kept {
+        &mut self.0
+    }
 }
 
 impl Slot {
-    /// The slot's zval; None before the context sets it.
-    pub(crate) fn get(&self) -> Option<&Value> {
-        // SAFETY: a set slot points at its own `value`, which the context
-        // (or, for an array, the object's property) keeps live.
-        unsafe { Value::from_ptr(self.ptr) }
-    }
-
-    /// The object a set object slot holds.
-    pub(crate) fn object(&self) -> Option<*mut zend_object> {
-        self.get()?.object()
-    }
-
-    /// The array a set array slot holds, to add to.
-    pub(crate) fn array_mut(&mut self) -> Option<&mut ArrayMut> {
-        self.get()?.array()?;
-        // SAFETY: as `get`, an array zval, borrowed mutably with the slot.
-        Some(unsafe { ArrayMut::from_ptr(self.ptr) })
-    }
-
     /// `swoole_http_init_and_read_property`: the array in `object`'s declared
-    /// property slot at `offset`, made on first use. Like upstream, the slot
-    /// keeps an uncounted copy, which the property keeps alive.
-    pub(crate) fn init_array(&mut self, object: &Self, offset: u32, size: u32) -> *mut zval {
-        if self.ptr.is_null()
-            && let Some(object) = object.object()
+    /// `property`, made on first use. Like upstream, the slot keeps an
+    /// uncounted copy, which the property keeps alive.
+    pub(crate) fn init_array(
+        &mut self,
+        object: &Self,
+        property: &Declared,
+        size: u32,
+    ) -> *mut zval {
+        if self.get().is_none()
+            && let Some(array) = object
+                .get()
+                .and_then(|object| property.init_array(object, size))
         {
-            // SAFETY: a declared property slot of the context's live object.
-            let array = unsafe { swr_zend_http_property_array(object, offset, size) };
-            // SAFETY: the array zval just initialised.
-            self.value = unsafe { *array };
-            self.ptr = &raw mut self.value;
+            // SAFETY: the context's object's property holds the array, as
+            // upstream's copy relies on.
+            unsafe { self.0.keep(array) };
         }
-        self.ptr
+        self.as_ptr()
+    }
+
+    /// `ZVAL_COPY_VALUE`: the zval's bits without a reference of their own
+    /// (`IS_UNDEF` while empty), for Zend to borrow.
+    pub(crate) fn copy_value(&self) -> zval {
+        self.get().map_or(UNDEF, Value::copy_value)
     }
 
     /// Property writes on the slot's object, under its own class; None
@@ -209,8 +211,3 @@ pub(crate) struct Response {
     pub(crate) zcookie: Slot,
     pub(crate) ztrailer: Slot,
 }
-
-/// The layout the upstream `ContextState` had.
-const _: () = assert!(size_of::<Parse>() == 144, "upstream ContextState layout");
-const _: () = assert!(size_of::<Response>() == 120, "upstream ContextState layout");
-const _: () = assert!(size_of::<Request>() == 272, "upstream ContextState layout");

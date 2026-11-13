@@ -12,13 +12,14 @@
 
 uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name) {
     zend_property_info *info = zend_hash_str_find_ptr(&ce->properties_info, name, strlen(name));
-    return info ? info->offset : 0;
+    if (!info || (info->flags & ZEND_ACC_STATIC) || ZEND_TYPE_IS_SET(info->type)) {
+        return 0;
+    }
+    return info->offset;
 }
 
-zval *swr_zend_http_property_array(zend_object *object, uint32_t offset, uint32_t size) {
-    zval *property = OBJ_PROP(object, offset);
-    array_init_size(property, size);
-    return property;
+void swr_zend_array_init_size(zval *target, uint32_t size) {
+    array_init_size(target, size);
 }
 
 char *swr_zend_http_estrndup(const char *text, size_t length) {

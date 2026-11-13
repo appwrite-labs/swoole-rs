@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ffi::{CStr, c_int};
 use std::ptr;
-use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
 use swoole_rs_httpbindings::{
     CONNECTION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER, TRANSFER_ENCODING,
@@ -17,7 +17,9 @@ use swoole_rs_httpbindings::{
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
 use swoole_rs_zend::sys::zval;
-use swoole_rs_zend::{Array, Class, HeldArray, Key, Value, ZStr, ZString, bailout, string};
+use swoole_rs_zend::{
+    Array, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout, string,
+};
 
 /// llhttp's `HTTP_HEAD`.
 const HEAD: u8 = 2;
@@ -35,7 +37,7 @@ const METHOD_ZSTD: i32 = 4;
 const TRAILER_LINE: usize = 65536;
 
 /// `Swoole\Http\Response`'s `header`, `cookie` and `trailer` slots.
-static OFFSETS: [AtomicU32; 3] = [const { AtomicU32::new(0) }; 3];
+static PROPERTIES: [Declared; 3] = [const { Declared::new() }; 3];
 
 php_local! {
     static OUT: RefCell<Vec<u8>> = RefCell::new(Vec::new());
@@ -56,8 +58,8 @@ pub(crate) fn buffer<R>(f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
 
 /// MINIT (from the response class's): find the array properties' slots.
 pub(crate) fn minit(class: &Class) {
-    for (slot, name) in OFFSETS.iter().zip([c"header", c"cookie", c"trailer"]) {
-        slot.store(crate::parse::property_offset(class, name), Relaxed);
+    for (property, name) in PROPERTIES.iter().zip([c"header", c"cookie", c"trailer"]) {
+        property.resolve(class, name);
     }
 }
 
@@ -71,8 +73,10 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
         _ => &mut response.ztrailer,
     };
     let index = usize::try_from(which).unwrap_or(2).min(2);
-    let offset = OFFSETS.get(index).map_or(0, |offset| offset.load(Relaxed));
-    slot.init_array(&response.zobject, offset, 8)
+    let Some(property) = PROPERTIES.get(index) else {
+        return ptr::null_mut();
+    };
+    slot.init_array(&response.zobject, property, 8)
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
@@ -82,12 +86,7 @@ pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
 /// context, or replace the property, while the array is walked: the hold keeps
 /// it live and borrows nothing from the context's state.
 pub(crate) fn property(response: &Slot, which: usize) -> Option<HeldArray> {
-    let object = response.object()?;
-    let offset = OFFSETS.get(which).map_or(0, |offset| offset.load(Relaxed)) as usize;
-    // OBJ_PROP: a declared slot of that object.
-    let slot = object.wrapping_byte_add(offset).cast::<zval>();
-    // SAFETY: a declared property slot of the context's live response.
-    unsafe { Value::from_ptr(slot) }?.hold()
+    PROPERTIES.get(which)?.get(response.get()?)?.hold()
 }
 
 /// `zend::String(value)`: a string zval's own string, or `zval_get_string`'s new one.
