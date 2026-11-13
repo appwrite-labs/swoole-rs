@@ -95,7 +95,12 @@ fn rust_trace(command: &[u8], split: usize, buffer_size: usize, maximum: u32) ->
         let (length, offset, r) = (model.content.len(), model.offset, model.request);
         let call = format!(
             "R{result}E{error}L{length}O{offset},{},{}/{},{}/{},{};",
-            r.state, r.lines_received, r.lines_total, r.bytes_received, r.bytes_total, r.offset
+            r.state as u8,
+            r.lines_received,
+            r.lines_total,
+            r.bytes_received,
+            r.bytes_total,
+            r.offset
         );
         model.log.extend_from_slice(call.as_bytes());
         if result == SW_ERR {
