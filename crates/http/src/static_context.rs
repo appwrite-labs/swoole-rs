@@ -10,14 +10,25 @@ mod selection;
 mod serve;
 
 const ALLOCATION: i32 = -3;
-pub(crate) const URL: u32 = 0;
-pub(crate) const ORIGINAL: u32 = 1;
-pub(crate) const DIRECTORY: u32 = 2;
-pub(crate) const INDEX: u32 = 3;
-pub(crate) const FILENAME: u32 = 4;
-pub(crate) const BOUNDARY: u32 = 5;
-pub(crate) const CONTENT: u32 = 6;
-pub(crate) const END: u32 = 7;
+/// One of the context's texts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticText {
+    /// The URL, rewritten or not.
+    Url,
+    /// The URL as the request gave it.
+    Original,
+    Directory,
+    /// The index file.
+    Index,
+    /// The filename, to its NUL.
+    Filename,
+    Boundary,
+    /// The multipart content type.
+    Content,
+    /// The closing boundary.
+    End,
+}
+use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, Url};
 /// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
 pub const BOUNDARY_SIZE: usize = 39;
 
@@ -176,25 +187,22 @@ impl HttpStaticContext {
     pub fn end_part(&self) -> &[u8] {
         &self.end
     }
-    /// One of the context's texts: 0 the URL, 1 the original URL, 2 the directory,
-    /// 3 the index file, 4 the filename (to its NUL), 5 the boundary, 6 the content
-    /// type and 7 the closing boundary.
+    /// One of the context's texts.
     #[must_use]
-    pub fn text(&self, kind: u32) -> Option<&[u8]> {
-        Some(match kind {
-            URL => self.url(),
-            ORIGINAL => &self.original,
-            DIRECTORY => &self.directory_path,
-            INDEX => &self.index,
-            FILENAME => crate::c_text(&self.filename),
-            BOUNDARY => &self.boundary,
-            CONTENT => &self.content,
-            END => &self.end,
-            _ => return None,
-        })
+    pub fn text(&self, kind: StaticText) -> &[u8] {
+        match kind {
+            Url => self.url(),
+            Original => &self.original,
+            Directory => &self.directory_path,
+            Index => &self.index,
+            Filename => crate::c_text(&self.filename),
+            Boundary => &self.boundary,
+            Content => &self.content,
+            End => &self.end,
+        }
     }
-    fn publish(&mut self, kind: u32, text: &[u8]) -> i32 {
-        if kind == FILENAME {
+    fn publish(&mut self, kind: StaticText, text: &[u8]) -> i32 {
+        if kind == Filename {
             let Some((nul, head)) =
                 crate::static_path::span(&mut self.filename, self.capacity, 0, text.len() + 1)
                     .and_then(<[u8]>::split_last_mut)
@@ -207,7 +215,7 @@ impl HttpStaticContext {
             return 0;
         }
         let target = match kind {
-            URL => {
+            Url => {
                 let value = match copied(text) {
                     Ok(value) => value,
                     Err(error) => return error,
@@ -215,11 +223,10 @@ impl HttpStaticContext {
                 self.rewritten = Some(value);
                 return 0;
             }
-            DIRECTORY => &mut self.directory_path,
-            INDEX => &mut self.index,
-            BOUNDARY => &mut self.boundary,
-
-            _ => return INVALID,
+            Directory => &mut self.directory_path,
+            Index => &mut self.index,
+            Boundary => &mut self.boundary,
+            Original | Filename | Content | End => return INVALID,
         };
         let value = match copied(text) {
             Ok(value) => value,
@@ -318,37 +325,36 @@ mod tests {
         rules.add(b"/a\0", b"/b\0");
         rules.add(b"/b\0tail", b"");
         assert!(owner.rewrite(&rules));
-        assert_eq!(owner.text(URL).unwrap(), b"/b\0tail");
+        assert_eq!(owner.text(Url), b"/b\0tail");
         assert!(owner.rewrite(&rules));
-        assert_eq!(owner.text(URL).unwrap(), b"");
-        assert_eq!(owner.text(ORIGINAL).unwrap(), original);
+        assert_eq!(owner.text(Url), b"");
+        assert_eq!(owner.text(Original), original);
         assert!(!owner.rewrite(&crate::RewriteRules::default()));
-        assert_eq!(owner.text(URL).unwrap(), b"");
+        assert_eq!(owner.text(Url), b"");
     }
     #[test]
     fn content_and_end_render_from_the_owned_binary_boundary() {
         let mut owner = make();
         let mut boundary = b"one\0two".to_vec();
-        assert_eq!(owner.publish(BOUNDARY, &boundary), 0);
+        assert_eq!(owner.publish(Boundary, &boundary), 0);
         boundary.fill(b'x');
         assert_eq!(owner.format_content(), 0);
         assert_eq!(owner.format_end(), 0);
         assert_eq!(
-            owner.text(CONTENT).unwrap(),
+            owner.text(Content),
             b"multipart/byteranges; boundary=one\0two"
         );
-        assert_eq!(owner.text(END).unwrap(), b"\r\n--one\0two--\r\n");
+        assert_eq!(owner.text(End), b"\r\n--one\0two--\r\n");
     }
     #[test]
     fn owned_original_rewrite_and_copies_are_independent() {
         let mut input = b"/first".to_vec();
         let mut owner = HttpStaticContext::new(&input, 128).unwrap();
         input.fill(b'x');
-        assert_eq!(owner.text(URL).unwrap(), b"/first");
-        assert_eq!(owner.publish(URL, b"/second\0tail"), 0);
-        assert_eq!(owner.text(URL).unwrap(), b"/second\0tail");
-        assert_eq!(owner.text(ORIGINAL).unwrap(), b"/first");
-        assert_eq!(owner.text(8), None);
+        assert_eq!(owner.text(Url), b"/first");
+        assert_eq!(owner.publish(Url, b"/second\0tail"), 0);
+        assert_eq!(owner.text(Url), b"/second\0tail");
+        assert_eq!(owner.text(Original), b"/first");
         assert!(HttpStaticContext::new(b"/", 0).is_none());
     }
     #[test]
@@ -357,9 +363,9 @@ mod tests {
         let root = b"/root";
         assert_eq!(owner.path_step(root, 0), 2);
         assert_eq!(owner.path_step(root, 0), 3);
-        assert_eq!(owner.text(DIRECTORY).unwrap(), b"/files");
+        assert_eq!(owner.text(Directory), b"/files");
         assert_eq!(owner.path_step(root, 0), 4);
-        assert_eq!(owner.publish(INDEX, b"index.html"), 0);
+        assert_eq!(owner.publish(Index, b"index.html"), 0);
         let base = owner.path.filename_length;
         let index_path = |owner: &mut HttpStaticContext| {
             crate::static_path::static_index_path(
@@ -371,12 +377,12 @@ mod tests {
         };
         assert_eq!(index_path(&mut owner), 0);
         assert_eq!(owner.path.filename_length, base);
-        assert_eq!(owner.text(FILENAME).unwrap(), b"/root/files/index.html");
-        assert_eq!(owner.publish(INDEX, b"other.html"), 0);
+        assert_eq!(owner.text(Filename), b"/root/files/index.html");
+        assert_eq!(owner.publish(Index, b"other.html"), 0);
         assert_eq!(index_path(&mut owner), 0);
         // The pinned helper observes slash at the unchanged base offset,
         // then overwrites from that offset on a repeated append.
-        assert_eq!(owner.text(FILENAME).unwrap(), b"/root/filesother.html");
+        assert_eq!(owner.text(Filename), b"/root/filesother.html");
     }
     #[test]
     fn initialized_facts_and_nested_stores_have_one_custodian() {
@@ -407,12 +413,12 @@ mod tests {
         assert_eq!(owner.set_boundary(&random), 0);
         random.fill(b'x');
         assert_eq!(
-            owner.text(BOUNDARY).unwrap(),
+            owner.text(Boundary),
             b"SwooleBoundaryABCDEFGHIJKLMNOPQRSTUVWX"
         );
         assert_eq!(owner.set_boundary(&random), 0);
         assert_eq!(
-            owner.text(BOUNDARY).unwrap(),
+            owner.text(Boundary),
             b"SwooleBoundaryABCDEFGHIJKLMNOPQRSTUVWX"
         );
     }

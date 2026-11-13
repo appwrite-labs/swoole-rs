@@ -185,7 +185,7 @@ fn wait(serv: view::Server<'_>) {
         swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, true));
         if config.reload_async.get()
             && swoole_rs_ossupport::swr_v1_os_is_root_user()
-            && !state.text(1).is_empty()
+            && !state.text(crate::ServerText::User).is_empty()
         {
             state.set_isolation();
         }

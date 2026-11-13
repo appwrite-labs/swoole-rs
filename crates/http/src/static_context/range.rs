@@ -298,7 +298,10 @@ mod tests {
             kind: 32,
             ..HttpStaticObservation::default()
         });
-        assert_eq!(owner.publish(super::super::BOUNDARY, b"boundary"), 0);
+        assert_eq!(
+            owner.publish(super::super::StaticText::Boundary, b"boundary"),
+            0
+        );
         owner
     }
     fn observed(modified: u32) -> Observation<'static> {

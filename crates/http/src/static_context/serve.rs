@@ -1,6 +1,6 @@
 //! Upstream `StaticHandler::try_serve`'s filesystem-path policy, stepped between the
 //! caller's effects.
-use super::{FILENAME, HttpStaticContext, INVALID};
+use super::{HttpStaticContext, INVALID, StaticText::Filename};
 use crate::static_meta::static_catch;
 use crate::static_path as path;
 
@@ -51,7 +51,7 @@ impl HttpStaticContext {
                 if let Some(value) = value
                     && value.len() < self.capacity
                 {
-                    let status = self.publish(FILENAME, value);
+                    let status = self.publish(Filename, value);
                     if status < 0 {
                         return status;
                     }
