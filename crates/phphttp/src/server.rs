@@ -19,7 +19,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{
@@ -59,9 +59,6 @@ const SERVICE_UNAVAILABLE: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\n\r\n";
 const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
 /// llhttp's `HPE_OK`.
 const HPE_OK: i32 = 0;
-/// `WebSocket::STATUS_CONNECTION` and `STATUS_HANDSHAKE`.
-const STATUS_CONNECTION: u8 = 1;
-const STATUS_HANDSHAKE: u8 = 2;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = 1005;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
@@ -83,7 +80,7 @@ struct Receive {
     local_port: i64,
     remote_port: i64,
     loopback: c_int,
-    websocket_status: u8,
+    websocket_status: WebSocketStatus,
     /// The port speaks HTTP and has `onRequest`.
     http: bool,
     /// The port speaks WebSocket and has `onMessage` (asked only when `http` is false).
@@ -387,7 +384,7 @@ impl swoole_rs_reactor::event_api::Deferred for Turn {
 fn route(facts: &Receive) -> c_int {
     if !facts.http && !facts.websocket {
         TCP
-    } else if facts.websocket_status >= STATUS_HANDSHAKE {
+    } else if facts.websocket_status >= WebSocketStatus::Handshake {
         WEBSOCKET
     } else if facts.http2 {
         HTTP2
@@ -455,7 +452,7 @@ fn handle(
     // Parsing an upgrade request sets the connection's status.
     let handshake = server
         .by_session(session)
-        .is_some_and(|conn| conn.websocket_status() == STATUS_CONNECTION);
+        .is_some_and(|conn| conn.websocket_status() == WebSocketStatus::Connection);
     let kind = if handshake {
         PortCallback::Handshake
     } else {
@@ -710,7 +707,7 @@ pub extern "C" fn server_rshutdown() {
 mod tests {
     use super::*;
 
-    fn facts(http: bool, websocket: bool, status: u8, http2: bool) -> Receive {
+    fn facts(http: bool, websocket: bool, status: WebSocketStatus, http2: bool) -> Receive {
         Receive {
             last_recv_time: 0.0,
             local_port: 0,
@@ -727,14 +724,29 @@ mod tests {
 
     #[test]
     fn data_goes_where_upstream_sends_it() {
-        assert_eq!(route(&facts(false, false, STATUS_HANDSHAKE, true)), TCP);
         assert_eq!(
-            route(&facts(true, false, STATUS_HANDSHAKE, true)),
+            route(&facts(false, false, WebSocketStatus::Handshake, true)),
+            TCP
+        );
+        assert_eq!(
+            route(&facts(true, false, WebSocketStatus::Handshake, true)),
             WEBSOCKET
         );
-        assert_eq!(route(&facts(false, true, 3, false)), WEBSOCKET);
-        assert_eq!(route(&facts(true, false, STATUS_CONNECTION, true)), HTTP2);
-        assert_eq!(route(&facts(true, true, STATUS_CONNECTION, false)), REQUEST);
-        assert_eq!(route(&facts(true, false, 0, false)), REQUEST);
+        assert_eq!(
+            route(&facts(false, true, WebSocketStatus::Active, false)),
+            WEBSOCKET
+        );
+        assert_eq!(
+            route(&facts(true, false, WebSocketStatus::Connection, true)),
+            HTTP2
+        );
+        assert_eq!(
+            route(&facts(true, true, WebSocketStatus::Connection, false)),
+            REQUEST
+        );
+        assert_eq!(
+            route(&facts(true, false, WebSocketStatus::None, false)),
+            REQUEST
+        );
     }
 }

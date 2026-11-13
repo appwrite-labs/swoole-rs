@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
     sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed},
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::PortCallback;
 use swoole_rs_phpserver::{RecvData, php_swoole_get_recv_data, php_swoole_server_of, zserv};
@@ -89,12 +89,6 @@ const FLAG_RSV3: u8 = 16;
 const FLAG_MASK: u8 = 32;
 const FLAG_ENCODE_HEADER_ONLY: u8 = 64;
 const FLAGS_ALL: i64 = 63;
-/// `swoole::websocket::Status`.
-const STATUS_CONNECTION: i64 = 1;
-const STATUS_HANDSHAKE: i64 = 2;
-const STATUS_ACTIVE: i64 = 3;
-const STATUS_CLOSING: i64 = 4;
-const STATUS_HANDSHAKE_FAILED: i64 = 5;
 /// `swoole::websocket::CloseReason`, as their constants name them.
 const CLOSE_NORMAL: i64 = 1000;
 const CLOSE_REASONS: [(&CStr, i64); 15] = [
@@ -142,7 +136,7 @@ pub fn websocket_class() -> &'static Class {
 /// What the methods read of a `swoole::Connection`.
 #[derive(Clone, Copy)]
 struct Connection {
-    status: u8,
+    status: WebSocketStatus,
     server_fd: c_int,
     compression: bool,
     closed: bool,
@@ -166,9 +160,9 @@ pub(crate) fn server_of(object: &Value) -> Option<view::Server<'_>> {
 }
 
 /// `conn->websocket_status = status` of the session's slot.
-fn set_status(server: view::Server<'_>, fd: zend_long, status: i64) {
+fn set_status(server: view::Server<'_>, fd: zend_long, status: WebSocketStatus) {
     if let Some(conn) = server.by_session(fd) {
-        conn.set_websocket_status(u8::try_from(status).unwrap_or_default());
+        conn.set_websocket_status(status);
     }
 }
 
@@ -312,18 +306,21 @@ fn constants(minit: &Minit) {
     };
     for (prefix, bc) in [("SWOOLE_WEBSOCKET_", false), ("WEBSOCKET_", true)] {
         let mut statuses = vec![
-            (c"CONNECTION", STATUS_CONNECTION),
-            (c"HANDSHAKE", STATUS_HANDSHAKE),
+            (c"CONNECTION", WebSocketStatus::Connection),
+            (c"HANDSHAKE", WebSocketStatus::Handshake),
         ];
         if bc {
-            statuses.push((c"FRAME", STATUS_ACTIVE));
+            statuses.push((c"FRAME", WebSocketStatus::Active));
         }
-        statuses.extend([(c"ACTIVE", STATUS_ACTIVE), (c"CLOSING", STATUS_CLOSING)]);
+        statuses.extend([
+            (c"ACTIVE", WebSocketStatus::Active),
+            (c"CLOSING", WebSocketStatus::Closing),
+        ]);
         if bc {
-            statuses.push((c"HANDSHAKE_FAILED", STATUS_HANDSHAKE_FAILED));
+            statuses.push((c"HANDSHAKE_FAILED", WebSocketStatus::HandshakeFailed));
         }
-        for (name, value) in statuses {
-            register(prefix, "STATUS_", name, value);
+        for (name, status) in statuses {
+            register(prefix, "STATUS_", name, i64::from(status.code()));
         }
         for (name, value) in opcodes {
             register(prefix, "OPCODE_", name, i64::from(value));
@@ -767,7 +764,7 @@ fn push_frame(server: view::Server<'_>, fd: zend_long, frame: &[u8]) -> bool {
         host::fatal(&format!("fd[{fd}] is invalid"));
         return false;
     }
-    if connection(server, fd, false).is_none_or(|conn| i64::from(conn.status) < STATUS_HANDSHAKE) {
+    if connection(server, fd, false).is_none_or(|conn| conn.status < WebSocketStatus::Handshake) {
         host::set_last_error(WEBSOCKET_UNCONNECTED);
         host::fatal(&format!(
             "the connected client of connection[{fd}] is not a websocket client or closed"
@@ -819,7 +816,7 @@ fn disconnect(call: &Call) {
         }
         connection(server, fd, false)?;
         // Mark it closing at once, so it is not closed twice.
-        set_status(server, fd, STATUS_CLOSING);
+        set_status(server, fd, WebSocketStatus::Closing);
         Some(close(server, fd, false))
     };
     call.set_bool(run().unwrap_or(false));
@@ -847,7 +844,7 @@ fn is_established(call: &Call) {
         let fd = call.arity(1, 1).and_then(|()| call.long(1, 0)).ok()?;
         Some(
             connection(server, fd, true)
-                .is_some_and(|conn| !conn.closed && i64::from(conn.status) >= STATUS_ACTIVE),
+                .is_some_and(|conn| !conn.closed && conn.status >= WebSocketStatus::Active),
         )
     };
     call.set_bool(run().unwrap_or(false));
@@ -948,7 +945,7 @@ pub(crate) fn handshake_open(mut context: Ctx) -> Result<(), bailout::Bailout> {
 
 /// A handshake `onHandshake` answers: the connection is upgrading.
 pub(crate) fn upgrading(server: view::Server<'_>, fd: zend_long) {
-    set_status(server, fd, STATUS_HANDSHAKE);
+    set_status(server, fd, WebSocketStatus::Handshake);
 }
 
 /// Set a response header as `Context::set_header(..., false)`.
@@ -989,7 +986,7 @@ fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
             closed(c"swoole_websocket_handshake", fd);
             return Ok(false);
         };
-        set_status(server, fd, STATUS_ACTIVE);
+        set_status(server, fd, WebSocketStatus::Active);
         if let Some(protocol) = port_protocol(server, conn.server_fd)
             && !protocol.is_empty()
         {
@@ -1148,15 +1145,15 @@ pub(crate) fn handshaked(mut context: Ctx) {
     let Some(conn) = connection(server, fd, true) else {
         return;
     };
-    if i64::from(conn.status) != STATUS_HANDSHAKE {
+    if conn.status != WebSocketStatus::Handshake {
         return;
     }
     let state = context.state();
     let status = if state.response.status == 101 {
-        STATUS_ACTIVE
+        WebSocketStatus::Active
     } else {
         state.keepalive = false;
-        STATUS_HANDSHAKE_FAILED
+        WebSocketStatus::HandshakeFailed
     };
     set_status(server, fd, status);
 }

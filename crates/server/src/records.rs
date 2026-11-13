@@ -2,6 +2,7 @@
 use core::cell::UnsafeCell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
+use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
 
@@ -53,7 +54,7 @@ pub struct ConnectionRecord {
     pub last_send_time: f64,
     pub last_dispatch_time: f64,
     pub uid: u32,
-    pub websocket_status: u8,
+    pub websocket_status: WebSocketStatus,
     pub websocket_buffer: *mut c_void,
     pub ssl_client_cert: *mut c_void,
     pub ssl_client_cert_pid: c_int,
@@ -193,7 +194,7 @@ impl<'a> Connection<'a> {
     field!(last_send_time, set_last_send_time: f64);
     field!(last_dispatch_time, set_last_dispatch_time: f64);
     field!(uid, set_uid: u32);
-    field!(websocket_status, set_websocket_status: u8);
+    field!(websocket_status, set_websocket_status: WebSocketStatus);
     field!(websocket_buffer, set_websocket_buffer: *mut c_void);
     field!(ssl_client_cert, set_ssl_client_cert: *mut c_void);
     field!(ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);

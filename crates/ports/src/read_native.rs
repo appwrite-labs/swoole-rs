@@ -12,7 +12,7 @@ use swoole_rs_corebase::constants::{
     SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
     SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
@@ -28,9 +28,6 @@ use crate::read::{Connection, Dispatch, Framing, ON_READ_HTTP, Reply, Upgrade, r
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
-/// `websocket::STATUS_HANDSHAKE` and `STATUS_ACTIVE`.
-const STATUS_HANDSHAKE: u8 = 2;
-const STATUS_ACTIVE: u8 = 3;
 /// `SW_HTTP2_SETTING_FRAME_SIZE`: a frame header and six settings.
 const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
@@ -96,8 +93,8 @@ pub(crate) unsafe fn on_read(
         frames: false,
     };
     if kind == ON_READ_HTTP {
-        read.frames =
-            read.conn().websocket_status >= STATUS_HANDSHAKE && port.open_websocket_protocol.get();
+        read.frames = read.conn().websocket_status >= WebSocketStatus::Handshake
+            && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
     *event = read.event.get();
@@ -308,7 +305,7 @@ impl Connection for Read<'_> {
     fn upgrade(&mut self) -> Upgrade {
         let c = self.conn();
         Upgrade {
-            websocket: c.websocket_status >= STATUS_HANDSHAKE,
+            websocket: c.websocket_status >= WebSocketStatus::Handshake,
             upgraded: c.http_upgrade,
             http2_stream: c.http2_stream,
         }
@@ -316,7 +313,7 @@ impl Connection for Read<'_> {
 
     fn activate_websocket(&mut self) {
         let conn = self.conn();
-        conn.websocket_status = STATUS_ACTIVE;
+        conn.websocket_status = WebSocketStatus::Active;
         conn.http_upgrade = true;
     }
 
