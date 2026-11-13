@@ -21,7 +21,6 @@ pub struct Http2Settings {
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Http2FrameFacts {
     pub length: u32,
-    pub kind: u32,
     pub flags: u32,
     pub stream_id: u32,
     /// The stream id is past the previous last one.
@@ -147,6 +146,19 @@ pub fn sw_rs_http2_data_rejected(
     current.wrapping_add(additional) > maximum as usize || ended
 }
 
+/// The frame types this side sends (`SW_HTTP2_TYPE_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameType {
+    Data = 0,
+    Headers = 1,
+    RstStream = 3,
+    Settings = 4,
+    Ping = 6,
+    Goaway = 7,
+    WindowUpdate = 8,
+}
+
 /// What a received frame asks of its session.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub enum FrameAction {
@@ -157,6 +169,7 @@ pub enum FrameAction {
     WindowUpdate,
     Reset,
     Goaway,
+    Continuation,
     #[default]
     Other,
     SettingsAck,
@@ -177,6 +190,7 @@ fn frame_action(client: bool, kind: u32, flags: u32) -> FrameAction {
         3 => FrameAction::Reset,
         7 => FrameAction::Goaway,
         5 if client => FrameAction::IgnorePush,
+        9 => FrameAction::Continuation,
         _ => FrameAction::Other,
     }
 }
@@ -410,15 +424,12 @@ pub fn sw_rs_http2_media_kind(value: &[u8]) -> Media {
 /// A frame header. Integer truncation matches the native header API.
 #[must_use]
 pub fn sw_rs_http2_pack_frame_header(
-    kind: u32,
+    kind: FrameType,
     length: u32,
     flags: u32,
     stream_id: u32,
 ) -> [u8; 9] {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the native uint8_t frame type and flags"
-    )]
+    #[expect(clippy::cast_possible_truncation, reason = "the native uint8_t flags")]
     header(kind as u8, length, flags as u8, stream_id)
 }
 
@@ -439,7 +450,12 @@ pub fn sw_rs_http2_pack_settings(out: &mut [u8], s: &Http2Settings, server: bool
         s.max_header_list_size,
     ];
     let (head, entries) = out.split_at_mut(9);
-    head.copy_from_slice(&header(4, u32::try_from(count * 6).unwrap_or(0), 0, 0));
+    head.copy_from_slice(&header(
+        FrameType::Settings as u8,
+        u32::try_from(count * 6).unwrap_or(0),
+        0,
+        0,
+    ));
     let sent = values
         .iter()
         .enumerate()
@@ -475,7 +491,6 @@ pub fn sw_rs_http2_decode_frame(
     let id = u32::from_be_bytes([i0, i1, i2, i3]) & 0x7fff_ffff;
     Some(Http2FrameFacts {
         length: u32::from_be_bytes([0, b0, b1, b2]),
-        kind: u32::from(kind),
         flags: u32::from(flags),
         stream_id: id,
         publish_last_id: id > previous_last_id,
@@ -611,12 +626,12 @@ pub fn sw_rs_http2_write_allowed(exists: bool, stream_flags: u32) -> bool {
 /// Whether a received frame ends the response and makes it ready.
 #[must_use]
 pub fn sw_rs_http2_response(
-    kind: u32,
+    action: FrameAction,
     flags: u32,
     stream_flags: u32,
     pipeline_read: bool,
 ) -> Http2ResponsePlan {
-    let end = flags & 1 != 0 || kind == 3 || kind == 7;
+    let end = flags & 1 != 0 || matches!(action, FrameAction::Reset | FrameAction::Goaway);
     let pipeline = (pipeline_read || stream_flags & 8 != 0) && stream_flags & 4 != 0;
     Http2ResponsePlan {
         end,
@@ -846,7 +861,10 @@ mod tests {
             assert_eq!(out[0], 0xcc);
             assert_eq!(out[n + 1], 0xcc);
             let frame = sw_rs_http2_decode_frame(&out[1..=n], 0, false).unwrap();
-            assert_eq!((frame.kind, frame.length), (4, (n - 9) as u32));
+            assert_eq!(
+                (frame.action, frame.length),
+                (FrameAction::Settings, (n - 9) as u32)
+            );
             for item in out[10..=n].as_chunks::<6>().0 {
                 let (id, value) = sw_rs_http2_unpack_setting(item);
                 assert!((1..=6).contains(&id));
@@ -918,7 +936,8 @@ mod tests {
             for read in [false, true] {
                 for kind in 0..=9 {
                     for frame_flags in 0..8 {
-                        let p = sw_rs_http2_response(kind, frame_flags, flags, read);
+                        let action = frame_action(true, kind, frame_flags);
+                        let p = sw_rs_http2_response(action, frame_flags, flags, read);
                         let end = frame_flags & 1 != 0 || kind == 3 || kind == 7;
                         assert_eq!(p.end, end);
                         assert_eq!(p.ready, end || ((read || flags & 8 != 0) && flags & 4 != 0));

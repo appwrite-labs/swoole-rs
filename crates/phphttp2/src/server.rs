@@ -9,8 +9,8 @@ use libc::c_int;
 use std::ffi::{CStr, CString};
 use swoole_rs_corebase::CCast;
 use swoole_rs_http2::{
-    FileCompletion, FrameAction, HeaderKind, HeaderRole, Http2HeaderPlan, Http2RespondFacts,
-    Http2WindowPlan, Media, Respond, WindowAction,
+    FileCompletion, FrameAction, FrameType, HeaderKind, HeaderRole, Http2HeaderPlan,
+    Http2RespondFacts, Http2WindowPlan, Media, Respond, WindowAction,
     hpack::{Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_content_length_rejected,
     sw_rs_http2_data_rejected, sw_rs_http2_decode_frame, sw_rs_http2_file_complete,
@@ -27,14 +27,6 @@ use swoole_rs_zend::{Array, HeldArray, Value as Zval, ZString, bailout};
 const FRAME_HEADER: usize = 9;
 const PING_PAYLOAD: usize = 8;
 const GOAWAY_SIZE: usize = 8;
-const TYPE_DATA: u32 = 0;
-const TYPE_HEADERS: u32 = 1;
-const TYPE_RST_STREAM: u32 = 3;
-const TYPE_SETTINGS: u32 = 4;
-const TYPE_PING: u32 = 6;
-const TYPE_GOAWAY: u32 = 7;
-const TYPE_WINDOW_UPDATE: u32 = 8;
-const TYPE_CONTINUATION: u32 = 9;
 const FLAG_ACK: u32 = 0x1;
 const FLAG_END_STREAM: u32 = 0x1;
 const FLAG_END_HEADERS: u32 = 0x4;
@@ -108,7 +100,7 @@ fn report(code: c_int, always: bool, message: &[u8]) {
 }
 
 /// A frame's nine header bytes.
-fn frame_header(kind: u32, length: usize, flags: u32, stream_id: u32) -> [u8; FRAME_HEADER] {
+fn frame_header(kind: FrameType, length: usize, flags: u32, stream_id: u32) -> [u8; FRAME_HEADER] {
     #[expect(clippy::cast_possible_truncation, reason = "frame lengths are 24-bit")]
     sw_rs_http2_pack_frame_header(kind, length as u32, flags, stream_id)
 }
@@ -137,7 +129,7 @@ pub(crate) fn current(session: &Session, stream: &Stream) -> bool {
 
 fn send_u32_frame(
     ctx: Ctx,
-    kind: u32,
+    kind: FrameType,
     length: usize,
     flags: u32,
     stream_id: u32,
@@ -150,18 +142,18 @@ fn send_u32_frame(
 }
 
 fn window_update(ctx: Ctx, stream_id: u32, size: u32) {
-    send_u32_frame(ctx, TYPE_WINDOW_UPDATE, 4, 0, stream_id, size);
+    send_u32_frame(ctx, FrameType::WindowUpdate, 4, 0, stream_id, size);
 }
 
 /// `Stream::reset`.
 pub(crate) fn reset(ctx: Ctx, stream_id: u32, code: u32) {
-    send_u32_frame(ctx, TYPE_RST_STREAM, 4, 0, stream_id, code);
+    send_u32_frame(ctx, FrameType::RstStream, 4, 0, stream_id, code);
 }
 
 /// `swoole_http2_server_ping`.
 fn ping(ctx: Ctx) -> bool {
     let mut frame = [0; FRAME_HEADER + PING_PAYLOAD];
-    frame[..FRAME_HEADER].copy_from_slice(&frame_header(TYPE_PING, PING_PAYLOAD, 0, 0));
+    frame[..FRAME_HEADER].copy_from_slice(&frame_header(FrameType::Ping, PING_PAYLOAD, 0, 0));
     send(ctx, &frame)
 }
 
@@ -174,7 +166,7 @@ fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
     let (flags, code) = (u32::from(code.c_cast::<u8>()), code.c_cast::<u32>());
     let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
     frame.extend_from_slice(&frame_header(
-        TYPE_GOAWAY,
+        FrameType::Goaway,
         GOAWAY_SIZE + data.len(),
         flags,
         0,
@@ -267,7 +259,7 @@ impl Headers {
     }
 
     /// The frame `deflate` built, its header filled in.
-    fn seal(&mut self, kind: u32, flags: u32, stream_id: u32) -> &mut Vec<u8> {
+    fn seal(&mut self, kind: FrameType, flags: u32, stream_id: u32) -> &mut Vec<u8> {
         let frame = &mut self.buffers.frame;
         let header = frame_header(kind, frame.len() - FRAME_HEADER, flags, stream_id);
         if let Some(head) = frame.first_chunk_mut::<FRAME_HEADER>() {
@@ -524,7 +516,7 @@ fn send_header_then(
     if flags & FLAG_END_STREAM != 0 {
         set(ctx, Field::End, 1);
     }
-    let frame = headers.seal(TYPE_HEADERS, flags, stream.id);
+    let frame = headers.seal(FrameType::Headers, flags, stream.id);
     then(frame);
     if !send(ctx, frame) {
         set(ctx, Field::SendHeader, 0);
@@ -580,7 +572,7 @@ pub(crate) fn send_body(
                 }
             }
         }
-        let header = frame_header(TYPE_DATA, send_n, send_flags, stream.id);
+        let header = frame_header(FrameType::Data, send_n, send_flags, stream.id);
         let (part, tail) = rest.split_at(send_n.min(rest.len()));
         if send_n < page {
             // One send of header and payload. Not a zeroed stack buffer: zeroing
@@ -631,7 +623,7 @@ fn append_body(
         return 0;
     }
     let flags = if end_stream { FLAG_END_STREAM } else { 0 };
-    frame.extend_from_slice(&frame_header(TYPE_DATA, data.len(), flags, stream.id));
+    frame.extend_from_slice(&frame_header(FrameType::Data, data.len(), flags, stream.id));
     frame.extend_from_slice(data);
     data.len()
 }
@@ -643,7 +635,11 @@ fn send_trailer(ctx: Ctx, session: &Session, stream_id: u32) -> bool {
     };
     send(
         ctx,
-        headers.seal(TYPE_HEADERS, FLAG_END_HEADERS | FLAG_END_STREAM, stream_id),
+        headers.seal(
+            FrameType::Headers,
+            FLAG_END_HEADERS | FLAG_END_STREAM,
+            stream_id,
+        ),
     )
 }
 
@@ -717,7 +713,10 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                 action = next(action, true, &facts);
             }
             Respond::Empty => {
-                let sent = send(ctx, &frame_header(TYPE_DATA, 0, FLAG_END_STREAM, stream.id));
+                let sent = send(
+                    ctx,
+                    &frame_header(FrameType::Data, 0, FLAG_END_STREAM, stream.id),
+                );
                 action = next(action, sent, &facts);
             }
             Respond::Body => {
@@ -887,12 +886,12 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
     };
     let stream_id = facts.stream_id;
     let new_stream = facts.publish_last_id;
-    if facts.kind == TYPE_HEADERS && new_stream {
+    if facts.action == FrameAction::Headers && new_stream {
         session.last_stream_id.set(stream_id);
     }
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
-    if pending != 0 && (facts.kind != TYPE_CONTINUATION || stream_id != pending) {
+    if pending != 0 && (facts.action != FrameAction::Continuation || stream_id != pending) {
         return SW_ERR;
     }
     if session.shutting_down.get() {
@@ -913,7 +912,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
     match facts.action {
         FrameAction::Settings => return settings(session, payload),
         FrameAction::Headers => return headers(session, stream_id, flags, payload, new_stream),
-        _ if facts.kind == TYPE_CONTINUATION => {
+        FrameAction::Continuation => {
             let stream = session.stream(stream_id, false);
             let Some(stream) = stream.filter(|_| pending == stream_id) else {
                 return SW_ERR;
@@ -929,7 +928,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             };
             let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
             ack[..FRAME_HEADER].copy_from_slice(&frame_header(
-                TYPE_PING,
+                FrameType::Ping,
                 PING_PAYLOAD,
                 FLAG_ACK,
                 stream_id,
@@ -1130,7 +1129,7 @@ fn settings(session: &Session, payload: &[u8]) -> c_int {
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
         session.default_ctx,
-        &frame_header(TYPE_SETTINGS, 0, FLAG_ACK, 0),
+        &frame_header(FrameType::Settings, 0, FLAG_ACK, 0),
     );
     SW_OK
 }
@@ -1336,7 +1335,7 @@ mod tests {
     #[test]
     fn frames_are_big_endian() {
         assert_eq!(
-            frame_header(TYPE_PING, 8, FLAG_ACK, 3),
+            frame_header(FrameType::Ping, 8, FLAG_ACK, 3),
             [0, 0, 8, 6, 1, 0, 0, 0, 3]
         );
     }

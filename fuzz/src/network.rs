@@ -33,8 +33,8 @@ pub fn http2_frame(bytes: &[u8]) {
     assert_eq!(length, wire as isize + 9, "frame length of {header:?}");
     let facts = decoded.expect("a whole header decodes");
     assert_eq!(
-        (facts.length, facts.kind, facts.flags, facts.stream_id),
-        (wire, u32::from(header[3]), u32::from(header[4]), id),
+        (facts.length, facts.flags, facts.stream_id),
+        (wire, u32::from(header[4]), id),
         "frame header {header:?}"
     );
     assert_eq!(facts.publish_last_id, id > previous);
