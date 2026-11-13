@@ -5,6 +5,7 @@ use crate::lifecycle::Props;
 use crate::server::{fatal, no_payload, running, server};
 use std::ffi::{CStr, CString, c_int};
 use swoole_rs_clients::address::assign;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
 use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, Value, bailout, message, sys::IS_TRUE};
@@ -129,11 +130,7 @@ fn listen(call: &Call) {
     let Ok((address, port, kind)) = parsed else {
         return call.set_bool(false);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "(SocketType) type and (int) port, as upstream"
-    )]
-    let (kind, port) = (kind as c_int, port as c_int);
+    let (kind, port) = (kind.c_cast::<c_int>(), port.c_cast::<c_int>());
     let ls = if serv.is_worker_thread() {
         // `serv->get_port(type, host, port)`, compared as C strings.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
@@ -162,11 +159,7 @@ fn socket_sendto(socket: Option<(c_int, c_int)>, host: &[u8], port: i64, data: &
         return -1;
     };
     let mut address = SocketAddress::default();
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Socket::sendto's (int) port, as upstream"
-    )]
-    let port = port as c_int;
+    let port = port.c_cast::<c_int>();
     let error = assign(&mut address.addr, &mut address.len, kind, host, port, true);
     if error != 0 {
         swoole_rs_corebase::log::set_last_error(error);
@@ -265,7 +258,7 @@ fn sendfile(call: &Call) {
     let Ok((fd, filename, offset, length)) = parsed else {
         return call.set_bool(false);
     };
-    if crate::server::worker_type() == crate::server::MASTER {
+    if crate::server::worker_type() == Some(crate::server::WorkerType::Master) {
         // `%s`: the name up to its first NUL.
         let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
         let text = message!(
@@ -275,12 +268,7 @@ fn sendfile(call: &Call) {
         fatal(E_WARNING, text.as_cstr());
         return call.set_bool(false);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "Server::sendfile's size_t size, as upstream's conversion"
-    )]
-    let size = length as usize;
+    let size = length.c_cast::<usize>();
     call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
 }
 
@@ -301,11 +289,7 @@ fn send_message(call: &Call) {
     let core_worker_num =
         i64::from(config.worker_num.get()) + i64::from(config.task_worker_num.get());
     if worker_id < 0 || worker_id >= core_worker_num {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "(int) worker_id, as upstream"
-        )]
-        let shown = worker_id as i32;
+        let shown = worker_id.c_cast::<i32>();
         fatal(
             E_WARNING,
             message!("worker_id[{shown}] is invalid").as_cstr(),

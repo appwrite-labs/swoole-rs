@@ -43,4 +43,6 @@ swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-utilities = { path = "../utilities" }
 
 [dev-dependencies]
+# The reactor's write handler, which `swr_v1_reactor_new` names, for tests that run one.
+swoole-rs-tls = { path = "../tls", features = ["upstream-symbols"] }
 swoole-rs-oracle = { path = "../oracle" }

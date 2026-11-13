@@ -18,6 +18,7 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::{
@@ -25,6 +26,7 @@ use swoole_rs_phpserver::{
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
+use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
@@ -98,10 +100,8 @@ const ON_HANDSHAKE: c_int = 5;
 const ON_MESSAGE: c_int = 8;
 /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST` (`SW_GLOBAL_HOOK_USER + 2`).
 const HOOK_BEFORE_REQUEST: c_int = 26;
-/// `SW_SOCK_TCP6`, `SW_MANAGER`, `SW_TASK_WORKER` and the server modes.
+/// `SW_SOCK_TCP6` and the server modes.
 const SOCK_TCP6: c_int = 3;
-const MANAGER: c_int = 3;
-const TASK_WORKER: c_int = 4;
 const MODE_BASE: u8 = 1;
 const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
@@ -295,9 +295,9 @@ pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
 /// `Server::is_enable_coroutine`.
 fn enable_coroutine(server: view::Server<'_>) -> bool {
     let config = server.config();
-    match swoole_rs_process::methods::swoole_get_worker_type() {
-        TASK_WORKER => config.task_enable_coroutine.get(),
-        MANAGER => false,
+    match swoole_rs_process::methods::worker_type() {
+        Some(WorkerType::Task) => config.task_enable_coroutine.get(),
+        Some(WorkerType::Manager) => false,
         _ => config.enable_coroutine.get(),
     }
 }
@@ -453,11 +453,7 @@ fn handle(
             cache,
         );
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (zend_long) cast"
-    )]
-    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
     add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_rs_corebase::swoole_isset_hook(HOOK_BEFORE_REQUEST) {
@@ -565,11 +561,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         cache,
     );
     request_times(state);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (zend_long) cast"
-    )]
-    let master_time = Owned::long(facts.last_recv_time as zend_long);
+    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
     add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, ON_REQUEST);

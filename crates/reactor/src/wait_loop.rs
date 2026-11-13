@@ -7,6 +7,7 @@ use crate::handlers;
 use crate::reactor_state::{before_wait, kernel_wait};
 use std::ffi::{c_int, c_void};
 use std::sync::OnceLock;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 
 pub const POLL: u32 = 0;
@@ -168,11 +169,7 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
         backend: view.backend,
         events: view.events,
         sockets: view.sockets,
-        #[expect(
-            clippy::cast_possible_wrap,
-            reason = "upstream's static_cast<int16_t>(reactor_->id)"
-        )]
-        reactor_id: id as i16,
+        reactor_id: id.c_cast::<i16>(),
         reactor,
         event: std::cell::Cell::new(Event::empty()),
         ready: std::cell::Cell::new(0),

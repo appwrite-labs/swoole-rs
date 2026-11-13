@@ -4,6 +4,7 @@
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::ptr;
 use std::ffi::CString;
+use swoole_rs_corebase::CCast;
 
 use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -76,7 +77,6 @@ fn accept<'s>(
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
 ) -> Option<(*mut DtlsSession, Socket<'s>)> {
-    let port = listen.raw();
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -121,11 +121,8 @@ fn accept<'s>(
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        // SAFETY: the live server and port, and the socket just made.
-        conn = unsafe {
-            crate::server_methods::add_connection(serv.raw(), port, sock.cast(), server_fd)
-        }
-        .cast();
+        conn = crate::connection::add(serv, listen, socket, server_fd)
+            .map_or(ptr::null_mut(), crate::Connection::as_ptr);
         if conn.is_null() {
             break 'setup;
         }
@@ -224,14 +221,9 @@ pub(crate) fn on_read(port: &port_config::PortConfig, sock: Socket<'_>, fd: c_in
     let data = buffer.wrapping_add(1).cast::<c_void>();
     // SAFETY: the live socket and the payload's `size` bytes.
     let read = unsafe { libc::read(sock.fd(), data, size) };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "C++'s uint16_t length"
-    )]
     // SAFETY: the header just allocated.
     unsafe {
-        *buffer = read as u16;
+        *buffer = read.c_cast::<u16>();
     }
     let session = (port_config::methods().dtls_session)(port, fd);
     // SAFETY: the socket's live session.

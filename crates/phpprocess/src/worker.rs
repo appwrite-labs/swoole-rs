@@ -5,6 +5,7 @@ use std::{
     ffi::{c_int, c_void},
     mem::MaybeUninit,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
     worker_record::WorkerRecord,
@@ -187,11 +188,10 @@ pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
     let ret = match which {
         CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD),
         CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR),
-        #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
         _ => c_int::from(socket_pair::close(
             // SAFETY: the worker's live pair.
             unsafe { &mut *pair },
-            which as c_int,
+            which.c_cast::<c_int>(),
         )),
     };
     if ret >= 0 && which == 0 {

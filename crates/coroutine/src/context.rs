@@ -12,6 +12,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
+use swoole_rs_corebase::CCast;
 
 /// A coroutine's context record, which follows its state in its [`Native`]
 /// record and never moves once switched in, so the switch may hand out its
@@ -95,11 +96,7 @@ impl Context {
             context.thread = Some(unsafe { thread::start(entry, data) }?);
             return Ok(context);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream keeps the size as uint32_t"
-        )]
-        let stack_size = stack_size as u32;
+        let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
         let stack = swr_v1_context_stack_alloc(size, flags).cast::<u8>();
         if stack.is_null() {

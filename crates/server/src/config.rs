@@ -372,7 +372,7 @@ impl ServerConfig {
         self.ipc_max_size.store(size, Relaxed);
     }
 
-    /// `serv->pipe_command`: the command pipe, once `OP_ST_PIPE_COMMAND_NEW` has made it.
+    /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self
             .pipe_command
@@ -413,11 +413,11 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
     use crate::ops::{
         FIELD_CPU_NUM, FIELD_DISPATCH_MODE, FIELD_HEARTBEAT_INTERVAL, FIELD_REACTOR_NUM,
         FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_UNSAFE_EVENT, FIELD_WORKER_NUM,
-        OP_ACCEPT_TIMER_CLEAR, OP_CONNECTION_LIST, OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_ERRNO,
-        OP_FIELD, OP_LAST_PORT_FD, OP_LC_DAEMONIZE, OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE,
-        OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE, OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_IDLE,
-        OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM, OP_PORT_WEBSOCKET, OP_RUNNING,
-        OP_SET_FIELD, OP_SET_MAX_CONNECTION, OP_SET_RUNNING, OP_SET_WARNING, OP_SINGLE_THREAD,
+        OP_DELAY_RECEIVE, OP_DISABLE_NOTIFY, OP_ERRNO, OP_FIELD, OP_LAST_PORT_FD, OP_LC_DAEMONIZE,
+        OP_MAX_CONNECTION, OP_MAX_WAIT_TIME, OP_MODE, OP_PORT_COUNT, OP_PORT_DEFAULT_IDLE,
+        OP_PORT_DGRAM, OP_PORT_FD, OP_PORT_IDLE, OP_PORT_REMOVED, OP_PORT_SSL_AT, OP_PORT_STREAM,
+        OP_PORT_WEBSOCKET, OP_RUNNING, OP_SET_FIELD, OP_SET_MAX_CONNECTION, OP_SET_RUNNING,
+        OP_SINGLE_THREAD,
     };
     if !matches!(
         op,
@@ -431,11 +431,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             | OP_MAX_WAIT_TIME
             | OP_FIELD
             | OP_SET_FIELD
-            | OP_SET_WARNING
             | OP_MAX_CONNECTION
             | OP_SET_MAX_CONNECTION
-            | OP_CONNECTION_LIST
-            | OP_ACCEPT_TIMER_CLEAR
             | OP_ERRNO
             | OP_PORT_COUNT
             | OP_PORT_DGRAM
@@ -461,7 +458,6 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
         OP_LC_DAEMONIZE => u64::from(config.daemonize.get()),
         OP_MAX_WAIT_TIME => u64::from(config.max_wait_time.get()),
         OP_MAX_CONNECTION => u64::from(tables.max_connection),
-        OP_CONNECTION_LIST => u64::from(!tables.connection_list.is_null()),
         OP_ERRNO => {
             i64::from(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)).cast_unsigned()
         }
@@ -505,18 +501,8 @@ pub(crate) unsafe fn native_fact(state: &crate::ServerState, op: u32, arg: u64) 
             unsafe { &mut *state.tables() }.max_connection = max;
             0
         }
-        OP_ACCEPT_TIMER_CLEAR => {
-            tables
-                .enable_accept_timer
-                .store(core::ptr::null_mut(), Relaxed);
-            0
-        }
         OP_SET_RUNNING => {
             state.set_running(arg != 0);
-            0
-        }
-        OP_SET_WARNING => {
-            config.scheduler_warning.store(true, Relaxed);
             0
         }
         OP_FIELD => match u32::try_from(arg).unwrap_or(u32::MAX) {

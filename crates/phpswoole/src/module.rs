@@ -11,6 +11,7 @@ use std::{
     ptr,
     sync::OnceLock,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
 };
@@ -485,12 +486,7 @@ extern "C" fn core_startup() {
 /// strings.
 extern "C" fn ready() {
     let size = globals().socket_buffer_size.get();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream assigns the zend_long to a uint32_t"
-    )]
-    swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size as u32);
+    swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size.c_cast::<u32>());
     swr_phpswoole_pcre_jit_off();
     swoole_rs_zend::host::known_init();
 }

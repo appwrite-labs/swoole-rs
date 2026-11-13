@@ -1,5 +1,7 @@
 //! Allocation-free request formatting into the caller's buffer.
 //! Byte/C-string behavior and snprintf's clamped length/terminator are explicit.
+use swoole_rs_corebase::CCast;
+
 pub struct ClientsFormatResult {
     pub written: usize,
     ///0 success;1 invalid span/output;2 printf count overflow (native errno).
@@ -67,12 +69,7 @@ impl<O: Output + ?Sized> Writer<'_, O> {
 fn precision_string(bytes: &[u8]) -> &[u8] {
     // Both supported native hosts use32-bit int precision. Preserve their
     // explicit C++ size_t->int narrowing, including negative precision.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "the C++ size_t->int narrowing described above"
-    )]
-    let precision = bytes.len() as i32;
+    let precision = bytes.len().c_cast::<i32>();
     crate::c_str(if precision < 0 {
         bytes
     } else {

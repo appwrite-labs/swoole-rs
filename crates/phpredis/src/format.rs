@@ -1,6 +1,7 @@
 //! `Swoole\Redis\Server::format`: a PHP value as a RESP reply, over the
 //! protocols crate's reply framing.
 use std::ffi::CStr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_protocols::reply_parts;
 use swoole_rs_zend::{
     Call, Key, Value,
@@ -86,8 +87,7 @@ fn format(buffer: &mut Vec<u8>, kind: zend_long, value: Option<&Value>) -> bool 
             array.for_each(|key, entry| item(buffer, kind == MAP, key, entry));
         }
         (_, _) => {
-            #[expect(clippy::cast_possible_truncation, reason = "upstream's `(int) type`")]
-            let message = format!("Unknown type[{}]", kind as i32);
+            let message = format!("Unknown type[{}]", kind.c_cast::<i32>());
             let message = std::ffi::CString::new(message).unwrap_or_default();
             throw(&message);
             return false;

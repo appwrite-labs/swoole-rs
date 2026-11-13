@@ -9,6 +9,7 @@ use std::{
     ffi::{CStr, CString, c_int},
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{
     Switch, built_with, log::set_last_error, swr_v1_core_set_enable_kqueue,
     swr_v1_core_set_enable_signalfd, swr_v1_core_set_print_backtrace_on_error,
@@ -122,12 +123,8 @@ fn text_option(options: &Array, key: &CStr, set: impl FnOnce(&ZStr)) {
 }
 
 /// C's implicit `zend_long` to `int` conversion.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream passes the zend_long as int"
-)]
-const fn int(value: i64) -> c_int {
-    value as c_int
+fn int(value: i64) -> c_int {
+    value.c_cast::<c_int>()
 }
 
 /// `php_swoole_set_global_option(options)`, after MINIT. A size that does not
@@ -223,12 +220,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
         defaults.read.set(read);
     }
     if let Some(value) = get(options, c"socket_buffer_size") {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "upstream assigns the size to a uint32_t"
-        )]
-        let size = size_of(value)? as u32;
+        let size = (size_of(value)?).c_cast::<u32>();
         if bailout::pending() {
             return Ok(());
         }
@@ -261,12 +253,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
             if bailout::pending() {
                 return Ok(());
             }
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "upstream passes the zend_long as uint32_t"
-            )]
-            swoole_rs_http2::put_default_setting(id, setting as u32);
+            swoole_rs_http2::put_default_setting(id, setting.c_cast::<u32>());
         }
     }
     Ok(())

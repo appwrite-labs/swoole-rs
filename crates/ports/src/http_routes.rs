@@ -68,6 +68,7 @@ fn length_size(conn: &ConnectionRecord) -> u8 {
 pub mod exports {
     use std::ffi::{c_int, c_void};
     use std::mem::MaybeUninit;
+    use swoole_rs_corebase::CCast;
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
     use swoole_rs_corebase::DataHead;
@@ -179,12 +180,7 @@ pub mod exports {
         };
         if let Some(fragment) = buffered.as_deref() {
             context.fragment_length = fragment.len();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "the fragment's offset holds its uint16_t ext_flags"
-            )]
-            let flags = fragment.offset() as u16;
+            let flags = fragment.offset().c_cast::<u16>();
             context.fragment_flags = flags;
             if frame.opcode == 0 {
                 // SAFETY: the port's live server, as the caller guarantees.
@@ -199,13 +195,9 @@ pub mod exports {
         if decision.error != PolicyError::None {
             policy_warning(conn, decision.error, frame.opcode);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a payload inside a uint32_t-sized frame"
-        )]
         let mut dispatch = RecvData {
             info: DataHead {
-                len: decision.length as u32,
+                len: decision.length.c_cast::<u32>(),
                 ext_flags: decision.ext_flags,
                 ..DataHead::default()
             },

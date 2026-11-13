@@ -7,6 +7,7 @@
 use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode};
 use std::cell::Cell;
 use std::ffi::{CStr, c_long, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
 /// `SW_ERR` and `SW_TIMER_MIN_SEC`.
@@ -109,12 +110,7 @@ pub extern "C" fn swoole_timer_get_next_msec() -> i64 {
 /// `sec2msec(timeout)`, at least `SW_TIMER_MIN_SEC`.
 fn sec2msec(timeout: f64) -> c_long {
     let timeout = if timeout < MIN_SEC { MIN_SEC } else { timeout };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sec2msec's static_cast<long>"
-    )]
-    let msec = (timeout * 1000.0) as c_long;
-    msec
+    (timeout * 1000.0).c_cast::<c_long>()
 }
 
 /// Adds `node` to this thread's timer, creating it on first use: the node and its id.

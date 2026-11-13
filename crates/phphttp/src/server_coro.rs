@@ -19,6 +19,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
 use swoole_rs_phpruntime::co;
@@ -177,19 +178,14 @@ impl HttpServer {
     }
 
     /// A flag's or a number's setting (`SWR_HTTPBINDINGS_SETTING_*`).
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's uint8_t level and uint32_t minimum"
-    )]
     fn apply(&self, kind: u32, value: i64) {
         match kind {
             SETTING_COOKIE => self.parse_cookie.set(value != 0),
             SETTING_POST => self.parse_post.set(value != 0),
             SETTING_FILES => self.parse_files.set(value != 0),
             SETTING_COMPRESSION => self.compression.set(value != 0),
-            SETTING_LEVEL => self.compression_level.set(value as i8),
-            SETTING_MINIMUM => self.compression_min_length.set(value as u32),
+            SETTING_LEVEL => self.compression_level.set(value.c_cast::<i8>()),
+            SETTING_MINIMUM => self.compression_min_length.set(value.c_cast::<u32>()),
             _ => {}
         }
     }
@@ -430,11 +426,9 @@ fn construct(call: &Call) {
         if reuse_port {
             set_reuse_port(socket.sock_fd());
         }
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's int port")]
-        if !socket.bind(host, port as c_int) {
+        if !socket.bind(host, port.c_cast::<c_int>()) {
             let code = set_error(props, socket);
-            #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) port")]
-            let port = port as i32;
+            let port = port.c_cast::<i32>();
             exception(
                 call,
                 code,
@@ -555,8 +549,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     // SAFETY: a live socket and the settings array.
     if !unsafe { php_swoole_socket_set_protocol(socket.this(), settings.as_ptr()) } {
         props.long(c"errCode", EINVAL);
-        #[expect(clippy::cast_possible_truncation, reason = "EINVAL")]
-        let message = swoole_rs_phpruntime::strerror(EINVAL as c_int);
+        let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());
         server.running.set(false);
         return Ok(Some(false));
@@ -1091,11 +1084,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
 fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout> {
     http2_begin(conn.socket);
     let fd = context.state().fd;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's uint32_t package_max_length"
-    )]
-    let max_body_size = conn.package_max_length() as u32;
+    let max_body_size = conn.package_max_length().c_cast::<u32>();
     if let Some(server) = crate::http2::server() {
         // The context outlives the session, freed below; the session's
         // handler holds the server object.

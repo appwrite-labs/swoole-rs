@@ -4,6 +4,7 @@
 //! copies in and out) and the warning text.
 use std::io::Error;
 use std::os::raw::c_int;
+use swoole_rs_corebase::CCast;
 
 /// `setsockopt(fd, level, name, &value, sizeof(value)) == 0`, for the plain option
 /// values (`int`, `timeval`, `linger`).
@@ -194,13 +195,8 @@ pub extern "C" fn swr_v1_socket_buffer_size(fd: c_int, recv: bool, send: bool, s
 /// truncated as upstream's `(int)` casts do.
 #[must_use]
 pub fn swr_v1_socket_kernel_timeout(fd: c_int, send: bool, timeout: f64) -> bool {
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) timeout")]
-    let seconds = timeout as c_int;
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's (int) microseconds"
-    )]
-    let microseconds = ((timeout - f64::from(seconds)) * 1000.0 * 1000.0) as c_int;
+    let seconds = timeout.c_cast::<c_int>();
+    let microseconds = ((timeout - f64::from(seconds)) * 1000.0 * 1000.0).c_cast::<c_int>();
     let microseconds = libc::suseconds_t::from(microseconds);
     let value = libc::timeval {
         tv_sec: seconds.into(),

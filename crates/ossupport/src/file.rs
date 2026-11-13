@@ -3,6 +3,7 @@
 //! function returns right after the failing call with its errno intact.
 use libc::{c_int, off_t};
 use std::ffi::CStr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
@@ -33,12 +34,8 @@ fn transfer(length: usize, mut io: impl FnMut(usize) -> isize) -> FileIo {
     }
 }
 
-#[expect(
-    clippy::cast_possible_wrap,
-    reason = "a file offset below the requested length fits off_t, as in upstream's implicit conversion"
-)]
-const fn to_off(done: usize) -> off_t {
-    done as off_t
+fn to_off(done: usize) -> off_t {
+    done.c_cast::<off_t>()
 }
 
 /// `File::open`: closes the open descriptor first; created files default to 0644.

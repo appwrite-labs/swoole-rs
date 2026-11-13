@@ -7,8 +7,8 @@ const SW_EVENT_READ: c_int = 1 << 9;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 
 /// `translate_events_to_poll`: the poll bits for swoole `events`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_poll_events_to(events: c_int) -> i16 {
+#[must_use]
+pub fn swr_v1_reactor_poll_events_to(events: c_int) -> i16 {
     let mut poll_events = 0;
     if events & SW_EVENT_READ != 0 {
         poll_events |= libc::POLLIN;

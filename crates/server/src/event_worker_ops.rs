@@ -1,13 +1,13 @@
 //! The event worker's facts and effects (`crates/process/src/workers/event_worker.rs`'s
 //! `OP_*`) over the server, worker and connection records Rust lays out.
 use core::ffi::{c_int, c_void};
+use swoole_rs_process::worker_record::{WorkerStatus, WorkerType};
 
 use swoole_rs_corebase::DataHead;
 #[cfg(target_os = "linux")]
 use swoole_rs_corebase::log;
 use swoole_rs_process::methods::{
-    push_stop, swoole_get_worker_id, swoole_get_worker_type, swoole_set_worker_id,
-    swoole_set_worker_type,
+    push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
 };
 use swoole_rs_process::worker_globals::worker_global_detach;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_shutdown};
@@ -61,11 +61,6 @@ impl<'a> Context<'a> {
 const SW_GLOBAL_HOOK_BEFORE_WORKER_START: c_int = 2;
 const SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
 const SW_GLOBAL_HOOK_BEFORE_WORKER_STOP: c_int = 8;
-/// `swoole::WorkerType::SW_EVENT_WORKER`.
-const SW_EVENT_WORKER: c_int = 2;
-/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
-const SW_WORKER_BUSY: u8 = 1;
-const SW_WORKER_IDLE: u8 = 2;
 /// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
 const DISPATCH_CO_CONN_LB: u8 = 8;
 const DISPATCH_CO_REQ_LB: u8 = 9;
@@ -130,7 +125,7 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
             let id = u16::try_from(arg.cast_signed()).ok();
             u64::from(id.is_some_and(|id| !ctx.server().worker(id).is_null()))
         }
-        OP_IS_EVENT_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
+        OP_IS_EVENT_WORKER => u64::from(worker_type() == Some(WorkerType::Event)),
         OP_POOL_RUNNING => u64::from(
             crate::shared::ServerShared::of(ctx.server())
                 .event_pool()
@@ -179,11 +174,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SIGNAL_SET => swr_workers_signal_set(arg, worker_signal_handler),
         OP_STOP_ASYNC => stop_async_worker(ctx.server(), ctx.worker()),
         OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
-        OP_WORKER_STATUS => ctx.worker().set_status(if arg == 0 {
-            SW_WORKER_IDLE
-        } else {
-            SW_WORKER_BUSY
-        }),
+        OP_WORKER_STATUS => ctx.worker().set_status(WorkerStatus::busy(arg != 0)),
         OP_REOPEN_LOGGER => {
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 logger.reopen();
@@ -196,7 +187,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_WORKER_SIGNAL_INIT => worker_signal_init(ctx.server()),
         OP_DRAIN_PIPES => drain_worker_pipe(ctx.server()),
-        OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
+        OP_CLEAR_TIMER => crate::control::clear_timer(ctx.server()),
         OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker()),
         OP_RESET_WORKER_COUNTER => {
             crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker());
@@ -204,7 +195,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_DETACH_WORKER => worker_global_detach(ctx.worker()),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
-            swoole_set_worker_type(SW_EVENT_WORKER);
+            set_worker_type(WorkerType::Event);
             crate::worker_methods::init_event_worker(ctx.server(), ctx.worker());
         }
         OP_CPU_AFFINITY =>

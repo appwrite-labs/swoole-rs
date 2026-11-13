@@ -2,9 +2,7 @@
 //! Rust owns the slots. A slot holds `invoke(ctx, ...)` and the `drop(ctx)` that
 //! frees `ctx`. Rust answers the presence facts and clears slots;
 //! native code still makes the calls.
-use crate::ops::{
-    OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_DISPATCH_FUNC, OP_HAS_ON_CLOSE, OP_HAS_ON_CONNECT,
-};
+use crate::ops::{OP_CALLBACK, OP_CLEAR_CALLBACK, OP_HAS_ON_CLOSE, OP_HAS_ON_CONNECT};
 use crate::reactor_entry::RecvData;
 use crate::view::Server;
 use crate::{ConnectionRecord, ServerState};
@@ -191,6 +189,29 @@ impl CallbackSlot {
 pub(crate) struct ServerCallbacks([CallbackSlot; CB_COUNT]);
 
 impl ServerCallbacks {
+    /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
+    pub(crate) fn dispatch(
+        &self,
+        serv: Server<'_>,
+        conn: Option<&ConnectionRecord>,
+        send: Option<&RecvData>,
+    ) -> c_int {
+        type Invoke = extern "C-unwind" fn(
+            Ctx,
+            Server<'_>,
+            Option<&ConnectionRecord>,
+            Option<&RecvData>,
+        ) -> c_int;
+        let Some(slot) = self.slot(CB_DISPATCH_FUNC) else {
+            return 0;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: dispatch_func's slot holds null or an
+        // `int (*)(void *, Server *, Connection *, SendData *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        invoke.map_or(0, |invoke| invoke(slot.ctx.load(Relaxed), serv, conn, send))
+    }
+
     pub(crate) const fn new() -> Self {
         Self([const { CallbackSlot::new() }; CB_COUNT])
     }
@@ -375,29 +396,6 @@ impl ServerCallbacks {
             invoke(slot.ctx.load(Relaxed), serv, worker, status);
         }
     }
-
-    /// `serv->dispatch_func(serv, conn, send)`; 0 when the slot is empty.
-    pub(crate) fn dispatch(
-        &self,
-        serv: Server<'_>,
-        conn: Option<&ConnectionRecord>,
-        send: Option<&RecvData>,
-    ) -> c_int {
-        type Invoke = extern "C-unwind" fn(
-            Ctx,
-            Server<'_>,
-            Option<&ConnectionRecord>,
-            Option<&RecvData>,
-        ) -> c_int;
-        let Some(slot) = self.slot(CB_DISPATCH_FUNC) else {
-            return 0;
-        };
-        let invoke = slot.invoke.load(Relaxed);
-        // SAFETY: dispatch_func's slot holds null or an
-        // `int (*)(void *, Server *, Connection *, SendData *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        invoke.map_or(0, |invoke| invoke(slot.ctx.load(Relaxed), serv, conn, send))
-    }
 }
 
 impl Drop for ServerCallbacks {
@@ -432,7 +430,6 @@ pub(crate) fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64>
     Some(match op {
         OP_HAS_ON_CONNECT => set(CB_CONNECT),
         OP_HAS_ON_CLOSE => set(CB_CLOSE),
-        OP_HAS_DISPATCH_FUNC => set(CB_DISPATCH_FUNC),
         OP_CALLBACK => match u32::try_from(arg) {
             Ok(index @ CB_CONNECT..=CB_PACKET) => set(index),
             _ => 0,
@@ -527,7 +524,6 @@ mod tests {
         fill(state.callbacks.slot(CB_DISPATCH_FUNC).unwrap());
         assert_eq!(native_fact(&state, OP_HAS_ON_CONNECT, 0), Some(1));
         assert_eq!(native_fact(&state, OP_HAS_ON_CLOSE, 0), Some(0));
-        assert_eq!(native_fact(&state, OP_HAS_DISPATCH_FUNC, 0), Some(1));
         assert_eq!(
             native_fact(&state, OP_CALLBACK, u64::from(CB_TASK)),
             Some(1)

@@ -63,7 +63,6 @@ pub unsafe fn set_methods(methods: PortMethods) {
 
 /// The registered methods. A port exists only after `swoole_init`, which
 /// registers them, so their absence aborts.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn methods() -> &'static PortMethods {
     METHODS
         .get()
@@ -291,6 +290,31 @@ impl PortConfig {
             tls: Box::default(),
             length_owner: Shared::new(None),
         })
+    }
+
+    /// `new ListenPort(serv)`: a port of `serv` with the default settings, whose box
+    /// becomes the `ListenPort *`.
+    pub(crate) fn new_port(serv: *mut c_void) -> Box<Self> {
+        let buffer_size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
+        let mut config = Self::boxed(c_int::try_from(buffer_size).unwrap_or(c_int::MAX));
+        config.protocol.get_mut().private_data_2 = serv;
+        config
+    }
+
+    /// `delete port` of a port still in its box: its TLS state, its settings, and
+    /// the record of a socket `destroy` never closed.
+    pub(crate) fn delete(mut self: Box<Self>) {
+        (methods().tls_free)(&mut self);
+        // Upstream's `~ListenPort` leaves the length callable to the port's deref
+        // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
+        #[expect(
+            clippy::mem_forget,
+            reason = "a port kept past this owns the callable to the exit"
+        )]
+        std::mem::forget(self.length_owner.replace(None));
+        // SAFETY: the record of a port `destroy` never closed (a server never started),
+        // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
+        unsafe { swoole_rs_reactor::SocketRecord::free(self.socket_ptr().cast()) };
     }
 }
 

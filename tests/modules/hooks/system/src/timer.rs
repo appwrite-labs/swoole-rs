@@ -12,7 +12,7 @@ const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_ERROR_INVALID_PARAMS: c_int = 505;
 const SW_NUM_MILLION: i64 = 1_000_000;
 
-/// `swoole::TimerNode` (native/timer/swoole_timer.h): `id`, the members up to
+/// `swoole::TimerNode` (crates/timer/src/owner.rs): `id`, the members up to
 /// `callback`, `data` and `destructor`.
 #[repr(C)]
 pub(super) struct TimerNode {

@@ -32,6 +32,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
+use swoole_rs_corebase::CCast;
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const READ: c_int = 1 << 9;
@@ -205,11 +206,7 @@ fn socket_poll(conn: Conn, event: c_int) -> c_int {
             events: to_poll(event),
             revents: 0,
         };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's (int) of the milliseconds"
-        )]
-        let timeout = (POLL_TIMEOUT * 1000.0) as c_int;
+        let timeout = (POLL_TIMEOUT * 1000.0).c_cast::<c_int>();
         let result = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut poll), timeout);
         let interrupted =
             result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);

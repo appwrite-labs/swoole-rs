@@ -51,16 +51,11 @@ typedef struct {
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
 typedef int (*swr_v1_reactor_handler)(void *, void *);
 swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
-void swr_v1_reactor_handlers_set_default(swr_v1_reactor_handlers *, uint32_t kind, swr_v1_reactor_handler);
 const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
-/* translate_events_to_poll. */
-int16_t swr_v1_reactor_poll_events_to(int events);
 /* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
 void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);
 size_t swr_v1_reactor_registry_count(const swr_v1_reactor_registry *);
-/* network::Socket's buffer sizes, setsockopt included. */
-bool swr_v1_socket_buffer_size(int fd, bool recv, bool send, uint32_t size);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
@@ -72,49 +67,6 @@ typedef struct {
     bool want_read;
     bool want_write;
 } swr_v1_socket_tls;
-/* An IOVector's cursor. */
-typedef struct {
-    struct iovec *iterator;
-    int remain_count;
-    int index;
-    size_t offset_bytes;
-} swr_v1_socket_iov_state;
-/* The descriptor allocation owns its cursor; payloads remain borrowed. */
-typedef struct swr_v1_reactor_iov swr_v1_reactor_iov;
-typedef struct {
-    struct iovec *original;
-    int32_t count;
-    swr_v1_socket_iov_state state;
-} swr_v1_reactor_iov_fields;
-typedef struct {
-    swr_v1_reactor_iov *owner;
-    swr_v1_reactor_iov_fields *fields;
-    int32_t status;
-} swr_v1_reactor_iov_prepared;
-swr_v1_reactor_iov_prepared swr_v1_reactor_iov_prepare(const struct iovec *source, int32_t count);
-void swr_v1_reactor_iov_destroy(swr_v1_reactor_iov *owner);
-swr_v1_socket_iov_state swr_v1_reactor_iov_view(const swr_v1_reactor_iov *owner);
-size_t swr_v1_reactor_iov_length(const swr_v1_reactor_iov *owner);
-void swr_v1_reactor_iov_advance(swr_v1_reactor_iov *owner, intptr_t n);
-/* network::Socket's swSocketType <-> (domain, type), and the type a host names
- * with how many leading bytes convert_to_type erases. */
-typedef struct { int socket_type; size_t erase; } swr_v1_socket_host_type_plan;
-int swr_v1_socket_type(int domain, int kind);
-/* Each swSocketType's classes (Socket::is_stream ... is_local), indexed by the type. */
-enum {
-    SWR_SOCKET_STREAM = 1,
-    SWR_SOCKET_DGRAM = 1 << 1,
-    SWR_SOCKET_INET4 = 1 << 2,
-    SWR_SOCKET_INET6 = 1 << 3,
-    SWR_SOCKET_TCP = 1 << 4,
-    SWR_SOCKET_LOCAL = 1 << 5,
-};
-extern const uint8_t swr_v1_socket_type_classes[16];
-static inline bool swr_socket_type_is(int socket_type, uint8_t classes) {
-    return (unsigned) socket_type < 16 && (swr_v1_socket_type_classes[socket_type] & classes);
-}
-bool swr_v1_socket_domain_and_type(int socket_type, int *domain, int *kind);
-swr_v1_socket_host_type_plan swr_v1_socket_host_type(const uint8_t *host, size_t length);
 
 /* Rust's reactor state (crates/reactor's ReactorState), which begins with swr_v1_reactor_head:
  * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor
@@ -139,11 +91,8 @@ typedef struct {
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
     swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_head;
-/* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn) and exit
- * conditions (set_exit_condition, or remove_exit_condition without fn: whether one was set). */
+/* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn). */
 void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
-bool swr_v1_reactor_set_exit(swr_v1_reactor_state *, int id, bool (*condition)(size_t *event_num));
-bool swr_v1_reactor_isset_exit(const swr_v1_reactor_state *, int id);
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&

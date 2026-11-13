@@ -7,7 +7,7 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_pid, swoole_get_worker_type};
+use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_pid, worker_type};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
@@ -26,10 +26,11 @@ use swoole_rs_process::workers::ops::{
     RUN_STOP_ASYNC, RUN_TRY_EXIT, RUN_WORKER_SIGNAL, RUN_WORKER_START,
 };
 
-use super::{Context, SW_EVENT_WORKER, SW_WORKER_BUSY, SW_WORKER_IDLE};
+use super::Context;
 use crate::callbacks::{ReceiveSlot, TaskSlot};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::view;
+use swoole_rs_process::worker_record::{WorkerStatus, WorkerType};
 use swoole_rs_reactor::Socket;
 
 use swoole_rs_coroutine::swoole_coroutine_count as coroutine_count;
@@ -38,10 +39,9 @@ use swoole_rs_coroutine::swoole_coroutine_count as coroutine_count;
 const PRIORITY_TRY_EXIT: c_int = 4;
 const PRIORITY_WORKER_CALLBACK: c_int = 6;
 const SW_FD_PIPE: c_int = 3;
-/// `SW_PIPE_MASTER`, `SW_SERVER_EVENT_SHUTDOWN`, `SW_TASK_WORKER`.
+/// `SW_PIPE_MASTER`, `SW_SERVER_EVENT_SHUTDOWN`.
 const PIPE_MASTER: c_int = 1;
 const EVENT_SHUTDOWN: u8 = 16;
-const SW_TASK_WORKER: c_int = 4;
 use crate::records::Lookup;
 
 /// The context's objects, each live when the op reading it runs.
@@ -131,11 +131,11 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
     let len = || usize::try_from(arg).unwrap_or(usize::MAX);
     Some(match op {
         OP_EVENT_BEGIN => {
-            ctx.worker().set_status(SW_WORKER_BUSY);
+            ctx.worker().set_status(WorkerStatus::Busy);
             u64::from(ctx.info().kind)
         }
         OP_EVENT_END => {
-            ctx.worker().set_status(SW_WORKER_IDLE);
+            ctx.worker().set_status(WorkerStatus::Idle);
             u64::from(ctx.worker().exceeded_max_request())
         }
         OP_PIPE_EVENT_WRITE => {
@@ -242,7 +242,7 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_OTHER_PIPE_NONBLOCK => {
-            if swoole_get_worker_type() == SW_EVENT_WORKER
+            if worker_type() == Some(WorkerType::Event)
                 && let Some(pipe) = ctx.other(arg).and_then(|w| worker_pipe(w, true))
             {
                 set_nonblock(pipe);
@@ -412,7 +412,7 @@ extern "C-unwind" fn count_coroutines() {
 /// (or, in a task worker, its pool, whose `ptr` is).
 fn worker_context<'a>(reactor: Reactor) -> Context<'a> {
     let mut serv = reactor.handle().object();
-    if swoole_get_worker_type() == SW_TASK_WORKER {
+    if worker_type() == Some(WorkerType::Task) {
         // SAFETY: a task worker's reactor holds its live pool.
         serv = unsafe { swoole_rs_process::process_pool::PoolRef::new(serv.cast()) }.ptr();
     }

@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, Ordering::Relaxed};
+use swoole_rs_corebase::CCast;
 use swoole_rs_reactor::signal_upstream::Handler;
 
 /// `SW_SIGNO_MAX`.
@@ -135,12 +136,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
 
 /// `signo` as upstream's `std::vector<int>` holds it.
 fn narrow(signo: c_long) -> i32 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream copies the longs into a vector<int>"
-    )]
-    let signo = signo as i32;
-    signo
+    signo.c_cast::<i32>()
 }
 
 /// `int System::wait_signal(const std::vector<int> &signals, double timeout)`: the

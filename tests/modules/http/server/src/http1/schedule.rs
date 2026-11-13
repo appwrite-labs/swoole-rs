@@ -7,11 +7,12 @@ use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::net_types::AddressStorage;
+use swoole_rs_process::worker_record::WorkerStatus::{
+    Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
+};
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
-const SW_WORKER_BUSY: u8 = 1;
-const SW_WORKER_IDLE: u8 = 2;
 const DISPATCH_ROUND: u8 = 1;
 const DISPATCH_IPMOD: u8 = 4;
 const DISPATCH_UIDMOD: u8 = 5;
@@ -68,16 +69,21 @@ fn port_fd(port: Port) -> c_int {
 
 /// `serv.add_connection(port, sock, port->get_fd())`.
 fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> &'static mut Connection {
-    // SAFETY: the created server, its port and a live socket.
-    let conn = unsafe { server_methods::add_connection(serv.0, port.0, sock, port_fd(port)) };
-    assert!(!conn.is_null());
+    let serv_view = serv.view();
+    let listen = serv_view
+        .ports()
+        .iter()
+        .find(|p| p.raw() == port.0)
+        .unwrap();
+    // SAFETY: a live socket.
+    let sock = unsafe { swoole_rs_ffi::Socket::from_ptr(sock.cast()) }.unwrap();
+    let conn = server_methods::add_connection(serv_view, *listen, sock, port_fd(port)).unwrap();
     // SAFETY: the new connection, live as long as the server.
-    unsafe { &mut *conn.cast::<Connection>() }
+    unsafe { &mut *conn.as_ptr().cast::<Connection>() }
 }
 
-fn schedule_worker(serv: Server, fd: c_int, data: *mut c_void) -> usize {
-    // SAFETY: the created server; `data` null or a live `SendData`.
-    let worker_id = unsafe { server_methods::schedule_worker(serv.0, fd, data) };
+fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::SendData>) -> usize {
+    let worker_id = server_methods::schedule_worker(serv.view(), fd, data);
     usize::try_from(worker_id).unwrap()
 }
 
@@ -120,7 +126,7 @@ fn schedule() {
 
     let mut worker_id_set = BTreeSet::new();
     for i in 0..worker_num {
-        worker_id_set.insert(schedule_worker(serv, (i * 13) as c_int, ptr::null_mut()));
+        worker_id_set.insert(schedule_worker(serv, (i * 13) as c_int, None));
     }
     assert_eq!(worker_id_set.len(), worker_num);
 
@@ -130,7 +136,7 @@ fn schedule() {
 
     worker_id_set.clear();
     for i in 0..worker_num {
-        worker_id_set.insert(schedule_worker(serv, (i * 13) as c_int, ptr::null_mut()));
+        worker_id_set.insert(schedule_worker(serv, (i * 13) as c_int, None));
     }
     assert_eq!(worker_id_set.len(), worker_num - 2);
 
@@ -146,7 +152,7 @@ fn schedule_1() {
     let schedule_count = 1024;
     let mut counter = vec![0usize; worker_num];
     for i in 0..schedule_count {
-        counter[schedule_worker(serv, (i * 13) as c_int, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, (i * 13) as c_int, None)] += 1;
     }
 
     for count in counter {
@@ -183,7 +189,7 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
     add_connection(serv, port, sock);
 
     for _ in 0..schedule_count {
-        let worker_id = schedule_worker(serv, 199, ptr::null_mut());
+        let worker_id = schedule_worker(serv, 199, None);
         counter[worker_id] += 1;
         let worker = worker(serv, worker_id);
         set(worker, get(worker) + 1);
@@ -213,13 +219,13 @@ fn schedule_4() {
     let sock = fake_sock(100, Some((SW_SOCK_TCP, "127.0.0.1", 9501)));
     add_connection(serv, port, sock);
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 100, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 100, None)] += 1;
     }
 
     let sock6 = fake_sock(101, Some((SW_SOCK_TCP6, "::1", 9502)));
     add_connection(serv, port6, sock6);
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 101, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 101, None)] += 1;
     }
 
     // SAFETY: the thread's buffer, which holds a `DgramPacket`.
@@ -231,12 +237,12 @@ fn schedule_4() {
         "192.168.1.103",
         29321,
     );
-    let mut sdata = SendData {
-        // SAFETY: zeroed is a valid head; upstream leaves it unset and reads none of it.
-        info: unsafe { std::mem::zeroed() },
+    let sdata = swoole_rs_server::SendData {
+        // Upstream leaves the head unset and reads none of it.
+        info: Default::default(),
         data: pkt.cast(),
     };
-    counter[schedule_worker(serv, 9999, (&raw mut sdata).cast())] += 1;
+    counter[schedule_worker(serv, 9999, Some(&sdata))] += 1;
 
     assert_eq!(counter[0], 0);
     assert_eq!(counter[1], schedule_count + 1);
@@ -257,13 +263,13 @@ fn schedule_5() {
     let sock = fake_sock(100, Some((SW_SOCK_TCP, "127.0.0.1", 9501)));
     add_connection(serv, port, sock).uid = 0;
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 100, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 100, None)] += 1;
     }
 
     let sock6 = fake_sock(101, Some((SW_SOCK_TCP6, "::1", 9502)));
     add_connection(serv, port6, sock6).uid = 839922;
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 101, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 101, None)] += 1;
     }
 
     assert_eq!(counter[0], schedule_count);
@@ -285,16 +291,16 @@ fn schedule_8() {
     let sock = fake_sock(100, Some((SW_SOCK_TCP, "127.0.0.1", 9501)));
     add_connection(serv, port, sock).worker_id = 1;
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 100, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 100, None)] += 1;
     }
 
     let sock6 = fake_sock(101, Some((SW_SOCK_TCP6, "::1", 9502)));
     add_connection(serv, port6, sock6);
     for _ in 0..schedule_count {
-        counter[schedule_worker(serv, 101, ptr::null_mut())] += 1;
+        counter[schedule_worker(serv, 101, None)] += 1;
     }
 
-    counter[schedule_worker(serv, 9999, ptr::null_mut())] += 1;
+    counter[schedule_worker(serv, 9999, None)] += 1;
 
     assert_eq!(counter[0], schedule_count + 1);
     assert_eq!(counter[1], schedule_count);

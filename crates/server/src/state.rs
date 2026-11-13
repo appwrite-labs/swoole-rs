@@ -1,24 +1,11 @@
 //! The server's Rust-owned state (`Server::state_`: the round-robin counter and the
 //! command id counter) and the operations over the rest of `Server` that
-//! `master.cc` kept: worker scheduling, commands, the document root, pipe sockets, worker counters, aborts, connection iteration, sends, timers
+//! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
-use crate::base_factory::{SEND_DATA, SendData, sends_here};
-use crate::ops::{
-    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
-    OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
-};
-use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
-#[cfg(test)]
-use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
-use crate::send::send_to_connection;
-use crate::{Host, MODE_PROCESS, SW_OK};
-use core::ffi::{c_char, c_int};
+use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
+use core::ffi::c_int;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
-use std::ffi::{CStr, CString};
-use swoole_rs_corebase::StringSlot;
+use std::ffi::CString;
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
@@ -42,8 +29,8 @@ pub struct ServerState {
     /// (`None`: `/tmp`), as `set()` gave it.
     upload_tmp_dir: std::sync::Mutex<Option<Box<[u8]>>>,
     /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in `TEXT_*`
-    /// order; native views them as `RustStringView`s.
-    texts: [StringSlot; TEXT_COUNT],
+    /// order. Readers share the value; a write replaces it.
+    texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; TEXT_COUNT],
     /// `Server::lock_`, the connection list's fd range lock: whether it is held,
     /// and how many threads wait for it.
     locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
@@ -104,7 +91,7 @@ impl ServerState {
             ports: std::sync::Mutex::new(Vec::new()),
             callbacks: crate::callbacks::ServerCallbacks::new(),
             upload_tmp_dir: std::sync::Mutex::new(None),
-            texts: [const { StringSlot::new() }; TEXT_COUNT],
+            texts: Default::default(),
             locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
@@ -177,21 +164,56 @@ impl ServerState {
             .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
     }
 
-    /// One of `texts`' slots.
-    pub(crate) fn text_slot(&self, index: usize) -> Option<&StringSlot> {
-        self.texts.get(index)
+    /// Text member `index` (`TEXT_*`), empty past the last.
+    pub(crate) fn text(&self, index: usize) -> std::sync::Arc<[u8]> {
+        self.texts
+            .get(index)
+            .map_or_else(Default::default, |text| std::sync::Arc::clone(&lock(text)))
     }
 
-    /// The bytes of one of `texts`, which no other thread sets meanwhile.
-    pub(crate) fn text(&self, index: usize) -> &[u8] {
-        self.text_slot(index).map_or(&[], StringSlot::bytes)
+    /// Sets text member `index` (`TEXT_*`); none past the last.
+    pub(crate) fn set_text(&self, index: usize, value: &[u8]) {
+        if let Some(text) = self.texts.get(index) {
+            *lock(text) = value.into();
+        }
+    }
+
+    /// `Server::set_document_root(path)`: the path's real path, if it exists.
+    pub(crate) fn set_document_root(&self, path: &[u8]) -> bool {
+        /// `SW_LOG_WARNING`.
+        const LOG_WARNING: c_int = 4;
+        use std::os::unix::ffi::OsStrExt;
+        let origin = c"Server::set_document_root";
+        if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
+            let code = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as c_int;
+            let m = format_args!(
+                "The length of document_root must be less than {}",
+                libc::PATH_MAX
+            );
+            swoole_rs_corebase::log::error_log(LOG_WARNING, code, origin, m);
+            return false;
+        }
+        // `realpath` reads the path up to its first NUL.
+        let path = path.split(|byte| *byte == 0).next().unwrap_or_default();
+        let real = std::fs::canonicalize(std::ffi::OsStr::from_bytes(path));
+        let Ok(real) = real else {
+            let code = swoole_rs_error::ErrorCode::SW_ERROR_DIR_NOT_EXIST as c_int;
+            let m = format_args!(
+                "document_root[{}] does not exist",
+                String::from_utf8_lossy(path)
+            );
+            swoole_rs_corebase::log::error_log(LOG_WARNING, code, origin, m);
+            return false;
+        };
+        self.set_text(TEXT_DOCUMENT_ROOT, real.as_os_str().as_bytes());
+        true
     }
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn set_isolation(&self) {
-        let text = |index| CString::new(self.text(index)).unwrap_or_default();
+        let text = |index| CString::new(&*self.text(index)).unwrap_or_default();
         let (root, user, group) = (text(0), text(1), text(2));
         swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
@@ -345,15 +367,6 @@ impl ServerState {
     }
 }
 
-/// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last;
-/// the slot lives as long as `state`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_text_slot(state: &ServerState, index: usize) -> *const StringSlot {
-    state
-        .text_slot(index)
-        .map_or(core::ptr::null(), core::ptr::from_ref)
-}
-
 /// `text.c_str()`: the bytes up to the first NUL.
 fn c_path(text: &[u8]) -> CString {
     let end = text
@@ -363,27 +376,16 @@ fn c_path(text: &[u8]) -> CString {
     CString::new(text.get(..end).unwrap_or_default()).unwrap_or_default()
 }
 
-/// Answers the ops over `texts` and the lock, which need only the state.
-///
-/// # Safety
-/// `state` is live; `OP_ST_SET_ROOT`'s `arg` addresses a NUL-terminated path.
+/// Answers the ops over the pid file and the lock, which need only the state.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
+pub(crate) fn native_fact(state: &ServerState, op: u32) -> Option<u64> {
     match op {
-        OP_SET_STOPPING => state.stopping.store(true, Ordering::Release),
         OP_LOCK => state.lock(),
         OP_UNLOCK => state.unlock(),
-        OP_ST_SET_ROOT => {
-            let path = core::ptr::with_exposed_provenance::<c_char>(usize::try_from(arg).ok()?);
-            // SAFETY: per the caller.
-            let path = unsafe { CStr::from_ptr(path) }.to_bytes();
-            // SAFETY: a slot of this state, set only while the server is configured.
-            unsafe { state.texts[TEXT_DOCUMENT_ROOT].set_shared(path) };
-        }
         OP_LC_WRITE_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                let file = c_path(file);
+                let file = c_path(&file);
                 let pid = std::process::id().cast_signed().to_string();
                 swoole_rs_ossupport::file_put_contents(&file, pid.as_bytes());
             }
@@ -391,7 +393,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
         OP_LC_UNLINK_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                swoole_rs_corebase::sys::unlink(&c_path(file));
+                swoole_rs_corebase::sys::unlink(&c_path(&file));
             }
         }
         _ => return None,
@@ -463,331 +465,40 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
     CString::new(code.to_string()).unwrap_or_default()
 }
 
-fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
-    h.op(OP_FIELD, u64::from(id))
-}
-
-fn worker_count<H: Host>(h: &mut H) -> crate::Effect<u64> {
-    field(h, FIELD_WORKER_NUM)
-}
-
-/// `get_lowest_load_worker_id` (`OP_WORKER_COROUTINES`) and
-/// `get_lowest_concurrent_worker_id` (`OP_WORKER_CONCURRENCY`): the first worker
-/// with the fewest.
-pub(crate) fn lowest<H: Host>(h: &mut H, metric: u32) -> crate::Effect<i64> {
-    let workers = worker_count(h)?;
-    let mut lowest = 0;
-    let mut min = h.op(metric, 0)?;
-    for id in 1..workers {
-        let value = h.op(metric, id)?;
-        if value < min {
-            min = value;
-            lowest = id;
-        }
-    }
-    Ok(lowest.cast_signed())
-}
-
-/// `get_idle_worker_id`: up to `worker_num + 1` round-robin tries for an idle worker,
-/// else the last one tried, with the scheduler warning raised.
-pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let workers = u32::try_from(worker_count(h)?).unwrap_or(u32::MAX).max(1);
-    let mut key = 0;
-    let mut found = false;
-    for _ in 0..=workers {
-        key = h.state()?.next_round() % workers;
-        if h.op(OP_WORKER_IDLE, u64::from(key))? != 0 {
-            found = true;
-            break;
-        }
-    }
-    if !found {
-        h.get(OP_SET_WARNING)?;
-    }
-    Ok(i64::from(key))
-}
-
-/// `Server::set_document_root(path)`: the path's real path, if it exists.
-fn document_root<H: Host>(h: &mut H, path: &[u8]) -> crate::Effect<bool> {
-    if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
-        h.get(LOG_ST_ROOT_TOO_LONG)?;
-        return Ok(false);
-    }
-    // `realpath` reads the path up to its first NUL.
-    let path = path.split(|byte| *byte == 0).next().unwrap_or_default();
-    let real = {
-        use std::os::unix::ffi::OsStrExt;
-        std::fs::canonicalize(std::ffi::OsStr::from_bytes(path)).ok()
-    }
-    .and_then(|real| {
-        use std::os::unix::ffi::OsStringExt;
-        CString::new(real.into_os_string().into_vec()).ok()
-    });
-    let Some(real) = real else {
-        h.get(LOG_ST_ROOT_MISSING)?;
-        return Ok(false);
-    };
-    h.op(OP_ST_SET_ROOT, real.as_ptr().expose_provenance() as u64)?;
-    Ok(true)
-}
-
-/// `Server::store_pipe_fd`: both ends of a worker pipe map to the pipe, and the
-/// highest fd grows to cover them.
-fn store_pipe_fd<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let master = h.signed(OP_ST_PIPE_FD)?;
-    let worker = h.op(OP_ST_PIPE_FD, 1)?.cast_signed();
-    h.op(OP_ST_PIPE_BIND, master.cast_unsigned())?;
-    h.op(OP_ST_PIPE_BIND, worker.cast_unsigned())?;
-    for fd in [master, worker] {
-        if fd > h.signed(OP_MAXFD)? {
-            h.op(OP_SET_MAXFD, fd.cast_unsigned())?;
-        }
-    }
-    Ok(())
-}
-
-/// `Server::TASK_IPC_UNIXSOCK`.
-const TASK_IPC_UNIXSOCK: u64 = 1;
-
-/// `Server::init_pipe_sockets`: the pipes of every event worker, and of the task
-/// workers when they talk over unix sockets.
-fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let workers = worker_count(h)?;
-    let total = workers + field(h, FIELD_TASK_WORKER_NUM)?;
-    let task_pipes = field(h, FIELD_TASK_IPC_MODE)? == TASK_IPC_UNIXSOCK;
-    for id in 0..total {
-        if id >= workers && !task_pipes {
-            continue;
-        }
-        h.op(OP_ST_INIT_PIPE, id)?;
-    }
-    Ok(())
-}
-
-/// `Server::abort_connection`: counted, then closed through the reactor when it is
-/// a connection, else freed.
-fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_ST_ABORT_COUNT)?;
-    if h.is(OP_ST_SOCK_OBJECT)? {
-        h.get(OP_ST_REACTOR_CLOSE)?;
-    } else {
-        h.get(OP_ST_SOCK_FREE)?;
-    }
-    Ok(())
-}
-
-/// `Server::send`: through the factory, then the server's, port's and worker's counts.
-/// A base or thread mode worker that owns the session sends it here, as
-/// `BaseFactory::finish` would, without a second trip through native code.
-pub(crate) fn send<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
-    let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, send)?;
-    let sent = if here {
-        match h.send_now(send)? {
-            Some(sent) if sent == i64::from(send.info.len) => true,
-            first => send_to_connection(h, u64::from(SEND_DATA), first)? == SW_OK,
-        }
-    } else {
-        h.is(OP_ST_FINISH)?
-    };
-    if !sent {
-        return Ok(false);
-    }
-    crate::shared::count_send(h.state()?, send.info.fd, send.info.len);
-    Ok(true)
-}
-
-/// `master_timer`, `heartbeat_timer`, `enable_accept_timer`.
-const TIMERS: u64 = 3;
-
-/// `Server::clear_timer`: each armed timer is deleted and forgotten.
-pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
-    for timer in 0..TIMERS {
-        if h.op(OP_ST_TIMER, timer)? != 0 {
-            h.op(OP_ST_TIMER_DEL, timer)?;
-        }
-    }
-    Ok(())
-}
-
-/// The operations of `crate::run` this module runs.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
-    use crate::ops::{
-        RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS,
-        RUN_ST_STORE_PIPE_FD,
-    };
-    Ok(Some(match operation {
-        RUN_ST_DOCUMENT_ROOT => {
-            let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
-            let len = usize::try_from(arg).unwrap_or(0);
-            // SAFETY: native passes the path's `len` bytes, live for the call.
-            let path = unsafe {
-                core::slice::from_raw_parts(core::ptr::with_exposed_provenance::<u8>(address), len)
-            };
-            i64::from(document_root(h, path)?)
-        }
-        RUN_ST_STORE_PIPE_FD => {
-            store_pipe_fd(h)?;
-            0
-        }
-        RUN_ST_INIT_PIPE_SOCKETS => {
-            init_pipe_sockets(h)?;
-            0
-        }
-        RUN_ST_ABORT => {
-            abort_connection(h)?;
-            0
-        }
-        RUN_ST_CLEAR_TIMER => {
-            clear_timer(h)?;
-            0
-        }
-        _ => return Ok(None),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MODE_PROCESS;
-    use crate::script::Script;
-
-    fn workers(n: u64) -> Script {
-        Script::with(&[(OP_FIELD, n)])
-    }
-
-    #[test]
-    fn lowest_takes_the_first_minimum() {
-        let mut s = workers(4).queue(OP_WORKER_COROUTINES, &[5, 3, 3, 9]);
-        assert_eq!(lowest(&mut s, OP_WORKER_COROUTINES).unwrap(), 1);
-        assert_eq!(s.args(OP_WORKER_COROUTINES), vec![0, 1, 2, 3]);
-        let mut s = workers(1);
-        assert_eq!(
-            lowest(&mut s, OP_WORKER_CONCURRENCY).unwrap(),
-            0,
-            "a single worker"
-        );
-    }
-
-    #[test]
-    fn idle_worker_tries_round_robin_then_warns() {
-        let mut s = workers(3).queue(OP_WORKER_IDLE, &[0, 1]);
-        assert_eq!(idle_worker(&mut s).unwrap(), 1);
-        assert_eq!(s.args(OP_WORKER_IDLE), vec![0, 1]);
-        assert_eq!(s.called(OP_SET_WARNING), 0);
-        // The round counter continues where the last schedule left it.
-        let mut busy = workers(3);
-        busy.state = ServerState::new();
-        busy.state.round.store(2, Ordering::SeqCst);
-        assert_eq!(
-            idle_worker(&mut busy).unwrap(),
-            2,
-            "the last of worker_num + 1 tries"
-        );
-        assert_eq!(busy.args(OP_WORKER_IDLE), vec![2, 0, 1, 2]);
-        assert_eq!(busy.called(OP_SET_WARNING), 1);
-    }
 
     #[test]
     fn document_root_is_the_real_path() {
-        let mut s = Script::default();
-        assert!(document_root(&mut s, b"/").unwrap());
-        assert_eq!(s.called(OP_ST_SET_ROOT), 1);
-        let mut s = Script::default();
-        assert!(!document_root(&mut s, b"/does/not/exist/swoole-rs").unwrap());
-        assert_eq!(s.called(LOG_ST_ROOT_MISSING), 1);
-        assert_eq!(s.called(OP_ST_SET_ROOT), 0);
-        let long = vec![b'a'; usize::try_from(libc::PATH_MAX).unwrap() + 1];
-        let mut s = Script::default();
-        assert!(!document_root(&mut s, &long).unwrap());
-        assert_eq!(s.called(LOG_ST_ROOT_TOO_LONG), 1);
-    }
-
-    #[test]
-    fn pipe_fds_raise_the_highest_fd() {
-        let mut s = Script::with(&[(OP_MAXFD, 7)]).queue(OP_ST_PIPE_FD, &[5, 9]);
-        store_pipe_fd(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_PIPE_FD), vec![0, 1]);
-        assert_eq!(s.args(OP_ST_PIPE_BIND), vec![5, 9]);
-        assert_eq!(s.args(OP_SET_MAXFD), vec![9]);
-    }
-
-    #[test]
-    fn task_pipes_only_over_unix_sockets() {
-        let mut s = Script::default().queue(OP_FIELD, &[2, 2, TASK_IPC_UNIXSOCK]);
-        init_pipe_sockets(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1, 2, 3]);
-        let mut s = Script::default().queue(OP_FIELD, &[2, 2, 2]);
-        init_pipe_sockets(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_INIT_PIPE), vec![0, 1]);
-    }
-
-    #[test]
-    fn connections_abort_iterate_and_send() {
-        let mut s = Script::with(&[(OP_ST_SOCK_OBJECT, 1)]);
-        abort_connection(&mut s).unwrap();
+        let state = ServerState::new();
+        let dir = std::env::temp_dir().join(format!("swoole-rs-root-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        let dotted = dir.join("inner/..");
+        assert!(state.set_document_root(dotted.to_str().unwrap().as_bytes()));
+        let real = std::fs::canonicalize(&dir).unwrap();
         assert_eq!(
-            (
-                s.called(OP_ST_ABORT_COUNT),
-                s.called(OP_ST_REACTOR_CLOSE),
-                s.called(OP_ST_SOCK_FREE)
-            ),
-            (1, 1, 0)
+            &*state.text(TEXT_DOCUMENT_ROOT),
+            real.to_str().unwrap().as_bytes(),
+            "the real path"
         );
-        let mut s = Script::default();
-        abort_connection(&mut s).unwrap();
-        assert_eq!(s.called(OP_ST_SOCK_FREE), 1);
-
-        let data = four_bytes();
-        let process = |facts: &[(u32, u64)]| {
-            let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-            s.facts.extend(facts.iter().copied());
-            s
-        };
-        let mut s = process(&[(OP_ST_FINISH, 1)]);
-        assert!(send(&mut s, &data).unwrap());
-        let mut s = process(&[]);
-        assert!(!send(&mut s, &data).unwrap());
-    }
-
-    /// A 4-byte send to session 1.
-    fn four_bytes() -> SendData {
-        SendData {
-            info: swoole_rs_corebase::DataHead {
-                fd: 1,
-                kind: SEND_DATA,
-                len: 4,
-                ..Default::default()
-            },
-            data: core::ptr::null(),
-        }
-    }
-
-    #[test]
-    fn base_mode_sends_here_without_the_factory() {
-        use crate::ops::{OP_SC_SEND, OP_SC_VERIFY, OP_SC_WRITABLE};
-        use crate::send::{DIRECT_SEND, FOUND, OUT_EMPTY};
-        let data = four_bytes();
-        let mut s = Script::with(&[
-            (OP_SC_VERIFY, FOUND | OUT_EMPTY | DIRECT_SEND | (4 << 32)),
-            (OP_SC_SEND, 4),
-            (OP_SC_WRITABLE, 1),
-        ]);
-        assert!(send(&mut s, &data).unwrap());
-        assert_eq!((s.called(OP_ST_FINISH), s.called(OP_SC_SEND)), (0, 1));
-        let mut s = Script::default();
-        assert!(!send(&mut s, &data).unwrap(), "no session");
-    }
-
-    #[test]
-    fn clear_timer_deletes_armed_timers() {
-        let mut s = Script::default().queue(OP_ST_TIMER, &[1, 0, 1]);
-        clear_timer(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_TIMER_DEL), vec![0, 2]);
+        let mut nul = real.to_str().unwrap().as_bytes().to_vec();
+        nul.extend_from_slice(b"\0/ignored");
+        assert!(state.set_document_root(&nul), "read up to the first NUL");
+        assert!(!state.set_document_root(b"/does/not/exist/swoole-rs"));
+        let long = vec![b'a'; usize::try_from(libc::PATH_MAX).unwrap() + 1];
+        assert!(!state.set_document_root(&long), "too long");
+        assert_eq!(
+            &*state.text(TEXT_DOCUMENT_ROOT),
+            real.to_str().unwrap().as_bytes(),
+            "failures keep the root"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn startup_error_falls_back_to_the_code() {
-        let text = |message: &CStr, code| startup_error(message.to_owned(), code);
+        let text = |message: &std::ffi::CStr, code| startup_error(message.to_owned(), code);
         assert_eq!(text(c"bind failed", 98), c"bind failed");
         assert_eq!(text(c"", 1004), c"1004");
         assert_eq!(text(c"", 0), c"");
@@ -805,16 +516,14 @@ mod tests {
     #[test]
     fn texts_and_the_lock_are_answered_without_native() {
         let state = ServerState::new();
-        let root = c"/srv/www";
-        let arg = root.as_ptr().expose_provenance() as u64;
-        assert_eq!(unsafe { native_fact(&state, OP_ST_SET_ROOT, arg) }, Some(0));
-        assert_eq!(state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
-        assert_eq!(state.text(TEXT_PID_FILE), b"");
-        assert!(state.text_slot(TEXT_COUNT).is_none());
-        assert_eq!(unsafe { native_fact(&state, OP_SET_MAXFD, 0) }, None);
+        state.set_text(TEXT_DOCUMENT_ROOT, b"/srv/www");
+        assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
+        assert_eq!(&*state.text(TEXT_PID_FILE), b"");
+        assert!(state.text(TEXT_COUNT).is_empty());
+        assert_eq!(native_fact(&state, crate::ops::OP_SET_MAXFD), None);
 
         let state = std::sync::Arc::new(state);
-        assert_eq!(unsafe { native_fact(&state, OP_LOCK, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LOCK), Some(0));
         // Two waiters: the unlock wakes one, whose unlock wakes the other.
         let waiters: Vec<_> = (0..2)
             .map(|_| {
@@ -833,7 +542,7 @@ mod tests {
             !waiters.iter().any(std::thread::JoinHandle::is_finished),
             "the lock is held"
         );
-        assert_eq!(unsafe { native_fact(&state, OP_UNLOCK, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_UNLOCK), Some(0));
         for waiter in waiters {
             waiter.join().unwrap();
         }
@@ -850,17 +559,17 @@ mod tests {
         swoole_rs_corebase::swr_v1_core_set_max_file_content(64 * 1024 * 1024);
         let state = ServerState::new();
         // No pid_file: neither op touches the file system.
-        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
-        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
+        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
-        unsafe { state.texts[TEXT_PID_FILE].set_shared(bytes) };
-        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
+        state.set_text(TEXT_PID_FILE, bytes);
+        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             std::process::id().to_string()
         );
-        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
         assert!(!path.exists());
     }
 }

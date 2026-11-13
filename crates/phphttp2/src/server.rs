@@ -7,6 +7,7 @@
 use crate::session::{Session, SessionState, Stream};
 use libc::c_int;
 use std::ffi::{CStr, CString};
+use swoole_rs_corebase::CCast;
 use swoole_rs_http2::{
     Http2HeaderPlan, Http2RespondFacts, Http2WindowPlan,
     hpack::{Encoder, Error},
@@ -203,12 +204,7 @@ fn goaway(ctx: Ctx, code: i64, data: &[u8]) -> bool {
         return false;
     };
     let last_stream_id = session.last_stream_id.get();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's uint8_t flags and uint32_t code"
-    )]
-    let (flags, code) = (u32::from(code as u8), code as u32);
+    let (flags, code) = (u32::from(code.c_cast::<u8>()), code.c_cast::<u32>());
     let mut frame = Vec::with_capacity(FRAME_HEADER + GOAWAY_SIZE + data.len());
     frame.extend_from_slice(&frame_header(
         TYPE_GOAWAY,
@@ -418,15 +414,13 @@ fn build_header(ctx: Ctx, session: &Session, body: Option<Body<'_>>) -> Option<H
     let zcookie = property(ctx, ResponseArray::Cookie);
     let mut headers =
         Headers::new(32 + length_safe(zheader.as_ref()) + length_safe(zcookie.as_ref()));
-    #[expect(
-        clippy::cast_possible_wrap,
-        clippy::cast_sign_loss,
-        reason = "the native int status"
-    )]
-    let status = sw_rs_http2_response_status(get(ctx, Field::Status) as i32) as u32;
+    let status =
+        sw_rs_http2_response_status(get(ctx, Field::Status).c_cast::<i32>()).c_cast::<u32>();
     set(ctx, Field::Status, status);
-    #[expect(clippy::cast_possible_wrap, reason = "the native int status")]
-    headers.add(b":status", decimal(&mut [0; 20], i64::from(status as i32)));
+    headers.add(
+        b":status",
+        decimal(&mut [0; 20], i64::from(status.c_cast::<i32>())),
+    );
 
     let mut header_flags = 0;
     if zheader.is_some() {
@@ -639,11 +633,7 @@ pub(crate) fn send_body(
 
 /// The windows after `sent` bytes of DATA.
 fn consume_window(session: &Session, stream: &Stream, sent: usize) {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "native uint32_t window arithmetic"
-    )]
-    let sent = sent as u32;
+    let sent = sent.c_cast::<u32>();
     stream
         .remote_window_size
         .set(stream.remote_window_size.get().wrapping_sub(sent));

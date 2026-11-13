@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::VecDeque;
 use std::ptr;
+use swoole_rs_corebase::CCast;
 #[test]
 fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
     let mut memory = [0u8; 128 + 24 + 4];
@@ -24,7 +25,7 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
         seed ^= seed >> 7;
         seed ^= seed << 17;
         if seed & 3 != 0 {
-            let bytes = vec![seed as u8; (seed % 25) as usize];
+            let bytes = vec![seed.c_cast::<u8>(); (seed % 25) as usize];
             if swr_v1_memory_channel_in(&mut c, &bytes) == 0 {
                 model.push_back(bytes);
             }
@@ -32,11 +33,14 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
             let mut output = [0u8; 24];
             let consume = ((seed >> 2) & 1) as u32;
             let capacity = if seed & 32 != 0 { 24 } else { 0 };
-            let status =
-                swr_v1_memory_channel_out(&mut c, &mut output[..capacity as usize], consume != 0);
+            let status = swr_v1_memory_channel_out(
+                &mut c,
+                &mut output[..capacity.c_cast::<usize>()],
+                consume != 0,
+            );
             if let Some(front) = model.front() {
-                if front.len() <= capacity as usize {
-                    assert_eq!(status, front.len() as i32);
+                if front.len() <= capacity.c_cast::<usize>() {
+                    assert_eq!(status, front.len().c_cast::<i32>());
                     assert_eq!(&output[..front.len()], front);
                     if consume != 0 {
                         model.pop_front();
@@ -48,7 +52,7 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
                 assert_eq!(status, -1);
             }
         }
-        assert_eq!(c.num as usize, model.len());
+        assert_eq!(c.num.c_cast::<usize>(), model.len());
         assert_eq!(c.bytes, model.iter().map(Vec::len).sum());
     }
 }
@@ -169,13 +173,13 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
         // Exact input/output allocations let ASan detect endpoint overreads,
         // including lengths just below/above each fixed-width copy threshold.
         let input: Vec<u8> = (0..length)
-            .map(|i| (i.wrapping_mul(37) ^ length) as u8)
+            .map(|i| (i.wrapping_mul(37) ^ length).c_cast::<u8>())
             .collect();
         for cursor in [0usize, 3, 127] {
             let mut memory = vec![0xabu8; 128 + 256 + 4];
             let mut c = Channel {
-                head: cursor as i64,
-                tail: cursor as i64,
+                head: cursor.c_cast::<i64>(),
+                tail: cursor.c_cast::<i64>(),
                 size: 128,
                 head_tag: 0,
                 tail_tag: 0,
@@ -196,7 +200,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                 memory.resize(256 + 256 + 4, 0xab);
                 c.mem = memory.as_mut_ptr();
             }
-            let start = c.tail as usize;
+            let start = c.tail.c_cast::<usize>();
             assert_eq!(swr_v1_memory_channel_in(&mut c, &input), 0);
             assert_eq!(&memory[..start], vec![0xab; start]);
             assert_eq!(&memory[start + 4..start + 4 + length], input);
@@ -210,7 +214,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                 let mut output = vec![0xcdu8; length];
                 assert_eq!(
                     swr_v1_memory_channel_out(&mut c, &mut output, consume),
-                    length as i32
+                    length.c_cast::<i32>()
                 );
                 assert_eq!(output, input);
                 if !consume {
@@ -269,7 +273,7 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
             for (head_tag, tail_tag) in [(0, 0), (0, 1), (1, 0), (127, 255), (255, 255)] {
                 for bytes in [0, 1, 4, usize::MAX - 3, usize::MAX] {
                     for num in [0, 1, -1, i32::MIN, i32::MAX] {
-                        let modular = ((bytes as u128 + (num as usize as u128) * 4)
+                        let modular = ((bytes as u128 + (num.c_cast::<usize>() as u128) * 4)
                             & usize::MAX as u128) as usize;
                         for size in [0, 4, 16, usize::MAX, modular] {
                             let state = CapacityState {
@@ -355,8 +359,10 @@ fn channel_push() {
     let mut m = Vec::new();
     let mut bytes = 0;
     while bytes < N {
-        let n = (unsafe { libc::rand() } as usize % 4000) + 4000;
-        let buf: Vec<u8> = (0..n).map(|_| unsafe { libc::rand() } as u8).collect();
+        let n = ((unsafe { libc::rand() }).c_cast::<usize>() % 4000) + 4000;
+        let buf: Vec<u8> = (0..n)
+            .map(|_| (unsafe { libc::rand() }).c_cast::<u8>())
+            .collect();
         bytes += n;
         m.push(buf);
     }
@@ -383,9 +389,9 @@ fn channel_push() {
             while bytes < N {
                 let retval = c.take(&mut buf, 1);
                 if retval > 0 {
-                    assert_eq!(m[index], buf[..retval as usize]);
+                    assert_eq!(m[index], buf[..retval.c_cast::<usize>()]);
                     index += 1;
-                    bytes += retval as usize;
+                    bytes += retval.c_cast::<usize>();
                 } else {
                     std::thread::sleep(std::time::Duration::from_micros(10));
                 }
@@ -403,7 +409,7 @@ fn channel_peek() {
     assert_eq!(c.take(&mut buf, 0), -1);
     let value = b"test";
     c.push(value);
-    assert_eq!(c.take(&mut buf, 0), value.len() as i32);
+    assert_eq!(c.take(&mut buf, 0), value.len().c_cast::<i32>());
 }
 
 /// `TEST(channel, notify)`. Upstream's `sleep(0.02)` truncates to `sleep(0)`, and its

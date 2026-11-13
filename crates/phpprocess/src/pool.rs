@@ -13,9 +13,11 @@ use std::{
     rc::Rc,
     sync::atomic::{AtomicPtr, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::process_pool;
+use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_process::worker_record::{Worker, WorkerRecord, WorkerStatus, WorkerType};
 use swoole_rs_process::{
     methods,
     process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
@@ -32,19 +34,9 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-const IPC_NONE: i64 = 0;
-const IPC_UNIXSOCK: i64 = 1;
-const IPC_MSGQUEUE: i64 = 2;
-const IPC_SOCKET: i64 = 3;
 /// `SW_SOCK_TCP` and `SW_SOCK_UNIX_STREAM`.
 const SOCK_TCP: c_int = 1;
 const SOCK_UNIX_STREAM: c_int = 5;
-/// `SW_MASTER` and `SW_WORKER`.
-const MASTER: c_int = 1;
-const WORKER: c_int = 2;
-/// `SW_WORKER_BUSY` and `SW_WORKER_IDLE`.
-const WORKER_BUSY: u8 = 1;
-const WORKER_IDLE: u8 = 2;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 
@@ -118,10 +110,10 @@ impl Drop for Pool {
 fn worker_busy(busy: bool) {
     swoole_rs_process::worker_globals::with_current(|worker| {
         if busy {
-            worker.set_status(WORKER_BUSY);
+            worker.set_status(WorkerStatus::Busy);
         } else {
             worker.add_request_count();
-            worker.set_status(WORKER_IDLE);
+            worker.set_status(WorkerStatus::Idle);
         }
     });
 }
@@ -370,7 +362,7 @@ extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     update_bool(object, c"workerRunning", true);
     update_long(object, c"workerPid", getpid());
     update_long(object, c"workerId", id);
-    methods::swoole_set_worker_type(WORKER);
+    methods::set_worker_type(WorkerType::Event);
     swoole_rs_corebase::swr_v1_core_set_enable_coroutine(this.enable_coroutine.get());
     if let Some(callable) = this.on_worker_start.get() {
         let coroutine = this.enable_coroutine.get();
@@ -455,7 +447,7 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
     if let Some((object, this)) = owner(pool) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
-        methods::swoole_set_worker_type(MASTER);
+        methods::set_worker_type(WorkerType::Master);
         swoole_rs_corebase::swr_v1_core_set_enable_coroutine(false);
         if let Some(callable) = this.on_start.get() {
             dispatch(&callable, object, None, false, "onStart");
@@ -509,7 +501,7 @@ fn construct(call: &Call) {
     let parsed = call.arity(1, 4).and_then(|()| {
         Ok((
             call.long(1, 0)?,
-            call.long(2, IPC_NONE)?,
+            call.long(2, IpcMode::None.code().into())?,
             call.long(3, 0)?,
             call.bool(4, false)?,
         ))
@@ -533,25 +525,20 @@ fn construct(call: &Call) {
     if worker_num <= 0 {
         return fail(c"the parameter $worker_num must be greater than 0");
     }
-    if ipc_type == IPC_MSGQUEUE && !crate::process::key_is_valid(key) {
+    if ipc_type == IpcMode::MsgQueue.code().into() && !crate::process::key_is_valid(key) {
         return fail(c"the parameter $msgqueue_key is out of range");
     }
-    if coroutine && ipc_type > 0 && ipc_type != IPC_UNIXSOCK {
+    if coroutine && ipc_type > 0 && ipc_type != IpcMode::UnixSock.code().into() {
         call.throw_error(
             c"the parameter $ipc_type must be SWOOLE_IPC_UNIXSOCK when enable coroutine",
         );
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream converts to uint32_t, key_t and swIPCMode"
-    )]
     let made = Pool::create(
-        worker_num as u32,
-        key as c_int,
-        ipc_type as c_int,
+        worker_num.c_cast::<u32>(),
+        key.c_cast::<c_int>(),
+        ipc_type.c_cast::<c_int>(),
         this_value,
         coroutine,
     );
@@ -636,7 +623,7 @@ fn on(call: &Call) {
     let slot = match name.to_ascii_lowercase().as_slice() {
         b"workerstart" => &this.on_worker_start,
         b"message" => {
-            if i64::from(view.ipc_mode()) == IPC_NONE {
+            if view.ipc_mode() == IpcMode::None {
                 call.throw(
                     exception(),
                     c"cannot set `onMessage` event with ipc_type=0",
@@ -677,7 +664,7 @@ fn on(call: &Call) {
 fn unsupported(call: &Call, view: PoolRef<'_>) {
     fatal(
         E_WARNING,
-        &message!("unsupported ipc type[{}]", view.ipc_mode()),
+        &message!("unsupported ipc type[{}]", view.ipc_mode().code()),
     );
     call.set_bool(false);
 }
@@ -701,7 +688,7 @@ fn listen(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if i64::from(view.ipc_mode()) != IPC_SOCKET {
+    if view.ipc_mode() != IpcMode::Socket {
         return unsupported(call, view);
     }
     let unix = address
@@ -712,11 +699,13 @@ fn listen(call: &Call) {
     let host =
         CString::new(host.split(|&byte| byte == 0).next().unwrap_or_default()).unwrap_or_default();
     let kind = if unix { SOCK_UNIX_STREAM } else { SOCK_TCP };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's int port and backlog"
-    )]
-    let listened = methods::listen_socket(view, kind, &host, port as c_int, backlog as c_int);
+    let listened = methods::listen_socket(
+        view,
+        kind,
+        &host,
+        port.c_cast::<c_int>(),
+        backlog.c_cast::<c_int>(),
+    );
     let socket = view.ipc_listener();
     if !socket.is_null() {
         // SAFETY: the pool's live listener record, which nothing else borrows here.
@@ -733,18 +722,14 @@ fn write(call: &Call) {
     let Some(view) = checked(this(call)) else {
         return;
     };
-    if i64::from(view.ipc_mode()) != IPC_SOCKET {
+    if view.ipc_mode() != IpcMode::Socket {
         return unsupported(call, view);
     }
     if data.is_empty() {
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's uint32_t length"
-    )]
-    let length = data.len() as u32 as usize;
+    let length = data.len().c_cast::<u32>() as usize;
     let written = methods::response(view, data.get(..length).unwrap_or(data));
     call.set_bool(written >= 0);
 }
@@ -758,7 +743,7 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if i64::from(view.ipc_mode()) != IPC_UNIXSOCK {
+    if view.ipc_mode() != IpcMode::UnixSock {
         return unsupported(call, view);
     }
     let parsed = call
@@ -768,12 +753,7 @@ fn send_message(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream's WorkerId"
-    )]
-    let sent = methods::send_message(view, worker as u32, data);
+    let sent = methods::send_message(view, worker.c_cast::<u32>(), data);
     call.set_bool(sent);
 }
 
@@ -823,7 +803,7 @@ fn start(call: &Call) {
             fatal(E_ERROR, &message!("require 'onWorkerStart' callback"));
             call.set_bool(false);
             return;
-        } else if i64::from(view.ipc_mode()) != IPC_NONE {
+        } else if view.ipc_mode() != IpcMode::None {
             fatal(E_ERROR, &message!("require 'onMessage' callback"));
             call.set_bool(false);
             return;
@@ -941,7 +921,7 @@ fn get_process(call: &Call) {
                 if let Some(props) = object.props(Some(class)) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(worker_pid(worker)));
-                    if i64::from(view.ipc_mode()) == IPC_UNIXSOCK {
+                    if view.ipc_mode() == IpcMode::UnixSock {
                         props.long(c"pipe", i64::from(pipe));
                     }
                 }

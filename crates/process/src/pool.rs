@@ -13,16 +13,13 @@
 //! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
-#![expect(
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "upstream's C conversions between ssize_t, uint32_t and long, kept so lengths and logged numbers match"
-)]
+use crate::process_pool::IpcMode;
 use crate::worker_record::Worker as Record;
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::set_errno;
 
 use crate::process_pool::PoolNative;
@@ -31,8 +28,6 @@ use crate::process_pool::PoolNative;
 pub const DONE: c_int = 0;
 pub const BAILED: c_int = 1;
 
-/// `SW_WORKER_IDLE`.
-const WORKER_IDLE: u8 = 2;
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
 const MSGMAX: usize = 65536;
 /// `SW_BUFFER_SIZE_STD`: the response buffer's first capacity.
@@ -391,11 +386,7 @@ impl Worker<'_> {
         } else {
             u64::from(worker_id) + 1
         };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream stores the id in the u16 server_fd"
-        )]
-        let server_fd = u64::from(worker_id as u16);
+        let server_fd = u64::from(worker_id.c_cast::<u16>());
         // `info.server_fd`: bytes 24..26 of the head, i.e. of out[4].
         if let Some(word) = out.get_mut(1 + HEAD_SERVER_FD / 8) {
             *word = server_fd << (8 * (HEAD_SERVER_FD % 8));
@@ -461,7 +452,7 @@ impl Worker<'_> {
                 let size = HEAD as u64 + u64::from(length);
                 let tmpfile = read::<u16>(buf, HEAD_EXT_FLAGS) & TASK_TMPFILE != 0;
                 let alone = self.connection().is_none();
-                if n as u64 != size || (tmpfile && length != PACKET_TASK) {
+                if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
                     self.warn(WARN_BAD_PACKET, 0, n as i64, size.cast_signed());
                 } else {
@@ -536,13 +527,15 @@ impl Worker<'_> {
                     let n = u32::from_be_bytes(head);
                     // Errors on one connection close it and carry on with the next.
                     received = received && n != 0 && n <= max_packet_size;
-                    if !received || self.recv_all(socket, packet, n as usize)? != n as isize {
+                    if !received
+                        || self.recv_all(socket, packet, n as usize)? != n.c_cast::<isize>()
+                    {
                         self.close(socket);
                         self.end()?;
                         continue;
                     }
                     self.set_connection(socket);
-                    (packet, n as isize)
+                    (packet, n.c_cast::<isize>())
                 }
                 Mode::Pipe => {
                     let call = self.io(
@@ -560,11 +553,7 @@ impl Worker<'_> {
                 }
             };
             if n >= 0 {
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "upstream stores the length in the u32 info.len"
-                )]
-                let length = n as u32 as usize;
+                let length = n.c_cast::<u32>() as usize;
                 self.io(
                     |native, call| native.message(call),
                     ptr::null_mut(),
@@ -580,11 +569,7 @@ impl Worker<'_> {
                         .map(std::mem::take)
                         .unwrap_or_default();
                     if !response.is_empty() {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "upstream's htonl of the length"
-                        )]
-                        let head = (response.len() as u32).to_be_bytes();
+                        let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;
                         self.send(socket, &response)?;
                     }
@@ -857,15 +842,11 @@ pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> *mut c_char {
     ipc.packet.as_mut_ptr().cast()
 }
 
-/// `SW_IPC_UNIXSOCK`/`_MSGQUEUE`/`_SOCKET`, as `ProcessPool::ipc_mode`.
-const IPC_MSGQUEUE: u8 = 2;
-const IPC_SOCKET: u8 = 3;
-
-fn mode(ipc_mode: u8) -> Mode {
+fn mode(ipc_mode: IpcMode) -> Mode {
     match ipc_mode {
-        IPC_MSGQUEUE => Mode::Queue,
-        IPC_SOCKET => Mode::Socket,
-        _ => Mode::Pipe,
+        IpcMode::MsgQueue => Mode::Queue,
+        IpcMode::Socket => Mode::Socket,
+        IpcMode::UnixSock | IpcMode::None => Mode::Pipe,
     }
 }
 
@@ -875,8 +856,8 @@ pub struct PoolLoop {
     pub pool: *mut c_void,
     pub worker: *mut c_void,
     pub worker_id: u32,
-    /// `use_msgqueue`/`use_socket` as an IPC mode (`SW_IPC_*`).
-    pub ipc_mode: u8,
+    /// `use_msgqueue`/`use_socket` as an IPC mode.
+    pub ipc_mode: IpcMode,
     pub schedule_by_sysvmsg: bool,
     pub max_packet_size: u32,
     /// `sizeof(EventData)`.
@@ -927,7 +908,7 @@ pub fn pool_schedule(count: u32, round: &AtomicU32, idle: impl Fn(u32) -> bool) 
 
 /// Whether `worker` is `SW_WORKER_IDLE`.
 pub(crate) fn idle(worker: Record<'_>) -> bool {
-    worker.status() == WORKER_IDLE
+    worker.is_idle()
 }
 
 /// `Worker::send_pipe_message`: through the pool's queue (as `mtype` worker id + 1)
@@ -959,7 +940,7 @@ pub unsafe fn swr_v1_process_worker_send(
         let base = message.as_mut_ptr().cast::<u8>();
         // SAFETY: the caller's bytes fit after `mtype`.
         unsafe { ptr::copy_nonoverlapping(data, base.wrapping_add(MTYPE), length) };
-        native.warn(&call, TRACE_PUSH, length as i64, 0);
+        native.warn(&call, TRACE_PUSH, length.c_cast::<i64>(), 0);
         call.data = base.cast();
         call.length = length;
         // The native queue's push, which cannot reach PHP.
@@ -1086,12 +1067,11 @@ mod tests {
         assert!(ipc.packet.len() * 8 >= 4 << 20);
     }
 
-    fn records(statuses: &[u8]) -> Vec<crate::worker_record::WorkerRecord> {
-        statuses
-            .iter()
-            .map(|&status| {
+    fn records(busy: &[bool]) -> Vec<crate::worker_record::WorkerRecord> {
+        busy.iter()
+            .map(|&busy| {
                 let mut record = *crate::worker_record::WorkerRecord::boxed();
-                record.set_status(status);
+                record.set_status(crate::worker_record::WorkerStatus::busy(busy));
                 record
             })
             .collect()
@@ -1108,7 +1088,7 @@ mod tests {
 
     #[test]
     fn schedule_picks_the_next_idle_worker() {
-        let mut workers = records(&[1, 2, 1]);
+        let mut workers = records(&[true, false, true]);
         let round = AtomicU32::new(0);
         let (target, warning) = schedule(&mut workers, &round);
         assert_eq!((target, round.into_inner(), warning), (1, 2, false));
@@ -1116,7 +1096,7 @@ mod tests {
 
     #[test]
     fn schedule_warns_when_every_worker_is_busy() {
-        let mut workers = records(&[1, 1]);
+        let mut workers = records(&[true, true]);
         let round = AtomicU32::new(5);
         let (target, warning) = schedule(&mut workers, &round);
         // Three tries (count + 1): rounds 5, 6, 7; the last is 7 % 2.
@@ -1161,7 +1141,7 @@ mod tests {
                 bytes.len().min(call.length),
             );
         }
-        call.result = bytes.len() as isize;
+        call.result = bytes.len().c_cast::<isize>();
     }
 
     fn bytes_of(call: &PoolCall) -> Vec<u8> {
@@ -1202,7 +1182,7 @@ mod tests {
         }
         fn send(&self, c: &mut PoolCall) {
             let bytes = bytes_of(c);
-            c.result = bytes.len() as isize;
+            c.result = bytes.len().c_cast::<isize>();
             with(|s| s.sent.push(bytes));
         }
         fn close(&self, c: &PoolCall) {
@@ -1255,7 +1235,7 @@ mod tests {
         }
     }
 
-    fn run_loop(script: Script, listener: bool, ipc_mode: u8, protocol: c_int) -> Script {
+    fn run_loop(script: Script, listener: bool, ipc_mode: IpcMode, protocol: c_int) -> Script {
         let ipc = pool_ipc_new(listener);
         with(|s| {
             *s = script;
@@ -1289,7 +1269,7 @@ mod tests {
                 ..Script::default()
             },
             true,
-            IPC_SOCKET,
+            IpcMode::Socket,
             2,
         );
         assert_eq!(script.messages, vec![b"abc".to_vec()]);
@@ -1313,7 +1293,7 @@ mod tests {
                 ..Script::default()
             },
             true,
-            IPC_SOCKET,
+            IpcMode::Socket,
             2,
         );
         assert_eq!(script.messages, Vec::<Vec<u8>>::new());
@@ -1346,7 +1326,7 @@ mod tests {
                 ..Script::default()
             },
             false,
-            1,
+            IpcMode::UnixSock,
             1,
         );
         // Neither bad packet reaches the task.
@@ -1354,8 +1334,16 @@ mod tests {
         assert_eq!(
             script.warnings,
             vec![
-                (WARN_BAD_PACKET, HEAD as i64 + 2, HEAD as i64 + 4),
-                (WARN_BAD_PACKET, HEAD as i64 + 4, HEAD as i64 + 4),
+                (
+                    WARN_BAD_PACKET,
+                    HEAD.c_cast::<i64>() + 2,
+                    HEAD.c_cast::<i64>() + 4
+                ),
+                (
+                    WARN_BAD_PACKET,
+                    HEAD.c_cast::<i64>() + 4,
+                    HEAD.c_cast::<i64>() + 4
+                ),
                 (WARN_TASK_FAILED, 42, 0),
                 (WARN_READ, 0, 0),
             ]
@@ -1373,7 +1361,7 @@ mod tests {
                 ..Script::default()
             },
             false,
-            1,
+            IpcMode::UnixSock,
             3,
         );
         assert_eq!(script.delivered, 1);
@@ -1386,7 +1374,7 @@ mod tests {
     #[test]
     fn a_dispatch_to_a_worker_the_pool_lacks_warns_and_fails() {
         with(|s| *s = Script::default());
-        let mut workers = records(&[0, 0]);
+        let mut workers = records(&[true, true]);
         let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
         let mut target = 5;
         let event = [0u8; 4];

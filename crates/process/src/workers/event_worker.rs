@@ -41,9 +41,9 @@ use super::{
     HANDLER_IGNORE, HANDLER_NONE, HANDLER_OWN, Host, MODE_BASE, MODE_PROCESS, MODE_THREAD,
     SIGNAL_RTMIN, SW_ERR, SW_OK, for_each_connection, set_signal,
 };
+use swoole_rs_corebase::CCast;
 
-/// `swoole::WorkerType::SW_EVENT_WORKER`.
-pub(crate) const EVENT_WORKER: u64 = 2;
+pub(crate) const EVENT_WORKER: u64 = crate::worker_record::WorkerType::Event as u64;
 
 pub(super) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> i64 {
     match operation {
@@ -328,21 +328,13 @@ fn try_exit<H: Host>(h: &mut H) {
             }
             // Upstream's int arithmetic over time_t.
             let elapsed = now() - h.signed(OP_EXIT_TIME);
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "upstream narrows max_wait_time - elapsed to int"
-            )]
-            let remaining = (h.signed(OP_MAX_WAIT_TIME) - elapsed) as i32;
+            let remaining = (h.signed(OP_MAX_WAIT_TIME) - elapsed).c_cast::<i32>();
             if remaining <= 0 {
                 h.log(LOG_EXIT_TIMEOUT, 0, 0);
                 h.get(OP_REACTOR_STOP);
             } else {
                 let limit = remaining.wrapping_mul(1000);
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "Reactor::timeout_msec is an int"
-                )]
-                let timeout = h.signed(OP_REACTOR_TIMEOUT) as i32;
+                let timeout = h.signed(OP_REACTOR_TIMEOUT).c_cast::<i32>();
                 if timeout < 0 || timeout > limit {
                     h.op(OP_SET_REACTOR_TIMEOUT, u64::from(limit.cast_unsigned()));
                 }

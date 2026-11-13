@@ -14,6 +14,7 @@ use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::{IoVector, Lent};
 use core::ffi::{CStr, c_char, c_int, c_ulong};
 use openssl_sys::BIO;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -413,15 +414,12 @@ pub(crate) fn swr_v1_hook_uring_poll(
         revents: 0,
     };
     // Upstream converts the (milliseconds) double to the int parameter.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's implicit double-to-int conversion"
-    )]
-    let milliseconds = if timeout > 0.0 {
+    let milliseconds = (if timeout > 0.0 {
         timeout * 1000.0
     } else {
         timeout
-    } as c_int;
+    })
+    .c_cast::<c_int>();
     let rc = uring::poll(ops.host(), &mut fd, milliseconds);
     if rc != 1 {
         let error = if rc == 0 { libc::ETIMEDOUT } else { errno() };

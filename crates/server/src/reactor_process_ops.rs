@@ -3,6 +3,7 @@
 //! port, worker and connection records Rust lays out.
 use core::ffi::c_int;
 use core::sync::atomic::Ordering;
+use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_process::methods::destroy as pool_destroy;
 use swoole_rs_process::worker_record::Worker;
@@ -239,7 +240,7 @@ fn reactor(ctx: &Context<'_>) -> Reactor {
 fn worker(ctx: &Context<'_>, op: u32) -> Option<u64> {
     match op {
         OP_WORKER_ENTER => {
-            swoole_rs_process::methods::swoole_set_worker_type(SW_EVENT_WORKER);
+            swoole_rs_process::methods::set_worker_type(WorkerType::Event);
             swoole_rs_process::methods::swoole_set_worker_id(ctx.worker().id());
             swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
             crate::worker_methods::init_event_worker(ctx.server(), ctx.worker());
@@ -264,9 +265,6 @@ fn worker(ctx: &Context<'_>, op: u32) -> Option<u64> {
     }
     Some(0)
 }
-
-/// `swoole::WorkerType::SW_EVENT_WORKER`.
-const SW_EVENT_WORKER: c_int = 2;
 
 /// The connection the context selected (`OP_CONN_AT`, `OP_EVENT_CONN_ACTIVE`) and
 /// the event being closed.

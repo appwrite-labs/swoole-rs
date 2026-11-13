@@ -430,7 +430,7 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
             close_reactor_connections(h)?;
             SW_OK
         }
-        _ => crate::dispatch::run(h, operation, arg)?,
+        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
     })
 }
 

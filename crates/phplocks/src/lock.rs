@@ -6,6 +6,7 @@ use std::{
     cell::OnceCell,
     ffi::{CStr, c_int},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_locks::{Lock, swr_v1_locks_size};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
@@ -176,12 +177,8 @@ fn failed(call: &Call) {
 }
 
 /// `swoole::sec2msec(double)`, narrowed to the `int` `Lock::lock` takes.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream casts to long, then passes an int"
-)]
 pub(crate) fn milliseconds(seconds: f64) -> i32 {
-    (seconds * 1000.0) as i64 as i32
+    (seconds * 1000.0).c_cast::<i64>().c_cast::<i32>()
 }
 
 /// `lock(int $operation = LOCK_EX, float $timeout = -1): bool` of `lock`, for
@@ -194,10 +191,13 @@ pub(crate) fn lock_with(call: &Call, lock: impl FnOnce(&Call) -> Option<&Lock>) 
         return failed(call);
     };
     match lock(call) {
-        #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
         Some(lock) => checked(
             call,
-            lock.lock(operation as i32, milliseconds(timeout), CAPABILITIES),
+            lock.lock(
+                operation.c_cast::<i32>(),
+                milliseconds(timeout),
+                CAPABILITIES,
+            ),
         ),
         None => bailout::finish(),
     }

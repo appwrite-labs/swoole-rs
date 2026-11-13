@@ -37,6 +37,9 @@ pub mod event_worker_ops;
 pub mod factory;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory_ops;
+#[cfg(test)]
+mod fixture;
+mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
 mod layout;
@@ -98,9 +101,7 @@ pub use config::ServerConfig;
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-pub use state::{
-    ServerState, swr_v1_server_state_free, swr_v1_server_state_new, swr_v1_server_text_slot,
-};
+pub use state::{ServerState, swr_v1_server_state_free, swr_v1_server_state_new};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;
@@ -146,11 +147,6 @@ pub(crate) trait Host {
     fn worker_id(&mut self) -> Effect<u64> {
         self.get(ops::OP_WORKER_ID)
     }
-    /// A base-mode send made without native code (see `send::send_now`); `None`
-    /// leaves all of it to `send_to_connection`.
-    fn send_now(&mut self, _send: &base_factory::SendData) -> Effect<Option<i64>> {
-        Ok(None)
-    }
 }
 
 /// The state of a server without one, which native code never passes.
@@ -185,8 +181,7 @@ impl Host for Native<'_, '_> {
             if let Some(value) = callbacks::native_fact(state, op, arg) {
                 return Ok(value);
             }
-            // SAFETY: the root path op lends its terminated path.
-            if let Some(value) = unsafe { state::native_fact(state, op, arg) } {
+            if let Some(value) = state::native_fact(state, op) {
                 return Ok(value);
             }
             if let Some(context) = self.reactor.as_deref_mut()
@@ -210,11 +205,6 @@ impl Host for Native<'_, '_> {
     fn worker_id(&mut self) -> Effect<u64> {
         // The process crate owns the worker record; no native call is needed.
         Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
-    }
-
-    fn send_now(&mut self, send: &base_factory::SendData) -> Effect<Option<i64>> {
-        // SAFETY: native code lends `send`.
-        Ok(unsafe { send::send_now(self.state, send) })
     }
 
     // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
@@ -248,7 +238,10 @@ pub(crate) fn run_reactor_with<'s, 'c>(
 ///
 /// # Safety
 /// `ctx.serv` is null or a live `Server`, and the other fields are what the operation reads.
-#[cfg_attr(test, expect(dead_code, reason = "server_methods' tests run a fake"))]
+#[cfg_attr(
+    test,
+    expect(dead_code, reason = "server_methods' tests run a fake in its place")
+)]
 pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,
@@ -264,66 +257,17 @@ pub(crate) unsafe fn run_method(
         server,
         reactor: None,
     };
-    match (operation, state) {
-        // Outside `run`'s match, with the state known and no reactor context, so
-        // each op an accept or a send makes folds to its answer (#2964, #3335).
-        (ops::RUN_ACCEPT, Some(_)) => connection::accept(&mut native),
-        (ops::RUN_ST_SEND, _) => {
-            let send = core::ptr::with_exposed_provenance::<base_factory::SendData>(
-                usize::try_from(arg).unwrap_or(0),
-            );
-            // SAFETY: `server_methods::send` lends the live `SendData` it built for the call.
-            state::send(&mut native, unsafe { &*send }).map(i64::from)
-        }
-        _ => run(&mut native, operation, arg),
-    }
-    .unwrap_or(SW_ERR)
+    run(&mut native, operation, arg).unwrap_or(SW_ERR)
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
-        RUN_ADD_CONNECTION, RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_DISABLE_ACCEPT,
-        RUN_ENABLE_ACCEPT, RUN_IDLE_TIMEOUT, RUN_INCOMING, RUN_MASTER_TIMER,
-        RUN_SET_MAX_CONNECTION, RUN_SHUTDOWN, RUN_SIGNAL, RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK,
-        RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
+        RUN_CREATE, RUN_DESTROY, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
     };
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        RUN_ADD_CONNECTION => i64::from(connection::add_connection(h)?),
-        RUN_INCOMING => connection::incoming(h)?,
-        RUN_IDLE_TIMEOUT => {
-            connection::idle_timeout(h)?;
-            SW_OK
-        }
-        RUN_DISABLE_ACCEPT => {
-            connection::disable_accept(h)?;
-            SW_OK
-        }
-        RUN_ENABLE_ACCEPT => {
-            connection::enable_accept(h)?;
-            SW_OK
-        }
-        RUN_SET_MAX_CONNECTION => {
-            connection::set_max_connection(h, u32::try_from(arg).unwrap_or(u32::MAX))?;
-            SW_OK
-        }
-        RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
-        RUN_SIGNAL => {
-            control::signal(h, i32::try_from(arg).unwrap_or(0))?;
-            SW_OK
-        }
-        RUN_SIGNAL_SHUTDOWN => i64::from(control::signal_shutdown(h)?),
-        RUN_CHILD_EXIT => i64::from(control::child_exit(h)?),
-        RUN_STOP_MASTER_THREAD => {
-            control::stop_master_thread(h)?;
-            SW_OK
-        }
-        RUN_MASTER_TIMER => {
-            control::master_timer(h)?;
-            SW_OK
-        }
         RUN_CREATE => startup::create(h)?,
         RUN_START_CHECK => startup::start_check(h)?,
         ops::RUN_START => startup::start(h)?,
@@ -338,11 +282,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         _ => match reactor_io::run(h, operation, arg)? {
             Some(result) => result,
-            None => match state::run(h, operation, arg)? {
-                Some(result) => result,
-                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
-                None => reactor_thread::run(h, operation, arg)?,
-            },
+            None => reactor_thread::run(h, operation, arg)?,
         },
     })
 }

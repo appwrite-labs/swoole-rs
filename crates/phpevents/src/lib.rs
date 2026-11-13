@@ -16,6 +16,7 @@ use std::{
     mem::ManuallyDrop,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpstubs::event;
@@ -152,12 +153,8 @@ fn registered(php: Php, fd: i32) -> bool {
 }
 
 /// `int` events, as the reactor takes them.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream passes the zend_long to an int parameter"
-)]
 fn events_of(events: i64) -> c_int {
-    events as c_int
+    events.c_cast::<c_int>()
 }
 
 /// The callable argument `value`, deferring a bailout.

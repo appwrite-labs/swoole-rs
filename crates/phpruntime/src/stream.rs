@@ -18,6 +18,7 @@ use std::{
     ptr,
     rc::Rc,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
@@ -701,12 +702,8 @@ fn xport_api(
     Ok(())
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "upstream stores transfers in an int"
-)]
-const fn returncode(bytes: isize) -> c_int {
-    bytes as c_int
+fn returncode(bytes: isize) -> c_int {
+    bytes.c_cast::<c_int>()
 }
 
 /// `STREAM_OOB`: unsupported.
@@ -1129,8 +1126,7 @@ fn stream_from_socket(
     };
     let seconds = swr_zend_stream_default_timeout();
     if seconds > 0 {
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) cast")]
-        socket.set_timeout(seconds as f64, timeout::ALL);
+        socket.set_timeout(seconds.c_cast::<f64>(), timeout::ALL);
     }
     let stream = alloc(socket_ops(), Rc::new(socket), ptr::null())?;
     if !stream.is_null() {
@@ -1158,8 +1154,11 @@ fn socket_pair(call: &Call) -> Result<(), Bailout> {
         call.set_bool(false);
         return Ok(());
     };
-    #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) casts")]
-    let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
+    let (domain, kind, protocol) = (
+        domain.c_cast::<c_int>(),
+        kind.c_cast::<c_int>(),
+        protocol.c_cast::<c_int>(),
+    );
     let Some(pair) = swoole_rs_corebase::sys::socketpair(domain, kind, protocol) else {
         let code = errno();
         let reason = swoole_rs_corebase::sys::strerror(code);

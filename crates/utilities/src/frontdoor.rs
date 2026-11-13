@@ -1,4 +1,5 @@
 //! Whole logging-frontdoor programs. All observations/effects happen after return.
+use swoole_rs_corebase::CCast;
 #[repr(C)]
 #[derive(Default)]
 pub struct SwrLogFrontdoor {
@@ -15,12 +16,6 @@ pub struct SwrLogAction {
 /// Operations: info, notice, warning, debug, trace, `sys_notice`, `sys_warning`,
 /// `error_log`, error, `sys_error`. Actions are declared in the matching C header.
 #[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "reproduces C's unsigned comparisons at each operand width"
-)]
 pub extern "C" fn swr_v2_utils_log_frontdoor_step(
     state: &mut SwrLogFrontdoor,
     operation: u32,
@@ -65,11 +60,15 @@ pub extern "C" fn swr_v2_utils_log_frontdoor_step(
             };
             let accepted = if operation == 7 {
                 match unsigned_width {
-                    32 => (first as u32) >= (second as u32),
-                    64 => (first as u64) >= (second as u64),
-                    128 => ((u128::from(high) << 64) | u128::from(first as u64)) >= second as u128,
+                    32 => first.c_cast::<u32>() >= second.c_cast::<u32>(),
+                    64 => first.c_cast::<u64>() >= second.c_cast::<u64>(),
+                    128 => {
+                        ((u128::from(high) << 64) | u128::from(first.c_cast::<u64>()))
+                            >= second.c_cast::<u128>()
+                    }
                     129 => {
-                        (((u128::from(high) << 64) | u128::from(first as u64)) as i128)
+                        ((u128::from(high) << 64) | u128::from(first.c_cast::<u64>()))
+                            .c_cast::<i128>()
                             >= i128::from(second)
                     }
                     256 | 257 => first != 0,
@@ -97,7 +96,7 @@ pub extern "C" fn swr_v2_utils_log_frontdoor_step(
                 5
             }
         }
-        3 if (first as u64 & second as u64) == 0 => {
+        3 if (first.c_cast::<u64>() & second.c_cast::<u64>()) == 0 => {
             state.phase = 7;
             0
         }
@@ -142,10 +141,6 @@ pub struct SwrLogHex {
 /// `length` remains the original captured length. `previous` is the last requested
 /// effect result.
 #[unsafe(no_mangle)]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "native size_t += int of the last effect's result"
-)]
 pub extern "C" fn swr_v2_utils_log_hex_step(
     s: &mut SwrLogHex,
     length: usize,
@@ -179,7 +174,7 @@ pub extern "C" fn swr_v2_utils_log_hex_step(
         } // header
         1 => next_row(s),
         2 => {
-            s.hex_length = s.hex_length.wrapping_add(previous as usize);
+            s.hex_length = s.hex_length.wrapping_add(previous.c_cast::<usize>());
             s.phase = 3;
             3
         }
@@ -188,7 +183,7 @@ pub extern "C" fn swr_v2_utils_log_hex_step(
             if previous != 0 { 4 } else { 5 }
         }
         4 => {
-            s.text_length = s.text_length.wrapping_add(previous as usize);
+            s.text_length = s.text_length.wrapping_add(previous.c_cast::<usize>());
             s.index = s.index.wrapping_add(1);
             next_byte(s)
         }

@@ -4,13 +4,14 @@
 use core::cell::Cell;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
+use swoole_rs_corebase::CCast;
+use swoole_rs_process::worker_record::WorkerStatus;
+use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_locks::SharedMutex;
-use swoole_rs_process::methods::{
-    swoole_set_worker_id, swoole_set_worker_type, worker_set_max_request,
-};
+use swoole_rs_process::methods::{set_worker_type, swoole_set_worker_id, worker_set_max_request};
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{EventHead, task_pack};
 use swoole_rs_process::worker_record::{Worker, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -149,13 +150,9 @@ thread_local! {
     static LATEST_TASK: Cell<Option<DataHead>> = const { Cell::new(None) };
 }
 
-/// `swoole::WorkerType::SW_TASK_WORKER`, `SW_SERVER_EVENT_FINISH`, `SW_PIPE_MASTER`.
-const SW_TASK_WORKER: c_int = 4;
+/// `SW_SERVER_EVENT_FINISH`, `SW_PIPE_MASTER`.
 const EVENT_FINISH: u8 = 9;
 const PIPE_MASTER: c_int = 1;
-/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
-const SW_WORKER_BUSY: u8 = 1;
-const SW_WORKER_IDLE: u8 = 2;
 /// `SW_LOG_ERROR`, `SW_WAIT`.
 const SW_LOG_ERROR: c_int = 5;
 const SW_WAIT: c_int = 2;
@@ -220,20 +217,13 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let worker = ctx.pool().worker(usize::try_from(arg).ok()?)?;
             crate::worker_methods::create_worker(ctx.server, worker);
         }
-        OP_WORKER_STATUS => {
-            let status = if arg != 0 {
-                SW_WORKER_BUSY
-            } else {
-                SW_WORKER_IDLE
-            };
-            ctx.worker().set_status(status);
-        }
+        OP_WORKER_STATUS => ctx.worker().set_status(WorkerStatus::busy(arg != 0)),
         OP_WORKER_SHUTDOWN => swr_v1_worker_shutdown(ctx.worker()),
         OP_STOP_ASYNC => crate::event_worker_ops::stop_async_worker(ctx.server, ctx.worker()),
         OP_ADD_REQUEST_COUNT => ctx.worker().add_request_count(),
         OP_WORKER_ENTER => {
             swoole_set_worker_id(ctx.worker().id());
-            swoole_set_worker_type(SW_TASK_WORKER);
+            set_worker_type(WorkerType::Task);
         }
         OP_FAIL_REACTOR => log::error(
             c"TaskWorker_onStart",
@@ -336,11 +326,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FINISH_HEADER => {
             let id = ctx.task().fd;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "DataHead's uint16_t ext_flags"
-            )]
-            let flags = arg as u16;
+            let flags = arg.c_cast::<u16>();
             ctx.edit_packed(|packed| {
                 packed.ext_flags |= flags;
                 packed.kind = EVENT_FINISH;
@@ -368,11 +354,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
                     swoole_rs_tls::upstream::send_sync(socket, data, 0)
                 })
             };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "htonl's uint32_t, as upstream"
-            )]
-            let length = (ctx.data.len() as u32).to_be_bytes();
+            let length = ctx.data.len().c_cast::<u32>().to_be_bytes();
             let mut retval = send(&length);
             if retval > 0 {
                 retval = send(ctx.data);

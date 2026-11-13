@@ -15,6 +15,7 @@ use std::{
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
@@ -160,15 +161,12 @@ fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
 /// worker, -1 `add_worker` failed, else the id.
 fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> i64 {
-    /// `SW_USER_WORKER`.
-    const USER_WORKER: c_int = 5;
     if fact(serv, fact::WORKER_THREAD) {
-        if crate::server::worker_type() != USER_WORKER {
+        if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
             return -2;
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
-        #[expect(clippy::cast_possible_truncation, reason = "get_worker(uint16_t)")]
-        if let Some(worker) = serv.worker_record(id as u16) {
+        if let Some(worker) = serv.worker_record(id.c_cast::<u16>()) {
             worker.set_redirect_stdin(false);
             worker.set_redirect_stdout(false);
             worker.set_redirect_stderr(false);
@@ -250,7 +248,9 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::STARTED => i64::from(serv.is_started()),
         // SAFETY: a live server.
         fact::SHUTDOWN => i64::from(serv.counters().shutdown.load(Ordering::Relaxed) != 0),
-        fact::MASTER => i64::from(crate::server::worker_type() == crate::server::MASTER),
+        fact::MASTER => {
+            i64::from(crate::server::worker_type() == Some(crate::server::WorkerType::Master))
+        }
         fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
         fact::SEND_YIELD => i64::from(c.send_yield.get()),
@@ -758,11 +758,7 @@ fn construct(call: &Call) {
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
     if mode != MODE_BASE && mode != MODE_PROCESS && !(thread && mode == MODE_THREAD) {
         set_last_error(SW_ERROR_INVALID_PARAMS);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "(int) serv_mode, as upstream"
-        )]
-        let text = message!("invalid $mode parameters {}", mode as i32);
+        let text = message!("invalid $mode parameters {}", mode.c_cast::<i32>());
         call.throw_error(text.as_cstr());
         return call.set_bool(false);
     }
@@ -808,11 +804,12 @@ fn construct(call: &Call) {
         // The host as C reads it: up to its first NUL.
         let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
         let host = CString::new(host).unwrap_or_default();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "add_port((SocketType) type, host, (int) port), as upstream"
-        )]
-        server_methods::add_port(server, kind as c_int, &host, port as c_int)
+        server_methods::add_port(
+            server,
+            kind.c_cast::<c_int>(),
+            &host,
+            port.c_cast::<c_int>(),
+        )
     }
     .is_none()
     {

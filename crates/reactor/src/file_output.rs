@@ -3,6 +3,7 @@
 use crate::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
 use std::ffi::{CStr, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_ossupport::FileRecord;
 
 #[derive(Clone, Copy, Default)]
@@ -83,14 +84,12 @@ impl SocketFileRequest {
 
     /// The remaining range, with the original unsigned size conversion.
     #[must_use]
-    pub const fn length(&self) -> usize {
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "the native off_t difference converts to size_t"
-        )]
+    pub fn length(&self) -> usize {
         {
-            self.fields.end.wrapping_sub(self.fields.begin) as usize
+            self.fields
+                .end
+                .wrapping_sub(self.fields.begin)
+                .c_cast::<usize>()
         }
     }
 

@@ -12,6 +12,8 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
+mod c_cast;
+pub use c_cast::{CCast, CastFrom};
 pub mod constants;
 mod global;
 pub mod hook;
@@ -144,12 +146,7 @@ pub fn strtol(input: &[u8]) -> (i64, usize) {
 /// `sw_atoi`: [`strtol`] truncated to `int` as `static_cast<int>(long)` does.
 #[must_use]
 pub fn atoi(input: &[u8]) -> c_int {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "`static_cast<int>` of a `long` keeps its low 32 bits"
-    )]
-    let value = strtol(input).0 as c_int;
-    value
+    strtol(input).0.c_cast::<c_int>()
 }
 
 /// The successful, representable portion of `std::stoi`: [`strtol`], none where
@@ -306,13 +303,10 @@ format_exports! {
 }
 
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
-#[cfg(feature = "upstream-symbols")]
 const LOG_ERROR: c_int = 5;
-#[cfg(feature = "upstream-symbols")]
 const TOO_MANY_LISTEN_PORT: c_int = 9005;
 
 /// `LISTEN_FDS`'s verdict: the count to return, or which log line (`true`: too big).
-#[cfg(any(test, feature = "upstream-symbols"))]
 fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
     match count {
         None => Err(false),
@@ -323,12 +317,10 @@ fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
     }
 }
 
-/// `int swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
+/// `swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
 /// or reaches `SW_MAX_LISTEN_PORT`.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_Z29swoole_get_systemd_listen_fdsv")]
 #[must_use]
-pub extern "C-unwind" fn swoole_get_systemd_listen_fds() -> c_int {
+pub fn get_systemd_listen_fds() -> c_int {
     let origin = c"swoole_get_systemd_listen_fds";
     match systemd_listen_fds(get_env(c"LISTEN_FDS")) {
         Ok(count) => count,
@@ -367,13 +359,7 @@ pub unsafe extern "C" fn swoole_itoa(output: *mut c_char, value: c_long) -> c_in
     }
     // SAFETY: the caller sizes `output` for these digits plus NUL, disjoint from the local.
     unsafe { ptr::copy_nonoverlapping(terminated.as_ptr(), output.cast(), length + 1) };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "a c_long has at most 20 digits"
-    )]
-    let length = bytes.len() as c_int;
-    length
+    bytes.len().c_cast::<c_int>()
 }
 
 /// Format backwards into `output`, NUL-terminated at its end; return the first digit's

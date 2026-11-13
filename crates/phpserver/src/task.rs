@@ -19,6 +19,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::Coroutine;
@@ -128,11 +129,7 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host<'_>> {
     };
     let mut result = ptr::null_mut();
     if sync {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "upstream's uint16_t worker id"
-        )]
-        let id = swoole_get_worker_id() as u16;
+        let id = swoole_get_worker_id().c_cast::<u16>();
         // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
         host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
         host.lock = serv
@@ -227,8 +224,8 @@ fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let worker_type = crate::server::worker_type();
     Facts {
-        worker: worker_type == crate::server::EVENT_WORKER,
-        task_worker: worker_type == crate::server::TASK_WORKER,
+        worker: worker_type == Some(crate::server::WorkerType::Event),
+        task_worker: worker_type == Some(crate::server::WorkerType::Task),
         task_object: config.task_enable_coroutine.get() || config.task_object.get(),
         task_coroutine: config.task_enable_coroutine.get(),
         event_object: config.event_object.get(),
@@ -346,8 +343,7 @@ pub(crate) fn pack(data: &Value, buf: &mut TaskBuffer) -> i64 {
 
 /// `buf->info.ext_flags |= flags`.
 fn flag(buf: &mut TaskBuffer, flags: u32) {
-    #[expect(clippy::cast_possible_truncation, reason = "ext_flags is a uint16_t")]
-    let flags = flags as u16;
+    let flags = flags.c_cast::<u16>();
     buf.add_flags(flags);
 }
 
@@ -428,11 +424,7 @@ fn task(call: &Call) {
         drop(old.map(ManuallyDrop::into_inner));
     }
     flag(&mut buf, NONBLOCK);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes (int *) &dst_worker_id"
-    )]
-    let mut dst = dst as c_int;
+    let mut dst = dst.c_cast::<c_int>();
     if dispatch(serv, &mut buf, &mut dst) {
         call.set_long(id);
     } else {
@@ -459,11 +451,7 @@ fn taskwait(call: &Call) {
     if id < 0 {
         return call.set_bool(false);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes (int *) &dst_worker_id"
-    )]
-    let mut dst = dst as c_int;
+    let mut dst = dst.c_cast::<c_int>();
     let Some(co) = Coroutine::current() else {
         let mut tasks = task_state(serv, true);
         let done = match tasks.task_sync(buf.as_mut_ptr().cast(), &mut dst, timeout) {
@@ -745,12 +733,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     let Some(data) = unpack(task)? else {
         return Ok(SW_ERR);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "ext_flags is a uint16_t"
-    )]
-    let mut flags = info.flags as u32;
+    let mut flags = info.flags.c_cast::<u32>();
     if flags & COROUTINE != 0 {
         return resume(server, id, data).map(|()| SW_OK);
     }

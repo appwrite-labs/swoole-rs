@@ -16,7 +16,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::log;
 use swoole_rs_process::worker_globals::with_globals;
-use swoole_rs_process::worker_record::Worker;
+use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
 /// `swoole::SendData`.
 #[repr(C)]
@@ -33,9 +33,6 @@ const RECV_DATA: u8 = 0;
 const RECV_DGRAM: u8 = 1;
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
 const DATA_PTR: u8 = 1 << 1;
-/// `SW_WORKER_BUSY`, `SW_WORKER_IDLE`.
-const WORKER_BUSY: u8 = 1;
-const WORKER_IDLE: u8 = 2;
 /// `Server::CLOSE_RESET`, `CLOSE_ACTIVELY`.
 const CLOSE_RESET: u64 = 1 << 1;
 const CLOSE_ACTIVELY: u64 = 1 << 2;
@@ -224,7 +221,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
     };
     // SAFETY: the current worker's record, which this worker loop owns.
     let worker = unsafe { Worker::new(worker) };
-    worker.set_status(WORKER_BUSY);
+    worker.set_status(WorkerStatus::Busy);
     if let Some(c) = conn {
         if task.info.len > 0 {
             c.recv_queued_bytes()
@@ -246,7 +243,7 @@ fn receive_now<H: Host>(h: &mut H, task: &SendData) -> crate::Effect<bool> {
             gs.request_count.fetch_add(1, Ordering::SeqCst);
         }
     }
-    worker.set_status(WORKER_IDLE);
+    worker.set_status(WorkerStatus::Idle);
     Ok(true)
 }
 
@@ -580,10 +577,7 @@ mod tests {
         assert!(dispatch(&mut s, &raw mut task, true).unwrap());
         assert_eq!((s.called(OP_ON_RECEIVE), s.called(OP_BASE_PASS)), (1, 0));
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { Worker::new(&raw const worker).status() },
-            WORKER_IDLE
-        );
+        assert!(unsafe { Worker::new(&raw const worker).is_idle() });
         let c = t.conn();
         assert_eq!(c.recv_queued_bytes.load(Ordering::Relaxed), 0, "unqueued");
         assert!((c.last_dispatch_time - 1.5).abs() < f64::EPSILON);

@@ -145,27 +145,9 @@ pub unsafe extern "C" fn swr_v1_reactor_iov_prepare(
 }
 
 /// Observe the cursor. No reference to the owner escapes the call.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
+#[must_use]
+pub fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
     owner.fields.state
-}
-
-/// Sum the unchanged original descriptors.
-/// # Safety
-/// `owner`'s original descriptors are readable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_iov_length(owner: &ReactorIov) -> usize {
-    let fields = &owner.fields;
-    // SAFETY: creation copied `count` (never negative) descriptors to `original`, live until destroy.
-    owned_length(unsafe { span(fields.original, fields.count) })
-}
-
-/// Advance owned descriptors and counters together; nothing for a null cursor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_iov_advance(owner: Option<&mut ReactorIov>, n: isize) {
-    if let Some(owner) = owner {
-        owner.advance(n);
-    }
 }
 
 /// `Socket::readv`/`writev` through an owned `IOVector`: readv(2)/writev(2) over the
@@ -235,7 +217,8 @@ pub(crate) unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [li
 }
 
 /// Sum the descriptors' lengths with C `size_t` wrapping semantics.
-pub(crate) fn owned_length(descriptors: &[libc::iovec]) -> usize {
+#[cfg(test)]
+fn owned_length(descriptors: &[libc::iovec]) -> usize {
     descriptors
         .iter()
         .fold(0usize, |total, iov| total.wrapping_add(iov.iov_len))
@@ -270,14 +253,9 @@ pub(crate) fn owned_progress(
     reply
 }
 #[cfg(test)]
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_sign_loss,
-    reason = "tests drive the native integer interfaces with literal and loop values"
-)]
 mod tests {
     use super::*;
+    use swoole_rs_corebase::CCast;
 
     #[test]
     fn owned_cursor_keeps_original_length_and_updates_live_state() {
@@ -290,21 +268,24 @@ mod tests {
                 })
                 .collect();
             unsafe {
+                let length = |owner: &ReactorIov| {
+                    owned_length(span(owner.fields.original, owner.fields.count))
+                };
                 let owner = owned_new(&source).map(Box::into_raw);
                 assert!(owner.is_ok_and(|owner| !owner.is_null()));
                 let owner = owner.unwrap();
                 let initial = swr_v1_reactor_iov_view(&*owner);
-                assert_eq!(initial.remain_count, count as i32);
+                assert_eq!(initial.remain_count, count.c_cast::<i32>());
                 assert_eq!(initial.index, 0);
                 assert_eq!(initial.offset_bytes, 0);
-                assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
+                assert_eq!(length(&*owner), count);
                 if count > 0 {
-                    swr_v1_reactor_iov_advance(owner.as_mut(), 1);
+                    (*owner).advance(1);
                     let next = swr_v1_reactor_iov_view(&*owner);
-                    assert_eq!(next.remain_count, count as i32 - 1);
+                    assert_eq!(next.remain_count, count.c_cast::<i32>() - 1);
                     assert_eq!(next.index, 1);
                     assert_eq!(next.offset_bytes, 0);
-                    assert_eq!(swr_v1_reactor_iov_length(&*owner), count);
+                    assert_eq!(length(&*owner), count);
                     assert_eq!(source[0].iov_len, 1);
                     assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
                 }
@@ -328,18 +309,24 @@ mod tests {
                     ((*owner).fields.original, (*owner).fields.state.iterator);
                 assert_eq!(original.add(count), iterator);
                 assert_eq!(original as usize % std::mem::align_of::<libc::iovec>(), 0);
-                assert_eq!(owned_length(span(original, count as i32)), count);
+                assert_eq!(owned_length(span(original, count.c_cast::<i32>())), count);
                 for (i, expected) in source.iter().enumerate() {
                     for span in [original, iterator] {
                         assert_eq!((*span.add(i)).iov_base, expected.iov_base);
                         assert_eq!((*span.add(i)).iov_len, expected.iov_len);
                     }
                 }
-                let reply = owned_progress(span(iterator, count as i32), 1, count as i32, 0, 0);
-                assert_eq!(reply.remain_count, count as i32 - 1);
+                let reply = owned_progress(
+                    span(iterator, count.c_cast::<i32>()),
+                    1,
+                    count.c_cast::<i32>(),
+                    0,
+                    0,
+                );
+                assert_eq!(reply.remain_count, count.c_cast::<i32>() - 1);
                 assert_eq!(reply.index, 1);
                 assert_eq!(reply.action, if count == 1 { 2 } else { 1 });
-                assert_eq!(owned_length(span(original, count as i32)), count);
+                assert_eq!(owned_length(span(original, count.c_cast::<i32>())), count);
                 swr_v1_reactor_iov_destroy(Some(Box::from_raw(owner)));
             }
         }
@@ -391,7 +378,7 @@ mod tests {
     }
     impl IoVector {
         fn new(input: &[libc::iovec]) -> Self {
-            let count = input.len() as i32;
+            let count = input.len().c_cast::<i32>();
             let owner = owned_new(input).map(Box::into_raw).unwrap();
             let fields = unsafe { &(*owner).fields };
             Self {
@@ -432,7 +419,7 @@ mod tests {
             unsafe { *self.iov.add(i) }
         }
         fn remainder(&self) -> Vec<u8> {
-            (0..self.remain_count as usize)
+            (0..self.remain_count.c_cast::<usize>())
                 .flat_map(|i| unsafe {
                     let iov = *self.iterator.add(i);
                     std::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len).to_vec()
@@ -456,7 +443,7 @@ mod tests {
         let (mut cases, mut metadata) = (0, 0usize);
         for lengths in [&[1][..], &[2, 3], &[1, 3, 7], &[4, 1, 2, 9], &[0, 1, 0, 3]] {
             let total: usize = lengths.iter().sum();
-            let mut bytes: Vec<u8> = (0..total).map(|i| i as u8).collect();
+            let mut bytes: Vec<u8> = (0..total).map(CCast::c_cast::<u8>).collect();
             let mut start = 0;
             let input: Vec<_> = lengths
                 .iter()
@@ -472,7 +459,7 @@ mod tests {
             let snapshot = input.clone();
             let unchanged = |v: &IoVector| {
                 assert_eq!(v.length(), total);
-                assert_eq!(v.count, input.len() as i32);
+                assert_eq!(v.count, input.len().c_cast::<i32>());
                 for (i, expected) in snapshot.iter().enumerate() {
                     assert!(same(v.original(i), *expected) && same(input[i], *expected));
                 }
@@ -480,21 +467,22 @@ mod tests {
             for sent in 1..=total {
                 let mut v = IoVector::new(&input);
                 let initial = v.iterator;
-                v.update_iterator(sent as isize);
+                v.update_iterator(sent.c_cast::<isize>());
                 let expected = if sent == total {
                     0
                 } else {
-                    input.len() as i32 - v.index
+                    input.len().c_cast::<i32>() - v.index
                 };
                 assert_eq!(v.remain_count, expected);
                 if sent == total {
                     assert_eq!(v.iterator, initial);
                 } else {
                     assert_eq!(v.remainder(), bytes[sent..]);
-                    assert_eq!(v.iterator, initial.wrapping_add(v.index as usize));
+                    assert_eq!(v.iterator, initial.wrapping_add(v.index.c_cast::<usize>()));
                 }
                 unchanged(&v);
-                metadata += v.offset_bytes + v.index as usize + v.remain_count as usize;
+                metadata +=
+                    v.offset_bytes + v.index.c_cast::<usize>() + v.remain_count.c_cast::<usize>();
                 cases += 1;
             }
             let mut v = IoVector::new(&input);
@@ -508,7 +496,8 @@ mod tests {
                     assert_eq!(v.remainder(), bytes[sent..]);
                 }
                 unchanged(&v);
-                metadata += v.offset_bytes + v.index as usize + v.remain_count as usize;
+                metadata +=
+                    v.offset_bytes + v.index.c_cast::<usize>() + v.remain_count.c_cast::<usize>();
             }
             cases += 1;
         }
@@ -532,7 +521,7 @@ mod tests {
             assert_eq!(v.iterator, v.iov.wrapping_add(count));
             assert_eq!(
                 (v.count, v.remain_count, v.index, v.offset_bytes),
-                (count as i32, count as i32, 0, 0)
+                (count.c_cast::<i32>(), count.c_cast::<i32>(), 0, 0)
             );
             assert_eq!(v.iov as usize % std::mem::align_of::<libc::iovec>(), 0);
             assert_eq!(v.length(), count * 3);
@@ -543,7 +532,7 @@ mod tests {
             v.update_iterator(1);
             assert_eq!(
                 (v.index, v.remain_count, v.offset_bytes),
-                (0, count as i32, 1)
+                (0, count.c_cast::<i32>(), 1)
             );
             let current = unsafe { *v.iterator };
             assert_eq!(current.iov_base, before[0].iov_base.wrapping_byte_add(1));

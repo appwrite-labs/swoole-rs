@@ -1,452 +1,796 @@
 //! Choosing a worker, sends from workers, and listen ports.
-use crate::ops::{
-    FIELD_DISPATCH_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_FDS_START, LOG_FILE_EMPTY,
-    LOG_HOST_TOO_LONG, LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LISTEN_PID, LOG_NOT_REGULAR,
-    LOG_PORT_CREATED, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_STAT,
-    LOG_TOO_MANY_PORTS, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_DISPATCH_FUNC,
-    OP_ENV_FDS_START, OP_ENV_LISTEN_PID, OP_FD_CONN, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD,
-    OP_FIELD, OP_HAS_DISPATCH_FUNC, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IP_KEY, OP_IS_CREATED,
-    OP_IS_MASTER, OP_MODE, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_COUNT, OP_PORT_IMPORT,
-    OP_PORT_NEW, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_SOCKET, OP_PORT_TYPE, OP_SEND_SYNC,
-    OP_SENDFILE_FINISH, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX,
-    OP_SENDFILE_OFFSET, OP_STREAM_PORT, OP_SYSTEMD_FDS, OP_TASKING, OP_TASKING_RESET,
-    OP_VERIFY_CONN, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES, OP_WORKER_IDLE,
-};
-use crate::{Host, MODE_PROCESS, state};
-use core::ffi::c_char;
+use crate::MODE_PROCESS;
+use crate::base_factory::SendData;
+use crate::callbacks::{CB_DISPATCH_FUNC, CallbackSlot};
+use crate::port_config::{PortConfig, methods};
+use crate::reactor_entry::RecvData;
+use crate::records::Lookup;
+use crate::view::{Port, Server};
+use core::ffi::{CStr, c_char, c_int, c_long};
+use core::sync::atomic::Ordering::{Relaxed, SeqCst};
+use swoole_rs_corebase::CCast;
+use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
+use swoole_rs_utilities::misc::swoole_hash_php;
 
 /// `Server::DispatchMode`, `DISPATCH_RESULT_USERFUNC_FALLBACK`; native asserts each.
-const DISPATCH_ROUND: u64 = 1;
-const DISPATCH_FDMOD: u64 = 2;
-const DISPATCH_IPMOD: u64 = 4;
-const DISPATCH_UIDMOD: u64 = 5;
-const DISPATCH_CO_CONN_LB: u64 = 8;
-const DISPATCH_CO_REQ_LB: u64 = 9;
-const DISPATCH_CONCURRENT_LB: u64 = 10;
-const USERFUNC_FALLBACK: i64 = -3;
+const DISPATCH_ROUND: u8 = 1;
+const DISPATCH_FDMOD: u8 = 2;
+const DISPATCH_IPMOD: u8 = 4;
+const DISPATCH_UIDMOD: u8 = 5;
+const DISPATCH_CO_CONN_LB: u8 = 8;
+const DISPATCH_CO_REQ_LB: u8 = 9;
+const DISPATCH_CONCURRENT_LB: u8 = 10;
+const USERFUNC_FALLBACK: c_int = -3;
 
 /// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
-const SOCK_UDP: u64 = 2;
-const SOCK_UDP6: u64 = 4;
-const SOCK_UNIX_STREAM: u64 = 5;
-const SOCK_UNIX_DGRAM: u64 = 6;
-const SOCK_SSL: u64 = 1 << 9;
-const MAX_LISTEN_PORT: u64 = 60000;
-const SYSTEMD_FDS_START: i64 = 3;
+const SOCK_UDP: c_int = 2;
+const SOCK_UDP6: c_int = 4;
+const SOCK_UNIX_STREAM: c_int = 5;
+const SOCK_UNIX_DGRAM: c_int = 6;
+const SOCK_SSL: c_int = 1 << 9;
+const MAX_LISTEN_PORT: usize = 60000;
+const SYSTEMD_FDS_START: c_int = 3;
 
-fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
-    h.op(OP_FIELD, u64::from(id))
-}
-
-/// `Server::schedule_worker`: the user's dispatch function, else the dispatch mode.
-pub(crate) fn schedule_worker<H: Host>(h: &mut H, fd: i32) -> crate::Effect<i64> {
-    if h.is(OP_HAS_DISPATCH_FUNC)? {
-        let id = h.signed(OP_DISPATCH_FUNC)?;
+/// `Server::schedule_worker(fd, data)`: the user's dispatch function, else the dispatch
+/// mode. `send` is the data the worker takes, if any.
+pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> c_int {
+    let state = serv.state();
+    let key = c_long::from(fd);
+    let dispatch_func = state.callbacks.slot(CB_DISPATCH_FUNC);
+    if dispatch_func.is_some_and(CallbackSlot::is_set) {
+        // SAFETY: null, or the table's live slot of the fd, read for the call.
+        let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
+        let recv = send.map(|send| core::ptr::from_ref(send).cast::<RecvData>());
+        // SAFETY: a `SendData` is laid out as the `RecvData` the callback reads: its head
+        // and data pointer.
+        let recv = recv.map(|recv| unsafe { &*recv });
+        let id = state.callbacks.dispatch(serv, conn, recv);
         if id != USERFUNC_FALLBACK {
-            return Ok(id);
+            return id;
         }
     }
+    let config = serv.config();
     let fd_key = fd.cast_unsigned();
-    let workers = u32::try_from(field(h, FIELD_WORKER_NUM)?)
-        .unwrap_or(u32::MAX)
-        .max(1);
-    let key = match field(h, FIELD_DISPATCH_MODE)? {
-        DISPATCH_ROUND => h.state()?.next_round(),
+    let workers = config.worker_num.get().max(1);
+    let conn = || state.connection(key, Lookup::ByFd);
+    let key = match config.dispatch_mode.get() {
+        DISPATCH_ROUND => state.next_round(),
         DISPATCH_FDMOD => fd_key,
-        DISPATCH_IPMOD => u32::try_from(h.get(OP_IP_KEY)? & 0xffff_ffff).unwrap_or(0),
-        DISPATCH_UIDMOD => {
-            let uid = if h.is(OP_FD_CONN)? {
-                h.get(OP_CONN_UID)?
-            } else {
-                0
-            };
-            if uid == 0 {
-                fd_key
-            } else {
-                u32::try_from(uid).unwrap_or(fd_key)
-            }
-        }
+        DISPATCH_IPMOD => ip_key(state, key, send),
+        DISPATCH_UIDMOD => match conn().map_or(0, crate::Connection::uid) {
+            0 => fd_key,
+            uid => uid,
+        },
         DISPATCH_CO_CONN_LB => {
-            if !h.is(OP_FD_CONN)? {
-                return Ok(i64::from(fd_key % workers));
+            let Some(conn) = conn() else {
+                return (fd_key % workers).cast_signed();
+            };
+            let worker = conn.worker_id();
+            if worker >= 0 {
+                return worker;
             }
-            let worker = h.signed(OP_CONN_WORKER)?;
-            return Ok(if worker < 0 {
-                let lowest = state::lowest(h, OP_WORKER_COROUTINES)?;
-                h.op(OP_PIN_WORKER, lowest.cast_unsigned())?;
-                lowest
-            } else {
-                worker
-            });
+            let lowest = lowest(serv, Load::Coroutines);
+            conn.set_worker_id(lowest);
+            return lowest;
         }
-        DISPATCH_CO_REQ_LB => return state::lowest(h, OP_WORKER_COROUTINES),
-        DISPATCH_CONCURRENT_LB => return state::lowest(h, OP_WORKER_CONCURRENCY),
+        DISPATCH_CO_REQ_LB => return lowest(serv, Load::Coroutines),
+        DISPATCH_CONCURRENT_LB => return lowest(serv, Load::Concurrency),
         // Deliver to an idle worker.
-        _ => return state::idle_worker(h),
+        _ => return idle_worker(serv),
     };
-    Ok(i64::from(key % workers))
+    (key % workers).cast_signed()
 }
 
-/// `Server::feedback`: a connection event from a worker to the master.
-pub(crate) fn feedback<H: Host>(h: &mut H, event: u64) -> crate::Effect<bool> {
-    Ok(if h.get(OP_MODE)? == MODE_PROCESS {
-        h.op(OP_FEEDBACK_THREAD, event)? != 0
+/// `get_ip_key`-style hash of the sender: its IPv4 address, else `swoole_hash_php` of
+/// its IPv6 one. The connection's peer, or with none, the datagram's sender.
+fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u32 {
+    let addr = if let Some(conn) = state.connection(fd, Lookup::ByFd) {
+        conn.info()
     } else {
-        h.op(OP_FEEDBACK_SEND, event)? != 0
-    })
-}
-
-/// `Server::sendwait`.
-pub(crate) fn sendwait<H: Host>(h: &mut H, session: u64) -> crate::Effect<bool> {
-    if h.op(OP_VERIFY_CONN, session)? == 0 {
-        h.op(LOG_SENDWAIT, session)?;
-        return Ok(false);
+        // No connection: the data is a datagram.
+        let Some(send) = send else { return 0 };
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the payload is a message bus buffer, aligned for its `DgramPacket`"
+        )]
+        let packet = send.data.cast::<crate::master_ops::DgramPacket>();
+        // SAFETY: the datagram's payload starts with its `DgramPacket`.
+        unsafe { (*packet).socket_addr }
+    };
+    if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
+        u32::from_be(addr.addr.v4().sin_addr.s_addr)
+    } else {
+        let v6 = (&raw const addr.addr).cast::<c_char>();
+        // SAFETY: the address's storage holds a whole `sockaddr_in6`.
+        let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
+        hash.c_cast::<u32>()
     }
-    h.is(OP_SEND_SYNC)
 }
 
-/// Idle workers among ids `from..to`.
-pub(crate) fn idle_workers<H: Host>(h: &mut H, task: bool) -> crate::Effect<i64> {
-    let workers = field(h, FIELD_WORKER_NUM)?;
+/// What [`lowest`] compares.
+#[derive(Clone, Copy)]
+enum Load {
+    Coroutines,
+    Concurrency,
+}
+
+/// `get_lowest_load_worker_id` and `get_lowest_concurrent_worker_id`: the first event
+/// worker with the fewest.
+fn lowest(serv: Server<'_>, load: Load) -> c_int {
+    let workers = serv.config().worker_num.get();
+    let of = |id: u32| {
+        let worker = u16::try_from(id).ok().and_then(|id| serv.worker_record(id));
+        worker.map_or(0, |worker| match load {
+            Load::Coroutines => worker.coroutine_num(),
+            Load::Concurrency => worker.concurrency_count() as usize,
+        })
+    };
+    (0..workers.max(1))
+        .min_by_key(|&id| of(id))
+        .unwrap_or(0)
+        .cast_signed()
+}
+
+/// `get_idle_worker_id`: up to `worker_num + 1` round-robin tries for an idle worker,
+/// else the last one tried, with the scheduler warning raised.
+fn idle_worker(serv: Server<'_>) -> c_int {
+    let workers = serv.config().worker_num.get().max(1);
+    let mut key = 0;
+    for _ in 0..=workers {
+        key = serv.state().next_round() % workers;
+        if is_idle(serv, key) {
+            return key.cast_signed();
+        }
+    }
+    serv.config().scheduler_warning.store(true, Relaxed);
+    key.cast_signed()
+}
+
+fn is_idle(serv: Server<'_>, id: u32) -> bool {
+    let worker = u16::try_from(id).ok().and_then(|id| serv.worker_record(id));
+    worker.is_some_and(swoole_rs_process::worker_record::Worker::is_idle)
+}
+
+/// `Server::get_idle_worker_num` (event workers) and `get_idle_task_worker_num`.
+#[must_use]
+pub(crate) fn idle_workers(serv: Server<'_>, task: bool) -> u32 {
+    let config = serv.config();
+    let workers = config.worker_num.get();
     let range = if task {
-        workers..workers + field(h, FIELD_TASK_WORKER_NUM)?
+        workers..workers.saturating_add(config.task_worker_num.get())
     } else {
         0..workers
     };
-    let mut idle = 0;
-    for id in range {
-        if h.op(OP_WORKER_IDLE, id)? != 0 {
-            idle += 1;
-        }
-    }
-    Ok(idle)
+    let idle = range.filter(|&id| is_idle(serv, id)).count();
+    u32::try_from(idle).unwrap_or(u32::MAX)
 }
 
 /// `Server::get_tasking_num`: a negative count is reset to 0.
-pub(crate) fn tasking<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    let count = h.signed(OP_TASKING)?;
+#[must_use]
+pub(crate) fn tasking(serv: Server<'_>) -> c_int {
+    let tasking = &serv.counters().tasking_num;
+    let count = tasking.load(SeqCst).cast_signed();
     if count < 0 {
-        h.get(OP_TASKING_RESET)?;
-        return Ok(0);
+        tasking.store(0, SeqCst);
+        return 0;
     }
-    Ok(count)
+    count
 }
 
-/// `Server::sendfile`: validate the session and file, then hand the task to the factory.
-pub(crate) fn sendfile<H: Host>(h: &mut H, session: i64) -> crate::Effect<bool> {
-    if session <= 0 {
-        h.get(LOG_INVALID_SESSION)?;
-        return Ok(false);
+/// `Server::feedback(conn, event)`: a connection event from a worker to the master,
+/// through a reactor thread in process mode, else sent here.
+#[must_use]
+pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: c_int) -> bool {
+    let info = swoole_rs_corebase::DataHead {
+        fd: conn.session_id(),
+        reactor_id: conn.reactor_id().into(),
+        kind: event.c_cast::<u8>(),
+        ..Default::default()
+    };
+    if u64::from(serv.config().mode_) == MODE_PROCESS {
+        return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
     }
-    if h.is(OP_IS_MASTER)? {
-        h.get(LOG_SEND_IN_MASTER)?;
-        return Ok(false);
+    let send = SendData {
+        info,
+        data: core::ptr::null(),
+    };
+    // SAFETY: a send with no data.
+    let sent = unsafe { crate::server_methods::send_to_connection(serv, &send) };
+    i64::from(sent) == crate::SW_OK
+}
+
+/// `Server::sendwait(session_id, data, length)`: a blocking send of all of `data` to
+/// the session's socket.
+#[must_use]
+pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
+    let Some(conn) = serv.state().connection(session_id, Lookup::VerifiedTls) else {
+        let length = data.len();
+        let m =
+            format_args!("send {length} byte failed, because session#{session_id} is not exists");
+        swoole_rs_corebase::log::error_log(
+            SW_LOG_TRACE,
+            swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int,
+            c"Server::sendwait",
+            m,
+        );
+        return false;
+    };
+    let sent = conn.socket().map_or(-1, |socket| {
+        swoole_rs_tls::upstream::send_sync(socket, data, 0)
+    });
+    usize::try_from(sent) == Ok(data.len())
+}
+
+/// `SW_LOG_TRACE`.
+const SW_LOG_TRACE: c_int = 1;
+
+const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
+/// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
+const SENDFILE_TASK_SIZE: usize = 16;
+/// `SW_SERVER_EVENT_SEND_FILE`.
+const EVENT_SEND_FILE: u8 = 3;
+/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
+const SW_LOG_WARNING: c_int = 4;
+const SW_LOG_ERROR: c_int = 5;
+
+/// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
+#[repr(C, align(8))]
+struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
+
+fn log_error(
+    level: c_int,
+    code: swoole_rs_error::ErrorCode,
+    origin: &CStr,
+    m: core::fmt::Arguments<'_>,
+) {
+    swoole_rs_corebase::log::error_log(level, code as c_int, origin, m);
+}
+
+fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
+    log_error(level, code, c"Server::sendfile", m);
+}
+
+/// `Server::sendfile(session_id, file, l_file, offset, length)`, `l_file` being the
+/// name's length narrowed to `uint32_t`, as upstream's callers do: checks the session
+/// and the file, then hands the `SendfileTask` to the factory. The task copies the name
+/// up to its first NUL (`swoole_strlcpy`).
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub fn sendfile(
+    serv: Server<'_>,
+    session_id: c_long,
+    file: &[u8],
+    offset: libc::off_t,
+    length: usize,
+) -> bool {
+    use swoole_rs_error::ErrorCode as E;
+    if session_id <= 0 {
+        let m = format_args!("invalid fd[{session_id}]");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SESSION_INVALID_ID, m);
+        return false;
     }
-    if h.get(OP_SENDFILE_NAME_LEN)? > h.get(OP_SENDFILE_NAME_MAX)? {
-        h.get(LOG_SENDFILE_NAME)?;
-        return Ok(false);
+    let master = swoole_rs_process::worker_record::WorkerType::Master;
+    if swoole_rs_process::methods::worker_type() == Some(master) {
+        let m = format_args!("can't send data to the connections in master process");
+        sendfile_error(SW_LOG_ERROR, E::SW_ERROR_SERVER_SEND_IN_MASTER, m);
+        return false;
     }
-    let address = usize::try_from(h.get(OP_SENDFILE_NAME)?).unwrap_or(0);
-    let name = core::ptr::with_exposed_provenance::<c_char>(address);
+    let l_file = file.len().c_cast::<u32>();
+    let name = file.split(|&byte| byte == 0).next().unwrap_or_default();
+    let max = IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1;
+    if l_file as usize > max {
+        // `%.8s`: at most 8 bytes of the name.
+        let head = String::from_utf8_lossy(name.get(..8).unwrap_or(name));
+        let m = format_args!(
+            "sendfile name[{head}...] length {l_file} is exceed the max name len {max}"
+        );
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_NAME_TOO_LONG, m);
+        return false;
+    }
+    let mut buffer = SendfileBuffer([0; IPC_BUFFER_SIZE]);
+    let (task, field) = buffer.0.split_at_mut(SENDFILE_TASK_SIZE);
+    let (head, tail) = task.split_at_mut(8);
+    head.copy_from_slice(&offset.to_ne_bytes());
+    tail.copy_from_slice(&length.to_ne_bytes());
+    // `swoole_strlcpy(req->filename, file, ...)`: the name, cut to leave room for its
+    // NUL, which the zeroed buffer already holds. One copy: a loop over the bytes costs
+    // the static handler about 800 instructions a file.
+    let (copied, _) = name.split_at(name.len().min(field.len() - 1));
+    let (target, _) = field.split_at_mut(copied.len());
+    target.copy_from_slice(copied);
+    let path = CStr::from_bytes_until_nul(field).unwrap_or_default();
     let mut st: libc::stat = swoole_rs_corebase::sys::zeroed();
-    // SAFETY: `name` is the NUL-terminated copy native code just made; `st` is valid.
-    if unsafe { libc::stat(name, &raw mut st) } < 0 {
-        h.get(LOG_STAT)?;
-        return Ok(false);
+    // SAFETY: a NUL-terminated path and a writable `stat`.
+    if unsafe { libc::stat(path.as_ptr(), &raw mut st) } < 0 {
+        let m = format_args!("stat({}) failed", path.to_string_lossy());
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
+        return false;
     }
     if st.st_mode & libc::S_IFMT != libc::S_IFREG {
-        h.get(LOG_NOT_REGULAR)?;
-        return Ok(false);
+        let path = path.to_string_lossy();
+        let m = format_args!("the path[{path}] given is not a regular file");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE, m);
+        return false;
     }
-    if st.st_size <= h.signed(OP_SENDFILE_OFFSET)? {
-        h.get(LOG_FILE_EMPTY)?;
-        return Ok(false);
+    if st.st_size <= offset {
+        let m = format_args!("file[offset={offset}] is empty");
+        sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
+        return false;
     }
-    h.is(OP_SENDFILE_FINISH)
+    let mut send = SendData {
+        info: swoole_rs_corebase::DataHead {
+            fd: session_id,
+            kind: EVENT_SEND_FILE,
+            len: SENDFILE_TASK_SIZE.c_cast::<u32>() + l_file + 1,
+            ..Default::default()
+        },
+        data: buffer.0.as_ptr().cast(),
+    };
+    crate::hybrid::hybrid().factory_finish(serv, &mut send)
 }
 
-/// `Server::add_port`: validate, create the listen socket, and register the port.
-pub(crate) fn add_port<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    if h.is(OP_IS_CREATED)? {
-        h.get(LOG_PORT_CREATED)?;
-        return Ok(0);
-    }
-    if h.get(OP_PORT_COUNT)? >= MAX_LISTEN_PORT {
-        h.get(LOG_TOO_MANY_PORTS)?;
-        return Ok(0);
-    }
-    let kind = h.get(OP_PORT_TYPE)?;
-    let local = matches!(kind, SOCK_UNIX_STREAM | SOCK_UNIX_DGRAM);
-    if !local && !(0..=65535).contains(&h.signed(OP_PORT_NUMBER)?) {
-        h.get(LOG_INVALID_PORT)?;
-        return Ok(0);
-    }
-    if h.get(OP_HOST_SIZE)? > h.get(OP_HOST_MAXSIZE)? {
-        h.get(LOG_HOST_TOO_LONG)?;
-        return Ok(0);
-    }
-    h.op(OP_PORT_NEW, u64::from(kind & SOCK_SSL != 0))?;
-    if !h.is(OP_PORT_SOCKET)? {
-        return Ok(0);
-    }
-    check_port_type(h)?;
-    h.get(OP_PORT_PUSH)?;
-    Ok(1)
+/// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
+fn host_maxsize() -> usize {
+    // `sun_path` is the struct's last field, with no padding after its bytes.
+    size_of::<libc::sockaddr_un>() - core::mem::offset_of!(libc::sockaddr_un, sun_path)
 }
 
-/// `Server::check_port_type` of the new port.
-fn check_port_type<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let kind = h.get(OP_NEW_PORT_TYPE)?;
+/// `Server::add_port(type, host, port)`: validates, creates the listen socket, and
+/// keeps the port; `None` with the error logged or set.
+#[must_use]
+pub fn add_port<'a>(
+    serv: Server<'a>,
+    socket_type: c_int,
+    host: &CStr,
+    number: c_int,
+) -> Option<Port<'a>> {
+    use swoole_rs_error::ErrorCode as E;
+    let fail = |code, m: core::fmt::Arguments<'_>| {
+        log_error(SW_LOG_ERROR, code, c"Server::add_port", m);
+        None
+    };
+    if !serv.state().config_ref().factory_.is_null() {
+        let m = format_args!("must add port before server is created");
+        return fail(E::SW_ERROR_WRONG_OPERATION, m);
+    }
+    if serv.ports().len() >= MAX_LISTEN_PORT {
+        let m = format_args!("up to 60000 listening ports are allowed");
+        return fail(E::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT, m);
+    }
+    let local = matches!(socket_type, SOCK_UNIX_STREAM | SOCK_UNIX_DGRAM);
+    if !local && !(0..=65535).contains(&number) {
+        let m = format_args!("invalid port [{number}]");
+        return fail(E::SW_ERROR_SERVER_INVALID_LISTEN_PORT, m);
+    }
+    if host.count_bytes() + 1 > host_maxsize() {
+        let host = host.to_string_lossy();
+        let limit = host_maxsize() - 1;
+        let m = format_args!("address '{host}' exceeds the limit of {limit} characters");
+        return fail(E::SW_ERROR_NAME_TOO_LONG, m);
+    }
+    let mut port = PortConfig::new_port(serv.raw());
+    port.r#type = socket_type;
+    port.port.set(number);
+    if port.host.set(host.to_bytes()) < 0 {
+        // `throw std::bad_alloc()`, which nothing catches.
+        swoole_rs_corebase::fatal("out of memory storing a port's host");
+    }
+    if socket_type & SOCK_SSL != 0 {
+        port.r#type = socket_type & !SOCK_SSL;
+        port.ssl = 1;
+        (methods().ssl_context_init)(&mut port);
+    }
+    if (methods().create_socket)(&port) < 0 {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        swoole_rs_corebase::log::set_last_error(errno);
+        port.delete();
+        return None;
+    }
+    Some(keep_port(serv, port))
+}
+
+/// `Server::check_port_type(port)` then `ports.push_back(port)`: the server keeps the port.
+fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
+    // SAFETY: ports are added before the server starts, while the master is its
+    // only thread, and no other reference to the config is held across this.
+    let config = unsafe { serv.config_mut() };
+    let kind = port.r#type;
     if matches!(kind, SOCK_UDP | SOCK_UDP6 | SOCK_UNIX_DGRAM) {
-        h.op(OP_DGRAM_PORT, kind)?;
+        let fd = port
+            .listening_socket()
+            .map_or(-1, swoole_rs_reactor::Socket::fd);
+        let size = port.socket_buffer_size.get().cast_unsigned();
+        swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+        config.have_dgram_sock = true;
+        config.dgram_port_num = config.dgram_port_num.wrapping_add(1);
+        let socket = port.socket_ptr();
+        match kind {
+            SOCK_UDP => config.udp_socket_ipv4 = socket,
+            SOCK_UDP6 => config.udp_socket_ipv6 = socket,
+            _ => config.dgram_socket = socket,
+        }
     } else {
-        h.get(OP_STREAM_PORT)?;
+        config.have_stream_sock = true;
     }
-    Ok(())
+    let raw = Box::into_raw(port).cast();
+    // SAFETY: the new port, which the server owns from now on; as above, no other
+    // thread reads the list.
+    unsafe { serv.state().push_port(raw) };
+    // SAFETY: the port the server just kept, for its life.
+    unsafe { Port::from_raw(raw) }.unwrap_or_else(|| swoole_rs_corebase::fatal("a null port"))
 }
 
-/// `Server::add_systemd_socket`: import the sockets systemd passed; the number imported.
-pub(crate) fn systemd_sockets<H: Host>(h: &mut H) -> crate::Effect<i64> {
+/// `Server::add_systemd_socket()`: imports the sockets systemd passed; the number
+/// imported.
+#[must_use]
+pub fn add_systemd_socket(serv: Server<'_>) -> c_int {
+    use swoole_rs_corebase::get_env;
+    let count = || swoole_rs_corebase::get_systemd_listen_fds();
+    let start = || get_env(c"LISTEN_FDS_START");
+    import_sockets(serv, get_env(c"LISTEN_PID"), count, start)
+}
+
+/// [`add_systemd_socket`] over `LISTEN_PID`, the `LISTEN_FDS` count and
+/// `LISTEN_FDS_START`; each is read only once the ones before it pass, as upstream's.
+fn import_sockets(
+    serv: Server<'_>,
+    listen_pid: Option<c_int>,
+    count: impl FnOnce() -> c_int,
+    start: impl FnOnce() -> Option<c_int>,
+) -> c_int {
+    let origin = c"Server::add_systemd_socket";
     // Upstream compares an unset `LISTEN_PID` with an indeterminate value; treat it as foreign.
-    if h.signed(OP_ENV_LISTEN_PID)? == i64::MIN {
-        h.get(LOG_LISTEN_PID)?;
-        return Ok(0);
+    if listen_pid.is_none() {
+        swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_PID"));
+        return 0;
     }
-    let count = h.signed(OP_SYSTEMD_FDS)?;
+    let count = count();
     if count <= 0 {
-        return Ok(0);
+        return 0;
     }
-    let start = match h.signed(OP_ENV_FDS_START)? {
-        i64::MIN => SYSTEMD_FDS_START,
-        start if start < 0 => {
-            h.get(LOG_FDS_START)?;
-            return Ok(0);
+    let start = match start() {
+        None => SYSTEMD_FDS_START,
+        Some(start) if start < 0 => {
+            swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_FDS_START"));
+            return 0;
         }
-        start => start,
+        Some(start) => start,
     };
     let mut imported = 0;
-    for fd in start..start + count {
-        if h.op(OP_PORT_IMPORT, fd.cast_unsigned())? == 0 {
+    for fd in start..start.saturating_add(count) {
+        let mut port = PortConfig::new_port(serv.raw());
+        if !(methods().import)(&mut port, fd) {
+            port.delete();
             continue;
         }
-        check_port_type(h)?;
-        h.get(OP_PORT_PUSH)?;
+        // The record `import` made: O_NONBLOCK and O_CLOEXEC.
+        if let Some(socket) = port.listening_socket() {
+            socket.edit(|socket| socket_set_fd_option(socket, 1, 1));
+        }
+        keep_port(serv, port);
         imported += 1;
     }
-    Ok(imported)
-}
-
-/// The dispatch and port operations of `crate::run`.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
-    use crate::ops::{
-        RUN_ADD_PORT, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS, RUN_SCHEDULE_WORKER,
-        RUN_SENDFILE, RUN_SENDWAIT, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
-    };
-    Ok(match operation {
-        RUN_SCHEDULE_WORKER => schedule_worker(h, i32::try_from(arg.cast_signed()).unwrap_or(0))?,
-        RUN_FEEDBACK => i64::from(feedback(h, arg)?),
-        RUN_SENDWAIT => i64::from(sendwait(h, arg)?),
-        RUN_IDLE_WORKERS => idle_workers(h, false)?,
-        RUN_IDLE_TASK_WORKERS => idle_workers(h, true)?,
-        RUN_TASKING => tasking(h)?,
-        RUN_SENDFILE => i64::from(sendfile(h, arg.cast_signed())?),
-        RUN_ADD_PORT => add_port(h)?,
-        RUN_SYSTEMD_SOCKETS => systemd_sockets(h)?,
-        _ => crate::base_factory::run(h, operation, arg)?.unwrap_or(crate::SW_ERR),
-    })
+    imported
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MODE_BASE;
-    use crate::script::Script;
 
-    fn mode(dispatch: u64, extra: &[(u32, u64)]) -> Script {
-        let mut s = Script::with(extra).queue(OP_FIELD, &[4, dispatch]);
-        s.facts.entry(OP_FIELD).or_insert(4);
-        s
+    use crate::fixture::LiveServer;
+    use swoole_rs_process::worker_record::{WorkerRecord, WorkerStatus};
+
+    /// The live server with `n` event workers in `dispatch` mode: their records, and
+    /// the server.
+    struct Workers {
+        live: LiveServer,
+        records: Vec<WorkerRecord>,
     }
 
+    impl Workers {
+        fn new(n: u32, dispatch: u8) -> Self {
+            let live = LiveServer::new();
+            let mut records: Vec<WorkerRecord> = (0..n).map(|_| *WorkerRecord::boxed()).collect();
+            // SAFETY: the fixture's configuration, which nothing else reads during the write.
+            let config = unsafe { &mut *live.state().config() };
+            config.worker_num.set(n);
+            config.dispatch_mode.set(dispatch);
+            config.workers = crate::records::tests::naming_at(records.as_mut_ptr());
+            Self { live, records }
+        }
+
+        fn serv(&self) -> Server<'_> {
+            self.live.server()
+        }
+
+        fn schedule(&self, fd: c_int) -> c_int {
+            schedule_worker(self.serv(), fd, None)
+        }
+
+        fn set(&self, ids: &[u16], status: WorkerStatus) {
+            for &id in ids {
+                self.serv().worker_record(id).unwrap().set_status(status);
+            }
+        }
+
+        fn warned(&self) -> bool {
+            self.serv().config().scheduler_warning.swap(false, Relaxed)
+        }
+    }
+
+    impl Drop for Workers {
+        fn drop(&mut self) {
+            // SAFETY: as in `new`; the records drop after the server forgets them.
+            let config = unsafe { &mut *self.live.state().config() };
+            config.workers = swoole_rs_memory::members::Shm::default();
+        }
+    }
+
+    /// A connection on `fd` with `uid` and pinned `worker`.
+    fn connect(w: &Workers, fd: c_int, uid: u32, worker: c_int) {
+        let conn = w.live.state().tables_ref().connection_at(fd).unwrap();
+        conn.set_fd(fd);
+        conn.set_uid(uid);
+        conn.set_worker_id(worker);
+    }
+
+    /// Past the connection table: no connection.
+    const UNLISTED: c_int = 5000;
+
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn schedule_by_mode() {
+        assert_eq!(Workers::new(4, DISPATCH_FDMOD).schedule(10), 2, "fd mod");
+        let round = Workers::new(4, DISPATCH_ROUND);
         assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_FDMOD, &[]), 10).unwrap(),
-            2,
-            "fd mod"
-        );
-        assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_ROUND, &[]), 10).unwrap(),
-            0,
+            [round.schedule(10), round.schedule(10)],
+            [0, 1],
             "round robin"
         );
+        let uid = Workers::new(4, DISPATCH_UIDMOD);
+        assert_eq!(uid.schedule(10), 2, "no uid: fd");
+        assert_eq!(uid.schedule(UNLISTED), 0, "no connection: fd");
+        connect(&uid, 10, 5, -1);
+        assert_eq!(uid.schedule(10), 1, "uid");
+
+        let mut co = Workers::new(4, DISPATCH_CO_CONN_LB);
+        assert_eq!(co.schedule(UNLISTED), 0, "no connection: fd");
+        co.records[0].coroutine_num = 5;
+        connect(&co, 10, 0, -1);
+        assert_eq!(co.schedule(10), 1, "pinned to the lowest load");
+        let conn = co.live.state().tables_ref().connection_at(10).unwrap();
+        assert_eq!(conn.worker_id(), 1, "and stays there");
+        co.records[1].coroutine_num = 9;
+        assert_eq!(co.schedule(10), 1, "pinned");
+
+        let mut req = Workers::new(4, DISPATCH_CO_REQ_LB);
+        for (record, load) in req.records.iter_mut().zip([5, 3, 3, 9]) {
+            record.coroutine_num = load;
+        }
+        assert_eq!(req.schedule(10), 1, "the first lowest load");
+        let concurrent = Workers::new(3, DISPATCH_CONCURRENT_LB);
+        concurrent.records[0].concurrency.store(2, Relaxed);
+        assert_eq!(concurrent.schedule(10), 1, "the lowest concurrency");
+
+        let idle = Workers::new(3, 3);
+        idle.set(&[1], WorkerStatus::Idle);
+        assert_eq!(idle.schedule(10), 1, "the first idle worker round robin");
+        assert!(!idle.warned());
+        idle.set(&[1], WorkerStatus::Busy);
+        assert_eq!(idle.schedule(10), 2, "the last of worker_num + 1 tries");
+        assert!(idle.warned(), "none idle: the scheduler warns");
+        assert_eq!(idle.live.state().next_round(), 6, "four tries after two");
+    }
+
+    extern "C" fn to_six(
+        _: crate::callbacks::Ctx,
+        _: Server<'_>,
+        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<&RecvData>,
+    ) -> c_int {
+        6
+    }
+
+    extern "C" fn fall_back(
+        _: crate::callbacks::Ctx,
+        _: Server<'_>,
+        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<&RecvData>,
+    ) -> c_int {
+        USERFUNC_FALLBACK
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn a_dispatch_function_comes_first_unless_it_falls_back() {
+        let w = Workers::new(4, DISPATCH_FDMOD);
+        let callbacks = &w.live.state().callbacks;
+        callbacks.set(crate::callbacks::Callback::DispatchFunc(to_six));
+        assert_eq!(w.schedule(10), 6, "user function");
+        callbacks.set(crate::callbacks::Callback::DispatchFunc(fall_back));
+        assert_eq!(w.schedule(10), 2, "user function falls back");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn a_datagram_hashes_its_sender() {
+        let w = Workers::new(4, DISPATCH_IPMOD);
+        // SAFETY: a plain record, for which zero is valid.
+        let mut packet: crate::master_ops::DgramPacket = unsafe { core::mem::zeroed() };
+        packet.socket_addr.kind = 2;
+        packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
+        let send = SendData {
+            info: swoole_rs_corebase::DataHead::default(),
+            data: (&raw const packet).cast(),
+        };
+        assert_eq!(ip_key(w.live.state(), -1, Some(&send)), 0x0a00_0001);
         assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_IPMOD, &[(OP_IP_KEY, 9)]), 10).unwrap(),
+            schedule_worker(w.serv(), -1, Some(&send)),
             1,
-            "ip hash"
-        );
-        assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_UIDMOD, &[]), 10).unwrap(),
-            2,
-            "no connection: fd"
-        );
-        assert_eq!(
-            schedule_worker(
-                &mut mode(DISPATCH_UIDMOD, &[(OP_FD_CONN, 1), (OP_CONN_UID, 5)]),
-                10
-            )
-            .unwrap(),
-            1,
-            "uid"
-        );
-        assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_CO_CONN_LB, &[]), 10).unwrap(),
-            2,
-            "no connection"
-        );
-        assert_eq!(
-            schedule_worker(
-                &mut mode(
-                    DISPATCH_CO_CONN_LB,
-                    &[
-                        (OP_FD_CONN, 1),
-                        (OP_CONN_WORKER, u64::MAX),
-                        (OP_WORKER_COROUTINES, 1)
-                    ]
-                ),
-                10
-            )
-            .unwrap(),
-            0,
-            "pinned to the lowest load"
-        );
-        assert_eq!(
-            schedule_worker(&mut mode(DISPATCH_CO_REQ_LB, &[]), 10).unwrap(),
-            0,
-            "lowest load"
-        );
-        assert_eq!(
-            schedule_worker(&mut mode(3, &[(OP_WORKER_IDLE, 1)]), 10).unwrap(),
-            0,
-            "idle worker"
-        );
-        let mut s = Script::with(&[(OP_HAS_DISPATCH_FUNC, 1), (OP_DISPATCH_FUNC, 6)]);
-        assert_eq!(schedule_worker(&mut s, 10).unwrap(), 6, "user function");
-        let mut s = mode(
-            DISPATCH_FDMOD,
-            &[
-                (OP_HAS_DISPATCH_FUNC, 1),
-                (OP_DISPATCH_FUNC, (-3i64).cast_unsigned()),
-            ],
-        );
-        assert_eq!(
-            schedule_worker(&mut s, 10).unwrap(),
-            2,
-            "user function falls back"
+            "10.0.0.1 mod 4"
         );
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn worker_side_sends() {
-        let mut s = Script::with(&[(OP_MODE, MODE_PROCESS), (OP_FEEDBACK_THREAD, 1)]);
+        use crate::hybrid::tests::{Call, calls};
+        let live = LiveServer::new();
+        let conn = live.state().tables_ref().connection_at(10).unwrap();
+        conn.set_session_id(7);
+        conn.set_reactor_id(1);
+        calls();
         assert!(
-            feedback(&mut s, 5).unwrap(),
+            feedback(live.server(), conn, 5),
             "process mode goes through the reactor thread"
         );
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        assert!(!feedback(&mut s, 5).unwrap(), "base mode sends directly");
-
-        let mut s = Script::with(&[]);
-        assert!(!sendwait(&mut s, 3).unwrap(), "missing session");
-        assert_eq!(s.args(LOG_SENDWAIT), vec![3], "traced");
-
-        let mut s = Script::with(&[(OP_FIELD, 3)]).queue(OP_WORKER_IDLE, &[1, 0, 1]);
-        assert_eq!(
-            idle_workers(&mut s, false).unwrap(),
-            2,
-            "idle event workers"
-        );
-        let mut s = Script::with(&[(OP_TASKING, u64::MAX)]);
-        assert_eq!(tasking(&mut s).unwrap(), 0, "reset");
-        assert_eq!(s.called(OP_TASKING_RESET), 1, "stored");
+        assert_eq!(calls(), [Call::ToReactorThread(7, 1, 5)]);
+        assert!(!sendwait(live.server(), 3, b"data"), "missing session");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn idle_and_tasking_counts() {
+        let w = Workers::new(3, DISPATCH_FDMOD);
+        w.set(&[0, 2], WorkerStatus::Idle);
+        assert_eq!(idle_workers(w.serv(), false), 2, "idle event workers");
+        assert_eq!(idle_workers(w.serv(), true), 0, "no task workers");
+        let tasking = &w.live.counters().tasking_num;
+        tasking.store(3, SeqCst);
+        assert_eq!(super::tasking(w.serv()), 3);
+        tasking.store(u32::MAX, SeqCst);
+        assert_eq!(super::tasking(w.serv()), 0, "reset");
+        assert_eq!(tasking.load(SeqCst), 0, "stored");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn sendfile_checks() {
-        let file = |name: &core::ffi::CStr, offset: u64| {
-            let address = u64::try_from(name.as_ptr().expose_provenance()).unwrap();
-            Script::with(&[
-                (OP_SENDFILE_NAME_MAX, 100),
-                (OP_SENDFILE_NAME, address),
-                (OP_SENDFILE_OFFSET, offset),
-                (OP_SENDFILE_FINISH, 1),
-            ])
-        };
-        let mut s = Script::with(&[]);
-        assert!(!sendfile(&mut s, 0).unwrap(), "invalid session");
-        let mut s = Script::with(&[(OP_IS_MASTER, 1)]);
-        assert!(!sendfile(&mut s, 1).unwrap(), "master");
-        let mut s = Script::with(&[(OP_SENDFILE_NAME_MAX, 4), (OP_SENDFILE_NAME_LEN, 5)]);
-        assert!(!sendfile(&mut s, 1).unwrap(), "name too long");
-
+        use crate::hybrid::tests::{Call, calls};
+        let live = LiveServer::new();
+        let serv = live.server();
+        calls();
+        assert!(!sendfile(serv, 0, b"Cargo.toml", 0, 1), "invalid session");
+        let long = vec![b'a'; IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE];
+        assert!(!sendfile(serv, 1, &long, 0, 1), "name too long");
+        assert!(!sendfile(serv, 1, b"no-such-file", 0, 1), "missing");
+        assert!(!sendfile(serv, 1, b"src", 0, 1), "directory");
         assert!(
-            sendfile(&mut file(c"Cargo.toml", 0), 1).unwrap(),
-            "regular file"
+            !sendfile(serv, 1, b"Cargo.toml", 1 << 40, 1),
+            "offset past the end"
         );
-        let mut s = file(c"Cargo.toml", 1 << 40);
-        assert!(!sendfile(&mut s, 1).unwrap(), "offset past the end");
-        assert_eq!(s.called(LOG_FILE_EMPTY), 1, "warned");
-        let mut s = file(c"src", 0);
-        assert!(!sendfile(&mut s, 1).unwrap(), "directory");
-        assert_eq!(s.called(LOG_NOT_REGULAR), 1, "warned");
-        let mut s = file(c"no-such-file", 0);
-        assert!(!sendfile(&mut s, 1).unwrap(), "missing");
-        assert_eq!(s.called(LOG_STAT), 1, "warned");
+        assert_eq!(calls(), [], "none reached the factory");
+        let given = b"Cargo.toml\0junk";
+        assert!(sendfile(serv, 12, given, 3, 99), "regular file");
+        // The head, `l_file` (the whole given length) and the NUL.
+        let len = 16 + 15 + 1;
+        assert_eq!(
+            calls(),
+            [Call::Finish(12, EVENT_SEND_FILE, len, 3, 99, *b"Cargo.to")],
+            "the task: its offset and length, then the name up to its NUL"
+        );
+    }
+
+    /// Port methods whose `create_socket` fails for port 1, and whose `import` takes
+    /// fd 3 as TCP, fd 4 as UDP and refuses the rest, keeping the fd as the port.
+    fn fake_port_methods() {
+        // SAFETY: the fakes touch only the settings they are given.
+        unsafe {
+            crate::port_config::set_methods(crate::port_config::PortMethods {
+                ssl_context_init: |_| true,
+                ssl_create: |_, _| unreachable!(),
+                import: |config, fd| {
+                    config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
+                    config.port.set(fd);
+                    fd < 5
+                },
+                close: |_| unreachable!(),
+                listen: |_| unreachable!(),
+                create_socket: |config| if config.port.get() == 1 { -1 } else { 0 },
+                close_socket: |_| unreachable!(),
+                get_protocols: |_| unreachable!(),
+                init_protocol: |_| unreachable!(),
+                destroy_http_request: |_| unreachable!(),
+                tls_free: |_| {},
+                dtls_create: |_, _| unreachable!(),
+                dtls_session: |_, _| unreachable!(),
+                dtls_free: |_, _| unreachable!(),
+            });
+        }
     }
 
     #[test]
-    fn ports() {
-        let mut s = Script::with(&[
-            (OP_PORT_TYPE, 1 | SOCK_SSL),
-            (OP_PORT_NUMBER, 9501),
-            (OP_HOST_SIZE, 8),
-            (OP_HOST_MAXSIZE, 108),
-            (OP_PORT_SOCKET, 1),
-            (OP_NEW_PORT_TYPE, SOCK_UDP),
-        ]);
-        assert_eq!(add_port(&mut s).unwrap(), 1, "added");
-        assert_eq!(s.args(OP_PORT_NEW), vec![1], "TLS");
-        assert_eq!(
-            s.args(OP_DGRAM_PORT),
-            vec![SOCK_UDP],
-            "datagram socket recorded"
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn add_port_checks_then_keeps_the_port() {
+        fake_port_methods();
+        let live = LiveServer::new();
+        let serv = live.server();
+        let before = serv.ports().len();
+        assert!(add_port(serv, 1, c"127.0.0.1", 70000).is_none(), "bad port");
+        let long = std::ffi::CString::new(vec![b'a'; host_maxsize()]).unwrap();
+        assert!(
+            add_port(serv, SOCK_UNIX_STREAM, &long, 70000).is_none(),
+            "unix sockets skip the port check, then the path is too long"
         );
+        assert!(add_port(serv, 1, c"127.0.0.1", 1).is_none(), "no socket");
+        assert_eq!(serv.ports().len(), before, "none kept");
+        assert!(!serv.config().have_dgram_sock);
 
-        let mut s = Script::with(&[(OP_PORT_TYPE, 1), (OP_PORT_NUMBER, 70000)]);
-        assert_eq!(add_port(&mut s).unwrap(), 0, "bad port");
-        assert_eq!(s.called(LOG_INVALID_PORT), 1, "warned");
-        let mut s = Script::with(&[
-            (OP_PORT_TYPE, SOCK_UNIX_STREAM),
-            (OP_PORT_NUMBER, 70000),
-            (OP_HOST_SIZE, 200),
-            (OP_HOST_MAXSIZE, 108),
-        ]);
-        assert_eq!(add_port(&mut s).unwrap(), 0, "path too long");
+        let port = add_port(serv, SOCK_UDP | SOCK_SSL, c"127.0.0.1", 9501).unwrap();
+        let config = port.config();
         assert_eq!(
-            s.called(LOG_HOST_TOO_LONG),
-            1,
-            "unix sockets skip the port check"
+            (config.r#type, config.ssl, config.port.get()),
+            (SOCK_UDP, 1, 9501)
         );
+        assert_eq!(serv.ports().len(), before + 1, "kept");
+        assert_eq!(serv.ports()[before].raw(), port.raw());
+        assert!(serv.config().have_dgram_sock);
+        assert_eq!(serv.config().dgram_port_num, 1);
+        assert!(add_port(serv, 1, c"::", 9502).is_some(), "a stream port");
+        assert!(serv.config().have_stream_sock);
 
-        let mut s = Script::with(&[
-            (OP_ENV_LISTEN_PID, 1),
-            (OP_SYSTEMD_FDS, 3),
-            (OP_ENV_FDS_START, i64::MIN.cast_unsigned()),
-        ])
-        .queue(OP_PORT_IMPORT, &[1, 0, 1]);
-        assert_eq!(systemd_sockets(&mut s).unwrap(), 2, "two imported");
-        assert_eq!(s.args(OP_PORT_IMPORT), vec![3, 4, 5], "from fd 3");
-        let mut s = Script::with(&[(OP_ENV_LISTEN_PID, i64::MIN.cast_unsigned())]);
-        assert_eq!(systemd_sockets(&mut s).unwrap(), 0, "no LISTEN_PID");
+        // SAFETY: the fixture's config, which nothing else borrows here.
+        let config = unsafe { serv.config_mut() };
+        config.factory_ = core::ptr::NonNull::dangling().as_ptr();
+        assert!(add_port(serv, 1, c"::", 9503).is_none(), "created");
+        config.factory_ = core::ptr::null_mut();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn systemd_sockets_import_from_listen_fds_start() {
+        fake_port_methods();
+        let live = LiveServer::new();
+        let serv = live.server();
+        let before = serv.ports().len();
+        assert_eq!(
+            import_sockets(serv, None, || unreachable!(), || unreachable!()),
+            0,
+            "no LISTEN_PID"
+        );
+        assert_eq!(
+            import_sockets(serv, Some(1), || -1, || unreachable!()),
+            0,
+            "no LISTEN_FDS"
+        );
+        assert_eq!(
+            import_sockets(serv, Some(1), || 3, || Some(-1)),
+            0,
+            "bad start"
+        );
+        assert_eq!(serv.ports().len(), before);
+        assert_eq!(
+            import_sockets(serv, Some(1), || 3, || None),
+            2,
+            "from fd 3; 5 refused"
+        );
+        let kept: Vec<_> = serv.ports()[before..]
+            .iter()
+            .map(|port| (port.config().port.get(), port.config().r#type))
+            .collect();
+        assert_eq!(kept, [(3, 1), (4, SOCK_UDP)]);
+        assert!(serv.config().have_stream_sock && serv.config().have_dgram_sock);
     }
 }

@@ -3,6 +3,7 @@
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
 use std::ffi::{CStr, c_int, c_long, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::RC_CANCELED;
 use swoole_rs_zend::{
     E_ERROR, bailout,
@@ -260,11 +261,7 @@ fn iouring_stats(stats: &mut Stats) {
     };
     stats.iouring = 1;
     stats.iouring_task_num = i64::from(tasks);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream stores the float percentage in an integer"
-    )]
-    let percent = percent as i64;
+    let percent = percent.c_cast::<i64>();
     stats.iouring_sq_usage_percent = percent;
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
@@ -643,12 +640,8 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
         // SAFETY: a live buffer.
         unsafe { php_write(message.as_ptr().cast(), message.len()) };
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes the zend_long status as int"
-    )]
     // Swoole's exit, which does not return here.
-    swoole_rs_phpswoole::sw_php_exit(status as c_int);
+    swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
 pub(crate) fn reactor_init() -> i32 {

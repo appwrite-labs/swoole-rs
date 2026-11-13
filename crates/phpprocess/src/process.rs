@@ -13,6 +13,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_zend::{
@@ -414,11 +415,12 @@ fn construct(call: &Call) {
     if let Some((props, callback)) = object.props(Some(&PROCESS)).zip(call.value(1)) {
         props.value(c"callback", callback);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream casts to PipeType"
-    )]
-    set_worker(process, worker, enable_coroutine, pipe_type as c_int);
+    set_worker(
+        process,
+        worker,
+        enable_coroutine,
+        pipe_type.c_cast::<c_int>(),
+    );
 }
 
 fn destruct(_call: &Call) {}
@@ -482,11 +484,7 @@ fn use_queue(call: &Call) {
     if !blocking {
         mode &= !IPC_NOWAIT;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream converts to key_t"
-    )]
-    let mut queue = QueueRecord::new(key as i32, true, 0);
+    let mut queue = QueueRecord::new(key.c_cast::<i32>(), true, 0);
     if !queue.ready() {
         call.set_bool(false);
         return;
@@ -503,12 +501,7 @@ fn use_queue(call: &Call) {
     if let Some(process) = process {
         process.worker.queue.own(worker, Box::new(queue));
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "upstream stores the mode in a uint8_t"
-    )]
-    let mode = mode as u8;
+    let mode = mode.c_cast::<u8>();
     worker::with(worker, |record| record.set_msgqueue_mode(mode));
     call.update_property_long(Some(&PROCESS), c"msgQueueId", i64::from(id));
     call.update_property_long(Some(&PROCESS), c"msgQueueKey", key);
@@ -530,11 +523,7 @@ fn stat_queue(call: &Call) {
         return;
     };
     call.set_array();
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream stores size_t in zend_long"
-    )]
-    call.add_assoc_long(c"queue_num", num as i64);
+    call.add_assoc_long(c"queue_num", num.c_cast::<i64>());
     #[expect(clippy::cast_possible_wrap, reason = "as above")]
     call.add_assoc_long(c"queue_bytes", bytes as i64);
 }
@@ -613,8 +602,7 @@ fn kill(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(clippy::cast_possible_truncation, reason = "upstream casts to int")]
-    let (pid, sig) = (pid as c_int, sig as c_int);
+    let (pid, sig) = (pid.c_cast::<c_int>(), sig.c_cast::<c_int>());
     if swoole_rs_process::os::kill(pid, sig) < 0 {
         if !(sig == 0 && errno() == libc::ESRCH) {
             sys(E_WARNING, &message!("kill({pid}, {sig}) failed"));
@@ -664,8 +652,7 @@ fn alarm(call: &Call) {
         it_interval: interval,
         it_value: interval,
     };
-    #[expect(clippy::cast_possible_truncation, reason = "upstream passes an int")]
-    let set = swoole_rs_corebase::sys::setitimer(kind as c_int, &timer);
+    let set = swoole_rs_corebase::sys::setitimer(kind.c_cast::<c_int>(), &timer);
     if set < 0 {
         sys(E_WARNING, &message!("setitimer() failed"));
         call.set_bool(false);
@@ -715,12 +702,7 @@ fn read(call: &Call) {
         call.set_bool(false);
         return;
     }
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "upstream converts to size_t"
-    )]
-    let size = size as usize;
+    let size = size.c_cast::<usize>();
     let mut buffer = ZBuf::with_capacity(size);
     let read = worker::pipe_read(worker, &mut buffer, blocking(process));
     let Ok(length) = usize::try_from(read) else {
@@ -1045,11 +1027,6 @@ fn priority_who(call: &Call, which: i64, who: Option<i64>) -> Option<i64> {
     None
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream passes zend_long to setpriority's int and id_t parameters"
-)]
 fn set_priority(call: &Call) {
     let parsed = call
         .arity(2, 3)
@@ -1061,8 +1038,13 @@ fn set_priority(call: &Call) {
     let Some(who) = priority_who(call, which, who) else {
         return;
     };
-    let who = who as libc::id_t;
-    if swoole_rs_corebase::sys::setpriority(which as c_int, who, priority as c_int) < 0 {
+    let who = who.c_cast::<libc::id_t>();
+    if swoole_rs_corebase::sys::setpriority(
+        which.c_cast::<c_int>(),
+        who,
+        priority.c_cast::<c_int>(),
+    ) < 0
+    {
         set_last_error(errno());
         call.set_bool(false);
         return;
@@ -1070,11 +1052,6 @@ fn set_priority(call: &Call) {
     call.set_bool(true);
 }
 
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "upstream passes zend_long to getpriority's int and id_t parameters"
-)]
 fn get_priority(call: &Call) {
     let parsed = call
         .arity(1, 2)
@@ -1087,7 +1064,8 @@ fn get_priority(call: &Call) {
         return;
     };
     set_errno(0);
-    let priority = swoole_rs_corebase::sys::getpriority(which as c_int, who as libc::id_t);
+    let priority =
+        swoole_rs_corebase::sys::getpriority(which.c_cast::<c_int>(), who.c_cast::<libc::id_t>());
     if priority == -1 && errno() != 0 {
         set_last_error(errno());
         call.set_bool(false);

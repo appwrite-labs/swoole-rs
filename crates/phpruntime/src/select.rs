@@ -3,6 +3,7 @@
 //! buffered reads answer at once, as PHP's own `stream_select` does.
 use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
 use std::{collections::HashMap, ptr};
+use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
@@ -166,9 +167,8 @@ fn select(call: &Call) -> Result<(), Bailout> {
             call.set_bool(false);
             return Ok(());
         }
-        #[expect(clippy::cast_precision_loss, reason = "upstream's (double) casts")]
         {
-            timeout = seconds as f64 + micros as f64 / 1_000_000.0;
+            timeout = seconds.c_cast::<f64>() + micros.c_cast::<f64>() / 1_000_000.0;
         }
     }
 

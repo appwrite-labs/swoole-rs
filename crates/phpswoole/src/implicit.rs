@@ -3,6 +3,7 @@
 //! addresses), as `php_swoole.cc` defined it.
 use crate::EXCEPTION;
 use std::ffi::{c_char, c_int, c_void};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_error::ErrorCode::{SW_ERROR_FOR_TEST, SW_ERROR_INVALID_PARAMS};
 use swoole_rs_zend::{
@@ -48,8 +49,7 @@ fn implicit_fn(call: &Call) {
         // SAFETY: a literal format with no conversions.
         unsafe { php_printf(c"never be executed here\n".as_ptr()) };
     } else if is(b"bailout") {
-        #[expect(clippy::cast_possible_truncation, reason = "C's (int) of a zend_long")]
-        let status = arg.map_or(95, |status| status.long() as c_int);
+        let status = arg.map_or(95, |status| status.long().c_cast::<c_int>());
         // It bails out across this frame, which owns nothing.
         sw_php_exit(status);
     } else if is(b"abort") {

@@ -176,3 +176,107 @@ pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool
         ),
     }
 }
+
+/// The hybrid's side of [`crate::hybrid`].
+pub(crate) struct Linked;
+
+impl crate::hybrid::Hybrid for Linked {
+    fn factory_end(&self, serv: crate::view::Server<'_>, session_id: c_long, flags: c_int) -> bool {
+        end(serv.state(), session_id, flags)
+    }
+
+    fn factory_notify(&self, serv: crate::view::Server<'_>, head: &mut DataHead) -> bool {
+        notify(serv.state(), ptr::from_mut(head).cast())
+    }
+
+    fn pipe_to_worker(
+        &self,
+        serv: crate::view::Server<'_>,
+        worker_id: u32,
+        message: &swoole_rs_process::task_file::TaskBuffer,
+    ) -> bool {
+        /// `SW_PIPE_MASTER | SW_PIPE_NONBLOCK`.
+        const PIPE_MASTER_NONBLOCK: c_int = 1 | 2;
+        let worker = serv.worker(u16::try_from(worker_id).unwrap_or(u16::MAX));
+        let bytes = message.bytes();
+        // SAFETY: one of the server's workers, and the message's bytes, which live
+        // for the call.
+        let sent = unsafe {
+            swoole_rs_process::methods::send_pipe_message(
+                worker,
+                bytes.as_ptr(),
+                bytes.len(),
+                PIPE_MASTER_NONBLOCK,
+            )
+        };
+        sent > 0
+    }
+
+    fn thread_mode(&self, serv: crate::view::Server<'_>, operation: u32) -> i64 {
+        crate::thread_mode_ops::run_server(serv, operation)
+    }
+
+    fn stop_single_worker(&self, serv: crate::view::Server<'_>) {
+        swoole_rs_process::worker_globals::with_current(|worker| {
+            crate::event_worker_ops::stop_async_worker(serv, *worker);
+        });
+    }
+
+    fn send_shutdown(&self, serv: crate::view::Server<'_>) -> bool {
+        /// `SW_SERVER_EVENT_SHUTDOWN_SIGNAL`.
+        const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
+        // A worker may run as a user that cannot signal the master.
+        let send = SendData {
+            info: DataHead {
+                kind: EVENT_SHUTDOWN_SIGNAL,
+                ..DataHead::default()
+            },
+            data: ptr::null(),
+        };
+        // `serv->get_reactor_pipe_socket(0, 0)`.
+        let Some(pipe) = serv.worker_pipe(0, false) else {
+            return false;
+        };
+        let data = (&raw const send).cast();
+        // SAFETY: the worker's live pipe socket and the send's bytes.
+        let sent = unsafe {
+            swoole_rs_tls::upstream::socket_send_async(pipe, data, size_of::<SendData>())
+        };
+        sent > 0
+    }
+
+    fn thread0_shutdown(&self, serv: crate::view::Server<'_>) {
+        let reactor = crate::reactor_handle::Reactor::thread();
+        crate::reactor_entry::thread_shutdown(serv, reactor, 0);
+    }
+
+    fn before_shutdown(&self, serv: crate::view::Server<'_>) {
+        serv.call_hook(crate::view::ServerHook::BeforeShutdown);
+        let callbacks = &serv.state().callbacks;
+        callbacks.call_server(crate::callbacks::CB_BEFORE_SHUTDOWN, serv);
+    }
+
+    fn reload(&self, serv: crate::view::Server<'_>, all_workers: bool) -> bool {
+        crate::manager_ops::reload(serv, all_workers)
+    }
+
+    fn command_send(
+        &self,
+        serv: crate::view::Server<'_>,
+        c: &crate::commands::CommandSend<'_>,
+    ) -> bool {
+        crate::commands::send(serv, c)
+    }
+
+    fn factory_finish(
+        &self,
+        serv: crate::view::Server<'_>,
+        send: &mut crate::base_factory::SendData,
+    ) -> bool {
+        finish(serv.state(), (&raw mut *send).cast())
+    }
+
+    fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
+        crate::event_worker_ops::send_to_reactor_thread(serv, head)
+    }
+}

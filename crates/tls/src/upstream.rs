@@ -14,6 +14,7 @@ use crate::{
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::mem::MaybeUninit;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
@@ -613,12 +614,7 @@ impl Vectors<'_> {
 
     /// writev(2) of the vectors.
     fn write(&self, fd: c_int) -> isize {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
-            reason = "writev takes an int count, as upstream passes it"
-        )]
-        let count = self.count as c_int;
+        let count = self.count.c_cast::<c_int>();
         // SAFETY: the type's invariant: `count` iovecs of readable bytes.
         unsafe { libc::writev(fd, self.at, count) }
     }
@@ -713,11 +709,7 @@ fn sync<S: ReadSlot>(
         dont_restart,
     };
     let event = if write { EVENT_WRITE } else { EVENT_READ };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "sec2msec's long is passed on as an int, as upstream does"
-    )]
-    let timeout_ms = (timeout * 1000.0) as c_long as c_int;
+    let timeout_ms = (timeout * 1000.0).c_cast::<c_long>().c_cast::<c_int>();
     swr_v1_socket_sync(&mut call, kind, flags, event, timeout_ms)
 }
 

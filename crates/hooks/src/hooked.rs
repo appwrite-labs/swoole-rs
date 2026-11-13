@@ -12,6 +12,7 @@ use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
 use core::mem::MaybeUninit;
 use libc::{c_int, c_void, msghdr, nfds_t, pollfd, size_t, sockaddr, socklen_t, ssize_t};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
@@ -372,10 +373,9 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 ) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
         let mut poll = swr_v1_hook_fd_poll(fd, event);
-        #[expect(clippy::cast_possible_truncation, reason = "upstream's (int) cast")]
         let ready = sys::poll(
             core::slice::from_mut(&mut poll),
-            (timeout * 1000.0) as c_int,
+            (timeout * 1000.0).c_cast::<c_int>(),
         );
         return if ready == 1 { 0 } else { -1 };
     };

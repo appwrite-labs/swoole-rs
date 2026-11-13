@@ -120,6 +120,7 @@ pub(crate) use kqueue::*;
 ))]
 mod kqueue {
     use super::{SW_EVENT_READ, SW_EVENT_WRITE, c_int, c_void, reads, writes};
+    use swoole_rs_corebase::CCast;
 
     /// `NOTE_EOF` where the platform defines it (upstream's `#ifdef NOTE_EOF`): only
     /// OpenBSD's headers do; FreeBSD's 0x0002 is `NOTE_FILE_POLL`.
@@ -139,8 +140,7 @@ mod kqueue {
     ) -> bool {
         let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
         // Upstream's `EV_SET` converts the int fd to `uintptr_t` the same way.
-        #[expect(clippy::cast_sign_loss, reason = "as upstream's EV_SET")]
-        let ident = fd as isize as usize;
+        let ident = (fd as isize).c_cast::<usize>();
         event.ident = ident;
         event.filter = filter;
         event.flags = flags;

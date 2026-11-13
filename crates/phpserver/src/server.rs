@@ -7,6 +7,7 @@ use std::{
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_phpstubs::server;
 use swoole_rs_process::worker_record::Worker;
@@ -513,22 +514,18 @@ const CONSTANTS: &[(&CStr, i64)] = &[
 pub(crate) use swoole_rs_corebase::log::set_last_error;
 pub(crate) use swoole_rs_phpswoole::display_errors;
 
-/// `swoole_get_worker_type()`'s `SW_MASTER`, `SW_EVENT_WORKER`, `SW_MANAGER` and `SW_TASK_WORKER`.
-pub(crate) const MASTER: c_int = 1;
-pub(crate) const EVENT_WORKER: c_int = 2;
-pub(crate) const MANAGER: c_int = 3;
-pub(crate) const TASK_WORKER: c_int = 4;
+pub(crate) use swoole_rs_process::worker_record::WorkerType;
 /// `Server::MODE_PROCESS`.
 const MODE_PROCESS: u8 = 2;
 
 /// `swoole_get_worker_type()`.
-pub(crate) fn worker_type() -> c_int {
-    swoole_rs_process::methods::swoole_get_worker_type()
+pub(crate) fn worker_type() -> Option<WorkerType> {
+    swoole_rs_process::methods::worker_type()
 }
 
 /// `Server::is_worker() || Server::is_task_worker()`.
 pub(crate) fn in_worker() -> bool {
-    matches!(worker_type(), EVENT_WORKER | TASK_WORKER)
+    matches!(worker_type(), Some(WorkerType::Event | WorkerType::Task))
 }
 
 /// `swoole_get_worker_id()`, as the `int` C++ reads.
@@ -766,12 +763,7 @@ fn bind(call: &Call) {
         );
         return call.set_bool(false);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "(uint32_t) uid, as upstream"
-    )]
-    let uid = uid as u32;
+    let uid = uid.c_cast::<u32>();
     let Some(conn) = serv.verified(fd) else {
         return call.set_bool(false);
     };
@@ -792,11 +784,7 @@ fn get_socket(call: &Call) {
     let Ok(port) = call.arity(0, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "get_port((int) port), as upstream"
-    )]
-    match serv.port_number(port as c_int) {
+    match serv.port_number(port.c_cast::<c_int>()) {
         Some(ls) => crate::port::socket(ls, call),
         None => call.set_bool(false),
     }
@@ -806,10 +794,6 @@ fn get_socket(call: &Call) {
 const DISPATCH_UIDMOD: u8 = 5;
 const DISPATCH_CO_CONN_LB: u8 = 8;
 
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "add_assoc_long of a double and (int) last_recv_time, as upstream"
-)]
 fn get_client_info(call: &Call) {
     let Some(serv) = running(call) else { return };
     let parsed = call.arity(1, 3).and_then(|()| {
@@ -850,8 +834,11 @@ fn get_client_info(call: &Call) {
         call.add_assoc_stringl(c"remote_ip", ip.to_bytes());
     });
     call.add_assoc_long(c"reactor_id", i64::from(conn.reactor_id()));
-    call.add_assoc_long(c"connect_time", conn.connect_time() as i64);
-    call.add_assoc_long(c"last_time", i64::from(conn.last_recv_time() as i32));
+    call.add_assoc_long(c"connect_time", conn.connect_time().c_cast::<i64>());
+    call.add_assoc_long(
+        c"last_time",
+        i64::from(conn.last_recv_time().c_cast::<i32>()),
+    );
     call.add_assoc_double(c"last_recv_time", conn.last_recv_time());
     call.add_assoc_double(c"last_send_time", conn.last_send_time());
     call.add_assoc_double(c"last_dispatch_time", conn.last_dispatch_time());
@@ -914,7 +901,7 @@ fn sendwait(call: &Call) {
         no_payload();
         return call.set_bool(false);
     }
-    if serv.config().mode_ == MODE_PROCESS || worker_type() == TASK_WORKER {
+    if serv.config().mode_ == MODE_PROCESS || worker_type() == Some(WorkerType::Task) {
         fatal(
             E_WARNING,
             c"can only be used with base mode and must be within worker process",
@@ -970,12 +957,7 @@ fn worker<'a>(call: &Call, serv: view::Server<'a>) -> Option<Worker<'a>> {
     } else {
         worker_id
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "get_worker's uint16_t id, as upstream"
-    )]
-    let worker_id = worker_id as u16;
+    let worker_id = worker_id.c_cast::<u16>();
     let worker = serv.worker_record(worker_id);
     if worker.is_none() {
         call.set_bool(false);
@@ -986,7 +968,7 @@ fn worker<'a>(call: &Call, serv: view::Server<'a>) -> Option<Worker<'a>> {
 fn get_worker_status(call: &Call) {
     let Some(serv) = running(call) else { return };
     if let Some(worker) = worker(call, serv) {
-        call.set_long(i64::from(worker.status()));
+        call.set_long(worker.status().map_or(0, |status| i64::from(status as u8)));
     }
 }
 
@@ -1025,11 +1007,7 @@ fn stop(call: &Call) {
     let Ok(worker_id) = call.arity(0, 1).and_then(|()| call.long(1, -1)) else {
         return call.set_bool(false);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "Server::kill_worker's int worker id, as upstream"
-    )]
-    let worker_id = worker_id as c_int;
+    let worker_id = worker_id.c_cast::<c_int>();
     call.set_bool(swoole_rs_server::event_worker_ops::kill_worker(
         serv, worker_id,
     ));

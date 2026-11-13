@@ -4,7 +4,6 @@
 //! exactly once, its destructor runs only after the queue call that released it has
 //! returned, and callbacks run between `select_next` and `complete` with no borrow of
 //! the queue held.
-use super::tests::out;
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -311,8 +310,7 @@ fn birth() {
     q.golden(&["call:A", "drop:A", "call:C", "drop:C", "call:B", "drop:B"]);
 }
 
-/// `snapshot`: the `snapshot_mutation` topic, over `swr_v1_timer_ids`, which
-/// `swoole_timer.h` still reads.
+/// `snapshot`: the `snapshot_mutation` topic, over `Timer::ids`.
 #[test]
 fn snapshot() {
     let c = Node::new("C");
@@ -323,40 +321,10 @@ fn snapshot() {
     a.on_destroy(|q| {
         q.add(&c, 0, 1, false);
     });
-    let mut count = 0;
-    // SAFETY: the live queue, no slots and a count.
-    let sized = unsafe {
-        swr_v1_timer_ids(
-            Some(&q.q.borrow()),
-            ptr::null_mut(),
-            0,
-            Some(out(&mut count)),
-        )
-    };
-    assert!(sized == CAPACITY && count == 2);
+    assert_eq!(q.q.borrow().ids(&mut []), (CAPACITY, 2));
     let mut guard = [-77_i64, -88];
-    // SAFETY: as above, and one writable slot.
-    let short = unsafe {
-        swr_v1_timer_ids(
-            Some(&q.q.borrow()),
-            guard.as_mut_ptr(),
-            1,
-            Some(out(&mut count)),
-        )
-    };
-    assert!(short == CAPACITY && guard == [-77, -88]);
-    // SAFETY: as above, and two writable slots.
-    assert_eq!(
-        unsafe {
-            swr_v1_timer_ids(
-                Some(&q.q.borrow()),
-                guard.as_mut_ptr(),
-                2,
-                Some(out(&mut count)),
-            )
-        },
-        OK
-    );
+    assert!(q.q.borrow().ids(&mut guard[..1]) == (CAPACITY, 2) && guard == [-77, -88]);
+    assert_eq!(q.q.borrow().ids(&mut guard), (OK, 2));
     guard.sort_unstable();
     assert!(guard[0] == av.id && guard[1] == bv.id);
     q.remove(guard[0]);

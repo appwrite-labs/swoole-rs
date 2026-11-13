@@ -163,7 +163,7 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
             .static_strings(INDEX_FILES, |enabled, files| enabled && !files.is_empty());
         let autoindex = self.autoindex();
         self.server.static_strings(LOCATIONS, |_, locations| {
-            context.try_serve(root, locations, has_index, autoindex, &self.effects)
+            context.try_serve(&root, locations, has_index, autoindex, &self.effects)
         })
     }
 

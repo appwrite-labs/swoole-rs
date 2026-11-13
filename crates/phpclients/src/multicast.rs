@@ -19,8 +19,8 @@ use std::{
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, setsockopt, zeroed};
 use swoole_rs_zend::{
-    Array, Call, Value, bailout, report,
-    sys::{E_WARNING, IS_LONG, swr_zend_convert_to_array},
+    Array, Call, E_WARNING, Value, bailout, report,
+    sys::{IS_LONG, swr_zend_convert_to_array},
 };
 
 const SUCCESS: c_int = 0;
@@ -81,8 +81,7 @@ impl Sock {
 /// `php_error_docref(NULL, E_WARNING, "%s", message)`.
 fn warn(message: &[u8]) -> Result<(), Stop> {
     let message = text(message);
-    #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
-    bailout::defer(report(E_WARNING as i32, &message));
+    bailout::defer(report(E_WARNING, &message));
     checked()
 }
 

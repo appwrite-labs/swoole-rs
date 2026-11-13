@@ -15,6 +15,7 @@ use std::{
     ffi::{CStr, CString},
     ptr,
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
@@ -327,11 +328,7 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
             fatal(E_WARNING, message.as_bytes())?;
             ret = false;
         } else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "set_option takes an int, as upstream's"
-            )]
-            let size = size as c_int;
+            let size = size.c_cast::<c_int>();
             let _ = socket.set_option(libc::SOL_SOCKET, libc::SO_RCVBUF, size)
                 && socket.set_option(libc::SOL_SOCKET, libc::SO_SNDBUF, size);
         }
@@ -517,11 +514,7 @@ fn get_option(call: &Call) {
     };
     let Some(socket) = open(call) else { return };
     let fd = fd(socket);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes them as int"
-    )]
-    let (level_int, name_int) = (level as c_int, name as c_int);
+    let (level_int, name_int) = (level.c_cast::<c_int>(), name.c_cast::<c_int>());
     let failed = || {
         warn_sys(&format!("getsockopt({fd}, {level}, {name})"), errno());
         call.set_bool(false);
@@ -563,18 +556,13 @@ fn get_option(call: &Call) {
             TIMEOUT_WRITE
         };
         let timeout = socket.get_timeout(kind);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "(int) timeout, as upstream"
-        )]
-        let sec = timeout as i32;
+        let sec = timeout.c_cast::<i32>();
         call.set_array();
         call.add_assoc_long(c"sec", i64::from(sec));
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the double to zend_long conversion upstream makes"
-        )]
-        call.add_assoc_long(c"usec", ((timeout - f64::from(sec)) * 1_000_000.0) as i64);
+        call.add_assoc_long(
+            c"usec",
+            ((timeout - f64::from(sec)) * 1_000_000.0).c_cast::<i64>(),
+        );
         return;
     }
     #[cfg(target_os = "linux")]
@@ -585,8 +573,7 @@ fn get_option(call: &Call) {
         }
         call.set_array();
         for (key, value) in swoole_rs_server::tcp_fields(&info) {
-            #[expect(clippy::cast_possible_wrap, reason = "upstream's (zend_long) cast")]
-            call.add_assoc_long(key, value as i64);
+            call.add_assoc_long(key, value.c_cast::<i64>());
         }
         return;
     }
@@ -648,11 +635,7 @@ fn set_option(call: &Call) {
         return call.set_bool(false);
     };
     let Some(socket) = open(call) else { return };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream passes them as int"
-    )]
-    let (level_int, name_int) = (level as c_int, name as c_int);
+    let (level_int, name_int) = (level.c_cast::<c_int>(), name.c_cast::<c_int>());
     let mut plain = false;
     if level == i64::from(libc::IPPROTO_IP) || level == i64::from(libc::IPPROTO_IPV6) {
         let result = if level == i64::from(libc::IPPROTO_IPV6) {
@@ -703,10 +686,8 @@ fn set_option(call: &Call) {
             Err(false) => return call.set_bool(false),
         };
         // `struct timeval`'s fields, as upstream assigns them.
-        #[expect(clippy::cast_precision_loss, reason = "(double) tv_sec, as upstream")]
-        let seconds = sec as f64;
-        #[expect(clippy::cast_precision_loss, reason = "(double) tv_usec, as upstream")]
-        let timeout = seconds + (tv_usec(usec) as f64) / 1000.0 / 1000.0;
+        let seconds = sec.c_cast::<f64>();
+        let timeout = seconds + tv_usec(usec).c_cast::<f64>() / 1000.0 / 1000.0;
         let kind = if read {
             TIMEOUT_READ
         } else {
@@ -719,11 +700,7 @@ fn set_option(call: &Call) {
         &move |fd| setsockopt_bytes(fd, level_int, name_int, device)
     } else {
         let Ok(number) = long(value) else { return };
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "an int option, as upstream's"
-        )]
-        let int = number as c_int;
+        let int = number.c_cast::<c_int>();
         &move |fd| setsockopt(fd, level_int, name_int, &int)
     };
     let fd = fd(socket);
@@ -743,11 +720,7 @@ fn tv_usec(value: i64) -> i64 {
 /// `timeval.tv_usec = value`: `suseconds_t` is 32 bits here.
 #[cfg(not(target_os = "linux"))]
 fn tv_usec(value: i64) -> i64 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the narrowing upstream's assignment makes"
-    )]
-    i64::from(value as i32)
+    i64::from(value.c_cast::<i32>())
 }
 
 #[cfg(target_os = "linux")]
@@ -782,11 +755,11 @@ fn socketpair(call: &Call) {
     let Ok((domain, kind, protocol)) = parsed else {
         return call.set_bool(false);
     };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "(int) casts, as upstream's"
-    )]
-    let (domain, kind, protocol) = (domain as c_int, kind as c_int, protocol as c_int);
+    let (domain, kind, protocol) = (
+        domain.c_cast::<c_int>(),
+        kind.c_cast::<c_int>(),
+        protocol.c_cast::<c_int>(),
+    );
     let Some(pair) = swoole_rs_corebase::sys::socketpair(domain, kind, protocol) else {
         warn_sys("failed to create socket", errno());
         return call.set_bool(false);

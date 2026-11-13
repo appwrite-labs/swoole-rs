@@ -4,6 +4,7 @@
 use crate::SocketAddress;
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
+use swoole_rs_corebase::CCast;
 
 fn errno() -> c_int {
     Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -171,14 +172,10 @@ pub fn sendfile_range(
     if status.st_size == 0 {
         return 2;
     }
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "upstream's static_cast<off_t>(length) wraps the same way"
-    )]
     let stop = if length == 0 {
         status.st_size
     } else {
-        begin.wrapping_add(length as libc::off_t)
+        begin.wrapping_add(length.c_cast::<libc::off_t>())
     };
     *end = stop;
     if begin < 0 || stop > status.st_size {
@@ -275,11 +272,7 @@ mod tests {
         let mut address: SocketAddress = unsafe { std::mem::zeroed() };
         address.addr.inet_v4.sin_family = libc::AF_INET.try_into().unwrap_or_default();
         address.addr.inet_v4.sin_addr.s_addr = u32::from(std::net::Ipv4Addr::LOCALHOST).to_be();
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "sizeof(sockaddr_in) fits socklen_t"
-        )]
-        let length = size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let length = (size_of::<libc::sockaddr_in>()).c_cast::<libc::socklen_t>();
         address.len = length;
         let raw = (&raw mut address.addr).cast::<libc::sockaddr>();
         // SAFETY: `address` is a local sockaddr_in of `length` bytes.

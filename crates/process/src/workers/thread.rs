@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use swoole_rs_corebase::CCast;
 
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
@@ -40,14 +41,11 @@ use super::ops::{
 };
 use super::{Host, SW_ERR, SW_OK};
 use crate::methods::{swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type};
-use crate::worker_record::WorkerRecord;
+use crate::worker_record::{WorkerRecord, WorkerType};
 
-/// `swoole::WorkerType`.
-const MANAGER: u64 = 3;
-const TASK_WORKER: u64 = 4;
-const USER_WORKER: u64 = 5;
-/// `SW_WORKER_IDLE`.
-const WORKER_IDLE: u8 = 2;
+const MANAGER: u64 = WorkerType::Manager as u64;
+const TASK_WORKER: u64 = WorkerType::Task as u64;
+const USER_WORKER: u64 = WorkerType::User as u64;
 
 /// `OP_SPAWN_THREAD`'s, `RUN_THREAD_BODY`'s and `RUN_THREAD_MAIN`'s argument:
 /// the thread's slot and the kind of worker it runs.
@@ -369,15 +367,11 @@ fn factory_start<H: Host>(h: &mut H) -> bool {
 /// A thread's body (`ThreadFactory::spawn_*`): enter the thread as its worker
 /// (or the manager), run its main inside the server's `worker_thread_start`,
 /// then leave, telling the manager thread when a worker exited.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the kind, slot and native thread id narrow as the C++ setters' parameters do"
-)]
 fn body<H: Host>(h: &mut H, arg: u64) {
     let (id, kind) = (arg & u64::from(u32::MAX), arg >> 32);
-    let pid = h.op(OP_THREAD_ENTER, id) as i32;
-    swoole_set_worker_type(kind as i32);
-    swoole_set_worker_id(id as u32);
+    let pid = h.op(OP_THREAD_ENTER, id).c_cast::<i32>();
+    swoole_set_worker_type(kind.c_cast::<i32>());
+    swoole_set_worker_id(id.c_cast::<u32>());
     swoole_set_worker_pid(pid);
     let message_bus = kind == TASK_WORKER || kind == USER_WORKER;
     if message_bus {
@@ -390,10 +384,10 @@ fn body<H: Host>(h: &mut H, arg: u64) {
         worker = usize::try_from(h.op(OP_GET_WORKER, id)).unwrap_or(0) as *mut WorkerRecord;
         // SAFETY: native lends the server's live record for this slot, which this thread runs.
         let worker = unsafe { Worker::new(worker) };
-        worker.set_kind(kind as u8);
+        worker.set_kind(kind.c_cast::<u8>());
         worker.set_pid(pid);
         if kind == TASK_WORKER {
-            worker.set_status(WORKER_IDLE);
+            worker.set_status(crate::worker_record::WorkerStatus::Idle);
         }
         crate::worker_globals::set_current_worker(worker.raw());
     }
@@ -538,7 +532,7 @@ mod tests {
         let fields = unsafe { (Worker::new(worker).kind(), Worker::new(worker).pid()) };
         assert_eq!(fields, (4, 4321));
         // SAFETY (test): as above.
-        assert_eq!(unsafe { Worker::new(worker).status() }, WORKER_IDLE);
+        assert!(unsafe { Worker::new(worker).is_idle() });
         assert_eq!(
             h.effects(&[OP_THREAD_MANAGER]),
             vec![
