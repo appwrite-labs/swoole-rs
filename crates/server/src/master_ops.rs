@@ -27,20 +27,18 @@ use crate::hybrid::hybrid;
 use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
-    LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG,
-    LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LC_ONLY_ONE, LOG_LISTEN_PID,
-    LOG_MAX_CONNECTION_MINIMUM, LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_REACTOR_NUM,
-    LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT,
-    LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_STAT, LOG_TASK_POOL,
+    LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_FDS_START, LOG_HOST_TOO_LONG,
+    LOG_INVALID_PORT, LOG_LC_ONLY_ONE, LOG_LISTEN_PID, LOG_MAX_CONNECTION_MINIMUM,
+    LOG_PORT_CREATED, LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW,
+    LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_TASK_POOL,
     LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED,
     OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_DGRAM_PORT, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE,
-    OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PORT_IDLE_TIME, OP_PORT_NUMBER,
-    OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE,
-    OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW,
-    OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE,
-    OP_SC_YIELD_ERROR, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME,
-    OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY,
-    OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT,
+    OP_HOST_SIZE, OP_IS_CREATED, OP_NEW_PORT_TYPE, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH,
+    OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
+    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
+    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD,
+    OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -82,10 +80,9 @@ const SW_FD_STREAM_SERVER: c_int = 1;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 /// `SW_SERVER_EVENT_CLOSE`.
 const EVENT_CLOSE: u8 = 4;
-/// `sizeof(Session)`, `sizeof(sw_atomic_t)` and `sizeof(SendfileTask)`.
+/// `sizeof(Session)` and `sizeof(sw_atomic_t)`.
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
-const SENDFILE_TASK_SIZE: usize = 16;
 // The native sizes of the arrays allocated here.
 const _: () = assert!(
     SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
@@ -93,8 +90,6 @@ const _: () = assert!(
 );
 /// `SW_BUFFER_MIN_SIZE`.
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `SW_HOST_MAXSIZE`: `sizeof(sockaddr_un::sun_path)`.
 fn host_maxsize() -> usize {
@@ -194,32 +189,10 @@ impl<'a> Objects<'a> {
     fn host(&self) -> &CStr {
         self.ctx.host.unwrap_or_default()
     }
-    /// The bytes the ops reading them are lent: a name or a path up to its first
-    /// NUL, or `sendwait`'s data.
-    fn data_bytes(&self) -> &'a [u8] {
-        self.ctx.bytes
-    }
     /// The live socket native code passes as `arg`.
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
         // SAFETY: the ops reading it pass a live socket.
         unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
-    }
-    /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
-    fn filename(&self) -> std::borrow::Cow<'_, str> {
-        let name = self
-            .ctx
-            .buffer
-            .as_ref()
-            .map(|buffer| &buffer.0[SENDFILE_TASK_SIZE..]);
-        name.and_then(|name| CStr::from_bytes_until_nul(name).ok())
-            .map_or("".into(), CStr::to_string_lossy)
-    }
-    /// `Server::sendfile`'s task buffer, which the ops using it run with.
-    fn buffer(&mut self) -> &mut [u8; IPC_BUFFER_SIZE] {
-        match self.ctx.buffer.as_deref_mut() {
-            Some(buffer) => &mut buffer.0,
-            None => swoole_rs_corebase::fatal("a master op without an IPC buffer"),
-        }
     }
 }
 
@@ -627,72 +600,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_INVALID_SESSION => {
-            let m = format_args!("invalid fd[{}]", o.ctx.session_id);
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SESSION_INVALID_ID,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
-        LOG_SEND_IN_MASTER => {
-            let m = format_args!("can't send data to the connections in master process");
-            error(
-                SW_LOG_ERROR,
-                E::SW_ERROR_SERVER_SEND_IN_MASTER,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
-        LOG_SENDFILE_NAME => {
-            // `%.8s`: at most 8 bytes of the name.
-            let name = o.data_bytes();
-            let head = String::from_utf8_lossy(name.get(..8).unwrap_or(name));
-            let (length, max) = (o.ctx.length, IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1);
-            let m = format_args!(
-                "sendfile name[{head}...] length {length} is exceed the max name len {max}"
-            );
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_NAME_TOO_LONG,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
-        LOG_STAT => {
-            let m = format_args!("stat({}) failed", o.filename());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SYSTEM_CALL_FAIL,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
-        LOG_NOT_REGULAR => {
-            let m = format_args!("the path[{}] given is not a regular file", o.filename());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
-        LOG_FILE_EMPTY => {
-            let m = format_args!("file[offset={}] is empty", o.ctx.offset);
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SYSTEM_CALL_FAIL,
-                c"Server::sendfile",
-                m,
-            );
-            0
-        }
         LOG_PORT_CREATED => {
             let m = format_args!("must add port before server is created");
             error(
@@ -867,9 +774,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_NUMBER => sign(o.ctx.number),
         OP_HOST_SIZE => o.host().count_bytes() as u64 + 1,
         OP_HOST_MAXSIZE => host_maxsize() as u64,
-        OP_SENDFILE_NAME_LEN => u64::from(o.ctx.length),
-        OP_SENDFILE_NAME_MAX => (IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1) as u64,
-        OP_SENDFILE_OFFSET => sign(o.ctx.offset),
         OP_SC_ADVANCE => {
             #[expect(clippy::cast_possible_truncation, reason = "a length within the data")]
             let step = arg as u32;
@@ -919,26 +823,9 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // The server's state and the worker records.
         OP_STATE => core::ptr::from_ref(state).expose_provenance() as u64,
         OP_IS_CREATED => u64::from(!o.config().factory_.is_null()),
-        OP_IS_MASTER => {
-            u64::from(swoole_rs_process::methods::worker_type() == Some(WorkerType::Master))
-        }
         OP_SC_YIELD_ERROR => {
             log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
             0
-        }
-        OP_SENDFILE_NAME => {
-            // `swoole_strlcpy(req->filename, data, SW_IPC_BUFFER_SIZE - sizeof(*req))`.
-            let source = o.data_bytes();
-            let (_, field) = o.buffer().split_at_mut(SENDFILE_TASK_SIZE);
-            // The name, cut to leave room for its NUL, then the NUL. One copy: a loop
-            // over the bytes costs the static handler about 800 instructions a file.
-            let (name_bytes, _) = source.split_at(source.len().min(field.len() - 1));
-            let (target, rest) = field.split_at_mut(name_bytes.len());
-            target.copy_from_slice(name_bytes);
-            if let Some(nul) = rest.first_mut() {
-                *nul = 0;
-            }
-            field.as_ptr().expose_provenance() as u64
         }
         // Lifecycle effects over process-wide state Rust owns: hooks, the
         // worker globals, the master reactor and the server's shared allocations.
@@ -1412,12 +1299,10 @@ struct SendfileTask {
 fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FORWARD, OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE,
-        OP_SENDFILE_FINISH,
     };
     use swoole_rs_corebase::DataHead;
     use swoole_rs_tls::upstream::socket_sendfile_async as sendfile_async;
-    /// `SW_SERVER_EVENT_SEND_FILE` and `_BUFFER_FULL`.
-    const EVENT_SEND_FILE: u8 = 3;
+    /// `SW_SERVER_EVENT_BUFFER_FULL`.
     const EVENT_BUFFER_FULL: c_int = 13;
     // The `SendData` native code lends at arg.
     let lent = || {
@@ -1454,26 +1339,6 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let socket = o.conn().socket();
             sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
         }
-        OP_SENDFILE_FINISH => {
-            // `SendfileTask::offset`, the head of `Server::sendfile`'s buffer.
-            let offset: libc::off_t = o.ctx.offset;
-            let buffer = o.buffer();
-            if let Some(head) = buffer.first_chunk_mut() {
-                *head = offset.to_ne_bytes();
-            }
-            let data = buffer.as_ptr().cast();
-            let head = u32::try_from(size_of::<SendfileTask>()).unwrap_or(0);
-            let mut send = SendData {
-                info: DataHead {
-                    fd: o.ctx.session_id,
-                    kind: EVENT_SEND_FILE,
-                    len: head + o.ctx.length + 1,
-                    ..DataHead::default()
-                },
-                data,
-            };
-            u64::from(factory_finish(o, &mut send))
-        }
         op => return factory_ops(o, op, arg),
     })
 }
@@ -1507,12 +1372,6 @@ fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
         bus.rust()
             .send(socket.as_ptr(), &mut info, send.data.cast())
     })
-}
-
-/// `serv->factory_->finish(send)`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn factory_finish(o: &Objects<'_>, send: &mut SendData) -> bool {
-    crate::factory::finish(o.state, (&raw mut *send).cast())
 }
 
 /// The ops over the server's factory and task pool: the process factory's and
@@ -1830,23 +1689,6 @@ mod tests {
         }
         assert_eq!(ctx.length, 5);
         assert_eq!(ctx.data, data[3..].as_ptr().cast());
-    }
-
-    #[test]
-    fn sendfile_name_is_copied_after_the_task_head() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // A whole task buffer: the op may write the name anywhere after its head.
-        let mut buffer = crate::server_methods::SendfileBuffer([0xff; IPC_BUFFER_SIZE]);
-        let at = buffer.0.as_ptr().wrapping_add(16).addr() as u64;
-        ctx.buffer = Some(&mut buffer);
-        ctx.bytes = b"/tmp/a";
-        // SAFETY: the context's buffer and name are live above.
-        let name = unsafe { answer(&raw mut ctx, None, &*state, OP_SENDFILE_NAME, 0) };
-        // SAFETY: created above and not used again.
-        unsafe { crate::state::free_state(state) };
-        assert_eq!(name, Some(at));
-        assert_eq!(&buffer.0[16..23], b"/tmp/a\0");
     }
 
     #[test]

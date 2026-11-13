@@ -65,6 +65,11 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// `factory_->finish(send)`.
+    fn factory_finish(&self, _serv: Server<'_>, _send: &mut crate::base_factory::SendData) -> bool {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -117,6 +122,9 @@ pub(crate) mod tests {
         CommandSend(i32, u32, i32, i64, usize),
         /// The head's session, reactor and kind.
         ToReactorThread(c_long, i16, u8),
+        /// The send's session, kind and length, and its task's offset, length and the
+        /// first 8 bytes of its name.
+        Finish(c_long, u8, u32, i64, usize, [u8; 8]),
     }
 
     thread_local! {
@@ -183,6 +191,21 @@ pub(crate) mod tests {
         fn to_reactor_thread(&self, _: Server<'_>, head: &DataHead) -> isize {
             hear(Call::ToReactorThread(head.fd, head.reactor_id, head.kind));
             size_of::<DataHead>().cast_signed()
+        }
+
+        fn factory_finish(&self, _: Server<'_>, send: &mut crate::base_factory::SendData) -> bool {
+            let info = &send.info;
+            // SAFETY: a sendfile task: its 16-byte head, then its name and NUL.
+            let task =
+                unsafe { core::slice::from_raw_parts(send.data.cast::<u8>(), info.len as usize) };
+            let word = |at: usize| u64::from_ne_bytes(task[at..at + 8].try_into().unwrap());
+            let mut name = [0; 8];
+            let given = &task[16..task.len().min(24)];
+            name[..given.len()].copy_from_slice(given);
+            let (offset, length) = (word(0).cast_signed(), usize::try_from(word(8)).unwrap());
+            hear(Call::Finish(
+                info.fd, info.kind, info.len, offset, length, name,
+            ))
         }
 
         fn command_send(&self, _: Server<'_>, c: &CommandSend<'_>) -> bool {
