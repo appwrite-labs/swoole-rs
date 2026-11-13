@@ -930,16 +930,21 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     }
 }
 
-/// `SWR_PORTS_HOOK_*` of a port callback just set: install the Server's slot
-/// unless one is set.
-pub(crate) fn port_hook(server: view::Server<'_>, hook: u32) {
-    let callback = match hook {
-        1 => Callback::Connect(on_connect),
-        2 => Callback::Packet(on_packet_slot),
-        3 => Callback::Close(on_close),
-        4 => Callback::BufferFull(on_buffer_full),
-        5 => Callback::BufferEmpty(on_buffer_empty),
-        _ => return,
+/// A port callback just set: install the Server's slot it needs unless one is set.
+pub(crate) fn port_hook(server: view::Server<'_>, port: PortCallback) {
+    let callback = match port {
+        PortCallback::Connect => Callback::Connect(on_connect),
+        PortCallback::Packet => Callback::Packet(on_packet_slot),
+        PortCallback::Close => Callback::Close(on_close),
+        PortCallback::BufferFull => Callback::BufferFull(on_buffer_full),
+        PortCallback::BufferEmpty => Callback::BufferEmpty(on_buffer_empty),
+        PortCallback::Receive
+        | PortCallback::Request
+        | PortCallback::Handshake
+        | PortCallback::BeforeHandshakeResponse
+        | PortCallback::Open
+        | PortCallback::Message
+        | PortCallback::Disconnect => return,
     };
     if !server.has_callback(callback.slot()) {
         server.set_callback(callback);

@@ -12,7 +12,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
-use swoole_rs_ports::{swr_v1_ports_callback_hook, swr_v1_ports_class_property};
+use swoole_rs_ports::swr_v1_ports_class_property;
 use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, message,
@@ -303,8 +303,7 @@ fn on(call: &Call) {
         Some(callable)
     };
     drop(kept);
-    let event = i32::try_from(index.index()).unwrap_or(-1);
-    crate::dispatch::port_hook(serv, swr_v1_ports_callback_hook(event));
+    crate::dispatch::port_hook(serv, index);
     call.set_bool(true);
 }
 

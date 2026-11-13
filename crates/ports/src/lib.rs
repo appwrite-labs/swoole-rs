@@ -54,19 +54,6 @@ fn protocol(flags: u32, length_type: u8) -> u32 {
     }
 }
 
-/// Select a native Server callback binding; callback addresses and custody stay native.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_callback_hook(index: i32) -> u32 {
-    match index {
-        0 => 1,  // Connect
-        3 => 2,  // Packet
-        2 => 3,  // Close
-        10 => 4, // BufferFull
-        11 => 5, // BufferEmpty
-        _ => 0,
-    }
-}
-
 fn protocol_name(flags: u32) -> &'static CStr {
     if flags & 1 != 0 {
         return c"dgram";

@@ -33,8 +33,8 @@ One immutable 12-event catalog.
 - `callback_property(name)` (getter) uses Zend ASCII folding in Rust and returns the
   static property name, or `None`. Reusing the locale-sensitive mode here would change
   Turkish-locale behavior.
-- `swr_v1_ports_callback_hook(index)` returns a binding ID: 0 none,
-  1 Connect, 2 Packet, 3 Close, 4 BufferFull, 5 BufferEmpty.
+- `on()` installs the Server slot a port's Connect, Packet, Close, BufferFull or
+  BufferEmpty callback needs (crates/phpserver's `dispatch::port_hook`).
 
 ## Sockets: `ListenPort::create_socket`, `listen` and `close_socket`
 
