@@ -38,14 +38,11 @@
 #include <inttypes.h>
 
 #include <sys/uio.h>
-#include <sys/utsname.h>
 
 #include <string>
 #include <memory>
-#include <list>
 #include <functional>
 #include <type_traits>
-#include <mutex>
 
 typedef unsigned long ulong_t;
 
@@ -71,7 +68,6 @@ typedef unsigned long ulong_t;
 #define __builtin_expect(x, expected_value) (x)
 #endif
 
-#define sw_likely(x) __builtin_expect(!!(x), 1)
 #define sw_unlikely(x) __builtin_expect(!!(x), 0)
 
 /*----------------------------------------------------------------------------*/
@@ -82,33 +78,13 @@ typedef unsigned long ulong_t;
 #include "swoole_atomic.h"
 #include "swoole_rs_error.h"
 
-// A log emitted on behalf of an upstream function, for example from a Rust dispatch callback,
-// names that function as upstream's __SW_FUNC__ did:
-// swoole_log_as("Server::timer_callback", swoole_warning("...")).
-static constexpr const char *sw_log_origin = nullptr;
-#undef __SW_FUNC__
-#define __SW_FUNC__ (sw_log_origin ? sw_log_origin : swoole::Logger::get_pretty_name(__PRETTY_FUNCTION__).c_str())
-#define swoole_log_as(origin, ...)                                                                                     \
-    do {                                                                                                               \
-        const char *const sw_log_origin = origin;                                                                      \
-        (void) sw_log_origin;                                                                                          \
-        __VA_ARGS__;                                                                                                   \
-    } while (0)
-
-#define SW_MIN(A, B) ((A) < (B) ? (A) : (B))
 #ifndef MAX
 #define MAX(A, B) ((A) > (B) ? (A) : (B))
 #endif
 #ifndef MIN
-#define MIN(A, B) SW_MIN(A, B)
+#define MIN(A, B) ((A) < (B) ? (A) : (B))
 #endif
 #define SW_LOOP_N(n) for (std::remove_reference_t<decltype(n)> i = 0; i < n; i++)
-
-#ifdef SW_DEBUG
-#define SW_ASSERT(e) assert(e)
-#else
-#define SW_ASSERT(e)
-#endif
 
 #ifdef SW_THREAD
 #define SW_THREAD_LOCAL thread_local
@@ -117,10 +93,7 @@ static constexpr const char *sw_log_origin = nullptr;
 #endif
 
 /*-----------------------------------Memory------------------------------------*/
-void *sw_malloc(size_t size);
 void sw_free(void *ptr);
-
-#define SW_MEM_ALIGNED_SIZE_EX(size, alignment) (((size) + ((alignment) -1LL)) & ~((alignment) -1LL))
 
 /*-------------------------------Declare Struct--------------------------------*/
 namespace swoole {
@@ -132,7 +105,6 @@ struct Event;
 class Pipe;
 class UnixSocket;
 class MessageBus;
-class Server;
 namespace network {
 struct Socket;
 struct Address;
@@ -143,7 +115,6 @@ struct EventData;
 struct DataHead;
 typedef int (*ReactorHandler)(Reactor *reactor, Event *event);
 typedef std::function<void(void *)> Callback;
-typedef void (*TimerCallback)(Timer *, TimerNode *);
 }  // namespace swoole
 
 /*----------------------------------String-------------------------------------*/
@@ -155,10 +126,6 @@ SW_EXTERN_C_BEGIN
 size_t sw_snprintf(char *buf, size_t size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 size_t sw_vsnprintf(char *buf, size_t size, const char *format, va_list args);
 SW_EXTERN_C_END
-
-static inline void sw_memset_zero(void *s, size_t n) {
-    memset(s, 0, n);
-}
 
 //------------------------------Base--------------------------------
 #ifndef uchar
@@ -184,23 +151,15 @@ int swoole_rand(int min, int max);
 
 int swoole_version_compare(const char *version1, const char *version2);
 
-void swoole_init();
 void swoole_exit(int _status);
 pid_t swoole_fork(int flags);
-pid_t swoole_waitpid(pid_t _pid, int *_stat_loc, int _options);
-void swoole_thread_init(bool main_thread = false);
-void swoole_thread_clean(bool main_thread = false);
 
 namespace swoole {
 typedef long SessionId;
 typedef long TaskId;
-typedef uint8_t ReactorId;
 typedef uint32_t WorkerId;
-typedef swEventType EventType;
 typedef swSocketType SocketType;
-typedef swTimeoutType TimeoutType;
 typedef swFdType FdType;
-typedef swReturnCode ReturnCode;
 
 struct Event {
     int fd;
@@ -311,14 +270,10 @@ struct Global {
 static_assert(offsetof(Global, dns_cache_refresh_time) == 8 && offsetof(Global, std_allocator) == 16 &&
                   sizeof(Global) == 56,
               "crates/corebase/src/config_state.rs's Global");
-
-double microtime();
 }  // namespace swoole
 
 extern swoole::Global SwooleG;                      // Local Global Variable
 #define SwooleTG (*swr_v1_core_thread_global())     // Thread Global Variable, Rust's
-
-#define SW_CPU_NUM (swr_v1_core_cpu_num())
 
 static inline void swoole_set_last_error(int error) {
     swr_v1_core_set_last_error(error);
@@ -335,34 +290,10 @@ static inline void swoole_clear_last_error() {
 void swoole_clear_last_error_msg();
 const char *swoole_get_last_error_msg();
 
-static inline int swoole_get_thread_id() {
-    return SwooleTG.id;
-}
-
-static inline int swoole_get_thread_type() {
-    return SwooleTG.type;
-}
-
-static inline void swoole_set_thread_id(uint16_t id) {
-    SwooleTG.id = id;
-}
-
-static inline void swoole_set_thread_type(uint8_t type) {
-    SwooleTG.type = type;
-}
-
-static inline uint32_t swoole_pagesize() {
-    return SwooleG.pagesize;
-}
-
 static sw_inline swoole::String *sw_tg_buffer() {
     return SwooleTG.buffer_stack;
 }
 
 static sw_inline swoole::Reactor *sw_reactor() {
     return SwooleTG.reactor;
-}
-
-static sw_inline swoole::Timer *sw_timer() {
-    return SwooleTG.timer;
 }

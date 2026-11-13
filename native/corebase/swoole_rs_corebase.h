@@ -9,17 +9,17 @@ extern "C" {
 /* Success matches the representable decimal portion of std::stoi; native code
  * retains its exception path and publishes output only after success. */
 uint8_t swr_v1_corebase_parse_stoi(const char *input, int32_t *output);
-/* Rust also defines swoole_fork, swoole_clean, swoole_thread_init/_clean and
- * swoole_is_main_thread. */
+/* Rust also defines swoole_init, swoole_fork, swoole_waitpid, swoole_clean,
+ * swoole_thread_init/_clean and swoole_is_main_thread. */
 /* swoole_init's body (crates/corebase/src/lifecycle.rs), which crates/ffi's
  * swoole_init calls once it has registered the leaves. */
 void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
- * native/framing/swoole_protocol.h stay their declarations: sw_malloc/sw_free/
- * sw_calloc (libc's allocator), swoole_common_divisor/_multiple,
- * swoole_version_compare, swoole_dec2hex, swoole_type_size, swoole_itoa, swoole_rand
- * (both overloads), swoole_random_int, swoole::microtime and
- * swoole::DataHead::dump. */
+ * native/framing/swoole_protocol.h stay their declarations: sw_free/sw_calloc
+ * (libc's allocator), swoole_common_divisor/_multiple, swoole_version_compare,
+ * swoole_dec2hex, swoole_type_size, swoole_itoa, swoole_rand (both overloads),
+ * swoole_random_int and swoole::DataHead::dump. sw_malloc and swoole::microtime
+ * are Rust's too; no C++ calls them. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
  * swoole_exit, swoole_set_log_level, swoole_set/get_stdout_stream and sw_printf
@@ -27,7 +27,6 @@ void swr_v1_core_swoole_init(void);
 /* Process-wide core state: upstream's SwooleG scalars that C++ reads. swoole::Global's
  * members of these names are swoole::RustField views over the accessor pairs below.
  * Pointers (the fatal-error hook) are native objects Rust only holds. */
-uint16_t swr_v1_core_cpu_num(void);
 bool swr_v1_core_running(void);
 void swr_v1_core_set_running(bool value);
 bool swr_v1_core_enable_coroutine(void);
