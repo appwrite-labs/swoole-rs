@@ -317,9 +317,7 @@ pub unsafe fn listen<T>(
     backlog: c_int,
     make: MakeServerSocket<T>,
 ) -> c_int {
-    /// `SW_IPC_SOCKET`.
-    const IPC_SOCKET: u8 = 3;
-    if pool.ipc_mode != IPC_SOCKET {
+    if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
         // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
             4,
@@ -687,7 +685,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
-        pool.ipc_mode = 1;
+        pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
         // SAFETY: the pool is live and the host a NUL-terminated string.
         let refused = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
         assert_eq!(
@@ -704,7 +702,7 @@ pub(crate) mod tests {
             )],
             "the upstream warning"
         );
-        pool.ipc_mode = 3;
+        pool.ipc_mode = crate::process_pool::IpcMode::Socket;
         // SAFETY: as above.
         let failed = unsafe { listen(&pool, 1, c"127.0.0.1", 9502, 8, make) };
         assert_eq!(failed, -1, "no socket, no listener");

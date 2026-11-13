@@ -40,7 +40,7 @@ pub struct PoolRecord {
     pub started: bool,
     pub schedule_by_sysvmsg: bool,
     pub is_async: bool,
-    pub ipc_mode: u8,
+    pub ipc_mode: IpcMode,
     pub protocol_type: c_int,
     pub master_pid: c_int,
     pub max_wait_time: u32,
@@ -105,7 +105,7 @@ impl PoolRecord {
             started: false,
             schedule_by_sysvmsg: false,
             is_async: false,
-            ipc_mode: 0,
+            ipc_mode: IpcMode::None,
             protocol_type: 0,
             master_pid: 0,
             max_wait_time: 0,
@@ -627,11 +627,34 @@ pub const RAISE: i64 = i64::MIN;
 const SW_OK: i64 = 0;
 const SW_ERR: i64 = -1;
 
-/// `swIPCMode`.
-const IPC_NONE: u8 = 0;
-const IPC_UNIXSOCK: u8 = 1;
-const IPC_MSGQUEUE: u8 = 2;
-const IPC_SOCKET: u8 = 3;
+/// `swIPCMode`: how a pool's master reaches its workers.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpcMode {
+    None = 0,
+    UnixSock = 1,
+    MsgQueue = 2,
+    Socket = 3,
+}
+
+impl IpcMode {
+    /// The mode `code` names; `create` takes any other as `None`.
+    #[must_use]
+    pub const fn from_code(code: i64) -> Self {
+        match code {
+            1 => Self::UnixSock,
+            2 => Self::MsgQueue,
+            3 => Self::Socket,
+            _ => Self::None,
+        }
+    }
+
+    /// The C++ enum's value.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+}
 
 /// `swoole::ProtocolType`; `MAIN_ASYNC` is `OP_MAIN_LOOP`'s `run_async`.
 const PROTOCOL_TASK: c_int = 1;
@@ -1089,7 +1112,7 @@ getters!(
     pub read_message: bool,
     pub schedule_by_sysvmsg: bool,
     pub is_async: bool,
-    pub ipc_mode: u8,
+    pub ipc_mode: IpcMode,
     pub master_pid: c_int,
     pub max_wait_time: u32,
     pub reload_count: u64,
@@ -1137,7 +1160,7 @@ setters!(
     pub reload_init / set_reload_init: bool,
     pub read_message / set_read_message: bool,
     pub started / set_started: bool,
-    pub ipc_mode / set_ipc_mode: u8,
+    pub ipc_mode / set_ipc_mode: IpcMode,
     pub protocol_type / set_protocol_type: c_int,
     pub master_pid / set_master_pid: c_int,
     pub max_wait_time / set_max_wait_time: u32,
@@ -1231,8 +1254,9 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create`.
-    fn create(&mut self, worker_num: u32, key: c_int, mut mode: u8) -> i64 {
-        if mode == IPC_MSGQUEUE && self.op(OP_HAVE_MSGQUEUE, 0) == 0 {
+    fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> i64 {
+        let mode = IpcMode::from_code(mode.into());
+        if mode == IpcMode::MsgQueue && self.op(OP_HAVE_MSGQUEUE, 0) == 0 {
             self.op(LOG_NO_SYSVMSG, 0);
             return SW_ERR;
         }
@@ -1248,7 +1272,7 @@ impl<H: PoolHost> Pool<'_, H> {
             return SW_ERR;
         }
         match mode {
-            IPC_MSGQUEUE => {
+            IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
                 let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
@@ -1256,7 +1280,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 };
                 self.set_queue(Box::into_raw(queue).cast());
             }
-            IPC_UNIXSOCK => {
+            IpcMode::UnixSock => {
                 let pipes = pointer(self.op(OP_NEW_PIPES, 0));
                 self.set_pipes(pipes);
                 for index in 0..worker_num {
@@ -1267,11 +1291,11 @@ impl<H: PoolHost> Pool<'_, H> {
                     }
                 }
             }
-            IPC_SOCKET => self.set_use_socket(true),
-            _ => mode = IPC_NONE,
+            IpcMode::Socket => self.set_use_socket(true),
+            IpcMode::None => {}
         }
         self.set_registry(Box::into_raw(Box::<WorkerRegistry>::default()));
-        self.set_ipc(pool_ipc_new(mode == IPC_SOCKET));
+        self.set_ipc(pool_ipc_new(mode == IpcMode::Socket));
         self.set_ipc_mode(mode);
         self.set_protocol(PROTOCOL_TASK);
         self.set_max_packet_size(packet_limit(self.use_msgqueue(), SW_INPUT_BUFFER_SIZE));
@@ -1294,7 +1318,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::create_message_bus`.
     fn create_message_bus(&mut self) -> i64 {
-        if self.ipc_mode() != IPC_UNIXSOCK {
+        if self.ipc_mode() != IpcMode::UnixSock {
             self.op(LOG_NEEDS_UNIXSOCK, 0);
             return SW_ERR;
         }
@@ -1352,7 +1376,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::start_check`.
     fn start_check(&mut self) -> i64 {
-        if self.ipc_mode() == IPC_SOCKET
+        if self.ipc_mode() == IpcMode::Socket
             && self
                 .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
                 .unwrap_or(true)
@@ -1543,7 +1567,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::at_worker_enter`.
     fn at_worker_enter(&mut self, worker: *mut WorkerRecord) {
         self.on(worker, OP_DONT_RESTART, 0);
-        if self.ipc_mode() == IPC_UNIXSOCK {
+        if self.ipc_mode() == IpcMode::UnixSock {
             self.op(OP_TIMER_INIT, 0);
         }
     }
@@ -1555,7 +1579,7 @@ impl<H: PoolHost> Pool<'_, H> {
             return self.run_async(worker);
         }
         if protocol == PROTOCOL_MESSAGE {
-            if self.ipc_mode() != IPC_UNIXSOCK {
+            if self.ipc_mode() != IpcMode::UnixSock {
                 self.op(LOG_NEEDS_UNIXSOCK, 1);
                 return SW_ERR;
             }
@@ -1573,11 +1597,11 @@ impl<H: PoolHost> Pool<'_, H> {
             return SW_ERR;
         };
         let ipc_mode = if self.use_msgqueue() {
-            IPC_MSGQUEUE
+            IpcMode::MsgQueue
         } else if self.use_socket() {
-            IPC_SOCKET
+            IpcMode::Socket
         } else {
-            IPC_UNIXSOCK
+            IpcMode::UnixSock
         };
         let pool_loop = PoolLoop {
             ipc: self.ipc(),
@@ -1599,7 +1623,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::run_async`.
     fn run_async(&mut self, worker: *mut WorkerRecord) -> i64 {
-        if self.ipc_mode() == IPC_UNIXSOCK && self.on_message().is_some() {
+        if self.ipc_mode() == IpcMode::UnixSock && self.on_message().is_some() {
             self.on(worker, OP_ADD_PIPE, 0);
             if self.message_bus().is_null() {
                 let size = self.max_packet_size();
@@ -2289,7 +2313,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(OP_HAVE_MSGQUEUE, 0);
         let mut pool = fixture.pool(script);
-        assert_eq!(pool.create(2, 0, IPC_MSGQUEUE), SW_ERR);
+        assert_eq!(pool.create(2, 0, IpcMode::MsgQueue.code()), SW_ERR);
         assert_eq!(ops(&pool), [OP_HAVE_MSGQUEUE, LOG_NO_SYSVMSG]);
     }
 
@@ -2297,7 +2321,7 @@ mod tests {
     fn create_makes_a_pipe_per_worker_and_sets_the_defaults() {
         let mut fixture = Fixture::new(3);
         let mut pool = fixture.pool(Script::default());
-        assert_eq!(pool.create(3, 0, IPC_UNIXSOCK), SW_OK);
+        assert_eq!(pool.create(3, 0, IpcMode::UnixSock.code()), SW_OK);
         assert_eq!(
             ops(&pool),
             [
@@ -2310,7 +2334,7 @@ mod tests {
                 OP_MAIN_LOOP
             ]
         );
-        assert_eq!(pool.ipc_mode(), IPC_UNIXSOCK);
+        assert_eq!(pool.ipc_mode(), IpcMode::UnixSock);
         assert_eq!(record(&mut pool).protocol_type, PROTOCOL_TASK);
         assert_eq!(pool.max_packet_size(), SW_INPUT_BUFFER_SIZE);
         assert_eq!(pool.max_wait_time(), SW_WORKER_MAX_WAIT_TIME);
@@ -2325,7 +2349,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(OP_NEW_PIPE, 0);
         let mut pool = fixture.pool(script);
-        assert_eq!(pool.create(3, 0, IPC_UNIXSOCK), SW_ERR);
+        assert_eq!(pool.create(3, 0, IpcMode::UnixSock.code()), SW_ERR);
         assert_eq!(
             pool.h
                 .log
@@ -2341,7 +2365,7 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
         assert_eq!(pool.create(1, 0, 9), SW_OK);
-        assert_eq!(pool.ipc_mode(), IPC_NONE);
+        assert_eq!(pool.ipc_mode(), IpcMode::None);
         pool.destroy();
     }
 
@@ -2365,7 +2389,7 @@ mod tests {
     fn a_socket_pool_must_listen_first() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
-        pool.set_ipc_mode(IPC_SOCKET);
+        pool.set_ipc_mode(IpcMode::Socket);
         pool.set_ipc(pool_ipc_new(true));
         assert_eq!(pool.start_check(), SW_ERR);
         assert_eq!(ops(&pool), [LOG_MUST_LISTEN]);
@@ -2454,7 +2478,7 @@ mod tests {
     fn the_message_protocol_needs_unix_sockets() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
-        pool.set_ipc_mode(IPC_MSGQUEUE);
+        pool.set_ipc_mode(IpcMode::MsgQueue);
         assert_eq!(pool.main(pool.worker(0), PROTOCOL_MESSAGE), SW_ERR);
         assert_eq!(pool.h.log, [(LOG_NEEDS_UNIXSOCK, 1)]);
     }
