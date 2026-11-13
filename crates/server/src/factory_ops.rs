@@ -5,11 +5,12 @@ use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::Worker;
+use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
-    ExitStatus, kill_all_workers, swoole_get_worker_id, swoole_get_worker_type,
-    swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type, worker_report_error,
+    ExitStatus, kill_all_workers, swoole_get_worker_id, swoole_set_worker_id,
+    swoole_set_worker_pid, swoole_set_worker_type, worker_report_error, worker_type,
 };
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
@@ -59,8 +60,6 @@ use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
-/// `swoole::WorkerType::SW_EVENT_WORKER`.
-const SW_EVENT_WORKER: c_int = 2;
 /// `Server::DISPATCH_FDMOD`, `DISPATCH_IPMOD`, `DISPATCH_CO_CONN_LB`.
 const DISPATCH_FDMOD: u8 = 2;
 const DISPATCH_IPMOD: u8 = 4;
@@ -299,7 +298,7 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
         OP_SEND_LEN => u64::from(send().len),
         OP_STREAM_EVENT => u64::from(is_stream_event(send().kind)),
         OP_CURRENT_WORKER_ID => signed(swoole_get_worker_id().cast_signed()),
-        OP_IS_WORKER => u64::from(swoole_get_worker_type() == SW_EVENT_WORKER),
+        OP_IS_WORKER => u64::from(worker_type() == Some(WorkerType::Event)),
         OP_EXIT_STATUS => u64::from(ctx.status().status() != 0),
         _ => return None,
     })

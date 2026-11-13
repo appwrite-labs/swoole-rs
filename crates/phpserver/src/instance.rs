@@ -186,8 +186,7 @@ pub(crate) fn send(serv: view::Server<'_>, fd: c_long, bytes: &[u8]) -> bool {
     sent
 }
 
-/// `SW_USER_WORKER`, `SW_LOG_NOTICE`, `SW_LOG_ERROR` and `SW_ERROR_SERVER_WORKER_TERMINATED`.
-const USER_WORKER: c_int = 5;
+/// `SW_LOG_NOTICE`, `SW_LOG_ERROR` and `SW_ERROR_SERVER_WORKER_TERMINATED`.
 const LOG_NOTICE: c_int = 3;
 const LOG_ERROR: c_int = 5;
 const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
@@ -204,12 +203,12 @@ pub extern "C" fn php_swoole_server_rshutdown() {
     let serv = share.view();
     event_worker_ops::drain_worker_pipe(serv);
     let kind = crate::server::worker_type();
-    if !serv.is_started() || !worker_is_running() || kind == USER_WORKER {
+    if !serv.is_started() || !worker_is_running() || kind == Some(crate::server::WorkerType::User) {
         return;
     }
     worker_globals::with_current(|worker| {
         worker_record::swr_v1_worker_shutdown(*worker);
-        if kind == crate::server::EVENT_WORKER {
+        if kind == Some(crate::server::WorkerType::Event) {
             event_worker_ops::clean_worker_connections(serv, *worker);
         }
     });

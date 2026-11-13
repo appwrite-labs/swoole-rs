@@ -224,8 +224,8 @@ fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let worker_type = crate::server::worker_type();
     Facts {
-        worker: worker_type == crate::server::EVENT_WORKER,
-        task_worker: worker_type == crate::server::TASK_WORKER,
+        worker: worker_type == Some(crate::server::WorkerType::Event),
+        task_worker: worker_type == Some(crate::server::WorkerType::Task),
         task_object: config.task_enable_coroutine.get() || config.task_object.get(),
         task_coroutine: config.task_enable_coroutine.get(),
         event_object: config.event_object.get(),

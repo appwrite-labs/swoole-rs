@@ -167,7 +167,7 @@ fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
 fn facts(server: view::Server<'_>) -> Facts {
     let config = server.config();
     let gs = server.counters();
-    let task_worker = crate::server::worker_type() == crate::server::TASK_WORKER;
+    let task_worker = crate::server::worker_type() == Some(crate::server::WorkerType::Task);
     Facts {
         master_pid: i64::from(gs.master_pid.load(core::sync::atomic::Ordering::Relaxed)),
         manager_pid: i64::from(gs.manager_pid.load(core::sync::atomic::Ordering::Relaxed)),
@@ -182,8 +182,8 @@ fn facts(server: view::Server<'_>) -> Facts {
 fn coroutine_enabled(server: view::Server<'_>) -> bool {
     let config = server.config();
     match crate::server::worker_type() {
-        crate::server::TASK_WORKER => config.task_enable_coroutine.get(),
-        crate::server::MANAGER => false,
+        Some(crate::server::WorkerType::Task) => config.task_enable_coroutine.get(),
+        Some(crate::server::WorkerType::Manager) => false,
         _ => config.enable_coroutine.get(),
     }
 }
@@ -205,7 +205,7 @@ pub(crate) fn use_zend_strings(server: view::Server<'_>) {
 /// runtime (not in thread mode), and the worker's bus allocates Zend strings.
 fn prepare_worker(server: view::Server<'_>) {
     let config = server.config();
-    if crate::server::worker_type() == crate::server::TASK_WORKER
+    if crate::server::worker_type() == Some(crate::server::WorkerType::Task)
         && !config.task_enable_coroutine.get()
         && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
     {

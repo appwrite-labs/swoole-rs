@@ -16,7 +16,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::process_pool;
 use swoole_rs_process::process_pool::{Hooks, MessageFn, PoolRef, RecvData, WorkerFn};
-use swoole_rs_process::worker_record::{Worker, WorkerRecord};
+use swoole_rs_process::worker_record::{Worker, WorkerRecord, WorkerStatus, WorkerType};
 use swoole_rs_process::{
     methods,
     process_pool::{PROTOCOL_MESSAGE, PROTOCOL_STREAM, PoolRecord, max_package_size, packet_limit},
@@ -40,12 +40,6 @@ const IPC_SOCKET: i64 = 3;
 /// `SW_SOCK_TCP` and `SW_SOCK_UNIX_STREAM`.
 const SOCK_TCP: c_int = 1;
 const SOCK_UNIX_STREAM: c_int = 5;
-/// `SW_MASTER` and `SW_WORKER`.
-const MASTER: c_int = 1;
-const WORKER: c_int = 2;
-/// `SW_WORKER_BUSY` and `SW_WORKER_IDLE`.
-const WORKER_BUSY: u8 = 1;
-const WORKER_IDLE: u8 = 2;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 
@@ -101,10 +95,10 @@ fn pool_free(pool: Pool) {
 fn worker_busy(busy: bool) {
     swoole_rs_process::worker_globals::with_current(|worker| {
         if busy {
-            worker.set_status(WORKER_BUSY);
+            worker.set_status(WorkerStatus::Busy);
         } else {
             worker.add_request_count();
-            worker.set_status(WORKER_IDLE);
+            worker.set_status(WorkerStatus::Idle);
         }
     });
 }
@@ -367,7 +361,7 @@ extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     update_bool(object, c"workerRunning", true);
     update_long(object, c"workerPid", getpid());
     update_long(object, c"workerId", id);
-    methods::swoole_set_worker_type(WORKER);
+    methods::set_worker_type(WorkerType::Event);
     swoole_rs_corebase::swr_v1_core_set_enable_coroutine(this.enable_coroutine.get());
     if let Some(callable) = this.on_worker_start.get() {
         let coroutine = this.enable_coroutine.get();
@@ -454,7 +448,7 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
     if let Some((object, this)) = owner(pool) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
-        methods::swoole_set_worker_type(MASTER);
+        methods::set_worker_type(WorkerType::Master);
         swoole_rs_corebase::swr_v1_core_set_enable_coroutine(false);
         if let Some(callable) = this.on_start.get() {
             dispatch(&callable, object, None, false, "onStart");
