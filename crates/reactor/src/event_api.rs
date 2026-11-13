@@ -109,6 +109,20 @@ pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> c_int {
     change(socket, crate::ChangeOp::Set, events)
 }
 
+/// `Reactor::interest(socket, kind, event)` on the thread's reactor, of a socket that
+/// is never freed while registered: the change's result, 0 when nothing changes, -1
+/// without a reactor.
+#[must_use]
+pub fn event_interest(
+    socket: crate::Socket<'static>,
+    kind: crate::Interest,
+    event: c_int,
+) -> c_int {
+    running().map_or(-1, |reactor| {
+        crate::reactor_upstream::interest(reactor, socket, kind, event)
+    })
+}
+
 /// `int swoole_event_del(Socket *socket)`: -1 without a reactor. Any live socket: a
 /// removal leaves its address nowhere.
 #[must_use]

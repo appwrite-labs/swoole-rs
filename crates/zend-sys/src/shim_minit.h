@@ -25,4 +25,7 @@ void swr_zend_minit_property_string(zend_class_entry *ce, const char *name, cons
 /* zend_add_parameter_attribute(method `lcname` of `ce`, `offset`, SensitiveParameter).
  * False when `ce` has no such internal method or it takes no such parameter. */
 bool swr_zend_minit_sensitive_parameter(zend_class_entry *ce, const char *lcname, uint32_t offset);
+/* cfg_get_string(name): the php.ini entry's string, which the configuration
+ * keeps for the process; null when it is unset or no string (an array entry). */
+const char *swr_zend_minit_ini_string(const char *name);
 #endif

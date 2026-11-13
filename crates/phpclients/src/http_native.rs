@@ -181,12 +181,7 @@ impl Co {
 
     /// The socket gives up its write buffer, as before its first write.
     pub(crate) fn take_write_buffer(self) -> Written {
-        let buffer = self.handle().write_buffer().cast::<CppString>();
-        // SAFETY: null, as before the socket's first write; `written` owns the
-        // String the socket no longer reaches.
-        unsafe { self.handle().set_write_buffer(std::ptr::null_mut()) };
-        // SAFETY: the socket's `new String` (a Box), which nothing else reaches now.
-        Written((!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) }))
+        Written(self.handle().take_buffer(true))
     }
 
     /// `f` over `get_write_buffer()`, made on first use.

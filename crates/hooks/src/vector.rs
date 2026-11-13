@@ -8,7 +8,6 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
 use core::ffi::c_int;
 use core::marker::PhantomData;
-use core::ptr::NonNull;
 use std::io::{IoSlice, IoSliceMut};
 use swoole_rs_reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
@@ -109,7 +108,7 @@ pub enum Vectors<'a, 'b> {
 /// readable for a write.
 #[repr(C)]
 pub struct IoVector<'a> {
-    owner: NonNull<ReactorIov>,
+    owner: Box<ReactorIov>,
     write: bool,
     lent: PhantomData<Vectors<'a, 'a>>,
 }
@@ -134,7 +133,7 @@ impl<'a> IoVector<'a> {
         // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so these
         // are the borrowed slice's `count` iovecs, which are only copied.
         let vectors = unsafe { core::slice::from_raw_parts(at, count) };
-        let owner = NonNull::from(Box::leak(ReactorIov::new(vectors)?));
+        let owner = ReactorIov::new(vectors)?;
         Some(Self {
             owner,
             write,
@@ -148,8 +147,7 @@ impl<'a> IoVector<'a> {
     }
 
     fn owner(&self) -> &ReactorIov {
-        // SAFETY: the owner `new` made, live until drop.
-        unsafe { self.owner.as_ref() }
+        &self.owner
     }
 
     /// The iovec index and byte offset where the transfers stopped.
@@ -182,8 +180,7 @@ impl<'a> IoVector<'a> {
     /// holding [`iovecs`](Self::iovecs) can advance the vector itself.
     #[cfg(feature = "iouring")]
     pub(crate) fn update(&mut self, result: isize) {
-        // SAFETY: the live owner; no reference to it is held across the call.
-        unsafe { self.owner.as_mut() }.advance(result);
+        self.owner.advance(result);
     }
 
     /// `io` over each remaining buffer in order while it moves data, again over what a
@@ -229,17 +226,9 @@ impl<'a> IoVector<'a> {
             |data: Drain<'_>| ssl_send_drain(socket, data),
         );
         let tls = (!ssl.is_null()).then_some(&calls);
-        // SAFETY: the owner `new` made, which this borrow of the vector holds alone,
-        // over buffers valid in the vector's direction while it lives (the type's
+        // SAFETY: buffers valid in the vector's direction while it lives (the type's
         // invariant).
-        unsafe { swr_v1_socket_iov_owned(fd, self.write, self.owner.as_ptr(), tls) }
-    }
-}
-
-impl Drop for IoVector<'_> {
-    fn drop(&mut self) {
-        // SAFETY: the box `new` leaked, released once.
-        drop(unsafe { Box::from_raw(self.owner.as_ptr()) });
+        unsafe { swr_v1_socket_iov_owned(fd, self.write, &mut self.owner, tls) }
     }
 }
 

@@ -108,18 +108,16 @@ pub fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
 /// remaining iovecs, or `tls` (its read and its write) one iovec at a time until one
 /// comes up short, advancing the cursor; retried on EINTR.
 /// # Safety
-/// `owner` is live/exclusive and each payload is valid for the direction.
+/// Each payload is valid for the direction.
 pub unsafe fn swr_v1_socket_iov_owned(
     fd: i32,
     write: bool,
-    owner: *mut ReactorIov,
+    owner: &mut ReactorIov,
     tls: Option<&(
         impl Fn(crate::Fill<'_>) -> isize,
         impl Fn(crate::Drain<'_>) -> isize,
     )>,
 ) -> isize {
-    // SAFETY: live exclusive owner per the contract.
-    let owner = unsafe { &mut *owner };
     loop {
         let result = if let Some((read, send)) = tls {
             let mut total: isize = 0;

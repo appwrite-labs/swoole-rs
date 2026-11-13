@@ -132,6 +132,7 @@ name = "swoole-rs-brotli"
 version = "0.1.0"
 dependencies = [
  "pkg-config",
+ "swoole-rs-corebase",
 ]
 
 [[package]]

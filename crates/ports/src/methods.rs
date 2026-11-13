@@ -13,8 +13,9 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{
     GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
 };
-use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{Event, Running, Socket, SocketFields, SocketRecord};
+use swoole_rs_reactor::socket_upstream::make_typed;
+use swoole_rs_reactor::{Event, Running, SocketFields, SocketRecord};
+use swoole_rs_tls::event_socket::OwnedSocket;
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -164,12 +165,12 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     } else {
         FD_STREAM_SERVER
     };
-    let made = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
-    // SAFETY: the record just made, null or live, which only this function holds.
-    let Some(socket) = (unsafe { Socket::from_ptr(made) }) else {
+    let Some(made) = make_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC) else {
         log::set_last_error(errno());
         return -1;
     };
+    let made = OwnedSocket::new(made);
+    let socket = made.get();
     let fd = socket.fd();
     let kqueue = cfg!(any(
         target_os = "macos",
@@ -181,14 +182,14 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     if kqueue && config.is_dtls() {
         set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT);
     }
-    let fail = || {
+    // The record just made, freed once, on a failure path.
+    let fail = |made: OwnedSocket| {
         log::set_last_error(errno());
-        // SAFETY: the record just made, freed once, on this failure path.
-        unsafe { socket_free(made) };
+        made.free();
         -1
     };
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
-        return fail();
+        return fail(made);
     }
     let mut address = SocketAddress {
         addr: swoole_rs_corebase::sys::zeroed(),
@@ -215,7 +216,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
                 config.port.get()
             ),
         );
-        return fail();
+        return fail(made);
     }
     if set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR) < 0 {
         log::sys_warning(
@@ -224,13 +225,13 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
         );
     }
     if socket.edit(|s| s.bind(&address)) < 0 || socket.edit(SocketFields::get_name) < 0 {
-        return fail();
+        return fail(made);
     }
     let info = socket.read(|s| s.info);
     config.port.set(swr_v1_clients_address_port(&info));
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
-    config.socket.store(made.cast(), Relaxed);
+    config.socket.store(made.into_raw().cast(), Relaxed);
     0
 }
 

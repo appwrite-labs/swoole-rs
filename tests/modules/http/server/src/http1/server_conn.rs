@@ -1840,8 +1840,7 @@ unsafe extern "C" fn pipe_writable_receive(
     check(data.get(4..) == Some(&rdata[..]), "req->data + 4 == rdata");
 
     // `serv->get_worker_message_bus()->move_packet()`: the packet's block, now ours to free.
-    // SAFETY: this worker's message bus, in its callback.
-    let data = unsafe { swoole_rs_server::bus_move_packet((*serv.head().tables).message_bus) };
+    let data = serv.view().move_worker_packet();
     check(!data.is_null(), "data != nullptr");
     // SAFETY: `sw_free(data)`: the block, from the libc allocator.
     unsafe { free(data.cast()) };

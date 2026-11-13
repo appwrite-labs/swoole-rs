@@ -40,13 +40,6 @@ const SOCK_UNIX_STREAM: c_int = 5;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 
-/// `swoole::MessageBus`'s first members: its Rust bus, then its allocator.
-#[repr(C)]
-struct BusHead {
-    bus: *mut c_void,
-    allocator: *const c_void,
-}
-
 static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.
 static CURRENT: AtomicPtr<PoolRecord> = AtomicPtr::new(ptr::null_mut());
@@ -138,9 +131,9 @@ fn message_data(pool: PoolRef<'_>, message: &RecvData) -> Owned {
         // SAFETY: the bus allocates its packets as unshared zend strings of at
         // least `length` written bytes.
         let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
-        // SAFETY: an OBJ_PTR message comes from the pool's live message bus; the
-        // string is now the caller's.
-        unsafe { swoole_rs_server::bus_move_packet(pool.message_bus()) };
+        // An OBJ_PTR message comes from the pool's message bus: the string, whose
+        // block `packet` already holds, is now the caller's.
+        _ = swoole_rs_server::pool_bus_move_packet(pool);
         packet.into_zstring()
     } else {
         // SAFETY: `length` bytes at `data`.
@@ -713,10 +706,8 @@ fn listen(call: &Call) {
         port.c_cast::<c_int>(),
         backlog.c_cast::<c_int>(),
     );
-    let socket = view.ipc_listener();
-    if !socket.is_null() {
-        // SAFETY: the pool's live listener record, which nothing else borrows here.
-        socket_set_fd_option(unsafe { &mut *socket.cast() }, 0, 1);
+    if let Some(socket) = swoole_rs_server::view::pool_ipc_listener(view) {
+        _ = socket.edit(|record| socket_set_fd_option(record, 0, 1));
     }
     call.set_bool(listened >= 0);
 }
@@ -870,9 +861,8 @@ fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
     if pool.message_bus().is_null() && methods::create_message_bus(pool) != 0 {
         return false;
     }
-    let bus = pool.message_bus().cast::<BusHead>();
-    // SAFETY: the pool's message bus, whose allocator its next buffer uses.
-    unsafe { (*bus).allocator = swoole_rs_phpswoole::sw_zend_string_allocator() };
+    // The pool's message bus, whose allocator its next buffer uses.
+    swoole_rs_server::pool_bus_set_allocator(pool, swoole_rs_phpswoole::zend_string_allocator());
     methods::set_protocol(pool, Protocol::Message);
     true
 }

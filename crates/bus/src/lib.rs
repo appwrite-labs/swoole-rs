@@ -149,8 +149,9 @@ pub struct Bus {
     buffer_size: Cell<usize>,
     always_chunked: Cell<bool>,
     packets: RefCell<HashMap<u64, Packet, BuildHasherDefault<IdHasher>>>,
-    /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes.
-    pipe_sockets: RefCell<Vec<*mut SocketRecord>>,
+    /// `pipe_sockets_`: by descriptor, this bus's own records of the pipes, which
+    /// `init_pipe_socket` made and only the bus's drop frees.
+    pipe_sockets: RefCell<Vec<Option<Socket<'static>>>>,
     /// `id_generator_`: the counter that numbers each written message.
     next_id: Cell<Option<&'static AtomicU64>>,
 }
@@ -163,11 +164,7 @@ impl Drop for Bus {
         #[cfg(not(all(feature = "upstream-symbols", not(test))))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
         // By descriptor, as `init_pipe_socket` recorded them.
-        let descriptors = c_int::try_from(self.pipe_sockets.get_mut().len()).unwrap_or(c_int::MAX);
-        for fd in 0..descriptors {
-            let Some(record) = self.pipe(fd) else {
-                continue;
-            };
+        for record in self.pipe_sockets.get_mut().drain(..).flatten() {
             record.edit(|record| record.fd = -1);
             // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
             // freed once: the bus is dropping.
@@ -785,40 +782,33 @@ impl Bus {
     #[inline]
     pub fn send(&self, socket: Socket<'_>, head: &mut BusHead, data: &[u8]) -> bool {
         head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: a live record, and the `head.len` bytes of `data`.
-        unsafe { self.send_raw(socket.as_ptr(), head, data.as_ptr()) }
+        // SAFETY: the `head.len` bytes of `data`.
+        unsafe { self.send_raw(socket, head, data.as_ptr()) }
     }
 
     /// [`Bus::send`] of a message its caller holds as a `SendData`: a head and the
     /// pointer its `len` counts from.
     ///
     /// # Safety
-    /// `socket` is a live record; `data` covers `head.len` bytes or is null.
-    pub unsafe fn send_raw(
-        &self,
-        socket: *mut SocketRecord,
-        head: &mut BusHead,
-        data: *const u8,
-    ) -> bool {
+    /// `data` covers `head.len` bytes or is null.
+    pub unsafe fn send_raw(&self, socket: Socket<'_>, head: &mut BusHead, data: *const u8) -> bool {
         use swoole_rs_reactor::event_api;
-        // SAFETY: the caller's live record.
-        let record = unsafe { Socket::from_ptr(socket) };
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
             if event_api::swoole_event_is_available() {
                 // SAFETY: the caller's live record, on the thread's live loop, and
                 // `write`'s iovecs, over `head` and inside the caller's `data`.
-                unsafe { event_api::swoole_event_writev(socket.cast(), iov.as_ptr(), iov.len()) }
+                unsafe { event_api::swoole_event_writev(socket.as_ptr(), iov.as_ptr(), iov.len()) }
             } else {
                 // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
                 // chunk inside the caller's `data`, each readable for the call.
                 let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
-                record.map_or(-1, |record| writev_sync(record, vectors))
+                writev_sync(socket, vectors)
             }
         };
         let reduce = || {
             let error = errno();
-            record.is_some_and(|socket| socket.catch_pipe_error(error) == REDUCE_SIZE)
+            socket.catch_pipe_error(error) == REDUCE_SIZE
         };
         if let Some(counter) = self.next_id.get() {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
@@ -834,7 +824,7 @@ impl Bus {
         };
         let mut pipe_sockets = self.pipe_sockets.borrow_mut();
         if index >= pipe_sockets.len() {
-            pipe_sockets.resize(index + 1, ptr::null_mut());
+            pipe_sockets.resize(index + 1, None);
         }
         // `make_socket`: a new record, which the bus frees on drop.
         let socket = Box::leak(Box::new(SocketRecord::with_fd(fd, /* SW_FD_PIPE */ 3)));
@@ -843,7 +833,7 @@ impl Bus {
             swoole_rs_reactor::socket_upstream::socket_set_fd_option(socket, 1, -1);
         }
         if let Some(slot) = pipe_sockets.get_mut(index) {
-            *slot = socket;
+            *slot = Some(Socket::new(socket));
         }
     }
 
@@ -851,10 +841,7 @@ impl Bus {
     #[must_use]
     #[inline]
     pub fn pipe_socket(&self, fd: c_int) -> *mut SocketRecord {
-        usize::try_from(fd)
-            .ok()
-            .and_then(|index| self.pipe_sockets.borrow().get(index).copied())
-            .unwrap_or(ptr::null_mut())
+        self.pipe(fd).map_or(ptr::null_mut(), Socket::as_ptr)
     }
 
     /// [`MessageBus::pipe_socket`]'s record as a handle, or `None` before
@@ -862,9 +849,8 @@ impl Bus {
     #[must_use]
     #[inline]
     pub fn pipe(&self, fd: c_int) -> Option<Socket<'_>> {
-        // SAFETY: null or a record `init_pipe_socket` made, which the bus frees only
-        // when it drops.
-        unsafe { Socket::from_ptr(self.pipe_socket(fd)) }
+        let index = usize::try_from(fd).ok()?;
+        self.pipe_sockets.borrow().get(index).copied().flatten()
     }
 }
 

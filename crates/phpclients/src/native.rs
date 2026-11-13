@@ -158,11 +158,10 @@ impl Co {
 
     /// The socket's buffers are zend strings from now on.
     pub fn use_zend_strings(self) {
-        // SAFETY: the static zend string allocator.
-        unsafe {
-            self.0
-                .set_buffer_allocator(swoole_rs_phpswoole::sw_zend_string_allocator());
-        }
+        let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
+        // SAFETY: the static zend string allocator, a `swoole::Allocator`.
+        let allocator = unsafe { &*allocator.cast::<swoole_rs_buffer::string::Allocator>() };
+        self.0.set_buffer_allocator(Some(allocator));
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string

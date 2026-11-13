@@ -2,10 +2,11 @@
 //! `php_swoole_odbc_minit`): connection pooling from `pdo_odbc.connection_pooling`,
 //! PDO's `ODBC_*` constants unless `pdo_odbc` declared them, and the driver.
 use std::{
-    ffi::{CStr, c_char, c_int},
+    convert::Infallible,
+    ffi::CStr,
     sync::atomic::{AtomicUsize, Ordering},
 };
-use swoole_rs_odbc_sys::{SQLHENV, SQLINTEGER, SQLPOINTER, SQLSetEnvAttr};
+use swoole_rs_odbc_sys::{SQLINTEGER, SQLRETURN};
 use swoole_rs_zend::{
     Minit,
     pdo::{Driver, php_pdo_register_driver},
@@ -15,11 +16,27 @@ use swoole_rs_zend::{
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/php*/pdo_odbc/odbc_driver.c`).
     safe static swoole_pdo_odbc_driver: Driver;
-    fn cfg_get_string(name: *const c_char, result: *mut *mut c_char) -> c_int;
+    /// `SQLSetEnvAttr` of no environment (nothing makes the reference), which sets
+    /// the process-wide connection pooling to `value`, an integer passed in the
+    /// pointer: the only attribute the type allows, and one the driver manager
+    /// reads no memory for.
+    #[link_name = "SQLSetEnvAttr"]
+    safe fn set_process_attr(
+        environment: Option<&'static Infallible>,
+        attribute: ProcessAttribute,
+        value: usize,
+        length: SQLINTEGER,
+    ) -> SQLRETURN;
+}
+
+/// What [`set_process_attr`] sets: `sqlext.h`'s `SQL_ATTR_CONNECTION_POOLING`.
+#[repr(i32)]
+#[derive(Clone, Copy)]
+enum ProcessAttribute {
+    ConnectionPooling = 201,
 }
 
 /// `sqlext.h`'s pooling values.
-const SQL_ATTR_CONNECTION_POOLING: SQLINTEGER = 201;
 const SQL_CP_OFF: usize = 0;
 const SQL_CP_ONE_PER_HENV: usize = 2;
 const SQL_CP_STRICT_MATCH: usize = 0;
@@ -56,16 +73,9 @@ pub fn minit(minit: &Minit) {
     };
     if !pdo.declared(c"ODBC_ATTR_USE_CURSOR_LIBRARY") {
         // The ini is process wide, so it is read this once, as upstream does.
-        let mut value: *mut c_char = std::ptr::null_mut();
-        // SAFETY: a NUL-terminated name and an out pointer.
-        let found =
-            unsafe { cfg_get_string(c"pdo_odbc.connection_pooling".as_ptr(), &raw mut value) } == 0;
-        let value = if found && !value.is_null() {
-            // SAFETY: the ini entry's NUL-terminated value.
-            unsafe { CStr::from_ptr(value) }.to_bytes()
-        } else {
-            b"strict"
-        };
+        let value = minit
+            .ini_string(c"pdo_odbc.connection_pooling")
+            .map_or(b"strict".as_slice(), CStr::to_bytes);
         let Some((on, mode)) = pooling(value) else {
             let message = c"Error in pdo_odbc.connection_pooling configuration. Value must be one of \"strict\", \"relaxed\", or \"off\"";
             // MINIT; E_CORE_ERROR bails out, raised from this outermost Rust frame.
@@ -78,15 +88,7 @@ pub fn minit(minit: &Minit) {
         pdo_odbc_pool_on.store(on, Ordering::Relaxed);
         pdo_odbc_pool_mode.store(mode, Ordering::Relaxed);
         if on != SQL_CP_OFF {
-            // SAFETY: the process-wide attribute takes its value in the pointer.
-            unsafe {
-                SQLSetEnvAttr(
-                    std::ptr::null_mut::<std::ffi::c_void>() as SQLHENV,
-                    SQL_ATTR_CONNECTION_POOLING,
-                    on as SQLPOINTER,
-                    0,
-                )
-            };
+            set_process_attr(None, ProcessAttribute::ConnectionPooling, on, 0);
         }
         let constants = [
             (c"ODBC_ATTR_USE_CURSOR_LIBRARY", PDO_ATTR_DRIVER_SPECIFIC),

@@ -125,8 +125,7 @@ pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> c_int {
 
 /// The worker's current pipe end, while it has one.
 fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
-    // SAFETY: a worker's current pipe end is null or a live socket of its pair.
-    unsafe { Socket::from_ptr(worker.pipe_current().cast()) }
+    swoole_rs_server::view::worker_pipe_end(worker, swoole_rs_server::view::PipeEnd::Current)
 }
 
 pub(crate) fn view(worker: Worker<'_>) -> WorkerView {

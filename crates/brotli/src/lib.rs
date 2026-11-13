@@ -11,9 +11,10 @@
     )
 )]
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 use std::marker::PhantomData;
 use std::ptr::{NonNull, null_mut};
+use swoole_rs_corebase::sys::Text;
 
 /// `BROTLI_MIN_QUALITY`, `BROTLI_MAX_QUALITY`.
 pub const MIN_QUALITY: i32 = 0;
@@ -88,7 +89,8 @@ unsafe extern "C" {
     ) -> c_int;
     /// The live state's last error: it reads the state and nothing else.
     safe fn BrotliDecoderGetErrorCode(state: Live<'_>) -> c_int;
-    safe fn BrotliDecoderErrorString(code: c_int) -> *const c_char;
+    /// The code's name: a static string for every code, `INVALID` for an unknown one.
+    safe fn BrotliDecoderErrorString(code: c_int) -> Text<'static>;
 }
 
 /// MINFO's `brotli` row: `E<BrotliEncoderVersion>/D<BrotliDecoderVersion>`.
@@ -179,8 +181,7 @@ impl Decoder {
     /// `BrotliDecoderDecompressStream() failed, <BrotliDecoderErrorString>`.
     fn error(&self) -> String {
         let code = BrotliDecoderGetErrorCode(self.state.live());
-        // SAFETY: libbrotli's error strings are static and NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(BrotliDecoderErrorString(code)) };
+        let reason = BrotliDecoderErrorString(code).get();
         format!(
             "BrotliDecoderDecompressStream() failed, {}",
             reason.to_string_lossy()

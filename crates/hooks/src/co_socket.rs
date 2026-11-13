@@ -11,7 +11,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_buffer::string::{Allocator, CppString, delete_string, new_sized_string};
+use swoole_rs_buffer::string::{Allocator, CppString, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -47,7 +47,8 @@ pub struct CoSocket {
     pub sock_fd: Cell<c_int>,
     pub connect_port: Cell<c_int>,
     pub backlog: Cell<c_int>,
-    pub(crate) buffer_allocator: Cell<*const c_void>,
+    /// The buffers' allocator: none for the default.
+    pub(crate) buffer_allocator: Cell<Option<&'static Allocator>>,
     pub buffer_init_size: Cell<usize>,
     pub(crate) read_buffer: Cell<*mut c_void>,
     pub(crate) write_buffer: Cell<*mut c_void>,
@@ -260,14 +261,26 @@ impl Co {
         /// `errMsg`: a NUL-terminated message, static, `swoole_strerror`'s, the thread's
         /// last error message or the record's own error string.
         err_msg, set_err_msg: *const c_char;
-        /// The buffers' allocator: null for the default, else a live `Allocator`.
-        buffer_allocator, set_buffer_allocator: *const c_void;
-        /// Null, or the live `String` the record owns.
-        read_buffer, set_read_buffer: *mut c_void;
-        /// Null, or the live `String` the record owns.
-        write_buffer, set_write_buffer: *mut c_void;
         /// Null, or a live `NameResolver::Context` that outlives the record.
         resolve_context, set_resolve_context: *mut c_void;
+    }
+
+    fields!(get
+        /// Null, or the live `String` the record owns: a `new String`, a Box.
+        read_buffer: *mut c_void);
+    fields!(get
+        /// Null, or the live `String` the record owns: a `new String`, a Box.
+        write_buffer: *mut c_void);
+
+    /// The buffers' allocator: none for the default.
+    #[must_use]
+    pub fn buffer_allocator(self) -> Option<&'static Allocator> {
+        self.record().buffer_allocator.get()
+    }
+
+    /// The buffers' allocator from now on: none for the default.
+    pub fn set_buffer_allocator(self, allocator: Option<&'static Allocator>) {
+        self.record().buffer_allocator.set(allocator);
     }
 
     /// The `network::Socket`'s address: null before the socket opens.
@@ -342,17 +355,37 @@ impl Co {
         if !slot.is_null() {
             return slot.cast();
         }
-        let allocator = self.buffer_allocator().cast::<Allocator>();
-        // SAFETY: the field's contract: null or a live allocator.
-        let made = new_sized_string(BUFFER_SIZE_BIG, unsafe { allocator.as_ref() });
-        let field = if write {
-            Self::set_write_buffer
-        } else {
-            Self::set_read_buffer
-        };
-        // SAFETY: a live String, which the record owns now.
-        unsafe { field(self, made.cast()) };
+        let made = new_sized_string(BUFFER_SIZE_BIG, self.buffer_allocator());
+        // A `new String`, which the record owns now.
+        self.buffer_slot(write).set(made.cast());
         made
+    }
+
+    /// The record's read or write buffer slot.
+    fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
+        let record = self.record();
+        if write {
+            &record.write_buffer
+        } else {
+            &record.read_buffer
+        }
+    }
+
+    /// The read or write buffer, which the record gives up, as before its first use;
+    /// none when it has none.
+    /// # Panics
+    /// Inside a `with_buffer` over the same buffer.
+    #[track_caller]
+    #[must_use]
+    pub fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
+        let part = if write { WRITE_BUFFER } else { READ_BUFFER };
+        self.lend(part, |_| {
+            let buffer = self.buffer_slot(write).replace(ptr::null_mut());
+            let buffer = buffer.cast::<CppString>();
+            // SAFETY: null or the `new String` the record owned, which nothing else
+            // reaches: the record no longer does and no `with_buffer` lends it.
+            (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
+        })
     }
 
     /// The bound state's address; [`Co::with_state`] borrows it.
@@ -394,6 +427,31 @@ impl Co {
     /// handle lives only for the call, so it cannot outlive the record.
     pub fn with_network<T>(self, f: impl FnOnce(Socket<'_>) -> T) -> Option<T> {
         self.record().socket.get().map(f)
+    }
+
+    /// `Reactor::change`'s add (`add`) or set of the open socket for `events`, on the
+    /// thread's reactor: 0, or -1 without a socket or a reactor. The record's own
+    /// network socket, which `~Socket()` takes off the reactor as it frees it.
+    #[must_use]
+    pub fn register(self, add: bool, events: c_int) -> c_int {
+        use swoole_rs_reactor::event_api::{event_add, event_set};
+        let change = if add { event_add } else { event_set };
+        self.record()
+            .socket
+            .get()
+            .map_or(-1, |network| change(network, events))
+    }
+
+    /// `Reactor::interest(socket, kind, 0)` of the open socket on the thread's reactor,
+    /// registered as [`Co::register`] registers it: the change's result, 0 when nothing
+    /// changes, -1 without a socket or a reactor.
+    #[must_use]
+    pub fn interest(self, kind: swoole_rs_reactor::Interest) -> c_int {
+        let interest = swoole_rs_reactor::event_api::event_interest;
+        self.record()
+            .socket
+            .get()
+            .map_or(-1, |network| interest(network, kind, 0))
     }
 
     /// The record's metadata, `None` once released.
@@ -475,7 +533,7 @@ impl CoSocket {
             sock_fd: Cell::new(-1),
             connect_port: Cell::new(0),
             backlog: Cell::new(0),
-            buffer_allocator: Cell::new(ptr::null()),
+            buffer_allocator: Cell::new(None),
             buffer_init_size: Cell::new(BUFFER_SIZE_BIG),
             read_buffer: Cell::new(ptr::null_mut()),
             write_buffer: Cell::new(ptr::null_mut()),
@@ -586,10 +644,10 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
     let co = unsafe { Co::new(socket) };
     // The callback runs before anything is freed.
     crate::socket_extra::run_close_hook(co);
-    for buffer in [co.read_buffer(), co.write_buffer()] {
-        if !buffer.is_null() {
-            // SAFETY: the socket's own `new String`, deleted once.
-            unsafe { delete_string(buffer.cast()) };
+    for write in [false, true] {
+        // `delete` of the socket's own `new String`.
+        if let Some(mut buffer) = co.take_buffer(write) {
+            buffer.dispose();
         }
     }
     co.with_network(|network| {
@@ -917,7 +975,7 @@ mod test_support {
             unsafe {
                 for buffer in [self.0.read_buffer.get(), self.0.write_buffer.get()] {
                     if !buffer.is_null() {
-                        delete_string(buffer.cast());
+                        swoole_rs_buffer::string::delete_string(buffer.cast());
                     }
                 }
                 SocketRecord::free(self.0.socket_ptr());

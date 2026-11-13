@@ -67,8 +67,7 @@ fn fd(socket: Option<Socket<'_>>) -> c_int {
 
 /// The pool's stream listener, or `None` without one.
 fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
-    // SAFETY: null, or the listening socket the pool's IPC owns until the pool frees it.
-    unsafe { Socket::from_ptr(pool.ipc_listener().cast()) }
+    crate::view::pool_ipc_listener(pool)
 }
 
 /// The socket a hook works on, or `None`.
@@ -101,19 +100,22 @@ fn exit_status(exited: u64) -> ExitStatus {
 
 // ---------------------------------------------------------------- message bus
 
-fn bus_of(pool: Pool<'_>) -> crate::objects::Bus<'_> {
-    // SAFETY: the pool's bus, which `Op::NewMessageBus` made.
-    unsafe { crate::objects::Bus::of(pool.message_bus()) }
+/// The pool's bus, which `Op::NewMessageBus` made, or `None` without one.
+fn bus_of(pool: Pool<'_>) -> Option<crate::objects::Bus<'_>> {
+    PoolBus::of_pool(pool).map(crate::objects::Bus::over)
 }
 
-/// `MessageBus::read(sock)`.
+/// `MessageBus::read(sock)`; -1 without a socket or a bus.
 fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
-    sock.map_or(-1, |sock| bus_of(pool).read(sock))
+    sock.zip(bus_of(pool))
+        .map_or(-1, |(sock, bus)| bus.read(sock))
 }
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let bus = bus_of(pool);
+    let Some(bus) = bus_of(pool) else {
+        return;
+    };
     let mut info = bus.head();
     let packet = bus.packet();
     info.len = packet.length.c_cast::<u32>();
@@ -145,7 +147,7 @@ pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
 }
 
 fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
-    i64::from(bus_of(pool).alloc_buffer(size.c_cast::<usize>()))
+    i64::from(bus_of(pool).is_some_and(|bus| bus.alloc_buffer(size.c_cast::<usize>())))
 }
 
 fn free_message_bus(pool: Pool<'_>) {
@@ -164,8 +166,9 @@ pub(crate) unsafe fn free_bus(bus: *mut c_void) {
 
 // ---------------------------------------------------------------- pipes and box
 
-/// `pool->pipes`: each worker's `UnixSocket`.
-type Pipes = Vec<*mut SocketPair>;
+/// `pool->pipes`: each worker's `UnixSocket`, boxed so a worker's record keeps its
+/// pair's address while the list grows.
+type Pipes = Vec<Box<SocketPair>>;
 
 fn free_pipes(pool: Pool<'_>) {
     let pipes = pool.pipes().cast::<Pipes>();
@@ -173,9 +176,8 @@ fn free_pipes(pool: Pool<'_>) {
         return;
     }
     // SAFETY: `Op::NewPipes`'s box, freed once.
-    for pair in *unsafe { Box::from_raw(pipes) } {
-        // SAFETY: a pair `new_pipe` boxed, not used again.
-        socket_pair::drop(&mut *unsafe { Box::from_raw(pair) });
+    for mut pair in *unsafe { Box::from_raw(pipes) } {
+        socket_pair::drop(&mut pair);
     }
 }
 
@@ -189,9 +191,13 @@ fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
         free_pipes(pool);
         return 0;
     }
-    let pair = Box::into_raw(built);
     // SAFETY: `Op::NewPipes` made the list.
-    unsafe { &mut *pool.pipes().cast::<Pipes>() }.push(pair);
+    let pipes = unsafe { &mut *pool.pipes().cast::<Pipes>() };
+    pipes.push(built);
+    // The box keeps the pair at this address while the list owns it.
+    let pair = pipes
+        .last_mut()
+        .map_or(ptr::null_mut(), |pair| &raw mut **pair);
     // SAFETY: the two ends of the pair the pool's list now owns until `free_pipes`,
     // in the pool's `destroy`, after which this process sends to its workers no more.
     unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
@@ -670,7 +676,9 @@ impl PoolNative for Native {
         head: &mut DataHead,
         message: &[u8],
     ) -> bool {
-        worker_pipe(worker, true).is_some_and(|pipe| bus_of(pool).write(pipe, head, message))
+        worker_pipe(worker, true)
+            .zip(bus_of(pool))
+            .is_some_and(|(pipe, bus)| bus.write(pipe, head, message))
     }
 
     fn task(&self, c: &mut PoolCall) {

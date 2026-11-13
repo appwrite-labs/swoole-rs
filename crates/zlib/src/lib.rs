@@ -16,8 +16,7 @@ pub use libz_sys::{
     Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
 use libz_sys::{
-    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, deflateEnd, inflate, inflateEnd, uInt, uLong,
-    z_stream, z_streamp,
+    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, inflate, uInt, uLong, z_stream, z_streamp,
 };
 
 /// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
@@ -44,8 +43,9 @@ unsafe extern "C" {
     // zlib's own declarations of the calls that take only the stream, typed as the
     // stream it is, and plain values. The init calls refuse a version, struct size
     // or setting they don't accept and otherwise allocate the stream's state with
-    // its allocator; the others check the stream's state first. None touches the
-    // stream's input or output.
+    // its allocator; the others check the stream's state first (the end calls then
+    // free it with the stream's allocator and null it). None touches the stream's
+    // input or output.
     safe fn inflateInit2_(z: &mut Z, window_bits: c_int, version: Version, size: c_int) -> c_int;
     safe fn deflateInit2_(
         z: &mut Z,
@@ -59,6 +59,8 @@ unsafe extern "C" {
     ) -> c_int;
     safe fn deflateReset(z: &mut Z) -> c_int;
     safe fn deflateBound(z: &mut Z, length: uLong) -> uLong;
+    safe fn deflateEnd(z: &mut Z) -> c_int;
+    safe fn inflateEnd(z: &mut Z) -> c_int;
 }
 
 extern "C" fn c_alloc(_: *mut c_void, items: uInt, size: uInt) -> *mut c_void {
@@ -203,10 +205,11 @@ impl Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        let end: unsafe extern "C" fn(z_streamp) -> c_int =
-            if self.deflate { deflateEnd } else { inflateEnd };
-        // SAFETY: an initialised stream, ended once here.
-        unsafe { end(&raw mut self.z.0) };
+        if self.deflate {
+            deflateEnd(&mut self.z);
+        } else {
+            inflateEnd(&mut self.z);
+        }
     }
 }
 

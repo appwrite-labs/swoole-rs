@@ -53,10 +53,30 @@ pub(crate) fn timer_reinit(manually_trigger: bool) {
 // Only the upstream-symbol operations, which the unit tests don't link, use these.
 #[cfg(not(test))]
 impl crate::ServerState {
+    /// The server's own `MessageBus` record.
+    pub(crate) fn message_bus_record(&self) -> &PoolBus {
+        // SAFETY: `swr_v1_server_new`'s boxed record, which lives as long as the
+        // server; it frees it in `swr_v1_server_delete`, with the state.
+        unsafe { &*self.tables_ref().message_bus.cast::<PoolBus>() }
+    }
+
     /// The server's own `MessageBus`.
     pub(crate) fn message_bus(&self) -> Bus<'_> {
-        // SAFETY: `swr_v1_server_new`'s bus, which lives as long as the server.
-        unsafe { Bus::of(self.tables_ref().message_bus) }
+        Bus::over(self.message_bus_record())
+    }
+
+    /// `serv->get_worker_message_bus()`'s record: this thread's in thread mode, else
+    /// the server's.
+    pub(crate) fn worker_bus_record(&self) -> &PoolBus {
+        if self.config_ref().mode_ != Mode::Thread {
+            return self.message_bus_record();
+        }
+        let bus = swoole_rs_corebase::thread_message_bus();
+        // SAFETY: a thread-mode thread that sends to workers has its bus: a reactor
+        // thread's record's, set for its loop, or the one `create_message_bus` boxed
+        // for a task or user worker thread until it ends. Either outlives the server's
+        // use on this thread, and only this thread uses it.
+        unsafe { &*bus.cast::<PoolBus>() }
     }
 }
 
@@ -69,15 +89,6 @@ pub(crate) struct Bus<'a> {
 }
 
 impl<'a> Bus<'a> {
-    /// The `MessageBus` at `message_bus`.
-    ///
-    /// # Safety
-    /// `message_bus` is a live `MessageBus` record for `'a`, and only this thread uses
-    /// it meanwhile.
-    pub(crate) unsafe fn of(message_bus: *mut c_void) -> Self {
-        // SAFETY: per the caller; a `MessageBus` is a `PoolBus`.
-        Self::over(unsafe { &*message_bus.cast::<PoolBus>() })
-    }
     /// The bus of `record`, which a thread's own record lends.
     pub(crate) fn over(record: &'a PoolBus) -> Self {
         let (bus, allocator) = record.parts();
