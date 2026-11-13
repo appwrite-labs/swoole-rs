@@ -125,23 +125,9 @@ pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
 pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
     prepared(owner)
 }
-/// Another ownership handle on `owner`, for `swr_v1_tls_owner_free` to release once.
-///
 /// # Safety
-/// owner is a live ownership handle from new/clone (the Arc's pointer, not one taken
-/// from a reference, which would not reach the Arc's counts).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_clone(
-    owner: *const OwnedTlsContext,
-) -> *const OwnedTlsContext {
-    // SAFETY: as the caller promises: an Arc `swr_v1_tls_owner_new` made, live
-    // throughout this increment.
-    unsafe { Arc::increment_strong_count(owner) };
-    owner
-}
-/// # Safety
-/// owner is null or one owned Arc from new/clone. Borrowed fields/OpenSSL uses
-/// end before the last ownership handle is released.
+/// owner is null or one owned Arc from `swr_v1_tls_owner_new`. Borrowed fields/OpenSSL
+/// uses end before the last ownership handle is released.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_owner_free(owner: *const OwnedTlsContext) {
     if !owner.is_null() {
@@ -895,7 +881,9 @@ mod tests {
                     assert_eq!(bytes, expected);
                 }
             }
-            let retained = swr_v1_tls_owner_clone(owner);
+            // Another ownership handle, as a `TlsContext` clone takes one.
+            Arc::increment_strong_count(owner);
+            let retained = owner;
             swr_v1_tls_owner_free(owner);
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(

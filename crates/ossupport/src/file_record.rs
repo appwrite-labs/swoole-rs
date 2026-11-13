@@ -48,6 +48,11 @@ impl FileRecord {
         self.fd
     }
 
+    /// `File::release`: the descriptor, which the record no longer owns or closes.
+    pub const fn take_descriptor(&mut self) -> c_int {
+        std::mem::replace(&mut self.fd, -1)
+    }
+
     /// `File::ready`.
     #[must_use]
     pub const fn ready(&self) -> bool {
@@ -98,15 +103,6 @@ fn path_copy(bytes: &[u8]) -> Option<Vec<u8>> {
     path.try_reserve_exact(bytes.len()).ok()?;
     path.extend_from_slice(bytes);
     Some(path)
-}
-/// Current descriptor; ready is fd != -1, and release writes -1.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_os_file_record_fd(owner: &mut FileRecord, release: bool) -> c_int {
-    let fd = owner.fd;
-    if release {
-        owner.fd = -1;
-    }
-    fd
 }
 #[cfg(test)]
 mod tests {

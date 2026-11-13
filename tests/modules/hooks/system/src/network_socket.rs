@@ -232,15 +232,7 @@ unsafe extern "C-unwind" {
         domain: *mut c_int,
         sock_type: *mut c_int,
     ) -> bool;
-    fn swr_v1_socket_host_type(host: *const u8, length: usize) -> HostTypePlan;
     static swr_v1_socket_type_classes: [u8; 16];
-}
-
-/// crates/reactor's `HostType`, which `swr_v1_socket_host_type` returns.
-#[repr(C)]
-struct HostTypePlan {
-    socket_type: c_int,
-    erase: usize,
 }
 
 #[link(name = "crypto")]
@@ -328,8 +320,7 @@ fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
 
 /// `Socket::convert_to_type(std::string &host)`: erases the scheme from `host`.
 fn convert_host_to_type(host: &mut String) -> c_int {
-    // SAFETY: `host` is readable for its length.
-    let plan = unsafe { swr_v1_socket_host_type(host.as_ptr(), host.len()) };
+    let plan = swoole_rs_reactor::host_type(host.as_bytes());
     host.drain(..plan.erase);
     plan.socket_type
 }

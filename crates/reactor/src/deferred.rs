@@ -81,28 +81,6 @@ pub struct ReactorDeferred {
     tasks: VecDeque<Task>,
 }
 
-/// Appends `call(data)` to the queue in `slot`, creating it on first use: 0, or -2 when
-/// it cannot allocate (nothing is queued and `data` stays the caller's).
-///
-/// # Safety
-/// `slot` holds null or a queue from this module, and the loop may run `call(data)`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_reactor_deferred_push(
-    slot: &mut *mut ReactorDeferred,
-    call: DeferCall,
-    data: *mut c_void,
-    dispose: Option<DeferDispose>,
-) -> i32 {
-    push(
-        slot,
-        Task::Native {
-            call,
-            data,
-            dispose,
-        },
-    )
-}
-
 /// Appends `task` to the queue in `slot`, creating it on first use: 0, or -2 when it
 /// cannot allocate (nothing is queued). `slot` is a reactor's `defer_tasks` or
 /// `destroy_callbacks`, which hold null or a queue from this module.
@@ -276,6 +254,21 @@ mod tests {
         ptr::without_provenance_mut(value)
     }
 
+    /// `push` of the native task `call(data)`.
+    fn push_native(
+        slot: &mut *mut ReactorDeferred,
+        call: DeferCall,
+        data: *mut c_void,
+        dispose: Option<DeferDispose>,
+    ) -> i32 {
+        let task = Task::Native {
+            call,
+            data,
+            dispose,
+        };
+        push(slot, task)
+    }
+
     /// base.cc's `Reactor::defer` and the defer end callback: FIFO, a task's own defer
     /// lands on the next pass, and the queue is gone once run.
     #[test]
@@ -320,10 +313,7 @@ mod tests {
             defer(fields, record, token(1), None);
             defer(fields, escape, token(2), None);
             let slot = &raw mut (*fields).defer_tasks;
-            assert_eq!(
-                swr_v1_reactor_deferred_push(&mut *slot, record, token(3), Some(disposed)),
-                0
-            );
+            assert_eq!(push_native(&mut *slot, record, token(3), Some(disposed)), 0);
             let owner = std::panic::AssertUnwindSafe(state.owner);
             assert!(std::panic::catch_unwind(move || run_defer(running(*owner))).is_err());
             assert_eq!(take(), [1, 2]);
@@ -343,17 +333,14 @@ mod tests {
             let mut queue = ptr::null_mut();
             unsafe {
                 for i in 0..count {
-                    assert_eq!(
-                        swr_v1_reactor_deferred_push(&mut queue, record, token(i), None),
-                        0
-                    );
+                    assert_eq!(push_native(&mut queue, record, token(i), None), 0);
                 }
                 assert_eq!(take(), []);
                 deferred_run(queue);
                 assert_eq!(take(), (0..count).collect::<Vec<_>>());
                 deferred_run(queue);
                 assert_eq!(take(), []);
-                swr_v1_reactor_deferred_push(&mut queue, record, token(99), None);
+                push_native(&mut queue, record, token(99), None);
                 deferred_run(queue);
                 assert_eq!(take(), [99]);
                 deferred_free(&mut queue);
@@ -389,8 +376,8 @@ mod tests {
     fn free_disposes_unrun_tasks() {
         let mut queue = ptr::null_mut();
         unsafe {
-            swr_v1_reactor_deferred_push(&mut queue, record, token(99), Some(disposed));
-            swr_v1_reactor_deferred_push(&mut queue, record, token(7), None);
+            push_native(&mut queue, record, token(99), Some(disposed));
+            push_native(&mut queue, record, token(7), None);
             deferred_free(&mut queue);
             assert_eq!(take(), [1099]);
             assert!(queue.is_null());

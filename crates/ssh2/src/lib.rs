@@ -17,8 +17,9 @@
 )]
 
 use std::{
-    ffi::{c_char, c_int, c_long, c_uint, c_ulong},
-    ptr,
+    ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong},
+    marker::PhantomData,
+    ptr::{self, NonNull},
 };
 use swoole_rs_ssh2_sys::{
     KbdintResponse, LIBSSH2_AGENT, LIBSSH2_CHANNEL, LIBSSH2_ERROR_EAGAIN,
@@ -62,12 +63,36 @@ fn event(directions: c_int) -> c_int {
     }
 }
 
-/// The session an export parks on: live for as long as the value is used,
-/// which [`Wait::new`], the only place that makes one, has its caller promise.
+/// The session an export parks on, live for as long as the value is used. Only an
+/// export's parameter makes one, where the C caller's contract (the export's
+/// `# Safety`) stands for the constructor, as it does for a `&T` parameter there.
 /// A `LIBSSH2_SESSION *`'s layout, and neither `Send` nor `Sync`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct Session(*mut LIBSSH2_SESSION);
+pub struct Session(*mut LIBSSH2_SESSION);
+
+/// A NUL-terminated string live for `'a`, as an alias takes the SDK's `const char *`
+/// arguments it measures. A `const char *`'s layout, and made as [`Session`] is.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Text<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+
+impl Text<'_> {
+    /// The string, as libssh2 takes it.
+    fn as_ptr(self) -> *const c_char {
+        self.0.as_ptr()
+    }
+
+    /// `(unsigned int) strlen(text)`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the upstream alias casts strlen to unsigned int"
+    )]
+    fn len(self) -> c_uint {
+        // SAFETY: the type's invariant: NUL-terminated and live for `'a`.
+        unsafe { CStr::from_ptr(self.0.as_ptr()) }.count_bytes() as c_uint
+    }
+}
 
 // libssh2's own declarations of two calls that read a live session's state and
 // nothing else, with the session typed as the handle it is.
@@ -78,25 +103,13 @@ unsafe extern "C" {
     safe fn session_last_errno(session: Session) -> c_int;
 }
 
-/// The lent wait and the session it parks on, as an export received them.
+/// The lent wait and the session it can wait on, as an export received them.
 struct Wait<'a> {
     ops: &'a Ops,
     session: Session,
 }
 
 impl Wait<'_> {
-    /// # Safety
-    /// `ops` is the lent table and `session` a live session it can wait on,
-    /// both for as long as the value is used.
-    unsafe fn new(ops: *const Ops, session: *mut LIBSSH2_SESSION) -> Self {
-        // SAFETY: per the caller.
-        let ops = unsafe { &*ops };
-        Self {
-            ops,
-            session: Session(session),
-        }
-    }
-
     /// The event to wait for on the session.
     fn blocked(&self) -> c_int {
         event(block_directions(self.session))
@@ -109,7 +122,8 @@ impl Wait<'_> {
 
     /// Park the coroutine until `event` on the session's socket.
     fn park(&self, event: c_int) -> bool {
-        // SAFETY: the lent table's wait, on the session it can wait on (`new`).
+        // SAFETY: the lent table's wait, on the session it can wait on (the
+        // export's contract).
         unsafe { (self.ops.wait)(self.session.0, event) }
     }
 
@@ -199,12 +213,11 @@ macro_rules! hooks {
     (@int $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
         #[doc = concat!("`", stringify!($function), "`, retried while it says `EAGAIN`.")]
         /// # Safety
-        /// `ops` is the lent table, `wait_on` a live session, and the rest are
-        /// the libssh2 function's arguments.
+        /// `ops` is the lent table, `wait_on` a live session it can wait on, and
+        /// the rest are the libssh2 function's arguments.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
-            // SAFETY: per the caller.
-            let wait = unsafe { Wait::new(ops, wait_on) };
+        pub unsafe extern "C" fn $export(ops: &Ops, wait_on: Session, $($arg: $ty),*) -> $ret {
+            let wait = Wait { ops, session: wait_on };
             // SAFETY: the caller's arguments, as libssh2 takes them.
             wait.retry(wait.blocked(), || unsafe { $function($($arg),*) }.narrow())
         }
@@ -214,9 +227,8 @@ macro_rules! hooks {
         /// # Safety
         /// As the `int` exports.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $export(ops: *const Ops, wait_on: *mut LIBSSH2_SESSION, $($arg: $ty),*) -> $ret {
-            // SAFETY: per the caller.
-            let wait = unsafe { Wait::new(ops, wait_on) };
+        pub unsafe extern "C" fn $export(ops: &Ops, wait_on: Session, $($arg: $ty),*) -> $ret {
+            let wait = Wait { ops, session: wait_on };
             // SAFETY: the caller's arguments, as libssh2 takes them.
             let call = || unsafe { $function($($arg),*) };
             wait.retry_pointer(wait.blocked(), call, || wait.last_errno())

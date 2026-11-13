@@ -34,17 +34,16 @@ same target.
 
 ## WebSocket kernel (feature value 1)
 
-Only Rust calls this kernel (`crates/websocket-ffi`'s frame codec), so no C header declares it; a
-C caller would add the prototype beside the C that uses it.
+The mask kernel is `websocket::mask` under its upstream symbol; nothing else called
+it, so it has no `swr_v1_*` name of its own.
 
-- `int32_t swr_v1_ws_mask(data, length, key)`: XORs `data` in place with a
-  four-byte key. Returns 0, or -1 for null/oversized input. Length 0 is a no-op
-  and allows null. The key is copied first, so it may alias the payload. Byte
-  alignment suffices.
+- `void mask(data, length, key)`: XORs `data` in place with a four-byte key. Null or
+  oversized input writes nothing and logs a warning. Length 0 is a no-op and allows
+  null. The key is copied first, so it may alias the payload. Byte alignment suffices.
 
-It allocates nothing, retains no pointer, invokes no callback and has no global
-state. The rest of the codec is `native/websocket/swoole_rs_websocket_codec.h`.
-Both are exported by crates/websocket-ffi over crates/websocket's safe codec.
+It allocates nothing, retains no pointer and has no global state. The rest of the codec
+is `native/websocket/swoole_rs_websocket_codec.h`. Both are exported by
+crates/websocket-ffi over crates/websocket's safe codec.
 
 ## Other module contracts
 

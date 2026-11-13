@@ -318,7 +318,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             let packed = ctx.packed.cast::<EventHead>();
             // SAFETY: an `EventData` (the context's, or the source's result slot) and
             // the result's bytes.
-            u64::from(unsafe { task_pack(packed, ctx.data.as_ptr().cast(), ctx.data.len()) })
+            u64::from(unsafe { task_pack(packed, ctx.data) })
         }
         OP_ZERO_RESULT => {
             ctx.edit_packed(|packed| packed.len = 0);

@@ -677,6 +677,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-error",
+ "swoole-rs-oracle",
 ]
 
 [[package]]

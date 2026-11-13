@@ -2,9 +2,8 @@
 
 `crates/protocols` implements MQTT framing, SOCKS5 wire/state/configuration
 policy and RESP command/receive/reply policy over borrowed slices, and forbids
-`unsafe`. `crates/protocols-ffi` is the C contract over it
-(`native/protocols/swoole_rs_protocols.h`) and the upstream-symbol `mqtt` and
-`Socks5Proxy` entries. `crates/bus` is MessageBus chunking/fairness/membership.
+`unsafe`. `crates/protocols-ffi` is the C contract over it: the upstream-symbol
+`mqtt` and `Socks5Proxy` entries, and `redis::recv_packet`'s loop. `crates/bus` is MessageBus chunking/fairness/membership.
 
 ## Boundaries and compatibility
 
@@ -58,15 +57,11 @@ python3 tests/modules/protocols/native.py --source /pinned/reference \
 ```
 
 `native.py` compiles unchanged pinned function bodies (`adapter.inc`, `native.cc`)
-with modeled String allocation/socket I/O and compares their MQTT, SOCKS and RESP
-traces with the build's Rust: the upstream-symbol exports and the hybrid
-`Socks5Proxy` header over them.
-The build has no `redis::format`/`parse`; `redis_reply.inc` gives them over Rust's
-codec to this gate. A seeded 10,000-wire RESP corpus also runs the exact original PHP
-request-parser loop with modeled Zend parameters against Rust typed events. C++
-ASan/UBSan does not instrument Rust. Failing cases print trial/seed.
+with a modeled Address and compares their MQTT and SOCKS traces with the build's
+Rust: the upstream-symbol exports and the hybrid `Socks5Proxy` header over them. C++
+ASan/UBSan does not instrument Rust.
 
-Two of the gate's parts had Rust subjects that nothing but the gate called. They are
+The gate's RESP parts had Rust subjects that nothing but the gate called. They are
 `native.rs` (the `native` test of `swoole-rs-protocols-ffi`), one Rust test per part,
 each C export replaced by the safe function that was its body:
 
@@ -74,6 +69,26 @@ each C export replaced by the safe function that was its body:
 | --- | --- | --- |
 | `receive_states`: every split of eight commands at three package limits against the pinned `redis::recv_packet` | `receive_states` | `swr_v1_resp_recv` over C effects → `recv_packet` over a `RespConnection` |
 | `handler_key_trace`: 2432 keys against `snprintf` and an ASCII case model | `handler_keys` | `swr_v1_resp_handler_key` → `resp_handler_key` |
+| Five values and five integers as each of the seven reply types against the pinned `redis::format` overloads (70) | `reply_formats` | `swr_v1_resp_format` → `resp_format` |
+| Integers, numbers at and past a signed long from errno 0, `EDOM` and `ERANGE`, 1 to 128 arguments, permissive fallthrough and bulk payloads against the pinned `redis::parse`, or `get_number` where parse reads outside its input (134) | `parse_replies` | `swr_v1_resp_scan`, `swr_v1_resp_parse_range` → `resp_spans` |
+| `seeded_resp_trace`: 10,000 seeded wires through the pinned `redis::parse` and the pinned PHP request loop with modeled Zend parameters, strings, parameters and errno compared | `seeded_requests` | `swr_v1_resp_scan`, `swr_v1_resp_php_next` → `resp_spans`, `resp_php_next` |
+| The bounded failures that leave their output alone | `bounded_failures_leave_output` | `swr_v1_mqtt_frame_length`, `swr_v1_socks_auth`, `swr_v1_socks_connect`, `swr_v1_resp_format` → `mqtt_frame_length`, `socks_auth`, `socks_connect`, `resp_format` |
+
+The pinned sides are `crates/oracle`'s `protocols`: `redis::get_number`, `parse` and
+`format` from the pinned redis.cc and the request loop from the pinned
+`ext-src/swoole_redis_server.cc`, copied unchanged by its build script. `redis::parse`
+over Rust's spans is `redis_reply.inc`'s, which the gate compiled: an integer span in
+decimal, any other span's bytes, nothing for a malformed wire, and `ERANGE` set by the
+caller. `seeded_requests` also asserts the gate's `resp_corpus_fnv1a64`
+(`c51ae5cf4cf33d44`), so the wires are the ones `native.cc` generated.
+
+Five of the gate's assertions checked the exports' own argument validation, which
+went with the exports: a null pointer with a nonzero length (`swr_v1_mqtt_frame_length`,
+`swr_v1_socks_auth`, `swr_v1_resp_format`), `swr_v1_resp_parse_range`'s -2 for a
+non-null output of capacity 0, and `swr_v1_resp_receive_range`'s -1 for a length past
+its capacity. Slices cannot carry those arguments, and the codec has no such cases.
+The one export left that takes a pointer and a length, `Socks5Proxy::handshake_step`,
+refuses a null reply in its own test.
 
 The pinned side of `receive_states` is `crates/oracle`'s `resp_stream::UPSTREAM_TRACE`:
 the unchanged `recv_packet` over the oracle's socket model, which logs each call's
@@ -82,9 +97,7 @@ and request state; the Rust loop runs over the same model and must log the same
 bytes. It makes the further calls the oracle's driver makes until the stream is
 drained, where the C++ gate made one. `handler_key_trace` also checked a guard byte
 either side of the export's 64-byte output, which went with the export:
-`resp_handler_key` returns its array. The gate's two calls of the
-`swr_v1_resp_parse` and `swr_v1_resp_receive` forwarders now call what they forwarded
-to (`swr_v1_resp_parse_range` and `swr_v1_resp_receive_range` with a null range).
+`resp_handler_key` returns its array.
 
 ## Actual PHP checks
 
@@ -130,8 +143,8 @@ expected values:
 | --- | --- |
 | `redis.get` | `redis.get` in `server.rs` |
 | `redis.server` | `redis.server` in `server.rs` |
-| `redis.format` | `format_empty_status_and_error` in `crates/protocols-ffi/src/redis.rs` |
-| `redis.parse` | `parse_integer_reply` in `crates/protocols-ffi/src/redis.rs` |
+| `redis.format` | `format_empty_status_and_error` in `native.rs` |
+| `redis.parse` | `parse_integer_reply` in `native.rs` |
 | `redis.recv_packet_with_partially_filled_buffer` | `recv_packet_with_partially_filled_buffer` in `crates/ports/src/resp_recv.rs` |
 | `message_bus.read` | `message_bus_read` in `crates/bus/src/lib.rs` |
 | `message_bus.read_with_buffer` | `message_bus_read_with_buffer` in `crates/bus/src/lib.rs` (Linux) |

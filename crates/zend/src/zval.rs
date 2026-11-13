@@ -64,6 +64,10 @@ unsafe extern "C" {
     /// `zend_ini_parse_quantity`: it reads the string, and writes a new error
     /// string or leaves `error` alone. It raises nothing itself.
     safe fn zend_ini_parse_quantity(value: &ZStr, error: &mut *mut zend_string) -> zend_long;
+    /// `zendi_smart_strcmp`: it reads the two strings' bytes and lengths, as
+    /// numbers when both are numeric (parsed with errors off, so nothing is
+    /// raised) and as bytes otherwise.
+    safe fn swr_zend_smart_strcmp(a: &ZStr, b: &ZStr) -> std::ffi::c_int;
     /// `zend_double_to_str`: a new string; no PHP code runs.
     safe fn zend_double_to_str(value: f64) -> *mut zend_string;
     /// `number_format(number)`: a new string; no PHP code runs.
@@ -887,6 +891,14 @@ impl ZStr {
     pub fn interned(&self) -> bool {
         let [_, info] = header(&self.0);
         info & IS_STR_INTERNED != 0
+    }
+
+    /// `zendi_smart_strcmp`: PHP's `==` order of two strings, numeric when
+    /// both are numeric strings.
+    #[must_use]
+    #[inline]
+    pub fn smart_cmp(&self, other: &Self) -> std::ffi::c_int {
+        swr_zend_smart_strcmp(self, other)
     }
 
     /// `zend_ini_parse_quantity`: an ini quantity ("64M").

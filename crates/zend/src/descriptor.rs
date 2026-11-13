@@ -55,6 +55,14 @@ impl Value {
         }
     }
 
+    /// `php_stream_from_zval_no_verify`: the stream a resource this holds
+    /// names, or null for any other value or resource. A pointer: the
+    /// resource, not this borrow, keeps the stream.
+    #[must_use]
+    pub fn stream(&self) -> *mut crate::sys::php_stream {
+        swr_zend_stream_from_zval(self)
+    }
+
     /// A stream resource's descriptor (`php_stream_cast` for select), if it
     /// is one and has one.
     /// # Errors

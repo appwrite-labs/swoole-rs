@@ -5,7 +5,7 @@
 //! `file_put_contents`. Logs name the function as upstream's `__SW_FUNC__` did.
 use crate::file::{FileIo, file_open, file_size, tmpfile, write_all};
 use crate::file_record::FileRecord;
-use libc::{c_char, c_int};
+use libc::c_int;
 use std::ffi::CStr;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{log, sys};
@@ -53,21 +53,6 @@ fn size_of_fd(fd: c_int) -> isize {
         log::set_last_error(size.error);
     }
     isize::try_from(size.size).unwrap_or(-1)
-}
-
-/// `int swoole_tmpfile(char *filename)`.
-///
-/// # Safety
-/// `filename` is a writable NUL-terminated `XXXXXX` template.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z14swoole_tmpfilePc")
-)]
-pub unsafe extern "C" fn swoole_tmpfile(filename: *mut c_char) -> c_int {
-    // SAFETY: as the caller promises.
-    let length = unsafe { CStr::from_ptr(filename) }.count_bytes() + 1;
-    // SAFETY: as the caller promises: `length` bytes through the NUL, writable.
-    create_tmpfile(unsafe { std::slice::from_raw_parts_mut(filename.cast(), length) })
 }
 
 /// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`

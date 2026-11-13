@@ -29,9 +29,8 @@ pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     if !sock.data().has_stream() {
         return socket.close_trapped().map(drop);
     }
-    let stream_value = sock.data().stream();
-    // SAFETY: this is the initialized imported stream zval used by the original no-verify lookup.
-    let stream = unsafe { z::swr_zend_stream_from_zval(stream_value) };
+    // The original no-verify lookup of the imported stream's zval.
+    let stream = sock.data().stream();
     if !stream.is_null() {
         let mut flags = z::PHP_STREAM_FREE_KEEP_RSRC | z::PHP_STREAM_FREE_CLOSE;
         // SAFETY: read the real PHP stream bitfield before calling its close operation.

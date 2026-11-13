@@ -38,7 +38,6 @@ struct swr_case_reactor_view {
     const void *write;
     const void *close;
     const void *defer_tasks;
-    const void *default_write_handler;
     void *ptr;
 };
 
@@ -56,7 +55,6 @@ swr_case_reactor_view swr_case_reactor_view_of(const Reactor *r) {
             reinterpret_cast<const void *>(r->write),
             reinterpret_cast<const void *>(r->close),
             r->defer_tasks,
-            reinterpret_cast<const void *>(r->default_write_handler()),
             r->ptr};
 }
 // wait_exit, once and running take 0 or 1; -1 leaves the field.
@@ -87,9 +85,6 @@ void swr_case_reactor_set_handler(Reactor *r, int fd_type, int event, void *hand
 bool swr_case_reactor_isset_handler(Reactor *r, int fd_type, int event) {
     return r->isset_handler(fd_type, event);
 }
-void *swr_case_reactor_get_handler(Reactor *r, int fd_type, int event) {
-    return reinterpret_cast<void *>(r->get_handler(static_cast<FdType>(fd_type), static_cast<EventType>(event)));
-}
 bool swr_case_reactor_exists_fd(Reactor *r, int fd) {
     return r->exists(fd);
 }
@@ -107,8 +102,9 @@ void swr_case_reactor_set_end_callback(Reactor *r, int id, End fn) {
 void swr_case_reactor_erase_end_callback(Reactor *r, int id) {
     r->erase_end_callback(static_cast<Reactor::EndCallback>(id));
 }
-void swr_case_reactor_defer(Reactor *r, Plain fn, void *data) {
-    r->defer(fn, data);
+// `sw_reactor()->defer(fn, data)`.
+void swr_case_event_defer(Plain fn, void *data) {
+    swoole_event_defer(fn, data);
 }
 // which: 0 future_task, 1 idle_task.
 void swr_case_reactor_set_task(Reactor *r, int which, Plain fn, void *data) {

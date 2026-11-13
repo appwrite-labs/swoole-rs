@@ -2,13 +2,13 @@
 //! pipe entries in ext-src/swoole_server.cc): the record crates/process lays
 //! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
 use std::{
-    ffi::{c_int, c_void},
-    mem::MaybeUninit,
+    cell::{OnceCell, UnsafeCell},
+    ffi::c_int,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
-    worker_record::WorkerRecord,
+    worker_record::{Worker, WorkerRecord},
 };
 use swoole_rs_reactor::{
     Socket, event_api,
@@ -40,16 +40,59 @@ pub(crate) struct WorkerView {
     pub redirect_stderr: bool,
 }
 
-/// `f` over the worker's record, borrowed for the call only.
-pub(crate) fn with<R>(worker: *mut c_void, f: impl FnOnce(&mut WorkerRecord) -> R) -> R {
-    // SAFETY: every caller passes a live worker this process owns or copied, and
-    // no `f` reaches a worker's record again.
-    f(unsafe { &mut *worker.cast::<WorkerRecord>() })
+/// The `Worker` a Process object owns, boxed so that native code can keep its
+/// address: none before the constructor (or `Pool::getProcess`) makes it, then
+/// the same record until the object is freed. It is set once and never moved
+/// or replaced, so a handle borrowed from the slot names a live record.
+#[derive(Default)]
+pub(crate) struct Slot(OnceCell<Box<UnsafeCell<WorkerRecord>>>);
+
+impl Slot {
+    /// The object's worker, once it has one.
+    pub(crate) fn get(&self) -> Option<Worker<'_>> {
+        let record = self.0.get()?.get();
+        // SAFETY: the slot's own boxed record, which lives until the slot drops,
+        // so for longer than the borrow; only the thread that runs the object's
+        // methods reads or writes it, one field at a time.
+        Some(unsafe { Worker::new(record) })
+    }
+
+    /// Take `record` as the object's worker; false, with `record` dropped,
+    /// when the object has one already.
+    pub(crate) fn set(&self, record: WorkerRecord) -> bool {
+        self.0.set(Box::new(UnsafeCell::new(record))).is_ok()
+    }
+}
+
+impl Drop for Slot {
+    /// `delete worker`: the pipe it owns unless it shares a server's, then the
+    /// record with the slot.
+    fn drop(&mut self) {
+        let Some(record) = self.0.get_mut() else {
+            return;
+        };
+        let record = record.get_mut();
+        if !record.pipe_object.is_null() && !record.shared {
+            // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
+            // nothing uses afterwards.
+            delete_pair(unsafe { Box::from_raw(record.pipe_object.cast()) });
+        }
+    }
+}
+
+/// `f` over the worker's record, borrowed for the call only. Private: every
+/// `f` is a closure of this module that reads or writes fields and returns.
+fn with<R>(worker: Worker<'_>, f: impl FnOnce(&mut WorkerRecord) -> R) -> R {
+    // SAFETY: the handle's record is live (`Worker::new`'s contract), and it is
+    // one this process alone uses: a Process object's own ([`Slot::get`]) or the
+    // user worker a server starts this process as. No `f` reaches a worker's
+    // record again, so the borrow is the only one while it runs.
+    f(unsafe { &mut *worker.raw() })
 }
 
 /// `new Worker()`.
-pub(crate) fn new() -> *mut c_void {
-    Box::into_raw(WorkerRecord::boxed()).cast()
+pub(crate) fn new() -> WorkerRecord {
+    *WorkerRecord::boxed()
 }
 
 /// `delete pair`: the pair's ends, then its box.
@@ -57,21 +100,14 @@ fn delete_pair(mut pair: Box<SocketPair>) {
     socket_pair::drop(&mut pair);
 }
 
-/// Frees a worker `new` made, and the pipe it owns unless it shares a server's.
-/// # Safety
-/// `worker` came from `new` and nothing uses it afterwards.
-pub(crate) unsafe fn free(worker: *mut c_void) {
-    // SAFETY: as the caller promises.
-    let worker = unsafe { Box::from_raw(worker.cast::<WorkerRecord>()) };
-    if !worker.pipe_object.is_null() && !worker.shared {
-        // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
-        // nothing uses afterwards.
-        delete_pair(unsafe { Box::from_raw(worker.pipe_object.cast()) });
-    }
+/// In a server worker thread, the worker becomes a copy of its server worker
+/// (shared); false elsewhere, or past the server's last worker.
+pub(crate) fn share(worker: Worker<'_>) -> bool {
+    with(worker, crate::host::worker_share)
 }
 
 /// Redirect stdin, stdout and stderr to the pipe in the child.
-pub(crate) fn redirect(worker: *mut c_void) {
+pub(crate) fn redirect(worker: Worker<'_>) {
     with(worker, |worker| {
         worker.redirect_stdin = true;
         worker.redirect_stdout = true;
@@ -79,7 +115,7 @@ pub(crate) fn redirect(worker: *mut c_void) {
     });
 }
 
-pub(crate) fn set_id(worker: *mut c_void, id: u32) {
+pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
     with(worker, |record| {
         record.set_id(id);
         record.shared = false;
@@ -87,7 +123,7 @@ pub(crate) fn set_id(worker: *mut c_void, id: u32) {
 }
 
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
-pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
+pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> c_int {
     let mut built = Box::new(socket_pair::unix_socket(true, socket_type));
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
@@ -105,13 +141,13 @@ pub(crate) fn open_pipe(worker: *mut c_void, socket_type: c_int) -> c_int {
 }
 
 /// The worker's current pipe end, while it has one.
-fn pipe<'a>(worker: *mut c_void) -> Option<Socket<'a>> {
+fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
     let current = with(worker, |record| record.pipe_current);
     // SAFETY: a worker's current pipe end is null or a live socket of its pair.
     unsafe { Socket::from_ptr(current.cast()) }
 }
 
-pub(crate) fn view(worker: *mut c_void) -> WorkerView {
+pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
     let pipe = pipe(worker).map_or(-1, Socket::fd);
     with(worker, |record| WorkerView {
         id: record.id(),
@@ -125,7 +161,7 @@ pub(crate) fn view(worker: *mut c_void) -> WorkerView {
 }
 
 /// `swoole_fork(0)`, recording the child's pid in the parent.
-pub(crate) fn fork(worker: *mut c_void) -> c_int {
+pub(crate) fn fork(worker: Worker<'_>) -> c_int {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid > 0 {
         with(worker, |record| record.set_pid(pid));
@@ -137,7 +173,7 @@ pub(crate) fn fork(worker: *mut c_void) -> c_int {
 }
 
 /// In the child: the worker end becomes the pipe and the worker this process's.
-pub(crate) fn child_enter(worker: *mut c_void) {
+pub(crate) fn child_enter(worker: Worker<'_>) {
     let pid = swoole_rs_process::os::getpid();
     let id = with(worker, |process| {
         process.pipe_current = process.pipe_worker;
@@ -146,17 +182,16 @@ pub(crate) fn child_enter(worker: *mut c_void) {
     });
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
-    swoole_rs_process::worker_globals::set_current_worker(worker.cast());
+    swoole_rs_process::worker_globals::set_current_worker(worker.raw());
 }
 
 /// Read up to `buffer`'s capacity from the pipe: the length read, or -1.
-pub(crate) fn pipe_read(worker: *mut c_void, buffer: &mut ZBuf, blocking: bool) -> isize {
+pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut ZBuf, blocking: bool) -> isize {
     let Some(socket) = pipe(worker) else {
         return -1;
     };
-    let (data, length) = (buffer.as_mut_ptr().cast(), buffer.capacity());
-    // SAFETY: the buffer's own `capacity` writable bytes, borrowed with it.
-    let spare: &mut [MaybeUninit<u8>] = unsafe { std::slice::from_raw_parts_mut(data, length) };
+    // An empty buffer: its whole capacity.
+    let spare = buffer.spare_capacity_mut();
     if blocking {
         read_sync(socket, spare)
     } else {
@@ -165,7 +200,7 @@ pub(crate) fn pipe_read(worker: *mut c_void, buffer: &mut ZBuf, blocking: bool) 
 }
 
 /// Write `data` to the pipe: the length written, or -1.
-pub(crate) fn pipe_write(worker: *mut c_void, data: &[u8], blocking: bool) -> isize {
+pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> isize {
     let Some(socket) = pipe(worker) else {
         return -1;
     };
@@ -179,9 +214,9 @@ pub(crate) fn pipe_write(worker: *mut c_void, data: &[u8], blocking: bool) -> is
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,
 /// then free the pair); -1 when the worker owns no pipe object.
-pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
+pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> c_int {
     let fd = pipe(worker).map_or(-1, Socket::fd);
-    let pair = with(worker, |record| record.pipe_object).cast::<SocketPair>();
+    let pair = worker.pipe_object().cast::<SocketPair>();
     if pair.is_null() {
         return -1;
     }
@@ -207,7 +242,7 @@ pub(crate) fn pipe_close(worker: *mut c_void, which: i64) -> c_int {
 }
 
 /// The pipe's timeouts and kernel timeouts; false without a pipe.
-pub(crate) fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
+pub(crate) fn pipe_timeout(worker: Worker<'_>, seconds: f64) -> bool {
     pipe(worker).is_some_and(|socket| {
         socket.edit(|record| {
             record.timeouts.set(seconds, TIMEOUT_ALL);
@@ -218,7 +253,7 @@ pub(crate) fn pipe_timeout(worker: *mut c_void, seconds: f64) -> bool {
 }
 
 /// The pipe's `O_NONBLOCK`; false without a pipe.
-pub(crate) fn pipe_blocking(worker: *mut c_void, blocking: bool) -> bool {
+pub(crate) fn pipe_blocking(worker: Worker<'_>, blocking: bool) -> bool {
     pipe(worker).is_some_and(|socket| {
         socket.edit(|record| socket_set_fd_option(record, c_int::from(!blocking), -1))
     })

@@ -94,16 +94,20 @@ impl Callable {
                 // SAFETY: this live callable's cache, `argc` live arguments and a
                 // writable return slot or null; the reporter is C.
                 let called = unsafe {
-                    super::swr_v1_phphelpers_call(
+                    super::private::direct_call(
                         ptr::null_mut(),
                         self.cache_ptr(),
                         argc,
                         argv,
                         retval,
-                        true,
                         sys::swr_zend_callable_warning,
                     )
                 };
+                if !bailout::pending() {
+                    // A loop callback reports an uncaught exception at once.
+                    super::private::fatal_exception();
+                }
+                bailout::finish();
                 called == 0
             } else {
                 let called = self.invoke(argc, argv, retval);

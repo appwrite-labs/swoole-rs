@@ -582,18 +582,6 @@ pub extern "C" fn swoole_get_log_level() -> c_int {
 }
 
 /// `void swoole_set_log_file(const char *file)`.
-/// # Safety
-/// `file` is a NUL-terminated path.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_set_log_filePKc")
-)]
-pub unsafe extern "C" fn swoole_set_log_file(file: *const c_char) {
-    // SAFETY: a NUL-terminated path, per the contract.
-    set_log_file(unsafe { CStr::from_ptr(file) });
-}
-
-/// [`swoole_set_log_file`] over a C string.
 pub fn set_log_file(file: &CStr) {
     if let Some(logger) = process_logger() {
         logger.open(file);

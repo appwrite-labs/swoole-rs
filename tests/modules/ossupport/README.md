@@ -21,7 +21,7 @@ values (`cargo test -p swoole-rs-ossupport --all-features os_`):
 | `os.cpu_affinity` | `system::tests::os_cpu_affinity` (Linux). `swoole_set_cpu_affinity` and `swoole_get_cpu_affinity` left the build (crates/process `affinity.rs` pins workers and nothing called the getter), so the case sets and gets through their bodies, `sched_setaffinity(getpid())` and `sched_getaffinity(getpid())`, as `CpuSet::set_process` and `CpuSet::get_process` make them |
 | `os.thread_name` | `system::tests::os_thread_name` (Linux, whose 15-byte limit fails the second name) |
 | `os.thread_id` | none: `swoole_thread_id_to_str` left the build with its one caller, the async-thread warnings, so there is no function to test |
-| `os.set_isolation` | `system::tests::os_set_isolation`, over `swr_v1_os_set_isolation` |
+| `os.set_isolation` | `system::tests::os_set_isolation`, over `set_isolation` |
 
 `core-tests/src/os/file.cpp` tests `src/os/file.cc`, which is Rust (`crates/ossupport`'s
 `file.rs`, `file_api.rs` and `file_record.rs`). Its `ASSERT_ERREQ`s read the last error, which only the log
@@ -37,5 +37,5 @@ host `swoole_init` installs sets, so its TESTs are `file.<name>` in
 | `file.file_get_size` | `file.file_get_size`, over `file::file_size` (`file_get_size(int)`), which returns the error its caller publishes. The path overload left the build, so its ENOENT check has no subject |
 | `file.open_twice` | `file_record::tests::file_open_twice`, over `FileRecord::open`/`close` (`cargo test -p swoole-rs-ossupport file_open_twice`) |
 | `file.error` | `file.error`: `FileRecord::read_all`'s failure and errno (its callers warn), `fd_write_all` (`File::write_all`, which warns), and `file_size`'s `fstat` for `File::stat` |
-| `file.tmp_file` | `file.tmp_file` (`swoole_tmpfile`), and crates/process's `task_file::tests::make_tmpfile_in_a_missing_directory` for `make_tmpfile` |
+| `file.tmp_file` | `file.tmp_file`, over `file_api::create_tmpfile` (`swoole_tmpfile`'s body), and crates/process's `task_file::tests::make_tmpfile_in_a_missing_directory` for `make_tmpfile` |
 | `file.empty_file` | `file.empty_file`, over `FileRecord::read_all` |

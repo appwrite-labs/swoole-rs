@@ -12,6 +12,7 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{
     log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
 };
@@ -460,9 +461,9 @@ unsafe extern "C" {
     // crates/zend-sys' shims over process globals (no thread's), each a NUL-terminated
     // string live until the process ends.
     /// `PHP_VERSION`, a literal.
-    safe fn swr_zend_php_version() -> *const c_char;
+    safe fn swr_zend_php_version() -> Text<'static>;
     /// `sapi_module.name`, set before any module starts.
-    safe fn swr_zend_sapi_name() -> *const c_char;
+    safe fn swr_zend_sapi_name() -> Text<'static>;
 }
 
 /// [`php_swoole_load_library`] as a `void (*)(void)`, for `swr_zend_try_hook`.
@@ -477,8 +478,7 @@ extern "C" fn core_startup() {
     const AFTER_FORK: c_int = 12;
     swoole_init();
     swoole_rs_corebase::swoole_add_hook(AFTER_FORK, swr_zend_after_fork, 0);
-    // SAFETY: PHP_VERSION, a static string.
-    let version = unsafe { CStr::from_ptr(swr_zend_php_version()) }.to_bytes();
+    let version = swr_zend_php_version().get().to_bytes();
     swoole_rs_corebase::bug_report_append(&[b"PHP_VERSION : ", version, b"\n"].concat());
 }
 
@@ -527,8 +527,7 @@ unsafe extern "C" fn init_globals(globals: *mut c_void) {
     globals.blocking_threshold.set(100_000);
     globals.profile.set(false);
     globals.leak_detection.set(false);
-    // SAFETY: the SAPI's name, a NUL-terminated string set before any module starts.
-    let sapi = unsafe { CStr::from_ptr(swr_zend_sapi_name()) };
+    let sapi = swr_zend_sapi_name().get();
     if [c"cli", c"phpdbg", c"embed", c"micro"].contains(&sapi) {
         globals.cli.set(true);
     }

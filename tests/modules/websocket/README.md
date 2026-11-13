@@ -1,14 +1,15 @@
 # WebSocket tests
 
 The frame codec is `crates/websocket`, which forbids `unsafe`. Its C ABI is
-`crates/websocket-ffi`: the mask export in `docs/abi-v1.md` and `websocket.cc`'s
-C++-symbol entry points (`frame_api`). The PHP side is `crates/phphttp/src/websocket.rs`.
+`crates/websocket-ffi`: `websocket.cc`'s C++-symbol entry points (`frame_api`), the
+mask in `docs/abi-v1.md` among them. The PHP side is `crates/phphttp/src/websocket.rs`.
 
 ## Codec
 
 `cargo test -p swoole-rs-websocket -p swoole-rs-websocket-ffi` (`websocket-unit`) covers
-the codec at every opcode/flags combination and length boundary, and the mask
-export's pointer contract. The `fuzz/` targets `ws_frame_length`, `ws_decode` and
+the codec at every opcode/flags combination and length boundary, and
+`websocket::mask`'s pointer contract (`tests/kernel.rs`: a refused input is the one
+that logs the mask's warning). The `fuzz/` targets `ws_frame_length`, `ws_decode` and
 `ws_mask` compare the codec with the pinned C++ bodies.
 
 `codec.rs` (the `codec` test of `swoole-rs-websocket-ffi`) compares the codec with the

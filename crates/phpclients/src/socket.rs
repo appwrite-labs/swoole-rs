@@ -22,7 +22,7 @@ use swoole_rs_zend::{
     ZString,
     bailout::Bailout,
     string::ZBuf,
-    sys::{IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry, zval},
+    sys::{IS_UNDEF, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_class_entry},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -78,9 +78,13 @@ impl Data {
         self.socket.get()
     }
 
-    /// The imported stream's slot.
-    fn stream(&self) -> *mut zval {
-        self.stream.as_ptr().cast()
+    /// The imported stream (`php_stream_from_zval_no_verify`), or null when
+    /// the slot holds no stream resource.
+    fn stream(&self) -> *mut swoole_rs_zend::sys::php_stream {
+        let held = self.stream.take();
+        let stream = held.stream();
+        self.stream.set(held);
+        stream
     }
 
     /// Whether the object holds an imported stream.

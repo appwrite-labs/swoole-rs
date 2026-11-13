@@ -30,7 +30,6 @@ int main() {
     assert(SwooleG.max_sockets>0 && SwooleG.running && SwooleG.enable_coroutine && SwooleG.pagesize>0);
     SwooleG.max_sockets=91;SwooleG.dns_cache_refresh_time=2.5;
     assert(SwooleG.max_sockets==91 && SwooleG.dns_cache_refresh_time==2.5);
-    assert(swr_v1_core_set_task_tmpdir("/tmp") && !swr_v1_core_set_task_tmpdir("relative"));
     assert(SwooleTG.main_thread && swoole_is_main_thread());
     SwooleTG.id=19;SwooleTG.type=3;
     auto *id_address=&SwooleTG.id;

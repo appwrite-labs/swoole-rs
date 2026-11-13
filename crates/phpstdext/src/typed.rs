@@ -19,8 +19,7 @@ use swoole_rs_zend::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
         swr_zend_efree, swr_zend_separate_array, swr_zend_try_lookup_class, zend_class_entry,
-        zend_execute_data, zend_internal_function, zend_long, zend_value, zif_handler, zval,
-        zval_ptr_dtor,
+        zend_internal_function, zend_long, zend_value, zif_handler, zval_ptr_dtor,
     },
     throw_error, type_error,
     value::{self, table},
@@ -733,8 +732,7 @@ static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 /// # Safety
 /// At MINIT.
 pub(crate) unsafe fn install() {
-    type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
-    let handlers: [(_, Handler); 3] = [
+    let handlers: [(_, swoole_rs_zend::arginfo::Handler); 3] = [
         (c"array_push", zif_swoole_array_push),
         (c"array_unshift", zif_swoole_array_unshift),
         (c"array_splice", zif_swoole_array_splice),

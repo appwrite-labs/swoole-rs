@@ -190,10 +190,6 @@ pid_t swoole_fork(int flags);
 pid_t swoole_waitpid(pid_t _pid, int *_stat_loc, int _options);
 void swoole_thread_init(bool main_thread = false);
 void swoole_thread_clean(bool main_thread = false);
-extern "C" void swr_v1_os_set_isolation(const char *group, const char *user, const char *root);
-inline void swoole_set_isolation(const std::string &group_, const std::string &user_, const std::string &chroot_) {
-    swr_v1_os_set_isolation(group_.c_str(), user_.c_str(), chroot_.c_str());
-}
 
 namespace swoole {
 typedef long SessionId;
@@ -257,11 +253,6 @@ static inline bool swoole_get_env(const char *name, int *value) {
         *value = std::stoi(input);  // throws, as upstream
     }
     return true;
-}
-
-static inline bool swoole_set_task_tmpdir(const std::string &dir) {
-    (void) dir.at(0);  // throws on an empty path, as upstream
-    return swr_v1_core_set_task_tmpdir(dir.c_str());
 }
 
 namespace swoole {

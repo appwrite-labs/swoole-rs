@@ -11,8 +11,9 @@ not. Supported hosts: 64-bit macOS and Linux.
 
 ## Protocol selection and configuration
 
-`swr_v1_ports_protocol(flags, length_type)` selects the existing protocol setup
-branch; `swr_v1_ports_protocol_name(flags)` returns its static label. Datagram/DTLS
+crates/ports' `protocol(flags, length_type)` selects the existing protocol setup
+branch and `protocol_name(flags)` its static label: plain Rust functions, with no
+native symbol. Datagram/DTLS
 distinctions and the priority EOF > length > HTTP > MQTT > Redis are preserved,
 including for contradictory flags.
 

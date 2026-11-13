@@ -9,5 +9,18 @@ libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-error = { path = "../error" }
 
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+# The former native gates (tests/modules/locks/README.md): gate.cc against the pinned
+# bodies, and constructor.cc's faults at the pthread init calls.
+[[test]]
+name = "gate"
+path = "../../tests/modules/locks/gate.rs"
+
+[[test]]
+name = "constructor"
+path = "../../tests/modules/locks/constructor.rs"
+
 [lints]
 workspace = true

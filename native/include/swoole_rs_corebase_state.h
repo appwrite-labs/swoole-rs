@@ -39,8 +39,6 @@ typedef struct {
 #endif
 #undef SWR_CORE_ALLOCATOR_FIELDS
 size_t swr_v1_core_format_result(char *, size_t, int formatted, bool zero_query);
-/* swoole_set_task_tmpdir under its lock, with upstream's warnings. */
-bool swr_v1_core_set_task_tmpdir(const char *dir);
 /* The thread's last error is Rust's (crates/corebase/src/log.rs). */
 int swr_v1_core_last_error(void);
 void swr_v1_core_set_last_error(int);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 /* Swoole's include/swoole_lock.h, owned here: the server's Barrier, whose methods are Rust
- * (crates/locks) under their C++ symbols. Every lock kind is Rust's lock ABI
- * (swoole_rs_locks.h), with no C++ class. */
+ * (crates/locks) under their C++ symbols. Every lock kind is a Rust type (crates/locks'
+ * Lock and SharedMutex), with no C++ class or C entry point. */
 #pragma once
 
 #include "swoole.h"
@@ -10,7 +10,7 @@
 
 namespace swoole {
 
-// The lock kinds of Rust's lock ABI (swoole_rs_locks.h), as Swoole\Lock numbers them.
+// The lock kinds of crates/locks' Lock, as Swoole\Lock numbers them.
 struct Lock {
     enum Type {
         RW_LOCK = 1,

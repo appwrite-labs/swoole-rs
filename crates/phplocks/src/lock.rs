@@ -1,13 +1,12 @@
 //! `Swoole\Lock`: a process-shared mutex, rwlock or spinlock in Swoole's global
 //! memory pool, over the locks crate. Like upstream, a lock outlives its object:
 //! forked workers may still hold it.
-use std::sync::atomic::AtomicU64;
 use std::{
     cell::OnceCell,
     ffi::{CStr, c_int},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_locks::{Lock, swr_v1_locks_size};
+use swoole_rs_locks::Lock;
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::lock;
 use swoole_rs_zend::{
@@ -112,8 +111,7 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
 /// and `SpinLock` twins) makes one. Upstream throws a C++ exception, which
 /// terminates the process, when the pool or the lock's init fails.
 fn new_lock(kind: i32) -> Lock {
-    let words = swr_v1_locks_size(kind).div_ceil(size_of::<AtomicU64>());
-    pool::words(words)
+    pool::words(Lock::words(kind))
         .and_then(|storage| Lock::shared(kind, storage))
         .unwrap_or_else(|| swoole_rs_corebase::fatal("a shared lock can't be made"))
 }

@@ -3,7 +3,7 @@
 //! code reads in place, then its empty accessor members (`RustField` over
 //! `global.rs`'s record), whose bytes `views` reserves. Both sides assert the
 //! layout.
-use std::ffi::{CStr, CString, c_char, c_void};
+use std::ffi::{CStr, CString, c_void};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -174,15 +174,6 @@ fn set_task_path(
     Ok(())
 }
 
-/// [`set_task_tmpdir`] for native code.
-/// # Safety
-/// `dir` is a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_set_task_tmpdir(dir: *const c_char) -> bool {
-    // SAFETY: the caller's NUL-terminated string.
-    set_task_tmpdir(unsafe { CStr::from_ptr(dir) })
-}
-
 /// `bool swoole_set_task_tmpdir(const std::string &dir)` under its lock, with
 /// upstream's warnings.
 #[expect(
@@ -301,13 +292,13 @@ mod tests {
         let other = CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
         let held = task_tmpfile();
         // Readers may run before either setter, so start from one of the two.
-        assert!(unsafe { swr_v1_core_set_task_tmpdir(dir.as_ptr()) });
+        assert!(set_task_tmpdir(&dir));
         let templates = [template(&dir), template(&other)];
         std::thread::scope(|scope| {
             for dir in [&dir, &other] {
                 scope.spawn(move || {
                     for _ in 0..200 {
-                        assert!(unsafe { swr_v1_core_set_task_tmpdir(dir.as_ptr()) });
+                        assert!(set_task_tmpdir(dir));
                     }
                 });
                 scope.spawn(|| {

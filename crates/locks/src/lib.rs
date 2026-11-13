@@ -1,4 +1,4 @@
-//! Native-compatible synchronization. Callers allocate/free storage outside Rust.
+//! Native-compatible synchronization.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(
     not(test),
@@ -6,10 +6,6 @@
         clippy::undocumented_unsafe_blocks,
         clippy::multiple_unsafe_ops_per_block
     )
-)]
-#![expect(
-    clippy::missing_safety_doc,
-    reason = "every export is covered by the module-local C contract"
 )]
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("Rust locks require validated macOS or Linux platform contracts");
@@ -46,19 +42,19 @@ const MUTEX_ATTR: usize = words::<pthread_mutexattr_t>();
 const RW_LOCK: usize = words::<pthread_rwlock_t>();
 const RW_ATTR: usize = words::<pthread_rwlockattr_t>();
 
-/// The mutex storage of the lock ABI as C sees it; [`SharedMutex`] is the same bytes.
+/// A mutex and its attribute as C sees them; [`SharedMutex`] is the same bytes.
 #[repr(C)]
 struct Mutex {
     lock: pthread_mutex_t,
     attr: pthread_mutexattr_t,
 }
-/// The rwlock storage of the lock ABI as C sees it; [`RwLock`] is the same bytes.
+/// A rwlock and its attribute as C sees them; [`RwLock`] is the same bytes.
 #[repr(C)]
 struct RwLockLayout {
     lock: pthread_rwlock_t,
     attr: pthread_rwlockattr_t,
 }
-/// A rwlock and the attribute it was made from, in the lock ABI's storage.
+/// A rwlock and the attribute it was made from.
 #[derive(Debug)]
 #[repr(C)]
 struct RwLock {
@@ -158,35 +154,6 @@ unsafe extern "C" {
     safe fn pthread_spin_destroy(lock: SpinRef<'_>) -> c_int;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_size(kind: i32) -> usize {
-    match kind {
-        3 => size_of::<Mutex>(),
-        1 => size_of::<RwLockLayout>(),
-        #[cfg(target_os = "linux")]
-        5 => size_of::<pthread_spinlock_t>(),
-        _ => 0,
-    }
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_align(kind: i32) -> usize {
-    match kind {
-        3 => align_of::<Mutex>(),
-        1 => align_of::<RwLockLayout>(),
-        #[cfg(target_os = "linux")]
-        5 => align_of::<pthread_spinlock_t>(),
-        _ => 0,
-    }
-}
-/// Whether `storage` can be a `T`: not null, and aligned for it. With the kind's
-/// match this is [`valid`] in one branch, for the calls made per lock and unlock.
-fn holds<T>(storage: *mut c_void) -> bool {
-    !storage.is_null() && storage.cast::<T>().is_aligned()
-}
-fn valid(storage: *mut c_void, kind: i32) -> bool {
-    let align = swr_v1_locks_align(kind);
-    !storage.is_null() && align != 0 && (storage as usize).is_multiple_of(align)
-}
 // Failed lock initialization owns an initialized attribute, but not a live lock.
 fn init_result(result: c_int, destroy_attr: impl FnOnce()) -> c_int {
     if result != 0 {
@@ -247,35 +214,6 @@ impl RwLock {
     fn destroy(&self) {
         pthread_rwlockattr_destroy(&self.attr);
         pthread_rwlock_destroy(self.live());
-    }
-}
-// Lock storage below passed `valid`: non-null and aligned for its kind, and the caller
-// lends `swr_v1_locks_size(kind)` bytes of it for the call. Native code serializes
-// init and destroy against every other use.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_init(storage: *mut c_void, kind: i32, shared: i32) -> i32 {
-    if !valid(storage, kind) {
-        return EINVAL;
-    }
-    // SAFETY: the kind's size in writable bytes, as the caller lends: zeroed, so that
-    // the words below are values before pthread makes a lock of them.
-    unsafe { storage.cast::<u8>().write_bytes(0, swr_v1_locks_size(kind)) };
-    match kind {
-        3 => {
-            // SAFETY: writable, unused storage of a mutex's size and alignment, lent to
-            // this call alone.
-            let mutex = unsafe { &mut *storage.cast::<SharedMutex>() };
-            init_mutex(&mut mutex.lock, &mut mutex.attr, shared)
-        }
-        1 => {
-            // SAFETY: as above, of a rwlock's.
-            let rwlock = unsafe { &mut *storage.cast::<RwLock>() };
-            init_rwlock(&mut rwlock.lock, &mut rwlock.attr, shared)
-        }
-        #[cfg(target_os = "linux")]
-        // SAFETY: as above, of a spinlock's.
-        5 => pthread_spin_init(unsafe { &mut *storage.cast::<Spin>() }, shared),
-        _ => EINVAL,
     }
 }
 // Match sw_wait_for's exact attempt/sleep/backoff order, including its final attempt.
@@ -392,76 +330,6 @@ impl Live<'_> {
         }
     }
 }
-// Every call below takes a lock that `valid` checked and the caller initialized.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_lock(
-    storage: *mut c_void,
-    kind: i32,
-    operation: i32,
-    timeout: i32,
-    capabilities: u32,
-) -> i32 {
-    let lock = match kind {
-        // SAFETY: an initialized mutex, live for the call.
-        3 if holds::<Mutex>(storage) => unsafe { &*storage.cast::<SharedMutex>() }.live(),
-        1 if holds::<RwLockLayout>(storage) => {
-            // SAFETY: an initialized rwlock, live for the call.
-            Live::RwLock(unsafe { &*storage.cast::<RwLock>() }.live())
-        }
-        #[cfg(target_os = "linux")]
-        5 if holds::<pthread_spinlock_t>(storage) => {
-            // SAFETY: an initialized spinlock, live for the call.
-            Live::Spin(SpinRef(unsafe { &*storage.cast::<Spin>() }))
-        }
-        _ => return EINVAL,
-    };
-    lock.lock(operation, timeout, capabilities)
-}
-/// Marks its caller's path unlikely: `std::hint::cold_path`, which the fuzz toolchain
-/// doesn't have yet.
-#[cold]
-const fn cold() {}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_unlock(storage: *mut c_void, kind: i32) -> i32 {
-    if kind == 3 && holds::<Mutex>(storage) {
-        // SAFETY: an initialized mutex that this thread holds.
-        return unsafe { &*storage.cast::<SharedMutex>() }.unlock();
-    }
-    // After the mutex every Table row, task lock and default `Lock` is.
-    cold();
-    match kind {
-        1 if holds::<RwLockLayout>(storage) => {
-            // SAFETY: an initialized rwlock that this thread holds.
-            pthread_rwlock_unlock(unsafe { &*storage.cast::<RwLock>() }.live())
-        }
-        #[cfg(target_os = "linux")]
-        5 if holds::<pthread_spinlock_t>(storage) => {
-            // SAFETY: an initialized spinlock that this thread holds.
-            pthread_spin_unlock(SpinRef(unsafe { &*storage.cast::<Spin>() }))
-        }
-        _ => EINVAL,
-    }
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_locks_destroy(storage: *mut c_void, kind: i32) {
-    if !valid(storage, kind) {
-        return;
-    }
-    match kind {
-        // SAFETY: the mutex `swr_v1_locks_init` made, unlocked and destroyed once.
-        3 => unsafe { &*storage.cast::<SharedMutex>() }.destroy(),
-        // SAFETY: the rwlock `swr_v1_locks_init` made, unlocked and destroyed once.
-        1 => unsafe { &*storage.cast::<RwLock>() }.destroy(),
-        #[cfg(target_os = "linux")]
-        5 => {
-            // SAFETY: an initialized, unlocked spinlock, destroyed once.
-            pthread_spin_destroy(SpinRef(unsafe { &*storage.cast::<Spin>() }));
-        }
-        _ => (),
-    }
-}
-
 /// An initialized lock of one kind (`Lock::Type`: rwlock 1, mutex 3, spinlock 5),
 /// in heap storage it owns or in process-shared storage it keeps for the
 /// program's life. pthread reports misuse (unlocking a lock this thread doesn't
@@ -484,6 +352,19 @@ enum Held {
 }
 
 impl Lock {
+    /// The words [`shared`](Self::shared) needs for a lock of `kind`: a mutex's or
+    /// rwlock's with its attribute, or a spinlock's; 0 for a kind this platform lacks.
+    #[must_use]
+    pub const fn words(kind: i32) -> usize {
+        match kind {
+            3 => MUTEX_LOCK + MUTEX_ATTR,
+            1 => RW_LOCK + RW_ATTR,
+            #[cfg(target_os = "linux")]
+            5 => 1,
+            _ => 0,
+        }
+    }
+
     /// A thread-private lock (`new Mutex(false)` and its rwlock and spinlock
     /// twins); None for a kind this platform lacks, or when it can't be made.
     #[must_use]
@@ -491,8 +372,9 @@ impl Lock {
         match kind {
             3 => {
                 let mut mutex = Box::new(SharedMutex::new());
+                // Not `then_some`: dropping a `Lock` destroys it, and a failed init made none.
                 (init_mutex(&mut mutex.lock, &mut mutex.attr, 0) == 0)
-                    .then_some(Self(Held::Mutex(mutex)))
+                    .then(|| Self(Held::Mutex(mutex)))
             }
             1 => {
                 let mut rwlock = Box::new(RwLock {
@@ -500,12 +382,12 @@ impl Lock {
                     attr: [const { AtomicU64::new(0) }; RW_ATTR],
                 });
                 (init_rwlock(&mut rwlock.lock, &mut rwlock.attr, 0) == 0)
-                    .then_some(Self(Held::RwLock(rwlock)))
+                    .then(|| Self(Held::RwLock(rwlock)))
             }
             #[cfg(target_os = "linux")]
             5 => {
                 let mut spin = Box::new(Spin::new(0));
-                (pthread_spin_init(&mut spin, 0) == 0).then_some(Self(Held::Spin(spin)))
+                (pthread_spin_init(&mut spin, 0) == 0).then(|| Self(Held::Spin(spin)))
             }
             _ => None,
         }
@@ -543,7 +425,7 @@ impl Lock {
 
     fn live(&self) -> Live<'_> {
         match &self.0 {
-            Held::Mutex(mutex) => mutex.live(),
+            Held::Mutex(mutex) => Live::Mutex(MutexRef(&mutex.lock)),
             Held::SharedMutex(lock) => Live::Mutex(MutexRef(lock)),
             Held::RwLock(rwlock) => Live::RwLock(rwlock.live()),
             Held::SharedRwLock(lock) => Live::RwLock(RwLockRef(lock)),
@@ -610,10 +492,6 @@ impl SharedMutex {
             lock: [const { AtomicU64::new(0) }; MUTEX_LOCK],
             attr: [const { AtomicU64::new(0) }; MUTEX_ATTR],
         }
-    }
-
-    fn live(&self) -> Live<'_> {
-        Live::Mutex(MutexRef(&self.lock))
     }
 
     /// Makes the storage a process-shared mutex: 0 or an errno. Processes that share
@@ -878,44 +756,6 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
     }
 }
 
-// 0=reentrant, 1=acquired, 2=busy, 3=wait. Cookie/CID values are copied tokens.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_coroutine_try(
-    word: Option<&AtomicU32>,
-    held_cookie: usize,
-    held_cid: i64,
-    current_cookie: usize,
-    current_cid: i64,
-    blocking: u8,
-) -> i32 {
-    let Some(a) = word else {
-        return -1;
-    };
-    if current_cookie == held_cookie && current_cid == held_cid {
-        return 0;
-    }
-    if a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
-    {
-        1
-    } else if blocking == 0 {
-        2
-    } else {
-        3
-    }
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_coroutine_release(word: Option<&AtomicU32>) -> i32 {
-    let Some(a) = word else {
-        return -1;
-    };
-    if a.load(Ordering::Relaxed) == 0 {
-        return 0;
-    }
-    // Release: the next holder sees what this one wrote.
-    a.store(0, Ordering::Release);
-    1
-}
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_locks_coroutine_backoff(second: f64, initial: f64, maximum: f64) -> f64 {
     if second >= maximum {
@@ -927,8 +767,8 @@ pub extern "C" fn swr_v1_locks_coroutine_backoff(second: f64, initial: f64, maxi
     }
 }
 
-// core-tests/src/lock/lock.cpp's TESTs over the ABI that Mutex and Swoole\Lock call (the
-// RWLock and SpinLock classes left the build), with the same inputs and expected values.
+// core-tests/src/lock/lock.cpp's TESTs over `Lock`, which Swoole\Lock is (the Mutex, RWLock
+// and SpinLock classes left the build), with the same inputs and expected values.
 // The coroutine-lock TESTs are in coroutine.rs.
 #[cfg(test)]
 mod tests {
@@ -939,63 +779,6 @@ mod tests {
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
-
-    #[test]
-    fn lock_and_unlock_refuse_null_misaligned_and_unknown_storage() {
-        let mut words = [0u64; 16];
-        let misaligned = words
-            .as_mut_ptr()
-            .cast::<u8>()
-            .wrapping_add(1)
-            .cast::<c_void>();
-        for kind in [3, 1, 99] {
-            for storage in [ptr::null_mut(), misaligned] {
-                assert_eq!(unsafe { swr_v1_locks_lock(storage, kind, 0, 0, 0) }, EINVAL);
-                assert_eq!(unsafe { swr_v1_locks_unlock(storage, kind) }, EINVAL);
-            }
-        }
-        let aligned = words.as_mut_ptr().cast::<c_void>();
-        assert_eq!(unsafe { swr_v1_locks_lock(aligned, 99, 0, 0, 0) }, EINVAL);
-        assert_eq!(unsafe { swr_v1_locks_unlock(aligned, 99) }, EINVAL);
-    }
-
-    /// `swr_v1_locks_coroutine_release` publishes its holder's writes to the next holder
-    /// `swr_v1_locks_coroutine_try` admits, whichever process (here thread) that is. The
-    /// `HELD` flag only says when to start trying; it orders nothing.
-    #[test]
-    fn coroutine_release_publishes_the_holders_writes() {
-        struct Data(std::cell::UnsafeCell<u64>);
-        unsafe impl Sync for Data {}
-        impl Data {
-            fn get(&self) -> *mut u64 {
-                self.0.get()
-            }
-        }
-        let data = Data(std::cell::UnsafeCell::new(0));
-        let word = AtomicU32::new(0);
-        let held = std::sync::atomic::AtomicBool::new(false);
-        let acquire = |cid| {
-            while swr_v1_locks_coroutine_try(Some(&word), 0, 0, 1, cid, 1) != 1 {
-                thread::yield_now();
-            }
-        };
-        thread::scope(|scope| {
-            scope.spawn(|| {
-                acquire(1);
-                unsafe { *data.get() = 42 };
-                held.store(true, Ordering::Relaxed);
-                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
-            });
-            scope.spawn(|| {
-                while !held.load(Ordering::Relaxed) {
-                    thread::yield_now();
-                }
-                acquire(2);
-                assert_eq!(unsafe { *data.get() }, 42);
-                assert_eq!(swr_v1_locks_coroutine_release(Some(&word)), 1);
-            });
-        });
-    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]
@@ -1049,34 +832,26 @@ mod tests {
     #[cfg(target_os = "linux")]
     const SPIN_LOCK: i32 = 5;
 
-    // A lock in its own page; a shared one survives fork, as sw_mem_pool's does.
-    struct Lock {
-        storage: *mut c_void,
-        kind: i32,
-    }
-    // SAFETY: pthread locks are made to be used from any thread.
-    unsafe impl Sync for Lock {}
+    // A private lock, or a shared one in a page of its own, which survives fork as
+    // sw_mem_pool's does and is never unmapped.
+    struct Lock(super::Lock);
     impl Lock {
         fn new(kind: i32, shared: bool) -> Self {
-            let storage = page(shared);
-            assert!(swr_v1_locks_size(kind) <= 4096);
-            assert_eq!(
-                unsafe { swr_v1_locks_init(storage, kind, i32::from(shared)) },
-                0
-            );
-            Self { storage, kind }
+            let lock = if shared {
+                let words = super::Lock::words(kind);
+                assert!(words * size_of::<AtomicU64>() <= 4096);
+                let page = page(true).cast::<AtomicU64>();
+                super::Lock::shared(kind, unsafe { std::slice::from_raw_parts_mut(page, words) })
+            } else {
+                super::Lock::private(kind)
+            };
+            Self(lock.expect("a lock"))
         }
         fn lock(&self, operation: i32, timeout: i32) -> i32 {
-            unsafe { swr_v1_locks_lock(self.storage, self.kind, operation, timeout, CAPABILITIES) }
+            self.0.lock(operation, timeout, CAPABILITIES)
         }
         fn unlock(&self) -> i32 {
-            unsafe { swr_v1_locks_unlock(self.storage, self.kind) }
-        }
-    }
-    impl Drop for Lock {
-        fn drop(&mut self) {
-            unsafe { swr_v1_locks_destroy(self.storage, self.kind) };
-            unsafe { munmap(self.storage, 4096) };
+            self.0.unlock()
         }
     }
     fn page(shared: bool) -> *mut c_void {

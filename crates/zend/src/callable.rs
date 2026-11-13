@@ -85,14 +85,6 @@ impl Callable {
         (run::<H>, free::<H>)
     }
 
-    /// The callable `into_raw` returned.
-    /// # Safety
-    /// `raw` came from `into_raw` and is not used again.
-    #[must_use]
-    pub unsafe fn from_raw(raw: *mut c_void) -> Self {
-        Self(raw.cast())
-    }
-
     /// Drop the arguments, object and closure `keep` held, then free the
     /// callable (`sw_zend_fci_params_discard`, `sw_zend_fci_cache_discard`).
     /// # Errors

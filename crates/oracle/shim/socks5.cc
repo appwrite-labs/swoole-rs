@@ -1,7 +1,5 @@
-// Drives Socks5Proxy through a handshake behind a C entry point, once per engine:
-// build.rs compiles the pinned socks5.cc (upstream) or it with the protocols
-// overlay patch applied (candidate, which calls the Rust exports), each with
-// `swoole` renamed to the engine, over the facade in shim/socks5.
+// Drives the pinned Socks5Proxy through a handshake behind a C entry point: build.rs
+// compiles socks5.cc with `swoole` renamed, over the facade in shim/socks5.
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -27,14 +25,11 @@ extern "C" struct SwrOracleSocks5 {
     size_t reply_count;
 };
 
-#define SWR_CAT2(a, b) a##_##b
-#define SWR_CAT(a, b) SWR_CAT2(a, b)
-
 // Logs create's result (N on failure), the negotiate request, then per reply the
 // bytes sent (S<len>:bytes), the result, state and method (H<ok>,<state>,<method>;)
 // and the reply code's strerror, until a reply fails or the proxy is ready.
 // Returns the log's full length; at most capacity bytes are written to out.
-extern "C" size_t SWR_CAT(swr_oracle_socks5, SWR_SOCKS5_ENGINE)(const SwrOracleSocks5 *c, char *out, size_t capacity) {
+extern "C" size_t swr_oracle_socks5_upstream(const SwrOracleSocks5 *c, char *out, size_t capacity) {
     using swoole::Socks5Proxy;
     std::string log;
     auto *proxy = Socks5Proxy::create(c->socket_type,

@@ -177,9 +177,13 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
     }
     let mut added = -3;
     let add = || {
+        // None once the error an unconstructed process raised returns.
+        let Some(worker) = checked_worker(process) else {
+            return;
+        };
         // SAFETY: the process's live worker, which the server's copy of the
         // Process object keeps for the server's life.
-        let worker = unsafe { Worker::new(checked_worker(process).cast()) };
+        let worker = unsafe { Worker::new(worker.raw()) };
         let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
         added = if id >= 0 {
             worker.set_user_data(user_data.cast());

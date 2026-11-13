@@ -21,7 +21,7 @@ use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
-use swoole_rs_utilities::swoole_set_log_file;
+use swoole_rs_utilities::set_log_file;
 
 use case::{TimerNode, swoole_timer_after};
 
@@ -71,7 +71,7 @@ impl EventData {
     fn packed(data: &[u8]) -> Box<Self> {
         let mut buf = Self::new();
         // SAFETY: a writable EventData and `data`'s bytes.
-        let packed = unsafe { task_pack(buf.head(), data.as_ptr().cast(), data.len()) };
+        let packed = unsafe { task_pack(buf.head(), data) };
         check(packed, "Server::task_pack(&buf, data, len)");
         buf
     }
@@ -899,7 +899,7 @@ impl MultiTask for Multi<'_> {
     fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed> {
         let task = &self.tasks[usize::from(index)];
         // SAFETY: a writable EventData and the task's bytes.
-        if unsafe { task_pack(event.cast(), task.as_ptr().cast(), task.len()) } {
+        if unsafe { task_pack(event.cast(), task) } {
             // SAFETY: as above, now packed: `info.fd` heads it.
             Ok(unsafe { event.cast::<DataHead>().read_unaligned() }.fd)
         } else {
@@ -1471,8 +1471,7 @@ fn no_idle_task_worker() {
     serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
 
     let log_file = CString::new(TEST_LOG_FILE).unwrap();
-    // SAFETY: a NUL-terminated path.
-    unsafe { swoole_set_log_file(log_file.as_ptr()) };
+    set_log_file(&log_file);
     set_log_warning();
 
     listen(serv);

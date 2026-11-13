@@ -26,14 +26,16 @@ condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 ## Handlers
 
 `set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are Rust
-tables (`swr_v1_reactor_handlers_*`, `crates/reactor/src/handlers.rs`).
+tables (`crates/reactor/src/handlers.rs`). `get_handler` and `default_write_handler`
+have no C++ caller, so the class no longer has them: Rust reads them as
+`reactor_upstream::reactor_get_handler` and `reactor_default_write_handler`.
 
 ## Deferred queues
 
 `defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
 FIFO queues of C `(call, data, dispose)` entries (`crates/reactor/src/deferred.rs`),
-created on first push. `Reactor::defer` and `swoole_event_defer` take a plain
-`void (*)(void *)` and its data.
+created on first push. `swoole_event_defer` takes a plain `void (*)(void *)` and its
+data (`Reactor::defer` has no C++ caller left, so the class no longer has it).
 
 - The `PRIORITY_DEFER_TASK` end callback detaches `defer_tasks`, runs it and
   frees it, so a task that defers again lands on the next end pass. A non-null

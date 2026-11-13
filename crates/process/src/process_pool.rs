@@ -2158,7 +2158,7 @@ mod tests {
         assert_eq!(offset_of!(PoolRecord, workers), 192);
         assert_eq!(offset_of!(PoolRecord, ptr), 256);
         assert_eq!(offset_of!(PoolRecord, kill_timer), 264);
-        assert_eq!(size_of::<PoolRecord>(), 280);
+        assert_eq!(size_of::<PoolRecord>(), 288);
     }
 
     /// A scripted native side over a pool record allocated here.
@@ -2178,7 +2178,7 @@ mod tests {
             if op == OP_KILL_TIMER
                 && let Some(mut record) = self.record
             {
-                let timer = ArmedTimer::new(KILL_TIMER_ID, crate::armed_timer::tests::record);
+                let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
                 // SAFETY: the fixture's record, which outlives its pool.
                 unsafe { record.as_mut() }.kill_timer = Some(timer);
             }
@@ -2311,7 +2311,7 @@ mod tests {
     fn destroying_the_pool_deletes_an_armed_kill_timer() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        let timer = ArmedTimer::new(KILL_TIMER_ID, crate::armed_timer::tests::record);
+        let timer = ArmedTimer::new(1, KILL_TIMER_ID, crate::armed_timer::tests::record);
         record(&mut pool).kill_timer = Some(timer);
         pool.destroy();
         assert!(record(&mut pool).kill_timer.is_none());

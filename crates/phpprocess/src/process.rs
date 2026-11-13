@@ -9,13 +9,14 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_long},
     ptr,
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
+use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, bailout, handlers,
     message,
@@ -81,55 +82,48 @@ fn this(call: &Call) -> Option<&Process> {
 }
 
 /// `php_swoole_process_get_and_check_worker`: fatal without a constructed worker.
-fn checked(process: Option<&Process>) -> *mut c_void {
-    let worker = process.map_or(ptr::null_mut(), |process| process.worker.get());
-    if worker.is_null() {
+/// None once the error returns (no fatal-error hook is installed).
+fn checked(process: Option<&Process>) -> Option<Worker<'_>> {
+    let worker = process.and_then(|process| process.worker.get());
+    if worker.is_none() {
         host::unconstructed();
     }
     worker
 }
 
-/// The worker of a Process object (null before its constructor ran).
-pub(crate) fn worker_of(object: &Value) -> *mut c_void {
-    object
-        .custom::<Process>()
-        .map_or(ptr::null_mut(), |process| process.worker.get())
+/// The worker of a Process object (none before its constructor ran).
+pub(crate) fn worker_of(object: &Value) -> Option<Worker<'_>> {
+    object.custom::<Process>()?.worker.get()
 }
 
-/// `php_swoole_process_set_worker` on a Process object.
+/// `php_swoole_process_set_worker` on a new Process object, which takes
+/// `worker` (dropped when the object has one already, or is no Process).
 pub(crate) fn set_worker_of(
     object: &Value,
-    worker: *mut c_void,
+    worker: WorkerRecord,
     enable_coroutine: bool,
     pipe_type: c_int,
 ) {
-    if let Some(process) = object.custom() {
-        set_worker(process, worker, enable_coroutine, pipe_type);
+    if let Some(process) = object.custom::<Process>()
+        && process.worker.set(worker)
+    {
+        configure(process, enable_coroutine, pipe_type);
     }
 }
 
-/// A live worker's pid.
-pub(crate) fn worker_pid(worker: *mut c_void) -> i32 {
-    view(worker).pid
-}
-
-pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
-    view(worker)
-}
-
 /// A live worker's queue, or null.
-fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
-    worker::with(worker, |record| record.queue()).cast()
+fn queue_of(worker: Worker<'_>) -> *mut QueueRecord {
+    worker.queue().cast()
 }
 
 /// `f` over a live worker's queue, or `None` when it has none.
-fn with_queue<R>(worker: *mut c_void, f: impl FnOnce(&QueueRecord) -> R) -> Option<R> {
+fn with_queue<R>(worker: Worker<'_>, f: impl FnOnce(&QueueRecord) -> R) -> Option<R> {
     // SAFETY: null, or a queue its Process object or the pool owns, which lives until
     // `freeQueue` or its owner's drop, neither of which runs during `f`.
     unsafe { queue_of(worker).as_ref() }.map(f)
 }
 
-fn view(worker: *mut c_void) -> WorkerView {
+fn view(worker: Worker<'_>) -> WorkerView {
     worker::view(worker)
 }
 
@@ -256,14 +250,15 @@ fn signal_constants() -> Vec<(&'static CStr, i64)> {
     all
 }
 
-/// `php_swoole_process_get_and_check_worker`: the worker of a Process object; null,
-/// with the error thrown, before its constructor ran.
-pub fn checked_worker(object: &Value) -> *mut c_void {
+/// `php_swoole_process_get_and_check_worker`: the worker of a Process object, which
+/// the object keeps for as long as it lives; none, with the error raised, before
+/// its constructor ran.
+pub fn checked_worker(object: &Value) -> Option<Worker<'_>> {
     checked(object.custom())
 }
 
-fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pipe_type: c_int) {
-    process.worker.set(worker);
+/// `php_swoole_process_set_worker`'s flags, once the object has its worker.
+fn configure(process: &Process, enable_coroutine: bool, pipe_type: c_int) {
     process.pipe_type.set(pipe_type);
     process.enable_coroutine.set(enable_coroutine);
     process.blocking.set(true);
@@ -273,12 +268,12 @@ fn set_worker(process: &Process, worker: *mut c_void, enable_coroutine: bool, pi
 /// as `exit` would. -1 when the callback or the event loop cannot start; a
 /// bailout pending on the way is raised here, as the closing one is.
 /// `worker` is the Process object `this`'s.
-pub fn start_worker(worker: swoole_rs_process::worker_record::Worker<'_>, this: &Value) -> c_int {
-    start_child(worker.raw().cast(), this)
+pub fn start_worker(worker: Worker<'_>, this: &Value) -> c_int {
+    start_child(worker, this)
 }
 
 /// [`start_worker`] on `$this`.
-fn start_child(worker: *mut c_void, this: &Value) -> c_int {
+fn start_child(worker: Worker<'_>, this: &Value) -> c_int {
     if this.object().is_none() {
         return -1;
     }
@@ -351,7 +346,7 @@ fn construct(call: &Call) {
         call.throw_error(message!("{text}").as_cstr());
         call.set_bool(false);
     };
-    if !process.worker.get().is_null() {
+    if process.worker.get().is_some() {
         call.throw_constructed_twice();
         call.set_bool(false);
         return;
@@ -367,8 +362,10 @@ fn construct(call: &Call) {
     drop(name);
     // Upstream makes the worker before parsing, so a failed parse leaves it set.
     // A new worker the object owns from here.
-    let worker = worker::new();
-    process.worker.set(worker);
+    process.worker.set(worker::new());
+    let Some(worker) = process.worker.get() else {
+        return;
+    };
     let parsed = call.arity(1, 4).and_then(|()| {
         call.func(1)?;
         Ok((
@@ -381,7 +378,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !worker::with(worker, host::worker_share) {
+    if !worker::share(worker) {
         if redirect {
             worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
@@ -415,12 +412,7 @@ fn construct(call: &Call) {
     if let Some((props, callback)) = object.props(Some(&PROCESS)).zip(call.value(1)) {
         props.value(c"callback", callback);
     }
-    set_worker(
-        process,
-        worker,
-        enable_coroutine,
-        pipe_type.c_cast::<c_int>(),
-    );
+    configure(process, enable_coroutine, pipe_type.c_cast::<c_int>());
 }
 
 fn destruct(_call: &Call) {}
@@ -465,7 +457,9 @@ fn use_queue(call: &Call) {
         return;
     };
     let process = this(call);
-    let worker = checked(process);
+    let Some(worker) = checked(process) else {
+        return;
+    };
     if key > 0 && !key_is_valid(key) {
         fatal(
             E_WARNING,
@@ -502,14 +496,16 @@ fn use_queue(call: &Call) {
         process.worker.queue.own(worker, Box::new(queue));
     }
     let mode = mode.c_cast::<u8>();
-    worker::with(worker, |record| record.set_msgqueue_mode(mode));
+    worker.set_msgqueue_mode(mode);
     call.update_property_long(Some(&PROCESS), c"msgQueueId", i64::from(id));
     call.update_property_long(Some(&PROCESS), c"msgQueueKey", key);
     call.set_bool(true);
 }
 
 fn stat_queue(call: &Call) {
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     let Some(stat) = with_queue(worker, QueueRecord::stat) else {
         fatal(
             E_WARNING,
@@ -530,36 +526,28 @@ fn stat_queue(call: &Call) {
 
 fn free_queue(call: &Call) {
     let process = this(call);
-    let worker = checked(process);
+    let Some(worker) = checked(process) else {
+        return;
+    };
     call.set_bool(process.is_some_and(|process| process.worker.queue.free(worker)));
 }
 
-/// The worker a Process owns (null before its constructor ran) and the queue it
-/// owns, freed together when the slot drops; a queue the worker borrows (the
-/// pool's) is never freed here.
+/// The worker a Process owns (none before its constructor ran) and the queue it
+/// owns, freed together when the slot drops, the worker first; a queue the worker
+/// borrows (the pool's) is never freed here.
 #[derive(Default)]
 struct WorkerSlot {
-    worker: Cell<*mut c_void>,
+    worker: worker::Slot,
     queue: QueueSlot,
 }
 
 impl WorkerSlot {
-    fn get(&self) -> *mut c_void {
+    fn get(&self) -> Option<Worker<'_>> {
         self.worker.get()
     }
 
-    fn set(&self, worker: *mut c_void) {
-        self.worker.set(worker);
-    }
-}
-
-impl Drop for WorkerSlot {
-    fn drop(&mut self) {
-        let worker = self.worker.get();
-        if !worker.is_null() {
-            // SAFETY: the slot owns its worker; `queue` drops after it.
-            unsafe { worker::free(worker) };
-        }
+    fn set(&self, worker: WorkerRecord) -> bool {
+        self.worker.set(worker)
     }
 }
 
@@ -570,17 +558,17 @@ struct QueueSlot(RefCell<Option<Box<QueueRecord>>>);
 
 impl QueueSlot {
     /// Takes `queue` and points `worker` at it; a queue it owned before is dropped.
-    fn own(&self, worker: *mut c_void, queue: Box<QueueRecord>) {
+    fn own(&self, worker: Worker<'_>, queue: Box<QueueRecord>) {
         let mut owned = self.0.borrow_mut();
         // Point at the box once it is in place: moving it would invalidate an earlier pointer.
         let queue = owned.insert(queue);
         let queue = ptr::from_mut(&mut **queue).cast();
-        worker::with(worker, |record| record.set_queue(queue));
+        worker.set_queue(queue);
     }
 
     /// `freeQueue` on `worker`: destroys and drops a queue this slot owns, and only
     /// detaches one the worker borrows (the pool's).
-    fn free(&self, worker: *mut c_void) -> bool {
+    fn free(&self, worker: Worker<'_>) -> bool {
         if queue_of(worker).is_null() {
             return false;
         }
@@ -588,7 +576,7 @@ impl QueueSlot {
         if owned.as_mut().is_some_and(|queue| !queue.destroy()) {
             return false;
         }
-        worker::with(worker, |record| record.set_queue(ptr::null_mut()));
+        worker.set_queue(ptr::null_mut());
         *owned = None;
         true
     }
@@ -662,7 +650,9 @@ fn alarm(call: &Call) {
 }
 
 fn start(call: &Call) {
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     let pid = view(worker).pid;
     if pid != 0 && swoole_rs_process::os::kill(pid, 0) == 0 {
         fatal(E_WARNING, &message!("process has already been started"));
@@ -696,7 +686,9 @@ fn read(call: &Call) {
         return;
     };
     let process = this(call);
-    let worker = checked(process);
+    let Some(worker) = checked(process) else {
+        return;
+    };
     if view(worker).pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot read from pipe"));
         call.set_bool(false);
@@ -736,7 +728,9 @@ fn write(call: &Call) {
         return;
     }
     let process = this(call);
-    let worker = checked(process);
+    let Some(worker) = checked(process) else {
+        return;
+    };
     if view(worker).pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot write into pipe"));
         call.set_bool(false);
@@ -755,12 +749,7 @@ fn export_socket(call: &Call) {
     let Some(process) = this(call) else {
         return;
     };
-    let worker = process.worker.get();
-    let pipe = if worker.is_null() {
-        -1
-    } else {
-        view(worker).pipe
-    };
+    let pipe = process.worker.get().map_or(-1, |worker| view(worker).pipe);
     if pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot export stream"));
         call.set_bool(false);
@@ -793,7 +782,9 @@ fn push(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     // `QueueNode`: the type, then the payload.
     let mut node = (c_long::from(view(worker).id) + 1).to_ne_bytes().to_vec();
     node.extend_from_slice(data);
@@ -814,9 +805,10 @@ fn pop(call: &Call) {
         .ok()
         .filter(|size| (1..=MSGMAX).contains(size))
         .unwrap_or(MSGMAX);
-    let worker = checked(this(call));
-    let balance =
-        i64::from(worker::with(worker, |record| record.msgqueue_mode())) == MSGQUEUE_BALANCE;
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
+    let balance = i64::from(worker.msgqueue_mode()) == MSGQUEUE_BALANCE;
     let kind: c_long = if balance {
         0
     } else {
@@ -916,7 +908,9 @@ fn exit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     if swoole_rs_process::os::getpid() != view(worker).pid {
         fatal(E_WARNING, &message!("not current process"));
         call.set_bool(false);
@@ -944,7 +938,9 @@ fn close(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     let view = view(worker);
     if view.pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot close the pipe"));
@@ -984,7 +980,9 @@ fn set_timeout(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let worker = checked(this(call));
+    let Some(worker) = checked(this(call)) else {
+        return;
+    };
     if view(worker).pipe < 0 {
         fatal(E_WARNING, &message!("no pipe, cannot setTimeout the pipe"));
         call.set_bool(false);
@@ -1001,12 +999,15 @@ fn set_blocking(call: &Call) {
     let Some(process) = this(call) else {
         return;
     };
-    let worker = process.worker.get();
-    if worker.is_null() || view(worker).pipe < 0 {
+    let Some(worker) = process
+        .worker
+        .get()
+        .filter(|worker| view(*worker).pipe >= 0)
+    else {
         fatal(E_WARNING, &message!("no pipe, cannot setBlocking the pipe"));
         call.set_bool(false);
         return;
-    }
+    };
     process.blocking.set(blocking);
     call.set_bool(worker::pipe_blocking(worker, blocking));
 }
@@ -1018,8 +1019,7 @@ fn priority_who(call: &Call, which: i64, who: Option<i64>) -> Option<i64> {
         return Some(who);
     }
     if which == i64::from(libc::PRIO_PROCESS) {
-        let worker = checked(this(call));
-        return Some(i64::from(view(worker).pid));
+        return Some(i64::from(view(checked(this(call))?).pid));
     }
     fatal(E_WARNING, &message!("$who parameter must not be null"));
     set_last_error(INVALID_PARAMS);
@@ -1113,11 +1113,14 @@ mod tests {
     /// `Pool::getProcess` does.
     fn borrowing(queue: &mut QueueRecord) -> WorkerSlot {
         let slot = WorkerSlot::default();
-        slot.set(worker::new());
-        worker::with(slot.get(), |record| {
-            record.set_queue(ptr::from_mut(queue).cast());
-        });
+        assert!(slot.set(worker::new()), "a new slot takes a worker");
+        worker(&slot).set_queue(ptr::from_mut(queue).cast());
         slot
+    }
+
+    /// The worker `slot` was given.
+    fn worker(slot: &WorkerSlot) -> Worker<'_> {
+        slot.get().expect("the slot has a worker")
     }
 
     #[test]
@@ -1131,7 +1134,7 @@ mod tests {
     fn free_queue_detaches_a_borrowed_queue() {
         let mut queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
         let slot = borrowing(&mut queue);
-        let worker = slot.get();
+        let worker = worker(&slot);
         assert!(slot.queue.free(worker), "detached");
         assert!(queue_of(worker).is_null(), "the worker no longer has it");
         assert!(!slot.queue.free(worker), "nothing left to free");
@@ -1142,8 +1145,8 @@ mod tests {
     #[test]
     fn free_queue_destroys_an_owned_queue() {
         let slot = WorkerSlot::default();
-        slot.set(worker::new());
-        let worker = slot.get();
+        assert!(slot.set(worker::new()), "a new slot takes a worker");
+        let worker = worker(&slot);
         let queue = QueueRecord::new(libc::IPC_PRIVATE, true, 0);
         let id = queue.id();
         slot.queue.own(worker, Box::new(queue));

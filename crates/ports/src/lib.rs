@@ -10,7 +10,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::{CStr, c_char};
+use std::ffi::CStr;
 use std::slice;
 
 use swoole_rs_server::port_config::PortMethods;
@@ -35,8 +35,8 @@ const _: () = {
     );
 };
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_protocol(flags: u32, length_type: u8) -> u32 {
+/// The protocol setup branch `flags` select: EOF, then length, HTTP, MQTT and Redis.
+fn protocol(flags: u32, length_type: u8) -> u32 {
     if flags & 1 != 0 && flags & 2 == 0 {
         0
     } else if flags & 4 != 0 {
@@ -72,16 +72,11 @@ pub extern "C" fn swr_v1_ports_callback_hook(index: i32) -> u32 {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ports_protocol_name(flags: u32) -> *const c_char {
-    protocol_name(flags).as_ptr()
-}
-
 fn protocol_name(flags: u32) -> &'static CStr {
     if flags & 1 != 0 {
         return c"dgram";
     }
-    match swr_v1_ports_protocol(flags, 1) {
+    match protocol(flags, 1) {
         1 => c"eof",
         2 => c"length",
         3 => c"http",

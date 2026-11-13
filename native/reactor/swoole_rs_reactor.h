@@ -28,10 +28,8 @@ struct epoll_event;
 struct kevent;
 
 typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
-/* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues, created on first push.
- * push is 0, or -2 when it cannot allocate. */
-int32_t swr_v1_reactor_deferred_push(swr_v1_reactor_deferred **, void (*call)(void *), void *data,
-                                     void (*dispose)(void *));
+/* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues Rust creates on
+ * first push (swoole_event_defer). */
 
 /* network::Socket's write-path fields, embedded in Socket in this order and with these
  * types (Socket static_asserts it). */
@@ -45,13 +43,9 @@ typedef struct {
     bool ssl_send;
     bool send_wait;
 } swr_v1_socket_output;
-/* Reactor handler tables (read/write/error per fd type, write and error defaults).
- * Handlers are ReactorHandler: int (*)(Reactor *, Event *). get kind: 0 read, 1 write,
- * 2 error; error_only false adds get_error_handler's read and write fallbacks. */
+/* Reactor handler tables (read/write/error per fd type, write and error defaults), which
+ * only Rust reads. Handlers are ReactorHandler: int (*)(Reactor *, Event *). */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
-typedef int (*swr_v1_reactor_handler)(void *, void *);
-swr_v1_reactor_handler swr_v1_reactor_handlers_get(const swr_v1_reactor_handlers *, uint32_t kind, int fd_type, bool error_only);
-const swr_v1_reactor_handler *swr_v1_reactor_handlers_default(const swr_v1_reactor_handlers *, uint32_t kind);
 /* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
 void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);

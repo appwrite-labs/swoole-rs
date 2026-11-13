@@ -172,20 +172,6 @@ pub(crate) fn reply_socket<'a>(
     config.command_pipe()?.worker_end()
 }
 
-/// `swoole::EventData`: `SW_IPC_MAX_SIZE` bytes.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-#[repr(C)]
-struct EventData {
-    info: DataHead,
-    data: [u8; IPC_BUFFER_SIZE],
-}
-
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-const _: () = assert!(
-    size_of::<EventData>() == swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize,
-    "sizeof(EventData)"
-);
-
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 /// `Server::command`'s `SW_SERVER_EVENT_COMMAND_REQUEST` to its target: a task worker
 /// through the task pool, the manager through the event pool's queue, else a worker
@@ -197,41 +183,26 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         info.fd = c.request_id;
         info.server_fd = c.command_id.c_cast::<u16>();
     };
-    if c.action == TO_TASK_WORKER || c.action == TO_MANAGER {
-        let mut buf = EventData {
-            info: DataHead::default(),
-            data: [0; IPC_BUFFER_SIZE],
+    if c.action == TO_MANAGER {
+        // As much of the message as an `EventData` holds.
+        let (data, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
+        let mut info = DataHead {
+            len: u32::try_from(data.len()).unwrap_or(u32::MAX),
+            ..DataHead::default()
         };
-        let packed = if c.action == TO_TASK_WORKER {
-            // SAFETY: a writable `EventData` and the message's bytes.
-            unsafe {
-                swoole_rs_process::task_file::task_pack(
-                    (&raw mut buf).cast(),
-                    c.message.as_ptr().cast(),
-                    c.message.len(),
-                )
-            }
-        } else {
-            // As much of the message as the buffer holds.
-            let (message, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
-            buf.info.len = u32::try_from(message.len()).unwrap_or(u32::MAX);
-            let (data, _) = buf.data.split_at_mut(message.len());
-            data.copy_from_slice(message);
-            true
-        };
-        head(&mut buf.info);
-        if !packed {
+        head(&mut info);
+        let pool = serv.event_pool_ref();
+        return swoole_rs_process::methods::push_event(pool, &info, data) >= 0;
+    }
+    if c.action == TO_TASK_WORKER {
+        let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
+        if !buf.pack(c.message) {
             return false;
         }
-        if c.action == TO_MANAGER {
-            let data = buf.data.get(..buf.info.len as usize).unwrap_or_default();
-            let pool = serv.event_pool_ref();
-            return swoole_rs_process::methods::push_event(pool, &buf.info, data) >= 0;
-        }
-        // SAFETY: the head and the `len` bytes after it, which nothing writes while
-        // they are sent.
-        let task =
-            unsafe { swoole_rs_process::task_file::Packed::from_raw((&raw const buf).cast()) };
+        buf.set_kind(EVENT_COMMAND_REQUEST.c_cast::<u8>());
+        buf.set_fd(c.request_id);
+        buf.set_server_fd(c.command_id.c_cast::<u16>());
+        let task = buf.packed();
         let mut dst = c_int::from(process_id);
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {

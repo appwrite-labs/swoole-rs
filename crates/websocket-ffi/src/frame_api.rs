@@ -16,8 +16,6 @@ use swoole_rs_websocket::{
     encode_parts, encoded_size, frame_length,
 };
 
-use crate::swr_v1_ws_mask;
-
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
@@ -150,15 +148,28 @@ upstream! {
     }
 
     "_ZN6swoole9websocket4maskEPcmPKc" =>
-    /// `void mask(char *data, size_t len, const char *mask_key)`.
+    /// `void mask(char *data, size_t len, const char *mask_key)`: XORs `data` with the
+    /// four-byte key. Zero length is a no-op and permits null pointers; a null pointer
+    /// or a length past `isize::MAX` otherwise writes nothing and warns.
     ///
     /// # Safety
-    /// `data` covers `len` writable bytes and `mask_key` four readable ones.
+    /// For nonzero length, `data` covers `len` exclusive writable bytes and `mask_key`
+    /// four readable ones. The key may overlap data: it is copied before any mutable
+    /// borrow. All other aliases must remain unused for this call.
     pub unsafe extern "C" fn mask(data: *mut c_char, len: usize, mask_key: *const c_char) {
-        // SAFETY: as the caller promises.
-        if unsafe { swr_v1_ws_mask(data.cast(), len, mask_key.cast()) } != 0 {
-            log::warning(c"websocket::mask", format_args!("Rust WebSocket mask rejected input"));
+        if len == 0 {
+            return;
         }
+        if data.is_null() || mask_key.is_null() || len > isize::MAX as usize {
+            log::warning(c"websocket::mask", format_args!("Rust WebSocket mask rejected input"));
+            return;
+        }
+        // SAFETY: Copy all four key bytes before the mutable payload borrow so
+        // overlap is valid. read_unaligned preserves byte-aligned key support.
+        let key = unsafe { mask_key.cast::<[u8; 4]>().read_unaligned() };
+        // SAFETY: non-null, `len <= isize::MAX`; the caller lends `len` writable bytes and
+        // the key was copied out first, so an overlapping key is fine.
+        swoole_rs_websocket::mask(unsafe { std::slice::from_raw_parts_mut(data.cast(), len) }, key);
     }
 
     "_ZN6swoole9websocket6encodeEPNS_6StringEPKcmhh" =>

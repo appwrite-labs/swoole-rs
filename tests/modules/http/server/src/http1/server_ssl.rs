@@ -31,8 +31,6 @@ const SWR_CLIENTS_CLOSED: u32 = 1;
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-    fn swr_v1_clients_flag(state: *const c_void, name: u32) -> bool;
-    fn swr_v1_clients_ssl_context(state: *const c_void) -> *const c_void;
     #[link_name = "_Z13sw_shm_mallocm"]
     fn sw_shm_malloc(size: usize) -> *mut c_void;
     fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
@@ -217,8 +215,11 @@ impl SyncClient {
 
     /// `get_client()->set_ssl_cert_file(file)` (`CERT_FILE`) or `set_ssl_key_file`.
     fn set_ssl_file(&self, index: u32, file: &str) {
-        // SAFETY: the live client's context, made by `enable_ssl_encrypt`.
-        let context = unsafe { swr_v1_clients_ssl_context(self.state) };
+        // The live client's context, made by `enable_ssl_encrypt`.
+        let context = self.handle().ssl_context();
+        let context: *const c_void = context.map_or(std::ptr::null(), |context| {
+            context.as_ptr().cast_const().cast()
+        });
         assert!(!context.is_null(), "enable_ssl_encrypt made the context");
         set_ssl_path(context, index, ssl_file(file).as_ptr());
     }
@@ -235,8 +236,9 @@ impl SyncClient {
     }
 
     fn close(&mut self) -> bool {
-        // SAFETY: the live client.
-        if !self.created || unsafe { swr_v1_clients_flag(self.state, SWR_CLIENTS_CLOSED) } {
+        // SAFETY: the client `new` made, live until the drop frees it.
+        let client = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
+        if !self.created || client.flag(SWR_CLIENTS_CLOSED) {
             return false;
         }
         let _ = self.run(Op::Close);

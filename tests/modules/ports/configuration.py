@@ -17,7 +17,7 @@ def attest(manifest,metadata):
     receipt=ext_attest(manifest,candidates[0],8388608)
     symbols=subprocess.check_output(['nm','-g',candidates[0]['extension']],text=True,stderr=subprocess.DEVNULL)
     defined={parts[-1].lstrip('_') for line in symbols.splitlines() if len(parts:=line.split())>=2 and parts[-2].upper() in {'T','W'}}
-    required=['protocol','protocol_name','event','callback_property','callback_hook']
+    required=['event','callback_property','callback_hook']
     if not all('swr_v1_ports_'+name in defined for name in required):raise ValueError('Actual candidate DSO lacks required M25 controller exports')
     return {'passed':True,**receipt,'required_candidate_dso_exports':required}
 

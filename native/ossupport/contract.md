@@ -47,7 +47,7 @@ so the native `swoole_sys_warning` sees its errno.
   repeats), `arc4random_buf` elsewhere.
 
 - `file_api.rs` is the rest of upstream's `src/os/file.cc`:
-  `swoole_tmpfile` under its upstream symbol, `file_get_contents` and
+  `swoole_tmpfile` (`create_tmpfile`), `file_get_contents` and
   `file_put_contents` (Rust's only callers are the server and process). Logs name
   the function as upstream's `__SW_FUNC__` does.
 
@@ -68,8 +68,8 @@ upstream symbols: the root check, `swoole_daemon` (Darwin detaches, forks and
 calls `setsid` itself; elsewhere `daemon(3)` and the after-fork hooks, through corebase's
 `swoole_fork` and `swoole_call_hook`), the parent-death
 signal, the native thread id and thread names (`swoole_get_cpu_affinity` had no
-caller: Rust reads a process's CPUs with `CpuSet::get_process`). `swoole_set_isolation` is an inline header call with each
-`std::string`'s `c_str()`; Rust logs each failed step as it happens, errno intact.
+caller: Rust reads a process's CPUs with `CpuSet::get_process`). `swoole_set_isolation` is Rust's `set_isolation`, which the server's workers call;
+it logs each failed step as it happens, errno intact.
 
 `file_open`/`file_close` and `tmpfile` back `File::open`,
 `File::close` and `swoole_tmpfile`. The resolver request constructors and the

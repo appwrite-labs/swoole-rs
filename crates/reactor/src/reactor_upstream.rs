@@ -134,6 +134,24 @@ pub extern "C" fn reactor_set_handler(
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }
 
+/// `ReactorHandler Reactor::get_handler(FdType fd_type, EventType event) const`: the
+/// registered handler, else the write or error default; none for an `event` that is
+/// not `SW_EVENT_READ`, `SW_EVENT_WRITE` or `SW_EVENT_ERROR`, where upstream aborts.
+#[must_use]
+pub fn reactor_get_handler(
+    reactor: crate::Running<'_>,
+    fd_type: c_int,
+    event: c_int,
+) -> Option<Handler> {
+    reactor.handlers().of_event(fd_type, event)
+}
+
+/// `Reactor::default_write_handler`, which `swoole_event_init` sets.
+#[must_use]
+pub fn reactor_default_write_handler(reactor: crate::Running<'_>) -> Option<Handler> {
+    reactor.handlers().fallback(0)
+}
+
 /// `bool Reactor::isset_handler(int fd_type, int event) const`.
 #[cfg_attr(
     feature = "upstream-symbols",

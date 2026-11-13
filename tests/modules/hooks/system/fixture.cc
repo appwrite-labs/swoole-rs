@@ -138,8 +138,7 @@ Timer *swr_case_timer_exchange(Timer *timer) {
 }
 
 // os/process_pool.cpp (process_pool.rs): the record sizes its mirrors check, and what its
-// TESTs reach that isn't an exported symbol: the inline swoole_set_isolation, SwooleWG and
-// sw_worker().
+// TESTs reach that isn't an exported symbol: SwooleWG and sw_worker().
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
 extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
@@ -149,9 +148,6 @@ extern const size_t swr_case_process_layout[] = {sizeof(ProcessPool),
                                                  offsetof(Worker, start_time),
                                                  sizeof(EventData)};
 #pragma GCC diagnostic pop
-void swr_case_set_isolation_user(const char *user) {
-    swoole_set_isolation("", user, "");
-}
 // `SwooleWG`: crates/process's WorkerGlobalRecord, up to the fields read here.
 struct CaseWorkerGlobal {
     uint32_t id;

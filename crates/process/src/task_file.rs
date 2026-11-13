@@ -270,6 +270,25 @@ impl TaskBuffer {
         self.head.kind = kind;
     }
 
+    /// `info.fd = fd`.
+    pub fn set_fd(&mut self, fd: std::ffi::c_long) {
+        self.head.fd = fd;
+    }
+
+    /// `info.server_fd = server_fd`.
+    pub fn set_server_fd(&mut self, server_fd: u16) {
+        self.head.server_fd = server_fd;
+    }
+
+    /// The buffer as a packed task: its head, then the `len` bytes `pack` wrote.
+    #[must_use]
+    pub fn packed(&self) -> Packed<'_> {
+        Packed {
+            raw: std::ptr::from_ref(self).cast(),
+            life: PhantomData,
+        }
+    }
+
     /// The buffer, for an operation that reads `EventData::size()` bytes of it.
     #[must_use]
     pub fn as_mut_ptr(&mut self) -> *mut c_void {
@@ -345,14 +364,8 @@ impl EventData {
 /// [`TaskBuffer::pack`] into the task at `task`.
 ///
 /// # Safety
-/// `task` is a writable `EventData`; `data` lends `length` readable bytes.
-pub unsafe fn task_pack(task: *mut EventHead, data: *const c_void, length: usize) -> bool {
-    let data = if length == 0 {
-        &[]
-    } else {
-        // SAFETY: as the caller promises.
-        unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }
-    };
+/// `task` is a writable `EventData`.
+pub unsafe fn task_pack(task: *mut EventHead, data: &[u8]) -> bool {
     // SAFETY: as the caller promises; a `TaskBuffer` is an `EventData` whose
     // payload may be uninitialized.
     unsafe { &mut *task.cast::<TaskBuffer>() }.pack(data)
@@ -702,7 +715,7 @@ mod tests {
             let task = buf.as_mut_ptr().cast::<EventHead>();
             let event = task.cast::<EventData>();
             swr_v1_core_set_current_task_id(41);
-            assert!(unsafe { task_pack(task, c"hello".as_ptr().cast(), 5) });
+            assert!(unsafe { task_pack(task, b"hello") });
             let head = unsafe { &*task };
             assert_eq!(
                 (head.fd, head.len, head.kind, head.ext_flags),
@@ -723,12 +736,12 @@ mod tests {
         #[cfg_attr(miri, ignore = "Miri has no access")]
         fn a_large_task_spills_to_a_file_that_unpacking_reads_and_removes() {
             let _turn = TASK_ID.lock();
-            assert!(unsafe { swoole_rs_corebase::swr_v1_core_set_task_tmpdir(c"/tmp".as_ptr()) });
+            assert!(swoole_rs_corebase::set_task_tmpdir(c"/tmp"));
             let data = vec![7u8; 9000];
             let mut buf = event();
             let task = buf.as_mut_ptr().cast::<EventHead>();
             let event = task.cast::<EventData>();
-            assert!(unsafe { task_pack(task, data.as_ptr().cast(), data.len()) });
+            assert!(unsafe { task_pack(task, &data) });
             let head = unsafe { &*task };
             assert_eq!(
                 (head.len as usize, head.ext_flags),

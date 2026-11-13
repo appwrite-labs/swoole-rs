@@ -10,7 +10,7 @@ use swoole_rs_zend::{
     Call, Owned, Value as ZValue, ZString, bailout, numeric,
     sys::{
         IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING,
-        IS_TRUE, IS_UNDEF, swr_zend_smart_strcmp,
+        IS_TRUE, IS_UNDEF,
     },
 };
 
@@ -405,9 +405,7 @@ fn normalize(value: f64) -> i32 {
 
 /// `zendi_smart_strcmp`.
 fn smart_strcmp(a: &[u8], b: &[u8]) -> i32 {
-    let (a, b) = (ZString::new(a), ZString::new(b));
-    // SAFETY: two live strings.
-    unsafe { swr_zend_smart_strcmp(a.as_ptr(), b.as_ptr()) }
+    ZString::new(a).smart_cmp(&ZString::new(b))
 }
 
 /// `zend_binary_strcmp`, normalized: the bytes in order, a prefix first.

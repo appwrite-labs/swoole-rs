@@ -299,22 +299,6 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
     serv.state().set_document_root(path)
 }
 
-/// [`set_document_root`] for the C++ test fixtures and tests/modules/http's cases.
-///
-/// # Safety
-/// As [`set_document_root`]; `path` is readable for `length` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_server_set_document_root(
-    serv: *mut c_void,
-    path: *const u8,
-    length: usize,
-) -> bool {
-    // SAFETY: per the caller.
-    let path = unsafe { core::slice::from_raw_parts(path, length) };
-    // SAFETY: per the caller.
-    set_document_root(unsafe { view::Server::from_raw(serv) }, path)
-}
-
 /// Arms the master timer on this thread, the master's: each second it runs
 /// `Server::timer_callback` over `serv`. The timer's node, or null.
 #[cfg(all(feature = "upstream-symbols", not(test)))]

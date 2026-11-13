@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/network/address.cpp`, one Rust function per TEST with the
 //! same inputs and expected values. `Address` here is the same record over crates/clients'
-//! `address::assign`, `url` and `address_string` and the `swr_v1_clients_address_*`
-//! exports.
+//! `address::assign`, `set_port`, `is_empty`, `type_name`, `url` and `address_string` and
+//! the `swr_v1_clients_address_*` exports.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use swoole_rs_clients::{URL_PORT_RANGE, address};
@@ -34,10 +34,7 @@ const TEST_HOST: &str = "127.0.0.1";
 const TEST_LOG_FILE: &str = "/tmp/swoole.log";
 
 unsafe extern "C-unwind" {
-    fn swr_v1_clients_address_set_port(address: *mut Address, port: c_int);
     fn swr_v1_clients_address_loopback(address: *const Address) -> bool;
-    fn swr_v1_clients_address_empty(address: *const Address) -> bool;
-    fn swr_v1_clients_address_type(kind: c_int) -> *const c_char;
     fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
 }
@@ -110,8 +107,8 @@ impl Address {
     }
 
     fn set_port(&mut self, port: c_int) {
-        // SAFETY: a live record.
-        unsafe { swr_v1_clients_address_set_port(self, port) }
+        // SAFETY: the record is crates/corebase's `SocketAddress`.
+        address::set_port(unsafe { &mut *std::ptr::from_mut(self).cast() }, port);
     }
 
     fn is_loopback_addr(&self) -> bool {
@@ -131,8 +128,8 @@ impl Address {
     }
 
     fn empty(&self) -> bool {
-        // SAFETY: a live record.
-        unsafe { swr_v1_clients_address_empty(self) }
+        // SAFETY: the record is crates/corebase's `SocketAddress`.
+        address::is_empty(unsafe { &*std::ptr::from_ref(self).cast() })
     }
 }
 
@@ -148,8 +145,7 @@ fn text<'a>(ptr: *const c_char) -> &'a CStr {
 }
 
 fn type_str(kind: c_int) -> &'static CStr {
-    // SAFETY: a static name.
-    unsafe { CStr::from_ptr(swr_v1_clients_address_type(kind)) }
+    address::type_name(kind)
 }
 
 /// `make_socket(type, SW_FD_STREAM, 0)`, `sock->connect(addr)` and `sock->free()`.

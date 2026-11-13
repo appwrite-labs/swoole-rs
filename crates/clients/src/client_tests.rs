@@ -315,7 +315,7 @@ fn writable(client: *mut Client) -> c_int {
 
 fn flag(client: *mut Client, name: u32) -> bool {
     // SAFETY: a live state.
-    swr_v1_clients_flag(unsafe { &*client }, name)
+    unsafe { &*client }.flag(name)
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
@@ -505,7 +505,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     unsafe { swr_cpp_buffer_append(&*queue, [0_u8; 10].as_ptr(), 10) };
     sock().output.out_buffer = queue.cast();
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_watermark(&*client, true).write(8) };
+    unsafe { &*client }.set_watermark(true, 8);
     assert_eq!(send(Handle(client), b"data", 0), 4);
     assert_eq!(taken(), ["write 4", "call 5 0"]);
     // Already high: no second call.
@@ -521,7 +521,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     let client = client(1, true, true);
     set_proxy(client, false);
     // SAFETY: a live state.
-    unsafe { swr_v1_clients_watermark(&*client, true).write(100) };
+    unsafe { &*client }.set_watermark(true, 100);
     let result = writable(client);
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event 1 512", "write 3"]);

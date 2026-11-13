@@ -18,7 +18,7 @@
 namespace swoole {
 
 // The owner itself, reference counted: make() is a new one and the caller's reference, which
-// release() drops (swr_v1_tls_owner_clone adds one). C++ never constructs or copies one; its
+// release() drops (Rust's TlsContext clones add more). C++ never constructs or copies one; its
 // fields and string slots are the owner's.
 struct SSLContext {
     // The string slots C++ writes, in crates/tls/src/owned.rs's order.
