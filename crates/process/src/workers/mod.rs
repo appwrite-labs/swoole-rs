@@ -76,6 +76,11 @@ pub fn run_task_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> 
     task_worker::run(&mut Over(context), operation, arg)
 }
 
+/// [`run_task_worker`] for a process-factory `operation`.
+pub fn run_factory<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
+    factory::run(&mut Over(context), operation, arg)
+}
+
 /// [`run_task_worker`] for an event-worker `operation`.
 pub fn run_event_worker<A: Answer>(context: &mut A, operation: u32, arg: u64) -> i64 {
     event_worker::run(&mut Over(context), operation, arg)

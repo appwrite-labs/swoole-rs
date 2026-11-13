@@ -157,7 +157,7 @@ pub(crate) fn run<'a>(
         conn: None,
         fd: 0,
     };
-    swoole_rs_process::workers::run_over(&mut ctx, op, arg)
+    swoole_rs_process::workers::run_factory(&mut ctx, op, arg)
 }
 
 /// [`run`] of an op that reads the server alone.
@@ -168,18 +168,29 @@ pub(crate) fn run_server(serv: view::Server<'_>, op: u32) -> i64 {
 /// Each factory op over the objects [`run`]'s caller lent: the ops after
 /// `OP_SEND_CONN_ACTIVE` or `OP_SESSION_CONN` run with its connection.
 impl swoole_rs_process::workers::Answer for Context<'_> {
+    #[inline(always)]
     fn answer(&mut self, op: u32, arg: u64) -> u64 {
-        let answer = fact(self, op);
-        let answer = answer.or_else(|| connection(self, op, arg));
-        let answer = answer.or_else(|| worker(self, op, arg));
-        let answer = answer.or_else(|| server(self, op, arg));
-        let answer = answer.or_else(|| native(self, op, arg));
-        answer.unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown factory op"))
+        // Plain branches, not `or_else` closures, so each group inlines and an op
+        // known at the call folds to its arm.
+        if let Some(value) = fact(self, op) {
+            return value;
+        }
+        if let Some(value) = connection(self, op, arg) {
+            return value;
+        }
+        if let Some(value) = worker(self, op, arg) {
+            return value;
+        }
+        if let Some(value) = server(self, op, arg) {
+            return value;
+        }
+        native(self, op, arg).unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown factory op"))
     }
 }
 
 /// The reactor threads, barriers, pipes and message box the factory makes and
 /// frees, and its writes to the workers and reactor threads.
+#[inline(always)]
 fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv.raw();
     let (state, tables, config) = (ctx.state(), ctx.tables(), ctx.config());
@@ -269,6 +280,7 @@ pub(crate) fn new_reactor_threads(state: &crate::ServerState, count: u16) -> *mu
 }
 
 /// The facts read from the server config, the data sent and the worker globals.
+#[inline(always)]
 fn fact(ctx: &Context, op: u32) -> Option<u64> {
     let config = ctx.config();
     let send = || &ctx.send().info;
@@ -295,6 +307,7 @@ fn fact(ctx: &Context, op: u32) -> Option<u64> {
 
 /// The connection the data sent is for: selected by `OP_SEND_CONN_ACTIVE` or
 /// `OP_SESSION_CONN`, then read and updated by the ops after them.
+#[inline(always)]
 fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
     let serv = ctx.serv.raw();
     match op {
@@ -407,6 +420,7 @@ fn low32(value: u64) -> u32 {
 }
 
 /// Forking, registering and running event and user workers.
+#[inline(always)]
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let worker = ctx.worker_ptr();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
@@ -479,6 +493,7 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
 }
 
 /// The server's setup and teardown: connections, the manager and the task workers.
+#[inline(always)]
 fn server(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
     let (tables, config) = (ctx.tables(), ctx.config());
     // SAFETY: only the arms below that `create_process_factory` and
