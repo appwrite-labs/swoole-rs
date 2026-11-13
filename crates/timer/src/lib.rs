@@ -31,19 +31,23 @@ pub use wrapper::{
     swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec, thread_timer_count,
 };
 
-const OK: i32 = 0;
-const EMPTY: i32 = 1;
-const DEFERRED: i32 = 2;
-const RELEASE: i32 = 3;
-const RELEASE_OVERFLOW: i32 = 4;
-const INVALID: i32 = -1;
-const OVERFLOW: i32 = -2;
-const NOMEM: i32 = -3;
-const BUSY: i32 = -4;
-const NOT_FOUND: i32 = -5;
-const CLOSING: i32 = -6;
-#[cfg(test)]
-const CAPACITY: i32 = -7;
+/// What a queue operation did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    Ok,
+    Empty,
+    Deferred,
+    Release,
+    ReleaseOverflow,
+    Invalid,
+    Overflow,
+    NoMem,
+    Busy,
+    NotFound,
+    Closing,
+    #[cfg(test)]
+    Capacity,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,28 +142,28 @@ impl Timer {
         delay: i64,
         persistent: bool,
         token: *mut c_void,
-    ) -> (i32, TimerView) {
+    ) -> (Status, TimerView) {
         let none = TimerView::default();
         if now < 0 || delay <= 0 || token.is_null() {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         if self.closing {
-            return (CLOSING, none);
+            return (Status::Closing, none);
         }
         if now < self.last_time {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         let Some(deadline) = now.checked_add(delay) else {
-            return (OVERFLOW, none);
+            return (Status::Overflow, none);
         };
         let Some(id) = self.last_id.checked_add(1) else {
-            return (OVERFLOW, none);
+            return (Status::Overflow, none);
         };
         if self.heap.len() >= (isize::MAX as usize) / mem::size_of::<TimerView>() {
-            return (OVERFLOW, none);
+            return (Status::Overflow, none);
         }
         if self.heap.try_reserve(1).is_err() || self.positions.try_reserve(1).is_err() {
-            return (NOMEM, none);
+            return (Status::NoMem, none);
         }
         let view = TimerView {
             id,
@@ -173,17 +177,19 @@ impl Timer {
         self.positions.insert(id, slot);
         self.last_id = id;
         self.last_time = now;
-        (OK, view)
+        (Status::Ok, view)
     }
 
     /// The node `id`'s view.
     #[must_use]
-    pub fn get(&self, id: i64) -> (i32, TimerView) {
+    pub fn get(&self, id: i64) -> (Status, TimerView) {
         if id <= 0 {
-            return (INVALID, TimerView::default());
+            return (Status::Invalid, TimerView::default());
         }
         self.find(id)
-            .map_or((NOT_FOUND, TimerView::default()), |(_, view)| (OK, view))
+            .map_or((Status::NotFound, TimerView::default()), |(_, view)| {
+                (Status::Ok, view)
+            })
     }
 
     /// The token `id` was added with, or null.
@@ -195,43 +201,43 @@ impl Timer {
     }
 
     /// Node `id` falls due at `deadline`.
-    pub fn update(&mut self, id: i64, deadline: i64) -> (i32, TimerView) {
+    pub fn update(&mut self, id: i64, deadline: i64) -> (Status, TimerView) {
         let none = TimerView::default();
         if id <= 0 || deadline < 0 {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         if self.closing {
-            return (CLOSING, none);
+            return (Status::Closing, none);
         }
         let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
-            return (NOT_FOUND, none);
+            return (Status::NotFound, none);
         };
         view.deadline = deadline;
         self.heap.update(index, view);
-        (OK, view)
+        (Status::Ok, view)
     }
 
-    /// Removes node `id`; only `RELEASE` hands the token back.
-    pub fn remove(&mut self, id: i64) -> (i32, TimerView) {
+    /// Removes node `id`; only `Status::Release` hands the token back.
+    pub fn remove(&mut self, id: i64) -> (Status, TimerView) {
         let none = TimerView::default();
         if id <= 0 {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         let Some((index, mut view)) = self.find(id).filter(|(_, view)| !view.removed) else {
-            return (NOT_FOUND, none);
+            return (Status::NotFound, none);
         };
         if self.active_id == id {
             view.removed = true;
             self.heap.update(index, view);
-            (DEFERRED, view)
+            (Status::Deferred, view)
         } else {
             self.detach(index)
-                .map_or((NOT_FOUND, none), |entry| (RELEASE, entry))
+                .map_or((Status::NotFound, none), |entry| (Status::Release, entry))
         }
     }
 
     /// A selection at `now` that finds nothing due, in one step: [`Self::begin`], an
-    /// `EMPTY` [`Self::select_next`] and [`Self::end`], with `end`'s delay. `None`, and
+    /// `Status::Empty` [`Self::select_next`] and [`Self::end`], with `end`'s delay. `None`, and
     /// nothing changed, when a node is due or `begin` would refuse.
     pub fn select_idle(&mut self, now: i64) -> Option<i64> {
         let head = self.heap.first();
@@ -252,58 +258,58 @@ impl Timer {
     }
 
     /// Begins a selection at `now`.
-    pub fn begin(&mut self, now: i64) -> i32 {
+    pub fn begin(&mut self, now: i64) -> Status {
         if now < 0 {
-            return INVALID;
+            return Status::Invalid;
         }
         if self.closing {
-            return CLOSING;
+            return Status::Closing;
         }
         if self.selecting {
-            return BUSY;
+            return Status::Busy;
         }
         if now < self.last_time {
-            return INVALID;
+            return Status::Invalid;
         }
         if self.round == u64::MAX {
-            return OVERFLOW;
+            return Status::Overflow;
         }
         self.last_time = now;
         self.captured = now;
         self.selecting = true;
-        OK
+        Status::Ok
     }
 
     /// The selection's next due node, which becomes the active one.
-    pub fn select_next(&mut self) -> (i32, TimerView) {
+    pub fn select_next(&mut self) -> (Status, TimerView) {
         let none = TimerView::default();
         if !self.selecting {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         if self.active_id != 0 {
-            return (BUSY, none);
+            return (Status::Busy, none);
         }
         if self.closing {
-            return (CLOSING, none);
+            return (Status::Closing, none);
         }
         let Some(view) = self.heap.first().copied() else {
-            return (EMPTY, none);
+            return (Status::Empty, none);
         };
         if view.deadline > self.captured || view.birth_round == self.round {
-            return (EMPTY, none);
+            return (Status::Empty, none);
         }
         self.active_id = view.id;
-        (OK, view)
+        (Status::Ok, view)
     }
 
     /// The active node `id` ran.
-    pub fn complete(&mut self, id: i64) -> (i32, TimerView) {
+    pub fn complete(&mut self, id: i64) -> (Status, TimerView) {
         let none = TimerView::default();
         if id <= 0 || !self.selecting || self.active_id != id {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         let Some((index, mut view)) = self.find(id) else {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         };
         let mut next = Some(view.deadline);
         if view.deadline <= self.captured && view.interval > 0 {
@@ -316,13 +322,13 @@ impl Timer {
         let executions = view.exec_count.checked_add(1);
         self.active_id = 0;
         let status = if view.removed || self.closing || view.interval == 0 {
-            RELEASE
+            Status::Release
         } else if next.is_none() || executions.is_none() {
-            RELEASE_OVERFLOW
+            Status::ReleaseOverflow
         } else {
-            OK
+            Status::Ok
         };
-        if status == OK {
+        if status == Status::Ok {
             // Both values were checked above; matching avoids fallible unwraps.
             if let (Some(deadline), Some(exec_count)) = (next, executions) {
                 view.deadline = deadline;
@@ -336,15 +342,15 @@ impl Timer {
     }
 
     /// The selection ends; the delay to the next deadline, or -1.
-    pub fn end(&mut self) -> (i32, i64) {
+    pub fn end(&mut self) -> (Status, i64) {
         if !self.selecting {
-            return (INVALID, -1);
+            return (Status::Invalid, -1);
         }
         if self.active_id != 0 {
-            return (BUSY, -1);
+            return (Status::Busy, -1);
         }
         let Some(round) = self.round.checked_add(1) else {
-            return (OVERFLOW, -1);
+            return (Status::Overflow, -1);
         };
         self.selecting = false;
         self.round = round;
@@ -352,7 +358,7 @@ impl Timer {
             Some(head) if !self.closing => (head.deadline - self.captured).max(1),
             _ => -1,
         };
-        (OK, delay)
+        (Status::Ok, delay)
     }
 
     /// The count, round, active node and flags.
@@ -367,18 +373,18 @@ impl Timer {
         }
     }
 
-    /// Every live ID into the front of `ids`, and the status and the count: `CAPACITY`,
+    /// Every live ID into the front of `ids`, and the status and the count: `Status::Capacity`,
     /// writing nothing, when `ids` is shorter than the count.
     #[cfg(test)]
-    fn ids(&self, ids: &mut [i64]) -> (i32, usize) {
+    fn ids(&self, ids: &mut [i64]) -> (Status, usize) {
         let count = self.heap.len();
         let Some(slots) = ids.get_mut(..count) else {
-            return (CAPACITY, count);
+            return (Status::Capacity, count);
         };
         for (slot, entry) in slots.iter_mut().zip(self.heap.iter()) {
             *slot = entry.id;
         }
-        (OK, count)
+        (Status::Ok, count)
     }
 
     /// Closes the queue: nothing is added, updated or selected after it, and the
@@ -391,18 +397,18 @@ impl Timer {
         }
     }
 
-    /// A closed queue's next node to dispose of (`RELEASE`), or `DEFERRED` when only
+    /// A closed queue's next node to dispose of (`Status::Release`), or `Status::Deferred` when only
     /// the active one is left.
-    pub fn drain(&mut self) -> (i32, TimerView) {
+    pub fn drain(&mut self) -> (Status, TimerView) {
         let none = TimerView::default();
         if !self.closing {
-            return (INVALID, none);
+            return (Status::Invalid, none);
         }
         let Some(head) = self.heap.first() else {
-            return (EMPTY, none);
+            return (Status::Empty, none);
         };
         self.detach(usize::from(head.id == self.active_id))
-            .map_or((DEFERRED, none), |view| (RELEASE, view))
+            .map_or((Status::Deferred, none), |view| (Status::Release, view))
     }
 
     /// Whether the queue may be freed: no node and no selection.
@@ -473,37 +479,37 @@ mod tests {
             let (status, view) =
                 self.q()
                     .add(now, delay, persistent, ptr::without_provenance_mut(token));
-            assert_eq!(status, OK);
+            assert_eq!(status, Status::Ok);
             view
         }
         fn get(&self, id: i64) -> TimerView {
             let (status, view) = self.q().get(id);
-            assert_eq!(status, OK);
+            assert_eq!(status, Status::Ok);
             view
         }
         fn stats(&self) -> TimerStats {
             self.q().stats()
         }
-        fn begin(&self, now: i64) -> i32 {
+        fn begin(&self, now: i64) -> Status {
             self.q().begin(now)
         }
-        fn next(&self, expected: i32) -> TimerView {
+        fn next(&self, expected: Status) -> TimerView {
             let (status, view) = self.q().select_next();
             assert_eq!(status, expected);
             view
         }
-        fn complete(&self, id: i64, expected: i32) -> TimerView {
+        fn complete(&self, id: i64, expected: Status) -> TimerView {
             let (status, view) = self.q().complete(id);
             assert_eq!(status, expected);
             view
         }
         fn end(&self) -> i64 {
             let (status, delay) = self.q().end();
-            assert_eq!(status, OK);
+            assert_eq!(status, Status::Ok);
             delay
         }
         fn prime(&self) {
-            assert_eq!(self.begin(0), OK);
+            assert_eq!(self.begin(0), Status::Ok);
             self.end();
         }
         fn invariant(&self) {
@@ -523,12 +529,12 @@ mod tests {
             self.q().close();
             let stats = self.stats();
             if stats.active_id != 0 {
-                self.complete(stats.active_id, RELEASE);
+                self.complete(stats.active_id, Status::Release);
             }
             if stats.selecting {
                 self.end();
             }
-            while self.q().drain().0 == RELEASE {}
+            while self.q().drain().0 == Status::Release {}
             assert!(self.q().idle());
         }
     }
@@ -539,29 +545,29 @@ mod tests {
         let a = q.add(0, 1, false, 1);
         let b = q.add(0, 1, false, 2);
         let c = q.add(0, 1, false, 3);
-        assert_eq!(q.begin(1), OK);
-        assert_eq!(q.next(EMPTY), TimerView::default());
+        assert_eq!(q.begin(1), Status::Ok);
+        assert_eq!(q.next(Status::Empty), TimerView::default());
         assert_eq!(q.end(), 1);
-        assert_eq!(q.begin(1), OK);
+        assert_eq!(q.begin(1), Status::Ok);
         for expected in [a, c, b] {
-            assert_eq!(q.next(OK), expected);
-            assert_eq!(q.complete(expected.id, RELEASE), expected);
+            assert_eq!(q.next(Status::Ok), expected);
+            assert_eq!(q.complete(expected.id, Status::Release), expected);
             q.invariant();
         }
-        q.next(EMPTY);
+        q.next(Status::Empty);
         assert_eq!(q.end(), -1);
         // A callback-born head blocks an older due entry behind it.
         let old = q.add(1, 10, false, 4);
-        assert_eq!(q.begin(20), OK);
+        assert_eq!(q.begin(20), Status::Ok);
         let young = q.add(20, 1, false, 5);
-        assert_eq!(q.q().update(young.id, 0).0, OK);
-        q.next(EMPTY);
+        assert_eq!(q.q().update(young.id, 0).0, Status::Ok);
+        q.next(Status::Empty);
         q.end();
-        assert_eq!(q.begin(20), OK);
-        assert_eq!(q.next(OK).id, young.id);
-        q.complete(young.id, RELEASE);
-        assert_eq!(q.next(OK).id, old.id);
-        q.complete(old.id, RELEASE);
+        assert_eq!(q.begin(20), Status::Ok);
+        assert_eq!(q.next(Status::Ok).id, young.id);
+        q.complete(young.id, Status::Release);
+        assert_eq!(q.next(Status::Ok).id, old.id);
+        q.complete(old.id, Status::Release);
         q.end();
     }
 
@@ -578,8 +584,8 @@ mod tests {
             let delay = idle.q().select_idle(now);
             assert_eq!(delay.is_none(), due);
             if let Some(delay) = delay {
-                assert_eq!(steps.begin(now), OK);
-                steps.next(EMPTY);
+                assert_eq!(steps.begin(now), Status::Ok);
+                steps.next(Status::Empty);
                 assert_eq!(steps.end(), delay);
                 assert_eq!(idle.stats(), steps.stats());
                 // Both refuse a time before the selection's.
@@ -594,7 +600,7 @@ mod tests {
         assert_eq!(q.q().select_idle(5), Some(1));
         assert_eq!(q.q().select_idle(5), None);
         // An open selection or an active node leaves the queue to the full path.
-        assert_eq!(q.begin(5), OK);
+        assert_eq!(q.begin(5), Status::Ok);
         assert_eq!(q.q().select_idle(5), None);
     }
 
@@ -605,20 +611,27 @@ mod tests {
             let a = q.add(0, 5, persistent, 1);
             let b = q.add(0, 6, false, 2);
             q.prime();
-            assert_eq!(q.begin(10), OK);
-            assert_eq!(q.next(OK).id, a.id);
-            assert_eq!(q.complete(b.id, INVALID), TimerView::default());
+            assert_eq!(q.begin(10), Status::Ok);
+            assert_eq!(q.next(Status::Ok).id, a.id);
+            assert_eq!(q.complete(b.id, Status::Invalid), TimerView::default());
             assert_eq!(q.stats().active_id, a.id);
-            assert_eq!(q.q().update(a.id, 100).0, OK);
-            let completed = q.complete(a.id, if persistent { OK } else { RELEASE });
+            assert_eq!(q.q().update(a.id, 100).0, Status::Ok);
+            let completed = q.complete(
+                a.id,
+                if persistent {
+                    Status::Ok
+                } else {
+                    Status::Release
+                },
+            );
             assert_eq!(completed.id, a.id);
             assert_eq!(completed.deadline, 100);
             if persistent {
                 assert_eq!(completed.exec_count, 1);
                 assert_eq!(completed.interval, 5);
             }
-            assert_eq!(q.next(OK).id, b.id);
-            q.complete(b.id, RELEASE);
+            assert_eq!(q.next(Status::Ok).id, b.id);
+            q.complete(b.id, Status::Release);
             q.end();
             q.invariant();
         }
@@ -630,21 +643,21 @@ mod tests {
         let a = q.add(0, 5, true, 1);
         let b = q.add(0, 50, false, 2);
         q.prime();
-        assert_eq!(q.begin(23), OK);
-        assert_eq!(q.next(OK).id, a.id);
+        assert_eq!(q.begin(23), Status::Ok);
+        assert_eq!(q.next(Status::Ok).id, a.id);
         let c = q.add(100, 1, false, 3); // Accepted add time does not alter captured 23.
-        assert_eq!(q.complete(a.id, OK).deadline, 25);
-        q.next(EMPTY);
+        assert_eq!(q.complete(a.id, Status::Ok).deadline, 25);
+        q.next(Status::Empty);
         assert_eq!(q.end(), 2);
-        assert_eq!(q.begin(99), INVALID);
-        assert_eq!(q.begin(100), OK);
-        assert_eq!(q.next(OK).id, a.id);
-        let out = q.complete(a.id, OK);
+        assert_eq!(q.begin(99), Status::Invalid);
+        assert_eq!(q.begin(100), Status::Ok);
+        assert_eq!(q.next(Status::Ok).id, a.id);
+        let out = q.complete(a.id, Status::Ok);
         assert_eq!(out.deadline, 105);
         assert_eq!(out.exec_count, 2);
-        assert_eq!(q.next(OK).id, b.id);
-        q.complete(b.id, RELEASE);
-        q.next(EMPTY);
+        assert_eq!(q.next(Status::Ok).id, b.id);
+        q.complete(b.id, Status::Release);
+        q.next(Status::Empty);
         q.end();
         assert_eq!(q.get(c.id).deadline, 101);
         q.invariant();
@@ -656,23 +669,23 @@ mod tests {
         let a = q.add(0, 1, true, 1);
         let b = q.add(0, 2, false, 2);
         q.prime();
-        assert_eq!(q.begin(10), OK);
-        q.next(OK);
-        assert_eq!(q.q().remove(a.id).0, DEFERRED);
+        assert_eq!(q.begin(10), Status::Ok);
+        q.next(Status::Ok);
+        assert_eq!(q.q().remove(a.id).0, Status::Deferred);
         assert!(q.get(a.id).removed);
-        assert_eq!(q.q().remove(a.id), (NOT_FOUND, TimerView::default()));
+        assert_eq!(q.q().remove(a.id), (Status::NotFound, TimerView::default()));
         assert!(!q.q().idle(), "release would be PENDING");
         q.q().close();
-        q.next(BUSY);
+        q.next(Status::Busy);
         let (status, out) = q.q().drain();
-        assert_eq!(status, RELEASE);
+        assert_eq!(status, Status::Release);
         assert_eq!(out.id, b.id);
-        assert_eq!(q.q().drain(), (DEFERRED, TimerView::default()));
-        assert_eq!(q.complete(a.id, RELEASE).token, a.token);
-        q.next(CLOSING);
+        assert_eq!(q.q().drain(), (Status::Deferred, TimerView::default()));
+        assert_eq!(q.complete(a.id, Status::Release).token, a.token);
+        q.next(Status::Closing);
         assert_eq!(q.end(), -1);
-        assert_eq!(q.q().drain().0, EMPTY);
-        assert_eq!(q.begin(10), CLOSING);
+        assert_eq!(q.q().drain().0, Status::Empty);
+        assert_eq!(q.begin(10), Status::Closing);
     }
 
     #[test]
@@ -681,17 +694,17 @@ mod tests {
         let a = q.add(0, 2, false, 1);
         let b = q.add(0, 1, false, 2);
         let mut ids = [99, 99];
-        assert_eq!(q.0.borrow().ids(&mut []), (CAPACITY, 2));
-        assert_eq!(q.0.borrow().ids(&mut ids[..1]), (CAPACITY, 2));
+        assert_eq!(q.0.borrow().ids(&mut []), (Status::Capacity, 2));
+        assert_eq!(q.0.borrow().ids(&mut ids[..1]), (Status::Capacity, 2));
         assert_eq!(ids, [99, 99]);
-        assert_eq!(q.0.borrow().ids(&mut ids), (OK, 2));
+        assert_eq!(q.0.borrow().ids(&mut ids), (Status::Ok, 2));
         ids.sort_unstable();
         assert_eq!(ids, [a.id, b.id]);
         for id in ids {
-            assert_eq!(q.q().remove(id).0, RELEASE);
+            assert_eq!(q.q().remove(id).0, Status::Release);
             q.invariant();
         }
-        assert_eq!(q.0.borrow().ids(&mut []), (OK, 0));
+        assert_eq!(q.0.borrow().ids(&mut []), (Status::Ok, 0));
     }
 
     #[test]
@@ -702,16 +715,16 @@ mod tests {
         let before = q.stats();
         assert_eq!(
             q.q().add(5, 1, false, ptr::dangling_mut()),
-            (OVERFLOW, TimerView::default())
+            (Status::Overflow, TimerView::default())
         );
         assert_eq!(q.stats(), before);
         assert_eq!(q.q().last_time, 0);
         let rounds = Owned::new();
         rounds.q().round = u64::MAX - 1;
-        assert_eq!(rounds.begin(0), OK);
+        assert_eq!(rounds.begin(0), Status::Ok);
         rounds.end();
         assert_eq!(rounds.stats().round, u64::MAX);
-        assert_eq!(rounds.begin(1), OVERFLOW);
+        assert_eq!(rounds.begin(1), Status::Overflow);
         assert_eq!(rounds.q().last_time, 0);
         for execution_limit in [false, true] {
             let queue = Owned::new();
@@ -725,9 +738,12 @@ mod tests {
                 };
                 heap.update(0, view);
             }
-            assert_eq!(queue.begin(if execution_limit { 1 } else { i64::MAX }), OK);
-            queue.next(OK);
-            let released = queue.complete(a.id, RELEASE_OVERFLOW);
+            assert_eq!(
+                queue.begin(if execution_limit { 1 } else { i64::MAX }),
+                Status::Ok
+            );
+            queue.next(Status::Ok);
+            let released = queue.complete(a.id, Status::ReleaseOverflow);
             assert_eq!(released.token, a.token);
             assert_eq!(queue.stats().count, 0);
             queue.end();
@@ -749,9 +765,9 @@ mod tests {
                 let id = ids[usize::try_from(seed % ids.len() as u64).unwrap()];
                 if step % 3 == 1 {
                     let deadline = i64::try_from(seed % 100).unwrap();
-                    assert_eq!(q.q().update(id, deadline).0, OK);
+                    assert_eq!(q.q().update(id, deadline).0, Status::Ok);
                 } else {
-                    assert_eq!(q.q().remove(id).0, RELEASE);
+                    assert_eq!(q.q().remove(id).0, Status::Release);
                 }
             }
             q.invariant();
@@ -767,13 +783,13 @@ mod tests {
             let (status, out) = queue.add(10, 5, false, ptr::dangling_mut());
             FAIL_AFTER.set(None);
             if nth < 3 {
-                assert_eq!(status, NOMEM);
+                assert_eq!(status, Status::NoMem);
                 assert_eq!(out, TimerView::default());
                 assert_eq!(queue.stats().count, 0);
                 assert_eq!(queue.last_id, 0);
                 assert_eq!(queue.last_time, 0);
             } else {
-                assert_eq!(status, OK);
+                assert_eq!(status, Status::Ok);
                 assert_eq!(out.id, 1);
             }
         }
@@ -790,7 +806,7 @@ mod tests {
         FAIL_AFTER.set(Some(0));
         let added = q.q().add(99, 1, false, ptr::without_provenance_mut(999));
         FAIL_AFTER.set(None);
-        assert_eq!(added, (NOMEM, TimerView::default()));
+        assert_eq!(added, (Status::NoMem, TimerView::default()));
         assert_eq!(q.stats(), stats);
         assert_eq!(q.get(first.id), first);
         assert_eq!(q.q().last_id, last_id);
@@ -813,8 +829,8 @@ mod tests {
         let removed = queue.remove(1).0;
         let allocation_not_attempted = FAIL_AFTER.replace(None);
         drop(queue);
-        assert_eq!(updated, OK);
-        assert_eq!(removed, RELEASE);
+        assert_eq!(updated, Status::Ok);
+        assert_eq!(removed, Status::Release);
         assert_eq!(allocation_not_attempted, Some(0));
         q.invariant();
     }
@@ -845,22 +861,22 @@ mod tests {
                         .unwrap();
                     if seed % 4 == 1 {
                         let (status, out) = q.q().remove(id);
-                        assert_eq!(status, RELEASE);
+                        assert_eq!(status, Status::Release);
                         assert_eq!(out, model.remove(&id).unwrap());
                     } else {
                         let deadline = now + i64::try_from(seed % 53).unwrap();
                         let (status, out) = q.q().update(id, deadline);
-                        assert_eq!(status, OK);
+                        assert_eq!(status, Status::Ok);
                         model.get_mut(&id).unwrap().deadline = deadline;
                         assert_eq!(out, model[&id]);
                     }
                 }
                 _ => {
                     now += i64::try_from(seed % 7).unwrap();
-                    assert_eq!(q.begin(now), OK);
+                    assert_eq!(q.begin(now), Status::Ok);
                     loop {
                         let (status, out) = q.q().select_next();
-                        if status == EMPTY {
+                        if status == Status::Empty {
                             if let Some(deadline) = model.values().map(|v| v.deadline).min() {
                                 assert!(
                                     deadline > now
@@ -872,13 +888,19 @@ mod tests {
                             }
                             break;
                         }
-                        assert_eq!(status, OK);
+                        assert_eq!(status, Status::Ok);
                         let old = model[&out.id];
                         assert_eq!(out, old);
                         assert_eq!(Some(old.deadline), model.values().map(|v| v.deadline).min());
                         assert!(old.deadline <= now && old.birth_round != round);
-                        let completed =
-                            q.complete(old.id, if old.interval == 0 { RELEASE } else { OK });
+                        let completed = q.complete(
+                            old.id,
+                            if old.interval == 0 {
+                                Status::Release
+                            } else {
+                                Status::Ok
+                            },
+                        );
                         if old.interval == 0 {
                             assert_eq!(completed, model.remove(&old.id).unwrap());
                         } else {
@@ -917,7 +939,7 @@ mod tests {
         let view = q.add(0, 5, false, 7);
         assert_eq!(q.0.borrow().token(view.id), view.token);
         assert!(q.0.borrow().token(view.id + 1).is_null());
-        assert_eq!(q.q().remove(view.id).0, RELEASE);
+        assert_eq!(q.q().remove(view.id).0, Status::Release);
         assert!(q.0.borrow().token(view.id).is_null());
     }
 
@@ -925,22 +947,25 @@ mod tests {
     fn invalid_inputs_return_empty_views_and_do_not_change_selection() {
         let q = Owned::new();
         let original = q.add(0, 1, false, 1);
-        assert_eq!(q.complete(original.id, INVALID), TimerView::default());
-        assert_eq!(q.begin(-1), INVALID);
+        assert_eq!(
+            q.complete(original.id, Status::Invalid),
+            TimerView::default()
+        );
+        assert_eq!(q.begin(-1), Status::Invalid);
         assert_eq!(
             q.q().add(i64::MAX, 1, false, ptr::dangling_mut()),
-            (OVERFLOW, TimerView::default())
+            (Status::Overflow, TimerView::default())
         );
-        assert_eq!(q.q().update(1, -1), (INVALID, TimerView::default()));
-        assert_eq!(q.q().drain(), (INVALID, TimerView::default()));
+        assert_eq!(q.q().update(1, -1), (Status::Invalid, TimerView::default()));
+        assert_eq!(q.q().drain(), (Status::Invalid, TimerView::default()));
         assert_eq!(q.get(original.id), original);
         q.prime();
-        assert_eq!(q.begin(1), OK);
-        assert_eq!(q.begin(100), BUSY);
+        assert_eq!(q.begin(1), Status::Ok);
+        assert_eq!(q.begin(100), Status::Busy);
         assert_eq!(q.q().captured, 1);
-        q.next(OK);
-        assert_eq!(q.q().end(), (BUSY, -1));
-        q.complete(original.id, RELEASE);
+        q.next(Status::Ok);
+        assert_eq!(q.q().end(), (Status::Busy, -1));
+        q.complete(original.id, Status::Release);
         q.end();
     }
 }
