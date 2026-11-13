@@ -23,7 +23,7 @@ use super::{
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::io::{Read, Write};
-use swoole_rs_clients::client::{Handle, Op};
+use swoole_rs_clients::client::{ClientEvent, Flag, Handle, Op};
 use swoole_rs_corebase::net_types::SocketAddress;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
@@ -50,8 +50,6 @@ const SW_ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_SSL_HANDSHAKE_FAILED: c_int = 1018;
 const SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int = 7101;
-const SWR_CLIENTS_CLOSED: u32 = 1;
-const SWR_CLIENTS_ASYNC_CONNECT: u32 = 5;
 const SW_DNS_RESOLV_CONF: &CStr = c"/etc/resolv.conf";
 
 // glibc's values (the core-tests build is Linux).
@@ -61,14 +59,6 @@ const ESOCKTNOSUPPORT: c_int = 94;
 const EINPROGRESS: c_int = 115;
 const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
-
-// crates/clients' `ON_*` events.
-const ON_CONNECT: c_int = 1;
-const ON_RECEIVE: c_int = 2;
-const ON_CLOSE: c_int = 3;
-const ON_ERROR: c_int = 4;
-const ON_BUFFER_FULL: c_int = 5;
-const ON_BUFFER_EMPTY: c_int = 6;
 
 /// crates/clients' `ClientRecord`, the head of `network::Client`, with Linux's
 /// 120-byte `network::Address`.
@@ -204,24 +194,24 @@ pub(super) struct Client<'a> {
 
 unsafe extern "C" fn listener(
     object: *mut c_void,
-    kind: c_int,
+    kind: ClientEvent,
     data: *const c_char,
     length: usize,
 ) {
     // SAFETY: `listen` passed the boxed client, alive while its loop runs.
     let cli = unsafe { &*object.cast::<Client>() };
-    if kind == ON_RECEIVE {
+    if kind == ClientEvent::Receive {
         // SAFETY: the client's received bytes.
         let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
         (cli.on_receive.borrow_mut().as_mut().unwrap())(cli, bytes);
         return;
     }
     let slot = match kind {
-        ON_CONNECT => &cli.on_connect,
-        ON_ERROR => &cli.on_error,
-        ON_CLOSE => &cli.on_close,
-        ON_BUFFER_FULL => &cli.on_buffer_full,
-        _ => &cli.on_buffer_empty,
+        ClientEvent::Connect => &cli.on_connect,
+        ClientEvent::Error => &cli.on_error,
+        ClientEvent::Close => &cli.on_close,
+        ClientEvent::BufferFull => &cli.on_buffer_full,
+        ClientEvent::BufferEmpty | ClientEvent::Receive => &cli.on_buffer_empty,
     };
     (slot.borrow_mut().as_mut().unwrap())(cli);
 }
@@ -268,15 +258,21 @@ impl<'a> Client<'a> {
     fn listen(&self) {
         let mut events = 0;
         for (kind, set) in [
-            (ON_CONNECT, self.on_connect.borrow().is_some()),
-            (ON_RECEIVE, self.on_receive.borrow().is_some()),
-            (ON_CLOSE, self.on_close.borrow().is_some()),
-            (ON_ERROR, self.on_error.borrow().is_some()),
-            (ON_BUFFER_FULL, self.on_buffer_full.borrow().is_some()),
-            (ON_BUFFER_EMPTY, self.on_buffer_empty.borrow().is_some()),
+            (ClientEvent::Connect, self.on_connect.borrow().is_some()),
+            (ClientEvent::Receive, self.on_receive.borrow().is_some()),
+            (ClientEvent::Close, self.on_close.borrow().is_some()),
+            (ClientEvent::Error, self.on_error.borrow().is_some()),
+            (
+                ClientEvent::BufferFull,
+                self.on_buffer_full.borrow().is_some(),
+            ),
+            (
+                ClientEvent::BufferEmpty,
+                self.on_buffer_empty.borrow().is_some(),
+            ),
         ] {
             if set {
-                events |= 1 << kind;
+                events |= kind.bit();
             }
         }
         let object = std::ptr::from_ref(self).cast::<c_void>();
@@ -489,7 +485,7 @@ impl<'a> Client<'a> {
     }
 
     fn async_connect(&self) -> bool {
-        self.client().flag(SWR_CLIENTS_ASYNC_CONNECT)
+        self.client().flag(Flag::AsyncConnect)
     }
 
     fn has_timedout(&self) -> bool {
@@ -528,7 +524,7 @@ impl<'a> Client<'a> {
 
     /// `SyncClient::close`.
     fn sync_close(&self) -> bool {
-        if !self.created.get() || self.client().flag(SWR_CLIENTS_CLOSED) {
+        if !self.created.get() || self.client().flag(Flag::Closed) {
             return false;
         }
         self.close();

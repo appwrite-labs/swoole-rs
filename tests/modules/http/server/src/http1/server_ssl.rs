@@ -16,7 +16,7 @@ use super::case::{
 use super::*;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use swoole_rs_clients::client::{Handle, Op};
+use swoole_rs_clients::client::{Flag, Handle, Op};
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_HOST6: &str = "::1";
@@ -25,9 +25,6 @@ const SW_SOCK_UDP6: c_int = 4;
 const SW_SOCK_UNIX_DGRAM: c_int = 6;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
 const F_GETFD: c_int = 1;
-
-// crates/clients' `closed` flag.
-const SWR_CLIENTS_CLOSED: u32 = 1;
 
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
@@ -238,7 +235,7 @@ impl SyncClient {
     fn close(&mut self) -> bool {
         // SAFETY: the client `new` made, live until the drop frees it.
         let client = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
-        if !self.created || client.flag(SWR_CLIENTS_CLOSED) {
+        if !self.created || client.flag(Flag::Closed) {
             return false;
         }
         let _ = self.run(Op::Close);
