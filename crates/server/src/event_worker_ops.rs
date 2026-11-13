@@ -187,7 +187,7 @@ fn effect(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_WORKER_SIGNAL_INIT => worker_signal_init(ctx.server()),
         OP_DRAIN_PIPES => drain_worker_pipe(ctx.server()),
-        OP_CLEAR_TIMER => crate::server_methods::clear_timer(ctx.server()),
+        OP_CLEAR_TIMER => crate::control::clear_timer(ctx.server()),
         OP_ABORT_WORKER => crate::worker_methods::abort_worker(ctx.server(), ctx.worker()),
         OP_RESET_WORKER_COUNTER => {
             crate::worker_methods::reset_worker_counter(ctx.server(), ctx.worker());
