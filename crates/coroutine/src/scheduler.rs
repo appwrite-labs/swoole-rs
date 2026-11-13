@@ -251,7 +251,8 @@ unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
 /// coroutine. A coroutine nothing resumes (a bailout abandons every suspended one)
 /// stays parked for good with its stack, or its thread, in place: only `destroy`
 /// frees one, and only once its entry returned. So what the caller's frames own is
-/// leaked, as by a thread that never wakes, and never freed under them.
+/// leaked, as by a thread that never wakes, and never freed under them. Freeing a
+/// suspended coroutine anywhere (at shutdown, say) would make this `unsafe` again.
 pub fn suspend(co: *mut c_void) {
     let s = Sched::this();
     ops::yield_(s, Co::running(s, co.cast()));
