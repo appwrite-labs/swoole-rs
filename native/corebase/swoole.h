@@ -305,15 +305,8 @@ struct Global {
     Allocator std_allocator;
 
     SW_RUST_FIELD(bool, running);
-    SW_RUST_FIELD(bool, enable_signalfd);
     SW_RUST_FIELD(bool, enable_coroutine);
-
-    SW_RUST_FIELD(uint32_t, signal_listener_num);
-    SW_RUST_FIELD(uint32_t, signal_async_listener_num);
-
-    //-----------------------[System]--------------------------
     SW_RUST_FIELD(uint32_t, pagesize);
-    SW_RUST_FIELD(Server *, server);
 };
 static_assert(offsetof(Global, dns_cache_refresh_time) == 8 && offsetof(Global, std_allocator) == 16 &&
                   sizeof(Global) == 56,

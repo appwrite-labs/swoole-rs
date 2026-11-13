@@ -1,10 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #ifndef SWOOLE_RS_COREBASE_H
 #define SWOOLE_RS_COREBASE_H
-#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <sys/types.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -24,39 +22,22 @@ void swr_v1_core_swoole_init(void);
  * swoole::DataHead::dump. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
- * and swoole_exit. */
-/* Process-wide core state: upstream's SwooleG scalars. swoole::Global's members
- * of these names are swoole::RustField views over the accessor pairs below.
- * Pointers (memory pool, stdout FILE *, Logger *, Server *, the AIO pipe
- * Socket *, the fatal-error and backtrace hooks) are native objects Rust only
- * holds. */
+ * swoole_exit, swoole_set_log_level, swoole_set/get_stdout_stream and sw_printf
+ * (crates/corebase/src/format.c). No compiled C++ calls them. */
+/* Process-wide core state: upstream's SwooleG scalars that C++ reads. swoole::Global's
+ * members of these names are swoole::RustField views over the accessor pairs below.
+ * Pointers (the fatal-error hook) are native objects Rust only holds. */
 uint16_t swr_v1_core_cpu_num(void);
 bool swr_v1_core_running(void);
 void swr_v1_core_set_running(bool value);
-bool swr_v1_core_enable_signalfd(void);
-void swr_v1_core_set_enable_signalfd(bool value);
 bool swr_v1_core_enable_coroutine(void);
 void swr_v1_core_set_enable_coroutine(bool value);
-uint32_t swr_v1_core_signal_listener_num(void);
-void swr_v1_core_set_signal_listener_num(uint32_t value);
-uint32_t swr_v1_core_signal_async_listener_num(void);
-void swr_v1_core_set_signal_async_listener_num(uint32_t value);
 long swr_v1_core_trace_flags(void);
 uint32_t swr_v1_core_pagesize(void);
 void swr_v1_core_set_pagesize(uint32_t value);
-void *swr_v1_core_stdout(void);
-void *swr_v1_core_logger(void);
-void *swr_v1_core_server(void);
-void swr_v1_core_set_server(void *value);
 void *swr_v1_core_fatal_error(void);
-/* crates/corebase/src/format.c: vfprintf to SwooleG.stdout_. No compiled source
- * calls it; core-tests/src/_lib/ssl.cpp does. */
-int sw_printf(const char *format, ...) __attribute__((format(printf, 1, 2)));
 #ifdef __cplusplus
 }
-#include <cstdio>
-#include <functional>
-#include <string>
 namespace swoole {
 /* The name resolvers' types. The list and the Context, which native code only
  * points to, are crates/corebase/src/name_resolver.rs (swr_v1_core_name_resolver_*). */
@@ -71,11 +52,8 @@ void swoole_throw_error(int code);
 void swoole_ignore_error(int code);
 bool swoole_is_ignored_error(int code);
 bool swoole_is_main_thread();
-void swoole_set_log_level(int level);
 int swoole_get_log_level();
 void swoole_set_trace_flags(long flags);
 void swoole_set_print_backtrace_on_error(bool enable = true);
-void swoole_set_stdout_stream(FILE *fp);
-FILE *swoole_get_stdout_stream();
 #endif
 #endif
