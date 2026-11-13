@@ -4,7 +4,7 @@
 use crate::{
     array::{Array, list_index, negate},
     host::{self, handlers},
-    item::{IS_ARRAYLIST, IS_MAP, IS_QUEUE, Item, Value},
+    item::{Item, Kind, Value},
     queue::Queue,
     table::Key,
 };
@@ -158,20 +158,20 @@ const NOTIFY_ALL: i64 = 2;
 pub(crate) fn shared(value: &ZValue) -> Option<Item> {
     let (kind, list, shared) = if let Some(map) = value.custom::<Map>() {
         (
-            IS_MAP,
+            Kind::Map,
             false,
             map.0.get().map(|array| Value::Array(Arc::clone(array))),
         )
     } else if let Some(list) = value.custom::<List>() {
         (
-            IS_ARRAYLIST,
+            Kind::ArrayList,
             true,
             list.0.get().map(|array| Value::Array(Arc::clone(array))),
         )
     } else {
         let queue = value.custom::<QueueObject>()?;
         (
-            IS_QUEUE,
+            Kind::Queue,
             false,
             queue.0.get().map(|queue| Value::Queue(Arc::clone(queue))),
         )
@@ -179,7 +179,7 @@ pub(crate) fn shared(value: &ZValue) -> Option<Item> {
     let Some(value) = shared else {
         crate::host::defer(crate::host::Pending::Unconstructed { list });
         return Some(Item {
-            kind: swoole_rs_zend::sys::IS_UNDEF,
+            kind: Kind::Undef,
             value: Value::Bare(0),
         });
     };
@@ -187,8 +187,8 @@ pub(crate) fn shared(value: &ZValue) -> Option<Item> {
 }
 
 /// `php_swoole_thread_{arraylist,map}_create`: an object over `array`.
-pub(crate) fn array_object(kind: u32, array: &Arc<Array>) -> Owned {
-    if kind == IS_ARRAYLIST {
+pub(crate) fn array_object(kind: Kind, array: &Arc<Array>) -> Owned {
+    if kind == Kind::ArrayList {
         new_object(List::around(array))
     } else {
         new_object(Map::around(array))

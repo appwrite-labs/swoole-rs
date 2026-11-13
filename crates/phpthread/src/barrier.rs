@@ -2,7 +2,7 @@
 //! (or a container value referring to it) waits on.
 use crate::{
     host::{self, handlers},
-    item::{IS_BARRIER, Item, Value},
+    item::{Item, Kind, Value},
 };
 use std::{
     cell::OnceCell,
@@ -50,7 +50,7 @@ pub fn barrier_minit(minit: &Minit) {
 pub(crate) fn shared(value: &ZValue) -> Option<Item> {
     let barrier = value.custom::<BarrierObject>()?;
     Some(Item {
-        kind: IS_BARRIER,
+        kind: Kind::Barrier,
         value: Value::Barrier(barrier.0.get().cloned()),
     })
 }
