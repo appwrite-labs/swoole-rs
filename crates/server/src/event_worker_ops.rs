@@ -313,8 +313,8 @@ fn set_cpu_affinity(config: &crate::ServerConfig, worker_id: u32) {
     const ORIGIN: &core::ffi::CStr = c"Worker_set_cpu_affinity";
     /// `Server::MODE_THREAD`.
     const MODE_THREAD: u8 = 3;
-    let available = &config.cpu_affinity_available;
-    let available = (!available.is_empty()).then_some(available.as_slice());
+    let available = config.cpu_affinity_available.get();
+    let available = available.as_deref().map(Vec::as_slice);
     let outcome = swoole_rs_process::affinity::worker_affinity(
         worker_id,
         available,
