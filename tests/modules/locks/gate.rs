@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use libc::{EBUSY, ETIMEDOUT, LOCK_EX, LOCK_NB, LOCK_SH};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock, CoroutineOutcome};
+use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_locks::{
     Barrier, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait, swr_v1_locks_atomic32,
     swr_v1_locks_atomic64, swr_v1_locks_coroutine_backoff,
@@ -449,16 +449,11 @@ fn coroutine_policy() {
     fn shared() -> Option<&'static AtomicU32> {
         Some(&WORD)
     }
-    fn sleep(_: f64) -> CoroutineOutcome {
+    fn sleep(_: f64) -> i32 {
         SLEEPS.set(SLEEPS.get() + 1);
-        CoroutineOutcome {
-            code: -1,
-            bailed: 0,
-        }
+        -1
     }
-    fn warning() -> u8 {
-        0
-    }
+    fn warning() {}
     static HOST: CoroutineHost = CoroutineHost {
         current,
         alloc_shared: shared,
@@ -470,32 +465,32 @@ fn coroutine_policy() {
     let word = || WORD.load(Ordering::Relaxed);
     let lock = CoroutineLock::new(true, &HOST);
     CID.set(7);
-    assert_eq!(lock.acquire(true).code, 0);
+    assert_eq!(lock.acquire(true), Ok(()));
     assert_eq!(word(), 1);
-    assert_eq!(lock.acquire(true).code, 0);
+    assert_eq!(lock.acquire(true), Ok(()));
     assert_eq!((word(), SLEEPS.get()), (1, 0));
     CID.set(8);
-    assert_eq!(lock.acquire(false).code, EBUSY);
+    assert_eq!(lock.acquire(false), Err(EBUSY));
     assert_eq!(word(), 1);
     CID.set(9);
     assert_eq!(
-        lock.acquire(true).code,
-        ErrorCode::SW_ERROR_CO_CANCELED as i32
+        lock.acquire(true),
+        Err(ErrorCode::SW_ERROR_CO_CANCELED as i32)
     );
     assert_eq!((word(), SLEEPS.get()), (1, 1));
     CID.set(7);
-    assert_eq!(lock.unlock().code, 0);
+    assert_eq!(lock.unlock(), Ok(()));
     assert_eq!(word(), 0);
-    assert_eq!(lock.unlock().code, 0);
+    assert_eq!(lock.unlock(), Ok(()));
     assert_eq!(word(), 0);
     // Pinned owner reentrancy precedes CAS even if the shared word is already zero, as
     // after another process's unlock.
-    assert_eq!(lock.acquire(false).code, 0);
+    assert_eq!(lock.acquire(false), Ok(()));
     WORD.store(0, Ordering::Relaxed);
-    assert_eq!(lock.acquire(false).code, 0);
+    assert_eq!(lock.acquire(false), Ok(()));
     assert_eq!(word(), 0);
     CID.set(8);
-    assert_eq!(lock.acquire(false).code, 0);
+    assert_eq!(lock.acquire(false), Ok(()));
     assert_eq!(word(), 1);
     let mut second = 0.001;
     for expected in [0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.1, 0.001] {

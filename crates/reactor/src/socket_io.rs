@@ -10,28 +10,55 @@ fn errno() -> c_int {
     Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// An I/O outcome: `status` 0 ready, 1 timed out (`wait`) or in progress
-/// (`connect`), 2 failed with `error` (an errno).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SocketIoResult {
-    pub status: c_int,
-    pub error: c_int,
+/// Why a wait or connect is not ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoError {
+    /// [`fd_wait`] timed out.
+    TimedOut,
+    /// [`fd_connect`] is in progress: wait for writability.
+    InProgress,
+    /// Failed with an errno.
+    Failed(c_int),
 }
 
-const READY: SocketIoResult = SocketIoResult {
-    status: 0,
-    error: 0,
-};
+impl IoError {
+    /// The errno it leaves: `EAGAIN`, `EINPROGRESS` or the failure's.
+    #[must_use]
+    pub const fn errno(self) -> c_int {
+        match self {
+            Self::TimedOut => libc::EAGAIN,
+            Self::InProgress => libc::EINPROGRESS,
+            Self::Failed(error) => error,
+        }
+    }
 
-const fn failed(error: c_int) -> SocketIoResult {
-    SocketIoResult { status: 2, error }
+    /// The last error it sets: `SW_ERROR_SOCKET_POLL_TIMEOUT` for a timeout, else
+    /// [`IoError::errno`].
+    #[must_use]
+    pub const fn last_error(self) -> c_int {
+        match self {
+            Self::TimedOut => POLL_TIMEOUT,
+            error => error.errno(),
+        }
+    }
 }
+
+/// `SW_ERROR_SOCKET_POLL_TIMEOUT`.
+pub(crate) const POLL_TIMEOUT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 
 /// `Socket::wait_event`: poll `fd` for `events` (already translated to poll bits)
 /// for `timeout_ms` (negative waits forever). On `EINTR` it fails if
 /// `dont_restart`, otherwise runs `swoole_signal_dispatch` and polls again.
-#[must_use]
-pub fn fd_wait(fd: c_int, events: i16, timeout_ms: c_int, dont_restart: bool) -> SocketIoResult {
+///
+/// # Errors
+/// [`IoError::TimedOut`], or the poll's failure.
+pub fn fd_wait(
+    fd: c_int,
+    events: i16,
+    timeout_ms: c_int,
+    dont_restart: bool,
+) -> Result<(), IoError> {
     let mut event = libc::pollfd {
         fd,
         events,
@@ -41,17 +68,14 @@ pub fn fd_wait(fd: c_int, events: i16, timeout_ms: c_int, dont_restart: bool) ->
     loop {
         let ready = swoole_rs_corebase::sys::poll(std::slice::from_mut(&mut event), timeout);
         if ready == 0 {
-            return SocketIoResult {
-                status: 1,
-                error: libc::EAGAIN,
-            };
+            return Err(IoError::TimedOut);
         }
         if ready > 0 {
-            return READY;
+            return Ok(());
         }
         let error = errno();
         if error != libc::EINTR || dont_restart {
-            return failed(error);
+            return Err(IoError::Failed(error));
         }
         swoole_rs_process::signal::swoole_signal_dispatch();
     }
@@ -114,34 +138,31 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
     }
 }
 
-/// `connect_async`'s loop: connect(2) to `address`, retried on `EINTR`. Status 1
-/// is `EINPROGRESS` (wait for writability), 2 any other error.
-#[must_use]
-pub fn fd_connect(fd: c_int, address: &SocketAddress) -> SocketIoResult {
+/// `connect_async`'s loop: connect(2) to `address`, retried on `EINTR`.
+///
+/// # Errors
+/// [`IoError::InProgress`] on `EINPROGRESS`, else connect's failure.
+pub fn fd_connect(fd: c_int, address: &SocketAddress) -> Result<(), IoError> {
     loop {
         if address.connect(fd) == 0 {
-            return READY;
+            return Ok(());
         }
         match errno() {
             libc::EINTR => {}
-            libc::EINPROGRESS => {
-                return SocketIoResult {
-                    status: 1,
-                    error: libc::EINPROGRESS,
-                };
-            }
-            error => return failed(error),
+            libc::EINPROGRESS => return Err(IoError::InProgress),
+            error => return Err(IoError::Failed(error)),
         }
     }
 }
 
-/// `connect_sync`'s `SO_ERROR` read once the socket is writable: ready, or failed
-/// with the pending error (or getsockopt's own errno).
-#[must_use]
-pub fn fd_pending_error(fd: c_int) -> SocketIoResult {
+/// `connect_sync`'s `SO_ERROR` read once the socket is writable.
+///
+/// # Errors
+/// The pending error, or getsockopt's own errno.
+pub fn fd_pending_error(fd: c_int) -> Result<(), c_int> {
     match socket_error(fd) {
-        Ok(0) => READY,
-        Ok(error) | Err(error) => failed(error),
+        Ok(0) => Ok(()),
+        Ok(error) | Err(error) => Err(error),
     }
 }
 
@@ -226,19 +247,13 @@ mod tests {
     #[test]
     fn wait_times_out_then_sees_data() {
         let [a, b] = pair();
-        assert_eq!(
-            fd_wait(a, libc::POLLIN, 10, false),
-            SocketIoResult {
-                status: 1,
-                error: libc::EAGAIN
-            }
-        );
+        assert_eq!(fd_wait(a, libc::POLLIN, 10, false), Err(IoError::TimedOut));
         write(b, b"x");
-        assert_eq!(fd_wait(a, libc::POLLIN, -5, false), READY);
+        assert_eq!(fd_wait(a, libc::POLLIN, -5, false), Ok(()));
         fd_clean(a);
         assert_eq!(
-            fd_wait(a, libc::POLLIN, 0, false).status,
-            1,
+            fd_wait(a, libc::POLLIN, 0, false),
+            Err(IoError::TimedOut),
             "clean drained it"
         );
         close(&[a, b]);
@@ -287,8 +302,8 @@ mod tests {
 
         // SAFETY: socket(2) has no memory preconditions.
         let client = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert_eq!(fd_connect(client, &address), READY);
-        assert_eq!(fd_pending_error(client), READY);
+        assert_eq!(fd_connect(client, &address), Ok(()));
+        assert_eq!(fd_pending_error(client), Ok(()));
 
         let mut peer = address;
         let (accepted, _) = fd_accept(listener, &mut peer, true);
@@ -303,7 +318,7 @@ mod tests {
         }
         close(&[accepted, client, listener]);
         // -1, not the closed fd: a parallel test may reuse that number.
-        assert_eq!(fd_pending_error(-1).status, 2, "invalid fd");
+        assert!(fd_pending_error(-1).is_err(), "invalid fd");
     }
 
     #[test]

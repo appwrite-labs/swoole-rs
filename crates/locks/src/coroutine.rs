@@ -6,19 +6,6 @@ use std::{
 use swoole_rs_corebase::constants::{SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND};
 use swoole_rs_error::ErrorCode;
 
-/// A native leaf outcome; PHP hosts contain bailouts before returning to Rust.
-#[derive(Clone, Copy)]
-pub struct CoroutineOutcome {
-    pub code: i32,
-    pub bailed: u8,
-}
-
-impl CoroutineOutcome {
-    const fn code(code: i32) -> Self {
-        Self { code, bailed: 0 }
-    }
-}
-
 /// Immutable, process-lived effects supplied once when the lock is constructed.
 /// No native lock state or per-call operation table is retained.
 pub struct CoroutineHost {
@@ -26,10 +13,14 @@ pub struct CoroutineHost {
     pub current: fn() -> Option<i64>,
     /// A process-shared word, for the program's life, or None.
     pub alloc_shared: fn() -> Option<&'static AtomicU32>,
-    pub sleep: Option<fn(f64) -> CoroutineOutcome>,
-    pub wait: Option<fn(&AtomicU32) -> CoroutineOutcome>,
-    pub wake: Option<fn(&AtomicU32) -> CoroutineOutcome>,
-    pub warning: fn() -> u8,
+    /// `System::sleep`: 0, or nonzero when cancelled.
+    pub sleep: Option<fn(f64) -> i32>,
+    /// The futex wait: 0, or nonzero with errno set.
+    pub wait: Option<fn(&AtomicU32) -> i32>,
+    /// The futex wake: negative with errno set on failure.
+    pub wake: Option<fn(&AtomicU32) -> i32>,
+    /// Warns that the lock was used outside a coroutine.
+    pub warning: fn(),
 }
 
 /// The word is shared across processes when requested; ownership tokens stay process-local.
@@ -48,11 +39,9 @@ enum Word {
     Private(Box<AtomicU32>),
 }
 
-fn outside(host: &CoroutineHost) -> CoroutineOutcome {
-    CoroutineOutcome {
-        code: ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32,
-        bailed: (host.warning)(),
-    }
+fn outside(host: &CoroutineHost) -> Result<(), i32> {
+    (host.warning)();
+    Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32)
 }
 
 fn last_errno() -> i32 {
@@ -94,14 +83,17 @@ impl CoroutineLock {
     }
 
     /// `CoroutineLock::lock_impl`: blocks (sleeping or on the futex) unless `blocking` is false.
-    pub fn acquire(&self, blocking: bool) -> CoroutineOutcome {
+    ///
+    /// # Errors
+    /// The error code: out of coroutine, `EBUSY`, the wait's errno, or cancelled.
+    pub fn acquire(&self, blocking: bool) -> Result<(), i32> {
         let host = self.host;
         // The current-coroutine identity, once, before possible suspension.
         let Some(cid) = (host.current)() else {
             return outside(host);
         };
         if cid == self.cid.get() {
-            return CoroutineOutcome::code(0);
+            return Ok(());
         }
         let word = self.word();
         let mut second = SW_FILE_LOCK_DEFAULT_SECOND;
@@ -113,26 +105,18 @@ impl CoroutineLock {
                 break;
             }
             if !blocking {
-                return CoroutineOutcome::code(libc::EBUSY);
+                return Err(libc::EBUSY);
             }
             if let Some(wait) = host.wait {
-                let result = wait(word);
-                if result.bailed != 0 {
-                    return result;
-                }
-                if result.code != 0 {
-                    return CoroutineOutcome::code(last_errno());
+                if wait(word) != 0 {
+                    return Err(last_errno());
                 }
             } else {
                 let Some(sleep) = host.sleep else {
                     swoole_rs_corebase::fatal("a coroutine lock host has neither wait nor sleep");
                 };
-                let result = sleep(second);
-                if result.bailed != 0 {
-                    return result;
-                }
-                if result.code != 0 {
-                    return CoroutineOutcome::code(ErrorCode::SW_ERROR_CO_CANCELED as i32);
+                if sleep(second) != 0 {
+                    return Err(ErrorCode::SW_ERROR_CO_CANCELED as i32);
                 }
                 second = super::swr_v1_locks_coroutine_backoff(
                     second,
@@ -142,11 +126,14 @@ impl CoroutineLock {
             }
         }
         self.cid.set(cid);
-        CoroutineOutcome::code(0)
+        Ok(())
     }
 
     /// `CoroutineLock::unlock`.
-    pub fn unlock(&self) -> CoroutineOutcome {
+    ///
+    /// # Errors
+    /// The error code: out of coroutine, or the wake's errno.
+    pub fn unlock(&self) -> Result<(), i32> {
         let host = self.host;
         // Query the current coroutine before accessing ownership, as upstream does.
         if (host.current)().is_none() {
@@ -154,22 +141,15 @@ impl CoroutineLock {
         }
         let word = self.word();
         if word.load(Ordering::Relaxed) == 0 {
-            return CoroutineOutcome::code(0);
+            return Ok(());
         }
         // Release: the next holder, perhaps another process, sees what this one wrote.
         word.store(0, Ordering::Release);
         // Release clears ownership before waking a waiter.
         self.cid.set(0);
-        let Some(wake) = host.wake else {
-            return CoroutineOutcome::code(0);
-        };
-        let result = wake(word);
-        if result.bailed != 0 {
-            result
-        } else if result.code >= 0 {
-            CoroutineOutcome::code(0)
-        } else {
-            CoroutineOutcome::code(last_errno())
+        match host.wake {
+            Some(wake) if wake(word) < 0 => Err(last_errno()),
+            _ => Ok(()),
         }
     }
 }
@@ -186,7 +166,6 @@ mod tests {
         lock: *const CoroutineLock,
         sleeps: Vec<f64>,
         result: i32,
-        bailed: u8,
         releases: bool,
         warnings: usize,
         allocated: usize,
@@ -210,45 +189,35 @@ mod tests {
         STATE.with(|state| state.borrow_mut().allocated += 1);
         WORDS.get(NEXT.fetch_add(1, Ordering::Relaxed))
     }
-    fn sleep(second: f64) -> CoroutineOutcome {
-        let (lock, releases, result, bailed) = STATE.with(|state| {
+    fn sleep(second: f64) -> i32 {
+        let (lock, releases, result) = STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.sleeps.push(second);
-            (state.lock, state.releases, state.result, state.bailed)
+            (state.lock, state.releases, state.result)
         });
         // Model the old owner resuming while the contender is suspended.
         if releases {
-            unsafe { &*lock }.unlock();
+            _ = unsafe { &*lock }.unlock();
         }
         if let Some(others) = ON_SLEEP.with(|f| f.borrow_mut().take()) {
             let (current, cid) = STATE.with(|state| (state.borrow().current, state.borrow().cid));
             others();
             switch(current, cid);
         }
-        CoroutineOutcome {
-            code: result,
-            bailed,
-        }
+        result
     }
-    fn wait(_: &AtomicU32) -> CoroutineOutcome {
+    fn wait(_: &AtomicU32) -> i32 {
         sleep(0.0)
     }
-    fn wake(_: &AtomicU32) -> CoroutineOutcome {
+    fn wake(_: &AtomicU32) -> i32 {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.wakes += 1;
-            CoroutineOutcome {
-                code: state.result,
-                bailed: state.bailed,
-            }
+            state.result
         })
     }
-    fn warning() -> u8 {
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
-            state.warnings += 1;
-            state.bailed
-        })
+    fn warning() {
+        STATE.with(|state| state.borrow_mut().warnings += 1);
     }
     static SLEEP: CoroutineHost = CoroutineHost {
         current,
@@ -291,10 +260,12 @@ mod tests {
         });
     }
     fn lock(lock: &CoroutineLock, operation: i32) -> i32 {
-        lock.acquire(operation & libc::LOCK_NB == 0).code
+        lock.acquire(operation & libc::LOCK_NB == 0)
+            .err()
+            .unwrap_or(0)
     }
     fn unlock(lock: &CoroutineLock) -> i32 {
-        lock.unlock().code
+        lock.unlock().err().unwrap_or(0)
     }
 
     // core-tests/src/lock/lock.cpp's coroutine TESTs (the C++ CoroutineLock left the build),
@@ -366,26 +337,26 @@ mod tests {
     fn ownership_reentry_and_recycled_coroutine_identity() {
         reset();
         let lock = CoroutineLock::new(false, &SLEEP);
-        assert_eq!(lock.acquire(true).code, 0);
-        assert_eq!(lock.acquire(false).code, 0);
+        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(false), Ok(()));
         STATE.with(|state| state.borrow_mut().cid += 1);
-        assert_eq!(lock.acquire(false).code, libc::EBUSY);
-        assert_eq!(lock.unlock().code, 0);
-        assert_eq!(lock.acquire(false).code, 0);
-        assert_eq!(lock.unlock().code, 0);
-        assert_eq!(lock.unlock().code, 0);
+        assert_eq!(lock.acquire(false), Err(libc::EBUSY));
+        assert_eq!(lock.unlock(), Ok(()));
+        assert_eq!(lock.acquire(false), Ok(()));
+        assert_eq!(lock.unlock(), Ok(()));
+        assert_eq!(lock.unlock(), Ok(()));
         drop(lock);
     }
     #[test]
     fn shared_allocation_and_sleeping_contender_transfer_ownership() {
         reset();
         let lock = CoroutineLock::new(true, &SLEEP);
-        assert_eq!(lock.acquire(true).code, 0);
+        assert_eq!(lock.acquire(true), Ok(()));
         contender(&lock);
-        assert_eq!(lock.acquire(false).code, libc::EBUSY);
+        assert_eq!(lock.acquire(false), Err(libc::EBUSY));
         STATE.with(|state| state.borrow_mut().releases = true);
-        assert_eq!(lock.acquire(true).code, 0);
-        assert_eq!(lock.acquire(false).code, 0);
+        assert_eq!(lock.acquire(true), Ok(()));
+        assert_eq!(lock.acquire(false), Ok(()));
         drop(lock);
         STATE.with(|state| {
             let state = state.borrow();
@@ -397,15 +368,13 @@ mod tests {
     fn cancellation_and_bailout_do_not_publish_contender() {
         reset();
         let lock = CoroutineLock::new(false, &SLEEP);
-        assert_eq!(lock.acquire(true).code, 0);
+        assert_eq!(lock.acquire(true), Ok(()));
         contender(&lock);
         STATE.with(|state| state.borrow_mut().result = -1);
         assert_eq!(
-            lock.acquire(true).code,
-            ErrorCode::SW_ERROR_CO_CANCELED as i32
+            lock.acquire(true),
+            Err(ErrorCode::SW_ERROR_CO_CANCELED as i32)
         );
-        STATE.with(|state| state.borrow_mut().bailed = 1);
-        assert_eq!(lock.acquire(true).bailed, 1);
         assert_eq!(lock.cid.get(), 7);
         drop(lock);
     }
@@ -413,23 +382,20 @@ mod tests {
     fn futex_wait_and_wake_keep_errno_and_contained_bailout() {
         reset();
         let lock = CoroutineLock::new(false, &FUTEX);
-        assert_eq!(lock.acquire(true).code, 0);
+        assert_eq!(lock.acquire(true), Ok(()));
         contender(&lock);
         swoole_rs_corebase::sys::set_errno(libc::EINTR);
         STATE.with(|state| state.borrow_mut().result = -1);
-        assert_eq!(lock.acquire(true).code, libc::EINTR);
+        assert_eq!(lock.acquire(true), Err(libc::EINTR));
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.result = 0;
             state.releases = true;
         });
-        assert_eq!(lock.acquire(true).code, 0);
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
-            state.result = -1;
-            state.bailed = 1;
-        });
-        assert_eq!(lock.unlock().bailed, 1);
+        assert_eq!(lock.acquire(true), Ok(()));
+        STATE.with(|state| state.borrow_mut().result = -1);
+        swoole_rs_corebase::sys::set_errno(libc::EPERM);
+        assert_eq!(lock.unlock(), Err(libc::EPERM));
         assert_eq!(lock.cid.get(), 0);
         drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().wakes, 2));
@@ -437,15 +403,10 @@ mod tests {
     #[test]
     fn outside_coroutine_warning_is_contained_before_state_access() {
         reset();
-        STATE.with(|state| {
-            let mut state = state.borrow_mut();
-            state.current = 0;
-            state.bailed = 1;
-        });
+        STATE.with(|state| state.borrow_mut().current = 0);
         let lock = CoroutineLock::new(false, &SLEEP);
         for result in [lock.acquire(true), lock.unlock()] {
-            assert_eq!(result.code, ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32);
-            assert_eq!(result.bailed, 1);
+            assert_eq!(result, Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32));
         }
         drop(lock);
         STATE.with(|state| assert_eq!(state.borrow().warnings, 2));
@@ -472,13 +433,11 @@ mod tests {
         fn shared() -> Option<&'static AtomicU32> {
             Some(&WORD)
         }
-        fn sleep(_: f64) -> CoroutineOutcome {
+        fn sleep(_: f64) -> i32 {
             std::thread::yield_now();
-            CoroutineOutcome::code(0)
-        }
-        fn warning() -> u8 {
             0
         }
+        fn warning() {}
         static HOST: CoroutineHost = CoroutineHost {
             current,
             alloc_shared: shared,
@@ -496,10 +455,10 @@ mod tests {
             scope.spawn(move || {
                 let first = first;
                 let first = &first.0;
-                assert_eq!(first.acquire(true).code, 0);
+                assert_eq!(first.acquire(true), Ok(()));
                 unsafe { *DATA.0.get() = 42 };
                 HELD.store(true, Ordering::Relaxed);
-                assert_eq!(first.unlock().code, 0);
+                assert_eq!(first.unlock(), Ok(()));
             });
             scope.spawn(move || {
                 let second = second;
@@ -507,9 +466,9 @@ mod tests {
                 while !HELD.load(Ordering::Relaxed) {
                     std::thread::yield_now();
                 }
-                assert_eq!(second.acquire(true).code, 0);
+                assert_eq!(second.acquire(true), Ok(()));
                 assert_eq!(unsafe { *DATA.0.get() }, 42);
-                assert_eq!(second.unlock().code, 0);
+                assert_eq!(second.unlock(), Ok(()));
             });
         });
     }

@@ -1,5 +1,5 @@
 //! Conditional-date policy over a [`Calendar`].
-use crate::{INVALID, OVERFLOW};
+
 use std::ffi::CStr;
 use swoole_rs_locale as locale;
 pub use swoole_rs_locale::Tm;
@@ -9,98 +9,6 @@ static FORMATS: [&CStr; 4] = [
     c"%A, %d-%b-%y %T GMT",
     c"%a %b %e %T %Y",
 ];
-#[derive(Default)]
-struct HttpConditional {
-    phase: u32,
-    kind: u32,
-    valid: u32,
-    length: usize,
-    timezone: i64,
-    file_mtime: i64,
-    value: i64,
-    parsed_time: i64,
-}
-/// Kind0=If-Modified-Since; kind1=If-Range mismatch. Returns native actions:
-/// 0=false,1..4=strptime format0..3,5=gmtime(file),6=mktime(parsed),
-/// 7=mktime(file GMT),8=true. Native stores result validity/value before resume.
-/// State is retained unchanged except native result fields.
-/// Native calendar objects survive between calls; Rust borrows none of them.
-fn conditional_step(state: &mut HttpConditional) -> i32 {
-    if state.kind > 1 {
-        return INVALID;
-    }
-    match state.phase {
-        0 => {
-            if state.length > isize::MAX as usize {
-                return OVERFLOW;
-            }
-            if state.length == 0 || state.kind == 0 && state.length > 63 {
-                state.phase = 10;
-                return 0;
-            }
-            state.phase = 1;
-            1
-        }
-        1..=4 => {
-            if state.valid != 0 {
-                if state.kind == 0 {
-                    state.phase = 6;
-                    6
-                } else {
-                    state.phase = 5;
-                    5
-                }
-            } else if state.phase < 4 {
-                state.phase += 1;
-                state.phase.cast_signed()
-            } else if state.kind == 1 {
-                state.phase = 9;
-                5
-            } else {
-                state.phase = 10;
-                0
-            }
-        }
-        5 => {
-            if state.valid == 0 {
-                state.phase = 10;
-                return 0;
-            }
-            state.phase = 6;
-            6
-        }
-        6 => {
-            if state.kind == 0 {
-                state.phase = 10;
-                state
-                    .value
-                    .checked_sub(state.timezone)
-                    .map_or(
-                        OVERFLOW,
-                        |parsed| if parsed >= state.file_mtime { 8 } else { 0 },
-                    )
-            } else {
-                state.parsed_time = state.value;
-                state.phase = 7;
-                7
-            }
-        }
-        7 => {
-            state.phase = 10;
-            if state.parsed_time == state.value {
-                0
-            } else {
-                8
-            }
-        }
-        // Legacy If-Range calls gmtime even if all date formats failed.
-        9 => {
-            state.phase = 10;
-            0
-        }
-        _ => INVALID,
-    }
-}
 /// The calendar a conditional request's dates are parsed and compared in: libc's by
 /// default, or one that records its calls (the static handler's tests).
 pub trait Calendar {
@@ -118,55 +26,51 @@ pub trait Calendar {
     }
 }
 
-/// Upstream's `is_modified` (kind 0: `If-Modified-Since`, with the server's
-/// `timezone`) and `is_modified_range` (kind 1: an `If-Range` date other than the
-/// file's) of `date` against the file's modification time `mtime`. The date is read
-/// as a C string. Empty and oversized dates finish before any calendar call.
+/// Which conditional header a date comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conditional {
+    /// `If-Modified-Since`, read in the server's timezone.
+    ModifiedSince,
+    /// `If-Range`.
+    Range,
+}
+
+/// Upstream's `is_modified` (`If-Modified-Since`: `date`, less `timezone`, is not
+/// before the file's modification time `mtime`) and `is_modified_range` (an
+/// `If-Range` date other than the file's). The date is read as a C string, in the
+/// first of [`FORMATS`] that parses it. Empty and oversized dates finish before any
+/// calendar call.
 pub fn conditional(
     date: &[u8],
-    kind: u32,
+    kind: Conditional,
     mtime: i64,
     timezone: i64,
     calendar: &impl Calendar,
 ) -> bool {
+    if date.is_empty() || kind == Conditional::ModifiedSince && date.len() > 63 {
+        return false;
+    }
     let text = [date, b"\0"].concat();
     let Ok(text) = CStr::from_bytes_until_nul(&text) else {
         return false;
     };
-    let mut state = HttpConditional {
-        kind,
-        length: date.len(),
-        ..HttpConditional::default()
-    };
     let mut parsed = locale::zeroed();
-    let mut file = None;
-    loop {
-        let action = conditional_step(&mut state);
-        match action {
-            1..=4 => {
-                let format = FORMATS
-                    .get((action - 1).cast_unsigned() as usize)
-                    .copied()
-                    .unwrap_or_default();
-                state.valid = u32::from(calendar.parse(text, format, &mut parsed));
-            }
-            5 => {
-                file = calendar.to_gmt(mtime);
-                state.valid = u32::from(file.is_some());
-            }
-            6 => {
-                state.value = calendar.to_time(&mut parsed);
-                if kind == 0 {
-                    state.timezone = timezone;
-                    state.file_mtime = mtime;
-                }
-            }
-            7 => {
-                if let Some(file) = file.as_mut() {
-                    state.value = calendar.to_time(file);
-                }
-            }
-            _ => return action == 8,
+    let found = FORMATS
+        .iter()
+        .any(|format| calendar.parse(text, format, &mut parsed));
+    match kind {
+        Conditional::ModifiedSince => {
+            found
+                && (calendar.to_time(&mut parsed).checked_sub(timezone))
+                    .is_some_and(|time| time >= mtime)
+        }
+        Conditional::Range => {
+            // Upstream reads the file's date even when no format parsed.
+            let file = calendar.to_gmt(mtime);
+            let (true, Some(mut file)) = (found, file) else {
+                return false;
+            };
+            calendar.to_time(&mut parsed) != calendar.to_time(&mut file)
         }
     }
 }
@@ -202,10 +106,17 @@ mod tests {
     }
     #[test]
     fn owned_calendar_keeps_empty_and_oversized_date_metadata_lazy() {
-        for kind in [0, 1] {
+        for kind in [Conditional::ModifiedSince, Conditional::Range] {
             assert!(!conditional(b"", kind, 0, 0, &Unreachable));
         }
-        assert!(!conditional(&[b'x'; 64], 0, 0, 0, &Unreachable));
+        let long = [b'x'; 64];
+        assert!(!conditional(
+            &long,
+            Conditional::ModifiedSince,
+            0,
+            0,
+            &Unreachable
+        ));
     }
     #[test]
     fn http_dates_format_gmt() {
@@ -218,48 +129,78 @@ mod tests {
         assert_eq!(epoch.len(), 29);
         assert_eq!(http_date(None).len(), 29);
     }
-    #[test]
-    fn range_parse_failure_still_requests_gmtime_and_since_does_not() {
-        for kind in [0, 1] {
-            let mut state = HttpConditional {
-                kind,
-                length: 12,
-                ..Default::default()
-            };
-            for action in 1..=4 {
-                assert_eq!(conditional_step(&mut state), action);
+    /// A calendar that parses when `parses`, answers `time` from `to_time`, and
+    /// records each call.
+    struct Script {
+        parses: bool,
+        time: i64,
+        calls: std::cell::RefCell<Vec<&'static str>>,
+    }
+    impl Script {
+        fn new(parses: bool, time: i64) -> Self {
+            Self {
+                parses,
+                time,
+                calls: std::cell::RefCell::default(),
             }
-            if kind == 1 {
-                assert_eq!(conditional_step(&mut state), 5);
-            }
-            assert_eq!(conditional_step(&mut state), 0);
+        }
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+    impl Calendar for Script {
+        fn parse(&self, _: &CStr, _: &CStr, _: &mut Tm) -> bool {
+            self.calls.borrow_mut().push("parse");
+            self.parses
+        }
+        fn to_time(&self, _: &mut Tm) -> i64 {
+            self.calls.borrow_mut().push("to_time");
+            self.time
+        }
+        fn to_gmt(&self, _: i64) -> Option<Tm> {
+            self.calls.borrow_mut().push("to_gmt");
+            Some(locale::zeroed())
         }
     }
     #[test]
-    fn signed_time_comparison_and_invalid_metadata_are_checked() {
-        let mut state = HttpConditional {
-            kind: 0,
-            phase: 6,
-            value: i64::MIN,
-            timezone: 1,
-            ..Default::default()
+    fn range_parse_failure_still_requests_gmtime_and_since_does_not() {
+        let since = Script::new(false, 0);
+        assert!(!conditional(
+            b"yesterday",
+            Conditional::ModifiedSince,
+            0,
+            0,
+            &since
+        ));
+        assert_eq!(since.calls(), ["parse"; 4]);
+        let range = Script::new(false, 0);
+        assert!(!conditional(b"yesterday", Conditional::Range, 0, 0, &range));
+        assert_eq!(
+            range.calls(),
+            ["parse", "parse", "parse", "parse", "to_gmt"]
+        );
+    }
+    #[test]
+    fn signed_time_comparison_is_checked() {
+        let since = |time, timezone, mtime| {
+            conditional(
+                b"today",
+                Conditional::ModifiedSince,
+                mtime,
+                timezone,
+                &Script::new(true, time),
+            )
         };
-        assert_eq!(conditional_step(&mut state), OVERFLOW);
-        state = HttpConditional {
-            kind: 0,
-            phase: 6,
-            value: 100,
-            timezone: 1,
-            file_mtime: 99,
-            ..Default::default()
-        };
-        assert_eq!(conditional_step(&mut state), 8);
-        state = HttpConditional {
-            kind: 0,
-            length: 64,
-            ..Default::default()
-        };
-        assert_eq!(conditional_step(&mut state), 0);
+        assert!(!since(i64::MIN, 1, i64::MIN), "an overflowing date fails");
+        assert!(since(100, 1, 99));
+        assert!(!since(100, 1, 100));
+        assert!(!conditional(
+            &[b'x'; 64],
+            Conditional::ModifiedSince,
+            0,
+            0,
+            &Unreachable
+        ));
         assert!(FORMATS.get(4).is_none());
     }
 }

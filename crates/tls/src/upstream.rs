@@ -28,9 +28,9 @@ use swoole_rs_reactor::socket_upstream::{
 use swoole_rs_reactor::{
     CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
     SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
-    SyncEffects, handle_send_owned, record_peek, record_recv, record_send, sendfile_chunk,
-    ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync,
-    type_is, what_event_want,
+    SslSendfileWarning, SyncEffects, handle_send_owned, record_peek, record_recv, record_send,
+    sendfile_chunk, ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
+    swr_v1_socket_sync, type_is, what_event_want,
 };
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
@@ -698,10 +698,12 @@ fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: u
     if nobufs {
         socket.edit(|record| record.kernel_nobufs = true);
     }
-    if result.warn == 1 {
-        log::sys_warning(c"Socket::ssl_sendfile", format_args!("write() failed"));
-    } else if result.warn == 2 {
-        log::sys_warning(c"Socket::ssl_sendfile", format_args!("pread() failed"));
+    if let Some(warning) = result.warn {
+        let call = match warning {
+            SslSendfileWarning::Write => "write",
+            SslSendfileWarning::Pread => "pread",
+        };
+        log::sys_warning(c"Socket::ssl_sendfile", format_args!("{call}() failed"));
     }
     result.value
 }
@@ -886,7 +888,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
         )
     });
     buffer_check(output.status);
-    if output.result.warn == 1 {
+    if output.result.warn {
         let fd = record.fd();
         log::sys_warning(
             c"Socket::handle_send",
@@ -924,7 +926,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     }
     let result = request.sent(&hooks, rv, requested);
     socket.edit(|record| result.publish(&mut record.output));
-    if result.warn == 2 {
+    if result.warn {
         let at = request.fields().begin;
         let name = String::from_utf8_lossy(request.path());
         log::sys_warning(
