@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
 
-/// Zend's interned known strings, in `SW_ZEND_KNOWN_STRINGS` order: null until
+/// Zend's interned known strings, in `SW_ZEND_STR_*` order: null until
 /// MINIT fills it, and again after MSHUTDOWN. C++ reads it as a
 /// `zend_string **`: `AtomicPtr` has a pointer's layout.
 #[unsafe(no_mangle)]
