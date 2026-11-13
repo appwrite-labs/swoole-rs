@@ -37,6 +37,8 @@ pub mod event_worker_ops;
 pub mod factory;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory_ops;
+#[cfg(test)]
+mod fixture;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
 mod layout;
@@ -249,7 +251,6 @@ pub(crate) fn run_reactor_with<'s, 'c>(
 ///
 /// # Safety
 /// `ctx.serv` is null or a live `Server`, and the other fields are what the operation reads.
-#[cfg_attr(test, expect(dead_code, reason = "server_methods' tests run a fake"))]
 pub(crate) unsafe fn run_method(
     operation: u32,
     arg: u64,

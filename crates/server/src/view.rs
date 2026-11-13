@@ -22,9 +22,20 @@ use swoole_rs_tls::socket_pair::SocketPair;
 
 /// The head of every `Server`.
 #[repr(C)]
-struct Fields {
+pub(crate) struct Fields {
     state: *const ServerState,
     config: *mut ServerConfig,
+}
+
+#[cfg(test)]
+impl Fields {
+    /// A head over `state`, as a server's own: a test's server.
+    pub(crate) fn of(state: &ServerState) -> Self {
+        Self {
+            state,
+            config: state.config(),
+        }
+    }
 }
 
 /// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
