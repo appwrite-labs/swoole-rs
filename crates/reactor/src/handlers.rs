@@ -173,10 +173,13 @@ const SW_EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 const SW_EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
 
-/// Table indexes, also the wait loop's handler kinds.
-pub(crate) const READ: usize = 0;
-pub(crate) const WRITE: usize = 1;
-pub(crate) const ERROR: usize = 2;
+/// A handler table, also the wait loop's handler kind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Table {
+    Read,
+    Write,
+    Error,
+}
 
 /// Each slot is a cell: a registration needs only the shared tables, as a lookup does.
 #[derive(Default)]
@@ -187,13 +190,13 @@ pub struct Handlers {
 }
 
 /// `Reactor::isset_*_event`'s order: the table an `events` mask names, if any.
-fn table(events: c_int) -> Option<usize> {
+fn table(events: c_int) -> Option<Table> {
     if events < SW_EVENT_DEAULT || events & SW_EVENT_READ != 0 {
-        Some(READ)
+        Some(Table::Read)
     } else if events & SW_EVENT_WRITE != 0 {
-        Some(WRITE)
+        Some(Table::Write)
     } else if events & SW_EVENT_ERROR != 0 {
-        Some(ERROR)
+        Some(Table::Error)
     } else {
         None
     }
@@ -215,11 +218,13 @@ impl Handlers {
 
     fn slot(&self, fd_type: c_int, events: c_int) -> Option<&Cell<Option<Handler>>> {
         let table = table(events)?;
-        self.tables.get(table)?.get(usize::try_from(fd_type).ok()?)
+        self.tables
+            .get(table as usize)?
+            .get(usize::try_from(fd_type).ok()?)
     }
 
-    fn registered(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
-        let row = self.tables.get(kind)?;
+    fn registered(&self, kind: Table, fd_type: c_int) -> Option<Handler> {
+        let row = self.tables.get(kind as usize)?;
         row.get(usize::try_from(fd_type).ok()?)?.get()
     }
 
@@ -232,32 +237,32 @@ impl Handlers {
     /// `SW_EVENT_READ`, `SW_EVENT_WRITE` or `SW_EVENT_ERROR`, where upstream aborts.
     pub(crate) fn of_event(&self, fd_type: c_int, event: c_int) -> Option<Handler> {
         let kind = match event {
-            SW_EVENT_READ => READ,
-            SW_EVENT_WRITE => WRITE,
-            SW_EVENT_ERROR => ERROR,
+            SW_EVENT_READ => Table::Read,
+            SW_EVENT_WRITE => Table::Write,
+            SW_EVENT_ERROR => Table::Error,
             _ => return None,
         };
         self.get(kind, fd_type)
     }
 
     /// `Reactor::get_handler`: the registered handler, else the write or error default.
-    fn get(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
+    fn get(&self, kind: Table, fd_type: c_int) -> Option<Handler> {
         let registered = self.registered(kind, fd_type);
         match kind {
-            WRITE => registered.or(self.defaults[0].get()),
-            ERROR => registered.or(self.defaults[1].get()),
-            _ => registered,
+            Table::Read => registered,
+            Table::Write => registered.or(self.defaults[0].get()),
+            Table::Error => registered.or(self.defaults[1].get()),
         }
     }
 
     /// `Reactor::get_error_handler`: error, else read, else write.
-    pub(crate) fn dispatch(&self, kind: usize, fd_type: c_int) -> Option<Handler> {
-        if kind != ERROR {
+    pub(crate) fn dispatch(&self, kind: Table, fd_type: c_int) -> Option<Handler> {
+        if kind != Table::Error {
             return self.get(kind, fd_type);
         }
-        self.get(ERROR, fd_type)
-            .or_else(|| self.get(READ, fd_type))
-            .or_else(|| self.get(WRITE, fd_type))
+        self.get(Table::Error, fd_type)
+            .or_else(|| self.get(Table::Read, fd_type))
+            .or_else(|| self.get(Table::Write, fd_type))
     }
 }
 
@@ -310,21 +315,21 @@ mod tests {
             assert!(!(*h).isset(5, SW_EVENT_DEAULT));
 
             // Write and error fall back to the defaults; error dispatch then to read.
-            assert_eq!(call((*h).get(1, 5)), 0);
+            assert_eq!(call((*h).get(Table::Write, 5)), 0);
             swr_v1_reactor_handlers_set_default(&mut *h, 1, Some(two));
-            assert_eq!(call((*h).get(1, 5)), 2);
-            assert_eq!(call((*h).get(2, 5)), 0);
-            assert_eq!(call((*h).dispatch(2, 5)), 1);
+            assert_eq!(call((*h).get(Table::Write, 5)), 2);
+            assert_eq!(call((*h).get(Table::Error, 5)), 0);
+            assert_eq!(call((*h).dispatch(Table::Error, 5)), 1);
             swr_v1_reactor_handlers_set_default(&mut *h, 2, Some(three));
-            assert_eq!(call((*h).dispatch(2, 5)), 3);
+            assert_eq!(call((*h).dispatch(Table::Error, 5)), 3);
             assert_eq!(call((*h).fallback(1)), 3);
             assert!((*h).fallback(2).is_none());
             assert!((*h).set(5, SW_EVENT_WRITE | SW_EVENT_ERROR, Some(one)));
-            assert_eq!(call((*h).get(1, 5)), 1);
+            assert_eq!(call((*h).get(Table::Write, 5)), 1);
             // Error-only types: no read handler, the error default still applies.
-            assert_eq!(call((*h).get(0, 6)), 0);
-            assert_eq!(call((*h).dispatch(2, 6)), 3);
-            assert_eq!(call((*h).get(0, -1)), 0);
+            assert_eq!(call((*h).get(Table::Read, 6)), 0);
+            assert_eq!(call((*h).dispatch(Table::Error, 6)), 3);
+            assert_eq!(call((*h).get(Table::Read, -1)), 0);
         }
     }
 }
