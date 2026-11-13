@@ -26,7 +26,7 @@ known/system/unknown paths have not been re-measured.
 
 ## Ignored-error set
 
-`swoole_rs_error_state.h` declares `swr_v1_error_ignore`,
+`swoole_rs_error.h` declares `swr_v1_error_ignore`,
 `swr_v1_error_is_ignored`, `swr_v1_error_ignored_release` and
 `swr_v1_error_ignore_global`. The process-global set behind `swoole_ignore_error`
 and `swoole_is_ignored_error` is a Rust static that lazily owns an opaque

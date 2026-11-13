@@ -5,7 +5,11 @@
 #pragma once
 
 #include "swoole_socket.h"
-#include "swoole_rs_process.h"
+/* The Rust records the views below point at, opaque here (crates/corebase, crates/process, crates/ossupport). */
+typedef struct swr_v1_process_worker_registry swr_v1_process_worker_registry;
+typedef struct swr_v1_process_pool_ipc swr_v1_process_pool_ipc;
+typedef struct swr_v1_process_reload_task swr_v1_process_reload_task;
+typedef struct swr_v1_os_msg_queue swr_v1_os_msg_queue;
 #include "swoole_rs_process_views.h"
 
 enum swPipe_close_which {

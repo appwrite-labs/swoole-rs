@@ -1,7 +1,6 @@
 # Worker, task and reload transitions v1
 
-Feature bit 524288 (`process`). ABI:
-`swoole_rs_process.h`. crates/process runs the event worker, task worker,
+Feature bit 524288 (`process`). crates/process runs the event worker, task worker,
 reactor process, manager and factory operations, and crates/server builds each
 operation's context and answers its ops. Decisions it keeps from upstream:
 
