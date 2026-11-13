@@ -2,14 +2,12 @@
 //! the front chunk's cursor, the socket's wait flags and the queue's detachment;
 //! sendfile requests own their descriptor, path and range in `file_output`. The
 //! socket's I/O and cork effects are the caller's [`OutputEffects`].
+use crate::Caught;
 use std::io::Error;
 use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
-/// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
-const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
-const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
+/// `SW_ERR`.
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
@@ -21,11 +19,11 @@ pub trait OutputEffects {
     /// Records the send time when the socket has a send timer.
     fn sent(&self);
     /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
-    fn catch_error(&self, error: c_int) -> c_int;
+    fn catch_error(&self, error: c_int) -> Caught;
 }
 
 /// `catch_error` over the errno the last effect left.
-fn classify(hooks: &impl OutputEffects) -> c_int {
+fn classify(hooks: &impl OutputEffects) -> Caught {
     hooks.catch_error(Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
@@ -72,10 +70,10 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
     let sent = hooks.send(rest);
     if sent < 0 {
         match classify(hooks) {
-            ERROR => result.warn = true,
-            CLOSE => (result.close_wait, result.code) = (true, ERR),
-            WAIT => (result.send_wait, result.code) = (true, ERR),
-            _ => {}
+            Caught::Error => result.warn = true,
+            Caught::Close => (result.close_wait, result.code) = (true, ERR),
+            Caught::Wait => (result.send_wait, result.code) = (true, ERR),
+            Caught::Invalid | Caught::ReduceSize => {}
         }
         return result;
     }
@@ -125,7 +123,7 @@ pub fn sendfile_sent(
     let result = OutputResult::default();
     if sent <= 0 {
         match classify(hooks) {
-            ERROR => {
+            Caught::Error => {
                 return OutputResult {
                     warn: true,
                     requested,
@@ -133,21 +131,21 @@ pub fn sendfile_sent(
                     ..result
                 };
             }
-            CLOSE => {
+            Caught::Close => {
                 return OutputResult {
                     code: ERR,
                     close_wait: true,
                     ..result
                 };
             }
-            WAIT => {
+            Caught::Wait => {
                 return OutputResult {
                     code: ERR,
                     send_wait: true,
                     ..result
                 };
             }
-            _ => {}
+            Caught::Invalid | Caught::ReduceSize => {}
         }
     } else {
         hooks.sent();
@@ -304,7 +302,7 @@ mod tests {
         fn sent(&self) {
             unsafe { (self.sent)(self.socket) }
         }
-        fn catch_error(&self, error: c_int) -> c_int {
+        fn catch_error(&self, error: c_int) -> Caught {
             crate::catch_error(error, unsafe { &mut *self.kernel_nobufs })
         }
     }

@@ -8,10 +8,9 @@ use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::ReadSlot;
 
-/// `SW_OK`, `SW_ERR`, `SW_WAIT` and `SW_BACKLOG`.
+/// `SW_OK`, `SW_ERR` and `SW_BACKLOG`.
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 const BACKLOG: c_int = 512;
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
@@ -177,7 +176,9 @@ pub fn record_recv<S: ReadSlot>(
     } else if total < 0 {
         // Nothing since the call has touched errno.
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if socket.catch_error(error) == WAIT && socket.read(|record| record.event_hup) {
+        if socket.catch_error(error) == crate::Caught::Wait
+            && socket.read(|record| record.event_hup)
+        {
             return 0;
         }
     }

@@ -215,7 +215,7 @@ impl<S: TlsSocket> Tls<S> {
         file: c_int,
         offset: &mut libc::off_t,
         size: usize,
-        mut classify: impl FnMut(c_int) -> c_int,
+        mut classify: impl FnMut(c_int) -> Option<swoole_rs_reactor::Caught>,
     ) -> (usize, c_int) {
         crate::sendfile::tls_sendfile(
             size,

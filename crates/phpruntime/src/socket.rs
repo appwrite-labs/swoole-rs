@@ -77,9 +77,6 @@ pub(crate) enum RecvOp {
     Peek,
 }
 
-/// `SW_WAIT`.
-pub(crate) const SW_WAIT: i32 = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as i32;
-
 /// A `SocketImpl *`, owned: deleted on drop.
 pub(crate) struct Socket {
     /// The socket's handle, live while this owns it.
@@ -206,9 +203,10 @@ impl Socket {
         }
     }
 
-    /// `catch_write_error`/`catch_read_error` of `code`, which are one rule.
-    pub(crate) fn catch_error(&self, code: i32) -> i32 {
-        self.with_record(0, |record| record.catch_error(code))
+    /// `catch_write_error`/`catch_read_error` of `code`, which are one rule; `None`
+    /// without a socket.
+    pub(crate) fn catch_error(&self, code: i32) -> Option<swoole_rs_reactor::Caught> {
+        self.co().net(|record| record.catch_error(code))
     }
 
     /// `recvfrom(buf, n, addr, addrlen)` into `buf` and `peer`: the bytes received

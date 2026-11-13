@@ -17,7 +17,7 @@ use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Event, Fill, Running, Socket};
+use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
 use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
@@ -181,9 +181,8 @@ impl Connection for Read<'_> {
         recv_fill(self.socket, free, 0) as i64
     }
 
-    fn catch_error(&mut self) -> u64 {
-        let error = errno();
-        i64::from(self.socket.catch_error(error)).cast_unsigned()
+    fn catch_error(&mut self) -> Caught {
+        self.socket.catch_error(errno())
     }
 
     fn warn_recv(&mut self) {

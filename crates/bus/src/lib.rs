@@ -29,7 +29,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log, sys};
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_reactor::{Caught, Socket, SocketRecord};
 
 pub use Bus as MessageBus;
 
@@ -45,10 +45,6 @@ const HEAD: usize = size_of::<BusHead>();
 /// `SW_IPC_MSG_MIN`.
 const IPC_MSG_MIN: u32 = 2048 - 40;
 const _: () = assert!(HEAD == 40, "sizeof(DataHead)");
-/// `swReturnCode`'s `SW_WAIT`.
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
-/// `swReturnCode`'s `SW_REDUCE_SIZE`.
-const REDUCE_SIZE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_REDUCE_SIZE as c_int;
 /// `SW_DEFAULT_ALIGNMENT`.
 const ALIGNMENT: usize = size_of::<std::ffi::c_ulong>();
 /// The least a buffer holds: a header and the `PacketPtr` `pass` stores after it.
@@ -197,7 +193,7 @@ fn errno() -> c_int {
 
 /// `Socket::catch_read_error(errno) == SW_WAIT`.
 fn waits(nobufs: &mut bool) -> bool {
-    swoole_rs_reactor::catch_error(errno(), nobufs) == WAIT
+    swoole_rs_reactor::catch_error(errno(), nobufs) == Caught::Wait
 }
 
 impl Bus {
@@ -822,7 +818,7 @@ impl Bus {
         };
         let reduce = || {
             let error = errno();
-            socket.catch_pipe_error(error) == REDUCE_SIZE
+            socket.catch_pipe_error(error) == Caught::ReduceSize
         };
         if let Some(counter) = self.next_id.get() {
             head.msg_id = counter.fetch_add(1, Ordering::SeqCst);
@@ -1150,7 +1146,7 @@ mod tests {
     fn pipe_reduce() -> bool {
         let mut nobufs = false;
         let code = swoole_rs_reactor::catch_pipe_error(errno(), &mut nobufs);
-        code == REDUCE_SIZE
+        code == Caught::ReduceSize
     }
 
     /// `MessageBus::read` (`dgram == false`) or `read_with_buffer`: one read,

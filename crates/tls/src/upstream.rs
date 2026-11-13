@@ -52,7 +52,6 @@ const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const BUFFER_EMPTY: i32 = 1;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
-const CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
 const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
 const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
 const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
@@ -468,7 +467,8 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
     let mut byte = [0u8];
     set_errno(0);
     let peeked = peek(socket, &mut byte, libc::MSG_DONTWAIT);
-    !(peeked == 0 || (peeked < 0 && socket.catch_error(errno()) == CLOSE))
+    !(peeked == 0
+        || (peeked < 0 && socket.catch_error(errno()) == swoole_rs_reactor::Caught::Close))
 }
 
 /// One blocking call: the socket, and its I/O with the bytes it has left.
@@ -557,7 +557,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         }
     }
 
-    fn catch_error(&self, error: c_int) -> c_int {
+    fn catch_error(&self, error: c_int) -> swoole_rs_reactor::Caught {
         self.socket.catch_error(error)
     }
 
@@ -870,7 +870,7 @@ impl OutputEffects for Output<'_> {
         });
     }
 
-    fn catch_error(&self, error: c_int) -> c_int {
+    fn catch_error(&self, error: c_int) -> swoole_rs_reactor::Caught {
         self.0.catch_error(error)
     }
 }

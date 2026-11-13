@@ -377,7 +377,7 @@ impl SocketFields {
     }
 
     /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).
-    pub fn catch_error(&mut self, error: c_int) -> c_int {
+    pub fn catch_error(&mut self, error: c_int) -> crate::Caught {
         crate::catch_error(error, &mut self.kernel_nobufs)
     }
 

@@ -32,11 +32,11 @@ use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
-use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
-    SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
+    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
     swr_v1_socket_domain_and_type,
 };
+use swoole_rs_reactor::{Event, Running};
 #[cfg(not(test))]
 use swoole_rs_tls::ssl_context_create;
 #[cfg(not(test))]
@@ -133,8 +133,6 @@ enum EventOp {
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
 const SW_WAIT: c_int = ReturnCode::SW_WAIT as c_int;
-const SW_CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
-const SW_ERROR: c_int = ReturnCode::SW_ERROR as c_int;
 const SW_READY: c_int = ReturnCode::SW_READY as c_int;
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
@@ -1872,7 +1870,7 @@ fn on_read(this: Handle) -> c_int {
     if n < 0 {
         let socket = this.socket();
         return match socket.catch_error(errno()) {
-            SW_ERROR => {
+            Caught::Error => {
                 let fd = socket.fd();
                 log::sys_warning(
                     c"Client_onStreamRead",
@@ -1880,8 +1878,8 @@ fn on_read(this: Handle) -> c_int {
                 );
                 OK
             }
-            SW_CLOSE => close(this),
-            _ => OK,
+            Caught::Close => close(this),
+            Caught::Wait | Caught::Invalid | Caught::ReduceSize => OK,
         };
     }
     if n == 0 {
