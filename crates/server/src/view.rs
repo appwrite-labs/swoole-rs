@@ -202,19 +202,8 @@ impl<'a> Server<'a> {
 
     /// `serv-><text> = value` for text member `index`: 0 `chroot_`, 1 `user_`,
     /// 2 `group_`, 3 `pid_file` (`SWR_SERVER_TEXT_*`).
-    ///
-    /// # Safety
-    /// The server is not started, so no other thread reads the text.
-    pub unsafe fn set_text(self, index: usize, value: &[u8]) {
-        let Some(slot) = self.state().text_slot(index) else {
-            return;
-        };
-        // SAFETY: a slot set only while the server is configured, per the caller.
-        let status = unsafe { slot.set_shared(value) };
-        if status < 0 {
-            // C++'s assignment threw `std::bad_alloc`, which nothing catches.
-            swoole_rs_corebase::fatal("out of memory storing a server setting");
-        }
+    pub fn set_text(self, index: usize, value: &[u8]) {
+        self.state().set_text(index, value);
     }
 
     /// `insert(value)` into the static collection `kind`: 0 `locations`,
@@ -241,7 +230,7 @@ impl<'a> Server<'a> {
 
     /// `document_root`.
     #[must_use]
-    pub fn document_root(self) -> &'a [u8] {
+    pub fn document_root(self) -> std::sync::Arc<[u8]> {
         self.state().text(crate::state::TEXT_DOCUMENT_ROOT)
     }
 
