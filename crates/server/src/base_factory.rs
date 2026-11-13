@@ -10,21 +10,17 @@
 )]
 use crate::callbacks::{CB_CLOSE, CallbackSlot, EventSlot, ReceiveSlot};
 use crate::hybrid::hybrid;
-use crate::ops::{
-    LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
-    OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_CONNECTIONS, OP_ALLOC_PORT_CONNECTION_NUMS,
-    OP_BASE_REACTORS, OP_NEW_BASE_FACTORY, OP_PORT_COUNT,
-};
 use crate::reactor_entry::RecvData;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
-use crate::{Host, view};
-use core::ffi::{c_char, c_int, c_long};
+use crate::view;
+use core::ffi::{c_char, c_int, c_long, c_void};
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::DataHead;
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{CCast, log};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
 use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
@@ -105,25 +101,70 @@ pub(crate) fn on_close<'a>(
     Some(())
 }
 
-/// `Server::create_base_factory`: one reactor per worker and per-worker counters.
-pub(crate) fn create<H: Host>(h: &mut H) -> crate::Effect<i64> {
-    h.get(OP_BASE_REACTORS)?;
-    if !h.is(OP_ALLOC_CONNECTIONS)? {
-        h.get(LOG_BASE_ALLOC_CONNECTIONS)?;
-        return Ok(0);
+/// `Server::create_base_factory`: one reactor per worker, this process's connection
+/// list and per-worker connection counts, then the factory; null when an allocation
+/// fails. It runs in `Server::create`, before any other thread or process exists.
+pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
+    /// `sizeof(sw_atomic_t)`.
+    const ATOMIC_SIZE: usize = 4;
+    let state = serv.state();
+    let config = state.config_ref();
+    let workers = config.worker_num.get();
+    config.reactor_num.set(workers.c_cast::<u16>());
+    let origin = c"Server::create_base_factory";
+    // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
+    let max = state.tables_ref().max_connection as usize;
+    let connections = Shm::calloc_private(max, size_of::<crate::ConnectionRecord>());
+    if connections.is_null() {
+        let size = max * size_of::<crate::ConnectionRecord>();
+        log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
+        return core::ptr::null_mut();
     }
-    if !h.is(OP_ALLOC_CONNECTION_NUMS)? {
-        h.get(LOG_BASE_ALLOC_NUMS)?;
-        return Ok(0);
-    }
-    for port in 0..h.get(OP_PORT_COUNT)? {
-        if h.op(OP_ALLOC_PORT_CONNECTION_NUMS, port)? == 0 {
-            h.get(LOG_BASE_ALLOC_PORT_NUMS)?;
-            return Ok(0);
+    // SAFETY: as above; the write is the statement's only access to the tables.
+    unsafe { &mut *state.tables() }.connection_list = connections;
+    let counts = |what: &str| {
+        let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
+        if cells.is_null() {
+            let size = workers as usize * ATOMIC_SIZE;
+            let m = format_args!("sw_shm_calloc({size}) for {what}->connection_nums failed");
+            log::sys_warning(origin, m);
         }
+        (!cells.is_null()).then_some(cells)
+    };
+    // SAFETY: `slot` is the `connection_nums` of the server's counters, which
+    // `swr_v1_server_new` mapped, or of a port's, in the `port_gs_list` `Server::create`
+    // mapped; no other process shares them yet.
+    let store = |slot: *mut Shm, cells| unsafe { slot.write(cells) };
+    let Some(cells) = counts("gs") else {
+        return core::ptr::null_mut();
+    };
+    let gs = config.gs.as_ptr();
+    store(
+        gs.wrapping_byte_add(core::mem::offset_of!(
+            crate::shared::ServerCounters,
+            connection_nums
+        ))
+        .cast(),
+        cells,
+    );
+    for port in state.tables_ref().ports() {
+        let gs = port.config().gs.get();
+        if gs.is_null() {
+            continue;
+        }
+        let Some(cells) = counts("port") else {
+            return core::ptr::null_mut();
+        };
+        store(
+            gs.wrapping_byte_add(core::mem::offset_of!(
+                crate::shared::PortCounters,
+                connection_nums
+            ))
+            .cast(),
+            cells,
+        );
     }
-    h.get(OP_NEW_BASE_FACTORY)?;
-    Ok(1)
+    hybrid().factory_new(serv)
 }
 
 /// `BaseFactory::dispatch`: a stream event needs an active connection the server has
@@ -401,7 +442,6 @@ mod tests {
     use crate::callbacks::{Callback, Ctx};
     use crate::conn_io::tests::{accepted, closed, queue, session};
     use crate::hybrid::tests::{Call, calls};
-    use crate::script::Script;
     use std::cell::RefCell;
     use swoole_rs_process::worker_globals::set_current_worker;
 
@@ -438,19 +478,6 @@ mod tests {
             },
             data: core::ptr::null(),
         }
-    }
-
-    #[test]
-    fn create_fails_on_a_port() {
-        let mut s = Script::with(&[
-            (OP_ALLOC_CONNECTIONS, 1),
-            (OP_ALLOC_CONNECTION_NUMS, 1),
-            (OP_PORT_COUNT, 2),
-        ])
-        .queue(OP_ALLOC_PORT_CONNECTION_NUMS, &[1, 0]);
-        assert_eq!(create(&mut s).unwrap(), 0, "second port failed");
-        assert_eq!(s.called(LOG_BASE_ALLOC_PORT_NUMS), 1, "warned");
-        assert_eq!(s.called(OP_NEW_BASE_FACTORY), 0);
     }
 
     #[test]

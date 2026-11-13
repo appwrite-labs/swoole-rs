@@ -129,7 +129,6 @@ impl ServerState {
         true
     }
 
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
     /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
     /// the pipe isn't ready.
     pub(crate) fn push_task_pipe(&self) -> bool {
@@ -520,7 +519,7 @@ mod tests {
         assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
         assert_eq!(&*state.text(TEXT_PID_FILE), b"");
         assert!(state.text(TEXT_COUNT).is_empty());
-        assert_eq!(native_fact(&state, crate::ops::OP_SET_MAXFD), None);
+        assert_eq!(native_fact(&state, crate::ops::OP_SET_MINFD), None);
 
         let state = std::sync::Arc::new(state);
         assert_eq!(native_fact(&state, OP_LOCK), Some(0));

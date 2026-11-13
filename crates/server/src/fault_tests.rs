@@ -31,18 +31,6 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
             ],
         ),
         (
-            RUN_CREATE,
-            0,
-            &[
-                (OP_MODE, 2),
-                (OP_INIT_LOCAL_ADDRS, 1),
-                (OP_ALLOC_SESSIONS, 1),
-                (OP_ALLOC_WORKERS, 1),
-                (OP_ALLOC_PORT_GS, 1),
-                (OP_CREATE_FACTORY, 1),
-            ],
-        ),
-        (
             RUN_START_MASTER_THREAD,
             0,
             &[
@@ -52,7 +40,6 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
                 (OP_TIMER_DETACHED, 1),
             ],
         ),
-        (RUN_START_CHECK, 0, &[(OP_FIELD, 1), (OP_PORT_COUNT, 2)]),
     ];
     let mut boundaries = 0;
     for &(operation, arg, facts) in cases {
@@ -70,7 +57,7 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
         }
     }
     assert!(
-        boundaries > 70,
+        boundaries > 40,
         "exercise complete multi-effect paths: {boundaries}"
     );
 }

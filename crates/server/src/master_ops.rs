@@ -11,60 +11,34 @@ use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 
-use crate::callbacks::{
-    CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK,
-};
 use crate::hybrid::hybrid;
-use crate::ops::OP_MASTER_THREAD;
-use crate::ops::OP_PIPE_COMMAND_ADD;
 use crate::ops::{
-    LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
-    LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
-    LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_LC_ONLY_ONE, LOG_MAX_CONNECTION_MINIMUM,
-    LOG_REACTOR_NUM, LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_WORKER_NUM, OP_BASE_REACTORS,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_HAS_PIPE_COMMAND, OP_IS_CREATED,
-    OP_PORT_IDLE_TIME, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY,
-    OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE,
+    LOG_LC_ONLY_ONE, OP_AFTER_SHUTDOWN, OP_CONN_CLOSING, OP_DESTROY_FACTORY, OP_DESTROY_WORKER,
+    OP_FREE_USER_WORKERS, OP_HAS_PIPE_COMMAND, OP_IS_CREATED, OP_LC_BEFORE_START, OP_LC_CHECK,
+    OP_LC_PREPARE_WORKERS, OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_THREAD,
+    OP_MASTER_WORKER, OP_PIPE_COMMAND_ADD, OP_PORT_IDLE_TIME, OP_SET_MASTER_PID, OP_SIGNAL_FD,
+    OP_SIGRTMIN, OP_STATE,
 };
-use crate::ops::{
-    OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
-    OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
-    OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
-    OP_HTTP_DEFAULTS, OP_INIT_LOCAL_ADDRS, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_PREPARE_WORKERS,
-    OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER,
-};
-use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
 use crate::port_config::PortConfig;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use crate::port_config::methods;
-use crate::records::{ConnectionRecord, SessionRecord};
+use crate::records::SessionRecord;
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::view::ServerHook;
 use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, ServerState};
-use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_memory::members::Shm;
-use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_process::workers::ops::{
-    RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
-};
+use swoole_rs_process::workers::ops::{RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS};
 
-const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const SW_EVENT_READ: c_int = 1 << 9;
 /// `SW_FD_STREAM_SERVER`.
 const SW_FD_STREAM_SERVER: c_int = 1;
-/// `sizeof(Session)` and `sizeof(sw_atomic_t)`.
-const SESSION_SIZE: usize = size_of::<SessionRecord>();
-const ATOMIC_SIZE: usize = 4;
-// The native sizes of the arrays allocated here.
+// The native sizes of the arrays `Server::create` allocates.
 const _: () = assert!(
-    SESSION_SIZE == 16 && size_of::<PortCounters>() == 80,
+    size_of::<SessionRecord>() == 16 && size_of::<PortCounters>() == 80,
     "server.cc sizeof(Session), sizeof(ServerPortGS)"
 );
-/// `SW_BUFFER_MIN_SIZE`.
-const BUFFER_MIN_SIZE: u32 = 65536;
 
 fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, origin, message);
@@ -170,18 +144,9 @@ fn connection(o: &mut Objects<'_>, op: u32) -> Option<u64> {
 }
 
 /// The ops that write the configuration and tables, each of which runs only while
-/// the master is the server's only thread: `Server::create` (`OP_ALLOC_SESSIONS`,
-/// `OP_ALLOC_PORT_GS`, `OP_HTTP_DEFAULTS`, `OP_ALLOC_WORKERS`, `OP_CREATE_FACTORY`,
-/// `OP_BASE_REACTORS`, `OP_ALLOC_CONNECTIONS`, `OP_ALLOC_CONNECTION_NUMS`,
-/// `OP_ALLOC_PORT_CONNECTION_NUMS`, `OP_ALLOC_TASK_RESULTS`, `OP_TASK_PIPE`), `add_port` before it and `add_command` before the start (`OP_DGRAM_PORT`,
-/// `OP_STREAM_PORT`), `start_check` (`OP_SET_DISABLE_NOTIFY`,
-/// `OP_CLEAR_SEND_YIELD`, `OP_CLEAR_MAX_QUEUED`, `OP_SEND_TIMEOUT_MIN`), and `destroy`
-/// once the factory has joined its threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
+/// the master is the server's only thread: `destroy` once the factory has joined its
+/// threads (`OP_DESTROY_FACTORY` in base mode, `OP_FREE_USER_WORKERS`,
 /// `OP_DESTROY_TASK_WORKERS`, `OP_FREE_SERVER`); else `None`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
 fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     // SAFETY: no other thread runs (above), and each arm's write through it is its
     // last config access, so no other reference to the config is used meanwhile.
@@ -195,118 +160,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     let port_gs = |index| Some(o.port_at(index)?.config().gs.get().cast::<PortCounters>());
     // SAFETY: as `counters`, for a port's slot in `port_gs_list`: null, or mapped.
     let port_counters = |index| unsafe { port_gs(index)?.as_mut() };
-    let mode = || u64::from(o.config().mode_);
     Some(match op {
-        OP_SET_DISABLE_NOTIFY => {
-            config().disable_notify = true;
-            0
-        }
-        OP_CLEAR_SEND_YIELD => {
-            o.config().send_yield.set(false);
-            0
-        }
-        OP_CLEAR_MAX_QUEUED => {
-            o.config().max_queued_bytes.set(0);
-            0
-        }
-        OP_SEND_TIMEOUT_MIN => {
-            o.config().send_timeout.set(0.001);
-            0
-        }
-        OP_BASE_REACTORS => {
-            let reactors = o.config().worker_num.get().c_cast::<u16>();
-            o.config().reactor_num.set(reactors);
-            0
-        }
-        OP_HTTP_DEFAULTS => {
-            // `locations` (0) and `http_compression_types` (2): count, enabled, enable, reset.
-            let strings = |kind, op| crate::static_config::config(o.state, kind, op, &[]);
-            if o.config().enable_static_handler.get() && strings(0, 1) == 0 {
-                strings(0, 3);
-                strings(0, 2);
-            }
-            if strings(2, 1) != 0 && strings(2, 0) != 0 {
-                o.config().http_compression.set(true);
-            }
-            0
-        }
-        OP_ALLOC_SESSIONS => {
-            let list = Shm::calloc(SW_SESSION_LIST_SIZE as usize, SESSION_SIZE);
-            let ready = !list.is_null();
-            tables().session_list = list;
-            u64::from(ready)
-        }
-        OP_ALLOC_PORT_GS => {
-            let count = o.tables().ports().len();
-            let shm = Shm::calloc(count, size_of::<PortCounters>());
-            let list = shm.as_ptr().cast::<PortCounters>();
-            tables().port_gs_list = shm;
-            if list.is_null() {
-                return Some(0);
-            }
-            for index in 0..count {
-                o.port_at(index as u64)?
-                    .set_gs(list.wrapping_add(index).cast());
-            }
-            1
-        }
-        OP_ALLOC_CONNECTIONS => {
-            // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
-            let size = size_of::<ConnectionRecord>();
-            let list = Shm::calloc_private(o.tables().max_connection as usize, size);
-            let ready = !list.is_null();
-            tables().connection_list = list;
-            u64::from(ready)
-        }
-        OP_ALLOC_CONNECTION_NUMS => {
-            let cells = Shm::calloc(o.config().worker_num.get() as usize, ATOMIC_SIZE);
-            let ready = !cells.is_null();
-            counters().connection_nums = cells;
-            u64::from(ready)
-        }
-        OP_ALLOC_WORKERS => {
-            let workers = Shm::calloc(
-                o.config().worker_num.get() as usize,
-                size_of::<WorkerRecord>(),
-            );
-            let ready = !workers.is_null();
-            config().workers = workers;
-            u64::from(ready)
-        }
-        OP_ALLOC_TASK_RESULTS => {
-            let size = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize;
-            let results = Shm::calloc(o.config().worker_num.get() as usize, size);
-            let ready = !results.is_null();
-            config().task_results = results;
-            u64::from(ready)
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        OP_CREATE_FACTORY if mode() == MODE_PROCESS => {
-            use swoole_rs_process::workers::ops::RUN_CREATE_PROCESS_FACTORY;
-            let made = crate::factory_ops::run_server(o.server(), RUN_CREATE_PROCESS_FACTORY);
-            let factory =
-                core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0));
-            config().factory_ = factory;
-            u64::from(!factory.is_null())
-        }
-        OP_CREATE_FACTORY if mode() != MODE_PROCESS => {
-            let factory = if mode() == MODE_BASE {
-                crate::server_methods::create_base_factory(o.server())
-            } else {
-                let factory = hybrid().thread_mode(o.server(), RUN_CREATE_THREAD_FACTORY);
-                core::ptr::with_exposed_provenance_mut(usize::try_from(factory).unwrap_or(0))
-            };
-            config().factory_ = factory;
-            u64::from(!factory.is_null())
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_TASK_PIPE => {
-            let ready = o.state.push_task_pipe();
-            if !ready {
-                config().task_results.free();
-            }
-            u64::from(ready)
-        }
         // `Server::destroy_base_factory()`: the connection list and the connection counts.
         OP_DESTROY_FACTORY if arg == MODE_BASE => {
             tables().connection_list.free();
@@ -317,15 +171,6 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 }
             }
             0
-        }
-        OP_ALLOC_PORT_CONNECTION_NUMS => {
-            let Some(gs) = port_counters(arg) else {
-                return Some(0);
-            };
-            let cells = Shm::calloc(o.config().worker_num.get() as usize, ATOMIC_SIZE);
-            let ready = !cells.is_null();
-            gs.connection_nums = cells;
-            u64::from(ready)
         }
         OP_FREE_USER_WORKERS => {
             config().user_workers.free();
@@ -357,17 +202,12 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     })
 }
 
-/// The other ops of master.cc's switch; then [`forwarded`].
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
+/// The other ops of master.cc's switch.
 fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     if let Some(done) = configure(o, op, arg) {
         return Some(done);
     }
     let state = o.state;
-    let cpus = c_int::from(swoole_rs_corebase::swr_v1_core_cpu_num());
     Some(match op {
         // Logs.
         LOG_LC_ONLY_ONE => {
@@ -380,128 +220,9 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_ALLOC_SESSIONS => {
-            let m = format_args!("sw_shm_calloc(1048576, {SESSION_SIZE}) for session_list failed");
-            log::sys_warning(c"Server::create", m);
-            0
-        }
-        LOG_ALLOC_PORT_GS => {
-            let (ports, size) = (o.tables().ports.count, size_of::<PortCounters>());
-            let m =
-                format_args!("sw_shm_calloc({ports}, {size}) for port_connection_num_array failed");
-            log::sys_warning(c"Server::create", m);
-            0
-        }
-        LOG_ALLOC_WORKERS => {
-            let (workers, size) = (
-                o.config().worker_num.get().cast_signed(),
-                size_of::<swoole_rs_process::worker_record::WorkerRecord>(),
-            );
-            let m = format_args!("sw_shm_calloc({workers}, {size}) for workers failed");
-            log::sys_warning(c"Server::create", m);
-            0
-        }
-        LOG_MAX_CONNECTION_MINIMUM => {
-            #[expect(clippy::cast_possible_truncation, reason = "the low half of arg")]
-            let (minimum, reset) = (arg >> 32, arg as u32);
-            let m =
-                format_args!("max_connection must be bigger than {minimum}, it's reset to {reset}");
-            log::warning(c"Server::create", m);
-            0
-        }
-        LOG_REACTOR_NUM => {
-            let (now, max) = (o.config().reactor_num.get(), cpus * 4);
-            let m =
-                format_args!("reactor_num == {now}, Too many threads, reset to max value {max}");
-            log::warning(c"Server::create", m);
-            0
-        }
-        LOG_WORKER_NUM => {
-            let (now, max) = (o.config().worker_num.get().cast_signed(), cpus * 1000);
-            let m =
-                format_args!("worker_num == {now}, Too many processes, reset to max value {max}");
-            log::warning(c"Server::create", m);
-            0
-        }
-        LOG_TASK_WORKER_NUM => {
-            let (now, max) = (o.config().task_worker_num.get().cast_signed(), cpus * 1000);
-            let m = format_args!(
-                "task_worker_num == {now}, Too many processes, reset to max value {max}"
-            );
-            log::warning(c"Server::create", m);
-            0
-        }
-        LOG_TASK_POOL => {
-            let m = format_args!("[Master] create task_workers failed");
-            log::warning(c"Server::create_task_workers", m);
-            0
-        }
-        LOG_ALLOC_TASK_RESULTS => {
-            let (workers, size) = (
-                o.config().worker_num.get().cast_signed(),
-                swoole_rs_corebase::constants::SW_IPC_MAX_SIZE,
-            );
-            let m = format_args!("sw_shm_calloc({workers}, {size}) for task_result failed");
-            log::warning(c"Server::create_task_workers", m);
-            0
-        }
-        LOG_CALLBACK_DISPATCH => {
-            let event = match u32::try_from(arg).unwrap_or(u32::MAX) {
-                CB_CONNECT => "onConnect",
-                CB_CLOSE => "onClose",
-                CB_BUFFER_FULL => "onBufferFull",
-                CB_BUFFER_EMPTY => "onBufferEmpty",
-                _ => return Some(0),
-            };
-            let mode = o.config().dispatch_mode.get();
-            let m = format_args!("cannot set '{event}' event when using dispatch_mode={mode}");
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SERVER_INVALID_CALLBACK,
-                c"Server::start_check",
-                m,
-            );
-            0
-        }
-        LOG_CALLBACK_REQUIRED => {
-            let event = match u32::try_from(arg).unwrap_or(u32::MAX) {
-                CB_TASK => "onTask",
-                CB_RECEIVE => "onReceive",
-                _ => "onPacket",
-            };
-            let m = format_args!("require '{event}' callback");
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SERVER_INVALID_CALLBACK,
-                c"Server::start_check",
-                m,
-            );
-            0
-        }
-        LOG_BASE_ALLOC_CONNECTIONS => {
-            let size = o.tables().max_connection as usize * size_of::<ConnectionRecord>();
-            log::sys_warning(
-                c"Server::create_base_factory",
-                format_args!("calloc[2]({size}) failed"),
-            );
-            0
-        }
-        LOG_BASE_ALLOC_NUMS | LOG_BASE_ALLOC_PORT_NUMS => {
-            let size = o.config().worker_num.get() as usize * ATOMIC_SIZE;
-            let what = if op == LOG_BASE_ALLOC_NUMS {
-                "gs"
-            } else {
-                "port"
-            };
-            let m = format_args!("sw_shm_calloc({size}) for {what}->connection_nums failed");
-            log::sys_warning(c"Server::create_base_factory", m);
-            0
-        }
-
         // The server's own records.
         OP_SIGRTMIN => sigrtmin(),
         OP_SIGNAL_FD => sign(swoole_rs_corebase::swr_v1_core_signal_fd()),
-        OP_SEND_TIMEOUT => o.config().send_timeout.get().to_bits(),
         OP_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
         OP_SET_MASTER_PID => {
             o.gs()
@@ -521,10 +242,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // worker globals, the master reactor and the server's shared allocations.
         OP_LC_BEFORE_START => {
             call_hook(o, ServerHook::BeforeStart);
-            0
-        }
-        OP_AFTER_CREATE => {
-            call_hook(o, ServerHook::AfterCreate);
             0
         }
         OP_AFTER_SHUTDOWN => {
@@ -548,22 +265,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             reactor.set_handler(SW_FD_STREAM_SERVER, SW_EVENT_READ, accept);
             0
         }
-        OP_INIT_LOCAL_ADDRS => u64::from(crate::local_addr::init(o.state)),
-        op => return forwarded(o, op, arg),
-    })
-}
-
-/// The ops over the server's tables and ports that master.cc made, and the
-/// `Server` methods crates/server defines that it forwarded to; then [`lifecycle`].
-fn forwarded(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    Some(match op {
-        OP_PORT_MAX_LENGTH | OP_PORT_MIN_LENGTH => {
-            let port = o.port_at(arg)?;
-            if op == OP_PORT_MIN_LENGTH {
-                port.set_package_max_length(BUFFER_MIN_SIZE);
-            }
-            u64::from(port.config().protocol.get().package_max_length)
-        }
         op => return lifecycle(o, op, arg),
     })
 }
@@ -586,10 +287,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LC_START_THREAD => {
             let started = hybrid().thread_mode(o.server(), RUN_START_WORKER_THREADS);
             sign(started.c_cast::<c_int>())
-        }
-        #[cfg(all(feature = "upstream-symbols", not(test)))]
-        crate::ops::OP_INIT_TASK_WORKERS => {
-            u64::from(crate::task_worker_ops::init_task_workers(o.server()))
         }
         OP_DESTROY_WORKER => {
             // `get_worker(i)` of an event worker, which shutdown indexes.
@@ -713,9 +410,8 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_START;
     use crate::ops::{
         OP_LC_DAEMON, OP_LC_FACTORY_START, OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS,
-        OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_STORE_LISTEN,
+        OP_MASTER_START, OP_MASTER_TIMER,
     };
-    use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::swoole_redirect_stdout_file;
     use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
@@ -741,7 +437,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         // The master starts its reactor threads.
         OP_LC_START_PROCESS => sign(crate::thread_ops::start_reactor_threads(o.server())),
-        OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
             let node = crate::server_methods::master_timer(o.server());
             o.config().master_timer.store(node, Relaxed);
@@ -750,34 +445,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_MASTER_START => {
             o.state.callbacks.call_server(CB_START, o.server());
             0
-        }
-        OP_STORE_LISTEN => {
-            let index = usize::try_from(arg).unwrap_or(usize::MAX);
-            let &listen = o.tables().ports().get(index)?;
-            let (ls, port) = (listen.raw(), listen.config());
-            let socket = o.server().port_socket_at(index)?;
-            let fd = socket.fd();
-            let conn = o.tables().connection_at(fd)?;
-            conn.set_fd(fd);
-            conn.set_socket(port.socket_ptr().cast());
-            conn.set_socket_type(port.r#type);
-            conn.set_object(ls);
-            let mut info = conn.info();
-            info.kind = port.r#type;
-            let error = assign(
-                &mut info.addr,
-                &mut info.len,
-                port.r#type,
-                port.host.bytes_with_nul(),
-                port.port.get(),
-                true,
-            );
-            conn.set_info(info);
-            if error != 0 {
-                log::set_last_error(error);
-            }
-            socket.edit(|socket| socket.object = ls);
-            sign(fd)
         }
         op => return closing(o, op, arg),
     })
@@ -811,7 +478,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             (methods().close)(*port);
             0
         }
-        op => return factory_ops(o, op, arg),
+        op => return factory_ops(o, op),
     })
 }
 
@@ -870,65 +537,18 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
 /// `ProcessPool`'s methods (crates/process), the factory's virtual members and
 /// the task notify pipes; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
+fn factory_ops(o: &mut Objects<'_>, op: u32) -> Option<u64> {
     use crate::factory_ops as process;
-    use crate::ops::{
-        OP_FACTORY_SHUTDOWN, OP_NEW_BASE_FACTORY, OP_TASK_POOL_CREATE, OP_TASK_POOL_LISTEN,
-        OP_TASK_POOL_SETUP,
-    };
-    use swoole_rs_process::methods as pool;
+    use crate::ops::OP_FACTORY_SHUTDOWN;
     use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
-    // crates/process' `ProcessPool::listen(socket_file, backlog)`.
-    use swoole_rs_process::methods::listen_unix as pool_listen;
-    let serv = o.ctx.serv;
-    let config = o.config();
     Some(match op {
         OP_DESTROY_FACTORY => {
             // The live server, whose process factory shutdown destroys.
             process::run_server(o.server(), RUN_DESTROY_PROCESS_FACTORY);
             0
         }
-        OP_TASK_POOL_CREATE => {
-            let task_pool = o.server().task_pool();
-            // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
-            unsafe { task_pool.write_bytes(0, 1) };
-            let key = if arg == u64::from(swoole_rs_process::process_pool::IpcMode::MsgQueue.code())
-            {
-                config.message_queue_key.get().c_cast::<c_int>()
-            } else {
-                0
-            };
-            #[expect(clippy::cast_possible_truncation, reason = "an swIPCMode")]
-            let created = pool::create(
-                o.server().task_pool_ref(),
-                config.task_worker_num.get(),
-                key,
-                arg as c_int,
-            );
-            u64::from(created >= 0)
-        }
-        OP_TASK_POOL_SETUP => {
-            let task_pool = o.server().task_pool_ref();
-            pool::set_max_request(
-                task_pool,
-                config.task_max_request.get(),
-                config.task_max_request_grace.get(),
-            );
-            pool::set_start_id(task_pool, config.worker_num.get().cast_signed());
-            pool::set_type(task_pool, WorkerType::Task.code().into());
-            0
-        }
-        OP_TASK_POOL_LISTEN => {
-            // SAFETY: the NUL-terminated path `arg` lends.
-            let file = unsafe { CStr::from_ptr(ptr_of(arg)) };
-            sign(pool_listen(o.server().task_pool_ref(), file, 2048))
-        }
         OP_FACTORY_SHUTDOWN => {
             crate::factory::shutdown(o.state);
-            0
-        }
-        OP_NEW_BASE_FACTORY => {
-            o.ctx.object = crate::factory::new(serv, None);
             0
         }
         op => return objects(o, op),
@@ -998,12 +618,6 @@ extern "C" fn accept_command_result(
     0
 }
 
-/// A pointer an op passes in its argument.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-fn ptr_of<T>(arg: u64) -> *const T {
-    core::ptr::with_exposed_provenance(usize::try_from(arg).unwrap_or(0))
-}
-
 /// Outside the hybrid, whose unit tests link no C++, native code keeps these.
 #[cfg(not(all(feature = "upstream-symbols", not(test))))]
 fn native(_: &mut Objects<'_>, _: u32, _: u64) -> Option<u64> {
@@ -1058,7 +672,13 @@ mod tests {
                 None
             );
             assert_eq!(
-                answer(core::ptr::null_mut(), None, &*state, OP_SEND_TIMEOUT, 0),
+                answer(
+                    core::ptr::null_mut(),
+                    None,
+                    &*state,
+                    OP_FREE_USER_WORKERS,
+                    0
+                ),
                 None
             );
             crate::state::free_state(state);
@@ -1066,67 +686,17 @@ mod tests {
     }
 
     #[test]
-    fn config_ops_read_and_write_the_config() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: a fresh state owns its config; the ops below touch only it. The test
-        // reads it through the state's pointer, as the ops do, so no reference of its
-        // own outlives an op.
-        unsafe {
-            let config = (*state).config();
-            (*config).send_timeout.set(2.5);
-            (*config).worker_num.set(6);
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT, 0),
-                Some(2.5f64.to_bits())
-            );
-            answer(&raw mut ctx, None, &*state, OP_SEND_TIMEOUT_MIN, 0);
-            assert_eq!((*config).send_timeout.get(), 0.001);
-            answer(&raw mut ctx, None, &*state, OP_CLEAR_SEND_YIELD, 0);
-            assert!(!(*config).send_yield.get());
-            answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
-            assert_eq!((*config).reactor_num.get(), 6);
-            crate::state::free_state(state);
-        }
-    }
-
-    #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
-    fn allocation_ops_fill_the_config_tables_and_counters() {
+    fn freeing_the_user_workers_twice_is_harmless() {
         let state = crate::swr_v1_server_state_new();
         let mut ctx = context();
-        // SAFETY: a fresh state; every pointer the ops write is checked and freed below.
+        // SAFETY: a fresh state; the op frees what the test allocated.
         unsafe {
             let config = &mut *(*state).config();
-            config.worker_num.set(3);
-            config.gs = Shm::calloc(1, size_of::<ServerCounters>());
-            let gs = config.gs.as_ptr().cast::<ServerCounters>();
-            gs.write(ServerCounters::default());
-            for op in [
-                OP_ALLOC_WORKERS,
-                OP_ALLOC_TASK_RESULTS,
-                OP_ALLOC_CONNECTION_NUMS,
-                OP_ALLOC_SESSIONS,
-            ] {
-                assert_eq!(
-                    answer(&raw mut ctx, None, &*state, op, 0),
-                    Some(1),
-                    "op {op}"
-                );
-            }
-            let nums = (*gs).cells();
-            assert_eq!((*nums.add(2)).load(Relaxed), 0, "zeroed");
-            let tables = &mut *(*state).tables();
-            assert_eq!((*tables.session_slot(5).unwrap().get()).fd, 0, "zeroed");
-            config.user_workers = Shm::calloc(1, 8);
+            config.user_workers = swoole_rs_memory::members::Shm::calloc(1, 8);
             answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
             assert!(config.user_workers.is_null());
             answer(&raw mut ctx, None, &*state, OP_FREE_USER_WORKERS, 0);
-            config.task_results.free();
-            config.workers.free();
-            (*gs).connection_nums.free();
-            tables.session_list.free();
-            config.gs.free();
             crate::state::free_state(state);
         }
     }

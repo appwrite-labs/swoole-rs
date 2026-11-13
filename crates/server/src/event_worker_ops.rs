@@ -105,7 +105,7 @@ fn fact(ctx: &Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INFO_TYPE => u64::from(ctx.info().kind),
         OP_INFO_FD => ctx.info().fd.cast_unsigned(),
         OP_INFO_LEN => u64::from(ctx.info().len),
-        OP_DISABLE_NOTIFY => u64::from(config.disable_notify),
+        OP_DISABLE_NOTIFY => u64::from(config.disable_notify.get()),
         OP_DISCARD_TIMEOUT_REQUEST => u64::from(config.discard_timeout_request.get()),
         OP_WORKER_ID => u64::from(ctx.worker().id()),
         OP_WORKER_TYPE => u64::from(ctx.worker().kind()),

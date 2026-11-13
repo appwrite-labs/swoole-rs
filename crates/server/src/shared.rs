@@ -174,9 +174,9 @@ pub unsafe fn swr_v1_server_shared_init(
 #[inline(always)]
 pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
-        OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MASTER_PID,
-        OP_MAXFD, OP_MINFD, OP_SESSION_ROUND, OP_SET_MAXFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY,
-        OP_ST_GS_CONCURRENCY_SUB, OP_ST_GS_CONCURRENCY_ZERO,
+        OP_IS_STARTED, OP_LC_CLAIM_START, OP_LC_START_TIME, OP_MANAGER_PID, OP_MAXFD, OP_MINFD,
+        OP_SESSION_ROUND, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB,
+        OP_ST_GS_CONCURRENCY_ZERO,
     };
     use core::sync::atomic::Ordering;
     if !matches!(
@@ -184,11 +184,9 @@ pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Opti
         OP_IS_STARTED
             | OP_LC_CLAIM_START
             | OP_LC_START_TIME
-            | OP_MASTER_PID
             | OP_MANAGER_PID
             | OP_MAXFD
             | OP_MINFD
-            | OP_SET_MAXFD
             | OP_SET_MINFD
             | OP_SESSION_ROUND
             | OP_ST_GS_CONCURRENCY_SUB
@@ -212,24 +210,17 @@ pub(crate) fn native_fact(state: &crate::ServerState, op: u32, arg: u64) -> Opti
             gs.start_time.store(now, Relaxed);
             0
         }
-        // The master pid is assigned before workers can read it.
-        OP_MASTER_PID => i64::from(gs.master_pid.load(Relaxed)).cast_unsigned(),
         OP_MANAGER_PID => i64::from(gs.manager_pid.load(Relaxed)).cast_unsigned(),
         // Native server code serializes fd-bound updates with its existing lock.
         OP_MAXFD => i64::from(gs.max_fd()).cast_unsigned(),
         OP_MINFD => i64::from(gs.min_fd()).cast_unsigned(),
-        OP_SET_MAXFD | OP_SET_MINFD => {
+        OP_SET_MINFD => {
             let value = core::ffi::c_int::from_ne_bytes(
                 u32::try_from(arg & u64::from(u32::MAX))
                     .unwrap_or_default()
                     .to_ne_bytes(),
             );
-            if op == OP_SET_MAXFD {
-                &gs.max_fd
-            } else {
-                &gs.min_fd
-            }
-            .store(value, Relaxed);
+            gs.min_fd.store(value, Relaxed);
             0
         }
         // Callers read the session round under the shared spin lock.
@@ -265,7 +256,7 @@ pub unsafe extern "C" fn swr_v1_server_port_shared_init(storage: *mut core::ffi:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{OP_MAXFD, OP_SET_MAXFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
+    use crate::ops::{OP_MINFD, OP_SET_MINFD, OP_ST_GS_CONCURRENCY, OP_ST_GS_CONCURRENCY_SUB};
     use crate::state::{free_state, swr_v1_server_state_new};
     use core::sync::atomic::Ordering;
     use swoole_rs_memory::members::Shm;
@@ -350,14 +341,14 @@ mod tests {
                 // Only lock-free atomics/plain loaned cells and _exit run after
                 // fork; no Rust allocation, callback, destructor or test assertion.
                 native_fact(&*state, OP_ST_GS_CONCURRENCY_SUB, 2);
-                native_fact(&*state, OP_SET_MAXFD, 123);
+                native_fact(&*state, OP_SET_MINFD, 123);
                 libc::_exit(0);
             }
             let mut status = 0;
             assert_eq!(libc::waitpid(pid, &raw mut status, 0), pid);
             assert_eq!(status, 0);
             assert_eq!(native_fact(&*state, OP_ST_GS_CONCURRENCY, 0), Some(5));
-            assert_eq!(native_fact(&*state, OP_MAXFD, 0), Some(123));
+            assert_eq!(native_fact(&*state, OP_MINFD, 0), Some(123));
             (*(*state).config()).gs.free();
             free_state(state);
         }

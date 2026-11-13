@@ -134,7 +134,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) -
     };
     // A TLS connection that never finished its handshake has nobody to notify.
     let handshaking = conn.ssl() && !conn.ssl_ready();
-    if serv.state().config_ref().disable_notify || conn.close_force() || handshaking {
+    if serv.state().config_ref().disable_notify.get() || conn.close_force() || handshaking {
         return crate::conn_io::close_connection(serv, reactor, conn.socket());
     }
     conn.set_close_force(true);

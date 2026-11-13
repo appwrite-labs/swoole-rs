@@ -10,11 +10,7 @@ use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 
 use crate::hybrid::hybrid;
-use crate::ops::RUN_BASE_CREATE;
-use crate::ops::{
-    RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
-    RUN_STORE_LISTEN_SOCKET,
-};
+use crate::ops::{RUN_DESTROY, RUN_START, RUN_START_MASTER_THREAD};
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
 
@@ -26,7 +22,6 @@ pub struct NativeContext<'a> {
     pub(crate) port: *mut c_void,
     /// The connection the operation acts on or selects.
     pub(crate) conn: Option<crate::Connection<'a>>,
-    pub(crate) object: *mut c_void,
 }
 
 impl NativeContext<'_> {
@@ -36,7 +31,6 @@ impl NativeContext<'_> {
             reactor: ptr::null_mut(),
             port: ptr::null_mut(),
             conn: None,
-            object: ptr::null_mut(),
         }
     }
 }
@@ -50,15 +44,9 @@ use tests::fake as run;
 
 /// Runs `op` with `arg` over a context that lends `serv` and nothing else.
 fn run_on(serv: view::Server<'_>, op: u32, arg: u64) -> i64 {
-    run_over(serv, op, arg).0
-}
-
-/// [`run_on`], and the context afterwards, for what `op` left in it.
-fn run_over<'a>(serv: view::Server<'_>, op: u32, arg: u64) -> (i64, NativeContext<'a>) {
     let mut ctx = NativeContext::new(serv.raw());
     // SAFETY: a live server, and no other object for the operation to read.
-    let result = unsafe { run(op, arg, &mut ctx) };
-    (result, ctx)
+    unsafe { run(op, arg, &mut ctx) }
 }
 
 /// Each method that is one operation over the server alone: its Rust name, return type
@@ -101,8 +89,17 @@ impl Narrow for u32 {
 
 plain_methods! {
     fn start() -> c_int = RUN_START;
-    fn start_check() -> c_int = RUN_START_CHECK;
-    fn store_listen_socket() -> () = RUN_STORE_LISTEN_SOCKET;
+}
+
+/// `Server::start_check()`.
+#[must_use]
+pub fn start_check(serv: view::Server<'_>) -> c_int {
+    crate::startup::start_check(serv)
+}
+
+/// `Server::store_listen_socket()`.
+pub fn store_listen_socket(serv: view::Server<'_>) {
+    crate::startup::store_listen_socket(serv);
 }
 
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
@@ -125,7 +122,7 @@ pub fn create(serv: view::Server<'_>) -> c_int {
         return -1;
     }
     serv.call_hook(view::ServerHook::BeforeCreate);
-    c_int::narrow(run_on(serv, RUN_CREATE, 0))
+    crate::startup::create(serv)
 }
 
 /// `Server::destroy()`: nothing before the server is created.
@@ -340,17 +337,6 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
 
 pub use crate::dispatch::sendfile;
 
-/// `Server::create_base_factory()`: the new `BaseFactory`, or null.
-#[must_use]
-pub fn create_base_factory(serv: view::Server<'_>) -> *mut c_void {
-    let (created, ctx) = run_over(serv, RUN_BASE_CREATE, 0);
-    if created != 0 {
-        ctx.object
-    } else {
-        ptr::null_mut()
-    }
-}
-
 /// `serv->reactor_thread_barrier.wait()`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
@@ -459,22 +445,9 @@ pub fn swr_v1_server_command_result(serv: view::Server<'_>, request_id: i64, mes
 mod tests {
     use super::*;
     use crate::records::ConnectionRecord;
-    use std::sync::Mutex;
 
-    /// The fields of each call: op, arg and serv.
-    type Sent = (u32, u64, usize);
-    static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
-
-    pub(super) unsafe fn fake(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
-        SENT.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((op, arg, ctx.serv.addr()));
-        ctx.port = ptr::without_provenance_mut(0x50);
-        ctx.object = ptr::without_provenance_mut(0x70);
-        match op {
-            RUN_BASE_CREATE => 1,
-            _ => 0,
-        }
+    pub(super) unsafe fn fake(_op: u32, _arg: u64, _ctx: &mut NativeContext<'_>) -> i64 {
+        0
     }
 
     /// A server whose state and config are null: the fake runner reads neither.
@@ -488,25 +461,7 @@ mod tests {
         unsafe { view::Server::from_raw(fake_serv()) }
     }
 
-    fn sent() -> Sent {
-        *SENT
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .last()
-            .unwrap_or(&(0, 0, 0))
-    }
-
     #[test]
-    fn methods_fill_the_context_their_forward_did() {
-        assert_eq!(
-            create_base_factory(server()).addr(),
-            0x70,
-            "the created factory"
-        );
-        assert_eq!(sent().0, RUN_BASE_CREATE, "create op");
-        close_notify_and_pipe_messages();
-    }
-
     fn close_notify_and_pipe_messages() {
         use crate::hybrid::tests::{Call, calls};
         calls();
