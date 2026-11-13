@@ -6,8 +6,6 @@ Thread Lock, Atomic/Long and Thread Atomic/Long are Rust classes (`crates/phploc
 [native/locks/contract.md](../../../native/locks/contract.md) for geometry,
 ownership, timeout, ordering, fork, coroutine and platform contracts.
 
-`overlay.py` names the pin for `platforms.py`'s report.
-
 ## Rust gates
 
 `gate.rs` and `constructor.rs` (the `gate` and `constructor` tests of `swoole-rs-locks`,
@@ -53,9 +51,6 @@ gate did, and passes through to libc unless the calling thread is watching.
   integer wrap, CAS, lock behaviour, coroutine mutual exclusion, owner reentrancy,
   nonblocking contention, cancellation, constructor/clone/serialization rules; under ZTS
   also real threads sharing 32/64-bit atomics. Observations must match.
-- `platforms.py --source S --output R` (`locks-platforms`): compiles the header as C11/C++14 on the
-  host and checks synthetic FreeBSD/Android (and Apple mobile on macOS) macros
-  are rejected.
 - Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` jobs), which runs every pinned PHPT on upstream and the Cargo build. To attribute a gate regression to this module, see *Attributing a regression* in [corpus/upstream/README.md](../../../corpus/upstream/README.md).
 
 ## Ported GoogleTests

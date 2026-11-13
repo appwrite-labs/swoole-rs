@@ -7,9 +7,9 @@ Upstream's `include/swoole_coroutine_channel.h`, `src/coroutine/channel.cc`,
 and `include/swoole_coroutine{,_context,_api,_system}.h` are not built.
 
 `swoole_coroutine.h` here is an opaque `Coroutine` with the three inline getters
-native/ still calls, and `swoole_coroutine_system.h` and `swoole_coroutine_api.h` the `System` members and
-`swoole_coroutine_*` exports, each keeping only what native/, the vendored code
-and the compiled core-tests call.
+native/ still calls, and `swoole_coroutine_system.h` the `System` members, each keeping
+only what native/ and the vendored code call. The vendored code reaches the
+`swoole_coroutine_*` exports through the hook headers (native/hooks).
 
 Rust frames that span a swap callback, context switch, timer or destructor
 own nothing with a destructor, so a stack the bailout abandons, or PHP's longjmp

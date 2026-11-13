@@ -43,7 +43,7 @@ class Overlays(unittest.TestCase):
                 (root / 'native' / name).touch()
             with patch.object(build_ext, 'ROOT', root):
                 selected = build_ext.headers_for(['websocket'])
-                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_server_state.h', 'swoole_rs_websocket.h', 'codec.h', 'swoole_rs_corebase_constants.h'})
+                self.assertEqual({p.name for p in selected}, {'swoole_rs.h', 'swoole_rs_websocket.h', 'codec.h', 'swoole_rs_corebase_constants.h'})
                 (root / 'native/websocket/swoole_rs.h').touch()
                 with self.assertRaises(ValueError):
                     build_ext.headers_for(['websocket'])

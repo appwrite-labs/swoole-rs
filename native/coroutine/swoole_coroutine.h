@@ -10,7 +10,6 @@
 #include "swoole_socket.h"
 #include "swoole_reactor.h"
 #include "swoole_async.h"
-#include "swoole_util.h"
 
 #include "swoole_rs_coroutine.h"
 
