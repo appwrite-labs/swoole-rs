@@ -335,7 +335,7 @@ impl TaskServer for Server {
     fn finish(self, data: &[u8], task: *mut c_void) -> bool {
         // SAFETY: null, or the task being run, which starts with its head.
         let task = unsafe { task.cast::<swoole_rs_corebase::DataHead>().as_ref() };
-        swoole_rs_server::task_worker_ops::finish(self.view(), data, 0, task)
+        swoole_rs_server::task_worker::native::finish(self.view(), data, 0, task)
     }
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
@@ -387,7 +387,7 @@ impl TaskServer for Server {
     }
 
     fn kill_worker(self, worker_id: c_int) -> bool {
-        swoole_rs_server::event_worker_ops::kill_worker(self.view(), worker_id)
+        swoole_rs_server::event_worker::native::kill_worker(self.view(), worker_id)
     }
 
     fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {

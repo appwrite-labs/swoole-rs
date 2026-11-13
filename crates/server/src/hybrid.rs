@@ -108,7 +108,7 @@ pub(crate) trait Hybrid: Sync {
     }
 
     /// Thread mode's `Server` method `operation`.
-    fn thread_mode(&self, _serv: Server<'_>, _operation: u32) -> i64 {
+    fn thread_mode(&self, _serv: Server<'_>, _operation: crate::thread_mode::ThreadOp) -> i64 {
         missing()
     }
 
@@ -220,6 +220,16 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// Process mode's write of `send` to `to`: whether it went.
+    fn process_send(
+        &self,
+        _serv: Server<'_>,
+        _to: crate::process_factory::Pipe,
+        _send: &mut crate::base_factory::SendData,
+    ) -> bool {
+        missing()
+    }
+
     /// Runs `step`: negative when it failed, else 0 or what it returns.
     fn step(&self, _serv: Server<'_>, _step: Step) -> c_int {
         missing()
@@ -267,7 +277,7 @@ pub(crate) mod tests {
         Notify(c_long, i16, u8, u16),
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
-        ThreadMode(u32),
+        ThreadMode(crate::thread_mode::ThreadOp),
         StopSingleWorker,
         SendShutdown,
         Thread0Shutdown,
@@ -297,6 +307,8 @@ pub(crate) mod tests {
         /// The IPC mode's code and whether the pool listens.
         TaskPool(u8, bool),
         TaskWorkers,
+        /// Where process mode wrote, and the send's fd and kind.
+        Process(crate::process_factory::Pipe, c_long, u8),
         Step(Step),
     }
 
@@ -342,7 +354,7 @@ pub(crate) mod tests {
             hear(Call::Pipe(worker_id, message.head().kind, sent))
         }
 
-        fn thread_mode(&self, _: Server<'_>, operation: u32) -> i64 {
+        fn thread_mode(&self, _: Server<'_>, operation: crate::thread_mode::ThreadOp) -> i64 {
             hear(Call::ThreadMode(operation));
             0
         }
@@ -429,6 +441,15 @@ pub(crate) mod tests {
 
         fn task_workers(&self, _: Server<'_>) -> bool {
             hear(Call::TaskWorkers)
+        }
+
+        fn process_send(
+            &self,
+            _: Server<'_>,
+            to: crate::process_factory::Pipe,
+            send: &mut crate::base_factory::SendData,
+        ) -> bool {
+            hear(Call::Process(to, send.info.fd, send.info.kind))
         }
 
         fn step(&self, _: Server<'_>, step: Step) -> c_int {

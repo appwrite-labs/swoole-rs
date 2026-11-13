@@ -38,9 +38,8 @@ pub mod task_sync;
 pub mod wait;
 pub mod worker_globals;
 pub mod worker_record;
-pub use swoole_rs_corebase::worker_registry;
-pub mod workers;
 use std::ffi::c_int;
+pub use swoole_rs_corebase::worker_registry;
 /// SIGRTMIN is a runtime value on Linux and undefined elsewhere (upstream guards
 /// it with `#ifdef SIGRTMIN`).
 #[cfg(target_os = "linux")]

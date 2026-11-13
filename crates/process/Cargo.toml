@@ -26,7 +26,6 @@ swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-memory = { path = "../memory" }
 swoole-rs-ossupport = { path = "../ossupport" }
-swoole-rs-error = { path = "../error" }
 swoole-rs-locks = { path = "../locks" }
 swoole-rs-utilities = { path = "../utilities" }
 libc = "=0.2.191"

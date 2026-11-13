@@ -13,7 +13,7 @@ use swoole_rs_clients::client::{
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::callbacks as cb;
-use swoole_rs_server::{event_worker_ops, manager_ops, task_worker_ops, worker_methods};
+use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_WRONG_OPERATION: c_int = 509;
@@ -167,7 +167,7 @@ fn pid() -> c_int {
 
 /// `serv->reload(reload_all_workers)`.
 fn reload(serv: Server, reload_all_workers: bool) -> bool {
-    manager_ops::reload(serv.view(), reload_all_workers)
+    manager::native::reload(serv.view(), reload_all_workers)
 }
 
 fn shutdown(serv: Server) -> bool {
@@ -349,15 +349,27 @@ unsafe extern "C" fn after_reload(_: *mut c_void, _: *mut c_void) {
 /// `reload_all_workers`' and `reload_all_workers2`'s `onWorkerStart`: worker 1 records its
 /// pid in `filename` and signals `target` to reload the task workers, then all of them;
 /// its replacement checks it is a new process, then stops the server.
-fn reload_on_worker_start(serv: Server, worker: *mut WorkerRecord, filename: &str, target: c_int) {
+///
+/// The workers start before the master publishes its pid, which it does once the
+/// manager has installed its signal handlers. Until then `master_pid` is 0, and
+/// `kill(0, ...)` would signal the whole process group, so worker 1 waits for it.
+fn reload_on_worker_start(
+    serv: Server,
+    worker: *mut WorkerRecord,
+    filename: &str,
+    target: fn(Server) -> c_int,
+) {
     if worker_id(worker) != 1 {
         return;
     }
     if std::fs::File::open(filename).is_err() {
         std::fs::write(filename, pid().to_string()).unwrap();
-        signal(target, SIGUSR2);
+        while master_pid(serv) == 0 {
+            sleep(0.001);
+        }
+        signal(target(serv), SIGUSR2);
         sleep(1.0);
-        signal(target, SIGUSR1);
+        signal(target(serv), SIGUSR1);
     } else {
         // `char buf[10]; file >> buf; stringstream(buf) >> oldPid`.
         let old_pid = std::fs::read_to_string(filename)
@@ -377,7 +389,7 @@ unsafe extern "C" fn reload_all_workers_start(
     worker: *mut WorkerRecord,
 ) {
     let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_1.pid", manager_pid(serv));
+    reload_on_worker_start(serv, worker, "/tmp/worker_1.pid", manager_pid);
 }
 
 unsafe extern "C" fn reload_all_workers2_start(
@@ -386,7 +398,7 @@ unsafe extern "C" fn reload_all_workers2_start(
     worker: *mut WorkerRecord,
 ) {
     let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_2.pid", master_pid(serv));
+    reload_on_worker_start(serv, worker, "/tmp/worker_2.pid", master_pid);
 }
 
 /// `reload_all_workers`' and `reload_all_workers2`'s Server: two workers and two task
@@ -831,7 +843,7 @@ fn restart_worker_process() {
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
-    _ = manager_ops::restart_worker_process(serv.view(), &fake_exit);
+    _ = manager::native::restart_worker_process(serv.view(), &fake_exit);
 
     wait_all_child_processes();
 
@@ -1011,7 +1023,7 @@ fn current_worker() -> *mut WorkerRecord {
 }
 
 fn kill_worker(serv: Server, worker_id: c_int) -> bool {
-    event_worker_ops::kill_worker(serv.view(), worker_id)
+    event_worker::native::kill_worker(serv.view(), worker_id)
 }
 
 /// `test_kill_worker`'s `Options`.
@@ -1054,7 +1066,7 @@ unsafe extern "C" fn kill_on_receive(
 
 unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
     server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
-    event_worker_ops::drain_worker_pipe(Server(serv).view());
+    event_worker::native::drain_worker_pipe(Server(serv).view());
 }
 
 unsafe extern "C" fn kill_self_on_worker_stop(
@@ -1398,7 +1410,7 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     let resp = server_response();
     serv.send(session, &resp);
 
-    let finished = task_worker_ops::finish(serv.view(), &resp, 0, None);
+    let finished = task_worker::native::finish(serv.view(), &resp, 0, None);
     expect(!finished, "!serv->finish(resp)");
 
     expect(
@@ -1742,9 +1754,9 @@ unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
     let serv = Server(serv).view();
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(current_worker()) };
-    event_worker_ops::clean_worker_connections(serv, worker);
+    event_worker::native::clean_worker_connections(serv, worker);
     client_run(Op::Shutdown(SHUT_RDWR));
-    event_worker_ops::stop_async_worker(serv, worker);
+    event_worker::native::stop_async_worker(serv, worker);
 }
 
 unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {

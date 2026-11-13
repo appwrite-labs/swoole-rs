@@ -708,7 +708,7 @@ fn reload(call: &Call) {
     let Ok(only_task_workers) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    call.set_bool(swoole_rs_server::manager_ops::reload(
+    call.set_bool(swoole_rs_server::manager::native::reload(
         serv,
         !only_task_workers,
     ));
@@ -1008,7 +1008,7 @@ fn stop(call: &Call) {
         return call.set_bool(false);
     };
     let worker_id = worker_id.c_cast::<c_int>();
-    call.set_bool(swoole_rs_server::event_worker_ops::kill_worker(
+    call.set_bool(swoole_rs_server::event_worker::native::kill_worker(
         serv, worker_id,
     ));
 }

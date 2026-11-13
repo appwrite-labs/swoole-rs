@@ -31,12 +31,9 @@ mod control;
 mod dispatch;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod dtls;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod event_worker_ops;
+pub mod event_worker;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod factory;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod factory_ops;
 #[cfg(test)]
 mod fixture;
 mod hybrid;
@@ -44,8 +41,7 @@ mod hybrid;
 mod json;
 mod layout;
 pub mod local_addr;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod manager_ops;
+pub mod manager;
 mod master_ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod objects;
@@ -53,6 +49,7 @@ pub mod ops;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod pool_native;
 pub mod port_config;
+mod process_factory;
 pub mod reactor_entry;
 mod reactor_handle;
 mod reactor_io;
@@ -70,11 +67,9 @@ mod state;
 mod static_config;
 pub mod static_handler;
 pub mod static_select;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod task_worker_ops;
+pub mod task_worker;
 mod tcp_info;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-pub mod thread_mode_ops;
+pub mod thread_mode;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 mod thread_ops;
 pub mod view;
@@ -96,7 +91,7 @@ pub use shared::{
 pub use config::ServerConfig;
 
 /// `SW_THREAD`: whether this build has thread mode, as the extension's MINIT says. Outside
-/// `thread_mode_ops`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
+/// `thread_mode::native`, which needs `upstream-symbols`, since crates/phpserver sets and reads it.
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 

@@ -188,7 +188,7 @@ pub(crate) unsafe fn on_packet(
             reactor_id: i16::from(reactor_id),
             ..DataHead::default()
         };
-        crate::event_worker_ops::send_to_reactor_thread(serv, &ev) < 0
+        crate::event_worker::native::send_to_reactor_thread(serv, &ev) < 0
     };
     if failed {
         // The reactor's own close, which is what the caller passes as `_close`.

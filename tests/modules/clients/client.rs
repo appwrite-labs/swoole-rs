@@ -1482,7 +1482,9 @@ fn ssl() {
     let string = unsafe { &mut *(&raw mut certificate).cast() };
     // SAFETY: the connected socket.
     let handle = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
-    assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(handle, string));
+    assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
+        handle, string
+    ));
     let ls = peer_cert_chain(sock, 10);
     assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);

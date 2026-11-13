@@ -71,15 +71,6 @@ impl<'a> ReactorContext<'a> {
     }
 }
 
-/// An op's answer: `value` widened to `i64`, as its bits.
-#[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
-    expect(dead_code, reason = "only the remaining op scripts answer with it")
-)]
-pub(crate) fn sign(value: impl Into<i64>) -> u64 {
-    value.into().cast_unsigned()
-}
-
 /// `Server::is_stream_event`.
 pub(crate) fn stream_event(kind: u8) -> bool {
     // RECV_DATA, SEND_DATA, SEND_FILE, CLOSE, CONNECT, PAUSE_RECV, RESUME_RECV,

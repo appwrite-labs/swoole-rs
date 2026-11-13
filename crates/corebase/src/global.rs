@@ -114,9 +114,9 @@ record! {
 pub unsafe fn fatal_error(code: c_int, message: &std::ffi::CStr) {
     type FatalError = unsafe extern "C" fn(code: c_int, format: *const c_char, ...);
     let hook = swr_v1_core_fatal_error();
-    if !hook.is_null() {
-        // SAFETY: native code stores its `fatal_error` there.
-        let fatal = unsafe { std::mem::transmute::<*mut c_void, FatalError>(hook) };
+    // SAFETY: native code stores null or its `fatal_error` there.
+    let hook = unsafe { std::mem::transmute::<*mut c_void, Option<FatalError>>(hook) };
+    if let Some(fatal) = hook {
         // SAFETY: "%s" takes the NUL-terminated message.
         unsafe { fatal(code, c"%s".as_ptr(), message.as_ptr()) };
     }

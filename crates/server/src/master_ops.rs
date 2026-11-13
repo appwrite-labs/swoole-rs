@@ -31,8 +31,7 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
     let bus = worker_message_bus(serv.state());
     bus.rust().pass(&send.info, send.data);
-    let mut head = bus.head();
-    crate::event_worker_ops::accept_event(serv, &mut head);
+    crate::event_worker::native::accept_event(serv, &bus.head());
 }
 
 /// The message bus writes `send` to the pipe of the worker that owns its session.
