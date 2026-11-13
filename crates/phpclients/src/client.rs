@@ -101,10 +101,10 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(client_coro_minit => register);
-
 /// MINIT, as `php_swoole_client_coro_minit` did.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn client_coro_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Data>(c"Swoole\\Coroutine\\Client", &METHODS.0, 0);
     if swoole_rs_phpswoole::globals().use_shortname.get() {
         minit.alias(&CLIENT, c"Co\\Client")?;

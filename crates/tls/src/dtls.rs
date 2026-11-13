@@ -13,57 +13,23 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::{Fill, Socket, SocketRecord};
 
-#[repr(C)]
-struct Buffer {
+/// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
+/// into, and the `uint16_t` length its header counts of them as the payload.
+struct Datagram {
+    bytes: Box<[MaybeUninit<u8>]>,
     length: u16,
-    data: [u8; 0],
-}
-
-/// One queued datagram.
-enum Datagram {
-    /// An allocation that begins with an initialized `Buffer` header and holds the
-    /// header's `length` payload bytes after it, as `swr_v1_tls_dtls_append_buffer`'s
-    /// caller promises.
-    Native(*mut Buffer),
-    /// The copy `swr_v1_tls_dtls_append` made: at most a header's `u16` of bytes.
-    Copied(Box<[MaybeUninit<u8>]>),
 }
 impl Datagram {
     /// The payload's length.
     fn length(&self) -> u16 {
-        match self {
-            // SAFETY: the datagram owns its allocation, whose header is initialized.
-            Self::Native(buffer) => unsafe { (**buffer).length },
-            Self::Copied(bytes) => bytes.len().c_cast::<u16>(),
-        }
+        self.length
     }
 
-    /// The payload, which nothing writes while the datagram is queued.
+    /// The payload, which nothing writes while the datagram is queued; as
+    /// `MaybeUninit`, its bytes need not be initialized.
     fn payload(&self) -> &[MaybeUninit<u8>] {
-        match self {
-            Self::Native(buffer) => {
-                let length = usize::from(self.length());
-                // SAFETY: the datagram owns its allocation, which holds `length` bytes
-                // after the header; as `MaybeUninit`, they need not be initialized.
-                unsafe { core::slice::from_raw_parts(payload(*buffer).cast(), length) }
-            }
-            Self::Copied(bytes) => bytes,
-        }
-    }
-}
-
-/// Where a datagram's payload begins: right after its header. Computing it reads nothing.
-fn payload(buffer: *mut Buffer) -> *mut u8 {
-    buffer
-        .wrapping_byte_add(core::mem::offset_of!(Buffer, data))
-        .cast()
-}
-impl Drop for Datagram {
-    fn drop(&mut self) {
-        if let Self::Native(buffer) = self {
-            // SAFETY: a native datagram owns one sw_malloc/libc-compatible allocation.
-            unsafe { libc::free(buffer.cast()) };
-        }
+        let length = usize::from(self.length);
+        self.bytes.get(..length).unwrap_or(&self.bytes)
     }
 }
 
@@ -119,16 +85,20 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
     }
 }
 
-/// # Safety
-/// buffer is an exclusively transferred sw_malloc-compatible datagram, its header
-/// initialized and the header's `length` payload bytes allocated after it.
-/// On allocation failure ownership remains with the caller.
-pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_void) -> c_int {
+/// One read(2) of at most `size` bytes from `fd` into a new `dtls::Buffer`, queued as a
+/// datagram whose length is the read's result as upstream's `uint16_t` header takes it;
+/// -1 when the queue can't grow.
+pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> c_int {
+    let mut bytes = Box::new_uninit_slice(size);
+    let read = swoole_rs_corebase::sys::read(fd, &mut bytes);
     let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
         return -1;
     }
-    queue.push_back(Datagram::Native(buffer.cast()));
+    queue.push_back(Datagram {
+        bytes,
+        length: read.c_cast::<u16>(),
+    });
     0
 }
 
@@ -145,7 +115,10 @@ pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
         return -1;
     }
     bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
-    queue.push_back(Datagram::Copied(bytes.into_boxed_slice()));
+    queue.push_back(Datagram {
+        bytes: bytes.into_boxed_slice(),
+        length: length.c_cast::<u16>(),
+    });
     0
 }
 
@@ -507,11 +480,6 @@ pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
     false
 }
 
-const _: () = assert!(
-    core::mem::size_of::<Buffer>() == 2,
-    "native datagram header is one uint16_t"
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,15 +572,11 @@ mod tests {
     fn taken_native_datagram_and_scalar_aliases_have_one_canonical_owner() {
         let mut socket = SocketRecord::new();
         let owner = Owner::new(&raw mut socket);
-        let raw = unsafe { libc::malloc(5) }.cast::<Buffer>();
-        assert!(!raw.is_null());
-        unsafe { (*raw).length = 3 };
-        let data = unsafe { ptr::addr_of_mut!((*raw).data).cast::<u8>() };
-        unsafe { ptr::copy_nonoverlapping(b"abc".as_ptr(), data, 3) };
-        assert_eq!(
-            unsafe { swr_v1_tls_dtls_append_buffer(owner.session(), raw.cast()) },
-            0
-        );
+        let [read, write] = swoole_rs_corebase::sys::pipe().unwrap();
+        assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), 3);
+        assert_eq!(dtls_session_receive(owner.session(), read, 5), 0);
+        swoole_rs_corebase::sys::close(read);
+        swoole_rs_corebase::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");
         assert_eq!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 0) }, 1);
         assert!(!owner.session().listened());

@@ -91,15 +91,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(table_minit => register);
-
 /// `php_swoole_table_minit`: register `Swoole\Table`, an `Iterator` and
 /// `Countable`, with its properties and type constants.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "minit! raises the bailout a MINIT body returns"
-)]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn table_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Held>(c"Swoole\\Table", &METHODS.0, 0);
     minit.implements(&TABLE, minit.iterator());
     minit.implements(&TABLE, minit.countable());

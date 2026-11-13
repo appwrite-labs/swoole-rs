@@ -39,15 +39,13 @@ const _: () = assert!(
     "RT_CONSTANT below is the 64-bit (relative) form"
 );
 
-/// Install the complete Rust-owned opcode handlers, then stdext's function overrides.
-/// # Safety
-/// Called once at MINIT, before any PHP code executes.
+/// Install the complete Rust-owned opcode handlers, then stdext's function overrides:
+/// a MINIT step, which the token shows runs before any PHP code executes.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "Zend opcode constants are encoded in its opcode byte"
 )]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
+pub fn stdext_minit(minit: &swoole_rs_zend::Minit) {
     let handlers: [(u32, user_opcode_handler_t); 5] = [
         (
             swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL,
@@ -77,8 +75,7 @@ pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
     }
     // Function lookups, then overrides, in the original order.
     invoke::install();
-    // SAFETY: PHP's function table is complete and no request has started.
-    unsafe { typed::install() };
+    typed::install(minit);
 }
 
 /// An operand's `var` or `constant`: a byte offset either way.

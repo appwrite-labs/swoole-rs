@@ -169,8 +169,7 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
     text_option(options, c"log_date_format", |format| {
         if let Some(logger) = process_logger() {
-            // SAFETY: a NUL-terminated format (a Zend string's bytes).
-            unsafe { swr_v1_logger_set_date_format(logger, format.c_str().as_ptr()) };
+            swr_v1_logger_set_date_format(logger, format.c_str().into());
         }
     });
     flag(c"log_date_with_microseconds", &|on| {

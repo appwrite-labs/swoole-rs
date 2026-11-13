@@ -4,8 +4,8 @@
 use crate::{Report, in_coroutine, report};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::sleep::{
-    CoroutineSleep, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep, swr_v1_hooks_sleep_until,
-    swr_v1_hooks_usleep,
+    CoroutineSleep, SleepOutcome, swr_v1_hooks_nanosleep, swr_v1_hooks_sleep,
+    swr_v1_hooks_sleep_until, swr_v1_hooks_usleep,
 };
 use swoole_rs_zend::{Call, E_WARNING, message};
 
@@ -19,19 +19,13 @@ swoole_rs_zend::handlers! {
 // `System::sleep(seconds)` (crates/hooks).
 use swoole_rs_hooks::sleep::system_sleep as coroutine_sleep;
 
-/// Statuses of a `SleepOutcome`.
-const INVALID: i32 = 1;
-const WARN: i32 = 3;
-
 fn sleeper() -> Option<CoroutineSleep> {
     in_coroutine().then_some(coroutine_sleep)
 }
 
 /// `zend_argument_value_error(number, "must be greater than or equal to 0")`.
-fn negative(call: &Call, number: i64) {
-    #[expect(clippy::cast_possible_truncation, reason = "an argument number")]
-    #[expect(clippy::cast_sign_loss, reason = "an argument number")]
-    call.argument_value_error(number as u32, c"must be greater than or equal to 0");
+fn negative(call: &Call, number: u32) {
+    call.argument_value_error(number, c"must be greater than or equal to 0");
 }
 
 /// `sleep(int $seconds): int`.
@@ -39,12 +33,11 @@ fn sleep(call: &Call) {
     let Ok(seconds) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return;
     };
-    let outcome = swr_v1_hooks_sleep(seconds, sleeper());
-    if outcome.status == INVALID {
-        negative(call, outcome.value);
-        return;
+    match swr_v1_hooks_sleep(seconds, sleeper()) {
+        SleepOutcome::Negative(number) => negative(call, number),
+        SleepOutcome::Done(value) => call.set_long(value),
+        SleepOutcome::Interrupted { .. } | SleepOutcome::Warn => call.set_long(0),
     }
-    call.set_long(outcome.value);
 }
 
 /// `usleep(int $microseconds): void`.
@@ -53,9 +46,8 @@ fn usleep(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let outcome = swr_v1_hooks_usleep(microseconds, sleeper());
-    if outcome.status == INVALID {
-        negative(call, outcome.value);
+    if let SleepOutcome::Negative(number) = swr_v1_hooks_usleep(microseconds, sleeper()) {
+        negative(call, number);
     }
 }
 
@@ -70,11 +62,11 @@ fn time_nanosleep(call: &Call) {
         return;
     };
     let outcome = swr_v1_hooks_nanosleep(seconds, nanoseconds, sleeper());
-    if outcome.status == INVALID {
-        negative(call, outcome.value);
+    if let SleepOutcome::Negative(number) = outcome {
+        negative(call, number);
         return;
     }
-    if outcome.status == WARN {
+    if outcome == SleepOutcome::Warn {
         swoole_rs_zend::bailout::defer(report(
             Report::Swoole,
             E_WARNING,
@@ -93,18 +85,18 @@ fn time_sleep_until(call: &Call) {
         return;
     };
     let outcome = swr_v1_hooks_sleep_until(timestamp, TOP.c_cast::<f64>(), sleeper());
-    match outcome.status {
-        INVALID => {
+    match outcome {
+        SleepOutcome::Negative(_) => {
             let message = message!("must be between 0 and {TOP}");
             call.argument_value_error(1, message.as_cstr());
         }
-        WARN => {
+        SleepOutcome::Warn => {
             swoole_rs_zend::bailout::defer(swoole_rs_zend::report(
                 E_WARNING,
                 c"Argument #1 ($timestamp) must be greater than or equal to the current time",
             ));
             call.set_bool(false);
         }
-        _ => call.set_bool(true),
+        SleepOutcome::Done(_) | SleepOutcome::Interrupted { .. } => call.set_bool(true),
     }
 }

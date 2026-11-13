@@ -1,6 +1,6 @@
 //! Shared HTTP/SOCKS proxy values and packet storage. Native objects only lend
 //! references to these stable slots.
-use crate::{CoreStringView, StringSlot};
+use crate::StringSlot;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::ptr;
 
@@ -218,24 +218,6 @@ pub extern "C" fn swr_v1_core_proxy_assign(
     destination.assign(source)
 }
 
-/// [`ProxyState::configure`] for native code.
-/// # Safety
-/// texts lends host/user/password terminated byte spans.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_proxy_configure(
-    owner: &ProxyState,
-    texts: &[CoreStringView; 3],
-    port: i32,
-    authenticated: bool,
-    socket_type: i32,
-) -> ProxyCopyResult {
-    let texts = texts.map(|view| {
-        // SAFETY: each view lends `length` readable bytes for the call.
-        unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }
-    });
-    owner.configure(texts, port, authenticated, socket_type)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,11 +254,7 @@ mod tests {
     fn native_views_see_rust_writes() {
         let prepared = swr_v1_core_proxy_new(true);
         let owner = unsafe { &*prepared.owner };
-        let texts = [c"host", c"", c""].map(|text| CoreStringView {
-            data: text.as_ptr(),
-            length: text.count_bytes(),
-        });
-        let configured = unsafe { swr_v1_core_proxy_configure(owner, &texts, 80, false, 1) };
+        let configured = owner.configure([b"host", b"", b""], 80, false, 1);
         assert_eq!(configured.status, 0);
         assert_eq!(unsafe { (*prepared.fields).port }, 80);
         let host = unsafe { crate::swr_v1_core_string_view(&*prepared.strings[0]) };

@@ -728,10 +728,9 @@ struct Originals {
 
 static ORIGINALS: OnceLock<Originals> = OnceLock::new();
 
-/// Replace `array_push`, `array_unshift` and `array_splice`'s handlers (MINIT).
-/// # Safety
-/// At MINIT.
-pub(crate) unsafe fn install() {
+/// Replace `array_push`, `array_unshift` and `array_splice`'s handlers, at
+/// MINIT (the token): PHP's function table is complete and no request has started.
+pub(crate) fn install(_minit: &swoole_rs_zend::Minit) {
     let handlers: [(_, swoole_rs_zend::arginfo::Handler); 3] = [
         (c"array_push", zif_swoole_array_push),
         (c"array_unshift", zif_swoole_array_unshift),

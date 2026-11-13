@@ -92,17 +92,9 @@ impl Callable {
         let body = || {
             result = if from_loop {
                 // SAFETY: this live callable's cache, `argc` live arguments and a
-                // writable return slot or null; the reporter is C.
-                let called = unsafe {
-                    super::private::direct_call(
-                        ptr::null_mut(),
-                        self.cache_ptr(),
-                        argc,
-                        argv,
-                        retval,
-                        sys::swr_zend_callable_warning,
-                    )
-                };
+                // writable return slot or null.
+                let called =
+                    unsafe { super::private::direct_call(self.cache_ptr(), argc, argv, retval) };
                 if !bailout::pending() {
                     // A loop callback reports an uncaught exception at once.
                     super::private::fatal_exception();
@@ -188,10 +180,7 @@ impl Callable {
 /// A native PHP leaf bailed out. No jump is resumed here; propagate the result
 /// and finish only from the outermost C-facing handler or export.
 fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
-    let warn = |message: &CStr| {
-        // SAFETY: Swoole's C warning leaf, called inside `zend_try`.
-        bailout::defer(unsafe { bailout::report(sys::swr_zend_callable_warning, message) });
-    };
+    let warn = super::private::callable_warning;
     let mut state = Box::new(Callable {
         value: Owned::default(),
         cache: crate::EMPTY_FCC,

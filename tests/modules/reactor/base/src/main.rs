@@ -174,7 +174,6 @@ unsafe extern "C" {
     fn swr_case_event_free() -> c_int;
     fn swr_case_event_wait() -> c_int;
     fn swr_case_event_add(socket: *mut Socket, events: c_int) -> c_int;
-    fn swr_case_event_del(socket: *mut Socket) -> c_int;
     fn swr_case_event_write(socket: *mut Socket, data: *const c_void, len: usize) -> isize;
     fn swr_case_event_writev(socket: *mut Socket, iov: *const Iovec, iovcnt: usize) -> isize;
     fn swr_case_event_get_socket(fd: c_int) -> *mut Socket;
@@ -215,7 +214,6 @@ unsafe extern "C" {
     ) -> *mut c_void;
     fn swr_case_random_bytes(buf: *mut c_char, size: usize) -> usize;
     fn swr_case_tg_buffer() -> *mut CppString;
-    fn swr_case_string_append(str: *mut CppString, data: *const c_char, len: usize);
 }
 
 unsafe extern "C" {
@@ -329,6 +327,16 @@ unsafe fn event_add_or_update(socket: *mut Socket, event: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
     swoole_rs_ffi::event_api::add_or_update(socket, event)
+}
+
+/// `swoole_event_del(socket)`, which is crates/reactor's.
+///
+/// # Safety
+/// `socket` is a live socket.
+unsafe fn event_del(socket: *mut Socket) -> c_int {
+    // SAFETY: as the caller guarantees.
+    let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
+    swoole_rs_ffi::event_api::event_del(socket)
 }
 
 /// `pair->write(data, len)`, which is crates/tls's.
@@ -505,7 +513,7 @@ unsafe fn get_missing_socket() {
         expect_eq!(swr_case_reactor_event_num(swr_case_tg_reactor()), 0);
         expect_eq!(swr_case_event_add(socket, SW_EVENT_READ), SW_OK);
         expect_eq!(swr_case_event_get_socket(fd), socket);
-        expect_eq!(swr_case_event_del(socket), SW_OK);
+        expect_eq!(event_del(socket), SW_OK);
         expect_eq!(swr_case_event_free(), SW_OK);
         swr_case_pair_delete(p);
     }
@@ -621,7 +629,7 @@ extern "C" fn read_2m(reactor: *mut Reactor, event: *mut Event) -> c_int {
             (*tg_buf.cast::<swoole_rs_ffi::string::CppString>()).reserve((*tg_buf).size * 2);
         }
         if (*tg_buf).length == DATA_SIZE {
-            swr_case_string_append(tg_buf, c"".as_ptr(), 1);
+            (*tg_buf.cast::<swoole_rs_ffi::string::CppString>()).append(b"\0");
             del(reactor, socket);
         }
     }

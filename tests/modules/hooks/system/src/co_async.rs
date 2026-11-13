@@ -13,11 +13,9 @@ use super::{AF_INET, ENOENT, O_RDONLY, SW_ERROR_CO_TIMEDOUT};
 use super::{coroutine_cancel, current, errno, open, run, timer};
 
 const MAGIC_CODE: isize = 0x700_9501;
-const SW_OK: c_int = 0;
 const SW_ERROR_CO_CANCELED: c_int = 10017;
 
 unsafe extern "C" {
-    fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn inet_ntop(family: c_int, src: *const c_void, dst: *mut c_char, size: u32) -> *const c_char;
     fn usleep(usec: u32) -> c_int;
 }
@@ -65,11 +63,7 @@ fn gethostbyname() {
         let mut ip = String::new();
 
         let retval = co_async_fn(|| {
-            let mut buf: [c_char; 128] = [0; 128];
-            // SAFETY: a NUL-terminated name and room for an IPv4 address.
-            if unsafe { swr_v1_clients_gethostbyname(AF_INET, domain.as_ptr(), buf.as_mut_ptr()) }
-                == SW_OK
-            {
+            if let Some(buf) = swoole_rs_corebase::gethostbyname(AF_INET, domain) {
                 let mut addr: [c_char; 128] = [0; 128];
                 // SAFETY: an IPv4 address and a 128-byte buffer.
                 unsafe { inet_ntop(AF_INET, buf.as_ptr().cast(), addr.as_mut_ptr(), 128) };

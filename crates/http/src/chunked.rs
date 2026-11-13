@@ -1,15 +1,23 @@
 //! `Request::get_chunked_body_length`: a chunked body's length, scanned across reads.
 
-/// `ChunkState`.
-pub const CHUNK_SIZE: u8 = 0;
-pub const CHUNK_DATA: u8 = 1;
-pub const CHUNK_TRAILER: u8 = 2;
+/// `ChunkState`: what a chunked body expects next. A `uint8_t` in
+/// `http_server::Request`'s layout.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChunkState {
+    /// A chunk's size line.
+    #[default]
+    Size,
+    /// A chunk's data and its CRLF.
+    Data,
+    /// A trailer line.
+    Trailer,
+}
 
 /// Where a chunked body's scan stopped: the request's chunk fields.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HttpChunks {
-    /// `CHUNK_SIZE`, `CHUNK_DATA` or `CHUNK_TRAILER`: what the body expects next.
-    pub state: u8,
+    pub state: ChunkState,
     /// The current chunk's size, where its line or data starts (0 until the body
     /// is first scanned), and how far its size line has been scanned.
     pub length: usize,
@@ -106,7 +114,7 @@ impl HttpChunks {
             self.scan_offset = self.offset;
         }
         loop {
-            if self.state == CHUNK_DATA {
+            if self.state == ChunkState::Data {
                 if self.offset > input.len() || self.length > input.len() - self.offset {
                     return HttpChunked::Partial;
                 }
@@ -120,7 +128,7 @@ impl HttpChunks {
                 }
                 (self.offset, self.scan_offset) = (end + 2, end + 2);
                 self.length = 0;
-                self.state = CHUNK_SIZE;
+                self.state = ChunkState::Size;
                 continue;
             }
             let line_start = self.offset;
@@ -140,7 +148,7 @@ impl HttpChunks {
                 _ => return HttpChunked::Malformed,
             }
             (self.offset, self.scan_offset) = (line_end + 2, line_end + 2);
-            if self.state == CHUNK_TRAILER {
+            if self.state == ChunkState::Trailer {
                 if self.offset > max {
                     return HttpChunked::TooLarge;
                 }
@@ -157,9 +165,9 @@ impl HttpChunks {
             // What must still fit: the chunk and its CRLF, then the last chunk and the
             // trailer section's end; the last chunk's trailer only needs its CRLF.
             let (state, rest) = if self.length == 0 {
-                (CHUNK_TRAILER, Some(2))
+                (ChunkState::Trailer, Some(2))
             } else {
-                (CHUNK_DATA, self.length.checked_add(2 + 5))
+                (ChunkState::Data, self.length.checked_add(2 + 5))
             };
             self.state = state;
             if rest.is_none_or(|rest| max.checked_sub(self.offset).is_none_or(|room| room < rest)) {

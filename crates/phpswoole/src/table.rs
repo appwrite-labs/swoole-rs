@@ -149,46 +149,6 @@ unsafe extern "C" {
     fn zif_ssh2_auth_agent(frame: *mut z::zend_execute_data, value: *mut z::zval);
 }
 
-#[cfg(feature = "ftp")]
-// The bundled ext/ftp's handlers (thirdparty/php84/ftp), with SSL.
-unsafe extern "C" {
-    fn zif_ftp_connect(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_ssl_connect(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_login(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_pwd(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_cdup(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_chdir(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_exec(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_raw(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_mkdir(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_rmdir(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_chmod(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_alloc(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nlist(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_rawlist(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_mlsd(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_systype(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_fget(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nb_fget(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_pasv(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_get(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nb_get(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nb_continue(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_fput(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nb_fput(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_put(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_append(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_nb_put(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_size(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_mdtm(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_rename(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_delete(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_site(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_close(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_set_option(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ftp_get_option(frame: *mut z::zend_execute_data, value: *mut z::zval);
-}
-
 #[cfg(feature = "stdext")]
 method_table! {
     static STDEXT_FUNCTIONS = [
@@ -259,48 +219,6 @@ method_table! {
     ];
 }
 
-#[cfg(feature = "ftp")]
-method_table! {
-    static FTP_FUNCTIONS = [
-        c"ftp_connect" => zif_ftp_connect, &swoole_rs_phpstubs::ftp::arginfo_ftp_connect, 0;
-        c"ftp_ssl_connect" => zif_ftp_ssl_connect, &swoole_rs_phpstubs::ftp::arginfo_ftp_ssl_connect, 0;
-        c"ftp_login" => zif_ftp_login, &swoole_rs_phpstubs::ftp::arginfo_ftp_login, 0;
-        c"ftp_pwd" => zif_ftp_pwd, &swoole_rs_phpstubs::ftp::arginfo_ftp_pwd, 0;
-        c"ftp_cdup" => zif_ftp_cdup, &swoole_rs_phpstubs::ftp::arginfo_ftp_cdup, 0;
-        c"ftp_chdir" => zif_ftp_chdir, &swoole_rs_phpstubs::ftp::arginfo_ftp_chdir, 0;
-        c"ftp_exec" => zif_ftp_exec, &swoole_rs_phpstubs::ftp::arginfo_ftp_exec, 0;
-        c"ftp_raw" => zif_ftp_raw, &swoole_rs_phpstubs::ftp::arginfo_ftp_raw, 0;
-        c"ftp_mkdir" => zif_ftp_mkdir, &swoole_rs_phpstubs::ftp::arginfo_ftp_mkdir, 0;
-        c"ftp_rmdir" => zif_ftp_rmdir, &swoole_rs_phpstubs::ftp::arginfo_ftp_rmdir, 0;
-        c"ftp_chmod" => zif_ftp_chmod, &swoole_rs_phpstubs::ftp::arginfo_ftp_chmod, 0;
-        c"ftp_alloc" => zif_ftp_alloc, &swoole_rs_phpstubs::ftp::arginfo_ftp_alloc, 0;
-        c"ftp_nlist" => zif_ftp_nlist, &swoole_rs_phpstubs::ftp::arginfo_ftp_nlist, 0;
-        c"ftp_rawlist" => zif_ftp_rawlist, &swoole_rs_phpstubs::ftp::arginfo_ftp_rawlist, 0;
-        c"ftp_mlsd" => zif_ftp_mlsd, &swoole_rs_phpstubs::ftp::arginfo_ftp_mlsd, 0;
-        c"ftp_systype" => zif_ftp_systype, &swoole_rs_phpstubs::ftp::arginfo_ftp_systype, 0;
-        c"ftp_fget" => zif_ftp_fget, &swoole_rs_phpstubs::ftp::arginfo_ftp_fget, 0;
-        c"ftp_nb_fget" => zif_ftp_nb_fget, &swoole_rs_phpstubs::ftp::arginfo_ftp_nb_fget, 0;
-        c"ftp_pasv" => zif_ftp_pasv, &swoole_rs_phpstubs::ftp::arginfo_ftp_pasv, 0;
-        c"ftp_get" => zif_ftp_get, &swoole_rs_phpstubs::ftp::arginfo_ftp_get, 0;
-        c"ftp_nb_get" => zif_ftp_nb_get, &swoole_rs_phpstubs::ftp::arginfo_ftp_nb_get, 0;
-        c"ftp_nb_continue" => zif_ftp_nb_continue, &swoole_rs_phpstubs::ftp::arginfo_ftp_nb_continue, 0;
-        c"ftp_fput" => zif_ftp_fput, &swoole_rs_phpstubs::ftp::arginfo_ftp_fput, 0;
-        c"ftp_nb_fput" => zif_ftp_nb_fput, &swoole_rs_phpstubs::ftp::arginfo_ftp_nb_fput, 0;
-        c"ftp_put" => zif_ftp_put, &swoole_rs_phpstubs::ftp::arginfo_ftp_put, 0;
-        c"ftp_append" => zif_ftp_append, &swoole_rs_phpstubs::ftp::arginfo_ftp_append, 0;
-        c"ftp_nb_put" => zif_ftp_nb_put, &swoole_rs_phpstubs::ftp::arginfo_ftp_nb_put, 0;
-        c"ftp_size" => zif_ftp_size, &swoole_rs_phpstubs::ftp::arginfo_ftp_size, 0;
-        c"ftp_mdtm" => zif_ftp_mdtm, &swoole_rs_phpstubs::ftp::arginfo_ftp_mdtm, 0;
-        c"ftp_rename" => zif_ftp_rename, &swoole_rs_phpstubs::ftp::arginfo_ftp_rename, 0;
-        c"ftp_delete" => zif_ftp_delete, &swoole_rs_phpstubs::ftp::arginfo_ftp_delete, 0;
-        c"ftp_site" => zif_ftp_site, &swoole_rs_phpstubs::ftp::arginfo_ftp_site, 0;
-        c"ftp_close" => zif_ftp_close, &swoole_rs_phpstubs::ftp::arginfo_ftp_close, 0;
-        c"ftp_quit" => zif_ftp_close, &swoole_rs_phpstubs::ftp::arginfo_ftp_quit, 0;
-        c"ftp_set_option" => zif_ftp_set_option, &swoole_rs_phpstubs::ftp::arginfo_ftp_set_option, 0;
-        c"ftp_get_option" => zif_ftp_get_option, &swoole_rs_phpstubs::ftp::arginfo_ftp_get_option, 0;
-    ];
-}
-
 /// The complete table, in upstream's order: the optional families the build
 /// has sit between the head and the tracer's functions.
 pub(crate) fn functions() -> *const zend_function_entry {
@@ -312,8 +230,6 @@ pub(crate) fn functions() -> *const zend_function_entry {
     table.extend_from_slice(rows(&STDEXT_FUNCTIONS.0));
     #[cfg(feature = "ssh2")]
     table.extend_from_slice(rows(&SSH2_FUNCTIONS.0));
-    #[cfg(feature = "ftp")]
-    table.extend_from_slice(rows(&FTP_FUNCTIONS.0));
     table.extend_from_slice(&TAIL.0);
     Box::leak(table.into_boxed_slice()).as_ptr()
 }

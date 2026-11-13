@@ -4,8 +4,8 @@ Feature bit 8192 (`corebase`). Header: `swoole_rs_corebase.h`. `src/core/base.cc
 and `src/core/misc.cc` are gone, and no C++ source of theirs is left. What stable
 Rust can't express of them stays where it has to: the compile-time build strings
 are on the generated switch table (`switches.cc`, `swr_cpp_bug_report`), the
-variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`, and
-the throwing API, `swoole_get_env` (`std::stoi`), is inline in `swoole.h` for C++ callers; Rust reads the
+variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`. No
+C++ called the throwing `swoole_get_env` (`std::stoi`), so it left `swoole.h`; Rust reads the
 environment itself (`get_env`, which aborts where `std::stoi` would throw an
 exception nothing catches). Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
 and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
@@ -39,11 +39,8 @@ bailout or panic crosses the ABI. All spans and pointer differences fit
 - `swoole_version_compare`: calls host `strtoul` left then right on every component, keeping
   sticky errno/ERANGE and platform differences. Skips exactly one arbitrary
   separator between equal components.
-- `parse_stoi`: host decimal `strtol`, accepted only within `int` range. The
-  facade first builds the same `std::string` upstream's `std::stoi` needed (same
-  `bad_alloc` point), saves and clears errno, captures ERANGE and restores errno.
-  Output is written only on success; on no-conversion or out-of-range it reruns
-  native `std::stoi` so the original exception is thrown.
+- `parse_stoi`: decimal `strtol` in the C locale, accepted only within `int` range:
+  none on no conversion or out of range, where `std::stoi` throws. It has no C facade.
 - The global hook table (`hook.rs`) is Rust's: `swoole_add_hook`,
   `swoole_call_hook` (over the list as the call began) and `swoole_isset_hook`.
 
@@ -138,7 +135,8 @@ Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divis
 struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
 `sw_malloc`/`sw_free`/`sw_calloc`, which call libc's allocator
-directly. The `corebase-native` gate compares them with the pinned `base.cc`.
+directly. `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
+`base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
 warnings: `swoole_shell_exec`, `swoole_dump_ascii`/`_hex`, `swoole_print_backtrace` without Boost,

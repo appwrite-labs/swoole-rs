@@ -12,7 +12,7 @@ use swoole_rs_locale::case_prefix;
 const INVALID: i32 = -1;
 const OVERFLOW: i32 = -2;
 mod chunked;
-pub use chunked::{CHUNK_DATA, CHUNK_SIZE, CHUNK_TRAILER, HttpChunked, HttpChunks};
+pub use chunked::{ChunkState, HttpChunked, HttpChunks};
 mod conditional;
 pub use conditional::{Calendar, Tm, conditional, http_date};
 mod directory;

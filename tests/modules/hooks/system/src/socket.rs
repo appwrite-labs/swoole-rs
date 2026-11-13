@@ -20,7 +20,7 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_hooks::co_socket::{self, Co};
-use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage};
+use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 
 // glibc's values (the core-tests build is Linux).
@@ -537,10 +537,15 @@ impl Sock {
 
     /// The member over an `IOVector` of `iov`, as crates/phpruntime calls it.
     fn vector(&self, op: c_int, iov: &[IoVec]) -> isize {
-        let count = c_int::try_from(iov.len()).unwrap();
-        let write = matches!(op, WRITEV | WRITEV_ALL);
-        // SAFETY: `iov`'s live vectors, an iovec's layout.
-        let mut vector = unsafe { IoVector::new(iov.as_ptr().cast(), count, write) }.unwrap();
+        let (at, count) = (iov.as_ptr(), iov.len());
+        // SAFETY: `iov`'s live vectors, an iovec's layout and so an `IoSlice`'s, over
+        // buffers nothing else touches meanwhile.
+        let vectors = if matches!(op, WRITEV | WRITEV_ALL) {
+            Vectors::Write(unsafe { std::slice::from_raw_parts(at.cast(), count) })
+        } else {
+            Vectors::Read(unsafe { std::slice::from_raw_parts_mut(at.cast_mut().cast(), count) })
+        };
+        let mut vector = IoVector::new(vectors).unwrap();
         self.co()
             .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
     }

@@ -44,10 +44,10 @@ pub struct ReactorFields {
     pub write: Option<ReactorWrite>,
     pub writev: Option<ReactorWritev>,
     pub close: Option<ReactorClose>,
-    /// `Reactor::defer_tasks`: null until a task is deferred.
-    pub defer_tasks: *mut crate::ReactorDeferred,
+    /// `Reactor::defer_tasks`: null (`None`) until a task is deferred.
+    pub defer_tasks: Option<Box<crate::ReactorDeferred>>,
     /// `Reactor::destroy_callbacks`.
-    pub destroy_callbacks: *mut crate::ReactorDeferred,
+    pub destroy_callbacks: Option<Box<crate::ReactorDeferred>>,
     pub idle_task: ReactorTask,
     pub future_task: ReactorTask,
 }
@@ -66,7 +66,11 @@ pub struct ReactorState {
     pub(crate) callbacks: crate::callbacks::Callbacks,
     /// The `defer_tasks` queues the defer end callback detached and is running, innermost
     /// last: one a task bailed out of stays here for the drop to free.
-    pub(crate) running_defer: Vec<*mut crate::ReactorDeferred>,
+    #[expect(
+        clippy::vec_box,
+        reason = "a running queue's address stays put while the list grows, and it moves here from its slot uncopied"
+    )]
+    pub(crate) running_defer: Vec<Box<crate::ReactorDeferred>>,
 }
 // swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
 const _: () = assert!(
@@ -103,17 +107,11 @@ impl Drop for ReactorState {
 
 impl ReactorState {
     /// Takes the queues [`swr_v1_reactor_delete`] still has to free out of the state.
-    fn detach_queues(&mut self) -> Vec<*mut crate::ReactorDeferred> {
+    #[expect(clippy::vec_box, reason = "the queues as their slots own them")]
+    fn detach_queues(&mut self) -> Vec<Box<crate::ReactorDeferred>> {
         let mut queues = std::mem::take(&mut self.running_defer);
-        queues.push(std::mem::replace(
-            &mut self.fields.destroy_callbacks,
-            ptr::null_mut(),
-        ));
-        queues.push(std::mem::replace(
-            &mut self.fields.defer_tasks,
-            ptr::null_mut(),
-        ));
-        queues.retain(|queue| !queue.is_null());
+        queues.extend(self.fields.destroy_callbacks.take());
+        queues.extend(self.fields.defer_tasks.take());
         queues
     }
 }
@@ -210,8 +208,8 @@ impl ReactorState {
                 write: None,
                 writev: None,
                 close: None,
-                defer_tasks: ptr::null_mut(),
-                destroy_callbacks: ptr::null_mut(),
+                defer_tasks: None,
+                destroy_callbacks: None,
                 idle_task: ReactorTask {
                     callback: None,
                     data: ptr::null_mut(),
@@ -397,9 +395,7 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     });
     // Dropping a task may run its owner's code, which may reach the reactor.
     drop(cycle_tasks);
-    let queue = handle.with(|state| state.fields.destroy_callbacks);
-    // SAFETY: the state's own queue, which only the drain below frees.
-    unsafe { crate::deferred::deferred_run(queue) };
+    crate::deferred::run_destroy(handle);
     handle.with(ReactorState::close_backend);
     if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_DESTROY) {
         // SAFETY: hooks receive the live `Reactor`.
@@ -413,9 +409,9 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
         if queues.is_empty() {
             break;
         }
-        for mut queue in queues {
-            // SAFETY: a detached queue of this state's, which nothing runs now.
-            unsafe { crate::deferred::deferred_free(&mut queue) };
+        // Detached queues of this state's, which nothing runs now.
+        for queue in queues {
+            crate::deferred::deferred_free(&mut Some(queue));
         }
     }
     // SAFETY: as the caller promises: `ReactorState::open`'s allocation, used no more.

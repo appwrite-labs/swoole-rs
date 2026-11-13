@@ -2,12 +2,7 @@
 //! record's `recv`, `send` and `peek` (`socket_methods.rs`) drive, their EINTR test,
 //! `catch_error`'s errno classification and `ssl_sendfile`.
 use std::io::Error;
-use std::os::raw::{c_int, c_void};
-
-/// A TLS write on `socket` that C defines, for [`crate::socket_record_send`]: what
-/// `ssl_send` returns.
-pub type TlsIo =
-    unsafe extern "C" fn(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize;
+use std::os::raw::c_int;
 
 pub(crate) fn interrupted() -> bool {
     Error::last_os_error().raw_os_error() == Some(libc::EINTR)
@@ -135,6 +130,7 @@ pub fn ssl_sendfile(
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
+    use std::os::raw::c_void;
 
     fn pair() -> [c_int; 2] {
         let mut fds = [0; 2];
@@ -189,8 +185,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn plain_send_recv_and_peek() {
-        use crate::lent::raw::{socket_record_peek, socket_record_recv};
-        use crate::{Socket, SocketRecord, socket_record_send, steady_ms};
+        use crate::lent::raw::{socket_record_peek, socket_record_recv, socket_record_send};
+        use crate::{Socket, SocketRecord, steady_ms};
         let [mut a, mut b] = pair().map(|fd| SocketRecord::with_fd(fd, 0));
         let (a, b) = (Socket::new(&mut a), Socket::new(&mut b));
         // SAFETY: local buffers, no TLS.

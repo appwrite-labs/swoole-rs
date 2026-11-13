@@ -596,7 +596,7 @@ operations! {
 /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
 /// them, as the vector was made for.
 #[must_use]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector, timeout: f64) -> isize {
+pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> isize {
     let iovecs = vector.iovecs();
     let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
     let iov = iovecs.as_ptr();
@@ -611,7 +611,7 @@ pub fn vector(host: &Host, fd: c_int, vector: &IoVector, timeout: f64) -> isize 
     };
     // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
     // `&mut` methods move, and their buffers, valid in its direction while it lives
-    // (`IoVector::new`'s contract); the request completes before `request` returns.
+    // (the type's invariant); the request completes before `request` returns.
     unsafe { request(host, timeout, entry) }
 }
 

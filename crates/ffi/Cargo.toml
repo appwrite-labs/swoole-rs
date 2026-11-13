@@ -18,7 +18,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phptimer", "sw
 # Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
 # --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
-# --with-swoole-ssh2, --enable-swoole-ftp, --enable-sockets).
+# --with-swoole-ssh2, --enable-sockets).
 iouring = ["swoole-rs-hooks/iouring", "swoole-rs-phplocks/iouring", "swoole-rs-phpcoroutines/iouring"]
 cares = ["swoole-rs-clients/cares"]
 stdext = ["swoole-rs-phpstdext/active", "swoole-rs-phpswoole?/stdext"]
@@ -31,7 +31,6 @@ sqlite = ["dep:swoole-rs-sqlite", "swoole-rs-phpswoole?/sqlite"]
 oci = ["dep:swoole-rs-oci", "swoole-rs-phpswoole?/oci"]
 curl = ["dep:swoole-rs-curl", "swoole-rs-phpruntime/curl"]
 ssh2 = ["dep:swoole-rs-ssh2", "swoole-rs-hooks/ssh2", "swoole-rs-phpswoole?/ssh2"]
-ftp = ["swoole-rs-phpswoole?/ftp"]
 sockets = ["swoole-rs-phpswoole?/sockets"]
 
 [dependencies]

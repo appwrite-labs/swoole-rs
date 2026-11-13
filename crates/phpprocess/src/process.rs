@@ -166,12 +166,7 @@ method_table! {
 
 /// `php_swoole_process_minit`: register `Swoole\Process`, its constants and
 /// properties, and (when pcntl is absent) the signal constants.
-/// # Safety
-/// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_process_minit(module: c_int) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module) };
+pub fn php_swoole_process_minit(minit: &Minit) {
     minit.register_object::<Process>(c"Swoole\\Process", &METHODS.0, 0);
     for (name, value) in [
         (c"IPC_NOWAIT", IPC_NOWAIT),

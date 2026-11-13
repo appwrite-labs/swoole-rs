@@ -11,9 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, OwnedTlsSessionResult, TlsContext, owner_fields,
-    owner_host_name, reason_text, swoole_ssl_init, swr_v1_tls_owner_socket_context,
-    swr_v1_tls_owner_socket_session,
+    OwnedTlsContext, OwnedTlsFields, SslNewError, TlsContext, owner_fields, owner_host_name,
+    swoole_ssl_init, swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -120,23 +119,9 @@ impl Co {
             // SAFETY: the live owner and the record's host name slot; TLS is initialised.
             unsafe { swr_v1_tls_owner_socket_session(owner, socket, hostname) }
         });
-        let result = result.unwrap_or(OwnedTlsSessionResult {
-            status: 1,
-            error: 0,
-        });
-        let origin = c"Socket::ssl_create";
-        match result.status {
-            0 => return true,
-            1 => log::warning(origin, format_args!("SSL_new() failed")),
-            2 => log::warning(
-                origin,
-                format_args!(
-                    "SSL_set_fd() failed. Error: {}[{}]",
-                    reason_text(result.error),
-                    result.error
-                ),
-            ),
-            _ => log::warning(origin, format_args!("SSL_set_ex_data() failed")),
+        match result.unwrap_or(Err(SslNewError::New)) {
+            Ok(()) => return true,
+            Err(error) => error.warn(),
         }
         set_err(self, SSL_CREATE_SESSION_FAILED);
         false

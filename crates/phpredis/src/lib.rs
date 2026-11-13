@@ -74,16 +74,12 @@ handlers! {
     zim_swoole_redis_server_format => format::method;
 }
 
-swoole_rs_zend::minit!(redis_minit => register);
-
 /// MINIT, after `Swoole\Server`: `Swoole\Redis\Server` extending it, with its
 /// reply type constants, and the Redis ports' `onReceive`. Its objects are the
 /// parent's (it installs no handlers).
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "minit! raises the bailout a MINIT body returns"
-)]
-fn register(minit: &Minit) -> Result<(), bailout::Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn redis_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
     let parent = minit.parent(swoole_rs_phpserver::server_class_ref());
     minit.register_child(
         &SERVER,

@@ -36,7 +36,7 @@ FFI_FEATURES = {'sockets', 'stdext', 'halfclose', 'iouring', 'cares', 'pgsql', '
 HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql', 'odbc': '--with-swoole-odbc',
                   'firebird': '--with-swoole-firebird', 'sqlite': '--enable-swoole-sqlite',
                   'oci': '--with-swoole-oracle', 'curl': '--enable-swoole-curl',
-                  'ssh2': '--with-swoole-ssh2', 'ftp': '--enable-swoole-ftp'}
+                  'ssh2': '--with-swoole-ssh2'}
 
 
 def headers_for(modules):

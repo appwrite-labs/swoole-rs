@@ -1,5 +1,5 @@
-//! MINIT's registrations, safe behind the token Zend's MINIT hands a family
-//! ([`minit!`](crate::minit)): constants, classes and their function aliases.
+//! MINIT's registrations, safe behind the token Zend's MINIT hands a family:
+//! constants, classes and their function aliases.
 use crate::{
     Class, Owned,
     bailout::Bailout,
@@ -489,22 +489,6 @@ fn terminated(methods: &'static [zend_function_entry]) -> *const zend_function_e
         "a method table ends with PHP_FE_END"
     );
     methods.as_ptr()
-}
-
-/// A family's MINIT hook (`unsafe extern "C" fn(int)`, which Zend runs inside
-/// `zend_try`) that runs `body(&Minit)` and raises the bailout it returns.
-#[macro_export]
-macro_rules! minit {
-    ($name:ident => $body:path) => {
-        /// A family's MINIT hook.
-        /// # Safety
-        /// Called by Zend at this module's MINIT, with its number.
-        pub unsafe extern "C" fn $name(module_number: ::std::ffi::c_int) {
-            // SAFETY: per Zend's MINIT contract; the token lives for this call.
-            let minit = unsafe { $crate::Minit::new(module_number) };
-            $crate::bailout::raise($body(&minit));
-        }
-    };
 }
 
 #[cfg(test)]

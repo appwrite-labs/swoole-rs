@@ -121,20 +121,13 @@ unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-    fn swr_v1_clients_gethostbyname(flags: c_int, name: *const c_char, addr: *mut c_char) -> c_int;
     fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
     fn swr_v1_tls_owner_free(owner: *const c_void);
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
-    #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPNS_6StringE"]
-    fn socket_ssl_get_peer_certificate(socket: *const c_void, buf: *mut CppString) -> bool;
     #[link_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv"]
     fn socket_ssl_get_peer_cert_chain(socket: *const c_void) -> *mut c_void;
-    #[link_name = "_ZN6swoole7network6Socket10ssl_writevEPNS0_8IOVectorE"]
-    fn socket_ssl_writev(socket: *mut c_void, io_vector: *mut c_void) -> isize;
-    #[link_name = "_ZN6swoole7network6Socket9ssl_readvEPNS0_8IOVectorE"]
-    fn socket_ssl_readv(socket: *mut c_void, io_vector: *mut c_void) -> isize;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -1326,12 +1319,9 @@ fn proxy_sync_test(client: &Client<'_>, https: bool) {
         .socks5_dns_tunnel()
         .is_some_and(|tunnel| *tunnel == 0)
     {
-        let mut addr = [0_u8; 16];
         let name = cstring(TEST_DOMAIN_BAIDU);
-        // SAFETY: a NUL-terminated name and a 16-byte address buffer.
-        if unsafe { swr_v1_clients_gethostbyname(AF_INET, name.as_ptr(), addr.as_mut_ptr().cast()) }
-            == 0
-        {
+        if let Some(addr) = swoole_rs_corebase::gethostbyname(AF_INET, &name) {
+            let addr = addr.map(|byte| byte.to_ne_bytes()[0]);
             host = std::net::Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]).to_string();
         } else {
             host.clear();
@@ -1437,18 +1427,22 @@ fn cpp_string(size: usize) -> CppString {
     }
 }
 
-/// `IOVector(iov, count)` around `body`, destroyed after. Its constructor is inline
-/// C++ upstream, so this does what it does; the `ssl_readv`/`ssl_writev` it reaches
-/// read only its first member, `owner_`.
-fn with_io_vector<T>(iov: &[IoVec], body: impl FnOnce(*mut c_void) -> T) -> T {
-    // SAFETY: `IoVec` is `struct iovec`, and `iov` a live array of them.
-    let source = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
-    let owner = swoole_rs_reactor::ReactorIov::new(source);
-    let mut owner = Box::into_raw(owner.expect("IOVector(iov, count)"));
-    let result = body((&raw mut owner).cast());
-    // SAFETY: the vector's owner_, released once.
-    drop(unsafe { Box::from_raw(owner) });
-    result
+/// `ssl_readv` or `ssl_writev` (when `write`) on `sock` over `IOVector(iov, count)`,
+/// destroyed after: crates/hooks' vector, which is both.
+fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
+    use swoole_rs_hooks::vector::{IoVector, Vectors};
+    let (at, count) = (iov.as_ptr(), iov.len());
+    // SAFETY: `IoVec` is `struct iovec` and so an `IoSlice`, and `iov` a live array of
+    // them over buffers nothing else touches meanwhile.
+    let vectors = if write {
+        Vectors::Write(unsafe { std::slice::from_raw_parts(at.cast(), count) })
+    } else {
+        Vectors::Read(unsafe { std::slice::from_raw_parts_mut(at.cast_mut().cast(), count) })
+    };
+    // SAFETY: the connected socket.
+    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
+    let vector = IoVector::new(vectors);
+    vector.expect("IOVector(iov, count)").transfer(sock)
 }
 
 /// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ upstream: the PEM of each of
@@ -1484,8 +1478,13 @@ fn ssl() {
 
     let sock = client.socket();
     let mut certificate = cpp_string(SW_BUFFER_SIZE_BIG);
-    // SAFETY: the connected socket and a live String.
-    assert!(unsafe { socket_ssl_get_peer_certificate(sock, &raw mut certificate) });
+    // SAFETY: a live `swoole::String`, which is crates/buffer's.
+    let string = unsafe { &mut *(&raw mut certificate).cast() };
+    // SAFETY: the connected socket.
+    let handle = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
+    assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
+        handle, string
+    ));
     let ls = peer_cert_chain(sock, 10);
     assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);
@@ -1504,8 +1503,7 @@ fn ssl() {
             len: tail.len(),
         },
     ];
-    // SAFETY: the connected socket and a vector over `req`.
-    let written = with_io_vector(&wr_iov, |vector| unsafe { socket_ssl_writev(sock, vector) });
+    let written = ssl_vector(sock, &wr_iov, true);
     assert_eq!(written, req.len() as isize);
 
     let mut buf = vec![0_u8; 1024 * 1024];
@@ -1521,8 +1519,7 @@ fn ssl() {
             len: tail.len(),
         },
     ];
-    // SAFETY: the connected socket and a vector over `buf`.
-    let rv = with_io_vector(&rd_iov, |vector| unsafe { socket_ssl_readv(sock, vector) });
+    let rv = ssl_vector(sock, &rd_iov, false);
     assert!(rv > 1024);
 
     assert!(contains(&buf[..rv as usize], TEST_HTTPS_EXPECT));

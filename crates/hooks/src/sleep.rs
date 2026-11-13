@@ -10,28 +10,20 @@ use swoole_rs_corebase::CCast;
 pub type CoroutineSleep = extern "C-unwind" fn(f64) -> i32;
 
 /// What a sleep call returns to PHP.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SleepOutcome {
-    /// 0 done; 1 argument `value` is negative (or out of range, for `sleep_until`);
-    /// 2 interrupted, with the time left in `seconds` and `nanoseconds`; 3 warn
-    /// (`time_nanosleep`: invalid nanoseconds, then true; `time_sleep_until`: the
-    /// target has passed, then false).
-    pub status: i32,
-    /// `sleep`'s return value when done; the argument number for status 1.
-    pub value: i64,
-    pub seconds: i64,
-    pub nanoseconds: i64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SleepOutcome {
+    /// Done, with `sleep`'s return value (0 for the others).
+    Done(i64),
+    /// This argument is negative (or out of range, for `sleep_until`).
+    Negative(u32),
+    /// Interrupted, with the time left.
+    Interrupted { seconds: i64, nanoseconds: i64 },
+    /// `time_nanosleep`: invalid nanoseconds, then true; `time_sleep_until`: the
+    /// target has passed, then false.
+    Warn,
 }
 
-const fn argument(number: i64) -> SleepOutcome {
-    SleepOutcome {
-        status: 1,
-        value: number,
-        seconds: 0,
-        nanoseconds: 0,
-    }
-}
+const DONE: SleepOutcome = SleepOutcome::Done(0);
 
 /// Sleeps `seconds` in the current coroutine; whether it was cancelled.
 fn yielded(coroutine_sleep: CoroutineSleep, seconds: f64) -> bool {
@@ -43,7 +35,7 @@ fn yielded(coroutine_sleep: CoroutineSleep, seconds: f64) -> bool {
 #[must_use]
 pub fn swr_v1_hooks_sleep(seconds: i64, coroutine_sleep: Option<CoroutineSleep>) -> SleepOutcome {
     if seconds < 0 {
-        return argument(1);
+        return SleepOutcome::Negative(1);
     }
     let value = match coroutine_sleep {
         Some(sleep) => {
@@ -57,10 +49,7 @@ pub fn swr_v1_hooks_sleep(seconds: i64, coroutine_sleep: Option<CoroutineSleep>)
             seconds.cast_unsigned().c_cast::<u32>(),
         )),
     };
-    SleepOutcome {
-        value,
-        ..SleepOutcome::default()
-    }
+    SleepOutcome::Done(value)
 }
 
 /// `usleep(microseconds)`.
@@ -70,7 +59,7 @@ pub fn swr_v1_hooks_usleep(
     coroutine_sleep: Option<CoroutineSleep>,
 ) -> SleepOutcome {
     if microseconds < 0 {
-        return argument(1);
+        return SleepOutcome::Negative(1);
     }
     match coroutine_sleep {
         Some(sleep) => {
@@ -80,7 +69,7 @@ pub fn swr_v1_hooks_usleep(
             swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned().c_cast::<u32>());
         }
     }
-    SleepOutcome::default()
+    DONE
 }
 
 /// `time_nanosleep(seconds, nanoseconds)`.
@@ -91,17 +80,17 @@ pub fn swr_v1_hooks_nanosleep(
     coroutine_sleep: Option<CoroutineSleep>,
 ) -> SleepOutcome {
     if seconds < 0 {
-        return argument(1);
+        return SleepOutcome::Negative(1);
     }
     if nanoseconds < 0 {
-        return argument(2);
+        return SleepOutcome::Negative(2);
     }
     if let Some(sleep) = coroutine_sleep {
         yielded(
             sleep,
             seconds.c_cast::<f64>() + nanoseconds.c_cast::<f64>() / 1_000_000_000.00,
         );
-        return SleepOutcome::default();
+        return DONE;
     }
     let request = libc::timespec {
         tv_sec: seconds,
@@ -112,20 +101,15 @@ pub fn swr_v1_hooks_nanosleep(
         tv_nsec: 0,
     };
     if swoole_rs_corebase::sys::nanosleep(&request, &mut remaining) == 0 {
-        return SleepOutcome::default();
+        return DONE;
     }
     match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::EINTR) => SleepOutcome {
-            status: 2,
-            value: 0,
+        Some(libc::EINTR) => SleepOutcome::Interrupted {
             seconds: remaining.tv_sec,
             nanoseconds: remaining.tv_nsec,
         },
-        Some(libc::EINVAL) => SleepOutcome {
-            status: 3,
-            ..SleepOutcome::default()
-        },
-        _ => SleepOutcome::default(),
+        Some(libc::EINVAL) => SleepOutcome::Warn,
+        _ => DONE,
     }
 }
 
@@ -137,20 +121,14 @@ pub fn swr_v1_hooks_sleep_until(
     coroutine_sleep: Option<CoroutineSleep>,
 ) -> SleepOutcome {
     if !(timestamp >= 0.0 && timestamp <= top) {
-        return argument(1);
+        return SleepOutcome::Negative(1);
     }
     let target = UNIX_EPOCH + Duration::from_secs_f64(timestamp);
     let Ok(left) = target.duration_since(SystemTime::now()) else {
-        return SleepOutcome {
-            status: 3,
-            ..SleepOutcome::default()
-        };
+        return SleepOutcome::Warn;
     };
     if left.is_zero() {
-        return SleepOutcome {
-            status: 3,
-            ..SleepOutcome::default()
-        };
+        return SleepOutcome::Warn;
     }
     match coroutine_sleep {
         Some(sleep) => {
@@ -158,7 +136,7 @@ pub fn swr_v1_hooks_sleep_until(
         }
         None => std::thread::sleep(left),
     }
-    SleepOutcome::default()
+    DONE
 }
 
 /// `int System::sleep(double sec)`: parks the current coroutine for `sec`, at least
@@ -202,46 +180,64 @@ mod tests {
 
     #[test]
     fn negative_arguments_name_their_position() {
-        assert_eq!(swr_v1_hooks_sleep(-1, None), argument(1));
-        assert_eq!(swr_v1_hooks_usleep(-1, None), argument(1));
-        assert_eq!(swr_v1_hooks_nanosleep(-1, 0, None), argument(1));
-        assert_eq!(swr_v1_hooks_nanosleep(0, -1, None), argument(2));
-        assert_eq!(swr_v1_hooks_sleep_until(-1.0, 1.0, None), argument(1));
-        assert_eq!(swr_v1_hooks_sleep_until(2.0, 1.0, None), argument(1));
-        assert_eq!(swr_v1_hooks_sleep_until(f64::NAN, 1.0, None), argument(1));
+        assert_eq!(swr_v1_hooks_sleep(-1, None), SleepOutcome::Negative(1));
+        assert_eq!(swr_v1_hooks_usleep(-1, None), SleepOutcome::Negative(1));
+        assert_eq!(
+            swr_v1_hooks_nanosleep(-1, 0, None),
+            SleepOutcome::Negative(1)
+        );
+        assert_eq!(
+            swr_v1_hooks_nanosleep(0, -1, None),
+            SleepOutcome::Negative(2)
+        );
+        assert_eq!(
+            swr_v1_hooks_sleep_until(-1.0, 1.0, None),
+            SleepOutcome::Negative(1)
+        );
+        assert_eq!(
+            swr_v1_hooks_sleep_until(2.0, 1.0, None),
+            SleepOutcome::Negative(1)
+        );
+        assert_eq!(
+            swr_v1_hooks_sleep_until(f64::NAN, 1.0, None),
+            SleepOutcome::Negative(1)
+        );
     }
 
     #[test]
     fn coroutine_sleep_reports_cancellation_as_upstream() {
-        assert_eq!(swr_v1_hooks_sleep(7, Some(cancelled)).value, 7);
-        assert_eq!(swr_v1_hooks_sleep(7, Some(slept)).value, 0);
-        assert_eq!(swr_v1_hooks_usleep(5, Some(slept)), SleepOutcome::default());
         assert_eq!(
-            swr_v1_hooks_nanosleep(0, 5, Some(slept)),
-            SleepOutcome::default()
+            swr_v1_hooks_sleep(7, Some(cancelled)),
+            SleepOutcome::Done(7)
         );
+        assert_eq!(swr_v1_hooks_sleep(7, Some(slept)), DONE);
+        assert_eq!(swr_v1_hooks_usleep(5, Some(slept)), DONE);
+        assert_eq!(swr_v1_hooks_nanosleep(0, 5, Some(slept)), DONE);
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sleep")]
     fn thread_sleeps() {
-        assert_eq!(swr_v1_hooks_sleep(0, None), SleepOutcome::default());
-        assert_eq!(swr_v1_hooks_usleep(1, None), SleepOutcome::default());
-        assert_eq!(swr_v1_hooks_nanosleep(0, 1, None), SleepOutcome::default());
-        assert_eq!(swr_v1_hooks_nanosleep(0, 1_000_000_000, None).status, 3);
+        assert_eq!(swr_v1_hooks_sleep(0, None), DONE);
+        assert_eq!(swr_v1_hooks_usleep(1, None), DONE);
+        assert_eq!(swr_v1_hooks_nanosleep(0, 1, None), DONE);
+        assert_eq!(
+            swr_v1_hooks_nanosleep(0, 1_000_000_000, None),
+            SleepOutcome::Warn
+        );
     }
 
     #[test]
     fn past_targets_warn_and_future_ones_sleep() {
-        assert_eq!(swr_v1_hooks_sleep_until(1.0, f64::MAX, None).status, 3);
+        assert_eq!(
+            swr_v1_hooks_sleep_until(1.0, f64::MAX, None),
+            SleepOutcome::Warn
+        );
         // A minute ahead, so a slow run (Miri) still reaches the call before it; the
         // coroutine sleep returns at once.
         let soon = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0.0, |now| now.as_secs_f64() + 60.0);
-        assert_eq!(
-            swr_v1_hooks_sleep_until(soon, f64::MAX, Some(slept)),
-            SleepOutcome::default()
-        );
+        assert_eq!(swr_v1_hooks_sleep_until(soon, f64::MAX, Some(slept)), DONE);
     }
 }

@@ -20,9 +20,7 @@ use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
-    sys::{
-        E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer, zval,
-    },
+    sys::{E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer},
 };
 
 /// `SW_TIMEOUT_*`.
@@ -160,19 +158,19 @@ pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> b
     applied
 }
 
-/// [`apply`] for callers that raise no bailout of their own: it raises one.
+/// [`apply`] for callers that raise no bailout of their own (crates/phpruntime,
+/// through crates/phpswoole's families): it raises one. Settings that are no
+/// array apply nothing.
 /// # Safety
-/// `socket` is a live coroutine socket and `settings` a live array zval.
-pub unsafe extern "C" fn socket_settings(
-    socket: *mut c_void,
-    settings: *const zval,
+/// It raises a pending bailout: the caller is inside a trap, or the frames the
+/// jump skips own only values of the request's heap, which Zend reclaims.
+pub unsafe fn socket_settings(
+    socket: swoole_rs_hooks::co_socket::Co,
+    settings: &Value,
     which: c_int,
 ) -> bool {
-    // SAFETY: per the caller.
-    let settings = unsafe { Value::from_ptr(settings) }.and_then(Value::array);
-    // SAFETY: as above.
-    let socket = unsafe { Co::new(socket) };
-    let applied = settings.is_some_and(|settings| apply(socket, settings, which));
+    let settings = settings.array();
+    let applied = settings.is_some_and(|settings| apply(socket.into(), settings, which));
     bailout::finish();
     applied
 }
@@ -180,11 +178,11 @@ pub unsafe extern "C" fn socket_settings(
 /// `php_swoole_socket_set_protocol(socket, settings)`.
 /// # Safety
 /// As [`socket_settings`].
-pub unsafe extern "C" fn php_swoole_socket_set_protocol(
-    socket: native::Socket,
-    settings: *const zval,
+pub unsafe fn php_swoole_socket_set_protocol(
+    socket: swoole_rs_hooks::co_socket::Co,
+    settings: &Value,
 ) -> bool {
-    // SAFETY: per the caller.
+    // SAFETY: the caller's contract.
     unsafe { socket_settings(socket, settings, PROTOCOL) }
 }
 

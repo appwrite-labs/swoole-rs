@@ -1,5 +1,5 @@
 //! What configure builds in or leaves out, where upstream's `#ifdef`s ran it:
-//! the coroutine PDO drivers, stdext, the bundled ssh2 and ftp clients and
+//! the coroutine PDO drivers, stdext, the bundled ssh2 client and
 //! ext/sockets' `Socket` (the cargo features of the same names, which the
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
@@ -16,13 +16,6 @@ unsafe extern "C" {
     fn php_swoole_ssh2_minfo();
 }
 
-#[cfg(feature = "ftp")]
-// the bundled ext/ftp's module hooks (thirdparty/php84/ftp), linked with this feature.
-unsafe extern "C" {
-    fn zm_startup_ftp(kind: c_int, module_number: c_int) -> c_int;
-    fn zm_info_ftp(module: *mut c_void);
-}
-
 #[cfg(feature = "sockets")]
 // ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
@@ -31,28 +24,18 @@ unsafe extern "C" {
     fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
 }
 
-/// MINIT, after the HTTP/2 client: ssh2's, then ftp's.
+/// MINIT, after the HTTP/2 client: ssh2's.
 pub(crate) fn client_minit() -> Vec<Step> {
     Vec::from([
         #[cfg(feature = "ssh2")]
-        Step::Minit(ssh2_minit),
-        #[cfg(feature = "ftp")]
-        Step::Minit(ftp_minit),
+        Step::Typed(ssh2_minit),
     ])
 }
 
 #[cfg(feature = "ssh2")]
-extern "C" fn ssh2_minit(module_number: c_int) {
+fn ssh2_minit(minit: &swoole_rs_zend::Minit) {
     // SAFETY: MINIT, with the module's number; upstream ignores the result too.
-    unsafe { php_swoole_ssh2_minit(module_number) };
-}
-
-#[cfg(feature = "ftp")]
-extern "C" fn ftp_minit(module_number: c_int) {
-    /// `MODULE_PERSISTENT`.
-    const PERSISTENT: c_int = 1;
-    // SAFETY: as above.
-    unsafe { zm_startup_ftp(PERSISTENT, module_number) };
+    unsafe { php_swoole_ssh2_minit(minit.module()) };
 }
 
 /// MSHUTDOWN, after the drivers': ssh2's.
@@ -69,7 +52,7 @@ extern "C" fn ssh2_mshutdown() {
     unsafe { php_swoole_ssh2_mshutdown() };
 }
 
-/// MINFO's ssh2 and ftp tables, a `zend_try` body.
+/// MINFO's ssh2 table, a `zend_try` body.
 /// # Safety
 /// MINFO, with the module's live entry.
 pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
@@ -77,11 +60,6 @@ pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
     // SAFETY: per the caller.
     unsafe {
         php_swoole_ssh2_minfo();
-    }
-    #[cfg(feature = "ftp")]
-    // SAFETY: per the caller.
-    unsafe {
-        zm_info_ftp(module);
     }
     let _ = module;
 }
@@ -168,7 +146,7 @@ pub(crate) fn minit() -> Vec<Step> {
     ]);
     let stdext: Vec<Step> = Vec::from([
         #[cfg(feature = "stdext")]
-        Step::Hook(swoole_rs_phpstdext::swr_v1_phpstdext_minit),
+        Step::Typed(swoole_rs_phpstdext::stdext_minit),
     ]);
     let thread = built([(Switch::Thread, Step::Typed(thread_minit))]);
     drivers.into_iter().chain(thread).chain(stdext).collect()
@@ -257,8 +235,8 @@ fn thread_minit(minit: &swoole_rs_zend::Minit) {
         return;
     };
     (families.thread_minit)(minit);
-    // SAFETY: MINIT, with the module's number, before any PHP thread starts.
-    unsafe { (families.locks_minit[3])(minit.module()) };
+    // Raised here, inside this step's `zend_try`, as the registrations' own are.
+    swoole_rs_zend::bailout::raise((families.locks_minit[3])(minit));
     for register in families.thread_classes_minit {
         register(minit);
     }

@@ -88,16 +88,6 @@ fn page_aligned(size: usize) -> usize {
     size.wrapping_add(page.wrapping_sub(size % page))
 }
 
-/// # Safety
-/// `data` is readable for `length` bytes, or `length` is zero.
-unsafe fn bytes<'a>(data: *const u8, length: usize) -> &'a [u8] {
-    if length == 0 {
-        return &[];
-    }
-    // SAFETY: the caller's readable range.
-    unsafe { std::slice::from_raw_parts(data, length) }
-}
-
 /// `swoole_strnstr`: the first `needle` in `haystack`, both lengths cut to its `uint32_t`.
 fn strnstr(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     let cut = |bytes: &[u8]| bytes.len().c_cast::<u32>() as usize;
@@ -235,8 +225,11 @@ impl CppString {
     /// The `length` bytes at `str`.
     #[must_use]
     pub fn view(&self) -> &[u8] {
+        if self.length == 0 {
+            return &[];
+        }
         // SAFETY: `str` holds `length` bytes.
-        unsafe { bytes(self.str, self.length) }
+        unsafe { std::slice::from_raw_parts(self.str, self.length) }
     }
 
     /// `String::reserve`, never below the content's length.
@@ -563,13 +556,6 @@ upstream! {
     pub extern "C" fn swr_string_release(this: &mut CppString) -> *mut u8 {
         this.release()
     }
-    "_ZN6swoole6String6appendEPKcm", "_ZN6swoole6String6appendEPKcm" =>
-    /// # Safety
-    /// `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_append(this: &mut CppString, data: *const u8, length: usize) {
-        // SAFETY: as the caller promises.
-        this.append(unsafe { bytes(data, length) });
-    }
     "_ZN6swoole6String6appendEi", "_ZN6swoole6String6appendEi" =>
     /// `append(int)`: its decimal text.
     pub extern "C" fn swr_string_append_int(this: &mut CppString, value: c_int) {
@@ -667,7 +653,7 @@ mod tests {
     fn append_grows_and_reduce_moves() {
         let mut s = new(b"abc");
         assert_eq!((s.length, s.size), (3, 8));
-        unsafe { swr_string_append(&mut s, b"defghijkl".as_ptr(), 9) };
+        s.append(b"defghijkl");
         assert_eq!((s.view(), s.size), (&b"abcdefghijkl"[..], 16));
         swr_string_append_int(&mut s, -42);
         s.reduce(3);
@@ -685,7 +671,7 @@ mod tests {
         let mut s = new(b"a\r\nbc\r\nd\r");
         let mut chunks: Vec<Vec<u8>> = Vec::new();
         let ret = s.split(b"\r\n", |data, length| {
-            chunks.push(unsafe { bytes(data, length) }.to_vec());
+            chunks.push(unsafe { std::slice::from_raw_parts(data, length) }.to_vec());
             true
         });
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
@@ -714,7 +700,7 @@ mod tests {
     fn pop_on_an_empty_string_records_its_allocator() {
         let mut s = CppString::EMPTY;
         assert!(s.pop(8).is_null(), "no old buffer to hand back");
-        unsafe { swr_string_append(&mut s, b"123".as_ptr(), 3) };
+        s.append(b"123");
         s.reserve(64);
         assert_eq!(s.view(), b"123");
         s.dispose();

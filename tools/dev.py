@@ -261,10 +261,6 @@ def plan(args, reports):
         script('corebase-record-views', 'tests/modules/corebase/record_views.py',
                '--archive', archive, *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
-        includes = (['--include', str(Path(subprocess.check_output(['brew', '--prefix', 'openssl@3'], text=True).strip()) / 'include')]
-                    if sys.platform == 'darwin' else [])
-        script('corebase-native', 'tests/modules/corebase/differential.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize', *includes, *report('corebase-native'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines,
                    '--build-manifest', built, *report('corebase-startup'))

@@ -31,9 +31,9 @@ pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecor
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
 pub(crate) fn workers_start(serv: view::Server<'_>) {
     let workers = serv.workers();
-    let pending = serv.registry().pending().as_ptr();
+    let pending = serv.registry().pending();
     // SAFETY: the server's live arrays and its pending user workers.
-    unsafe { swr_v1_process_server_workers_start(&workers, serv.raw(), pending.cast()) };
+    unsafe { swr_v1_process_server_workers_start(&workers, serv.raw(), &pending) };
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.

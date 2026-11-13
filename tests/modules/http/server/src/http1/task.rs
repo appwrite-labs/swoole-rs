@@ -17,7 +17,7 @@ use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods as pool;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{self, EventHead, Packed, TaskBuffer, task_pack};
+use swoole_rs_process::task_file::{self, EventHead, Packed, TaskBuffer};
 use swoole_rs_process::task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
@@ -71,7 +71,7 @@ impl EventData {
     fn packed(data: &[u8]) -> Box<Self> {
         let mut buf = Self::new();
         // SAFETY: a writable EventData and `data`'s bytes.
-        let packed = unsafe { task_pack(buf.head(), data) };
+        let packed = unsafe { &mut *buf.head().cast::<TaskBuffer>() }.pack(data);
         check(packed, "Server::task_pack(&buf, data, len)");
         buf
     }

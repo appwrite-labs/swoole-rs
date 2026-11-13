@@ -466,8 +466,9 @@ pub(crate) fn destroy_http_request(conn: *mut ConnectionRecord) {
     // SAFETY: a live connection, which `PortMethods` takes.
     let conn = unsafe { &mut *conn };
     let request = std::mem::replace(&mut conn.object, ptr::null_mut());
-    // SAFETY: its `object` is null or from `request_new`; nothing holds it after.
-    unsafe { request_free(request.cast()) };
+    let request = ptr::NonNull::new(request.cast::<swoole_rs_http_ffi::HttpRequest>());
+    // SAFETY: its `object` is null or `request_new`'s box; nothing holds it after.
+    request_free(request.map(|request| unsafe { Box::from_raw(request.as_ptr()) }));
 }
 
 #[cfg(not(test))]

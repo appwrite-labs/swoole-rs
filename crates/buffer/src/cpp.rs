@@ -45,6 +45,12 @@ impl CppBuffer {
     fn stats(&self) -> (u32, usize) {
         self.with(|queue| queue.stats())
     }
+
+    /// `append(data, size)` of a slice.
+    #[inline]
+    pub fn append(&self, data: &[u8]) {
+        check(self.with(|queue| queue.append(data)));
+    }
 }
 
 // Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and elsewhere
@@ -105,7 +111,7 @@ upstream! {
             // SAFETY: non-null with `size` readable bytes, as the caller promises.
             unsafe { std::slice::from_raw_parts(data, size as usize) }
         };
-        check(this.with(|queue| queue.append(data)));
+        this.append(data);
     }
     "_ZN6swoole6Buffer6appendEPK5iovecml", "_ZN6swoole6Buffer6appendEPK5iovecmx" =>
     /// `append(iov, iovcnt, offset)`: the bytes past `offset`.

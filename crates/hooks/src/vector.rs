@@ -6,11 +6,14 @@
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use std::io::{IoSlice, IoSliceMut};
-use swoole_rs_reactor::{ReactorIov, swr_v1_reactor_iov_view};
+use swoole_rs_reactor::{
+    Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
+};
+use swoole_rs_tls::upstream::{ssl_recv_fill, ssl_send_drain};
 
 /// A `msghdr` over the `count` iovecs at `iov`, with no address and no control data.
 fn message_header(iov: *mut libc::iovec, count: usize) -> libc::msghdr {
@@ -94,13 +97,21 @@ impl<'a> RecvMessage<'a> {
     }
 }
 
-/// A `network::IOVector` over the caller's iovecs, destroyed on drop, and the
-/// direction it was made for. Its owner is its first member, so a pointer to it is
-/// the `IOVector *` the `network::Socket` calls read (they read only that member).
+/// What an [`IoVector`] is made over: buffers a read fills, or bytes a write sends.
+pub enum Vectors<'a, 'b> {
+    Read(&'a mut [IoSliceMut<'b>]),
+    Write(&'a [IoSlice<'b>]),
+}
+
+/// A `network::IOVector` over a copy of the caller's iovecs, destroyed on drop, and
+/// the direction it was made for. The buffers the iovecs name are borrowed for `'a`
+/// as [`Vectors`] lent them: writable and reached through nothing else for a read,
+/// readable for a write.
 #[repr(C)]
-pub struct IoVector {
+pub struct IoVector<'a> {
     owner: NonNull<ReactorIov>,
     write: bool,
+    lent: PhantomData<Vectors<'a, 'a>>,
 }
 
 /// What is left of one of an [`IoVector`]'s buffers, lent in the vector's direction:
@@ -111,24 +122,24 @@ pub(crate) enum Lent<'a> {
     Write(&'a [u8]),
 }
 
-impl IoVector {
-    /// A vector over a copy of the `count` iovecs at `vectors`, to write from when
-    /// `write` and to read into otherwise; none when the copy fails, where
-    /// `IOVector`'s constructor throws.
-    ///
-    /// # Safety
-    /// `vectors` holds `count` iovecs, and their buffers stay valid while the
-    /// vector lives: readable when `write`, writable otherwise, and no reference to
-    /// one is live during a transfer over the vector.
+impl<'a> IoVector<'a> {
+    /// A vector over a copy of `vectors`' iovecs, to read into or to write from as
+    /// they were lent; none when the copy fails, where `IOVector`'s constructor throws.
     #[must_use]
-    pub unsafe fn new(vectors: *const libc::iovec, count: c_int, write: bool) -> Option<Self> {
-        let vectors = match usize::try_from(count).ok()? {
-            0 => &[][..],
-            // SAFETY: as the caller promises; the iovecs are only copied.
-            count => unsafe { core::slice::from_raw_parts(vectors, count) },
+    pub fn new(vectors: Vectors<'a, '_>) -> Option<Self> {
+        let (at, count, write) = match vectors {
+            Vectors::Read(read) => (read.as_ptr().cast::<libc::iovec>(), read.len(), false),
+            Vectors::Write(written) => (written.as_ptr().cast(), written.len(), true),
         };
+        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so these
+        // are the borrowed slice's `count` iovecs, which are only copied.
+        let vectors = unsafe { core::slice::from_raw_parts(at, count) };
         let owner = NonNull::from(Box::leak(ReactorIov::new(vectors)?));
-        Some(Self { owner, write })
+        Some(Self {
+            owner,
+            write,
+            lent: PhantomData,
+        })
     }
 
     /// Whether the vector was made to write from.
@@ -189,12 +200,12 @@ impl IoVector {
                 let (at, n) = (iov.iov_base.wrapping_byte_add(done), iov.iov_len - done);
                 result = io(if write {
                     // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
-                    // readable while the vector lives (`new`'s contract).
+                    // readable while the vector lives (the type's invariant).
                     Lent::Write(unsafe { core::slice::from_raw_parts(at.cast(), n) })
                 } else {
                     // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
-                    // writable and unreferenced while the vector lives (`new`'s
-                    // contract); lent for this call only, one buffer at a time.
+                    // writable and unreferenced while the vector lives (the type's
+                    // invariant); lent for this call only, one buffer at a time.
                     Lent::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), n) })
                 });
                 if result <= 0 {
@@ -207,13 +218,25 @@ impl IoVector {
         if total > 0 { total } else { result }
     }
 
-    /// The `IOVector *` the `network::Socket` calls take.
-    pub(crate) fn as_ptr(&self) -> *const c_void {
-        core::ptr::from_ref(self).cast()
+    /// `Socket::readv(io_vector)` or `writev` on `socket`, in the direction the vector
+    /// was made for: readv(2) or writev(2) over the iovecs left, or OpenSSL one buffer
+    /// at a time when the socket holds an SSL (upstream's `ssl_readv` and `ssl_writev`),
+    /// advancing the vector past what moved.
+    pub fn transfer(&mut self, socket: Socket<'_>) -> isize {
+        let (fd, ssl) = socket.read(|record| (record.fd, record.ssl()));
+        let calls = (
+            |buffer: Fill<'_>| ssl_recv_fill(socket, buffer),
+            |data: Drain<'_>| ssl_send_drain(socket, data),
+        );
+        let tls = (!ssl.is_null()).then_some(&calls);
+        // SAFETY: the owner `new` made, which this borrow of the vector holds alone,
+        // over buffers valid in the vector's direction while it lives (the type's
+        // invariant).
+        unsafe { swr_v1_socket_iov_owned(fd, self.write, self.owner.as_ptr(), tls) }
     }
 }
 
-impl Drop for IoVector {
+impl Drop for IoVector<'_> {
     fn drop(&mut self) {
         // SAFETY: the box `new` leaked, released once.
         drop(unsafe { Box::from_raw(self.owner.as_ptr()) });
@@ -224,20 +247,25 @@ impl Drop for IoVector {
 /// only for the wait that lends it ([`wait_barrier`]), which erases its lifetime.
 pub type Barrier = *mut (dyn FnMut() -> bool + 'static);
 
-struct Transfer<T, R> {
+struct Transfer<'a, V, T, R> {
     socket: Co,
+    vector: &'a mut V,
     transfer: T,
     remaining: R,
     result: isize,
     total: isize,
 }
 
-impl<T: FnMut() -> isize, R: FnMut() -> usize> Transfer<T, R> {
+impl<V, T: FnMut(&mut V) -> isize, R: FnMut(&V) -> usize> Transfer<'_, V, T, R> {
     fn transfer(&mut self) {
-        self.result = (self.transfer)();
+        self.result = (self.transfer)(self.vector);
         if self.result > 0 {
             self.total = self.total.wrapping_add(self.result);
         }
+    }
+
+    fn remaining(&mut self) -> usize {
+        (self.remaining)(self.vector)
     }
 
     fn would_block(&self) -> bool {
@@ -248,13 +276,13 @@ impl<T: FnMut() -> isize, R: FnMut() -> usize> Transfer<T, R> {
 /// `readv_all`/`writev_all` in `event`'s direction, timed by the socket's read or
 /// write timeout: the bytes transferred, the first call's result when it finished
 /// or failed, or -1 when the socket is not available. `transfer` is one
-/// `network::Socket` call over the vector and `remaining` its remaining count.
-///
-pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
+/// `network::Socket` call over `vector` and `remaining` its remaining count.
+pub(crate) fn vector_all<V>(
     socket: Co,
     event: u32,
-    transfer: T,
-    remaining: R,
+    vector: &mut V,
+    transfer: impl FnMut(&mut V) -> isize,
+    remaining: impl FnMut(&V) -> usize,
 ) -> isize {
     if !available(socket, event) {
         return -1;
@@ -263,6 +291,7 @@ pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
     let mut timer = Timer::new(socket, event, timeout);
     let mut state = Transfer {
         socket,
+        vector,
         transfer,
         remaining,
         result: 0,
@@ -274,7 +303,7 @@ pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
         set_err(socket, errno());
         first
     // The iov must not be touched again once complete.
-    } else if first == 0 || (state.remaining)() == 0 {
+    } else if first == 0 || state.remaining() == 0 {
         first
     } else {
         // The barrier's retry: transfer until the vector is done or a call returns
@@ -282,7 +311,7 @@ pub(crate) fn vector_all<T: FnMut() -> isize, R: FnMut() -> usize>(
         let mut retry = || {
             loop {
                 state.transfer();
-                if state.result <= 0 || (state.remaining)() == 0 {
+                if state.result <= 0 || state.remaining() == 0 {
                     break;
                 }
             }
@@ -406,7 +435,13 @@ mod tests {
             effects.into_iter().for_each(log);
             count
         };
-        let result = vector_all(socket.co(), event, transfer, remaining);
+        let result = vector_all(
+            socket.co(),
+            event,
+            &mut (),
+            |()| transfer(),
+            |()| remaining(),
+        );
         let error = socket.0.err_code;
         socket.0.sock_fd = 100;
         ON_SUSPEND.set(None);

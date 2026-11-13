@@ -42,10 +42,20 @@ pub fn cares_lookup(domain: &std::ffi::CStr, family: c_int, timeout: f64) -> Opt
     }
 }
 
+/// What a URL's host names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum UrlHost {
+    #[default]
+    Invalid,
+    /// An IPv4 address or a hostname.
+    Named,
+    Ipv6,
+    Unix,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct UrlPlan {
-    /// 0 invalid, 1 IPv4 or hostname, 2 IPv6, 3 Unix.
-    kind: u32,
+    kind: UrlHost,
     datagram: bool,
     host_offset: usize,
     host_length: usize,
@@ -75,7 +85,7 @@ fn url_plan(url: &[u8]) -> UrlPlan {
             && rest.starts_with(b"/")
             && !rest.iter().any(|b| matches!(b, b'?' | b'#'))
         {
-            plan.kind = 3;
+            plan.kind = UrlHost::Unix;
             plan.host_length = rest.len();
         }
         return plan;
@@ -87,7 +97,7 @@ fn url_plan(url: &[u8]) -> UrlPlan {
         if end <= 1 || rest.get(end + 1) != Some(&b':') || end + 2 == rest.len() {
             return UrlPlan::default();
         }
-        plan.kind = 2;
+        plan.kind = UrlHost::Ipv6;
         plan.host_offset += 1;
         plan.host_length = end - 1;
         plan.port_offset = offset + end + 2;
@@ -98,7 +108,7 @@ fn url_plan(url: &[u8]) -> UrlPlan {
         if end == 0 || rest.iter().take(end).any(|&b| b == b'[') || end + 1 == rest.len() {
             return UrlPlan::default();
         }
-        plan.kind = 1;
+        plan.kind = UrlHost::Named;
         plan.host_length = end;
         plan.port_offset = offset + end + 1;
     }
@@ -119,8 +129,8 @@ pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
     let plan = url_plan(url);
     let host = plan.host_offset..plan.host_offset + plan.host_length;
     match (plan.kind, plan.datagram) {
-        (0, _) => Err(URL_INVALID),
-        (3, datagram) => Ok((if datagram { UNIX_DGRAM } else { UNIX_STREAM }, host, 0)),
+        (UrlHost::Invalid, _) => Err(URL_INVALID),
+        (UrlHost::Unix, datagram) => Ok((if datagram { UNIX_DGRAM } else { UNIX_STREAM }, host, 0)),
         (family, datagram) => {
             let digits = url.get(plan.port_offset..).unwrap_or_default();
             if !digits.iter().all(u8::is_ascii_digit) {
@@ -130,8 +140,8 @@ pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
                 n.checked_mul(10)?.checked_add(i32::from(digit - b'0'))
             });
             let kind = match (family, datagram) {
-                (2, true) => UDP6,
-                (2, false) => TCP6,
+                (UrlHost::Ipv6, true) => UDP6,
+                (UrlHost::Ipv6, false) => TCP6,
                 (_, true) => UDP,
                 (_, false) => TCP,
             };
@@ -140,39 +150,23 @@ pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
     }
 }
 
+/// Whether `port` is a valid port; 0 is one only when not connecting.
 #[must_use]
-pub fn swr_v1_clients_port(port: i32, for_connect: u8) -> u8 {
-    u8::from((0..=65535).contains(&port) && (port != 0 || for_connect == 0))
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct HostMatch {
-    pub found: u32,
-    pub offset: usize,
-    pub length: usize,
+pub fn valid_port(port: i32, for_connect: bool) -> bool {
+    (0..=65535).contains(&port) && (port != 0 || !for_connect)
 }
 
 /// The address field of a hosts-file `line` naming `search`, its fields split by
 /// the 256-entry `spaces` table.
-pub(crate) fn hosts_match(line: &[u8], search: &[u8], spaces: &[u8]) -> HostMatch {
+pub(crate) fn hosts_match<'a>(line: &'a [u8], search: &[u8], spaces: &[u8]) -> Option<&'a [u8]> {
     if matches!(line.first(), None | Some(0 | b'\r' | b'\n')) {
-        return HostMatch::default();
+        return None;
     }
     let mut tokens = line
         .split(|b| spaces.get(usize::from(*b)).is_some_and(|&space| space != 0))
         .filter(|token| !token.is_empty());
-    let Some(address) = tokens.next() else {
-        return HostMatch::default();
-    };
-    if tokens.any(|token| token == search) {
-        HostMatch {
-            found: 1,
-            offset: address.as_ptr() as usize - line.as_ptr() as usize,
-            length: address.len(),
-        }
-    } else {
-        HostMatch::default()
-    }
+    let address = tokens.next()?;
+    tokens.any(|token| token == search).then_some(address)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -279,24 +273,24 @@ mod tests {
     use super::*;
     #[test]
     fn exact_unix_grammar_and_binary_host() {
-        assert_eq!(url_plan(b"unix:///").kind, 0);
-        assert_eq!(url_plan(b"unix:////").kind, 3);
-        assert_eq!(url_plan(b"unix:///a?b").kind, 0);
+        assert_eq!(url_plan(b"unix:///").kind, UrlHost::Invalid);
+        assert_eq!(url_plan(b"unix:////").kind, UrlHost::Unix);
+        assert_eq!(url_plan(b"unix:///a?b").kind, UrlHost::Invalid);
         let p = url_plan(b"tcp://a\0b:12");
-        assert_eq!(p.kind, 1);
+        assert_eq!(p.kind, UrlHost::Named);
         assert_eq!(p.host_length, 3);
         assert_eq!(&b"tcp://a\0b:12"[p.port_offset..], b"12");
     }
     #[test]
     fn brackets_and_empty_fields() {
-        assert_eq!(url_plan(b"tcp://[::1]:80").kind, 2);
+        assert_eq!(url_plan(b"tcp://[::1]:80").kind, UrlHost::Ipv6);
         for url in [
             b"tcp://[]:80".as_slice(),
             b"tcp://a:",
             b"tcp://:80",
             b"tcp://[a:80",
         ] {
-            assert_eq!(url_plan(url).kind, 0);
+            assert_eq!(url_plan(url).kind, UrlHost::Invalid);
         }
     }
     #[test]
@@ -312,76 +306,57 @@ mod tests {
     }
     #[test]
     fn port() {
-        assert_eq!(swr_v1_clients_port(0, 0), 1);
-        assert_eq!(swr_v1_clients_port(0, 1), 0);
-        assert_eq!(swr_v1_clients_port(65536, 0), 0);
+        assert!(valid_port(0, false));
+        assert!(!valid_port(0, true));
+        assert!(!valid_port(65536, false));
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ResolvLine {
-    /// 0: no prefix; 1: defined native token pair; 2: outside the compared domain.
-    pub kind: u32,
-    pub offset: usize,
-    pub length: usize,
+/// A resolv.conf line, as native strtok splits it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResolvLine<'a> {
+    /// Not a `nameserver` line.
+    Other,
+    /// A `nameserver` line and its address token.
+    Nameserver(&'a [u8]),
+    /// A `nameserver` line outside the compared domain.
+    Invalid,
 }
 
-pub(crate) fn resolv_line(line: &[u8]) -> ResolvLine {
+pub(crate) fn resolv_line(line: &[u8]) -> ResolvLine<'_> {
     let line = c_str(line);
     if !line.starts_with(b"nameserver") {
-        return ResolvLine::default();
+        return ResolvLine::Other;
     }
-    let invalid = ResolvLine {
-        kind: 2,
-        ..ResolvLine::default()
-    };
     // Native strtok first uses only SPACE, then only LF. Extra spaces/tabs and
     // CR in the second token are significant; this is not a new config grammar.
     let Some(separator) = line.iter().position(|&byte| byte == b' ') else {
-        return invalid;
+        return ResolvLine::Invalid;
     };
     if separator > 15 {
-        return invalid;
+        return ResolvLine::Invalid;
     }
-    let offset = separator + 1;
-    let rest = line.get(offset..).unwrap_or_default();
+    let rest = line.get(separator + 1..).unwrap_or_default();
     let Some(start) = rest.iter().position(|&byte| byte != b'\n') else {
-        return invalid;
+        return ResolvLine::Invalid;
     };
     let rest = rest.get(start..).unwrap_or_default();
-    let length = rest
-        .iter()
-        .position(|&byte| byte == b'\n')
-        .unwrap_or(rest.len());
-    if length > 15 {
-        return invalid;
+    let token = rest.split(|&byte| byte == b'\n').next().unwrap_or_default();
+    if token.len() > 15 {
+        return ResolvLine::Invalid;
     }
-    ResolvLine {
-        kind: 1,
-        offset: offset + start,
-        length,
-    }
+    ResolvLine::Nameserver(token)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct DnsEndpoint {
-    pub has_port: u32,
-    pub host_length: usize,
-    pub port_offset: usize,
-}
-
-/// The host and port spans of a `host[:port]` DNS server, up to its first NUL.
-pub(crate) fn dns_endpoint(bytes: &[u8]) -> DnsEndpoint {
+/// The host and, after its first colon, the port of a `host[:port]` DNS server,
+/// up to its first NUL.
+pub(crate) fn dns_endpoint(bytes: &[u8]) -> (&[u8], Option<&[u8]>) {
     let bytes = c_str(bytes);
     match bytes.iter().position(|&byte| byte == b':') {
-        Some(colon) => DnsEndpoint {
-            has_port: 1,
-            host_length: colon,
-            port_offset: colon + 1,
-        },
-        None => DnsEndpoint {
-            host_length: bytes.len(),
-            ..DnsEndpoint::default()
-        },
+        Some(colon) => (
+            bytes.get(..colon).unwrap_or_default(),
+            bytes.get(colon + 1..),
+        ),
+        None => (bytes, None),
     }
 }

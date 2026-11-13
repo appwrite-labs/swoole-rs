@@ -16,7 +16,7 @@ use swoole_rs_clients::client::{
     self as state, ON_BUFFER_EMPTY, ON_BUFFER_FULL, ON_CLOSE, ON_CONNECT, ON_ERROR, ON_RECEIVE, Op,
     SSL_STATE_WAIT_STREAM,
 };
-use swoole_rs_clients::swr_v1_clients_port;
+use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
@@ -84,12 +84,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_client_async_minit => register);
-
 /// `php_swoole_client_async_minit`, after `Swoole\Client`'s: objects come from
 /// the parent's `create_object`, which Zend inherits.
-#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &ASYNC,
         c"Swoole\\Async\\Client",
@@ -246,7 +245,7 @@ fn destruct(call: &Call) {
 fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, true)?;
     let int_port = port.c_cast::<i32>();
-    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && swr_v1_clients_port(int_port, 1) == 0 {
+    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && !valid_port(int_port, true) {
         warn(ErrorKind::Fatal, "The port is invalid");
         set_last_error(INVALID_PARAMS);
         return None;

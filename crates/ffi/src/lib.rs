@@ -240,5 +240,15 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             server_class: http::server_class,
             websocket_class: http::websocket_class,
         },
+        process: swoole_rs_phpswoole::ProcessSteps {
+            minit: swoole_rs_phpprocess::php_swoole_process_minit,
+            pool_minit: swoole_rs_phpprocess::php_swoole_process_pool_minit,
+            rshutdown: swoole_rs_phpprocess::php_swoole_process_rshutdown,
+        },
+        runtime: swoole_rs_phpswoole::RuntimeSteps {
+            minit: swoole_rs_phpruntime::php_swoole_runtime_minit,
+            mshutdown: swoole_rs_phpruntime::php_swoole_runtime_mshutdown,
+            rshutdown: swoole_rs_phpruntime::rshutdown,
+        },
     }
 };

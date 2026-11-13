@@ -378,7 +378,6 @@ pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result
             ptr::null_mut(),
             coroutine,
             create_coroutine,
-            swoole_rs_zend::sys::swr_zend_callable_warning,
             swoole_rs_zend::host::NO_THEN,
         )
     }
@@ -407,7 +406,6 @@ pub fn call_handler(
             retval.as_ptr(),
             coroutine,
             create_coroutine,
-            swoole_rs_zend::sys::swr_zend_callable_warning,
             swoole_rs_zend::host::NO_THEN,
         )
     }
