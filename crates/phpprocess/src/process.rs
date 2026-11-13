@@ -118,7 +118,7 @@ pub(crate) fn worker_view(worker: *mut c_void) -> WorkerView {
 
 /// A live worker's queue, or null.
 fn queue_of(worker: *mut c_void) -> *mut QueueRecord {
-    worker::record(worker).queue().cast()
+    worker::with(worker, |record| record.queue()).cast()
 }
 
 /// `f` over a live worker's queue, or `None` when it has none.
@@ -381,7 +381,7 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if !host::worker_share(worker::record(worker)) {
+    if !worker::with(worker, host::worker_share) {
         if redirect {
             worker::redirect(worker);
             pipe_type = PIPE_TYPE_STREAM;
@@ -504,13 +504,13 @@ fn use_queue(call: &Call) {
     if let Some(process) = process {
         process.worker.queue.own(worker, Box::new(queue));
     }
-    let record = worker::record(worker);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "upstream stores the mode in a uint8_t"
     )]
-    record.set_msgqueue_mode(mode as u8);
+    let mode = mode as u8;
+    worker::with(worker, |record| record.set_msgqueue_mode(mode));
     call.update_property_long(Some(&PROCESS), c"msgQueueId", i64::from(id));
     call.update_property_long(Some(&PROCESS), c"msgQueueKey", key);
     call.set_bool(true);
@@ -586,7 +586,8 @@ impl QueueSlot {
         let mut owned = self.0.borrow_mut();
         // Point at the box once it is in place: moving it would invalidate an earlier pointer.
         let queue = owned.insert(queue);
-        worker::record(worker).set_queue(ptr::from_mut(&mut **queue).cast());
+        let queue = ptr::from_mut(&mut **queue).cast();
+        worker::with(worker, |record| record.set_queue(queue));
     }
 
     /// `freeQueue` on `worker`: destroys and drops a queue this slot owns, and only
@@ -599,7 +600,7 @@ impl QueueSlot {
         if owned.as_mut().is_some_and(|queue| !queue.destroy()) {
             return false;
         }
-        worker::record(worker).set_queue(ptr::null_mut());
+        worker::with(worker, |record| record.set_queue(ptr::null_mut()));
         *owned = None;
         true
     }
@@ -827,7 +828,8 @@ fn pop(call: &Call) {
         .filter(|size| (1..=MSGMAX).contains(size))
         .unwrap_or(MSGMAX);
     let worker = checked(this(call));
-    let balance = i64::from(worker::record(worker).msgqueue_mode()) == MSGQUEUE_BALANCE;
+    let balance =
+        i64::from(worker::with(worker, |record| record.msgqueue_mode())) == MSGQUEUE_BALANCE;
     let kind: c_long = if balance {
         0
     } else {
@@ -1130,7 +1132,9 @@ mod tests {
     fn borrowing(queue: &mut QueueRecord) -> WorkerSlot {
         let slot = WorkerSlot::default();
         slot.set(worker::new());
-        worker::record(slot.get()).set_queue(ptr::from_mut(queue).cast());
+        worker::with(slot.get(), |record| {
+            record.set_queue(ptr::from_mut(queue).cast());
+        });
         slot
     }
 

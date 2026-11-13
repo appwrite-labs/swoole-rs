@@ -14,6 +14,7 @@ use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use swoole_rs_process::task_file::TaskBuffer;
 
 const PACKET: &[u8] = b"hello world\n";
 const SW_SOCK_UDP: c_int = 2;
@@ -251,21 +252,13 @@ fn close(serv: Server, session: c_long) -> bool {
 }
 
 /// `serv->send_pipe_message(worker_id, msg)`.
-fn send_pipe_message(serv: Server, worker_id: u32, msg: &mut EventData) -> bool {
-    // SAFETY: a live server and a live `EventData`, headed by its `DataHead`.
-    unsafe { server_methods::send_pipe_message(serv.0, worker_id, (&raw mut msg.info).cast()) }
+fn send_pipe_message(serv: Server, worker_id: u32, msg: &mut TaskBuffer) -> bool {
+    server_methods::send_pipe_message(serv.view(), worker_id, msg)
 }
 
 /// `Server::task_pack(msg, data, length)`.
-fn pack(msg: &mut EventData, data: &[u8]) -> bool {
-    // SAFETY: a writable `EventData`, headed by its `DataHead`; `data` readable for its length.
-    unsafe {
-        swoole_rs_process::task_file::task_pack(
-            (&raw mut msg.info).cast(),
-            data.as_ptr().cast(),
-            data.len(),
-        )
-    }
+fn pack(msg: &mut TaskBuffer, data: &[u8]) -> bool {
+    msg.pack(data)
 }
 
 /// What the case's `onStart` thread runs.
@@ -492,7 +485,7 @@ unsafe extern "C" fn pipe_message_check(_: *mut c_void, _: *mut c_void, req: *mu
 unsafe extern "C" fn pipe_message_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
     if worker_id() == 1 {
         let serv = Server(serv);
-        let mut buf = EventData::new();
+        let mut buf = TaskBuffer::default();
         check(pack(&mut buf, PACKET), "Server::task_pack(&buf, data)");
         check(
             send_pipe_message(serv, worker_id() - 1, &mut buf),
@@ -532,7 +525,7 @@ unsafe extern "C" fn forward_receive(
     serv: *mut c_void,
     req: *mut RecvData,
 ) -> c_int {
-    let mut msg = EventData::new();
+    let mut msg = TaskBuffer::default();
     let (client_fd, _) = request(req);
     pack(&mut msg, &client_fd.to_ne_bytes());
     check(
