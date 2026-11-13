@@ -1,42 +1,42 @@
 # Speed vs upstream Swoole
 
-Callgrind instructions per request (lower is better), measured by the merge tier on `328365a` (`benchmarks/callgrind.py`, 1000 requests). Ratio is the Cargo build ÷ upstream: below 1.00× is faster than upstream. The limit is `benchmarks/callgrind_limits/`; ✅ beats upstream, ➖ within the limit, ❌ over it.
+Callgrind instructions per request (lower is better), measured by the merge tier on `beee920` (`benchmarks/callgrind.py`, 1000 requests). Ratio is the Cargo build ÷ upstream: below 1.00× is faster than upstream. The limit is `benchmarks/callgrind_limits/`; ✅ beats upstream, ➖ within the limit, ❌ over it.
 
 | workload | cargo | upstream | ratio | limit | |
 | --- | ---: | ---: | ---: | ---: | --- |
-| plaintext | 13,961 | 15,214 | 0.9177× | 0.92× | ✅ |
-| echo-1k | 17,066 | 18,165 | 0.9395× | 0.94× | ✅ |
-| json | 22,061 | 23,158 | 0.9526× | 0.95× | ✅ |
-| service-health | 16,563 | 17,773 | 0.9319× | 0.93× | ✅ |
-| websocket | 6,584 | 8,188 | 0.8041× | 0.82× | ✅ |
-| timer | 203,661 | 313,525 | 0.6496× | 0.65× | ✅ |
-| app | 125,810 | 135,933 | 0.9255× | 0.93× | ✅ |
-| http2 | 18,656 | 20,464 | 0.9116× | 0.93× | ✅ |
-| table | 195,475 | 201,865 | 0.9683× | 0.97× | ✅ |
-| channel | 138,439 | 154,654 | 0.8951× | 0.9× | ✅ |
-| task | 32,142 | 33,261 | 0.9664× | 0.96× | ✅ |
-| mysql | 49,637 | 51,062 | 0.9721× | 0.97× | ✅ |
-| http-client | 33,748 | 35,806 | 0.9425× | 0.94× | ✅ |
-| client | 18,477 | 19,757 | 0.9352× | 0.94× | ✅ |
-| socket | 19,615 | 21,067 | 0.9311× | 0.92× | ✅ |
-| gzip | 194,161 | 197,079 | 0.9852× | 1.0× | ✅ |
-| websocket-deflate | 179,397 | 181,572 | 0.9880× | 1.0× | ✅ |
-| tcp-length | 4,792 | 4,762 | 1.0063× | 1.05× | ➖ |
+| plaintext | 13,924 | 15,213 | 0.9153× | 0.92× | ✅ |
+| echo-1k | 17,025 | 18,165 | 0.9372× | 0.94× | ✅ |
+| json | 22,008 | 23,161 | 0.9502× | 0.95× | ✅ |
+| service-health | 16,509 | 17,777 | 0.9287× | 0.93× | ✅ |
+| websocket | 6,581 | 8,191 | 0.8034× | 0.82× | ✅ |
+| timer | 203,624 | 313,631 | 0.6492× | 0.65× | ✅ |
+| app | 125,721 | 135,901 | 0.9251× | 0.93× | ✅ |
+| http2 | 18,649 | 20,464 | 0.9113× | 0.93× | ✅ |
+| table | 195,466 | 201,865 | 0.9683× | 0.97× | ✅ |
+| channel | 138,433 | 154,654 | 0.8951× | 0.9× | ✅ |
+| task | 32,097 | 33,264 | 0.9649× | 0.96× | ✅ |
+| mysql | 49,510 | 51,061 | 0.9696× | 0.97× | ✅ |
+| http-client | 33,689 | 35,804 | 0.9409× | 0.94× | ✅ |
+| client | 18,435 | 19,756 | 0.9331× | 0.94× | ✅ |
+| socket | 19,578 | 21,067 | 0.9293× | 0.92× | ✅ |
+| gzip | 194,120 | 197,079 | 0.9850× | 1.0× | ✅ |
+| websocket-deflate | 179,397 | 181,568 | 0.9880× | 1.0× | ✅ |
+| tcp-length | 4,792 | 4,763 | 1.0061× | 1.05× | ➖ |
 | tcp-eof | 5,340 | 10,231 | 0.5219× | 0.54× | ✅ |
-| udp | 7,573 | 7,987 | 0.9481× | 0.95× | ✅ |
-| connect | 18,374 | 18,707 | 0.9822× | 0.98× | ✅ |
-| https | 108,795 | 108,810 | 0.9999× | 1.0× | ✅ |
-| wss | 104,495 | 104,794 | 0.9971× | 1.0× | ✅ |
-| atomic | 49,682 | 51,316 | 0.9682× | 0.97× | ✅ |
-| process-mode | 16,683 | 16,959 | 0.9837× | 0.99× | ✅ |
-| http2-concurrent | 358,766 | 408,881 | 0.8774× | 0.88× | ✅ |
-| websocket-64k | 156,024 | 159,694 | 0.9770× | 0.98× | ✅ |
-| websocket-fragmented | 12,829 | 16,327 | 0.7857× | 0.79× | ✅ |
-| upload | 477,967 | 1,322,380 | 0.3614× | 0.37× | ✅ |
-| static | 29,307 | 41,074 | 0.7135× | 0.72× | ✅ |
-| pgsql | 23,186 | 24,595 | 0.9427× | 0.95× | ✅ |
-| sqlite | 23,470 | 25,236 | 0.9300× | 0.94× | ✅ |
-| curl | 84,736 | 90,354 | 0.9378× | 0.94× | ✅ |
-| dns | 230,638 | 232,648 | 0.9914× | 0.99× | ✅ |
+| udp | 7,573 | 7,986 | 0.9482× | 0.95× | ✅ |
+| connect | 18,351 | 18,707 | 0.9810× | 0.98× | ✅ |
+| https | 108,791 | 108,803 | 0.9999× | 1.0× | ✅ |
+| wss | 104,481 | 104,794 | 0.9970× | 1.0× | ✅ |
+| atomic | 49,669 | 51,316 | 0.9679× | 0.97× | ✅ |
+| process-mode | 16,668 | 16,963 | 0.9826× | 0.99× | ✅ |
+| http2-concurrent | 359,079 | 409,578 | 0.8767× | 0.88× | ✅ |
+| websocket-64k | 156,028 | 159,700 | 0.9770× | 0.98× | ✅ |
+| websocket-fragmented | 12,825 | 16,331 | 0.7853× | 0.79× | ✅ |
+| upload | 478,009 | 1,322,380 | 0.3615× | 0.37× | ✅ |
+| static | 29,278 | 41,045 | 0.7133× | 0.72× | ✅ |
+| pgsql | 23,195 | 24,593 | 0.9431× | 0.95× | ✅ |
+| sqlite | 23,485 | 25,221 | 0.9312× | 0.94× | ✅ |
+| curl | 84,844 | 90,482 | 0.9377× | 0.94× | ✅ |
+| dns | 230,317 | 232,930 | 0.9888× | 0.99× | ✅ |
 
-Geometric mean 0.8828×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
+Geometric mean 0.8820×. Goal: ≤ 1.00× on every workload ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)).
