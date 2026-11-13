@@ -30,7 +30,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::pool::{PoolCall, Warning, raise_bailout};
 use swoole_rs_process::process_pool::{
-    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, RAISE, RecvData, pool_run_main,
+    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, Protocol, RAISE, RecvData, pool_run_main,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -48,9 +48,6 @@ use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free}
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT`, `Reactor::PRIORITY_TRY_EXIT`,
 /// and the `Channel` flags.
-const PROTOCOL_TASK: c_int = 1;
-const PROTOCOL_STREAM: c_int = 2;
-const PROTOCOL_MESSAGE: c_int = 3;
 const FD_PIPE: c_int = 3;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const TIMEOUT_READ: c_int = 4;
@@ -345,10 +342,10 @@ macro_rules! main_loops {
 }
 
 main_loops! {
-    run_task = PROTOCOL_TASK as u64;
-    run_stream = PROTOCOL_STREAM as u64;
-    run_message = PROTOCOL_MESSAGE as u64;
-    run_async = 4;
+    run_task = Some(Protocol::Task);
+    run_stream = Some(Protocol::Stream);
+    run_message = Some(Protocol::Message);
+    run_async = None;
 }
 
 // ---------------------------------------------------------------- the table
@@ -413,11 +410,11 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
         }
         Op::NewPipes => address(Box::into_raw(Box::new(Pipes::new()))),
         Op::MainLoop => {
-            let main_loop: MainLoopFn = match arg {
-                1 => run_task,
-                2 => run_stream,
-                3 => run_message,
-                _ => run_async,
+            let main_loop: MainLoopFn = match Protocol::from_code(arg.c_cast::<c_int>()) {
+                Some(Protocol::Task) => run_task,
+                Some(Protocol::Stream) => run_stream,
+                Some(Protocol::Message) => run_message,
+                None => run_async,
             };
             let hooks = Hooks {
                 main_loop: Some(main_loop),
@@ -598,9 +595,9 @@ fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {
 
 /// The upstream method each worker loop's warnings came from.
 fn loop_origin(pool: Pool<'_>) -> &'static CStr {
-    match pool.protocol_type() {
-        PROTOCOL_STREAM => c"ProcessPool::run_with_stream_protocol",
-        PROTOCOL_MESSAGE => c"ProcessPool::run_with_message_protocol",
+    match Protocol::from_code(pool.protocol_type()) {
+        Some(Protocol::Stream) => c"ProcessPool::run_with_stream_protocol",
+        Some(Protocol::Message) => c"ProcessPool::run_with_message_protocol",
         _ => c"ProcessPool::run_with_task_protocol",
     }
 }

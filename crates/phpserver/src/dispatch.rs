@@ -22,7 +22,7 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::ConnectionRecord;
-use swoole_rs_server::callbacks::{CB_USER_WORKER_START, Callback, Ctx};
+use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
 use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
@@ -35,7 +35,7 @@ use swoole_rs_zend::{
 const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
 
 use crate::instance::{php_swoole_get_recv_data, php_swoole_server_get_callback};
-use swoole_rs_server::{server_methods, view};
+use swoole_rs_server::{Mode, server_methods, view};
 
 /// What the dispatch reads of the Server, per event.
 struct Facts {
@@ -176,7 +176,7 @@ pub(crate) fn use_zend_strings(server: view::Server<'_>) {
     let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
     server.set_bus_allocator(false, swoole_rs_phpswoole::zend_string_allocator());
     let config = server.config();
-    if i64::from(config.mode_) != crate::lifecycle::MODE_PROCESS {
+    if config.mode_ != Mode::Process {
         config
             .recv_buffer_allocator
             .store(allocator.cast_mut(), Relaxed);
@@ -189,7 +189,7 @@ fn prepare_worker(server: view::Server<'_>) {
     let config = server.config();
     if crate::server::worker_type() == Some(crate::server::WorkerType::Task)
         && !config.task_enable_coroutine.get()
-        && i64::from(config.mode_) != crate::lifecycle::MODE_THREAD
+        && config.mode_ != Mode::Thread
     {
         let _unhooked = swoole_rs_phpruntime::php_coroutine_enable_hook(0);
     }
@@ -891,7 +891,7 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     let id = i64::from(worker.id());
     let config = server.config();
-    let process = if i64::from(config.mode_) == crate::lifecycle::MODE_THREAD {
+    let process = if config.mode_ == Mode::Thread {
         let index =
             id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
         let index = usize::try_from(index).unwrap_or(usize::MAX);
@@ -976,7 +976,7 @@ pub(crate) fn install(server: view::Server<'_>, which: u32) {
         RECEIVE => &[Callback::Receive(on_receive)],
         HTTP_RECEIVE => &[Callback::Receive(on_http_receive)],
         REDIS_RECEIVE => &[Callback::Receive(on_redis_receive)],
-        USER_WORKER_START if server.has_callback(CB_USER_WORKER_START) => &[],
+        USER_WORKER_START if server.has_callback(CallbackKind::UserWorkerStart) => &[],
         USER_WORKER_START => &[Callback::UserWorkerStart(on_user_worker_start)],
         _ => return,
     };

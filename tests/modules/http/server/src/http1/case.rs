@@ -9,11 +9,10 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::mem::{offset_of, transmute};
 
 use super::{
-    Address, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_START, CB_WORKER_START, COMPRESSION_TYPES,
-    Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port, Protocol, RecvData,
-    SW_LOG_WARNING, SW_SOCK_TCP, Server, TEST_HOST, TEXT_CHROOT, TEXT_GROUP, TEXT_USER,
-    ignore_event, ignore_server, last_error, microtime, swoole_set_log_level,
-    swr_v1_core_string_set,
+    Address, COMPRESSION_TYPES, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port,
+    Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
+    TEXT_GROUP, TEXT_USER, ignore_event, ignore_server, last_error, microtime,
+    swoole_set_log_level, swr_v1_core_string_set,
 };
 use crate::{CppString, Event, Hook, Receive};
 use swoole_rs_ports::{lifecycle, methods};
@@ -171,21 +170,21 @@ unsafe extern "C" fn on_receive(ctx: *mut c_void, serv: *mut c_void, req: *mut c
 
 impl Server {
     fn on_start(self, hook: Hook) {
-        self.set_closure(CB_START, on_hook as *const c_void, hook as *mut c_void);
+        self.set_closure(Slot::Start, on_hook as *const c_void, hook as *mut c_void);
     }
     fn on_worker_start(self, hook: Hook) {
         self.set_closure(
-            CB_WORKER_START,
+            Slot::WorkerStart,
             on_worker_hook as *const c_void,
             hook as *mut c_void,
         );
     }
-    fn on_event(self, slot: usize, event: Event) {
+    fn on_event(self, slot: Slot, event: Event) {
         self.set_closure(slot, on_event as *const c_void, event as *mut c_void);
     }
     fn on_receive(self, receive: Receive) {
         self.set_closure(
-            CB_RECEIVE,
+            Slot::Receive,
             on_receive as *const c_void,
             receive as *mut c_void,
         );
@@ -298,8 +297,8 @@ pub(crate) unsafe fn swr_case_mqtt_server(
         .open_mqtt_protocol = true;
     serv.create();
     serv.on_worker_start(on_worker_start);
-    serv.on_event(CB_CLOSE, on_close);
-    serv.on_event(CB_CONNECT, on_connect);
+    serv.on_event(Slot::Close, on_close);
+    serv.on_event(Slot::Connect, on_connect);
     serv.on_receive(on_receive);
     serv.0
 }
@@ -361,7 +360,7 @@ pub(crate) unsafe fn swr_case_base_server(
     port.config().open_websocket_protocol = true;
     serv.create();
     serv.on_worker_start(on_worker_start);
-    serv.on_event(CB_CLOSE, on_close);
+    serv.on_event(Slot::Close, on_close);
     serv.on_receive(on_receive);
     serv.0
 }
@@ -402,9 +401,9 @@ pub(crate) unsafe fn swr_case_http_server(
     serv.set_document_root(unsafe { CStr::from_ptr(root) }.to_bytes());
     serv.insert(LOCATIONS, "/examples");
     serv.create();
-    serv.set_callback(CB_START, ignore_server as *const c_void);
-    serv.set_callback(CB_CONNECT, ignore_event as *const c_void);
-    serv.on_event(CB_CLOSE, on_close);
+    serv.set_callback(Slot::Start, ignore_server as *const c_void);
+    serv.set_callback(Slot::Connect, ignore_event as *const c_void);
+    serv.on_event(Slot::Close, on_close);
     serv.on_receive(on_receive);
     serv.0
 }

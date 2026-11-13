@@ -229,11 +229,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             &c.recv_queued_bytes,
         )
     };
-    let mode = u64::from(state.config_ref().mode_);
-    let dispatched = if mode == crate::MODE_PROCESS {
+    let mode = state.config_ref().mode_;
+    let dispatched = if mode == crate::Mode::Process {
         crate::factory::dispatch(server, &mut task)
     } else {
-        crate::base_factory::dispatch(server, &mut task, mode == crate::MODE_BASE)
+        crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
     };
     if !dispatched {
         if len > 0 {
@@ -241,7 +241,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         }
         return -1;
     }
-    if mode == crate::MODE_PROCESS {
+    if mode == crate::Mode::Process {
         // `serv->get_thread(id)`, unchecked.
         let threads = state.tables_ref().reactor_threads_ptr();
         let thread = threads

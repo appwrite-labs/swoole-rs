@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
 use swoole_rs_clients::client::{Client, ClientEvent, Handle, Op, listen, swr_v1_clients_new};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
-use swoole_rs_server::callbacks as cb;
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -280,9 +279,12 @@ fn reload_single_process() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
-    serv.set_callback(CB_WORKER_START, reload_single_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(
+        Slot::WorkerStart,
+        reload_single_worker_start as *const c_void,
+    );
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -319,12 +321,12 @@ fn reload_no_task_worker() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
     serv.set_callback(
-        CB_WORKER_START,
+        Slot::WorkerStart,
         reload_no_task_worker_start as *const c_void,
     );
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -409,23 +411,20 @@ fn reload_server(task_enable_coroutine: bool) -> Server {
     set_log_warning();
 
     serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        cb::CB_BEFORE_RELOAD as usize,
-        before_reload as *const c_void,
-    );
-    serv.set_callback(cb::CB_AFTER_RELOAD as usize, after_reload as *const c_void);
+    serv.set_callback(Slot::BeforeReload, before_reload as *const c_void);
+    serv.set_callback(Slot::AfterReload, after_reload as *const c_void);
     serv
 }
 
 /// `TEST(server, reload_all_workers)`: the manager is signalled.
 fn reload_all_workers() {
     let serv = reload_server(true);
-    serv.set_callback(CB_WORKER_START, reload_all_workers_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, reload_all_workers_start as *const c_void);
 
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
@@ -437,7 +436,10 @@ fn reload_all_workers() {
 /// `TEST(server, reload_all_workers2)`: the master is signalled.
 fn reload_all_workers2() {
     let serv = reload_server(false);
-    serv.set_callback(CB_WORKER_START, reload_all_workers2_start as *const c_void);
+    serv.set_callback(
+        Slot::WorkerStart,
+        reload_all_workers2_start as *const c_void,
+    );
 
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
@@ -486,12 +488,12 @@ fn kill_user_workers() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(
-        cb::CB_USER_WORKER_START as usize,
+        Slot::UserWorkerStart,
         kill_user_workers_user_start as *const c_void,
     );
-    serv.set_callback(cb::CB_TASK as usize, sleeping_task as *const c_void);
-    serv.set_callback(CB_WORKER_START, kill_user_workers_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, sleeping_task as *const c_void);
+    serv.set_callback(Slot::WorkerStart, kill_user_workers_start as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
     delete_worker(worker1);
@@ -537,14 +539,14 @@ fn force_kill_all_workers() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(
-        cb::CB_USER_WORKER_START as usize,
+        Slot::UserWorkerStart,
         force_kill_user_start as *const c_void,
     );
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
-    serv.set_callback(CB_WORKER_START, force_kill_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(Slot::WorkerStart, force_kill_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
     serv.set_callback(
-        cb::CB_MANAGER_START as usize,
+        Slot::ManagerStart,
         force_kill_manager_start as *const c_void,
     );
 
@@ -599,12 +601,12 @@ fn kill_user_workers1() {
     assert_eq!(serv.create(), SW_OK);
 
     serv.set_callback(
-        cb::CB_USER_WORKER_START as usize,
+        Slot::UserWorkerStart,
         kill_user_workers1_user_start as *const c_void,
     );
-    serv.set_callback(cb::CB_TASK as usize, spinning_task as *const c_void);
-    serv.set_callback(CB_WORKER_START, kill_user_workers1_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, spinning_task as *const c_void);
+    serv.set_callback(Slot::WorkerStart, kill_user_workers1_start as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -674,14 +676,17 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
     prepare(serv);
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_WORKER_START, count_thread_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
     serv.set_callback(
-        cb::CB_MANAGER_START as usize,
+        Slot::WorkerStart,
+        count_thread_worker_start as *const c_void,
+    );
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(
+        Slot::ManagerStart,
         reload_thread_manager_start as *const c_void,
     );
     serv.set_callback(
-        cb::CB_MANAGER_STOP as usize,
+        Slot::ManagerStop,
         reload_thread_manager_stop as *const c_void,
     );
     serv
@@ -695,17 +700,17 @@ fn reload_thread_2() {
         serv.config().task_worker_num = 2;
         user_worker = add_user_worker(serv);
     });
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
     serv.set_callback(
-        cb::CB_USER_WORKER_START as usize,
+        Slot::UserWorkerStart,
         reload_thread_2_user_start as *const c_void,
     );
     serv.set_callback(
-        cb::CB_BEFORE_RELOAD as usize,
+        Slot::BeforeReload,
         reload_thread_before_reload as *const c_void,
     );
     serv.set_callback(
-        cb::CB_AFTER_RELOAD as usize,
+        Slot::AfterReload,
         reload_thread_2_after_reload as *const c_void,
     );
 
@@ -764,15 +769,12 @@ fn reload_thread() {
             swoole_rs_corebase::swoole_thread_clean(false);
         },
     );
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
     serv.set_callback(
-        cb::CB_USER_WORKER_START as usize,
+        Slot::UserWorkerStart,
         reload_thread_user_start as *const c_void,
     );
-    serv.set_callback(
-        cb::CB_MANAGER_START as usize,
-        unlock_on_manager_start as *const c_void,
-    );
+    serv.set_callback(Slot::ManagerStart, unlock_on_manager_start as *const c_void);
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -801,7 +803,7 @@ unsafe extern "C" fn reload_thread_3_after_reload(_: *mut c_void, serv: *mut c_v
 fn reload_thread_3() {
     let serv = reload_thread_server(|_| {});
     serv.set_callback(
-        cb::CB_AFTER_RELOAD as usize,
+        Slot::AfterReload,
         reload_thread_3_after_reload as *const c_void,
     );
 
@@ -825,7 +827,7 @@ fn restart_worker_process() {
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(CB_WORKER_START, count_worker_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, count_worker_start as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -956,26 +958,23 @@ fn test_reload_from_worker_error(task_only: bool) {
     counter_init();
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
-    serv.set_callback(CB_WORKER_START, worker_error_start as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Slot::WorkerStart, worker_error_start as *const c_void);
     serv.set_callback(
-        cb::CB_MANAGER_START as usize,
+        Slot::ManagerStart,
         worker_error_manager_start as *const c_void,
     );
+    serv.set_callback(Slot::WorkerError, worker_error_on_error as *const c_void);
     serv.set_callback(
-        cb::CB_WORKER_ERROR as usize,
-        worker_error_on_error as *const c_void,
-    );
-    serv.set_callback(
-        cb::CB_BEFORE_RELOAD as usize,
+        Slot::BeforeReload,
         worker_error_before_reload as *const c_void,
     );
     serv.set_callback(
-        cb::CB_AFTER_RELOAD as usize,
+        Slot::AfterReload,
         worker_error_after_reload as *const c_void,
     );
-    serv.set_callback(CB_START, worker_error_start_server as *const c_void);
+    serv.set_callback(Slot::Start, worker_error_start_server as *const c_void);
     assert_eq!(serv.start(), SW_OK);
     assert_eq!(counter_get(31), 0);
     assert_eq!(counter_get(26), 0);
@@ -1183,21 +1182,15 @@ fn test_kill_worker(mode: c_int, options: Options) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_CONNECT, kill_on_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
-    serv.set_callback(
-        cb::CB_WORKER_STOP as usize,
-        kill_on_worker_stop as *const c_void,
-    );
-    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
-    serv.set_callback(CB_WORKER_START, kill_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Connect, kill_on_connect as *const c_void);
+    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStop, kill_on_worker_stop as *const c_void);
+    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
+    serv.set_callback(Slot::WorkerStart, kill_on_worker_start as *const c_void);
     if options.worker_exit_callback {
-        serv.set_callback(
-            cb::CB_WORKER_EXIT as usize,
-            kill_on_worker_exit as *const c_void,
-        );
+        serv.set_callback(Slot::WorkerExit, kill_on_worker_exit as *const c_void);
     }
-    serv.set_callback(CB_START, kill_on_start as *const c_void);
+    serv.set_callback(Slot::Start, kill_on_start as *const c_void);
 
     let t = kill_client(serv, port.unwrap().port(), || 1 - counter_get(5));
 
@@ -1322,15 +1315,15 @@ fn test_kill_self(mode: c_int) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_CONNECT, kill_on_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
+    serv.set_callback(Slot::Connect, kill_on_connect as *const c_void);
+    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStop, kill_self_on_worker_stop as *const c_void);
+    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
     serv.set_callback(
-        cb::CB_WORKER_STOP as usize,
-        kill_self_on_worker_stop as *const c_void,
+        Slot::WorkerStart,
+        kill_self_on_worker_start as *const c_void,
     );
-    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
-    serv.set_callback(CB_WORKER_START, kill_self_on_worker_start as *const c_void);
-    serv.set_callback(CB_START, kill_on_start as *const c_void);
+    serv.set_callback(Slot::Start, kill_on_start as *const c_void);
 
     let t = kill_client(serv, port.unwrap().port(), || counter_get(5));
 
@@ -1501,13 +1494,10 @@ fn test_base() {
         super::kill_self();
     });
 
-    serv.set_callback(CB_WORKER_START, base_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, base_receive as *const c_void);
-    serv.set_callback(CB_START, base_on_start as *const c_void);
-    serv.set_callback(
-        cb::CB_BEFORE_SHUTDOWN as usize,
-        before_shutdown as *const c_void,
-    );
+    serv.set_callback(Slot::WorkerStart, base_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, base_receive as *const c_void);
+    serv.set_callback(Slot::Start, base_on_start as *const c_void);
+    serv.set_callback(Slot::BeforeShutdown, before_shutdown as *const c_void);
 
     serv.start();
     t1.join().unwrap();
@@ -1649,23 +1639,14 @@ fn test_process(single_thread: bool) {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
     delete_worker(fake_worker.raw());
 
-    serv.set_callback(CB_START, process_on_start as *const c_void);
-    serv.set_callback(CB_WORKER_START, process_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, process_receive as *const c_void);
-    serv.set_callback(cb::CB_TASK as usize, return_ok as *const c_void);
-    serv.set_callback(
-        cb::CB_MANAGER_START as usize,
-        manager_start_stop as *const c_void,
-    );
-    serv.set_callback(
-        cb::CB_MANAGER_STOP as usize,
-        manager_start_stop as *const c_void,
-    );
-    serv.set_callback(
-        cb::CB_BEFORE_SHUTDOWN as usize,
-        before_shutdown as *const c_void,
-    );
-    serv.set_callback(cb::CB_SHUTDOWN as usize, on_shutdown as *const c_void);
+    serv.set_callback(Slot::Start, process_on_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, process_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, process_receive as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(Slot::ManagerStart, manager_start_stop as *const c_void);
+    serv.set_callback(Slot::ManagerStop, manager_start_stop as *const c_void);
+    serv.set_callback(Slot::BeforeShutdown, before_shutdown as *const c_void);
+    serv.set_callback(Slot::Shutdown, on_shutdown as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -1797,12 +1778,12 @@ fn test_clean_worker(mode: c_int) {
     CLEAN_PORT.store(port.unwrap().port(), Ordering::SeqCst);
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_CONNECT, clean_on_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, kill_on_receive as *const c_void);
-    serv.set_callback(CB_CLOSE, kill_on_close as *const c_void);
-    serv.set_callback(CB_WORKER_START, clean_worker_start as *const c_void);
-    serv.set_callback(cb::CB_WORKER_STOP as usize, ignore_worker as *const c_void);
-    serv.set_callback(CB_START, clean_on_start as *const c_void);
+    serv.set_callback(Slot::Connect, clean_on_connect as *const c_void);
+    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
+    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
+    serv.set_callback(Slot::WorkerStart, clean_worker_start as *const c_void);
+    serv.set_callback(Slot::WorkerStop, ignore_worker as *const c_void);
+    serv.set_callback(Slot::Start, clean_on_start as *const c_void);
 
     assert_eq!(serv.start(), SW_OK);
     assert_eq!(counter_get(0), 0); // Server on_receive

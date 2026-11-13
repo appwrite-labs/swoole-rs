@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::port_config::PortConfig;
 use crate::shared::ServerShared;
-use crate::{ServerConfig, ServerState, ServerTables, view};
+use crate::{Mode, ServerConfig, ServerState, ServerTables, view};
 use swoole_rs_corebase::log;
 use swoole_rs_locks::Barrier;
 
@@ -48,7 +48,8 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters,
     // freed only by `swr_v1_server_delete` after the message bus.
     let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
-    config.mode_ = u8::try_from(mode).unwrap_or_default();
+    config.mode_ = Mode::from_code(mode.into())
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown server mode"));
     tables.message_bus = crate::pool_native::new_bus(&counters.pipe_packet_msg_id);
     let fresh = crate::state::boxed(config, tables);
     let (config, tables) = (fresh.config(), fresh.tables());

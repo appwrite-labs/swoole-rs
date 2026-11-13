@@ -68,10 +68,6 @@ const WEBSOCKET: u32 = 2;
 const HTTP2: u32 = 4;
 const REDIS: u32 = 8;
 
-/// `Server::MODE_*`.
-const MODE_BASE: i64 = 1;
-pub(crate) const MODE_PROCESS: i64 = 2;
-pub(crate) const MODE_THREAD: i64 = 3;
 /// `SW_SOCK_TCP`.
 const SOCK_TCP: i64 = 1;
 /// `Server::Command::REACTOR_THREAD`.
@@ -144,7 +140,7 @@ impl PortInfo {
 // unconstructed one; and a copy of `sw_error`.
 use swoole_rs_error::last_error_message;
 use swoole_rs_phpprocess::checked_worker;
-use swoole_rs_server::{SharedServer, admin_register};
+use swoole_rs_server::{Mode, SharedServer, admin_register};
 
 /// What kind of Server `object` is: the most derived of `KIND_*`, else 0.
 fn kind(object: ServerObject<'_>) -> c_int {
@@ -260,7 +256,7 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
     // `is_hash_dispatch_mode()`: DISPATCH_FDMOD, DISPATCH_IPMOD, DISPATCH_CO_CONN_LB.
     let hash_dispatch = matches!(c.dispatch_mode.get(), 2 | 4 | 8);
     match id {
-        fact::MODE => i64::from(c.mode_),
+        fact::MODE => c.mode_ as i64,
         fact::WORKER_THREAD => i64::from(serv.is_worker_thread()),
         fact::STARTED => i64::from(serv.is_started()),
         // SAFETY: a live server.
@@ -268,10 +264,12 @@ fn number(serv: view::Server<'_>, id: u32) -> i64 {
         fact::MASTER => {
             i64::from(crate::server::worker_type() == Some(crate::server::WorkerType::Master))
         }
-        fact::THREAD_MODE => i64::from(i64::from(c.mode_) == MODE_THREAD),
+        fact::THREAD_MODE => i64::from(c.mode_ == Mode::Thread),
         fact::ENABLE_COROUTINE => i64::from(c.enable_coroutine.get()),
         fact::SEND_YIELD => i64::from(c.send_yield.get()),
-        fact::HAS_ON_CLOSE => i64::from(serv.has_callback(swoole_rs_server::callbacks::CB_CLOSE)),
+        fact::HAS_ON_CLOSE => {
+            i64::from(serv.has_callback(swoole_rs_server::callbacks::CallbackKind::Close))
+        }
         fact::UNSAFE_EVENTS => i64::from(hash_dispatch || c.enable_unsafe_event.get()),
         fact::HASH_DISPATCH => i64::from(hash_dispatch),
         fact::WORKER_NUM => i64::from(c.worker_num.get()),
@@ -761,7 +759,7 @@ fn construct(call: &Call) {
         Ok((
             call.string(1, b"")?,
             call.long(2, 0)?,
-            call.long(3, MODE_BASE)?,
+            call.long(3, Mode::Base as i64)?,
             call.long(4, SOCK_TCP)?,
         ))
     });
@@ -769,12 +767,12 @@ fn construct(call: &Call) {
         return call.set_bool(false);
     };
     let thread = crate::server::THREAD.load(Ordering::Relaxed);
-    if mode != MODE_BASE && mode != MODE_PROCESS && !(thread && mode == MODE_THREAD) {
+    let Some(server_mode) = Mode::from_code(mode).filter(|&m| thread || m != Mode::Thread) else {
         set_last_error(SW_ERROR_INVALID_PARAMS);
         let text = message!("invalid $mode parameters {}", mode.c_cast::<i32>());
         call.throw_error(text.as_cstr());
         return call.set_bool(false);
-    }
+    };
     let mut existing = None;
     match crate::thread::admit(&mut existing) {
         0 => {}
@@ -803,7 +801,7 @@ fn construct(call: &Call) {
     // A supported mode.
     let share = SharedServer::new(c_int::try_from(mode).unwrap_or_default());
     let server = share.view();
-    if mode == MODE_BASE {
+    if server_mode == Mode::Base {
         server.config().reactor_num.set(1);
         server.config().worker_num.set(1);
     }

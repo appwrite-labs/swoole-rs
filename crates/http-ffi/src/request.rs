@@ -33,32 +33,37 @@ pub struct HttpString {
     pub str: *mut u8,
 }
 
-/// `op(op, a, b, n, m)`: one effect (`SWR_HTTP_NATIVE_*`) of a test's host.
-pub type HttpNative = unsafe extern "C" fn(u32, *mut c_void, *const u8, u64, u64) -> u64;
+/// One effect of a test's host ([`HttpNative`]). Each reads only its arguments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum NativeOp {
+    /// `new String(n)`, or `new String(b, n)`.
+    StringNew,
+    StringFree,
+    /// `a->append(b, n)`.
+    StringAppend,
+    /// `swoole_tmpfile(a)`.
+    Tmpfile,
+    /// `fdopen(n, "wb+")`.
+    Fdopen,
+    /// `fwrite(b, 1, n, a)`, `fflush(a)`, `fclose(a)`, `unlink(a)`.
+    Fwrite,
+    Fflush,
+    Fclose,
+    Unlink,
+    /// The errno `strtoull` leaves: bit 1 `ERANGE`, bit 2 its no-digits value.
+    NumberErrors,
+}
+
+/// `op(op, a, b, n, m)`: one effect of a test's host.
+pub type HttpNative = unsafe extern "C" fn(NativeOp, *mut c_void, *const u8, u64, u64) -> u64;
 
 /// One effect of a test's host.
-fn op(native: HttpNative, op: u32, a: *mut c_void, b: *const u8, n: u64) -> u64 {
+fn op(native: HttpNative, op: NativeOp, a: *mut c_void, b: *const u8, n: u64) -> u64 {
     // SAFETY: the host runs one effect over its arguments.
     unsafe { native(op, a, b, n, 0) }
 }
 
-// HttpNative effects. Each reads only its arguments.
-/// `new String(n)`.
-const STRING_NEW: u32 = 0;
-const STRING_FREE: u32 = 1;
-/// `a->append(b, n)`.
-const STRING_APPEND: u32 = 2;
-/// `swoole_tmpfile(a)`.
-const TMPFILE: u32 = 6;
-/// `fdopen(n, "wb+")`.
-const FDOPEN: u32 = 7;
-/// `fwrite(b, 1, n, a)`, `fflush(a)`, `fclose(a)`, `unlink(a)`.
-const FWRITE: u32 = 8;
-const FFLUSH: u32 = 9;
-const FCLOSE: u32 = 10;
-const UNLINK: u32 = 11;
-/// The errno `strtoull` leaves: bit 1 `ERANGE`, bit 2 its no-digits value.
-const NUMBER_ERRORS: u32 = 12;
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const WARNING: c_int = 4;
@@ -97,7 +102,7 @@ impl Upload {
             Self::File(file) => file.write_all(data).is_ok(),
             Self::Host(native, fp) => {
                 let length = data.len() as u64;
-                op(*native, FWRITE, *fp, data.as_ptr(), length) == length
+                op(*native, NativeOp::Fwrite, *fp, data.as_ptr(), length) == length
             }
         }
     }
@@ -107,9 +112,9 @@ impl Upload {
         // Dropping a `File` flushes and closes it.
         if let Self::Host(native, fp) = self {
             if flush {
-                op(native, FFLUSH, fp, ptr::null(), 0);
+                op(native, NativeOp::Fflush, fp, ptr::null(), 0);
             }
-            op(native, FCLOSE, fp, ptr::null(), 0);
+            op(native, NativeOp::Fclose, fp, ptr::null(), 0);
         }
     }
 
@@ -122,10 +127,10 @@ impl Upload {
                 _ = std::fs::remove_file(OsStr::from_bytes(name));
             }
             Self::Host(native, fp) => {
-                op(native, FCLOSE, fp, ptr::null(), 0);
+                op(native, NativeOp::Fclose, fp, ptr::null(), 0);
                 op(
                     native,
-                    UNLINK,
+                    NativeOp::Unlink,
                     name.as_ptr().cast_mut().cast(),
                     ptr::null(),
                     0,
@@ -408,7 +413,13 @@ impl HttpRequest {
     /// no-digits value.
     fn number_errors(&self, errors: u64) {
         if let Some(native) = self.native {
-            op(native, NUMBER_ERRORS, ptr::null_mut(), ptr::null(), errors);
+            op(
+                native,
+                NativeOp::NumberErrors,
+                ptr::null_mut(),
+                ptr::null(),
+                errors,
+            );
             return;
         }
         if errors & 1 != 0 {
@@ -429,7 +440,7 @@ impl HttpRequest {
         if let Some(native) = self.native {
             op(
                 native,
-                STRING_APPEND,
+                NativeOp::StringAppend,
                 string.cast(),
                 data.as_ptr(),
                 data.len() as u64,
@@ -479,7 +490,7 @@ impl HttpRequest {
             None => new_sized_string(size, None).cast(),
             Some(native) => op(
                 native,
-                STRING_NEW,
+                NativeOp::StringNew,
                 ptr::null_mut(),
                 ptr::null(),
                 size as u64,
@@ -518,7 +529,13 @@ impl HttpRequest {
             // `new_sized_string` when it saved the receive buffer; nothing uses it after.
             None => unsafe { delete_string(r.buffer.cast()) },
             Some(native) => {
-                op(native, STRING_FREE, r.buffer.cast(), ptr::null(), 0);
+                op(
+                    native,
+                    NativeOp::StringFree,
+                    r.buffer.cast(),
+                    ptr::null(),
+                    0,
+                );
             }
         }
         r.buffer = form.saved;
@@ -647,13 +664,13 @@ impl Parts for HttpRequest {
             return 0;
         };
         let name = form.upload.as_mut_ptr();
-        let fd = op(native, TMPFILE, name.cast(), ptr::null(), 0);
+        let fd = op(native, NativeOp::Tmpfile, name.cast(), ptr::null(), 0);
         // `swoole_tmpfile`'s `int`, sign-extended.
         if fd.cast_signed() < 0 {
             self.excepted = true;
             return 0;
         }
-        let fp = op(native, FDOPEN, ptr::null_mut(), ptr::null(), fd) as *mut c_void;
+        let fp = op(native, NativeOp::Fdopen, ptr::null_mut(), ptr::null(), fd) as *mut c_void;
         if !fp.is_null() {
             form.fp = Some(Upload::Host(native, fp));
         }
@@ -776,7 +793,7 @@ mod tests {
     /// The native effects a test saw, the strings it made and what it wrote to files.
     #[derive(Default)]
     struct Host {
-        effects: Vec<u32>,
+        effects: Vec<NativeOp>,
         strings: Vec<*mut Text>,
         written: Vec<u8>,
     }
@@ -789,11 +806,11 @@ mod tests {
         usize::try_from(n).unwrap()
     }
 
-    unsafe extern "C" fn native(op: u32, a: *mut c_void, b: *const u8, n: u64, _: u64) -> u64 {
+    unsafe extern "C" fn native(op: NativeOp, a: *mut c_void, b: *const u8, n: u64, _: u64) -> u64 {
         HOST.with_borrow_mut(|host| {
             host.effects.push(op);
             match op {
-                STRING_NEW => {
+                NativeOp::StringNew => {
                     let (length, mut bytes) = if b.is_null() {
                         (0, Vec::with_capacity(size(n)))
                     } else {
@@ -817,7 +834,7 @@ mod tests {
                     host.strings.push(text);
                     text as u64
                 }
-                STRING_APPEND => {
+                NativeOp::StringAppend => {
                     let data = unsafe { core::slice::from_raw_parts(b, size(n)) };
                     if host.strings.contains(&a.cast()) {
                         let text = unsafe { &mut *a.cast::<Text>() };
@@ -839,19 +856,19 @@ mod tests {
                     }
                     0
                 }
-                FWRITE => {
+                NativeOp::Fwrite => {
                     host.written
                         .extend_from_slice(unsafe { core::slice::from_raw_parts(b, size(n)) });
                     n
                 }
-                TMPFILE => 7,
-                FDOPEN => 0x1000,
+                NativeOp::Tmpfile => 7,
+                NativeOp::Fdopen => 0x1000,
                 _ => 0,
             }
         })
     }
 
-    fn effects() -> Vec<u32> {
+    fn effects() -> Vec<NativeOp> {
         HOST.with_borrow_mut(|host| core::mem::take(&mut host.effects))
     }
 
@@ -1271,7 +1288,9 @@ mod tests {
         );
         let seen = effects();
         assert!(
-            seen.contains(&TMPFILE) && seen.contains(&FFLUSH) && seen.contains(&FCLOSE),
+            seen.contains(&NativeOp::Tmpfile)
+                && seen.contains(&NativeOp::Fflush)
+                && seen.contains(&NativeOp::Fclose),
             "file effects"
         );
         r.destroy_multipart_parser();
@@ -1279,7 +1298,7 @@ mod tests {
             r.form.is_none() && r.buffer == (&raw const i.buffer).cast_mut(),
             "the receive buffer is back"
         );
-        assert_eq!(effects(), [STRING_FREE], "body freed");
+        assert_eq!(effects(), [NativeOp::StringFree], "body freed");
     }
 
     /// The effects outside tests: `swoole::String`s and a file on disk.

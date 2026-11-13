@@ -28,7 +28,7 @@ use swoole_rs_phpserver::{
 };
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_record::WorkerType;
-use swoole_rs_server::{Connection, view};
+use swoole_rs_server::{Connection, Mode, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_long, zval,
@@ -97,10 +97,8 @@ struct Receive {
 
 /// `PHP_SWOOLE_HOOK_BEFORE_REQUEST` (`SW_GLOBAL_HOOK_USER + 2`).
 const HOOK_BEFORE_REQUEST: c_int = 26;
-/// `SW_SOCK_TCP6` and the server modes.
+/// `SW_SOCK_TCP6`.
 const SOCK_TCP6: c_int = 3;
-const MODE_BASE: u8 = 1;
-const MODE_PROCESS: u8 = 2;
 /// `Server::DISPATCH_FDMOD`.
 const DISPATCH_FDMOD: u8 = 2;
 
@@ -285,8 +283,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 #[must_use]
 pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
-    config.mode_ == MODE_BASE
-        || (config.mode_ == MODE_PROCESS && config.dispatch_mode.get() == DISPATCH_FDMOD)
+    config.mode_ == Mode::Base
+        || (config.mode_ == Mode::Process && config.dispatch_mode.get() == DISPATCH_FDMOD)
 }
 
 /// `Server::is_enable_coroutine`.

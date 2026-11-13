@@ -692,10 +692,35 @@ impl IpcMode {
     }
 }
 
-/// `swoole::ProtocolType`; `MAIN_ASYNC` is `Op::MainLoop`'s `run_async`.
-const PROTOCOL_TASK: c_int = 1;
-pub const PROTOCOL_STREAM: c_int = 2;
-pub const PROTOCOL_MESSAGE: c_int = 3;
+/// `swoole::ProtocolType`: how a pool's workers receive, so which loop they run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Protocol {
+    Task = 1,
+    Stream = 2,
+    Message = 3,
+}
+
+impl Protocol {
+    /// The protocol of a native `ProtocolType` code.
+    #[must_use]
+    pub const fn from_code(code: c_int) -> Option<Self> {
+        match code {
+            1 => Some(Self::Task),
+            2 => Some(Self::Stream),
+            3 => Some(Self::Message),
+            _ => None,
+        }
+    }
+
+    /// The native `ProtocolType` code.
+    #[must_use]
+    pub const fn code(self) -> c_int {
+        self as c_int
+    }
+}
+
+/// `Op::MainLoop`'s `run_async`, after the protocols' own codes.
 const MAIN_ASYNC: u64 = 4;
 
 /// `swWorkerType`.
@@ -852,7 +877,7 @@ pub enum Callback {
 pub(crate) enum Run {
     CreateMessageBox(u64),
     CreateMessageBus,
-    SetProtocol(c_int),
+    SetProtocol(Protocol),
     StartCheck,
     Start,
     Spawn,
@@ -863,8 +888,8 @@ pub(crate) enum Run {
     Shutdown,
     Reload,
     DropReloadTask,
-    /// `run_with_*_protocol` and `run_async`, by `ProtocolType` or `MAIN_ASYNC`.
-    Main(c_int),
+    /// `run_with_*_protocol`, or `run_async` for none.
+    Main(Option<Protocol>),
     Wait,
     Destroy,
     SetType(u8),
@@ -883,7 +908,7 @@ pub(crate) trait PoolHost {
     /// Run `callback` inside the trap: its result, or [`Bailed`].
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
-    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int;
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int;
     /// The native side, which tests leave out.
     fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
@@ -925,7 +950,7 @@ impl PoolHost for Native<'_> {
         Ok(call.result)
     }
 
-    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int {
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int {
         pool_run(self.native, pool_loop, protocol)
     }
 
@@ -1353,7 +1378,7 @@ impl<H: PoolHost> Pool<'_, H> {
         self.set_registry(Some(Box::default()));
         self.set_ipc(pool_ipc_new(mode == IpcMode::Socket));
         self.set_ipc_mode(mode);
-        self.set_protocol(PROTOCOL_TASK);
+        self.set_protocol(Protocol::Task);
         self.set_max_packet_size(packet_limit(self.use_msgqueue(), SW_INPUT_BUFFER_SIZE));
         self.set_max_wait_time(SW_WORKER_MAX_WAIT_TIME);
         for index in 0..worker_num {
@@ -1422,12 +1447,9 @@ impl<H: PoolHost> Pool<'_, H> {
     /// - `SW_PROTOCOL_STREAM`: a 4-byte payload length in network byte order, then
     ///   the payload; the receiver reads the length, allocates, then reads that
     ///   many bytes.
-    fn set_protocol(&mut self, protocol: c_int) {
-        if !matches!(protocol, PROTOCOL_TASK | PROTOCOL_STREAM | PROTOCOL_MESSAGE) {
-            swoole_rs_corebase::fatal("an unknown process pool protocol");
-        }
-        self.op(Op::MainLoop, u64::from(protocol.cast_unsigned()));
-        self.set_protocol_type(protocol);
+    fn set_protocol(&mut self, protocol: Protocol) {
+        self.op(Op::MainLoop, u64::from(protocol.code().cast_unsigned()));
+        self.set_protocol_type(protocol.code());
     }
 
     /// `ProcessPool::start_check`.
@@ -1631,11 +1653,11 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; -1 for
     /// a `worker` that is none of the pool's.
-    fn main(&mut self, worker: *mut WorkerRecord, protocol: c_int) -> i64 {
-        if u64::from(protocol.cast_unsigned()) == MAIN_ASYNC {
+    fn main(&mut self, worker: *mut WorkerRecord, protocol: Option<Protocol>) -> i64 {
+        let Some(protocol) = protocol else {
             return self.run_async(worker);
-        }
-        if protocol == PROTOCOL_MESSAGE {
+        };
+        if protocol == Protocol::Message {
             if self.ipc_mode() != IpcMode::UnixSock {
                 self.op(Op::Log(Log::NeedsUnixsock), 1);
                 return SW_ERR;
@@ -2054,7 +2076,7 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
     std::ffi::c_char::from_ne_bytes([symbol])
 }
 
-/// `ProcessPool::run_with_*_protocol` and `run_async` ([`Run::Main`] with `protocol`):
+/// `ProcessPool::run_with_*_protocol`, or `run_async` for no `protocol`:
 /// `worker`'s loop in `pool`. The loop's return value, or [`RAISE`]; -1 when `worker`
 /// is none of the pool's ([`PoolRef::worker_of`]).
 #[must_use]
@@ -2062,13 +2084,10 @@ pub fn pool_run_main(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
     worker: Worker<'_>,
-    protocol: u64,
+    protocol: Option<Protocol>,
 ) -> i64 {
     match pool.worker_of(worker.raw()) {
-        Some(worker) => {
-            let protocol = c_int::try_from(protocol.cast_signed()).unwrap_or(0);
-            run_op(native, pool, Some(worker), Run::Main(protocol))
-        }
+        Some(worker) => run_op(native, pool, Some(worker), Run::Main(protocol)),
         None => SW_ERR,
     }
 }
@@ -2221,7 +2240,7 @@ mod tests {
                 Ok(0)
             }
         }
-        fn run_loop(&mut self, _: &PoolLoop<'_>, _: c_int) -> c_int {
+        fn run_loop(&mut self, _: &PoolLoop<'_>, _: Protocol) -> c_int {
             crate::pool::DONE
         }
         fn native(&self) -> Option<&dyn PoolNative> {
@@ -2375,7 +2394,7 @@ mod tests {
             ]
         );
         assert_eq!(pool.ipc_mode(), IpcMode::UnixSock);
-        assert_eq!(record(&mut pool).protocol_type, PROTOCOL_TASK);
+        assert_eq!(record(&mut pool).protocol_type, Protocol::Task.code());
         assert_eq!(pool.max_packet_size(), SW_INPUT_BUFFER_SIZE);
         assert_eq!(pool.max_wait_time(), SW_WORKER_MAX_WAIT_TIME);
         assert!(!pool.p.registry().is_null());
@@ -2519,7 +2538,7 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
         pool.set_ipc_mode(IpcMode::MsgQueue);
-        assert_eq!(pool.main(pool.worker(0), PROTOCOL_MESSAGE), SW_ERR);
+        assert_eq!(pool.main(pool.worker(0), Some(Protocol::Message)), SW_ERR);
         assert_eq!(pool.h.log, [(Op::Log(Log::NeedsUnixsock), 1)]);
     }
 

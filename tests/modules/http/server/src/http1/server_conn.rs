@@ -23,8 +23,6 @@ const SW_LOG_TRACE: c_int = 1;
 const SW_SERVER_EVENT_RESUME_RECV: c_int = SW_SERVER_EVENT_PAUSE_RECV + 1;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
-const CB_PACKET: usize = 6;
-const CB_PIPE_MESSAGE: usize = 15;
 /// `SW_IPC_MAX_SIZE` (Linux): an `EventData`.
 const SW_IPC_MAX_SIZE: usize = 8192;
 const TEST_COUNTER_NUM: usize = 32;
@@ -279,7 +277,7 @@ unsafe extern "C" fn start_client(_: *mut c_void, serv: *mut c_void) {
 
 fn set_start_client(serv: Server, body: fn(Server)) {
     *ON_START.lock().unwrap() = Some(body);
-    serv.set_callback(CB_START, start_client as *const c_void);
+    serv.set_callback(Slot::Start, start_client as *const c_void);
 }
 
 /// A client thread started before `serv.start()`; it signals this process if it fails.
@@ -351,8 +349,8 @@ fn sendwait() {
 
     packet_client(move || serv.get_primary_port().port());
 
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, sendwait_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, sendwait_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -387,8 +385,8 @@ fn system() {
 
     packet_client(move || svr_port);
 
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, sendwait_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, sendwait_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -438,8 +436,8 @@ fn udp_packet() {
     server.add_port(SW_SOCK_UDP, TEST_HOST, 0);
 
     server.create();
-    server.set_callback(CB_PACKET, udp_on_packet as *const c_void);
-    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    server.set_callback(Slot::Packet, udp_on_packet as *const c_void);
+    server.set_callback(Slot::Receive, return_ok as *const c_void);
 
     let pid = fork_with(move || {
         let client = catch_unwind(AssertUnwindSafe(move || {
@@ -503,9 +501,12 @@ fn pipe_message() {
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
     server.create();
-    server.set_callback(CB_PIPE_MESSAGE, pipe_message_check as *const c_void);
-    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
-    server.set_callback(CB_WORKER_START, pipe_message_worker_start as *const c_void);
+    server.set_callback(Slot::PipeMessage, pipe_message_check as *const c_void);
+    server.set_callback(Slot::Receive, return_ok as *const c_void);
+    server.set_callback(
+        Slot::WorkerStart,
+        pipe_message_worker_start as *const c_void,
+    );
 
     server.start();
     checks_held();
@@ -549,9 +550,9 @@ fn forward_message() {
 
     packet_client(move || serv.get_primary_port().port());
 
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_PIPE_MESSAGE, forward_pipe_message as *const c_void);
-    serv.set_callback(CB_RECEIVE, forward_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::PipeMessage, forward_pipe_message as *const c_void);
+    serv.set_callback(Slot::Receive, forward_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -592,8 +593,8 @@ fn reopen_log() {
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_WORKER_START, reopen_log_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::WorkerStart, reopen_log_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
     checks_held();
@@ -628,9 +629,9 @@ fn reopen_log2() {
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_START, reopen_log2_start as *const c_void);
-    serv.set_callback(CB_WORKER_START, count_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Start, reopen_log2_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, count_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
     let _ = std::fs::remove_file(TEST_LOG_FILE);
@@ -711,8 +712,8 @@ fn test_conn_overflow(mode: c_int, send_yield: bool) {
     assert_eq!(serv.create(), SW_OK);
 
     set_start_client(serv, overflow_client);
-    serv.set_callback(CB_WORKER_START, overflow_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, overflow_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, overflow_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, overflow_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -791,8 +792,8 @@ fn no_idle_worker() {
     assert_eq!(serv.create(), SW_OK);
 
     set_start_client(serv, no_idle_worker_client);
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, slow_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, slow_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -843,8 +844,8 @@ fn test_max_request(mode: c_int) {
     assert_eq!(serv.create(), SW_OK);
 
     set_start_client(serv, max_request_client);
-    serv.set_callback(CB_WORKER_START, unlock_and_count as *const c_void);
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_and_count as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -934,10 +935,10 @@ fn watermark() {
     port.config().buffer_low_watermark = 65536;
 
     set_start_client(serv, watermark_client);
-    serv.set_callback(CB_WORKER_START, unlock_and_count as *const c_void);
-    serv.set_callback(CB_RECEIVE, watermark_receive as *const c_void);
-    serv.set_callback(CB_BUFFER_EMPTY, count_buffer_empty as *const c_void);
-    serv.set_callback(CB_BUFFER_FULL, count_buffer_full as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_and_count as *const c_void);
+    serv.set_callback(Slot::Receive, watermark_receive as *const c_void);
+    serv.set_callback(Slot::BufferEmpty, count_buffer_empty as *const c_void);
+    serv.set_callback(Slot::BufferFull, count_buffer_full as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -1001,8 +1002,8 @@ fn discard_data() {
     RDATA.set(random_bytes(8192)).unwrap();
 
     set_start_client(serv, discard_data_client);
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, discard_data_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, discard_data_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
 
@@ -1082,9 +1083,9 @@ fn pause_and_resume() {
         shutdown(serv);
     });
 
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_CONNECT, pause_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, reply_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Connect, pause_connect as *const c_void);
+    serv.set_callback(Slot::Receive, reply_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -1147,9 +1148,9 @@ fn max_queued_bytes() {
         shutdown(serv);
     });
 
-    serv.set_callback(CB_WORKER_START, unlock_on_worker_start as *const c_void);
-    serv.set_callback(CB_CONNECT, slow_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, max_queued_bytes_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, unlock_on_worker_start as *const c_void);
+    serv.set_callback(Slot::Connect, slow_connect as *const c_void);
+    serv.set_callback(Slot::Receive, max_queued_bytes_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -1168,9 +1169,6 @@ const COMMAND_ALL_PROCESS: c_int = COMMAND_MASTER
     | COMMAND_EVENT_WORKER
     | COMMAND_TASK_WORKER
     | COMMAND_MANAGER;
-const CB_TASK: usize = 4;
-const CB_MANAGER_START: usize = 10;
-const CB_WORKER_STOP: usize = 17;
 const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
 const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
 const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
@@ -1279,7 +1277,7 @@ fn test_heartbeat_check(mode: c_int, single_thread: bool) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, return_ok as *const c_void);
     set_start_client(serv, heartbeat_client);
 
     serv.start();
@@ -1390,10 +1388,10 @@ fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_CONNECT, close_on_connect as *const c_void);
-    serv.set_callback(CB_RECEIVE, close_on_receive as *const c_void);
-    serv.set_callback(CB_CLOSE, close_on_close as *const c_void);
-    serv.set_callback(CB_WORKER_STOP, close_on_worker_stop as *const c_void);
+    serv.set_callback(Slot::Connect, close_on_connect as *const c_void);
+    serv.set_callback(Slot::Receive, close_on_receive as *const c_void);
+    serv.set_callback(Slot::Close, close_on_close as *const c_void);
+    serv.set_callback(Slot::WorkerStop, close_on_worker_stop as *const c_void);
     set_start_client(serv, close_client);
 
     assert_eq!(serv.start(), SW_OK);
@@ -1514,9 +1512,9 @@ fn eof_check() {
 
     counter_init();
 
-    serv.set_callback(CB_WORKER_START, eof_check_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, eof_check_receive as *const c_void);
-    serv.set_callback(CB_CONNECT, eof_check_connect as *const c_void);
+    serv.set_callback(Slot::WorkerStart, eof_check_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, eof_check_receive as *const c_void);
+    serv.set_callback(Slot::Connect, eof_check_connect as *const c_void);
 
     serv.start();
     join_client();
@@ -1598,10 +1596,10 @@ fn test_command(mode: c_int) {
     let handler = std::sync::Arc::new(command_handler);
     swoole_rs_server::swr_v1_server_add_command(serv.view(), b"test", COMMAND_ALL_PROCESS, handler);
 
-    serv.set_callback(CB_START, command_start as *const c_void);
-    serv.set_callback(CB_WORKER_START, ignore_worker_start as *const c_void);
-    serv.set_callback(CB_TASK, return_ok as *const c_void);
-    serv.set_callback(CB_RECEIVE, reply_receive as *const c_void);
+    serv.set_callback(Slot::Start, command_start as *const c_void);
+    serv.set_callback(Slot::WorkerStart, ignore_worker_start as *const c_void);
+    serv.set_callback(Slot::Task, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, reply_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
     checks_held();
@@ -1674,8 +1672,8 @@ fn abnormal_pipeline_data() {
 
     server.create();
 
-    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
-    server.set_callback(CB_WORKER_START, abnormal_worker_start as *const c_void);
+    server.set_callback(Slot::Receive, return_ok as *const c_void);
+    server.set_callback(Slot::WorkerStart, abnormal_worker_start as *const c_void);
 
     server.start();
 
@@ -1700,9 +1698,9 @@ fn base_event_worker_pool_cleanup() {
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(server.create(), SW_OK);
 
-    server.set_callback(CB_RECEIVE, return_ok as *const c_void);
+    server.set_callback(Slot::Receive, return_ok as *const c_void);
     server.set_callback(
-        CB_MANAGER_START,
+        Slot::ManagerStart,
         shutdown_after_manager_start as *const c_void,
     );
 
@@ -1799,9 +1797,9 @@ fn abort_worker() {
         shutdown(server);
     });
 
-    server.set_callback(CB_CONNECT, abort_worker_connect as *const c_void);
-    server.set_callback(CB_RECEIVE, abort_worker_receive as *const c_void);
-    server.set_callback(CB_WORKER_START, abort_worker_start as *const c_void);
+    server.set_callback(Slot::Connect, abort_worker_connect as *const c_void);
+    server.set_callback(Slot::Receive, abort_worker_receive as *const c_void);
+    server.set_callback(Slot::WorkerStart, abort_worker_start as *const c_void);
 
     assert_eq!(server.start(), 0);
     join_client();
@@ -1902,8 +1900,11 @@ fn reactor_thread_pipe_writable() {
         shutdown(serv);
     });
 
-    serv.set_callback(CB_WORKER_START, pipe_writable_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, pipe_writable_receive as *const c_void);
+    serv.set_callback(
+        Slot::WorkerStart,
+        pipe_writable_worker_start as *const c_void,
+    );
+    serv.set_callback(Slot::Receive, pipe_writable_receive as *const c_void);
 
     serv.start();
     join_client();
@@ -1997,8 +1998,8 @@ fn send_timeout() {
     assert_eq!(serv.create(), SW_OK);
 
     set_start_client(serv, send_timeout_client);
-    serv.set_callback(CB_WORKER_START, overflow_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, send_timeout_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, overflow_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, send_timeout_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
 

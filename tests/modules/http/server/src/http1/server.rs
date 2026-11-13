@@ -65,8 +65,8 @@ fn send_buffer() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(CB_WORKER_START, send_buffer_worker_start as *const c_void);
-    serv.set_callback(CB_RECEIVE, send_buffer_receive as *const c_void);
+    serv.set_callback(Slot::WorkerStart, send_buffer_worker_start as *const c_void);
+    serv.set_callback(Slot::Receive, send_buffer_receive as *const c_void);
 
     serv.start();
     join_client();

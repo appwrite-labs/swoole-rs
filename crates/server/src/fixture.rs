@@ -12,7 +12,7 @@ use crate::records::tests::naming_at;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::view::Fields;
-use crate::{MODE_PROCESS, ServerState, view};
+use crate::{Mode, ServerState, view};
 
 /// `SW_SESSION_LIST_SIZE`.
 const SESSIONS: usize = 1 << 20;
@@ -63,7 +63,7 @@ impl LiveServer {
         let mut port_counters = Box::new(PortCounters::default());
         // SAFETY: the state's own configuration, which nothing else reads yet.
         let config = unsafe { &mut *state.config() };
-        config.mode_ = u8::try_from(MODE_PROCESS).unwrap_or_default();
+        config.mode_ = Mode::Process;
         config.reactor_num.set(1);
         config.gs = naming_at(&raw mut *shared);
         config.worker_registry = Some(Box::default());

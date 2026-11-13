@@ -3,6 +3,7 @@
 //! it, its timers and the server methods it calls. Each is a Rust call: the bus
 //! is crates/bus', the methods are this crate's and crates/process' and
 //! crates/ports', reached under their upstream symbols.
+use crate::Mode;
 use crate::reactor_thread::{HEARTBEAT, each_connection, send_event};
 use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
@@ -103,7 +104,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     let thread = ctx.thread_record()?;
     let bus = thread.message_bus();
     methods::init_pipe_sockets(server, bus);
-    if u64::from(config.mode_) == crate::MODE_THREAD {
+    if config.mode_ == Mode::Thread {
         let worker = worker(server, id)?;
         crate::worker_methods::init_event_worker(server, worker);
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker, false)) {
@@ -251,9 +252,9 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         return;
     }
     ctx.reactor = Some(Reactor::thread());
-    let mode = u64::from(state.config_ref().mode_);
+    let mode = state.config_ref().mode_;
     let worker = || worker(serv, id);
-    if mode == crate::MODE_THREAD {
+    if mode == Mode::Thread {
         let Some(worker) = worker() else {
             return;
         };
@@ -265,7 +266,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         return;
     }
     // Every reactor thread is ready before the master runs.
-    if mode == crate::MODE_PROCESS {
+    if mode == Mode::Process {
         methods::reactor_barrier(serv);
     }
     #[expect(
@@ -273,7 +274,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, id: u16) {
         reason = "upstream's reactor thread ignores its loop's result: it cleans up either way"
     )]
     let _ = swoole_rs_reactor::event_api::swoole_event_wait();
-    if mode == crate::MODE_THREAD
+    if mode == Mode::Thread
         && let Some(worker) = worker()
     {
         call_worker_stop_callback(serv, worker);
@@ -436,7 +437,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     }
     // SAFETY: the call takes the reactor, which outlives it.
     unsafe { swoole_rs_reactor::defer_destroy(reactor.handle(), close_connections, reactor.ptr()) };
-    if u64::from(config.mode_) == crate::MODE_THREAD {
+    if config.mode_ == Mode::Thread {
         stop_async_worker(serv, worker(serv, id)?);
         return Some(());
     }

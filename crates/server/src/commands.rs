@@ -4,7 +4,7 @@
 //! the server can call it.
 use crate::hybrid::hybrid;
 use crate::view::Server;
-use crate::{MODE_BASE, MODE_PROCESS, ServerState};
+use crate::{Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
@@ -160,7 +160,7 @@ pub(crate) fn reply_socket<'a>(
     serv: crate::view::Server<'a>,
 ) -> Option<Socket<'a>> {
     let config = state.config_ref();
-    if u64::from(config.mode_) == MODE_BASE {
+    if config.mode_ == Mode::Base {
         return serv.worker_pipe(0, true);
     }
     // The server's live command pipe, a `UnixSocket`.
@@ -240,10 +240,7 @@ pub(crate) fn add_command(serv: Server<'_>, add: &AddCommand<'_>) -> bool {
         return false;
     }
     let config = serv.config();
-    if u64::from(config.mode_) != MODE_BASE
-        && config.command_pipe().is_none()
-        && !new_command_pipe(serv)
-    {
+    if config.mode_ != Mode::Base && config.command_pipe().is_none() && !new_command_pipe(serv) {
         return false;
     }
     let id = state
@@ -298,7 +295,7 @@ pub(crate) struct CommandSend<'a> {
 pub(crate) fn command(send: &SendCommand<'_>) -> bool {
     let (serv, state) = (send.serv, send.serv.state());
     let config = serv.config();
-    let mode = u64::from(config.mode_);
+    let mode = config.mode_;
     let found = commands(state)
         .named
         .get(send.name)
@@ -307,12 +304,12 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
     let input = CommandInput {
         started: serv.is_started(),
         found: found.is_some(),
-        process_mode: mode == MODE_PROCESS,
-        base_mode: mode == MODE_BASE,
+        process_mode: mode == Mode::Process,
+        base_mode: mode == Mode::Base,
         master: swoole_rs_process::methods::worker_type()
             == Some(swoole_rs_process::worker_record::WorkerType::Master),
         accepted_types: found.map_or(0, |(_, types)| types),
-        worker_id: worker_id.filter(|_| mode == MODE_BASE).unwrap_or(0),
+        worker_id: worker_id.filter(|_| mode == Mode::Base).unwrap_or(0),
         process_id: send.process_id,
         process_type: send.process_type,
         reactor_num: u32::from(config.reactor_num.get()),
@@ -438,11 +435,11 @@ mod tests {
     }
 
     /// The live server in `mode`, with four event workers.
-    fn live(mode: u64) -> LiveServer {
+    fn live(mode: Mode) -> LiveServer {
         let live = LiveServer::new();
         // SAFETY: the fixture's configuration, which nothing else reads during the write.
         let config = unsafe { &mut *live.state().config() };
-        config.mode_ = u8::try_from(mode).unwrap();
+        config.mode_ = mode;
         config.worker_num.set(4);
         live
     }
@@ -475,7 +472,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn commands_need_a_pipe_outside_base_mode() {
-        let base = live(MODE_BASE);
+        let base = live(Mode::Base);
         assert!(add(&base, b"a", 2));
         assert!(add(&base, b"b", 2));
         assert!(!add(&base, b"a", 2), "names are unique");
@@ -488,7 +485,7 @@ mod tests {
         assert_eq!(close_command_pipe(&base), 0, "no pipe in base mode");
         drop(base);
 
-        let process = live(MODE_PROCESS);
+        let process = live(Mode::Process);
         assert!(add(&process, b"a", 2));
         let pipe = process.server().config().command_pipe().unwrap();
         assert!(pipe.master_end().is_some() && pipe.worker_end().is_some());
@@ -498,7 +495,7 @@ mod tests {
         close_command_pipe(&process);
         drop(process);
 
-        let started = live(MODE_BASE);
+        let started = live(Mode::Base);
         start(&started);
         assert!(!add(&started, b"a", 2));
     }
@@ -506,7 +503,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn commands_keep_binary_names_for_the_listing() {
-        let live = live(MODE_BASE);
+        let live = live(Mode::Base);
         let name = b"admin\0command";
         assert!(add(&live, name, 62));
         assert_eq!(listing(live.state()), [(name.to_vec(), 1, 62)]);
@@ -541,7 +538,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_base_master_answers_its_own_commands_at_once() {
-        let live = live(MODE_BASE);
+        let live = live(Mode::Base);
         assert!(add(&live, b"hi", MASTER | EVENT_WORKER));
         start(&live);
         let out = Out::default();
@@ -559,7 +556,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_failed_send_forgets_its_callback_and_unknown_names_take_no_request() {
-        let live = live(MODE_BASE);
+        let live = live(Mode::Base);
         assert!(add(&live, b"hi", EVENT_WORKER));
         start(&live);
         let out = Out::default();

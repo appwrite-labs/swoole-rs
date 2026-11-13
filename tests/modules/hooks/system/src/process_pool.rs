@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::methods as pm;
+use swoole_rs_process::process_pool::Protocol;
 use swoole_rs_process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
@@ -39,9 +40,6 @@ const SW_IPC_NONE: c_int = 0;
 const SW_IPC_UNIXSOCK: c_int = 1;
 const SW_IPC_MSGQUEUE: c_int = 2;
 const SW_IPC_SOCKET: c_int = 3;
-const SW_PROTOCOL_TASK: c_int = 1;
-const SW_PROTOCOL_STREAM: c_int = 2;
-const SW_PROTOCOL_MESSAGE: c_int = 3;
 const SW_MASTER: c_int = 1;
 const SW_WORKER: c_int = 2;
 const SW_MANAGER: c_int = 3;
@@ -328,7 +326,7 @@ unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_in
     }
 }
 
-unsafe fn pool_set_protocol(pool: *mut Pool, protocol: c_int) {
+unsafe fn pool_set_protocol(pool: *mut Pool, protocol: Protocol) {
     // SAFETY: as the caller guarantees.
     unsafe {
         pm::set_protocol(
@@ -571,7 +569,7 @@ fn create_message_bus(pool: *mut Pool) -> c_int {
     unsafe { pool_create_message_bus(pool) }
 }
 
-fn set_protocol(pool: *mut Pool, protocol: c_int) {
+fn set_protocol(pool: *mut Pool, protocol: Protocol) {
     // SAFETY: a created pool.
     unsafe { pool_set_protocol(pool, protocol) };
 }
@@ -721,7 +719,7 @@ extern "C" fn task_protocol_on_task(
 }
 
 fn test_func_task_protocol(pool: *mut Pool) {
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     // SAFETY: the case's pool.
     unsafe { (*pool).on_task = Some(task_protocol_on_task) };
     test_func(pool);
@@ -736,7 +734,7 @@ extern "C" fn message_protocol_on_message(pool: *mut Pool, rdata: *mut RecvData)
 }
 
 fn test_func_message_protocol(pool: *mut Pool) {
-    set_protocol(pool, SW_PROTOCOL_MESSAGE);
+    set_protocol(pool, Protocol::Message);
     // SAFETY: the case's pool.
     unsafe { (*pool).on_message = Some(message_protocol_on_message) };
     test_func(pool);
@@ -752,7 +750,7 @@ extern "C" fn stream_protocol_on_message(pool: *mut Pool, rdata: *mut RecvData) 
 }
 
 fn test_func_stream_protocol(pool: *mut Pool) {
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
     // SAFETY: the case's pool.
     unsafe { (*pool).on_message = Some(stream_protocol_on_message) };
     test_func(pool);
@@ -798,7 +796,7 @@ fn tcp_raw() {
     let svr_port = TEST_PORT + 111;
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_host(pool, TEST_HOST, svr_port), SW_OK);
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
     // SAFETY: the case's pool; `data` outlives the loop.
     unsafe {
         (*pool).max_packet_size = SIZE;
@@ -901,7 +899,7 @@ fn message_protocol_with_timer() {
     let pool = new_pool();
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
 
-    set_protocol(pool, SW_PROTOCOL_MESSAGE);
+    set_protocol(pool, Protocol::Message);
 
     // SAFETY: an extern "C" handler.
     unsafe { swoole_signal_set(SIGTERM, stop_current_pool, false) };
@@ -956,7 +954,7 @@ fn shutdown_() {
     assert_eq!(create(pool, 1, 0x9501, SW_IPC_MSGQUEUE), SW_OK);
 
     // init
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     // SAFETY: the case's pool.
     unsafe {
         (*pool).max_packet_size = 8192;
@@ -1138,7 +1136,7 @@ fn async_() {
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
 
     // init
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     counter_init();
     // SAFETY: the case's pool.
     unsafe {
@@ -1257,7 +1255,7 @@ fn async_mb() {
     }
 
     // init
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     counter_init();
     // SAFETY: the case's pool.
     unsafe {
@@ -1342,7 +1340,7 @@ fn listen() {
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_host(pool, c"127.0.0.1", port), SW_OK);
 
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
 
     let rmem = random_c_string();
     let mut wmem = random_c_string();
@@ -1431,7 +1429,7 @@ fn listen_rejects_truncated_stream_packet() {
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_host(pool, c"127.0.0.1", port), SW_OK);
 
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
 
     let mut messages: Vec<Vec<u8>> = Vec::new();
     // SAFETY: the case's pool; `messages` outlives it.
@@ -1481,7 +1479,7 @@ fn listen_rejects_truncated_task_packet() {
     let port = get_random_port();
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_host(pool, c"127.0.0.1", port), SW_OK);
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
 
     let mut messages: Vec<Vec<u8>> = Vec::new();
     // SAFETY: the case's pool; `messages` outlives it.
@@ -1548,7 +1546,7 @@ fn send_to_worker(pool: *mut Pool, event: &EventData, n: usize) -> isize {
 fn task_protocol_rejects_malformed_packets() {
     let pool = new_pool();
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     let mut dispatched = 0usize;
     // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
     unsafe {
@@ -1594,7 +1592,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
     let pool = new_pool();
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_file(pool, SOCKET_FILE), SW_OK);
-    set_protocol(pool, SW_PROTOCOL_TASK);
+    set_protocol(pool, Protocol::Task);
     let mut dispatched = 0usize;
     // SAFETY: the case's pool and worker; `dispatched` outlives the loop.
     unsafe {
@@ -1685,7 +1683,7 @@ fn stream_protocol_small_packet() {
     let pool = new_pool();
     assert_eq!(create(pool, 1, 0, SW_IPC_UNIXSOCK), SW_OK);
     set_max_packet_size(pool, 1);
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
     // SAFETY: the case's pool and worker.
     unsafe {
         worker_init(get_worker(pool, 0));
@@ -1728,7 +1726,7 @@ fn stream_protocol_msgqueue_ignores_package_size() {
             "limit {limit}"
         );
         set_max_packet_size(pool, limit);
-        set_protocol(pool, SW_PROTOCOL_STREAM);
+        set_protocol(pool, Protocol::Stream);
         let mut received: Vec<Vec<u8>> = Vec::new();
         // SAFETY: the case's pool and worker; `received` outlives the loop.
         unsafe {
@@ -1769,7 +1767,7 @@ fn listen_unixsock() {
     assert_eq!(create(pool, 1, 0, SW_IPC_SOCKET), SW_OK);
     assert_eq!(listen_file(pool, TEST_SOCK), SW_OK);
 
-    set_protocol(pool, SW_PROTOCOL_STREAM);
+    set_protocol(pool, Protocol::Stream);
 
     let rmem = random_c_string();
     let mut wmem = random_c_string();

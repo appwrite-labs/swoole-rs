@@ -1,7 +1,7 @@
 //! The master's message bus: which bus a worker uses, base mode's pass and forward
 //! over it, and its buffer.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-use crate::{MODE_THREAD, ServerState};
+use crate::{Mode, ServerState};
 use core::ffi::c_int;
 use swoole_rs_corebase::net_types::SocketAddress;
 
@@ -16,7 +16,7 @@ pub(crate) struct DgramPacket {
 /// server's.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_> {
-    let thread_mode = u64::from(state.config_ref().mode_) == MODE_THREAD;
+    let thread_mode = state.config_ref().mode_ == Mode::Thread;
     let bus = if thread_mode {
         swoole_rs_corebase::thread_message_bus()
     } else {
@@ -46,7 +46,7 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
         return false;
     };
     let bus = worker_message_bus(state);
-    let socket = if u64::from(state.config_ref().mode_) == MODE_THREAD {
+    let socket = if state.config_ref().mode_ == Mode::Thread {
         bus.pipe_socket(pipe)
     } else {
         Some(pipe)

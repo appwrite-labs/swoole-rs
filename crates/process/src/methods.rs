@@ -2,6 +2,7 @@
 //! whole Rust operations. Each runs over crates/server's [`PoolNative`] side as its
 //! C++ forward did.
 
+use crate::process_pool::Protocol;
 use crate::task_file::Packed;
 use crate::worker_record::{Worker, WorkerType};
 #[cfg(any(feature = "upstream-symbols", test))]
@@ -110,7 +111,7 @@ macro_rules! run_methods {
 run_methods! {
     fn create_message_box(size: usize) -> c_int = Run::CreateMessageBox(size as u64);
     fn create_message_bus() -> c_int = Run::CreateMessageBus;
-    fn set_protocol(protocol: c_int) -> () = Run::SetProtocol(protocol);
+    fn set_protocol(protocol: Protocol) -> () = Run::SetProtocol(protocol);
     fn start_check() -> c_int = Run::StartCheck;
     fn start() -> c_int = Run::Start;
     fn drop_reload_task() -> () = Run::DropReloadTask;

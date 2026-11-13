@@ -13,7 +13,7 @@
 //! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
-use crate::process_pool::IpcMode;
+use crate::process_pool::{IpcMode, Protocol};
 use crate::worker_record::Worker as Record;
 #[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
@@ -870,12 +870,12 @@ pub struct PoolLoop<'a> {
     pub event_size: usize,
 }
 
-/// `ProcessPool::run_with_task_protocol`/`_stream_protocol`/`_message_protocol`
-/// (`protocol` is `SW_PROTOCOL_*`), between `at_worker_enter` and
+/// `ProcessPool::run_with_task_protocol`/`_stream_protocol`/`_message_protocol`,
+/// between `at_worker_enter` and
 /// `at_worker_exit`: [`DONE`] (at once for a pool `create` never made, which has no
 /// IPC state), or [`BAILED`] to raise at once.
 #[must_use]
-pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: c_int) -> c_int {
+pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int {
     let ipc = pool_loop.pool.record().ipc;
     if ipc.is_null() {
         return DONE;
@@ -888,14 +888,14 @@ pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: c_i
     };
     let mode = mode(pool_loop.ipc_mode);
     let result = match protocol {
-        1 => worker.run_task(
+        Protocol::Task => worker.run_task(
             mode,
             pool_loop.event_size,
             pool_loop.schedule_by_sysvmsg,
             pool_loop.worker_id,
         ),
-        2 => worker.run_stream(mode, pool_loop.max_packet_size),
-        _ => worker.run_message(),
+        Protocol::Stream => worker.run_stream(mode, pool_loop.max_packet_size),
+        Protocol::Message => worker.run_message(),
     };
     if result.is_ok() { DONE } else { BAILED }
 }
@@ -1231,7 +1231,7 @@ mod tests {
         }
     }
 
-    fn run_loop(script: Script, listener: bool, ipc_mode: IpcMode, protocol: c_int) -> Script {
+    fn run_loop(script: Script, listener: bool, ipc_mode: IpcMode, protocol: Protocol) -> Script {
         let ipc = pool_ipc_new(listener);
         with(|s| {
             *s = script;
@@ -1268,7 +1268,7 @@ mod tests {
             },
             true,
             IpcMode::Socket,
-            2,
+            Protocol::Stream,
         );
         assert_eq!(script.messages, vec![b"abc".to_vec()]);
         assert_eq!(
@@ -1292,7 +1292,7 @@ mod tests {
             },
             true,
             IpcMode::Socket,
-            2,
+            Protocol::Stream,
         );
         assert_eq!(script.messages, Vec::<Vec<u8>>::new());
         assert_eq!(script.closed, vec![9]);
@@ -1325,7 +1325,7 @@ mod tests {
             },
             false,
             IpcMode::UnixSock,
-            1,
+            Protocol::Task,
         );
         // Neither bad packet reaches the task.
         assert_eq!(script.tasks, 1);
@@ -1358,7 +1358,7 @@ mod tests {
             },
             false,
             IpcMode::UnixSock,
-            3,
+            Protocol::Message,
         );
         assert_eq!(script.delivered, 1);
         // The delivered message and the interrupted read each end an iteration.
