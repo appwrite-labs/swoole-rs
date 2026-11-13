@@ -26,6 +26,7 @@ use crate::ops::{
     OP_TIMER_REINIT,
 };
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD, SW_ERR, SW_OK};
+use swoole_rs_process::process_pool::IpcMode;
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -39,13 +40,13 @@ const DISPATCH_FDMOD: u64 = 2;
 const DISPATCH_IPMOD: u64 = 4;
 const DISPATCH_CO_CONN_LB: u64 = 8;
 
-/// `Server::TaskIpcMode` and `swIPCMode`.
+/// `Server::TaskIpcMode`, and the pool's IPC mode for each.
 const TASK_IPC_MSGQUEUE: u64 = 2;
 const TASK_IPC_PREEMPTIVE: u64 = 3;
 const TASK_IPC_STREAM: u64 = 4;
-const IPC_UNIXSOCK: u64 = 1;
-const IPC_MSGQUEUE: u64 = 2;
-const IPC_SOCKET: u64 = 3;
+const IPC_UNIXSOCK: u64 = IpcMode::UnixSock as u64;
+const IPC_MSGQUEUE: u64 = IpcMode::MsgQueue as u64;
+const IPC_SOCKET: u64 = IpcMode::Socket as u64;
 
 fn field<H: Host>(h: &mut H, id: u32) -> crate::Effect<u64> {
     h.op(OP_FIELD, u64::from(id))

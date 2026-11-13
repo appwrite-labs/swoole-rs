@@ -213,7 +213,7 @@ mod tests {
             Worker::new(&raw mut worker).set_id(11);
             Worker::new(&raw mut worker).set_pid(1234);
             swr_v1_worker_init(Worker::new(&raw mut worker));
-            assert_eq!(Worker::new(&raw const worker).status(), 2);
+            assert!(Worker::new(&raw const worker).is_idle());
             assert_eq!(swr_v1_worker_global_get(3), 1);
             assert_eq!(swr_v1_worker_global_get(4), 0);
             worker_global_max_requests(2, 0, maximum);
@@ -227,7 +227,10 @@ mod tests {
             assert_eq!(Worker::new(copy).id(), 11);
             assert_eq!(Worker::new(copy).pid(), 1234);
             swr_v1_worker_shutdown(Worker::new(&raw mut worker));
-            assert_eq!(Worker::new(&raw const worker).status(), 3);
+            assert_eq!(
+                Worker::new(&raw const worker).status(),
+                Some(crate::worker_record::WorkerStatus::Exit)
+            );
             assert_eq!(swr_v1_worker_global_get(4), 1);
             worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);

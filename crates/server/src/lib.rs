@@ -186,8 +186,7 @@ impl Host for Native<'_, '_> {
             if let Some(value) = callbacks::native_fact(state, op, arg) {
                 return Ok(value);
             }
-            // SAFETY: the root path op lends its terminated path.
-            if let Some(value) = unsafe { state::native_fact(state, op, arg) } {
+            if let Some(value) = state::native_fact(state, op) {
                 return Ok(value);
             }
             if let Some(context) = self.reactor.as_deref_mut()
@@ -322,7 +321,7 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         _ => match reactor_io::run(h, operation, arg)? {
             Some(result) => result,
-            None => match state::run(h, operation, arg)? {
+            None => match state::run(h, operation)? {
                 Some(result) => result,
                 None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
                 None => reactor_thread::run(h, operation, arg)?,

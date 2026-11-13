@@ -3,11 +3,12 @@
 //! signal handler that run its operations: what workers.cc's `ManagerContext` did.
 use core::ffi::{c_int, c_void};
 use core::ptr::{null, null_mut};
+use swoole_rs_process::worker_record::WorkerType;
 
 use crate::factory_ops::run;
 use swoole_rs_corebase::{DataHead, log, worker_registry as registry};
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::methods::{self, ExitStatus, swoole_set_worker_type};
+use swoole_rs_process::methods::{self, ExitStatus};
 use swoole_rs_process::process_pool::{Hooks, PoolRef};
 use swoole_rs_process::server_workers::ServerWorkers;
 use swoole_rs_process::worker_record::Worker;
@@ -167,9 +168,8 @@ fn kill_workers(ctx: &Context<'_>, category: c_int, origin: &core::ffi::CStr) {
     registry.terminate(category, libc::SIGTERM, kill, wait, warn);
 }
 
-/// `SW_MESSAGE_BOX_SIZE`, `swoole::WorkerType::SW_MANAGER`, `SW_LOG_ERROR`.
+/// `SW_MESSAGE_BOX_SIZE`, `SW_LOG_ERROR`.
 const MESSAGE_BOX_SIZE: usize = 65536;
-const SW_MANAGER: c_int = 3;
 const SW_LOG_ERROR: c_int = 5;
 
 /// Answers each manager op over the context.
@@ -303,7 +303,7 @@ fn effect(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .store(pid, core::sync::atomic::Ordering::Relaxed);
         }
         OP_START_TASK_POOL => return Some(signed(methods::start(ctx.server().task_pool_ref()))),
-        OP_SET_MANAGER_TYPE => swoole_set_worker_type(SW_MANAGER),
+        OP_SET_MANAGER_TYPE => methods::set_worker_type(WorkerType::Manager),
         OP_MANAGER_INIT => {
             let pid = std::process::id().cast_signed();
             ctx.counters()

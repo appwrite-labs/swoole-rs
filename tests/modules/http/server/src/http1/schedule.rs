@@ -6,11 +6,12 @@
 use super::*;
 use std::collections::BTreeSet;
 use std::sync::atomic::Ordering::Relaxed;
+use swoole_rs_process::worker_record::WorkerStatus::{
+    Busy as SW_WORKER_BUSY, Idle as SW_WORKER_IDLE,
+};
 
 const SW_SOCK_UDP: c_int = 2;
 const SW_SOCK_TCP6: c_int = 3;
-const SW_WORKER_BUSY: u8 = 1;
-const SW_WORKER_IDLE: u8 = 2;
 const DISPATCH_ROUND: u8 = 1;
 const DISPATCH_IPMOD: u8 = 4;
 const DISPATCH_UIDMOD: u8 = 5;

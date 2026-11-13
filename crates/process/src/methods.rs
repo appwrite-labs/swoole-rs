@@ -3,7 +3,7 @@
 //! C++ forward did.
 
 use crate::task_file::Packed;
-use crate::worker_record::Worker;
+use crate::worker_record::{Worker, WorkerType};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::CCast;
@@ -317,9 +317,7 @@ pub unsafe fn listen<T>(
     backlog: c_int,
     make: MakeServerSocket<T>,
 ) -> c_int {
-    /// `SW_IPC_SOCKET`.
-    const IPC_SOCKET: u8 = 3;
-    if pool.ipc_mode != IPC_SOCKET {
+    if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
         // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
             4,
@@ -521,6 +519,17 @@ pub extern "C" fn swoole_get_worker_type() -> c_int {
     c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
 }
 
+/// `swoole_get_worker_type()`, `None` before the process has a type.
+#[must_use]
+pub fn worker_type() -> Option<WorkerType> {
+    WorkerType::from_code(swr_v1_worker_global_get(2))
+}
+
+/// `swoole_set_worker_type(type)`.
+pub fn set_worker_type(kind: WorkerType) {
+    swr_v1_worker_global_set(2, kind.code().into());
+}
+
 /// `swoole_set_worker_id(worker_id)`.
 pub fn swoole_set_worker_id(id: u32) {
     swr_v1_worker_global_set(0, i64::from(id));
@@ -676,7 +685,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
-        pool.ipc_mode = 1;
+        pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
         // SAFETY: the pool is live and the host a NUL-terminated string.
         let refused = unsafe { listen(&pool, 1, c"127.0.0.1", 9501, 8, make) };
         assert_eq!(
@@ -693,7 +702,7 @@ pub(crate) mod tests {
             )],
             "the upstream warning"
         );
-        pool.ipc_mode = 3;
+        pool.ipc_mode = crate::process_pool::IpcMode::Socket;
         // SAFETY: as above.
         let failed = unsafe { listen(&pool, 1, c"127.0.0.1", 9502, 8, make) };
         assert_eq!(failed, -1, "no socket, no listener");

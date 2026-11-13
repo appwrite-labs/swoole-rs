@@ -46,7 +46,7 @@ pub unsafe fn swr_v1_process_server_workers_start(
         };
         worker.set_pool(view.event_pool.cast());
         worker.set_id(index);
-        worker.set_kind(2);
+        worker.set_kind(crate::worker_record::WorkerType::Event.code());
     }
     let first_user = view.event_count.wrapping_add(view.task_count);
     for index in 0..view.user_count {

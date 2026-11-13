@@ -4,6 +4,7 @@
 //! manager's state ([`Manager`], which native holds as the opaque `Manager *`
 //! `Server::manager_`) and drives `reaper`'s loop with its own host; native code
 //! keeps the server, its pools, fork and the callbacks.
+use crate::worker_record::WorkerType;
 use core::cell::{Cell, RefCell};
 use core::ffi::c_int;
 
@@ -46,9 +47,8 @@ use crate::reaper::{
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_registry::{CATEGORY_USER, WorkerRegistry};
 
-/// `swoole::WorkerType`.
-const TASK_WORKER: u64 = 4;
-const USER_WORKER: u64 = 5;
+const TASK_WORKER: u64 = WorkerType::Task as u64;
+const USER_WORKER: u64 = WorkerType::User as u64;
 
 #[cfg(test)]
 pub(super) fn worker_types() -> (u64, u64, u64) {

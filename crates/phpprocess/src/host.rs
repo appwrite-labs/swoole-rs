@@ -11,6 +11,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpcoroutines::create_coroutine;
 use swoole_rs_phpswoole::{Switch, built_with};
+use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_process::{methods, worker_record::WorkerRecord};
 use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
@@ -32,11 +33,6 @@ unsafe extern "C" {
     safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
-/// `SW_MASTER`, `SW_TASK_WORKER`, `SW_MANAGER` and `SW_USER_WORKER`.
-const MASTER: c_int = 1;
-const TASK_WORKER: c_int = 4;
-const MANAGER: c_int = 3;
-const USER_WORKER: c_int = 5;
 /// `SW_SOCK_UNIX_STREAM` and `SW_SOCK_UNIX_DGRAM`.
 const SOCK_UNIX_STREAM: c_int = 5;
 const SOCK_UNIX_DGRAM: c_int = 6;
@@ -60,7 +56,7 @@ pub(crate) fn construct_guard() -> c_int {
         reason = "the method's path fixes the view's lifetime; with_server's `f` takes any"
     )]
     let started = with_server(|serv| serv.is_started()).unwrap_or(false);
-    if started && methods::swoole_get_worker_type() == MASTER {
+    if started && methods::worker_type() == Some(WorkerType::Master) {
         return 1;
     }
     if thread_async_threads().is_null() {
@@ -89,7 +85,7 @@ pub(crate) fn worker_share(process: &mut WorkerRecord) -> bool {
 
 /// [`worker_share`] in a worker thread of `serv`.
 fn share(serv: view::Server<'_>, process: &mut WorkerRecord) -> bool {
-    let user = methods::swoole_get_worker_type() == USER_WORKER;
+    let user = methods::worker_type() == Some(WorkerType::User);
     let id = if user {
         methods::swoole_get_worker_id()
     } else {
@@ -241,9 +237,9 @@ pub(crate) fn callable_defer_free(callable: Callable) {
 #[unsafe(export_name = "php_swoole_is_enable_coroutine")]
 #[must_use]
 pub extern "C" fn enable_coroutine() -> bool {
-    with_server(|serv| match methods::swoole_get_worker_type() {
-        TASK_WORKER => task_coroutine(serv),
-        MANAGER => false,
+    with_server(|serv| match methods::worker_type() {
+        Some(WorkerType::Task) => task_coroutine(serv),
+        Some(WorkerType::Manager) => false,
         _ => serv.config().enable_coroutine.get(),
     })
     .unwrap_or_else(|| swoole_rs_corebase::swr_v1_core_enable_coroutine())
@@ -294,9 +290,9 @@ fn task_coroutine(serv: view::Server<'_>) -> bool {
 /// `Server::is_sync_process()` of the running server.
 #[must_use]
 pub fn sync_server() -> bool {
-    with_server(|serv| match methods::swoole_get_worker_type() {
-        MANAGER => true,
-        TASK_WORKER => !task_coroutine(serv),
+    with_server(|serv| match methods::worker_type() {
+        Some(WorkerType::Manager) => true,
+        Some(WorkerType::Task) => !task_coroutine(serv),
         _ => false,
     })
     .unwrap_or(false)
@@ -307,9 +303,15 @@ pub fn sync_server() -> bool {
 /// process outside both.
 #[must_use]
 pub fn timer_uses_reactor() -> bool {
-    let kind = methods::swoole_get_worker_type();
-    with_server(|serv| kind == USER_WORKER || (kind == TASK_WORKER && task_coroutine(serv)))
-        .unwrap_or_else(|| crate::pool::timer_uses_reactor(kind == MASTER).unwrap_or(true))
+    let kind = methods::worker_type();
+    with_server(|serv| match kind {
+        Some(WorkerType::User) => true,
+        Some(WorkerType::Task) => task_coroutine(serv),
+        _ => false,
+    })
+    .unwrap_or_else(|| {
+        crate::pool::timer_uses_reactor(kind == Some(WorkerType::Master)).unwrap_or(true)
+    })
 }
 
 extern "C-unwind" fn listening(_event_num: &mut usize) -> bool {
@@ -326,7 +328,7 @@ pub(crate) fn signal_listen() {
 /// Outside thread builds, a process that is not a user worker forgets its
 /// worker type.
 pub(crate) fn reset_worker_type() {
-    if !built_with(Switch::Thread) && methods::swoole_get_worker_type() != USER_WORKER {
+    if !built_with(Switch::Thread) && methods::worker_type() != Some(WorkerType::User) {
         methods::swoole_set_worker_type(0);
     }
 }
