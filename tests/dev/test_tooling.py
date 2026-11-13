@@ -391,7 +391,6 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         # An -ffi crate's tests run with its module's (#2996 moved error's there).
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
-        self.assertIn('--sanitize', commands['ports-callback-property'])
         for family in ['logger', 'hash']:
             command = commands['utilities-' + family + '-originals']
             self.assertIn('--' + family + '-originals', command)
@@ -414,8 +413,8 @@ class Lanes(unittest.TestCase):
             self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
             self.assertNotIn('--archive', command)
         self.assertNotIn('httpbindings-php', commands)
-        self.assertIn('--archive', commands['ports-callback-property'])
-        self.assertIn('--sanitize', commands['ports-callback-property'])
+        self.assertNotIn('ports-callback-property', commands)  # Its cases run in ports-unit.
+        self.assertNotIn('ports-policy', commands)  # Its cases run in ports-unit.
         self.assertNotIn('ports-php', commands)
         self.assertNotIn('ports-callback-php', commands)
         self.assertNotIn('--case', commands['ports-configuration'])
@@ -423,7 +422,6 @@ class Lanes(unittest.TestCase):
         self.assertEqual(stdext['phphelpers-runtime'].count('--engine'), 2)
         self.assertNotIn('phphelpers-policy', commands)
         self.assertNotIn('phphelpers-async', commands)
-        self.assertIn('--archive', commands['ports-policy'])
         self.assertNotIn('clients-http-format', commands)  # Its cases run in clients-unit.
         self.assertNotIn('clients-pool', commands)  # Its cases run in clients-unit.
         for family in ['http', 'dns', 'lifecycle', 'pool', 'resolver', 'pool_fork', 'http_connection', 'http_format', 'coro', 'async']:
@@ -694,7 +692,7 @@ class FocusedPhases(unittest.TestCase):
 
     def test_child_disk_refusal_stops_but_behavior_failure_continues(self):
         refusal = 'Build disk space low: 0 bytes free at /scratch; require 4294967296. Remove only inactive caches.'
-        # php_runtime.py reports the refusal and prints that report; ports/gate.py dies of it, leaving no report.
+        # php_runtime.py reports the refusal and prints that report; a gate that dies of it leaves no report.
         for log, report_text, expected_calls in [
                 (json.dumps({'passed': False, 'error': 'RuntimeError: ' + refusal, 'work': '/w'}) + '\n', True, 1),
                 ('Traceback (most recent call last):\nRuntimeError: ' + refusal + '\n', False, 1),

@@ -255,13 +255,22 @@ struct Cursor {
     current: Vec<u64>,
 }
 
-/// The process-private parts of each table this process made and hasn't destroyed,
-/// as this process allocated them (header, columns, cursor): a fork copies them, and a
-/// table created after one has another process's cursor. The headers are in the shared
-/// pool, which leak checkers don't scan and `swoole_clean` frees: `release` frees these.
-static PRIVATE: Mutex<Vec<[usize; 3]>> = Mutex::new(Vec::new());
+/// The process-private parts of a table this process made and hasn't destroyed, which
+/// its header (at address `header`) points at.
+struct Private {
+    header: usize,
+    columns: Box<Columns>,
+    cursor: Option<Box<Cursor>>,
+}
 
-fn private<T>(f: impl FnOnce(&mut Vec<[usize; 3]>) -> T) -> T {
+/// Every table's private parts, owned here, as this process allocated them: a fork
+/// copies them, and a table created after one has another process's cursor. The headers
+/// are in the shared pool, which leak checkers don't scan and `swoole_clean` frees:
+/// `destroy` drops a table's, `release` every one left. Nothing reads a table's parts
+/// through this list (the header's pointers do), so they stay put until they go.
+static PRIVATE: Mutex<Vec<Private>> = Mutex::new(Vec::new());
+
+fn private<T>(f: impl FnOnce(&mut Vec<Private>) -> T) -> T {
     f(&mut PRIVATE.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
@@ -271,14 +280,7 @@ fn private<T>(f: impl FnOnce(&mut Vec<[usize; 3]>) -> T) -> T {
 /// # Safety
 /// No table is used afterwards.
 pub unsafe extern "C" fn release() {
-    for [_, columns, cursor] in private(std::mem::take) {
-        // SAFETY: `init` made the columns and this process hasn't destroyed the table.
-        drop(unsafe { Box::from_raw(ptr::with_exposed_provenance_mut::<Columns>(columns)) });
-        if cursor != 0 {
-            // SAFETY: as above, from `create`.
-            drop(unsafe { Box::from_raw(ptr::with_exposed_provenance_mut::<Cursor>(cursor)) });
-        }
-    }
+    drop(private(std::mem::take));
 }
 
 /// The counters `Swoole\Table::stats()` reports.
@@ -423,15 +425,23 @@ impl Table {
             table.mutex.destroy();
             return false;
         }
-        table.columns = Box::into_raw(Box::default());
-        let columns = table.columns.expose_provenance();
-        let this = ptr::from_mut(table).addr();
-        private(|tables| tables.push([this, columns, 0]));
+        let header = ptr::from_mut(table).addr();
+        table.columns = private(|tables| {
+            tables.push(Private {
+                header,
+                columns: Box::default(),
+                cursor: None,
+            });
+            // The pointer comes from the box where it stays, so nothing invalidates it.
+            tables
+                .last_mut()
+                .map_or(ptr::null_mut(), |own| ptr::from_mut(&mut *own.columns))
+        });
         true
     }
 
     fn column_set(&self) -> &Columns {
-        // SAFETY: `init` made the columns; only `destroy` frees them.
+        // SAFETY: `init` made the columns; only `destroy` and `release` free them.
         unsafe { &*self.columns }
     }
 
@@ -460,13 +470,23 @@ impl Table {
             index: self.item_size,
             name: name.into(),
         };
+        let header = ptr::from_mut(self).addr();
+        // Declared through their owner, this process's parts of the table (`&mut self`
+        // excludes readers), which then lends the header its pointer afresh. None are
+        // left once `release` has run, and then there is no table to declare on.
+        let Some(columns) = private(|tables| {
+            let own = tables.iter_mut().rev().find(|own| own.header == header)?;
+            let columns = &mut *own.columns;
+            if columns.list.iter().all(|column| *column.name != *name) {
+                columns.first.push(columns.list.len());
+            }
+            columns.list.push(Box::new(column));
+            Some(ptr::from_mut(columns))
+        }) else {
+            return false;
+        };
+        self.columns = columns;
         self.item_size = self.item_size.wrapping_add(width as usize);
-        // SAFETY: as in `column_set`; `&mut self` excludes other users.
-        let columns = unsafe { &mut *self.columns };
-        if columns.list.iter().all(|column| *column.name != *name) {
-            columns.first.push(columns.list.len());
-        }
-        columns.list.push(Box::new(column));
         true
     }
 
@@ -573,23 +593,26 @@ impl Table {
         if unsafe { !fixed::construct(pool, layout, true, false) } {
             return false;
         }
-        self.cursor = Box::into_raw(Box::new(Cursor {
+        let header = ptr::from_mut(self).addr();
+        let cursor = Box::new(Cursor {
             absolute: 0,
             collision: 0,
             current: vec![0; plan.stride / 8],
-        }));
+        });
+        // This process's parts of the table hold its cursor; none are left once
+        // `release` has run, and then there is no table to create.
+        let Some(cursor) = private(|tables| {
+            let own = tables.iter_mut().rev().find(|own| own.header == header)?;
+            Some(ptr::from_mut(&mut **own.cursor.insert(cursor)))
+        }) else {
+            return false;
+        };
+        self.cursor = cursor;
         self.rows = rows;
         self.pool = pool;
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
         self.memory = arena;
         self.created = true;
-        let (this, cursor) = (ptr::from_mut(self).addr(), self.cursor.expose_provenance());
-        private(|tables| {
-            tables
-                .iter_mut()
-                .filter(|t| t[0] == this)
-                .for_each(|t| t[2] = cursor);
-        });
         true
     }
 
@@ -597,21 +620,16 @@ impl Table {
     /// returns the arena (null if the table was never created) for the host to
     /// free with the header.
     /// # Safety
-    /// `this` is an initialised table nothing uses afterwards.
-    pub unsafe fn destroy(this: *mut Table) -> *mut u8 {
-        // SAFETY: per the caller.
-        let table = unsafe { &mut *this };
-        // SAFETY: made by `init`, freed only here.
-        drop(unsafe { Box::from_raw(table.columns) });
-        if !table.cursor.is_null() {
-            // SAFETY: made by `create`, freed only here.
-            drop(unsafe { Box::from_raw(table.cursor) });
-        }
-        table.iterator_mutex.destroy();
-        table.mutex.destroy();
+    /// Nothing uses the table afterwards.
+    pub unsafe fn destroy(&mut self) -> *mut u8 {
+        let header = ptr::from_mut(self).addr();
+        // The columns `init` made and the cursor `create` made, which nothing uses
+        // afterwards (per the caller): this process's, so another's stay as they are.
+        private(|tables| tables.retain(|own| own.header != header));
+        self.iterator_mutex.destroy();
+        self.mutex.destroy();
         // The header is shared: forked processes see `ready()` turn false, as upstream's do.
-        private(|tables| tables.retain(|t| t[0] != this.addr()));
-        std::mem::replace(&mut table.memory, ptr::null_mut())
+        std::mem::replace(&mut self.memory, ptr::null_mut())
     }
 
     #[must_use]

@@ -55,11 +55,6 @@ struct Frame {
     char *payload;
 };
 
-bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags);
-bool decode(Frame *frame, char *data, size_t length);
-void mask(char *data, size_t len, const char *mask_key);
-bool pack_close_frame(String *buffer, int code, const char *reason, size_t length, uint8_t flags);
-void print_frame(const Frame *frame);
 ssize_t get_package_length(const Protocol *protocol, network::Socket *conn, PacketLength *pl);
 
 static inline void parse_ext_flags(uint16_t ext_flags, uchar *opcode, uchar *flags) {

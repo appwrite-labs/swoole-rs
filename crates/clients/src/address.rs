@@ -3,7 +3,7 @@
 //! native `gethostbyname`. Native code keeps `type`, set before the call, and the
 //! last error.
 use crate::ip::swr_v1_clients_ip;
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -105,7 +105,7 @@ pub fn assign(
 // Address::addr_str and verify_ip deliberately share one per-thread buffer.
 // Its pointer stays valid until thread exit and each operation overwrites it.
 thread_local! {
-    static ADDRESS_SCRATCH: UnsafeCell<[c_char; 46]> = const { UnsafeCell::new([0; 46]) };
+    static ADDRESS_SCRATCH: Cell<[u8; 46]> = const { Cell::new([0; 46]) };
 }
 
 fn inet4(kind: c_int) -> bool {
@@ -136,7 +136,7 @@ pub fn address_string(family: c_int, address: &[u8]) -> *const c_char {
     ADDRESS_SCRATCH.with(|scratch| {
         // SAFETY: this thread alone accesses its fixed scratch; inet_ntop reads the
         // family's bytes, writes at most its supplied capacity and retains neither.
-        unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.get().cast(), 46) }
+        unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.as_ptr().cast(), 46) }
     })
 }
 
@@ -155,10 +155,14 @@ pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *con
     // SAFETY: the caller's NUL-terminated host.
     let host = unsafe { CStr::from_ptr(host) };
     ADDRESS_SCRATCH.with(|scratch| {
-        // SAFETY: the scratch holds the largest IP address; this thread alone
-        // accesses it, and no borrow of it outlives this call.
-        let destination = unsafe { &mut *scratch.get().cast::<[u8; 16]>() };
-        parse_ip(family, host, destination)
+        // The scratch's leading bytes, which hold the largest IP address, parsed
+        // into in a copy and stored back.
+        let mut text = scratch.get();
+        let parsed = text
+            .first_chunk_mut()
+            .is_some_and(|destination| parse_ip(family, host, destination));
+        scratch.set(text);
+        parsed
     })
 }
 

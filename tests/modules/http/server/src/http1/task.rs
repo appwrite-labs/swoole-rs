@@ -17,8 +17,8 @@ use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::methods as pool;
 use swoole_rs_process::process_pool::{PoolRecord, PoolRef, SW_IPC_MAX_SIZE};
-use swoole_rs_process::task_file::{self, EventHead, Packed, task_pack};
-use swoole_rs_process::task_sync::{Bailed, MultiTask, TaskHost, Tasks};
+use swoole_rs_process::task_file::{self, EventHead, Packed, TaskBuffer, task_pack};
+use swoole_rs_process::task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_utilities::set_log_file;
@@ -109,16 +109,10 @@ struct TaskPool {
 }
 
 impl TaskHost for TaskPool {
-    fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
-        // SAFETY: the live task pool and a packed task.
-        unsafe {
-            pool::dispatch(
-                swoole_rs_process::process_pool::PoolRef::new(self.pool),
-                swoole_rs_process::task_file::Packed::from_raw(task.cast()),
-                worker_id,
-                blocking,
-            ) == SW_OK
-        }
+    fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
+        // SAFETY: the live task pool.
+        let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
+        pool::dispatch(pool, task, worker_id, blocking) == SW_OK
     }
 
     fn pipe_clean(&mut self) {
@@ -132,11 +126,10 @@ impl TaskHost for TaskPool {
     }
 
     fn read_notify(&mut self) -> isize {
-        let mut notify = 0u64;
         // SAFETY: this worker's live notify pipe.
         let pipe = unsafe { &*self.pipe };
-        // SAFETY: a local of that size.
-        unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+        let mut notify = [std::mem::MaybeUninit::new(0u8); size_of::<u64>()];
+        socket_pair::read_into(pipe, &mut notify)
     }
 
     fn lock(&mut self, on: bool) {
@@ -146,30 +139,39 @@ impl TaskHost for TaskPool {
     }
 }
 
-/// `serv`'s task state; for a call that waits (`sync`), with this worker's notify pipe,
-/// lock and `task_results` slot.
-fn tasks(serv: Server, sync: bool) -> Tasks<'static, TaskPool> {
+/// `serv`'s task state.
+fn tasks(serv: Server) -> Tasks<'static, TaskPool> {
     let view = serv.view();
     let counters = view.counters();
-    let mut host = TaskPool {
-        pool: view.task_pool(),
-        pipe: ptr::null_mut(),
-        lock: None,
-    };
-    let mut result = ptr::null_mut();
-    if sync {
-        let id = u16::try_from(pool::swoole_get_worker_id()).unwrap();
-        host.pipe = view.task_notify_pipe(id);
-        // SAFETY: this worker's live record.
-        host.lock = unsafe { (*view.worker(id)).lock };
-        result = serv.get_task_result().cast();
-    }
     Tasks {
-        host,
+        host: TaskPool {
+            pool: view.task_pool(),
+            pipe: ptr::null_mut(),
+            lock: None,
+        },
         tasking: &counters.tasking_num,
         count: &counters.task_count,
-        result,
     }
+}
+
+/// `serv`'s task state for a call that waits, with this worker's notify pipe, lock and
+/// `task_results` slot.
+fn waiting(serv: Server) -> Waiting<'static, TaskPool> {
+    let view = serv.view();
+    let mut tasks = tasks(serv);
+    let id = u16::try_from(pool::swoole_get_worker_id()).unwrap();
+    tasks.host.pipe = view.task_notify_pipe(id);
+    // SAFETY: this worker's live record.
+    tasks.host.lock = unsafe { (*view.worker(id)).lock };
+    let slot = ptr::NonNull::new(serv.get_task_result().cast()).unwrap();
+    // SAFETY: this worker's slot of the running server's `task_results`.
+    tasks.waiting(unsafe { ResultSlot::new(slot) })
+}
+
+/// The packed task in `buf`.
+fn packed(buf: &mut EventData) -> Packed<'_> {
+    // SAFETY: an `EventData`: its head, then the bytes it counts.
+    unsafe { Packed::from_raw(buf.head().cast()) }
 }
 
 unsafe extern "C" {
@@ -325,8 +327,8 @@ impl TaskServer for Server {
     }
 
     fn task(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> bool {
-        tasks(self, false)
-            .task(buf.head().cast(), dst_worker_id, false)
+        tasks(self)
+            .task(packed(buf), dst_worker_id, false)
             .unwrap_or(false)
     }
 
@@ -896,12 +898,10 @@ impl MultiTask for Multi<'_> {
         u16::try_from(self.tasks.len()).unwrap()
     }
 
-    fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed> {
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
         let task = &self.tasks[usize::from(index)];
-        // SAFETY: a writable EventData and the task's bytes.
-        if unsafe { task_pack(event.cast(), task) } {
-            // SAFETY: as above, now packed: `info.fd` heads it.
-            Ok(unsafe { event.cast::<DataHead>().read_unaligned() }.fd)
+        if event.pack(task) {
+            Ok(event.head().fd)
         } else {
             Ok(-1)
         }
@@ -937,9 +937,7 @@ unsafe extern "C" fn task_sync_multi_on_worker_start(
         };
 
         check(
-            tasks(serv, true)
-                .task_sync_many(&mut mt, 10.0)
-                .unwrap_or(false),
+            waiting(serv).task_sync_many(&mut mt, 10.0).unwrap_or(false),
             "serv->task_sync(mt, 10)",
         );
 
@@ -1021,8 +1019,8 @@ unsafe extern "C" fn task_sync_on_worker_start(
         let mut dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
         check(
-            tasks(serv, true)
-                .task_sync(buf.head().cast(), &mut dst_worker_id, 0.5)
+            waiting(serv)
+                .task_sync(packed(&mut buf), &mut dst_worker_id, 0.5)
                 .unwrap_or(false),
             "serv->task_sync(&buf, &_dst_worker_id, 0.5)",
         );

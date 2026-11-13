@@ -19,23 +19,36 @@ struct Buffer {
     data: [u8; 0],
 }
 
-/// One queued datagram: an allocation that begins with an initialized `Buffer` header
-/// and holds the header's `length` payload bytes after it, as `swr_v1_tls_dtls_append`
-/// makes and `swr_v1_tls_dtls_append_buffer`'s caller promises.
-struct Datagram(*mut Buffer);
+/// One queued datagram.
+enum Datagram {
+    /// An allocation that begins with an initialized `Buffer` header and holds the
+    /// header's `length` payload bytes after it, as `swr_v1_tls_dtls_append_buffer`'s
+    /// caller promises.
+    Native(*mut Buffer),
+    /// The copy `swr_v1_tls_dtls_append` made: at most a header's `u16` of bytes.
+    Copied(Box<[MaybeUninit<u8>]>),
+}
 impl Datagram {
-    /// The payload's length, from the header.
+    /// The payload's length.
     fn length(&self) -> u16 {
-        // SAFETY: the datagram owns its allocation, whose header is initialized.
-        unsafe { (*self.0).length }
+        match self {
+            // SAFETY: the datagram owns its allocation, whose header is initialized.
+            Self::Native(buffer) => unsafe { (**buffer).length },
+            Self::Copied(bytes) => bytes.len().c_cast::<u16>(),
+        }
     }
 
     /// The payload, which nothing writes while the datagram is queued.
     fn payload(&self) -> &[MaybeUninit<u8>] {
-        let length = usize::from(self.length());
-        // SAFETY: the datagram owns its allocation, which holds `length` bytes after
-        // the header; as `MaybeUninit`, they need not be initialized.
-        unsafe { core::slice::from_raw_parts(payload(self.0).cast(), length) }
+        match self {
+            Self::Native(buffer) => {
+                let length = usize::from(self.length());
+                // SAFETY: the datagram owns its allocation, which holds `length` bytes
+                // after the header; as `MaybeUninit`, they need not be initialized.
+                unsafe { core::slice::from_raw_parts(payload(*buffer).cast(), length) }
+            }
+            Self::Copied(bytes) => bytes,
+        }
     }
 }
 
@@ -47,8 +60,10 @@ fn payload(buffer: *mut Buffer) -> *mut u8 {
 }
 impl Drop for Datagram {
     fn drop(&mut self) {
-        // SAFETY: each queued datagram owns one sw_malloc/libc-compatible allocation.
-        unsafe { libc::free(self.0.cast()) };
+        if let Self::Native(buffer) = self {
+            // SAFETY: a native datagram owns one sw_malloc/libc-compatible allocation.
+            unsafe { libc::free(buffer.cast()) };
+        }
     }
 }
 
@@ -113,35 +128,24 @@ pub unsafe fn swr_v1_tls_dtls_append_buffer(owner: &DtlsSession, buffer: *mut c_
     if queue.try_reserve(1).is_err() {
         return -1;
     }
-    queue.push_back(Datagram(buffer.cast()));
+    queue.push_back(Datagram::Native(buffer.cast()));
     0
 }
 
-/// A copy of `data` queued as one datagram.
+/// A copy of `data` queued as one datagram: as many of its bytes as upstream's `u16`
+/// header counts; -1 when it can't allocate.
 pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
-    let length = data.len();
     let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
         return -1;
     }
-    let Some(size) = core::mem::size_of::<Buffer>().checked_add(length) else {
-        return -1;
-    };
-    // `sw_malloc` is libc's malloc: null on failure.
-    let buffer = swoole_rs_corebase::sw_malloc(size).cast::<Buffer>();
-    if buffer.is_null() {
+    let length = usize::from(data.len().c_cast::<u16>());
+    let mut bytes = Vec::new();
+    if bytes.try_reserve_exact(length).is_err() {
         return -1;
     }
-    let length = length.c_cast::<u16>();
-    // SAFETY: malloc provided at least the Buffer header plus length payload bytes.
-    unsafe { (*buffer).length = length };
-    let out = payload(buffer);
-    if length > 0 {
-        // SAFETY: the source covers `length` bytes, and malloc provided as many after the
-        // header, which fresh storage cannot overlap.
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), out, usize::from(length)) };
-    }
-    queue.push_back(Datagram(buffer));
+    bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
+    queue.push_back(Datagram::Copied(bytes.into_boxed_slice()));
     0
 }
 

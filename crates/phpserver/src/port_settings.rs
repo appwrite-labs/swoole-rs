@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn integer_bounds_match_sw_max_sw_min() {
-        // ports-policy: each clamp against SW_MAX(lo, SW_MIN(v, hi)).
+        // Each clamp against SW_MAX(lo, SW_MIN(v, hi)).
         let mut state = 71234_u64;
         let samples = (0..50_000).map(|n| {
             state ^= state << 13;

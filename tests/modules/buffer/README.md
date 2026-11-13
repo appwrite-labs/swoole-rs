@@ -65,12 +65,12 @@ The project-written `compatibility.cc` consumer is ported there too:
 | `compatibility.cc` (44 checks of append, write, integer, repeat, copy, termination and reduce) | `string::originals::compatibility` |
 
 The header declares only what C++ still calls or a fixture links: the sized constructor,
-copy and move construction, the destructor, `grow`, `substr`, `extend`, `reserve`,
-`release`, `repeat`, `append` (bytes and `int`), `append_random_bytes`, `write(String)`,
+copy and move construction, the destructor, `substr`, `extend`, `reserve`,
+`release`, `append` (bytes and `int`), `append_random_bytes`, `write(String)`,
 `set_null_terminated`, `print`, `pop`, `reduce` and the `format` templates. Assignment is
-deleted; the byte-pointer constructor, `contains`, `starts_with`, `ends_with`, `equals`,
-`append(String)`, `write(bytes)` and `split` have no C++ caller and no symbol: Rust uses
-`CppString`'s methods and its `view()`.
+deleted; the byte-pointer constructor, `grow`, `repeat`, `contains`, `starts_with`,
+`ends_with`, `equals`, `append(String)`, `write(bytes)` and `split` have no C++ caller and
+no symbol: Rust uses `CppString`'s methods and its `view()`.
 
 Run as `python3 tests/modules/buffer/<script>`; `S` is the pinned upstream
 checkout (`target/upstream/src`).

@@ -46,9 +46,12 @@ through the server's two rewrite exports, which only passed their arguments to
 `RewriteRules::add` and `HttpStaticContext::rewrite` and went with it; the tests call those. The gate ran
 its C++ under ASan/UBSan; the tests don't.
 
-The status, method, URL and boundary helpers are Rust behind thin facades, so
-crates/http-ffi's `pin_helpers` tests compare them with the pin's bodies (unchanged
-since v6.2.4) instead.
+The status, method, URL and boundary helpers are Rust, so crates/http-ffi's
+`pin_helpers` tests compare them with the pin's bodies (unchanged since v6.2.4) instead.
+`get_method`, `url_encode` and `parse_multipart_boundary` had facades under their C++
+symbols that no C or C++ linked; the tests call crates/http's `method`, `url_encode` and
+`boundary`, which were their bodies. `boundary_outputs_untouched_on_a_miss` checked the
+facade's two out-pointers and went with it.
 
 ### Ported GoogleTests
 

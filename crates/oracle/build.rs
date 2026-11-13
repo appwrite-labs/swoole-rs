@@ -206,6 +206,32 @@ fn http_locale() {
     fs::write(out("http_locale.inc"), parts.join("\n") + "\n").unwrap();
 }
 
+/// The port callback enum from the pinned `php_swoole_server.h`, the event catalog and
+/// `getCallback` from the pinned `swoole_server_port.cc`, and `swoole_strcaseeq` from
+/// the pinned swoole.h, copied unchanged for `shim/ports.cc`.
+fn ports() {
+    let header = fs::read_to_string("upstream/ext-src/php_swoole_server.h")
+        .expect("vendored php_swoole_server.h");
+    let port = fs::read_to_string("upstream/ext-src/swoole_server_port.cc")
+        .expect("vendored swoole_server_port.cc");
+    let swoole = fs::read_to_string("upstream/include/swoole.h").expect("vendored swoole.h");
+    let catalog = [
+        slice(&header, "enum php_swoole_server_port_callback_type {", "};") + "};",
+        slice(&port, "struct ServerPortEvent {", "// clang-format on"),
+        definition(&swoole, "static inline unsigned int swoole_strcaseeq("),
+    ];
+    fs::write(out("ports_catalog.inc"), catalog.join("\n") + "\n").unwrap();
+    let getter = definition(
+        &port,
+        "static PHP_METHOD(swoole_server_port, getCallback) {",
+    );
+    fs::write(out("ports_get_callback.inc"), getter + "\n").unwrap();
+    cpp()
+        .include(env::var("OUT_DIR").unwrap())
+        .file("shim/ports.cc")
+        .compile("swoole_upstream_ports");
+}
+
 /// `Server::add_rewrite_rule` and `apply_rewrite_rules` from the pinned
 /// `static_handler.cc`, copied unchanged for `shim/http_rewrite.cc`.
 fn http_rewrite() {
@@ -644,6 +670,7 @@ fn main() {
     http_static_context();
     http_locale();
     http_rewrite();
+    ports();
     protocols();
     resp_stream();
     clients();

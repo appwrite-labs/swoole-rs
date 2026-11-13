@@ -3,9 +3,7 @@
 //! `pin` transcribes the pinned bodies (C locale). The cases are the ones the retired
 //! `tests/modules/http/gate.cc`, `status_buffer_gate.cc` and `dispatch_gate.cc` compared.
 use crate::NATIVE_STATUS_CODES;
-use crate::http_server::{
-    get_method, get_method_string, get_status_message, parse_multipart_boundary,
-};
+use crate::http_server::{get_method_string, get_status_message};
 use std::ffi::{CStr, c_char, c_int};
 
 mod pin {
@@ -201,10 +199,7 @@ fn public_status_code_array_matches_the_pin_and_is_independent_of_lookup() {
 
 #[test]
 fn methods_match_the_pin() {
-    let method = |input: &[u8]| {
-        // SAFETY: `input` is initialized for its length.
-        unsafe { get_method(input.as_ptr().cast(), input.len()) }
-    };
+    let method = swoole_rs_http::method;
     for id in -10..40 {
         let name = get_method_string(id);
         let expected = pin::method_string(id);
@@ -219,12 +214,16 @@ fn methods_match_the_pin() {
 }
 
 fn encode(input: &[u8]) -> Vec<u8> {
-    // SAFETY: `input` is initialized for its length.
-    let encoded = unsafe { crate::http_server::url_encode(input.as_ptr().cast(), input.len()) };
-    // SAFETY: a NUL-terminated copy from `sw_malloc`.
-    let output = unsafe { CStr::from_ptr(encoded) }.to_bytes().to_vec();
-    // SAFETY: from `sw_malloc`, not used again.
-    unsafe { swoole_rs_corebase::sw_free(encoded.cast()) };
+    let capacity = swoole_rs_http::url_capacity(input).unwrap();
+    let mut encoded = vec![std::mem::MaybeUninit::new(0xa5u8); capacity];
+    let length = swoole_rs_http::url_encode(input, &mut encoded).unwrap();
+    assert_eq!(length + 1, capacity);
+    // SAFETY: every slot started initialized, and the encoder writes only bytes.
+    let mut output: Vec<u8> = encoded
+        .iter()
+        .map(|slot| unsafe { slot.assume_init() })
+        .collect();
+    assert_eq!(output.pop(), Some(0));
     output
 }
 
@@ -272,22 +271,11 @@ fn boundaries_match_the_pin() {
     for input in parameters.split('|').map(str::as_bytes) {
         for length in 0..=input.len() {
             for offset in 0..=length + 1 {
-                let (mut start, mut size) = (std::ptr::null_mut(), 3);
-                // SAFETY: `input` is initialized for `length` bytes.
-                let found = unsafe {
-                    parse_multipart_boundary(
-                        input.as_ptr().cast(),
-                        length,
-                        offset,
-                        &mut start,
-                        &mut size,
-                    )
-                };
-                let span = (start.addr().wrapping_sub(input.as_ptr().addr()), size);
+                let found = swoole_rs_http::boundary(&input[..length], offset).unwrap();
                 let expected = pin::boundary(&input[..length], offset);
                 assert_eq!(
-                    found.then_some(span),
-                    expected.map(|(offset, length)| (offset, c_int::try_from(length).unwrap())),
+                    found.map(|span| (span.offset, span.length)),
+                    expected,
                     "{input:?} {length} {offset}"
                 );
             }

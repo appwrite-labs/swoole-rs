@@ -56,13 +56,11 @@ class String {
         offset = 0;
     }
 
-    void grow(size_t incr_value);
     String substr(size_t offset, size_t len) const;
     void extend();
     void extend(size_t new_size);
     void reserve(size_t new_size);
     char *release();
-    void repeat(const char *data, size_t len, size_t n);
     void append(const char *append_str, size_t length);
     void append(const std::string &append_str) {
         append(append_str.c_str(), append_str.length());

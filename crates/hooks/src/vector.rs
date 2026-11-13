@@ -7,8 +7,92 @@ use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
 use core::ffi::{c_int, c_void};
+use core::marker::PhantomData;
 use core::ptr::NonNull;
+use std::io::{IoSlice, IoSliceMut};
 use swoole_rs_reactor::{ReactorIov, swr_v1_reactor_iov_view};
+
+/// A `msghdr` over the `count` iovecs at `iov`, with no address and no control data.
+fn message_header(iov: *mut libc::iovec, count: usize) -> libc::msghdr {
+    /// `count` as the platform's `msg_iovlen`; none of the vectors when it does not fit.
+    fn fit<T: TryFrom<usize> + Default>(count: usize) -> T {
+        T::try_from(count).unwrap_or_default()
+    }
+    // SAFETY: a msghdr is integers, raw pointers and (musl) padding: zero is a value of each.
+    let mut header: libc::msghdr = unsafe { core::mem::zeroed() };
+    header.msg_iov = iov;
+    header.msg_iovlen = fit(count);
+    header
+}
+
+/// A `sendmsg(2)` message: the buffers it borrows, with no address and no control data.
+pub struct SendMessage<'a> {
+    header: libc::msghdr,
+    lent: PhantomData<&'a [u8]>,
+}
+
+impl<'a> SendMessage<'a> {
+    /// The message of `vectors`' bytes, in order.
+    #[must_use]
+    pub fn new(vectors: &'a [IoSlice<'_>]) -> Self {
+        // An `IoSlice` is ABI-compatible with an iovec; a send only reads them.
+        let iov = vectors.as_ptr().cast::<libc::iovec>().cast_mut();
+        Self {
+            header: message_header(iov, vectors.len()),
+            lent: PhantomData,
+        }
+    }
+
+    /// The header, for a call that reads it while the message is borrowed.
+    #[cfg(feature = "iouring")]
+    pub(crate) const fn as_ptr(&self) -> *const libc::msghdr {
+        &raw const self.header
+    }
+
+    /// `sendmsg(2)` of the message on `fd`.
+    pub(crate) fn send(&self, fd: c_int, flags: c_int) -> isize {
+        // SAFETY: the header's vectors and their readable bytes are borrowed for `'a`.
+        unsafe { libc::sendmsg(fd, &raw const self.header, flags) }
+    }
+}
+
+/// A `recvmsg(2)` message: the buffers it borrows to fill, with no address and no
+/// control data.
+pub struct RecvMessage<'a> {
+    header: libc::msghdr,
+    lent: PhantomData<&'a mut [u8]>,
+}
+
+impl<'a> RecvMessage<'a> {
+    /// The message that fills `vectors`' buffers, in order.
+    #[must_use]
+    pub fn new(vectors: &'a mut [IoSliceMut<'_>]) -> Self {
+        // An `IoSliceMut` is ABI-compatible with an iovec.
+        let iov = vectors.as_mut_ptr().cast::<libc::iovec>();
+        Self {
+            header: message_header(iov, vectors.len()),
+            lent: PhantomData,
+        }
+    }
+
+    /// `msg_flags`, as the last receive left them.
+    #[must_use]
+    pub const fn flags(&self) -> c_int {
+        self.header.msg_flags
+    }
+
+    /// The header, for a call that writes it while the message is borrowed.
+    #[cfg(feature = "iouring")]
+    pub(crate) const fn as_mut_ptr(&mut self) -> *mut libc::msghdr {
+        &raw mut self.header
+    }
+
+    /// `recvmsg(2)` into the message on `fd`.
+    pub(crate) fn recv(&mut self, fd: c_int, flags: c_int) -> isize {
+        // SAFETY: the header's vectors and their writable bytes are borrowed for `'a`.
+        unsafe { libc::recvmsg(fd, &raw mut self.header, flags) }
+    }
+}
 
 /// A `network::IOVector` over the caller's iovecs, destroyed on drop, and the
 /// direction it was made for. Its owner is its first member, so a pointer to it is

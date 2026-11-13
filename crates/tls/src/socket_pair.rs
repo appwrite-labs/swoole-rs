@@ -6,7 +6,7 @@
 //! `upstream-symbols` each member is defined under its upstream (Itanium) symbol, and
 //! the process patch deletes `pipe.cc` and `unix_socket.cc`.
 use crate::upstream::{read_sync, socket_free, write_sync};
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_int};
 use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::CCast;
@@ -168,27 +168,8 @@ pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
     this.blocking = blocking;
 }
 
-/// `ssize_t SocketPair::read(void *, size_t) const`: from the worker end, waiting for
-/// data when the pair is blocking.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10SocketPair4readEPvm")
-)]
-#[must_use]
-pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isize {
-    let buffer: &mut [MaybeUninit<u8>] = if buffer.is_null() {
-        &mut []
-    } else {
-        // SAFETY: as the caller promises, lent until this returns.
-        unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) }
-    };
-    read_into(this, buffer)
-}
-
-/// [`read`] into `buffer`: the bytes read, or -1.
+/// `ssize_t SocketPair::read(void *, size_t) const` into `buffer`: from the worker end,
+/// waiting for data when the pair is blocking. The bytes read, or -1.
 pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> isize {
     let [_, Some(socket)] = ends(this) else {
         return -1;
@@ -200,26 +181,8 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> isize {
     }
 }
 
-/// `ssize_t SocketPair::write(const void *, size_t) const`: to the master end.
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10SocketPair5writeEPKvm")
-)]
-#[must_use]
-pub unsafe extern "C" fn write(this: &SocketPair, buffer: *const c_void, length: usize) -> isize {
-    let data: &[u8] = if buffer.is_null() {
-        &[]
-    } else {
-        // SAFETY: as the caller promises, lent until this returns.
-        unsafe { std::slice::from_raw_parts(buffer.cast(), length) }
-    };
-    write_from(this, data)
-}
-
-/// [`write`] of `data`: the bytes written, or -1.
+/// `ssize_t SocketPair::write(const void *, size_t) const` of `data`: to the master
+/// end. The bytes written, or -1.
 #[must_use]
 pub fn write_from(this: &SocketPair, data: &[u8]) -> isize {
     let [Some(socket), _] = ends(this) else {
@@ -299,27 +262,24 @@ mod tests {
         unsafe { storage.assume_init() }
     }
 
+    /// [`read_into`] over initialised bytes.
+    fn read(pair: &SocketPair, buffer: &mut [u8]) -> isize {
+        let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
+        read_into(pair, unsafe { std::slice::from_raw_parts_mut(at, length) })
+    }
+
     fn round_trip(mut pair: SocketPair) {
         let this = &raw mut pair;
         assert!(!pair.master_socket.is_null() && !pair.worker_socket.is_null());
         let sent = *b"wire";
         let mut received = [0_u8; 4];
-        assert_eq!(
-            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
-            4
-        );
-        assert_eq!(
-            unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) },
-            4
-        );
+        assert_eq!(write_from(unsafe { &*this }, &sent), 4);
+        assert_eq!(read(unsafe { &*this }, &mut received), 4);
         assert_eq!(received, sent);
-        assert_eq!(
-            unsafe { write(&*this, sent.as_ptr().cast(), sent.len()) },
-            4
-        );
+        assert_eq!(write_from(unsafe { &*this }, &sent), 4);
         set_blocking(unsafe { &mut *this }, false);
         clean(unsafe { &*this });
-        assert!(unsafe { read(&*this, received.as_mut_ptr().cast(), received.len()) } < 0);
+        assert!(read(unsafe { &*this }, &mut received) < 0);
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
         assert_eq!(unsafe { (*pair.worker_socket).fields.timeouts.read }, 2.5);

@@ -111,8 +111,9 @@ impl WorkerRecord {
         Box::new(Self::empty())
     }
 
-    /// A zeroed record, by value.
-    fn empty() -> Self {
+    /// `Worker()` by value, for an owner that boxes it itself: a zeroed record.
+    #[must_use]
+    pub fn empty() -> Self {
         let null = core::ptr::null_mut();
         Self {
             pid: 0,

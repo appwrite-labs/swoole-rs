@@ -335,32 +335,6 @@ pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> 
     // SAFETY: as the caller promises.
     create(&mut unsafe { Lent::new(context) })
 }
-/// Path access and assignment are one Rust operation. 1 access denied, otherwise
-/// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
-/// # Safety
-/// owner is exclusive; path is terminated and readable for length bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_tls_owner_set_path(
-    owner: &OwnedTlsContext,
-    index: u32,
-    path: *const c_char,
-    length: usize,
-) -> c_int {
-    if !matches!(index, 4 | 5 | 7) {
-        return -1;
-    }
-    // SAFETY: the caller supplies a terminated path for access(2).
-    if unsafe { libc::access(path, libc::R_OK) } < 0 {
-        return 1;
-    }
-    let Some(slot) = owner.strings.get(index as usize) else {
-        return -1;
-    };
-    let slot = Arc::as_ptr(slot);
-    // SAFETY: forwards the synchronized owner and readable bytes/cache contract.
-    unsafe { swoole_rs_corebase::swr_v1_core_string_set(slot, path, length) }
-}
-
 #[repr(C)]
 pub struct OwnedTlsCopy {
     pub status: i32,

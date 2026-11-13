@@ -72,6 +72,6 @@ caller: Rust reads a process's CPUs with `CpuSet::get_process`). `swoole_set_iso
 it logs each failed step as it happens, errno intact.
 
 `file_open`/`file_close` and `tmpfile` back `File::open`,
-`File::close` and `swoole_tmpfile`. The resolver request constructors and the
-`gethostbyname`/`getaddrinfo` async handlers are inline in `swoole_async.h`: `AsyncEvent`, whose layout `crates/hooks/src/offload.rs`
-mirrors, and the requests, views of the Rust resolver record.
+`File::close` and `swoole_tmpfile`. `swoole_async.h` keeps `AsyncEvent`, whose layout
+`crates/hooks/src/offload.rs` mirrors; the resolver requests it carries and their
+`gethostbyname`/`getaddrinfo` handlers are Rust's (`crates/corebase/src/resolver_request.rs`).

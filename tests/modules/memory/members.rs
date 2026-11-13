@@ -1,5 +1,144 @@
 use super::*;
+use crate::fixed::tests::{DebugCursor, debug_step};
+use crate::fixed::{self, Fixed, Layout};
+use std::ptr::NonNull;
 use swoole_rs_corebase::log::last_error;
+use swoole_rs_corebase::{sw_free, sw_malloc};
+
+// `swoole::FixedPool`, as upstream's fixed_pool TESTs use it: nothing else constructs a
+// pool over an arena of its own (the table lays its collision pool out in its own).
+
+/// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or `sw_malloc`.
+fn arena(shared: bool, size: usize) -> *mut c_void {
+    if shared {
+        sw_shm_malloc(size)
+    } else {
+        sw_malloc(size)
+    }
+}
+
+/// Frees what `arena(shared, ..)` returned.
+///
+/// # Safety
+/// `memory` is live and came from `arena(shared, ..)`.
+unsafe fn release(shared: bool, memory: *mut c_void) {
+    if shared {
+        Shm(memory).free();
+    } else {
+        // SAFETY: as the caller promises.
+        unsafe { sw_free(memory) };
+    }
+}
+
+/// `swoole::FixedPool` over an owned arena: its header, then its slices, in
+/// memory from `arena(shared, ..)`. `&mut self` serializes allocation and release.
+struct FixedPool(NonNull<Fixed>);
+
+impl FixedPool {
+    /// `FixedPool(slice_num, slice_size, shared)`: `INVALID` for upstream's
+    /// `Exception(SW_ERROR_INVALID_PARAMS)`, `NO_MEMORY` for `std::bad_alloc`.
+    ///
+    /// # Errors
+    /// As above.
+    fn new(slices: u32, width: u32, shared: bool) -> Result<Self, i32> {
+        let plan = Layout::new(slices, width, 0, true).ok_or(INVALID)?;
+        let memory = NonNull::new(arena(shared, plan.total).cast::<Fixed>()).ok_or(NO_MEMORY)?;
+        // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
+        unsafe { fixed::construct(memory.as_ptr(), plan, shared, true) };
+        Ok(Self(memory))
+    }
+
+    fn header(&self) -> &Fixed {
+        // SAFETY: the pool's constructed header, live until drop.
+        unsafe { self.0.as_ref() }
+    }
+
+    /// `void *FixedPool::alloc(uint32_t size)`: the slice width was fixed at construction.
+    ///
+    /// # Panics
+    /// Upstream's assertion: an allocation fails only when no slice is spare.
+    fn alloc(&mut self) -> *mut c_void {
+        // `&mut self` serializes allocation.
+        let result = fixed::alloc(self.header());
+        if result.is_null() {
+            set_last_error(MALLOC_FAIL);
+            // assert(get_number_of_spare_slice() == 0);
+            assert_eq!(self.spare(), 0, "a failed allocation leaves no spare slice");
+        }
+        result
+    }
+
+    /// `void FixedPool::free(void *ptr)`.
+    ///
+    /// # Panics
+    /// Upstream's assertions: `data` is an allocated slice of the pool.
+    fn free(&mut self, data: *mut c_void) {
+        let (memory, size) = (self.header().memory, self.header().size);
+        // assert(ptr > impl->memory && static_cast<char *>(ptr) < static_cast<char *>(impl->memory) + impl->size);
+        assert!(
+            data.addr() > memory.addr() && data.addr() < memory.addr() + size,
+            "a slice of this pool"
+        );
+        // The same address, from the arena: nothing is read through the caller's pointer.
+        let slice = memory.wrapping_add(data.addr() - memory.addr());
+        // `free` checks the stride before it reads a slice header, then upstream's
+        // `slice->lock == 1`, so a pointer into a slice's (maybe uninitialized) data is
+        // refused unread.
+        let freed = fixed::free(self.header(), slice.cast());
+        assert!(freed, "a live slice of this pool");
+    }
+
+    /// `uint32_t FixedPool::get_number_of_spare_slice() const`.
+    fn spare(&self) -> u32 {
+        self.header().slices().0
+    }
+
+    /// `uint32_t FixedPool::get_number_of_total_slice() const`.
+    fn total(&self) -> u32 {
+        self.header().slices().1
+    }
+
+    /// `uint32_t FixedPool::get_slice_size() const`.
+    fn slice_size(&self) -> u32 {
+        self.header().slice_size
+    }
+
+    /// `void FixedPool::debug(int max_lines) const`: the slices on stdout, through C stdio.
+    fn debug(&self, max_lines: c_int) {
+        let mut cursor = DebugCursor::default();
+        swoole_rs_corebase::sys::print(
+            b"===============================debug=================================\n",
+        );
+        while let Some(record) = debug_step(self.header(), &mut cursor, max_lines) {
+            if record.self_link {
+                swoole_rs_corebase::sys::print(
+                    b"-------------------@@@@@@@@@@@@@@@@@@@@@@----------------\n",
+                );
+            }
+            // SAFETY: the arguments match the format.
+            unsafe {
+                libc::printf(
+                    c"#%llu\tslice[%p]\tprev=%p\tnext=%p\ttag=%d\tdata=%p\n".as_ptr(),
+                    libc::c_ulonglong::from(record.line),
+                    record.slice,
+                    record.prev,
+                    record.next,
+                    c_int::from(record.lock),
+                    record.data,
+                )
+            };
+        }
+    }
+}
+
+impl Drop for FixedPool {
+    /// `FixedPool::~FixedPool()`.
+    fn drop(&mut self) {
+        let shared = self.header().shared != 0;
+        // SAFETY: the arena came from `arena(shared, ..)` in `new`, freed once.
+        unsafe { release(shared, self.0.as_ptr().cast()) };
+    }
+}
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no shared mappings")]

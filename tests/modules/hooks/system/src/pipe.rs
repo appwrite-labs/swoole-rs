@@ -23,10 +23,6 @@ unsafe extern "C" {
     fn pipe_new(this: *mut SocketPair, blocking: bool);
     #[link_name = "_ZN6swoole10SocketPairD1Ev"]
     fn socket_pair_drop(this: *mut SocketPair);
-    #[link_name = "_ZNK6swoole10SocketPair4readEPvm"]
-    fn socket_pair_read(this: *const SocketPair, buf: *mut c_void, length: usize) -> isize;
-    #[link_name = "_ZNK6swoole10SocketPair5writeEPKvm"]
-    fn socket_pair_write(this: *const SocketPair, buf: *const c_void, length: usize) -> isize;
 }
 
 impl SocketPair {
@@ -41,14 +37,21 @@ impl SocketPair {
         !self.master_socket.is_null() && !self.worker_socket.is_null()
     }
 
+    /// The record as crates/tls's, whose layout this mirrors.
+    fn pair(&self) -> &swoole_rs_tls::socket_pair::SocketPair {
+        // SAFETY: a constructed pair, which is that record.
+        unsafe { &*std::ptr::from_ref(self).cast() }
+    }
+
     fn write(&self, data: &[u8]) -> isize {
-        // SAFETY: `data` is readable for its length.
-        unsafe { socket_pair_write(self, data.as_ptr().cast(), data.len()) }
+        swoole_rs_tls::socket_pair::write_from(self.pair(), data)
     }
 
     fn read(&self, buf: &mut [u8]) -> isize {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { socket_pair_read(self, buf.as_mut_ptr().cast(), buf.len()) }
+        let (at, length) = (buf.as_mut_ptr().cast(), buf.len());
+        // SAFETY: `buf`'s own bytes, as ones a read may leave unwritten.
+        let buf = unsafe { std::slice::from_raw_parts_mut(at, length) };
+        swoole_rs_tls::socket_pair::read_into(self.pair(), buf)
     }
 }
 

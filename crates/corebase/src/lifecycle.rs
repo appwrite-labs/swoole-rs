@@ -243,16 +243,16 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         return -1;
     };
     if flags & FORK_EXEC == 0 {
-        // `SwooleG.fatal_error` may return, so each check runs.
-        if (host.coroutine_is_in)() {
-            let message = c"must be forked outside the coroutine";
+        let refuse = |message| {
             // SAFETY: the frames a native longjmp skips own nothing.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
+        };
+        // `SwooleG.fatal_error` may return, so each check runs.
+        if (host.coroutine_is_in)() {
+            refuse(c"must be forked outside the coroutine");
         }
         if with(|thread| !thread.async_threads.get().is_null()) {
-            let message = c"can not fork after using async-threads";
-            // SAFETY: as above.
-            unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
+            refuse(c"can not fork after using async-threads");
         }
     }
     if flags & FORK_PRECHECK != 0 {
@@ -260,8 +260,8 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     let previous = crate::signal_mask::block_for_fork();
     let pid = loop {
-        // SAFETY: fork has no memory preconditions; the child continues here.
-        let pid = unsafe { libc::fork() };
+        // The child continues here.
+        let pid = crate::sys::fork();
         if pid >= 0 {
             break pid;
         }
@@ -295,8 +295,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
 /// `swoole_fork_exec`: the child runs `child` and exits 0; the parent gets the
 /// pid, and 0 when fork fails (upstream returns `false`).
 pub fn fork_exec(child: impl FnOnce()) -> libc::pid_t {
-    // SAFETY: fork has no memory preconditions.
-    match unsafe { libc::fork() } {
+    match crate::sys::fork() {
         pid if pid < 0 => 0,
         0 => {
             child();

@@ -1,10 +1,10 @@
 # ListenPort policy ABI (ports)
 
-Feature bit 8388608 (`ports`). Declarations are in
-[swoole_rs_ports.h](swoole_rs_ports.h); crates/phpserver (`Swoole\Server\Port`) and
-crates/server call them. Tests: `tests/modules/ports/README.md`.
+Feature bit 8388608 (`ports`). crates/phpserver (`Swoole\Server\Port`) and
+crates/server call crates/ports' Rust functions; no C or C++ does, so there is no
+header. Tests: `tests/modules/ports/README.md`.
 
-The `swr_v1_ports_*` protocol, event and property exports are pure calls over
+The protocol, event and property functions are pure calls over
 copied scalars and borrowed bytes; no pointer is retained. Returned strings and spans point at static Rust storage. Protocol labels
 and option keys are NUL-terminated (length excludes NUL); class-property spans are
 not. Supported hosts: 64-bit macOS and Linux.
@@ -27,12 +27,12 @@ inline `set_eof_protocol` are Rust functions over a port's `PortConfig`
 
 One immutable 12-event catalog.
 
-- `swr_v1_ports_event(bytes, len, native_casefold)` returns `{index, property}`
-  or index -1 with a null/empty span. `on()` uses host-libc `strncasecmp` with the
-  original `swoole_strcaseeq` bound (locale-sensitive).
-- `swr_v1_ports_callback_property(bytes, len)` (getter) uses Zend ASCII folding in
-  Rust and returns a 16-byte static span, or null/zero. Reusing the locale-sensitive
-  mode here would change Turkish-locale behavior.
+- `event(name, native_casefold)` returns the event's index and property, or `None`.
+  `on()` uses host-libc `strncasecmp` with the original `swoole_strcaseeq` bound
+  (locale-sensitive).
+- `callback_property(name)` (getter) uses Zend ASCII folding in Rust and returns the
+  static property name, or `None`. Reusing the locale-sensitive mode here would change
+  Turkish-locale behavior.
 - `swr_v1_ports_callback_hook(index)` returns a binding ID: 0 none,
   1 Connect, 2 Packet, 3 Close, 4 BufferFull, 5 BufferEmpty.
 

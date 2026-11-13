@@ -40,8 +40,6 @@ swr_v1_tls_owner_prepared swr_v1_tls_owner_new(void);
 void swr_v1_tls_owner_free(const swr_v1_tls_owner *);
 /* The owner's fields and string slots. */
 swr_v1_tls_owner_prepared swr_v1_tls_owner_view(const swr_v1_tls_owner *);
-int swr_v1_tls_owner_set_path(const swr_v1_tls_owner *, uint32_t, const char *,
-                              size_t);
 #ifdef __cplusplus
 }
 #endif

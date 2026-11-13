@@ -64,7 +64,9 @@ mod c {
     // its reference names. `calloc` and `strndup` return null or a fresh
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
     // `sigset_t` is plain bits the set calls read or write whole, and a signal number
-    // outside the set is an error they return.
+    // outside the set is an error they return. `fork` takes nothing and touches no
+    // memory of the caller's; it stays inside the crate, whose callers each say
+    // what their child goes on to do.
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn listen(fd: c_int, backlog: c_int) -> c_int;
@@ -76,6 +78,7 @@ mod c {
             fds: &mut [c_int; 2],
         ) -> c_int;
         pub(crate) safe fn pipe(fds: &mut [c_int; 2]) -> c_int;
+        pub(crate) safe fn fork() -> pid_t;
         pub(crate) safe fn dup(fd: c_int) -> c_int;
         pub(crate) safe fn dup2(from: c_int, to: c_int) -> c_int;
         pub(crate) safe fn flock(fd: c_int, operation: c_int) -> c_int;
@@ -206,7 +209,7 @@ mod c {
 pub use c::kqueue;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, getrlimit, srandom, uname};
+pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
 pub use c::{
@@ -647,21 +650,20 @@ impl<'a> Interface<'a> {
         let address = self.address()?;
         match c_int::from(address.sa_family) {
             libc::AF_INET => {
-                // SAFETY: an AF_INET address is a sockaddr_in.
-                let inet = unsafe {
-                    std::ptr::from_ref(address)
-                        .cast::<libc::sockaddr_in>()
-                        .read_unaligned()
-                };
-                Some(inet.sin_addr.s_addr.to_ne_bytes().into())
+                // A sockaddr_in fits the header: its `sin_addr` follows the family and
+                // the two bytes of `sin_port`, so it is `sa_data[2..6]`.
+                let octets = address.sa_data.get(2..6)?.first_chunk::<4>()?;
+                Some(
+                    octets
+                        .map(|octet| u8::from_ne_bytes(octet.to_ne_bytes()))
+                        .into(),
+                )
             }
             libc::AF_INET6 => {
-                // SAFETY: an AF_INET6 address is a sockaddr_in6.
-                let inet6 = unsafe {
-                    std::ptr::from_ref(address)
-                        .cast::<libc::sockaddr_in6>()
-                        .read_unaligned()
-                };
+                let whole = self.0.ifa_addr.cast::<libc::sockaddr_in6>();
+                // SAFETY: an AF_INET6 address is a sockaddr_in6, longer than the header
+                // `address` borrows, so it is read through the list's own pointer.
+                let inet6 = unsafe { whole.read_unaligned() };
                 Some(inet6.sin6_addr.s6_addr.into())
             }
             _ => None,
@@ -944,6 +946,8 @@ mod tests {
         assert_eq!(if_nametoindex(c"no-such-interface"), 0);
         let interfaces = Interfaces::new().unwrap();
         assert!(interfaces.iter().all(|entry| !entry.name().is_empty()));
+        let loopback = Some(std::net::Ipv4Addr::LOCALHOST.into());
+        assert!(interfaces.iter().any(|entry| entry.ip() == loopback));
     }
 
     #[test]

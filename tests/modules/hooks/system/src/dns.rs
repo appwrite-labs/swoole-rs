@@ -3,8 +3,8 @@
 //! `get_ip_by_hosts`, the DNS server and hosts-path setters and `swoole_load_resolv_conf`
 //! are crates/clients' `dns` functions; the name-resolver list
 //! is Rust's (`swr_v1_core_name_resolver_*`), its `each` a remove; `GethostbynameRequest` and `GetaddrinfoRequest`
-//! are views of the resolver record, so the cases drive that record
-//! (`swr_v1_core_resolver_*`) as `network::gethostbyname`/`getaddrinfo` do; the
+//! are crates/corebase's resolver record, so the cases drive that record
+//! (`ResolverRequest`) as `network::gethostbyname`/`getaddrinfo` do; the
 //! lookup itself is crates/hooks' `resolve::name_resolver_lookup`.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -12,7 +12,8 @@ use std::fs;
 
 use swoole_rs_clients::dns;
 use swoole_rs_corebase::{
-    NameResolverContext as Context, swr_v1_core_name_resolver_add, swr_v1_core_name_resolver_remove,
+    NameResolverContext as Context, ResolverRequest, swr_v1_core_name_resolver_add,
+    swr_v1_core_name_resolver_remove, swr_v1_core_resolver_free,
 };
 
 use super::{
@@ -33,55 +34,7 @@ fn context_of(kind: c_int) -> Context {
     }
 }
 
-#[repr(C)]
-struct ResolverFields {
-    family: c_int,
-    socktype: c_int,
-    protocol: c_int,
-    error: c_int,
-    count: c_int,
-}
-
-#[repr(C)]
-struct ResolverPrepared {
-    owner: *mut c_void,
-    fields: *mut ResolverFields,
-    name: *const c_void,
-    service: *const c_void,
-    address: *const c_void,
-}
-
-#[repr(C)]
-struct ResolverText {
-    bytes: [c_char; 46],
-    valid: bool,
-}
-
-#[repr(C)]
-struct StringView {
-    data: *const c_char,
-    length: usize,
-}
-
 unsafe extern "C-unwind" {
-    fn swr_v1_core_resolver_create(
-        family: c_int,
-        socktype: c_int,
-        protocol: c_int,
-        name: *const c_char,
-        name_length: usize,
-        service: *const c_char,
-        service_length: usize,
-    ) -> ResolverPrepared;
-    fn swr_v1_core_resolver_free(owner: *mut c_void);
-    fn swr_v1_core_resolver_host(owner: *mut c_void) -> c_int;
-    fn swr_v1_core_resolver_lookup(
-        owner: *mut c_void,
-        unknown: unsafe extern "C" fn(*mut c_void, c_int) -> bool,
-        context: *mut c_void,
-    ) -> c_int;
-    fn swr_v1_core_resolver_next(owner: *const c_void, cursor: *mut usize) -> ResolverText;
-    fn swr_v1_core_string_view(string: *const c_void) -> StringView;
     fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool;
 }
 
@@ -140,33 +93,15 @@ fn name_resolver_lookup(host_name: &str, ctx: &mut Context) -> String {
 /// `GethostbynameRequest req(name, family); network::gethostbyname(&req)`: the status
 /// and `req.addr`.
 fn gethostbyname(name: &CStr, family: c_int) -> (c_int, String) {
-    // SAFETY: a NUL-terminated name and an empty service.
-    let req = unsafe {
-        swr_v1_core_resolver_create(
-            family,
-            0,
-            0,
-            name.as_ptr(),
-            name.to_bytes().len(),
-            c"".as_ptr(),
-            0,
-        )
-    };
+    let req = ResolverRequest::create(family, 0, 0, name.to_bytes(), b"");
     assert!(!req.owner.is_null());
-    // SAFETY: the record just made.
-    let status = unsafe { swr_v1_core_resolver_host(req.owner) };
-    // SAFETY: the record's address slot.
-    let view = unsafe { swr_v1_core_string_view(req.address) };
-    // SAFETY: the view's bytes, read before the record goes.
-    let addr = unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.length) }.to_vec();
+    // SAFETY: the record just made, live until it is freed below.
+    let record = unsafe { &*req.owner };
+    let status = record.host();
+    let addr = record.address();
     // SAFETY: frees the record once.
     unsafe { swr_v1_core_resolver_free(req.owner) };
     (status, String::from_utf8(addr).unwrap())
-}
-
-/// `network::getaddrinfo`'s warning for an unknown family is a log line; the lookup goes on.
-unsafe extern "C" fn unknown_family(_: *mut c_void, _: c_int) -> bool {
-    true
 }
 
 struct Getaddrinfo {
@@ -177,42 +112,20 @@ struct Getaddrinfo {
 }
 
 /// `GetaddrinfoRequest req(hostname, family, SOCK_STREAM, 0, ""); network::getaddrinfo(&req);
-/// req.parse_result(ip_list)`.
+/// req.parse_result(ip_list)`. `network::getaddrinfo`'s warning for an unknown family is a
+/// log line; the lookup goes on.
 fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
-    // SAFETY: as in `gethostbyname`.
-    let req = unsafe {
-        swr_v1_core_resolver_create(
-            family,
-            SOCK_STREAM,
-            0,
-            hostname.as_ptr(),
-            hostname.to_bytes().len(),
-            c"".as_ptr(),
-            0,
-        )
-    };
+    let req = ResolverRequest::create(family, SOCK_STREAM, 0, hostname.to_bytes(), b"");
     assert!(!req.owner.is_null());
-    // SAFETY: the record just made.
-    let status =
-        unsafe { swr_v1_core_resolver_lookup(req.owner, unknown_family, std::ptr::null_mut()) };
-    let mut ip_list = Vec::new();
-    let mut cursor = 0;
-    loop {
-        // SAFETY: walks the record's results.
-        let address = unsafe { swr_v1_core_resolver_next(req.owner, &mut cursor) };
-        if !address.valid {
-            break;
-        }
-        // SAFETY: a NUL-terminated presentation address.
-        ip_list.push(
-            unsafe { CStr::from_ptr(address.bytes.as_ptr()) }
-                .to_str()
-                .unwrap()
-                .to_owned(),
-        );
-    }
-    // SAFETY: the record's fields.
-    let (count, error) = unsafe { ((*req.fields).count, (*req.fields).error) };
+    // SAFETY: the record just made, live until it is freed below.
+    let record = unsafe { &*req.owner };
+    let status = record.lookup(|_| true);
+    let ip_list = record
+        .addresses()
+        .into_iter()
+        .map(|address| String::from_utf8(address).unwrap())
+        .collect();
+    let (count, error) = (record.fields().count, record.fields().error);
     // SAFETY: frees the record once.
     unsafe { swr_v1_core_resolver_free(req.owner) };
     Getaddrinfo {

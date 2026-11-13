@@ -259,14 +259,7 @@ def plan(args, reports):
         if integrate:
             script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
                    '--build-manifest', built, *report('ports-configuration'))
-        script('ports-policy', 'tests/modules/ports/gate.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, *report('ports-policy'))
-        phase = 'ports-callback-property'
-        script(phase, 'tests/modules/ports/callback_property.py', '--source', ROOT / 'target/upstream/src', '--sanitize',
-               '--archive', archive, *report(phase))
     if 'corebase' in modules:
-        script('corebase-dns-request-guard', 'tests/modules/corebase/resolver_guard.py',
-               '--archive', archive, *report('corebase-dns-request-guard'))
         script('corebase-record-views', 'tests/modules/corebase/record_views.py',
                '--archive', archive, *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))

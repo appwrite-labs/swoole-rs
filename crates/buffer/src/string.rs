@@ -23,6 +23,15 @@ pub struct Allocator {
     pub free: unsafe extern "C" fn(*mut c_void),
 }
 
+impl Allocator {
+    /// `malloc(size)`: `size` bytes of this allocator's, or null.
+    #[inline]
+    fn allocate(&self, size: usize) -> *mut c_void {
+        // SAFETY: an allocator's malloc, which takes any size.
+        unsafe { (self.malloc)(size) }
+    }
+}
+
 /// `SwooleG.std_allocator`, which only ever holds libc's allocator.
 pub static STD_ALLOCATOR: Allocator = Allocator {
     malloc: libc::malloc,
@@ -184,8 +193,7 @@ impl CppString {
         self.length = 0;
         self.size = size;
         self.offset = 0;
-        // SAFETY: an allocator's malloc.
-        self.str = checked(unsafe { (with.malloc)(size) });
+        self.str = checked(with.allocate(size));
         self.allocator = Some(with);
     }
 
@@ -435,8 +443,7 @@ impl CppString {
         });
         // An empty String has no allocator yet; the buffer then names the one that made it.
         let with = self.allocator.unwrap_or(&STD_ALLOCATOR);
-        // SAFETY: an allocator's malloc.
-        let new_value: *mut u8 = unsafe { (with.malloc)(size) }.cast();
+        let new_value: *mut u8 = with.allocate(size).cast();
         if new_value.is_null() {
             return ptr::null_mut();
         }
@@ -527,16 +534,6 @@ upstream! {
         this.dispose();
         this
     }
-    "_ZN6swoole6String4growEm", "_ZN6swoole6String4growEm" =>
-    /// `String::grow`: counts `increment` more bytes, doubling a buffer they fill.
-    /// # Safety
-    /// As `CppString::set_len` of `len() + increment`.
-    pub unsafe extern "C" fn swr_string_grow(this: &mut CppString, increment: usize) {
-        this.length = this.length.wrapping_add(increment);
-        if this.length == this.size {
-            this.reserve(this.size.wrapping_mul(2));
-        }
-    }
     "_ZNK6swoole6String6substrEmm", "_ZNK6swoole6String6substrEmm" =>
     /// `String substr(size_t, size_t) const`. The C++ ABI returns a class with a
     /// destructor in caller memory (`sret`), as C does a 40-byte struct.
@@ -565,13 +562,6 @@ upstream! {
     "_ZN6swoole6String7releaseEv", "_ZN6swoole6String7releaseEv" =>
     pub extern "C" fn swr_string_release(this: &mut CppString) -> *mut u8 {
         this.release()
-    }
-    "_ZN6swoole6String6repeatEPKcmm", "_ZN6swoole6String6repeatEPKcmm" =>
-    /// # Safety
-    /// `data` holds `length` bytes.
-    pub unsafe extern "C" fn swr_string_repeat(this: &mut CppString, data: *const u8, length: usize, count: usize) {
-        // SAFETY: as the caller promises.
-        this.repeat(unsafe { bytes(data, length) }, count);
     }
     "_ZN6swoole6String6appendEPKcm", "_ZN6swoole6String6appendEPKcm" =>
     /// # Safety

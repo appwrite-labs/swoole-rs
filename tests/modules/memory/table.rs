@@ -154,7 +154,7 @@ impl Owned {
 impl Drop for Owned {
     fn drop(&mut self) {
         let created = self.get().ready();
-        let arena = unsafe { Table::destroy(self.table) };
+        let arena = unsafe { (*self.table).destroy() };
         assert_eq!(!arena.is_null(), created);
         assert!(arena.is_null() || arena == self.arena.as_mut_ptr().cast());
         // Other processes sharing the header see the table destroyed.
@@ -528,7 +528,7 @@ fn make(rows: u32, conflict: f32) -> *mut Table {
 
 /// `Table::destroy()`.
 fn destroy(table: *mut Table) {
-    let arena = unsafe { Table::destroy(table) };
+    let arena = unsafe { (*table).destroy() };
     if !arena.is_null() {
         unsafe { crate::members::sw_shm_free(arena.cast()) };
     }

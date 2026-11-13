@@ -149,11 +149,8 @@ pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -
     OK
 }
 /// crates/reactor's, which reads the thread's reactor.
-pub(super) unsafe extern "C-unwind" fn swoole_event_write(
-    _: *mut SocketRecord,
-    _: *const c_void,
-    length: usize,
-) -> isize {
+pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> isize {
+    let length = data.len();
     log(format!("write {length}"));
     if log::last_error() == ERROR_OUTPUT_BUFFER_OVERFLOW {
         ERR as isize

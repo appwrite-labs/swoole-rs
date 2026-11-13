@@ -22,5 +22,10 @@ cc = { version = "=1.10.0", optional = true }
 name = "swoole_rs_corebase"
 crate-type = ["rlib"]
 
+# The resolver record's former native gate and C++ witnesses (tests/modules/corebase/README.md).
+[[test]]
+name = "resolver"
+path = "../../tests/modules/corebase/resolver.rs"
+
 [lints]
 workspace = true

@@ -30,7 +30,7 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
-use swoole_rs_reactor::event_api::swoole_event_write;
+use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
 use swoole_rs_reactor::{Event, Running};
 use swoole_rs_reactor::{
@@ -51,10 +51,10 @@ use swoole_rs_tls::{
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
+    async_dispatch, event_write, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
     socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
-    socket_ssl_set_host_name, socket_ssl_verify, ssl_context_create, swoole_event_write,
-    with_thread_buffer, writable_callback,
+    socket_ssl_set_host_name, socket_ssl_verify, ssl_context_create, with_thread_buffer,
+    writable_callback,
 };
 
 /// The flags [`Client::flag`] reads.
@@ -1690,10 +1690,9 @@ fn send(this: Handle, data: &[u8], flags: c_int) -> isize {
 
 /// `Client_tcp_send_async`: queue on the reactor, raising `onBufferFull` at the high watermark.
 fn send_async(this: Handle, data: &[u8]) -> isize {
-    let (at, length) = (data.as_ptr().cast(), data.len());
-    let mut n = length.cast_signed();
-    // SAFETY: the live client's socket; the data's bytes, copied by the reactor.
-    if unsafe { swoole_event_write(this.socket_ptr(), at, length) } < 0 {
+    let mut n = data.len().cast_signed();
+    // The live client's socket, deleted from the reactor before its record is freed.
+    if event_write(this.socket(), data) < 0 {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return ERR as isize;
         }

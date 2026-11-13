@@ -36,5 +36,10 @@ swoole-rs-http2 = { path = "../http2" }
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
 
+# The former native gates against the pinned catalog and getter (tests/modules/ports/README.md).
+[[test]]
+name = "catalog"
+path = "../../tests/modules/ports/catalog.rs"
+
 [lints]
 workspace = true

@@ -28,7 +28,7 @@ use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
     process_pool::{PoolRef, SW_IPC_MAX_SIZE},
     task_file::{Packed, TaskBuffer},
-    task_sync::{Bailed, MultiTask, TaskHost, Tasks},
+    task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting},
 };
 use swoole_rs_server::{task_worker_ops::finish, view};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
@@ -87,9 +87,7 @@ struct Host<'a> {
 }
 
 impl TaskHost for Host<'_> {
-    fn dispatch(&mut self, task: *mut u8, worker_id: &mut c_int, blocking: bool) -> bool {
-        // SAFETY: a packed task, which nothing writes while it is sent.
-        let task = unsafe { Packed::from_raw(task.cast()) };
+    fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
         methods::dispatch(self.pool, task, worker_id, blocking) == SW_OK
     }
 
@@ -118,33 +116,36 @@ impl TaskHost for Host<'_> {
     }
 }
 
-/// `serv`'s task state; for a call that waits (`sync`), with this worker's
-/// notify pipe, lock and `task_results` slot.
-fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host<'_>> {
+/// `serv`'s task state.
+fn task_state(serv: view::Server<'_>) -> Tasks<'_, Host<'_>> {
     let counters = serv.counters();
-    let mut host = Host {
-        pool: serv.task_pool_ref(),
-        pipe: None,
-        lock: None,
-    };
-    let mut result = ptr::null_mut();
-    if sync {
-        let id = swoole_get_worker_id().c_cast::<u16>();
-        // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
-        host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
-        host.lock = serv
-            .worker_record(id)
-            .and_then(swoole_rs_process::worker_record::Worker::lock);
-        let results = serv.config().task_results.as_ptr().cast::<u8>();
-        let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
-        result = results.wrapping_add(usize::from(id) * size);
-    }
     Tasks {
-        host,
+        host: Host {
+            pool: serv.task_pool_ref(),
+            pipe: None,
+            lock: None,
+        },
         tasking: &counters.tasking_num,
         count: &counters.task_count,
-        result,
     }
+}
+
+/// `serv`'s task state for a call that waits, with this worker's notify pipe, lock
+/// and `task_results` slot; `None` before the server has its results.
+fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
+    let mut tasks = task_state(serv);
+    let id = swoole_get_worker_id().c_cast::<u16>();
+    // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
+    tasks.host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
+    tasks.host.lock = serv
+        .worker_record(id)
+        .and_then(swoole_rs_process::worker_record::Worker::lock);
+    let results = ptr::NonNull::new(serv.config().task_results.as_ptr().cast::<u8>())?;
+    let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
+    let slot = ptr::NonNull::new(results.as_ptr().wrapping_add(usize::from(id) * size))?;
+    // SAFETY: this worker's slot of the server's `task_results`, shared memory that
+    // holds an `EventData` per worker for as long as the server lives.
+    Some(tasks.waiting(unsafe { ResultSlot::new(slot) }))
 }
 
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
@@ -160,17 +161,10 @@ impl MultiTask for Multi<'_> {
         self.count
     }
 
-    fn pack(&mut self, index: u16, event: *mut u8) -> Result<i64, Bailed> {
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
         let Some(data) = self.tasks.and_then(|tasks| tasks.index(u64::from(index))) else {
             return Ok(-1);
         };
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "task_sync's event is a zeroed Vec<u64> of SW_IPC_MAX_SIZE bytes"
-        )]
-        let event = event.cast::<TaskBuffer>();
-        // SAFETY: as above, an aligned `TaskBuffer` it lends for the call.
-        let event = unsafe { &mut *event };
         encode(data, event).map_err(|Bailout| Bailed)
     }
 
@@ -349,8 +343,8 @@ fn flag(buf: &mut TaskBuffer, flags: u32) {
 
 /// `serv->task(buf, dst_worker_id)`.
 fn dispatch(server: view::Server<'_>, buf: &mut TaskBuffer, dst: &mut c_int) -> bool {
-    task_state(server, false)
-        .task(buf.as_mut_ptr().cast(), dst, false)
+    task_state(server)
+        .task(buf.packed(), dst, false)
         .unwrap_or_else(|Bailed| {
             Bailout.defer();
             false
@@ -453,12 +447,15 @@ fn taskwait(call: &Call) {
     }
     let mut dst = dst.c_cast::<c_int>();
     let Some(co) = Coroutine::current() else {
-        let mut tasks = task_state(serv, true);
-        let done = match tasks.task_sync(buf.as_mut_ptr().cast(), &mut dst, timeout) {
+        let Some(mut tasks) = wait_state(serv) else {
+            return call.set_bool(false);
+        };
+        let done = match tasks.task_sync(buf.packed(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
             Ok(true) => {
-                // SAFETY: the result the task worker packed into the slot.
-                let result = unsafe { Packed::from_raw(tasks.result.cast()) };
+                // SAFETY: the result the task worker packed into the slot before
+                // it notified this worker.
+                let result = unsafe { Packed::from_raw(tasks.result().as_ptr().cast()) };
                 return_decoded(call, decode(result))
             }
             Ok(false) => false,
@@ -521,12 +518,14 @@ fn task_wait_multi(call: &Call) {
         out: &mut out,
         count: u16::try_from(n_task).unwrap_or_default(),
     };
-    let done = task_state(serv, true)
-        .task_sync_many(&mut multi, timeout)
-        .unwrap_or_else(|Bailed| {
-            Bailout.defer();
-            false
-        });
+    let done = wait_state(serv).is_some_and(|mut tasks| {
+        tasks
+            .task_sync_many(&mut multi, timeout)
+            .unwrap_or_else(|Bailed| {
+                Bailout.defer();
+                false
+            })
+    });
     if done {
         call.set_owned(out.into_owned());
     } else {

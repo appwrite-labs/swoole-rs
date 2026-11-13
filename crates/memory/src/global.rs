@@ -1,15 +1,18 @@
-//! `GlobalMemory`'s pages: a bump allocator over pages from `sw_shm_malloc` (shared)
-//! or `sw_malloc`, freed with the pool.
-use crate::members::{arena, release};
+//! `GlobalMemory`'s pages: a bump allocator over anonymous mappings, shared with
+//! forked processes or (as `sw_malloc`'s memory would be) copied by a fork, unmapped
+//! with the pool.
+use crate::members::Shm;
 use std::ffi::c_void;
-use std::ptr::{self, NonNull};
+use std::ptr;
 use swoole_rs_corebase::CCast;
 
-/// Page invariant: every entry of `pages` is a live, 8-aligned `page_size`-byte page
-/// this registry got from `arena(shared, ..)` and frees on drop, and
-/// `offset <= page_size` counts the bytes already allocated in the last page.
+/// Page invariant: every entry of `pages` is a live mapping whose payload is 8-aligned
+/// and `page_size` bytes, which this registry made and unmaps on drop, and
+/// `offset <= page_size` counts the bytes already allocated in the last page. A
+/// mapping starts zeroed and no block is handed out twice, so the bytes at and after
+/// `offset` are zero.
 pub(crate) struct Global {
-    pages: Vec<NonNull<u8>>,
+    pages: Vec<Shm>,
     pub(crate) page_size: u32,
     offset: usize,
     shared: bool,
@@ -45,9 +48,15 @@ impl Global {
         if self.pages.try_reserve(1).is_err() {
             return false;
         }
-        let Some(page) = NonNull::new(arena(self.shared, self.page_size as usize).cast()) else {
-            return false;
+        let size = self.page_size as usize;
+        let page = if self.shared {
+            Shm::malloc(size)
+        } else {
+            Shm::calloc_private(1, size)
         };
+        if page.is_null() {
+            return false;
+        }
         self.pages.push(page);
         self.offset = 0;
         true
@@ -74,8 +83,8 @@ impl Global {
         };
         // `offset + total <= page_size` (`fits`, and checked above), so the 8-byte header
         // and `size` payload bytes lie in the last page (see `Global`); `offset` stays
-        // 8-aligned.
-        let block = page.as_ptr().wrapping_add(self.offset);
+        // 8-aligned. The payload is zero already: the mapping's own, never handed out.
+        let block = page.as_ptr().cast::<u8>().wrapping_add(self.offset);
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "an 8-aligned native block header storing a sub-page uint32_t size"
@@ -84,8 +93,6 @@ impl Global {
         unsafe {
             block.cast::<u32>().write(size.c_cast::<u32>());
         };
-        // SAFETY: as above.
-        unsafe { ptr::write_bytes(block.wrapping_add(8), 0, size) };
         self.offset += total;
         block.wrapping_add(8).cast()
     }
@@ -103,9 +110,8 @@ impl Global {
 
 impl Drop for Global {
     fn drop(&mut self) {
-        for page in self.pages.drain(..) {
-            // SAFETY: a live page `arena(shared, ..)` made (see `Global`), freed once.
-            unsafe { release(self.shared, page.as_ptr().cast()) };
+        for page in &mut self.pages {
+            page.free();
         }
     }
 }

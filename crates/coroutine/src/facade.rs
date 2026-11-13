@@ -14,7 +14,7 @@ use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_i
 use crate::{
     Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
 };
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
 use std::io;
@@ -270,22 +270,16 @@ extern "C-unwind" fn print_list() {
 /// records `bound_cid` and raises the fatal error.
 ///
 /// # Safety
-/// `event` is a NUL-terminated string.
-#[unsafe(export_name = "_ZN6swoole9Coroutine24print_socket_bound_errorEiPKcl")]
-pub unsafe extern "C-unwind" fn print_socket_bound_error(
-    fd: c_int,
-    event: *const c_char,
-    bound_cid: c_long,
-) {
+/// As [`fatal_error`]: the error may bail out of the caller's frames.
+pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_long) {
     with_scheduler(|s| s.socket_bound_cid = bound_cid);
-    // SAFETY: as the caller promises.
-    let event = unsafe { CStr::from_ptr(event) }.to_string_lossy();
+    let event = event.to_string_lossy();
     let message = format!(
         "Socket#{fd} has already been bound to another coroutine#{bound_cid}, {event} of the same socket in coroutine#{} at the same time is not allowed",
         swoole_coroutine_get_id()
     );
     let message = CString::new(message).unwrap_or_default();
-    // SAFETY: Swoole's fatal error hook.
+    // SAFETY: Swoole's fatal error hook, as the caller promises.
     unsafe { fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND, &message) };
 }
 

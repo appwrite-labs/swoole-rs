@@ -751,6 +751,53 @@ pub mod http_static_context {
     }
 }
 
+/// The pinned `Swoole\Server\Port` event catalog and `getCallback` (see
+/// `shim/ports.cc`): the catalog's lookup folds case through libc's `strncasecmp`, so
+/// in the process locale, and the getter runs in a model of its Zend calls.
+pub mod ports {
+    use std::ffi::{c_char, c_int, c_uint};
+
+    unsafe extern "C" {
+        /// How many events the catalog has.
+        #[link_name = "swr_oracle_ports_events"]
+        pub safe fn events() -> usize;
+        /// Entry `index`'s key, callback type and name (its property is `on` and the
+        /// name), in the order that numbers the getter model's properties from 1.
+        #[link_name = "swr_oracle_ports_entry"]
+        pub fn entry(
+            index: usize,
+            key: *mut *const c_char,
+            key_length: *mut usize,
+            name: *mut *const c_char,
+            name_length: *mut usize,
+        ) -> c_int;
+        /// The callback type `name` registers, exactly or (`folded`) as upstream
+        /// `swoole_strcaseeq` matches it, and the entry's name; -1 for none.
+        #[link_name = "swr_oracle_ports_event"]
+        pub fn event(
+            name: *const c_char,
+            length: usize,
+            folded: bool,
+            found: *mut *const c_char,
+            found_length: *mut usize,
+        ) -> c_int;
+        /// Gives the getter model's object every event's property: a callback, or null.
+        #[link_name = "swr_oracle_ports_properties"]
+        pub safe fn properties(null_properties: bool);
+        /// Upstream `Port::getCallback(name)` over the model: the number of the property
+        /// it returned (0 for null), its Zend calls in order (valid until the next
+        /// call), and how many times it lowercased the name.
+        #[link_name = "swr_oracle_ports_get_callback"]
+        pub fn get_callback(
+            name: *const c_char,
+            length: usize,
+            calls: *mut *const c_char,
+            calls_length: *mut usize,
+            lowercased: *mut c_uint,
+        ) -> c_uint;
+    }
+}
+
 pub mod protocols {
     use std::ffi::{c_char, c_int, c_long};
 

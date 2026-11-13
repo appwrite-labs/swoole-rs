@@ -35,6 +35,26 @@ native-TU gates.
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
   slashes, file parent), comparing warnings and `swoole_last_error`. The Cargo
   engine must be the one `tools/build_ext.py` recorded in `M` (`tools/ext_identity.py`).
+## The resolver record
+
+`resolver.rs` (`cargo test -p swoole-rs-corebase --test resolver`) holds what two native
+checks asked of `crates/corebase/src/resolver_request.rs`, against the Rust API that was
+under their C exports. Its binary defines `getaddrinfo` and `freeaddrinfo`, as the gate
+did, and passes to libc's unless a test set a fake answer. The exports
+(`swr_v1_core_resolver_new`, `_create`, `_span`, `_resize`, `_assign`, `_lookup`, `_host`,
+`_next`) and the C++ views over them (`ResolverOwner`, `ResolverAddresses`,
+`GethostbynameRequest`, `GetaddrinfoRequest`) had no caller but these checks. The gate
+built its C++ with `-Wall -Werror` under ASan/UBSan; the test doesn't.
+
+| Former check | Rust test or reason |
+| --- | --- |
+| `resolver_guard.cc` (`corebase-dns-request-guard`) | `diagnostic_refusal_cleans_up_and_publishes_nothing`: same fake entry (family 12345), error 55 and count 77, refusal then acceptance, the same statuses, call counts, freed list and published fields. The 0x5a address comes from a faked `AF_INET6` answer in place of `resize(1)` and `memset`, and is read back with `ResolverRequest::results` |
+| the guard's contained `std::bad_alloc` | none: the diagnostic is a Rust closure, which throws nothing |
+| the guard's unchanged `data` pointer after a refusal | none: Rust lends no pointer into the addresses; their length and bytes are compared |
+| `rust_dns_request.numeric_host_owner_and_independent_copies` (hooks fixture) | `numeric_host_owner_and_independent_records`: the same two lookups and expected texts, over two records in place of a C++ copy, assignment and self-assignment |
+| `rust_dns_request.hints_vectors_and_failure_publication` (hooks fixture) | `hints_vectors_and_failure_publication`: the same hints, the family -123 failure, and the count and address bytes it must keep. The parts over a C++ copy (an edited copy's text, `clear`, `resize`, assignment) have no counterpart |
+| `rust_dns_request.native_output_append_exception_is_contained` (hooks fixture) | `an_ipv6_result_reads_back_as_its_text`, for the `AF_INET6` texts it read. Its other half has no form: it threw `std::bad_alloc` from a C++ `emplace_back` between two `swr_v1_core_resolver_next` calls, and `ResolverRequest::addresses` builds its list in Rust |
+
 ## Helpers
 
 Rust unit tests: the task-directory policy in `crates/corebase/src/config_state.rs`,

@@ -140,6 +140,18 @@ pub struct Sendfile {
     pub warn: u32,
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe extern "C" {
+    /// Linux's `sendfile(2)`: reads its descriptors and count, and reads and advances
+    /// the one `off_t` it is lent, or the file's own position without one.
+    safe fn sendfile(
+        out_fd: c_int,
+        in_fd: c_int,
+        offset: Option<&mut off_t>,
+        count: usize,
+    ) -> isize;
+}
+
 /// `swoole_sendfile` (upstream `src/os/sendfile.cc`) on Linux: the direct syscall,
 /// from `offset` (advanced) or the file's own position, with its errno.
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -150,9 +162,7 @@ pub fn swr_v1_os_sendfile(
     offset: Option<&mut off_t>,
     size: usize,
 ) -> Sendfile {
-    let offset = offset.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-    // SAFETY: `offset` is null or a live, exclusively borrowed `off_t`.
-    let result = unsafe { libc::sendfile(out_fd, in_fd, offset, size) };
+    let result = sendfile(out_fd, in_fd, offset, size);
     Sendfile { result, warn: 0 }
 }
 

@@ -275,8 +275,8 @@ mod native {
     }
 
     pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {
-        // SAFETY: a NUL-terminated name; the report is fatal in a running server.
-        unsafe { print_socket_bound_error(fd, event.as_ptr(), cid) };
+        // SAFETY: the report is fatal in a running server.
+        unsafe { print_socket_bound_error(fd, event, cid) };
     }
 
     pub(super) fn sleep() {

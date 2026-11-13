@@ -412,36 +412,3 @@ pub fn call_handler(
         )
     }
 }
-
-/// `bool zend::function::call(zend_fcall_info_cache *, uint32_t, zval *, zval *, bool)`
-/// (the bundled curl's `zend::Function::call`): `function_call` in a
-/// coroutine, warning as `sw_callable_warning`, with a bailout re-raised.
-/// # Safety
-/// As `function_call`, from a frame that owns nothing that needs a drop.
-// The bundled curl's symbol, over Zend's call, which the unit tests don't link.
-#[cfg(not(test))]
-#[unsafe(export_name = "_ZN4zend8function4callEP22_zend_fcall_info_cachejP12_zval_structS4_b")]
-unsafe extern "C" fn zend_function_call(
-    cache: *mut zend_fcall_info_cache,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-    coroutine: bool,
-) -> bool {
-    // SAFETY: per the caller.
-    let result = unsafe {
-        swoole_rs_zend::host::function_call(
-            cache,
-            argc,
-            argv,
-            retval,
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::sys::swr_zend_callable_warning,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    };
-    let called = matches!(result, Ok(true));
-    bailout::raise(result.map(drop));
-    called
-}

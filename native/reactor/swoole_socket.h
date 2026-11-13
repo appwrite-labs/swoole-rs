@@ -37,7 +37,6 @@ enum {
 struct swr_v1_core_resolver;
 
 namespace swoole {
-struct GethostbynameRequest;
 
 namespace network {
 struct Address {

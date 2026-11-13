@@ -94,16 +94,11 @@ static_assert(offsetof(Request, url_offset_) == 12 && offsetof(Request, content_
                   offsetof(Request, native_) == 56 && sizeof(Request) == 88,
               "crates/http/src/request.rs mirrors Request");
 
-int get_method(const char *method_str, size_t method_len);
 const char *get_method_string(int method);
 const char *get_status_message(int code);
 extern int list_of_status_code[128];
 // Decodes in place.
 size_t url_decode(char *str, size_t len);
-// The caller frees the result.
-char *url_encode(char const *str, size_t len);
-bool parse_multipart_boundary(
-    const char *at, size_t length, size_t offset, char **out_boundary_str, int *out_boundary_len);
 ssize_t get_package_length(const Protocol *protocol, network::Socket *conn, PacketLength *pl);
 uint8_t get_package_length_size(network::Socket *conn);
 }  // namespace http_server

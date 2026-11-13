@@ -20,7 +20,8 @@ use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
 use swoole_rs_hooks::co_socket::{self, Co};
-use swoole_rs_hooks::{TimeoutScope, co_io, packet, vector::IoVector};
+use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage};
+use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -175,8 +176,6 @@ pub(super) struct TlsFields {
 /// The owner's string slots (crates/tls/src/owned.rs).
 const TLS_ECDH_CURVE: usize = 1;
 const TLS_DHPARAM: usize = 3;
-const TLS_CERT_FILE: u32 = 4;
-const TLS_KEY_FILE: u32 = 5;
 pub(super) const TLS_HOST_NAME: usize = 8;
 const TLS_CAFILE: usize = 9;
 
@@ -184,17 +183,6 @@ const TLS_CAFILE: usize = 9;
 pub(super) struct IoVec {
     pub(super) base: *mut c_void,
     pub(super) len: usize,
-}
-
-#[repr(C)]
-struct MsgHdr {
-    name: *mut c_void,
-    namelen: u32,
-    iov: *mut IoVec,
-    iovlen: usize,
-    control: *mut c_void,
-    controllen: usize,
-    flags: c_int,
 }
 
 unsafe extern "C" {
@@ -205,16 +193,7 @@ unsafe extern "C" {
         port: c_int,
     ) -> bool;
 
-    #[link_name = "_ZNK6swoole7network6Socket24ssl_get_peer_certificateEPcm"]
-    fn network_peer_certificate(socket: *const NetHead, buf: *mut c_char, n: usize) -> c_int;
-
     pub(super) safe fn swr_v1_tls_owner_new() -> TlsPrepared;
-    fn swr_v1_tls_owner_set_path(
-        owner: *const c_void,
-        index: u32,
-        path: *const c_char,
-        length: usize,
-    ) -> c_int;
     pub(super) fn swr_v1_core_string_set(
         slot: *const c_void,
         bytes: *const c_char,
@@ -548,10 +527,10 @@ impl Sock {
     /// `ssl_get_peer_cert()`: the peer certificate's PEM, or empty.
     fn ssl_get_peer_cert(&self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE];
-        // SAFETY: the open socket's network::Socket and the local buffer.
-        let length = unsafe {
-            network_peer_certificate(self.record().socket, pem.as_mut_ptr().cast(), pem.len())
-        };
+        // SAFETY: the open socket's network::Socket.
+        let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.record().socket.cast()) };
+        let length =
+            swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket.unwrap(), &mut pem);
         pem.truncate(usize::try_from(length).unwrap_or(0));
         pem
     }
@@ -592,20 +571,20 @@ impl Tls {
         );
     }
 
-    fn set_path(&self, index: u32, file: &str) -> bool {
-        let file = cstring(file);
-        // SAFETY: the live owner and a NUL-terminated path.
-        unsafe {
-            swr_v1_tls_owner_set_path(self.0.owner, index, file.as_ptr(), file.count_bytes()) == 0
-        }
+    /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file
+    /// can't be read.
+    fn set_path(&self, which: swoole_rs_tls::Text, file: &str) -> bool {
+        // SAFETY: the live owner, which only the case's thread configures.
+        let owner = unsafe { swoole_rs_tls::Lent::new(self.0.owner.cast()) };
+        owner.set_text(which, file.as_bytes())
     }
 
     fn set_ssl_cert_file(&self, file: &str) -> bool {
-        self.set_path(TLS_CERT_FILE, file)
+        self.set_path(swoole_rs_tls::Text::CertFile, file)
     }
 
     fn set_ssl_key_file(&self, file: &str) -> bool {
-        self.set_path(TLS_KEY_FILE, file)
+        self.set_path(swoole_rs_tls::Text::KeyFile, file)
     }
 
     fn set_ssl_cafile(&self, file: &str) {
@@ -1871,18 +1850,6 @@ fn peek() {
     });
 }
 
-fn msghdr(ivec: &mut IoVec) -> MsgHdr {
-    MsgHdr {
-        name: ptr::null_mut(),
-        namelen: 0,
-        iov: ivec,
-        iovlen: 1,
-        control: ptr::null_mut(),
-        controllen: 0,
-        flags: 0,
-    }
-}
-
 fn sendmsg_and_recvmsg() {
     run(|| {
         let pairs = socket_pair();
@@ -1890,28 +1857,20 @@ fn sendmsg_and_recvmsg() {
 
         go(move || {
             let sock = Sock::with_fd(pairs[0], SW_SOCK_UNIX_STREAM);
-            let mut ivec = IoVec {
-                base: HELLO.as_ptr().cast_mut().cast(),
-                len: length,
-            };
-            let msg = msghdr(&mut ivec);
+            let ivec = [std::io::IoSlice::new(HELLO)];
+            let msg = SendMessage::new(&ivec);
 
-            // SAFETY: the message, over the live vector.
-            let ret = unsafe { sock.co().sendmsg((&raw const msg).cast(), 0) };
+            let ret = sock.co().sendmsg(&msg, 0);
             sock.close();
             assert_eq!(size(ret), length);
         });
 
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
         let mut buf = vec![0_u8; length + 1];
-        let mut ivec = IoVec {
-            base: buf.as_mut_ptr().cast(),
-            len: length,
-        };
-        let mut msg = msghdr(&mut ivec);
+        let mut ivec = [std::io::IoSliceMut::new(&mut buf[..length])];
+        let mut msg = RecvMessage::new(&mut ivec);
 
-        // SAFETY: the message, over the live vector.
-        let ret = unsafe { sock.co().recvmsg((&raw mut msg).cast(), 0) };
+        let ret = sock.co().recvmsg(&mut msg, 0);
         sock.close();
         assert_eq!(&buf[..size(ret)], HELLO);
     });
@@ -2127,29 +2086,6 @@ fn selected_timeout_restore_and_copy() {
     });
 }
 
-// The repo-owned witnesses of C++ copies and std::bad_alloc containment, whose bodies are
-// ../fixture.cc's (formerly tests/modules/hooks/socket_scopes.cpp and dns_request_owner.cpp).
-unsafe extern "C-unwind" {
-    fn swr_case_numeric_host_owner_and_independent_copies();
-    fn swr_case_hints_vectors_and_failure_publication();
-    fn swr_case_native_output_append_exception_is_contained();
-}
-
-fn numeric_host_owner_and_independent_copies() {
-    // SAFETY: the fixture's case.
-    unsafe { swr_case_numeric_host_owner_and_independent_copies() };
-}
-
-fn hints_vectors_and_failure_publication() {
-    // SAFETY: the fixture's case.
-    unsafe { swr_case_hints_vectors_and_failure_publication() };
-}
-
-fn native_output_append_exception_is_contained() {
-    // SAFETY: the fixture's case.
-    unsafe { swr_case_native_output_append_exception_is_contained() };
-}
-
 fn actual_async_numeric_results() {
     run(|| {
         let host = swoole_rs_hooks::resolve::system_gethostbyname(b"127.0.0.1", AF_INET, 2.0);
@@ -2177,22 +2113,10 @@ pub(super) const SCOPE_CASES: super::Cases = &[(
     selected_timeout_restore_and_copy,
 )];
 
-/// `rust_dns_request.<name>`, the C++ witnesses.
-pub(super) const DNS_REQUEST_CASES: super::Cases = &[
-    (
-        "numeric_host_owner_and_independent_copies",
-        numeric_host_owner_and_independent_copies,
-    ),
-    (
-        "hints_vectors_and_failure_publication",
-        hints_vectors_and_failure_publication,
-    ),
-    (
-        "native_output_append_exception_is_contained",
-        native_output_append_exception_is_contained,
-    ),
-    ("actual_async_numeric_results", actual_async_numeric_results),
-];
+/// `rust_dns_request.<name>`. The witnesses of the record's C++ views, which left the
+/// hybrid header, are tests/modules/corebase/resolver.rs's.
+pub(super) const DNS_REQUEST_CASES: super::Cases =
+    &[("actual_async_numeric_results", actual_async_numeric_results)];
 
 /// `coroutine_socket.<name>`, in upstream's order.
 pub(super) const CASES: super::Cases = &[

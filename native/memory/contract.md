@@ -16,7 +16,8 @@ upstream symbols below. Supported hosts are 64-bit macOS and Linux.
 
 ## Fixed pool
 
-Rust only (`crates/memory/src/fixed.rs`): `FixedPool` and the table's row pool.
+Rust only (`crates/memory/src/fixed.rs`): the table's row pool. `FixedPool`, the
+owner of an arena of its own, is test support (`tests/modules/memory/members.rs`).
 The 48-byte header and 24-byte slice headers keep the pinned layout and live in
 the arena, so a shared pool stays visible across fork. Callers serialize.
 
@@ -30,8 +31,9 @@ the arena, so a shared pool stays visible across fork. Callers serialize.
   accounting. The `FixedPool` members keep upstream's assertions and last error.
 - Slice headers may be unaligned (odd table widths): raw unaligned access only.
   alloc/free publish only head/tail/slice_use through raw field addresses.
-- `debug_step` walks the live links for `FixedPool::debug`: negative max prints 1
-  row, max 0 prints 2, larger limits stop after max+2 or list end.
+- `debug_step` (test support, with `FixedPool`) walks the live links for
+  `FixedPool::debug`: negative max prints 1 row, max 0 prints 2, larger limits stop
+  after max+2 or list end.
 
 ## Core channel
 
@@ -64,11 +66,13 @@ accounting, the mutex and the pipe.
 ## Global memory pages
 
 Rust only (`crates/memory/src/global.rs`): `GlobalMemory`'s pages, under its lock.
-Pages come from `sw_shm_malloc` (shared) or `sw_malloc`, rounded up to whole
-system pages, and are freed when the pool is.
+Pages are anonymous mappings, `MAP_SHARED` (shared, as `sw_shm_malloc`'s) or
+`MAP_PRIVATE` (which a fork copies, as it would `sw_malloc`'s memory), rounded up to
+whole system pages, and are unmapped when the pool is.
 
 - alloc writes the 8-byte block header size and returns a zeroed, 8-aligned
-  payload; size 0 still consumes a header. A full page starts a new one. A block
+  payload: a mapping starts zeroed and no block is handed out twice, so nothing
+  zeroes it again. Size 0 still consumes a header. A full page starts a new one. A block
   that can't fit a page is refused with upstream's warning.
 - Fork: a shared GlobalMemory used in a different PID starts a new pool, which
   keeps the inherited one: its pages and pointers stay valid until the pool is
@@ -93,8 +97,9 @@ owner whose constructor returns upstream's throws as errors (-1
 `Exception(SW_ERROR_INVALID_PARAMS)`, -2 `std::bad_alloc`).
 `SwooleG.memory_pool` is the `GlobalMemory` in `members::pool` (`init`,
 `swoole_init`'s; `delete`, `swoole_clean`'s), whose `alloc` aborts where upstream's
-throws. `FixedPool` and `GlobalMemory` have no C++ caller left; their
-members stay Rust-only for upstream's GoogleTests, ported to `tests/modules/memory/`.
+throws. `FixedPool` and `GlobalMemory` have no C++ caller left: `FixedPool` lives
+with upstream's GoogleTests, ported to `tests/modules/memory/`, and `GlobalMemory`'s
+unshared flavour serves only them.
 `swr_table_make` allocates through `members::pool::alloc`; the pool's `free` is
 a no-op, so nothing calls it. These run allocators, mmap and logs with a Rust frame active.
 
@@ -123,3 +128,7 @@ frees the rest and returns the arena for the caller to free with the header.
   Duplicate names keep the first declaration for lookup; every declaration
   takes row space. Columns cannot be added once the table is created.
 - The iterator's cursor and row copy are process-private; its mutex is shared.
+- Each process owns its tables' private parts (columns and cursor) in one list; the
+  shared header only points at them. `Table::destroy` drops the calling process's and
+  `table::release` (MSHUTDOWN) every one left, so a process never frees through a
+  pointer another process wrote into the header.

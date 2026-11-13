@@ -4,7 +4,6 @@
 use std::{
     cell::UnsafeCell,
     ffi::{CStr, c_char},
-    ptr,
     sync::Arc,
 };
 
@@ -36,6 +35,7 @@ impl Bytes {
         Some(Self::Heap(data))
     }
 }
+#[repr(transparent)]
 pub struct StringSlot {
     bytes: UnsafeCell<Bytes>,
 }
@@ -144,31 +144,27 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
     let Some(replacement) = Bytes::copy(value) else {
         return -2;
     };
-    // SAFETY: the slot is live and externally synchronized.
-    let slot = unsafe { &*slot };
-    // SAFETY: publish only after the allocation succeeded; `bytes` may be the
-    // slot's own, which `set_shared` would hold borrowed across the write.
-    unsafe { *slot.bytes.get() = replacement };
+    // The slot is its cell alone (`repr(transparent)`).
+    let current = UnsafeCell::raw_get(slot.cast::<UnsafeCell<Bytes>>());
+    // SAFETY: the slot is live and externally synchronized. Publish only after the
+    // allocation succeeded; `bytes` may be the slot's own, which `set_shared` would
+    // hold borrowed across the write.
+    unsafe { *current = replacement };
     0
 }
 /// Independent value-copy for native `auto snapshot = context.field`; null when
-/// the allocation fails. The returned Arc is released once.
+/// the bytes' allocation fails. Native code hands the box back once, to
+/// `swr_v1_core_string_free`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_string_clone(source: &StringSlot) -> *const StringSlot {
+pub extern "C" fn swr_v1_core_string_clone(source: &StringSlot) -> Option<Box<StringSlot>> {
     let mut slot = StringSlot::new();
-    if slot.set(source.bytes()) != 0 {
-        return ptr::null();
-    }
-    Arc::into_raw(Arc::new(slot))
+    (slot.set(source.bytes()) == 0).then(|| Box::new(slot))
 }
-/// # Safety
-/// slot is one owned Arc returned by clone, released once after its view ends.
+/// Frees the copy `swr_v1_core_string_clone` made, or nothing for null: native code
+/// hands it back once, after its view ends.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_string_free(slot: *const StringSlot) {
-    if !slot.is_null() {
-        // SAFETY: consumes the caller's owned Arc.
-        unsafe { drop(Arc::from_raw(slot)) };
-    }
+pub extern "C" fn swr_v1_core_string_free(slot: Option<Box<StringSlot>>) {
+    drop(slot);
 }
 #[cfg(test)]
 mod tests {
@@ -179,11 +175,10 @@ mod tests {
             let slot = StringSlot::empty();
             let pointer = Arc::as_ptr(&slot);
             assert_eq!(swr_v1_core_string_set(pointer, c"initial".as_ptr(), 7), 0);
-            let copied = swr_v1_core_string_clone(&slot);
-            assert!(!copied.is_null());
+            let copied = swr_v1_core_string_clone(&slot).unwrap();
             assert_eq!(swr_v1_core_string_set(pointer, c"changed".as_ptr(), 7), 0);
             assert_eq!(
-                std::ffi::CStr::from_ptr(swr_v1_core_string_view(&*copied).data).to_bytes(),
+                std::ffi::CStr::from_ptr(swr_v1_core_string_view(&copied).data).to_bytes(),
                 b"initial"
             );
             let embedded = b"a\0b";
@@ -197,7 +192,7 @@ mod tests {
                 std::slice::from_raw_parts(view.data.cast::<u8>(), 4),
                 b"a\0b\0"
             );
-            swr_v1_core_string_free(copied);
+            swr_v1_core_string_free(Some(copied));
         }
     }
     #[test]

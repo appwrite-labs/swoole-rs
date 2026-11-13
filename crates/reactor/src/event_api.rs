@@ -6,7 +6,7 @@
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
-use crate::reactor_upstream::{reactor_change, reactor_interest};
+use crate::reactor_upstream::reactor_change;
 use crate::{ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -34,7 +34,7 @@ pub(crate) fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
     field_mut(|fields| read(fields))
 }
 
-/// The `interest` kind `swoole_event_add_or_update` adds for `event`, if it names one.
+/// The `interest` kind [`add_or_update`] adds for `event`, if it names one.
 fn direction(event: c_int) -> Option<u32> {
     match event {
         EVENT_READ => Some(2),
@@ -140,29 +140,10 @@ pub fn event_del(socket: crate::Socket<'_>) -> c_int {
     })
 }
 
-/// `int swoole_event_add_or_update(Socket *socket, int event)`: `add_read_event` or
-/// `add_write_event`; upstream asserts the event is one of them.
-///
-/// # Safety
-/// As `Reactor::add_read_event`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z26swoole_event_add_or_updatePN6swoole7network6SocketEi")
-)]
-pub unsafe extern "C" fn swoole_event_add_or_update(
-    socket: *mut SocketRecord,
-    event: c_int,
-) -> c_int {
-    let Some(kind) = direction(event) else {
-        debug_assert!(false, "swoole_event_add_or_update: event {event}");
-        return -1;
-    };
-    // SAFETY: as the caller promises.
-    unsafe { reactor_interest(current(), socket, kind, 0) }
-}
-
-/// [`swoole_event_add_or_update`] of a socket that is never freed while registered: -1
-/// without a reactor, or for an event that is neither `SW_EVENT_READ` nor `SW_EVENT_WRITE`.
+/// `int swoole_event_add_or_update(Socket *socket, int event)` (`add_read_event` or
+/// `add_write_event`) of a socket that is never freed while registered: -1 without a
+/// reactor, or for an event that is neither `SW_EVENT_READ` nor `SW_EVENT_WRITE`, where
+/// upstream asserts.
 #[must_use]
 pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> c_int {
     let (Some(reactor), Some(kind)) = (running(), direction(event)) else {
@@ -191,6 +172,20 @@ pub unsafe extern "C-unwind" fn swoole_event_write(
     };
     // SAFETY: as the caller promises.
     unsafe { write(reactor, socket, data, len) }
+}
+
+/// [`swoole_event_write`] of `data` on a socket that is never freed while registered
+/// (a write that can't all go out registers it for writing).
+#[must_use]
+pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> isize {
+    let reactor = current();
+    let Some(write) = field(|fields| fields.write).flatten() else {
+        swoole_rs_corebase::fatal("the reactor has no write function")
+    };
+    // SAFETY: `Reactor::write` of the thread's live reactor, which only its
+    // constructor sets (`ReactorFields` is written through nothing public): a live
+    // record that outlives its registration, and the slice's bytes, which it copies.
+    unsafe { write(reactor, socket.as_ptr(), data.as_ptr().cast(), data.len()) }
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)`.

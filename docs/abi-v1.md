@@ -34,16 +34,10 @@ same target.
 
 ## WebSocket kernel (feature value 1)
 
-The mask kernel is `websocket::mask` under its upstream symbol; nothing else called
-it, so it has no `swr_v1_*` name of its own.
-
-- `void mask(data, length, key)`: XORs `data` in place with a four-byte key. Null or
-  oversized input writes nothing and logs a warning. Length 0 is a no-op and allows
-  null. The key is copied first, so it may alias the payload. Byte alignment suffices.
-
-It allocates nothing, retains no pointer and has no global state. The rest of the codec
-is `native/websocket/swoole_rs_websocket_codec.h`. Both are exported by
-crates/websocket-ffi over crates/websocket's safe codec.
+The WebSocket codec has no C ABI of its own any more: crates/websocket's safe codec
+(`mask`, `encode`, `decode`, `pack_close_frame`) is called from Rust. What
+crates/websocket-ffi still exports is `websocket::get_package_length`, the protocol
+table's length function, under its upstream symbol.
 
 ## Other module contracts
 
