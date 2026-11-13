@@ -1,6 +1,6 @@
 //! `Swoole\\Coroutine\\Lock`: PHP object ownership over the Rust coroutine lock.
 use std::{cell::OnceCell, ffi::c_int};
-use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock, CoroutineOutcome};
+use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_memory::members::pool;
 use swoole_rs_phpstubs::coroutine_lock;
 use swoole_rs_zend::{
@@ -36,12 +36,6 @@ static HOST: CoroutineHost = CoroutineHost {
 };
 
 mod host {
-    use super::{CoroutineOutcome, c_int};
-
-    /// No leaf runs PHP, so none bails out.
-    const fn done(code: c_int) -> CoroutineOutcome {
-        CoroutineOutcome { code, bailed: 0 }
-    }
     pub(super) fn current() -> Option<i64> {
         swoole_rs_phpcoroutines::Coroutine::current().map(swoole_rs_phpcoroutines::Coroutine::cid)
     }
@@ -50,25 +44,24 @@ mod host {
     }
     #[cfg(not(feature = "iouring"))]
     /// The lock sleeps only inside a coroutine.
-    pub(super) fn sleep(seconds: f64) -> CoroutineOutcome {
-        done(swoole_rs_phpcoroutines::sleep(seconds))
+    pub(super) fn sleep(seconds: f64) -> i32 {
+        swoole_rs_phpcoroutines::sleep(seconds)
     }
     /// `Iouring::futex_wait`.
     #[cfg(feature = "iouring")]
-    pub(super) fn wait(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
-        done(swoole_rs_hooks::iouring::futex_wait(word))
+    pub(super) fn wait(word: &std::sync::atomic::AtomicU32) -> i32 {
+        swoole_rs_hooks::iouring::futex_wait(word)
     }
     /// `Iouring::futex_wakeup`.
     #[cfg(feature = "iouring")]
-    pub(super) fn wake(word: &std::sync::atomic::AtomicU32) -> CoroutineOutcome {
-        done(swoole_rs_hooks::iouring::futex_wakeup(word))
+    pub(super) fn wake(word: &std::sync::atomic::AtomicU32) -> i32 {
+        swoole_rs_hooks::iouring::futex_wakeup(word)
     }
-    pub(super) fn warning() -> u8 {
+    pub(super) fn warning() {
         swoole_rs_corebase::log::warning(
             c"swoole::CoroutineLock::lock_impl",
             format_args!("The coroutine lock can only be used in a coroutine environment"),
         );
-        0
     }
 }
 
@@ -132,12 +125,8 @@ fn construct(call: &Call) {
     held.0.get_or_init(|| CoroutineLock::new(shared, &HOST));
     call.set_bool(true);
 }
-fn check(call: &Call, result: CoroutineOutcome) {
-    if result.bailed != 0 {
-        bailout::Bailout.defer();
-        return;
-    }
-    super::lock::check(call, result.code);
+fn check(call: &Call, result: Result<(), i32>) {
+    super::lock::check(call, result.err().unwrap_or(0));
 }
 fn lock(call: &Call) {
     let Ok(operation) = call
