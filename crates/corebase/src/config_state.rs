@@ -49,7 +49,7 @@ struct Global {
     /// `swoole::Allocator`: `malloc`, `calloc`, `realloc` and `free`, or null.
     std_allocator: [AtomicPtr<c_void>; 4],
     /// The empty accessor members' bytes.
-    views: [AtomicU8; 7],
+    views: [AtomicU8; 3],
 }
 
 const _: () = assert!(
@@ -66,7 +66,7 @@ static SWOOLE_G: Global = Global {
     max_sockets: AtomicU32::new(0),
     dns_cache_refresh_time: AtomicU64::new(0),
     std_allocator: [const { AtomicPtr::new(std::ptr::null_mut()) }; 4],
-    views: [const { AtomicU8::new(0) }; 7],
+    views: [const { AtomicU8::new(0) }; 3],
 };
 
 /// `SwooleG.task_tmpfile`, `None` when empty. Its lock is `sw_thread_lock`, which

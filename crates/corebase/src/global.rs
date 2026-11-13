@@ -62,8 +62,7 @@ macro_rules! record {
 record! {
     running: AtomicBool, bool = false,
         #[unsafe(no_mangle)] swr_v1_core_running, #[unsafe(no_mangle)] swr_v1_core_set_running;
-    enable_signalfd: AtomicBool, bool = false,
-        #[unsafe(no_mangle)] swr_v1_core_enable_signalfd, #[unsafe(no_mangle)] swr_v1_core_set_enable_signalfd;
+    enable_signalfd: AtomicBool, bool = false, swr_v1_core_enable_signalfd, swr_v1_core_set_enable_signalfd;
     enable_kqueue: AtomicBool, bool = false, swr_v1_core_enable_kqueue, swr_v1_core_set_enable_kqueue;
     enable_coroutine: AtomicBool, bool = false,
         #[unsafe(no_mangle)] swr_v1_core_enable_coroutine, #[unsafe(no_mangle)] swr_v1_core_set_enable_coroutine;
@@ -77,11 +76,9 @@ record! {
     signal_alarm: AtomicBool, bool = false,
         #[unsafe(no_mangle)] swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
     signal_listener_num: AtomicU32, u32 = 0,
-        #[unsafe(no_mangle)] swr_v1_core_signal_listener_num,
-        #[unsafe(no_mangle)] swr_v1_core_set_signal_listener_num;
+        swr_v1_core_signal_listener_num, #[unsafe(no_mangle)] swr_v1_core_set_signal_listener_num;
     signal_async_listener_num: AtomicU32, u32 = 0,
-        #[unsafe(no_mangle)] swr_v1_core_signal_async_listener_num,
-        #[unsafe(no_mangle)] swr_v1_core_set_signal_async_listener_num;
+        swr_v1_core_signal_async_listener_num, swr_v1_core_set_signal_async_listener_num;
     trace_flags: AtomicI64, c_long = 0, #[unsafe(no_mangle)] swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
     pagesize: AtomicU32, u32 = 0,
         #[unsafe(no_mangle)] swr_v1_core_pagesize, #[unsafe(no_mangle)] swr_v1_core_set_pagesize;
@@ -100,8 +97,7 @@ record! {
         #[unsafe(no_mangle)] swr_v1_core_stdout, swr_v1_core_set_stdout;
     logger: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         #[unsafe(no_mangle)] swr_v1_core_logger, swr_v1_core_set_logger;
-    server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
-        #[unsafe(no_mangle)] swr_v1_core_server, #[unsafe(no_mangle)] swr_v1_core_set_server;
+    server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_server, swr_v1_core_set_server;
     aio_default_socket: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_aio_default_socket, swr_v1_core_set_aio_default_socket;
     fatal_error: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
