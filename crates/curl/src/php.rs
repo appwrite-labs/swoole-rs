@@ -4,7 +4,7 @@
 //! `CurlHandle` zval, checked against the coroutine its multi waits in.
 use crate::{Easy, host};
 use swoole_rs_curl_sys::CURL;
-use swoole_rs_zend::{E_WARNING, bailout, object_of, sys::zval};
+use swoole_rs_zend::{E_WARNING, Value, bailout, sys::zval};
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
 const PHP_FATAL_ERROR: i32 = 503;
@@ -20,8 +20,10 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
     exclusive: bool,
     required: bool,
 ) -> *mut *mut CURL {
-    // SAFETY: per the caller.
-    let object = unsafe { object_of(zid) };
+    // SAFETY: per the caller, a live zval.
+    let Some(object) = unsafe { Value::from_ptr(zid) }.and_then(Value::object) else {
+        return std::ptr::null_mut();
+    };
     // SAFETY: a live object.
     let handlers = unsafe { (*object).handlers };
     // SAFETY: its live handlers; `offset` is where `std` sits in `php_curl`.

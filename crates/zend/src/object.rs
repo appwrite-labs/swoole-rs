@@ -447,8 +447,8 @@ pub unsafe fn set_object(target: *mut zval, std: *mut zend_object) {
 pub unsafe fn init_object(target: *mut zval, ce: *mut zend_class_entry) -> *mut zend_object {
     // SAFETY: per the caller; it only fails for abstract classes and interfaces.
     let _ = unsafe { object_init_ex(target, ce) };
-    // SAFETY: `target` now holds the new object.
-    unsafe { crate::value::obj_of(target) }
+    // SAFETY: `target` now holds the new object, as `obj`, which leads the zval.
+    unsafe { target.cast::<*mut zend_object>().read() }
 }
 
 #[cfg(test)]

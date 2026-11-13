@@ -11,8 +11,8 @@
     )
 )]
 
-use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
+use std::ffi::c_int;
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 const ENTRIES: usize = 1024;
@@ -177,17 +177,17 @@ pub fn swr_v1_utils_wait_registry_size() -> usize {
     size_of::<Registry>()
 }
 
-/// Zero and adopt `memory` as the registry. False for null or misaligned memory.
-/// # Safety
-/// `memory` is null or writable for [`swr_v1_utils_wait_registry_size`] bytes,
-/// shared with every process that waits, and lives as long as they do.
-pub unsafe fn swr_v1_utils_wait_registry_init(memory: *mut c_void) -> bool {
-    if memory.is_null() || !memory.cast::<Registry>().is_aligned() {
+/// Zero and adopt `memory` as the registry: words shared with every process that
+/// waits, lent for the program's life. False when they are too few.
+pub fn swr_v1_utils_wait_registry_init(memory: &'static mut [AtomicU64]) -> bool {
+    let registry = memory.as_mut_ptr().cast::<Registry>();
+    if size_of_val(memory) < size_of::<Registry>() || !registry.is_aligned() {
         return false;
     }
-    // SAFETY: the caller lends `size_of::<Registry>()` writable bytes; all-zero is a valid Registry.
-    unsafe { memory.write_bytes(0, size_of::<Registry>()) };
-    REGISTRY.store(memory.cast(), Ordering::SeqCst);
+    for word in memory.iter_mut() {
+        *word.get_mut() = 0;
+    }
+    REGISTRY.store(registry, Ordering::SeqCst);
     true
 }
 
@@ -199,7 +199,9 @@ fn with<T>(
     if registry.is_null() {
         return Err(libc::EINVAL);
     }
-    // SAFETY: init adopted a registry that lives as long as its users.
+    // SAFETY: init adopted it from words lent to it alone for the program's life,
+    // aligned, long enough and zeroed, which every field of a Registry (atomics
+    // only) takes.
     run(unsafe { &*registry }, word)
 }
 
@@ -242,8 +244,9 @@ mod tests {
     fn registry() {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            let memory = Box::leak(Box::new(std::mem::MaybeUninit::<Registry>::uninit()));
-            assert!(unsafe { swr_v1_utils_wait_registry_init(memory.as_mut_ptr().cast()) });
+            let words = size_of::<Registry>().div_ceil(8);
+            let memory = Vec::from_iter((0..words).map(|_| AtomicU64::new(1))).leak();
+            assert!(swr_v1_utils_wait_registry_init(memory));
         });
     }
 

@@ -3,6 +3,7 @@
 use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zend_object, zval};
 use std::{
     ffi::{CStr, c_char},
+    io::IoSlice,
     marker::PhantomData,
     ptr::NonNull,
 };
@@ -37,6 +38,10 @@ unsafe extern "C" {
     safe fn swr_zend_tsrm_is_main_thread() -> bool;
     /// PHP's clock: no arguments, no PHP state.
     safe fn php_time() -> time_t;
+    /// `is_numeric_string(text, len, lval, dval, false)`: it reads the lent bytes
+    /// (an `IoSlice` is an iovec) and writes the two numbers; errors are off, so
+    /// it raises nothing.
+    safe fn swr_bytes_numeric(text: IoSlice<'_>, lval: &mut i64, dval: &mut f64) -> u8;
 }
 
 mod sealed {
@@ -98,15 +103,7 @@ pub fn time() -> i64 {
 #[must_use]
 pub fn numeric(text: &[u8]) -> (u8, i64, f64) {
     let (mut lval, mut dval) = (0, 0.0);
-    // SAFETY: a live byte range and two writable locals.
-    let kind = unsafe {
-        crate::sys::swr_zend_is_numeric_string(
-            text.as_ptr().cast(),
-            text.len(),
-            &raw mut lval,
-            &raw mut dval,
-        )
-    };
+    let kind = swr_bytes_numeric(IoSlice::new(text), &mut lval, &mut dval);
     (kind, lval, dval)
 }
 

@@ -1,15 +1,19 @@
 //! The string and array predicates, `swoole_parse_str`, and the PCRE and JSON
 //! functions, whose PCRE calls are src/stdext.c's and JSON call zend-sys's.
-use std::{ffi::c_void, ptr};
+use std::{
+    ffi::{c_char, c_void},
+    io::IoSlice,
+    ptr,
+};
 use swoole_rs_zend::{
     Call, UNDEF, ZStr, handlers,
-    sys::{
-        swr_zend_http_estrndup, swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long,
-        zend_string, zval,
-    },
+    sys::{swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long, zend_string, zval},
 };
 
 unsafe extern "C" {
+    /// `estrndup`: it reads the lent bytes (an `IoSlice` is an iovec) and returns
+    /// an emalloc'd NUL-terminated copy.
+    safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> *mut c_char;
     fn swr_phpstdext_pcre_cache(regex: *mut zend_string, result: *mut *mut c_void) -> u8;
     fn swr_phpstdext_pcre_retain(entry: *mut c_void);
     fn swr_phpstdext_pcre_release(entry: *mut c_void);
@@ -94,8 +98,7 @@ fn parse_str(call: &Call) {
     };
     call.set_array();
     // `estrndup`: the SAPI frees it.
-    // SAFETY: Zend copies `text.len()` bytes, in a request.
-    let copy = unsafe { swr_zend_http_estrndup(text.as_ptr().cast(), text.len()) };
+    let copy = swr_bytes_estrndup(IoSlice::new(text));
     // SAFETY: an emalloc'd NUL-terminated copy and the array just made.
     unsafe { swr_zend_treat_string(copy, call.return_value()) };
 }

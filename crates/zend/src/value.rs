@@ -1,7 +1,6 @@
 //! Raw zval reads and stores, and the empty string and array.
 use crate::sys::{
-    _zval_struct__bindgen_ty_1, HashTable, zend_empty_array, zend_object, zend_string, zend_value,
-    zval,
+    _zval_struct__bindgen_ty_1, HashTable, zend_empty_array, zend_string, zend_value, zval,
 };
 
 unsafe extern "C" {
@@ -26,26 +25,6 @@ const _: () = assert!(
     std::mem::offset_of!(zval, value) == 0,
     "the value union leads the zval"
 );
-
-/// `Z_ARRVAL_P`.
-/// # Safety
-/// `array` is a live array zval.
-#[must_use]
-#[inline]
-pub unsafe fn table(array: *const zval) -> *mut HashTable {
-    // SAFETY: per the caller, an array zval holds `arr`, at offset 0.
-    unsafe { array.cast::<*mut HashTable>().read() }
-}
-
-/// `Z_OBJ_P`.
-/// # Safety
-/// `object` is a live object zval.
-#[must_use]
-#[inline]
-pub unsafe fn obj_of(object: *const zval) -> *mut zend_object {
-    // SAFETY: per the caller, an object zval holds `obj`, at offset 0.
-    unsafe { object.cast::<*mut zend_object>().read() }
-}
 
 /// The two stores of Zend's `ZVAL_*` setters: the value and its type info,
 /// leaving `u2` (a bucket's chain, a frame's argument count) untouched.

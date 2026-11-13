@@ -93,7 +93,7 @@ fn same(a: zif_handler, b: zif_handler) -> bool {
 /// `ZSTR_VAL`/`ZSTR_LEN` of a live string.
 fn bytes<'a>(string: *const zend_string) -> &'a [u8] {
     // SAFETY: Zend's live, interned function and class names.
-    unsafe { swoole_rs_zend::string::bytes(string) }
+    unsafe { swoole_rs_zend::ZStr::from_ptr(string) }.map_or(&[], swoole_rs_zend::ZStr::bytes)
 }
 
 /// `zend::get_function(name)`: the function table's entry, if any.

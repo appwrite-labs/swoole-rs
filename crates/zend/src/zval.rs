@@ -5,12 +5,11 @@
 //! reads it safely from then on.
 use crate::{
     bailout,
-    string::bytes,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
+        add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
         swr_zend_http_build_query, swr_zend_separate_array, swr_zend_serialize,
         swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
         swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
@@ -25,6 +24,7 @@ use std::{
     borrow::{Borrow, Cow},
     cell::UnsafeCell,
     ffi::{CStr, c_char, c_void},
+    io::IoSlice,
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
@@ -80,6 +80,9 @@ unsafe extern "C" {
     /// `array_init(target)`: `target` holds a new, empty array in place of
     /// what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init(target: &Owned);
+    /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
+    /// returns a new string; no PHP code runs.
+    safe fn swr_bytes_url_encode(bytes: IoSlice<'_>) -> *mut zend_string;
 }
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
@@ -624,6 +627,15 @@ impl Value {
         Some(unsafe { &*self.payload::<Array>() })
     }
 
+    /// `Z_ARRVAL_P` of an array, as the pointer the zval holds: unlike a borrow
+    /// of the table, it reaches what an allocation keeps behind the table.
+    #[must_use]
+    #[inline]
+    pub fn array_ptr(&self) -> Option<*mut HashTable> {
+        // An array zval holds `arr`.
+        (self.kind() == IS_ARRAY).then(|| self.payload())
+    }
+
     /// `ZVAL_COPY_VALUE`: the same bits, without a reference of their own, for
     /// a slot that must not outlive this value or release it.
     #[must_use]
@@ -864,8 +876,10 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
-        // SAFETY: a live string.
-        unsafe { bytes(self.as_ptr()) }
+        // SAFETY: a live string, read while borrowed.
+        let length = unsafe { (*self.as_ptr()).len };
+        // SAFETY: a live string holds `len` bytes at `val`, which it keeps while borrowed.
+        unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }
 
     /// The bytes and the NUL Zend keeps after them; a NUL among the bytes stays.
@@ -963,8 +977,7 @@ impl ZString {
     /// `php_url_encode`: `bytes` as `urlencode()` encodes them.
     #[must_use]
     pub fn url_encode(bytes: &[u8]) -> Self {
-        // SAFETY: Zend reads the bytes and returns a new string.
-        Self(unsafe { php_url_encode(bytes.as_ptr().cast(), bytes.len()) })
+        Self(swr_bytes_url_encode(IoSlice::new(bytes)))
     }
 
     /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.

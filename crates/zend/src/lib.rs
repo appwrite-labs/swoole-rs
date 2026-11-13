@@ -61,7 +61,7 @@ pub use object::{
 };
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
-pub use value::{obj_of as object_of, push_str as push_string};
+pub use value::push_str as push_string;
 pub use zval::{
     Array, ArrayMut, Entries, HeldArray, Interned, Key, Owned, OwnedArray, Separated, UNDEF, Value,
     ZStr, ZString,
