@@ -290,13 +290,99 @@ impl Mode {
     }
 }
 
+/// `Server::DispatchMode`: how a connection's data picks its worker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DispatchMode {
+    Round = 1,
+    FdMod = 2,
+    IdleWorker = 3,
+    IpMod = 4,
+    UidMod = 5,
+    UserFunc = 6,
+    Stream = 7,
+    CoConnLb = 8,
+    CoReqLb = 9,
+    ConcurrentLb = 10,
+}
+
+impl DispatchMode {
+    /// The mode of a `dispatch_mode` setting.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::Round,
+            2 => Self::FdMod,
+            3 => Self::IdleWorker,
+            4 => Self::IpMod,
+            5 => Self::UidMod,
+            6 => Self::UserFunc,
+            7 => Self::Stream,
+            8 => Self::CoConnLb,
+            9 => Self::CoReqLb,
+            10 => Self::ConcurrentLb,
+            _ => return None,
+        })
+    }
+
+    /// `Server::is_hash_dispatch_mode()`: the mode binds a connection to one worker.
+    #[must_use]
+    pub const fn is_hash(self) -> bool {
+        matches!(self, Self::FdMod | Self::IpMod | Self::CoConnLb)
+    }
+}
+
+/// `Server::TaskIpcMode`: how task workers receive their tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TaskIpcMode {
+    UnixSock = 1,
+    MsgQueue = 2,
+    Preemptive = 3,
+    Stream = 4,
+}
+
+impl TaskIpcMode {
+    /// The mode of a `task_ipc_mode` setting.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Self::UnixSock,
+            2 => Self::MsgQueue,
+            3 => Self::Preemptive,
+            4 => Self::Stream,
+            _ => return None,
+        })
+    }
+}
+
+impl ServerConfig {
+    /// The `dispatch_mode` setting, `None` for a code no mode has.
+    #[must_use]
+    pub fn dispatch(&self) -> Option<DispatchMode> {
+        DispatchMode::from_code(self.dispatch_mode.get())
+    }
+
+    /// Whether the dispatch mode binds a connection to one worker.
+    #[must_use]
+    pub fn hash_dispatch(&self) -> bool {
+        self.dispatch().is_some_and(DispatchMode::is_hash)
+    }
+
+    /// The `task_ipc_mode` setting, `None` for a code no mode has.
+    #[must_use]
+    pub fn task_ipc(&self) -> Option<TaskIpcMode> {
+        TaskIpcMode::from_code(self.task_ipc_mode.get())
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             reactor_num: Setting::new(0),
             worker_num: Setting::new(0),
             dgram_port_num: 0,
-            dispatch_mode: Setting::new(2),
+            dispatch_mode: Setting::new(DispatchMode::FdMod as u8),
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),
@@ -352,7 +438,7 @@ impl Default for ServerConfig {
             factory_: core::ptr::null_mut(),
             manager_: Shared::new(core::ptr::null_mut()),
             task_worker_num: Setting::new(0),
-            task_ipc_mode: Setting::new(1),
+            task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
             task_max_request: Setting::new(0),
             task_max_request_grace: Setting::new(0),
             task_results: Shm::NULL,

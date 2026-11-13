@@ -5,6 +5,7 @@
     not(any(test, feature = "upstream-symbols")),
     expect(dead_code, reason = "only the hybrid runs task workers")
 )]
+use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::log;
@@ -16,17 +17,15 @@ pub mod native;
 const TASK_CALLBACK: u16 = 1 << 3;
 const TASK_COROUTINE: u16 = 1 << 5;
 const TASK_NOREPLY: u16 = 1 << 7;
-/// `Server::TaskIpcMode`.
-const TASK_IPC_MSGQUEUE: u8 = 2;
-const TASK_IPC_PREEMPTIVE: u8 = 3;
 /// `SW_LOG_WARNING`, `SW_ERROR_WRONG_OPERATION`.
 const SW_LOG_WARNING: i32 = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as i32;
 const WRONG_OPERATION: i32 = 509;
 
 /// Whether task workers over IPC `mode` may run coroutines: a coroutine task worker
 /// reads its pipe in an event loop, so not from a message queue (logged).
-fn coroutines_allowed(mode: u8, coroutine: bool) -> bool {
-    let allowed = !coroutine || !matches!(mode, TASK_IPC_MSGQUEUE | TASK_IPC_PREEMPTIVE);
+fn coroutines_allowed(mode: Option<TaskIpcMode>, coroutine: bool) -> bool {
+    let queue = matches!(mode, Some(TaskIpcMode::MsgQueue | TaskIpcMode::Preemptive));
+    let allowed = !coroutine || !queue;
     if !allowed {
         log::error_log(
             SW_LOG_WARNING,
@@ -39,8 +38,8 @@ fn coroutines_allowed(mode: u8, coroutine: bool) -> bool {
 }
 
 /// Whether task workers over IPC `mode` take their tasks from a System V queue.
-fn schedule_by_sysvmsg(mode: u8) -> bool {
-    mode == TASK_IPC_PREEMPTIVE
+fn schedule_by_sysvmsg(mode: Option<TaskIpcMode>) -> bool {
+    mode == Some(TaskIpcMode::Preemptive)
 }
 
 /// The task `Server::finish` answers: `task`, unless there are no task workers or no
@@ -98,14 +97,14 @@ mod tests {
     #[test]
     fn init_rejects_coroutines_over_message_queues() {
         for (mode, coroutine, ok, sysvmsg) in [
-            (1, false, true, false),
-            (TASK_IPC_PREEMPTIVE, false, true, true),
-            (TASK_IPC_MSGQUEUE, true, false, false),
-            (TASK_IPC_PREEMPTIVE, true, false, true),
-            (1, true, true, false),
+            (TaskIpcMode::UnixSock, false, true, false),
+            (TaskIpcMode::Preemptive, false, true, true),
+            (TaskIpcMode::MsgQueue, true, false, false),
+            (TaskIpcMode::Preemptive, true, false, true),
+            (TaskIpcMode::UnixSock, true, true, false),
         ] {
-            assert_eq!(coroutines_allowed(mode, coroutine), ok);
-            assert_eq!(schedule_by_sysvmsg(mode), sysvmsg);
+            assert_eq!(coroutines_allowed(Some(mode), coroutine), ok);
+            assert_eq!(schedule_by_sysvmsg(Some(mode)), sysvmsg);
         }
     }
 
