@@ -8,9 +8,9 @@ Upstream's inline string helpers (`swoole::ltrim`, `rtrim`, `substr_len`,
 `starts_with`, `ends_with`, `swoole_strnstr`, `swoole_strnpos`,
 `swoole_str_istarts_with` and the rest) have no caller left in the hybrid, so they
 left `swoole_util.h` and `swoole.h` with their Rust bodies (#2089).
-`core-tests/src/core/string.cpp`'s seven TESTs of them run on the pin only; its
-other 16 test `swoole::String` and run on both engines in the buffer module's
-`string-originals` (tests/modules/buffer/string/test_gate.py).
+`core-tests/src/core/string.cpp`'s seven TESTs of them run on the pin only, in the
+buffer module's `string-originals` (tests/modules/buffer/string/test_gate.py); its other
+16 test `swoole::String` (tests/modules/buffer/README.md).
 
 Use a release archive matching the current utility sources, headers and overlays.
 

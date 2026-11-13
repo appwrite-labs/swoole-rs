@@ -10,7 +10,7 @@ use openssl_sys::{BIO_METHOD, BIO_meth_free, SSL_set_bio};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::{Socket, SocketRecord};
+use swoole_rs_reactor::{Fill, Socket, SocketRecord};
 
 #[repr(C)]
 struct Buffer {
@@ -347,8 +347,8 @@ unsafe extern "C" fn bio_read(bio: &DtlsBio, data: *mut c_char, length: c_int) -
         return -1;
     };
     // SAFETY: OpenSSL lends `length` writable bytes.
-    let buffer =
-        unsafe { crate::upstream::slots(data.cast(), usize::try_from(length).unwrap_or(0)) };
+    let mut buffer = unsafe { Fill::from_raw(data.cast(), usize::try_from(length).unwrap_or(0)) };
+    let buffer = buffer.slots();
     let plan = swr_v1_tls_dtls_read(session, buffer, length);
     if plan.retry != 0 {
         BIO_set_flags(bio, BIO_FLAGS_READ | BIO_FLAGS_SHOULD_RETRY);

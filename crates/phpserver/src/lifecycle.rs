@@ -117,7 +117,7 @@ impl PortInfo {
         let config = port.config();
         Self {
             host: config.host_bytes().to_vec(),
-            port: config.port.into(),
+            port: config.port.get().into(),
             kind: config.r#type.into(),
             fd: port.fd().into(),
             ssl: config.ssl != 0,

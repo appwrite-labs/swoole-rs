@@ -81,7 +81,7 @@ fn accept<'s>(
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
         let host = CString::new(config.host_bytes()).unwrap_or_default();
-        (config.r#type, config.port, host)
+        (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
     let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
@@ -129,7 +129,7 @@ fn accept<'s>(
         if conn.is_null() {
             break 'setup;
         }
-        let session = (port_config::methods().dtls_create)(port, sock);
+        let session = (port_config::methods().dtls_create)(listen, socket);
         if !session.is_null() {
             return Some((session, socket));
         }
@@ -196,10 +196,7 @@ pub(crate) unsafe fn on_packet(
         return -1;
     };
     let failed = if single_thread {
-        // SAFETY: the live reactor and connection of the server.
-        let incoming =
-            unsafe { crate::server_methods::connection_incoming(serv, reactor.ptr(), conn) };
-        incoming < 0
+        crate::server_methods::connection_incoming(serv, reactor, conn) < 0
     } else {
         let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
         let ev = DataHead {

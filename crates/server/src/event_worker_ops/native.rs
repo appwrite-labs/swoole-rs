@@ -2,12 +2,13 @@
 //! and the connection's client certificate), and the reactor callbacks that run its
 //! operations: what workers.cc's `WorkerContext::call` did.
 use core::cell::Cell;
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_pid, swoole_get_worker_type};
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_process::workers::ops::{
@@ -26,7 +27,7 @@ use swoole_rs_process::workers::ops::{
 };
 
 use super::{Context, SW_EVENT_WORKER, SW_WORKER_BUSY, SW_WORKER_IDLE};
-use crate::callbacks::{CB_FINISH, CB_PACKET, CB_PIPE_MESSAGE, CB_RECEIVE, CB_WORKER_ERROR};
+use crate::callbacks::{ReceiveSlot, TaskSlot};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::view;
 use swoole_rs_reactor::Socket;
@@ -99,22 +100,19 @@ impl Context<'_> {
         let kind = if tls { VERIFIED_TLS } else { VERIFIED };
         self.state().connection(self.info().fd, kind)
     }
-    /// `serv->onX(serv, data)` for slot `index`, with the event head, event data or
-    /// worker it takes; `None` for no such slot.
-    pub(super) fn callback(&self, index: u32, data: *mut c_void) -> Option<()> {
-        let slot = self.state().callbacks.slot(index)?;
-        // SAFETY: the slot takes the server and the event head, event data or worker.
-        unsafe { slot.call(self.serv.raw(), data) };
-        Some(())
+    /// The event the bus just read, as its sender packed it: an `EventData`, its
+    /// head and the payload the head counts.
+    fn event_data(&self) -> Packed<'_> {
+        // SAFETY: the ops reading it run once the bus has read a whole event into its
+        // buffer, which only this thread's next read replaces.
+        unsafe { Packed::from_raw(self.bus().buffer().cast()) }
     }
-
     fn worker_error(&self) {
-        if let Some(slot) = self.state().callbacks.slot(CB_WORKER_ERROR) {
-            // SAFETY: `onWorkerError` takes the server, the worker and its exit status.
-            unsafe {
-                slot.worker_error(self.serv.raw(), self.worker.cast(), self.status.cast_mut());
-            };
-        }
+        let status = self
+            .status
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a worker error without a status"));
+        let callbacks = &self.state().callbacks;
+        callbacks.worker_error(self.serv, self.worker(), status);
     }
 }
 
@@ -175,10 +173,12 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 data: packet.data.cast(),
             };
             recv.info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-            let index = if arg == 0 { CB_RECEIVE } else { CB_PACKET };
-            let slot = ctx.state().callbacks.slot(index)?;
-            // SAFETY: `onReceive` and `onPacket` take the server and a `RecvData`.
-            if unsafe { slot.receive(ctx.serv.raw(), (&raw mut recv).cast()) } == 0 {
+            let slot = if arg == 0 {
+                ReceiveSlot::Receive
+            } else {
+                ReceiveSlot::Packet
+            };
+            if ctx.state().callbacks.receive(slot, ctx.serv, &recv) == 0 {
                 ctx.worker().add_request_count();
                 ctx.counters().request_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -204,14 +204,14 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_ON_FINISH => {
-            if let Some(slot) = ctx.state().callbacks.slot(CB_FINISH) {
-                // SAFETY: `onFinish` is `int (Server *, EventData *)`; its result is discarded.
-                let _ = unsafe { slot.receive(ctx.serv.raw(), ctx.bus().buffer().cast()) };
-            }
+            let callbacks = &ctx.state().callbacks;
+            let _ = callbacks.task(TaskSlot::Finish, ctx.serv, ctx.event_data());
             0
         }
         OP_ON_PIPE_MESSAGE => {
-            ctx.callback(CB_PIPE_MESSAGE, ctx.bus().buffer().cast());
+            ctx.state()
+                .callbacks
+                .pipe_message(ctx.serv, ctx.event_data());
             0
         }
         OP_ON_WORKER_ERROR => {
@@ -424,7 +424,7 @@ fn context(serv: view::Server<'_>, reactor: Reactor) -> Context<'_> {
         info: core::ptr::null_mut(),
         reactor,
         conn: None,
-        status: core::ptr::null(),
+        status: None,
         socket: None,
     }
 }
@@ -515,7 +515,7 @@ pub(crate) fn call_worker_error_callback(
     status: &ExitStatus,
 ) {
     let mut ctx = Context::with(serv, worker);
-    ctx.status = core::ptr::from_ref(status).cast();
+    ctx.status = Some(status);
     run(&mut ctx, RUN_CALL_WORKER_ERROR, 0);
 }
 

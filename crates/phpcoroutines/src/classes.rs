@@ -14,11 +14,12 @@ use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, Minit, Owned, Props, Value, ZStr,
     bailout::Bailout,
+    opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
-        swr_zend_error_reporting, swr_zend_exit_status, zend_class_entry, zend_execute_data,
-        zend_string, zend_throw_exception,
+        swr_zend_exit_status, zend_class_entry, zend_execute_data, zend_string,
+        zend_throw_exception,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -47,8 +48,6 @@ const EXIT_IN_COROUTINE: i64 = 1 << 1;
 const EXIT_IN_SERVER: i64 = 1 << 2;
 /// `Coroutine::MAX_NUM_LIMIT` (`LONG_MAX`).
 const MAX_NUM_LIMIT: i64 = c_long::MAX;
-/// `ZEND_USER_OPCODE_DISPATCH`: run the original handler.
-const DISPATCH: c_int = 2;
 
 method_table! {
     static COROUTINE_METHODS = [
@@ -167,7 +166,11 @@ fn register(minit: &Minit) -> Result<(), Bailout> {
     if host::flag(host::CLI) {
         // SAFETY: MINIT; the handlers are static.
         unsafe {
-            swr_zend_coroutine_opcodes(Some(exit_handler), Some(begin_silence), Some(end_silence));
+            swr_zend_coroutine_opcodes(
+                Some(handler::<Exit>),
+                Some(handler::<BeginSilence>),
+                Some(end_silence),
+            );
         };
     }
     // SAFETY: MINIT; restored never, as upstream.
@@ -213,22 +216,26 @@ fn throw_exit(message: &CStr, flags: i64, status: &Value) {
 }
 
 /// `coro_exit_handler` (before PHP 8.4, where `exit` is an opcode).
-unsafe extern "C" fn exit_handler(execute_data: *mut zend_execute_data) -> c_int {
-    let flags = exit_flags();
-    if flags != 0 {
-        let mut status = swoole_rs_zend::UNDEF;
-        // SAFETY: the exit opcode's frame.
-        unsafe { swr_zend_exit_status(execute_data, &raw mut status) };
-        let status = Value::of(&mut status);
-        // Upstream's extra reference, kept (never released) as it was.
-        #[expect(
-            clippy::mem_forget,
-            reason = "upstream keeps this extra reference forever"
-        )]
-        std::mem::forget(status.copy());
-        throw_exit(c"swoole exit", flags, status);
+struct Exit;
+
+impl Handler for Exit {
+    fn run(frame: Frame<'_>) -> c_int {
+        let flags = exit_flags();
+        if flags != 0 {
+            let mut status = swoole_rs_zend::UNDEF;
+            // SAFETY: the exit opcode's frame: installed for `ZEND_EXIT` only.
+            unsafe { swr_zend_exit_status(frame.as_ptr(), &raw mut status) };
+            let status = Value::of(&mut status);
+            // Upstream's extra reference, kept (never released) as it was.
+            #[expect(
+                clippy::mem_forget,
+                reason = "upstream keeps this extra reference forever"
+            )]
+            std::mem::forget(status.copy());
+            throw_exit(c"swoole exit", flags, status);
+        }
+        DISPATCH
     }
-    DISPATCH
 }
 
 swoole_rs_zend::handlers! {
@@ -289,11 +296,13 @@ fn get_status(call: &Call) {
 
 /// `coro_begin_silence_handler`: `@` remembers the reporting level a switch
 /// restores.
-extern "C" fn begin_silence(_: *mut zend_execute_data) -> c_int {
-    // SAFETY: Zend's executor globals.
-    let reporting = unsafe { swr_zend_error_reporting() };
-    context::current().set_silence(Some(reporting));
-    DISPATCH
+struct BeginSilence;
+
+impl Handler for BeginSilence {
+    fn run(frame: Frame<'_>) -> c_int {
+        context::current().set_silence(Some(frame.php().error_reporting()));
+        DISPATCH
+    }
 }
 
 /// `coro_end_silence_handler`.

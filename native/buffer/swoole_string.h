@@ -11,9 +11,6 @@
 #include <string>
 #include <type_traits>
 
-extern "C" ssize_t swr_v1_string_split(swoole::String *, const char *, size_t,
-                                       bool (*)(const void *, const char *, size_t), const void *);
-
 #define SW_STRINGL(s) s->str, s->length
 
 namespace swoole {
@@ -32,12 +29,10 @@ class String {
     }
 
     explicit String(size_t _size, const Allocator *_allocator = nullptr);
-    String(const char *_str, size_t _length);
-    explicit String(const std::string &_str) : String(_str.c_str(), _str.length()) {}
     String(const String &src);
     String(String &&src) noexcept;
-    String &operator=(const String &src) noexcept;
-    String &operator=(String &&src) noexcept;
+    String &operator=(const String &src) = delete;
+    String &operator=(String &&src) = delete;
     ~String();
 
     char *value() const {
@@ -61,19 +56,6 @@ class String {
         offset = 0;
     }
 
-    bool contains(const char *needle, size_t l_needle) const;
-    bool contains(const std::string &needle) const {
-        return contains(needle.c_str(), needle.size());
-    }
-    bool starts_with(const char *needle, size_t l_needle) const;
-    bool starts_with(const std::string &needle) const {
-        return starts_with(needle.c_str(), needle.length());
-    }
-    bool ends_with(const char *needle, size_t l_needle) const;
-    bool equals(const char *data, size_t len) const;
-    bool equals(const std::string &data) const {
-        return equals(data.c_str(), data.size());
-    }
     void grow(size_t incr_value);
     String substr(size_t offset, size_t len) const;
     void extend();
@@ -86,18 +68,10 @@ class String {
         append(append_str.c_str(), append_str.length());
     }
     void append(int value);
-    void append(const String &append_str);
     bool append_random_bytes(size_t length, bool base64 = false);
     void write(off_t _offset, const String &write_str);
-    void write(off_t _offset, const char *write_str, size_t _length);
     void set_null_terminated();
 
-    ssize_t split(const char *delimiter, size_t delimiter_length, const std::function<bool(const char *, size_t)> &handler) {
-        auto call = [](const void *h, const char *data, size_t length) {
-            return (*static_cast<const std::function<bool(const char *, size_t)> *>(h))(data, length);
-        };
-        return swr_v1_string_split(this, delimiter, delimiter_length, call, &handler);
-    }
     void print(bool print_value = true) const;
 
     enum FormatFlag {

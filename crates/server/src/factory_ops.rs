@@ -32,7 +32,7 @@ use swoole_rs_process::workers::ops::{
 };
 
 use crate::base_factory::{SendData, is_stream_event, low16};
-use crate::callbacks::{CB_CLOSE, CB_USER_WORKER_START, CallbackSlot};
+use crate::callbacks::{CB_CLOSE, CallbackSlot, EventSlot};
 use crate::reactor_ops::ThreadRecord;
 use crate::records::{VERIFIED, VERIFIED_TLS};
 use crate::{ConnectionRecord, view};
@@ -321,10 +321,9 @@ fn connection(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
         }
         OP_ON_CLOSE => {
             let call = |info: &mut DataHead| {
-                if let Some(slot) = ctx.slot(CB_CLOSE) {
-                    // SAFETY: onClose takes the server and the close event.
-                    unsafe { slot.call(serv, core::ptr::from_mut(info).cast()) };
-                }
+                ctx.state()
+                    .callbacks
+                    .event(EventSlot::Close, ctx.serv, info);
             };
             let fd = ctx.send().info.fd;
             return crate::base_factory::on_close(|| ctx.conn(), fd, call).map(|()| 0);
@@ -409,7 +408,7 @@ fn low32(value: u64) -> u32 {
 
 /// Forking, registering and running event and user workers.
 fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
-    let (serv, worker) = (ctx.serv.raw(), ctx.worker_ptr());
+    let worker = ctx.worker_ptr();
     // The pid or worker type in the argument, as native's `int` conversion keeps it.
     let int = c_int::from_ne_bytes(low32(arg).to_ne_bytes());
     let pid = int;
@@ -458,10 +457,9 @@ fn worker(ctx: &Context, op: u32, arg: u64) -> Option<u64> {
             let _code = crate::event_worker_ops::start_event_worker(ctx.serv, ctx.worker());
         }
         OP_ON_USER_WORKER_START => {
-            if let Some(slot) = ctx.slot(CB_USER_WORKER_START) {
-                // SAFETY: onUserWorkerStart takes the server and the worker.
-                unsafe { slot.call(serv, worker.cast()) };
-            }
+            ctx.state()
+                .callbacks
+                .user_worker_start(ctx.serv, ctx.worker());
         }
         OP_REPORT_ERROR => {
             worker_report_error(ctx.worker(), ctx.status());

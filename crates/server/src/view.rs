@@ -582,7 +582,7 @@ impl<'a> Server<'a> {
     /// `Server::get_port(port)`: the first port listening on `port` (any at 0).
     #[must_use]
     pub fn port_number(self, port: c_int) -> Option<Port<'a>> {
-        self.find_port(|config| port == 0 || config.port == port)
+        self.find_port(|config| port == 0 || config.port.get() == port)
     }
 
     /// The first of `serv->ports` whose settings `wanted` accepts.

@@ -11,21 +11,21 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
         IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, php_url_encode, swr_zend_array_add_or_merge,
-        swr_zend_array_init, swr_zend_http_build_query, swr_zend_object_properties,
-        swr_zend_separate_array, swr_zend_serialize, swr_zend_string_release,
-        swr_zend_try_array_merge, swr_zend_try_get_double, swr_zend_try_get_long,
-        swr_zend_try_get_string, swr_zend_try_hash_clean, swr_zend_try_hash_update,
-        swr_zend_try_json_encode, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
-        swr_zend_url_decode, swr_zend_zval_value_name, swr_zval_is_true, zend_class_entry,
-        zend_double_to_str, zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert,
-        zend_hash_str_find, zend_ini_parse_quantity, zend_long, zend_object, zend_reference,
-        zend_string, zend_trace_to_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_array_init, swr_zend_http_build_query, swr_zend_separate_array,
+        swr_zend_serialize, swr_zend_string_release, swr_zend_try_array_merge,
+        swr_zend_try_get_double, swr_zend_try_get_long, swr_zend_try_get_string,
+        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_json_encode,
+        swr_zend_try_ptr_dtor, swr_zend_try_symtable_update, swr_zend_url_decode, swr_zval_is_true,
+        zend_class_entry, zend_double_to_str, zend_hash_add_new, zend_hash_index_add,
+        zend_hash_next_index_insert, zend_ini_parse_quantity, zend_long, zend_object,
+        zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value, zval,
+        zval_ptr_dtor,
     },
 };
 use std::{
     borrow::{Borrow, Cow},
     cell::UnsafeCell,
-    ffi::{CStr, c_void},
+    ffi::{CStr, c_char, c_void},
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
 };
@@ -42,6 +42,15 @@ unsafe extern "C" {
     /// `zend_hash_index_find`: null (`None`), or the element under `index`,
     /// which lives as the table's others do, while the table is borrowed.
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
+    /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the `length`
+    /// bytes at `key`, which it reads.
+    fn zend_hash_str_find(table: &Array, key: *const c_char, length: usize) -> Option<&Value>;
+    /// `Z_OBJPROP_P` of an object zval: its property table, which its
+    /// `get_properties` handler may build; null (`None`) for none.
+    fn swr_zend_object_properties(object: &Value) -> Option<&Array>;
+    /// `zend_zval_value_name`: it reads the zval, and returns a static type
+    /// name or the name of the object's class.
+    safe fn swr_zend_zval_value_name(value: &Value) -> *const c_char;
     /// `ZEND_HASH_FOREACH`'s step: null (`None`) past the end, or the next
     /// defined element at or after `position` (any position: the walk stops at
     /// the table's last slot), which then points past it, with its key (null
@@ -549,18 +558,22 @@ impl Value {
         if self.kind() != IS_OBJECT {
             return None;
         }
-        // SAFETY: a live object zval.
-        let table = unsafe { swr_zend_object_properties(self.as_ptr()) };
-        // SAFETY: the object's table, which the zval keeps while borrowed.
-        unsafe { Array::from_ptr(table) }
+        // SAFETY: a live object zval, whose table it keeps while borrowed.
+        unsafe { swr_zend_object_properties(self) }
+    }
+
+    /// `Z_TRY_ADDREF_P`: one more reference to what a counted zval holds, which
+    /// whoever the caller hands it to releases (nobody: a leak).
+    #[inline]
+    pub fn add_ref(&self) {
+        swr_zval_try_addref(self);
     }
 
     /// `zend_zval_value_name`: the type, or the object's class, a type error names.
     #[must_use]
     #[inline]
     pub fn value_name(&self) -> &CStr {
-        // SAFETY: a live zval.
-        let name = unsafe { swr_zend_zval_value_name(self.as_ptr()) };
+        let name = swr_zend_zval_value_name(self);
         // SAFETY: a static type name, or the name of a class, which outlives its objects.
         unsafe { CStr::from_ptr(name) }
     }
@@ -659,10 +672,8 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn find(&self, key: &[u8]) -> Option<&Value> {
-        // SAFETY: a live table; Zend reads `key` only.
-        let found = unsafe { zend_hash_str_find(self.as_ptr(), key.as_ptr().cast(), key.len()) };
-        // SAFETY: null or an element of the borrowed table.
-        unsafe { Value::from_ptr(found) }
+        // SAFETY: Zend reads `key`'s bytes only.
+        unsafe { zend_hash_str_find(self, key.as_ptr().cast(), key.len()) }
     }
 
     /// `zend_hash_index_find`.

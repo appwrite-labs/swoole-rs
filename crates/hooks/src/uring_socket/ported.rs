@@ -129,7 +129,8 @@ impl Sock {
 
     /// `connect(host, port)`: the ring's connect, then the TLS handshake when enabled.
     fn connect(&self, addr: &Address) -> bool {
-        let ok = unsafe { swr_v1_hook_uring_connect(&self.ops, addr.as_ptr(), addr.len) };
+        let peer = unsafe { crate::lifecycle::Peer::from_raw(addr.as_ptr(), addr.len) };
+        let ok = swr_v1_hook_uring_connect(&self.ops, peer);
         ok && (self.ops.tls.ssl.is_none() || self.ssl_handshake())
     }
 

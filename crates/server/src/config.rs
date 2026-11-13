@@ -608,7 +608,7 @@ mod tests {
                 let config = crate::port_config::swr_v1_port_config_new(0);
                 unsafe {
                     (*config).r#type = kind;
-                    (*config).socket = (&raw mut socket).cast();
+                    *(*config).socket.get_mut() = (&raw mut socket).cast();
                 }
                 // A `ListenPort` is its settings.
                 config

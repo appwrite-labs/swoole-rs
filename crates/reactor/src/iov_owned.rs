@@ -2,7 +2,7 @@
 //! complete `IOVector`; native callers borrow views instead of mirroring counters.
 use crate::ReactorIovProgress;
 use crate::iov_progress::progress;
-use crate::socket_rw::{IovState, TlsIo};
+use crate::socket_rw::IovState;
 use std::ptr;
 
 pub struct ReactorIov {
@@ -169,29 +169,35 @@ pub extern "C" fn swr_v1_reactor_iov_advance(owner: Option<&mut ReactorIov>, n: 
 }
 
 /// `Socket::readv`/`writev` through an owned `IOVector`: readv(2)/writev(2) over the
-/// remaining iovecs, or `tls` one iovec at a time until one comes up short, advancing
-/// the cursor; retried on EINTR.
+/// remaining iovecs, or `tls` (its read and its write) one iovec at a time until one
+/// comes up short, advancing the cursor; retried on EINTR.
 /// # Safety
-/// `owner` is live/exclusive; each payload is valid for the direction and the
-/// optional nonthrowing TLS effect is valid for `socket`.
+/// `owner` is live/exclusive and each payload is valid for the direction.
 pub unsafe fn swr_v1_socket_iov_owned(
     fd: i32,
     write: bool,
     owner: *mut ReactorIov,
-    tls: Option<TlsIo>,
-    socket: *mut std::ffi::c_void,
+    tls: Option<&(
+        impl Fn(crate::Fill<'_>) -> isize,
+        impl Fn(crate::Drain<'_>) -> isize,
+    )>,
 ) -> isize {
     // SAFETY: live exclusive owner per the contract.
     let owner = unsafe { &mut *owner };
     loop {
-        let result = if let Some(io) = tls {
+        let result = if let Some((read, send)) = tls {
             let mut total: isize = 0;
             loop {
                 let Some(current) = owner.remaining().first().copied() else {
                     break total;
                 };
-                // SAFETY: the caller's TLS call for this socket, on that iovec.
-                let done = unsafe { io(socket, current.iov_base, current.iov_len) };
+                let done = if write {
+                    // SAFETY: the caller's readable payload, by that iovec.
+                    send(unsafe { crate::Drain::from_raw(current.iov_base, current.iov_len) })
+                } else {
+                    // SAFETY: the caller's writable payload, by that iovec.
+                    read(unsafe { crate::Fill::from_raw(current.iov_base, current.iov_len) })
+                };
                 total += done.max(0);
                 owner.advance(done);
                 if !(done > 0 && owner.fields.state.remain_count > 0) {

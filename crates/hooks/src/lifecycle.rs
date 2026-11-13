@@ -10,6 +10,53 @@ use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
+use core::marker::PhantomData;
+use swoole_rs_corebase::net_types::SocketAddress;
+
+/// A `connect(2)` peer: `len` bytes of address at `at`, lent for `'a`. Only the kernel
+/// reads them, and it refuses what it cannot use (`EFAULT` for a null address).
+#[derive(Clone, Copy)]
+pub struct Peer<'a> {
+    at: *const libc::sockaddr,
+    len: libc::socklen_t,
+    lent: PhantomData<&'a SocketAddress>,
+}
+
+impl<'a> Peer<'a> {
+    /// `address`'s storage, as much of it as its length says and no more than it holds.
+    #[must_use]
+    pub fn of(address: &'a SocketAddress) -> Self {
+        Self {
+            at: (&raw const address.addr).cast(),
+            len: address.len.min(SocketAddress::CAPACITY),
+            lent: PhantomData,
+        }
+    }
+
+    /// The `len` bytes at `at`.
+    ///
+    /// # Safety
+    /// `at` is null, or denotes `len` readable bytes that nothing writes for `'a`.
+    #[must_use]
+    pub const unsafe fn from_raw(at: *const libc::sockaddr, len: libc::socklen_t) -> Self {
+        Self {
+            at,
+            len,
+            lent: PhantomData,
+        }
+    }
+
+    /// Where the address is, for a call that takes it with [`Self::len`].
+    #[cfg(feature = "iouring")]
+    pub(crate) const fn as_ptr(self) -> *const libc::sockaddr {
+        self.at
+    }
+
+    #[cfg(feature = "iouring")]
+    pub(crate) const fn len(self) -> libc::socklen_t {
+        self.len
+    }
+}
 
 /// The syscalls: `shutdown(2)`, `connect(2)` and `getsockopt(SO_ERROR)` into the
 /// int it is given. Tests script them.
@@ -83,13 +130,9 @@ impl Co {
     }
 
     /// `Socket::connect(addr, addrlen)`.
-    ///
-    /// # Safety
-    /// `addr` holds `length` readable bytes.
     #[must_use]
-    pub unsafe fn connect_addr(self, addr: *const libc::sockaddr, length: libc::socklen_t) -> bool {
-        // SAFETY: as the caller promises.
-        unsafe { connect(self, addr, length, SYS) }
+    pub fn connect_addr(self, peer: Peer<'_>) -> bool {
+        connect(self, peer, SYS)
     }
 }
 
@@ -168,27 +211,18 @@ fn settle(socket: Co, sys: Sys) -> bool {
 }
 
 /// `Socket::connect(addr, addrlen)`, with `connect(2)` and the `SO_ERROR` read.
-///
-/// # Safety
-/// `addr` holds `length` readable bytes.
-unsafe fn connect(
-    socket: Co,
-    addr: *const libc::sockaddr,
-    length: libc::socklen_t,
-    sys: Sys,
-) -> bool {
+fn connect(socket: Co, peer: Peer<'_>, sys: Sys) -> bool {
     #[cfg(feature = "iouring")]
     if let Some(ops) = crate::uring_socket::of(socket) {
-        // SAFETY: the live view and the caller's address.
-        return unsafe { crate::uring_socket::swr_v1_hook_uring_connect(&ops, addr, length) };
+        return crate::uring_socket::swr_v1_hook_uring_connect(&ops, peer);
     }
     if !available(socket, READ | WRITE) {
         return false;
     }
     let fd = socket.sock_fd();
     let result = loop {
-        // SAFETY: the socket's descriptor and the caller's address.
-        let result = unsafe { (sys.connect)(fd, addr, length) };
+        // SAFETY: the socket's descriptor and the lent address, which connect(2) reads.
+        let result = unsafe { (sys.connect)(fd, peer.at, peer.len) };
         if result >= 0 || errno() != libc::EINTR {
             break result;
         }
@@ -676,7 +710,7 @@ mod tests {
             compare(
                 k + 752,
                 &setup,
-                &|s| unsafe { connect(s, core::ptr::null(), 16, FAKE) },
+                &|s| connect(s, unsafe { Peer::from_raw(core::ptr::null(), 16) }, FAKE),
                 &|s| upstream_connect(s, FAKE),
                 &hooks,
             );

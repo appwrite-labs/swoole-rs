@@ -72,6 +72,10 @@ mod socket_io;
 #[cfg(unix)]
 pub use socket_io::*;
 #[cfg(unix)]
+mod lent;
+#[cfg(unix)]
+pub use lent::{Drain, Fill};
+#[cfg(unix)]
 mod socket_rw;
 #[cfg(unix)]
 pub use socket_rw::*;

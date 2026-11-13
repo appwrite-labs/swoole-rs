@@ -25,22 +25,14 @@ mod invoke;
 mod text;
 mod typed;
 
-pub use assignment::{swr_v1_phpstdext_assign, swr_v1_phpstdext_assign_op};
-pub use invoke::swr_v1_phpstdext_method_call;
-pub use typed::{swr_v1_phpstdext_foreach_begin, swr_v1_phpstdext_unset};
-
-use std::{ffi::c_int, marker::PhantomData};
 use swoole_rs_zend::{
     Value,
+    opcode::{CONTINUE, DISPATCH, Frame, handler},
     sys::{
-        IS_CONST, IS_CV, IS_INDIRECT, IS_UNUSED, IS_VAR, zend_execute_data, zend_op, znode_op, zval,
+        IS_CONST, IS_CV, IS_INDIRECT, IS_UNUSED, IS_VAR, user_opcode_handler_t, zend_op, znode_op,
+        zval,
     },
 };
-
-/// `ZEND_USER_OPCODE_CONTINUE` and `ZEND_USER_OPCODE_DISPATCH`; the C shim
-/// asserts their values.
-const CONTINUE: c_int = 0;
-const DISPATCH: c_int = 2;
 
 const _: () = assert!(
     size_of::<usize>() == 8,
@@ -56,76 +48,37 @@ const _: () = assert!(
 )]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpstdext_minit() {
-    type Handler = unsafe extern "C" fn(*mut zend_execute_data) -> c_int;
-    let handlers: [(_, Handler); _] = [
+    let handlers: [(u32, user_opcode_handler_t); 5] = [
         (
             swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL,
-            swr_v1_phpstdext_method_call,
+            Some(handler::<invoke::MethodCall>),
         ),
         (
             swoole_rs_zend::sys::ZEND_ASSIGN_DIM,
-            swr_v1_phpstdext_assign,
+            Some(handler::<assignment::Assign>),
         ),
         (
             swoole_rs_zend::sys::ZEND_ASSIGN_DIM_OP,
-            swr_v1_phpstdext_assign_op,
+            Some(handler::<assignment::AssignOp>),
         ),
-        (swoole_rs_zend::sys::ZEND_UNSET_DIM, swr_v1_phpstdext_unset),
+        (
+            swoole_rs_zend::sys::ZEND_UNSET_DIM,
+            Some(handler::<typed::Unset>),
+        ),
         (
             swoole_rs_zend::sys::ZEND_FE_RESET_RW,
-            swr_v1_phpstdext_foreach_begin,
+            Some(handler::<typed::ForeachBegin>),
         ),
     ];
     for (opcode, handler) in handlers {
-        // SAFETY: each callback obeys Zend's user opcode ABI and lives for the process.
-        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, Some(handler)) };
+        // SAFETY: MINIT; each handler is installed for the one opcode its body
+        // is written for, and lives for the process.
+        unsafe { swoole_rs_zend::sys::zend_set_user_opcode_handler(opcode as u8, handler) };
     }
     // Function lookups, then overrides, in the original order.
     invoke::install();
     // SAFETY: PHP's function table is complete and no request has started.
     unsafe { typed::install() };
-}
-
-/// A live frame at the instruction of the user opcode handler Zend passed it
-/// to, for `'a`.
-#[derive(Clone, Copy)]
-struct Frame<'a> {
-    ptr: *mut zend_execute_data,
-    live: PhantomData<&'a zend_execute_data>,
-}
-
-impl<'a> Frame<'a> {
-    /// # Safety
-    /// `frame` is the live frame Zend passed a user opcode handler, which
-    /// outlives `'a`.
-    unsafe fn new(frame: *mut zend_execute_data) -> Self {
-        Self {
-            ptr: frame,
-            live: PhantomData,
-        }
-    }
-
-    fn as_ptr(self) -> *mut zend_execute_data {
-        self.ptr
-    }
-
-    /// `EX(opline)`.
-    fn opline(self) -> *const zend_op {
-        // SAFETY: a live frame.
-        unsafe { (*self.ptr).opline }
-    }
-
-    /// `EX(opline) = opline`.
-    fn jump(self, opline: *const zend_op) {
-        // SAFETY: a live frame.
-        unsafe { (*self.ptr).opline = opline };
-    }
-
-    /// The current instruction.
-    fn op(self) -> Op<'a> {
-        // SAFETY: the frame's current instruction.
-        unsafe { Op::at(self, self.opline()) }
-    }
 }
 
 /// An operand's `var` or `constant`: a byte offset either way.
@@ -155,6 +108,12 @@ struct Op<'a> {
 }
 
 impl<'a> Op<'a> {
+    /// `frame`'s current instruction.
+    fn current(frame: Frame<'a>) -> Self {
+        // SAFETY: the frame's current instruction.
+        unsafe { Self::at(frame, frame.opline()) }
+    }
+
     /// # Safety
     /// `at` is an instruction of `frame`'s function.
     unsafe fn at(frame: Frame<'a>, at: *const zend_op) -> Self {
@@ -185,7 +144,7 @@ impl<'a> Op<'a> {
             // `EX_VAR(node.var)`.
             _ => self
                 .frame
-                .ptr
+                .as_ptr()
                 .wrapping_byte_add(offset(node) as usize)
                 .cast(),
         };

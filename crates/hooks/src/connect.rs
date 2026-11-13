@@ -424,9 +424,8 @@ impl Connecting for Live<'_> {
     }
 
     fn connect(&mut self) -> bool {
-        let to = (&raw const self.address.addr).cast();
-        // SAFETY: the assigned address.
-        unsafe { self.socket.connect_addr(to, self.address.len) }
+        let peer = crate::lifecycle::Peer::of(&self.address);
+        self.socket.connect_addr(peer)
     }
 
     fn send(&mut self, data: &[u8]) -> isize {

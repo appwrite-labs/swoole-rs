@@ -4,7 +4,7 @@
 //! `swoole_*` wrappers that move that first argument where the function
 //! expects it.
 use crate::{
-    CONTINUE, DISPATCH, Frame,
+    CONTINUE, DISPATCH, Frame, Op,
     aliases::{self, Receiver},
     offset,
 };
@@ -16,6 +16,7 @@ use std::{
 use swoole_rs_zend::{
     Call, Value,
     bailout::{Bailout, trap},
+    opcode::Handler,
     string,
     sys::{
         IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_compiled_function_find, swr_zend_efree,
@@ -56,59 +57,59 @@ pub(crate) fn compiled_function(name: &CStr) -> *mut zend_function {
 }
 
 /// The `INIT_METHOD_CALL` user opcode handler.
-/// # Safety
-/// Zend's user opcode handler contract: a live frame at this opline.
-pub unsafe extern "C" fn swr_v1_phpstdext_method_call(frame: *mut zend_execute_data) -> c_int {
-    // SAFETY: per Zend's contract.
-    let frame = unsafe { Frame::new(frame) };
-    let op = frame.op();
-    let Some(object) = op.op1() else {
-        return DISPATCH;
-    };
-    let receiver = match object.dereferenced().kind() {
-        IS_ARRAY => Receiver::Array,
-        IS_STRING => Receiver::String,
-        IS_RESOURCE => Receiver::Stream,
-        _ => return DISPATCH,
-    };
-    // SAFETY: Zend's request allocator, freed by the method call.
-    let info = unsafe { swr_zend_emalloc(size_of::<CallInfo>()) }.cast::<CallInfo>();
-    // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)` as upstream reads it.
-    let name = op
-        .at
-        .wrapping_byte_offset(offset(op.op2).cast_signed() as isize)
-        .cast::<zval>();
-    // SAFETY: a live literal; zvals are plain copies, as upstream's are.
-    let func = unsafe { name.read() };
-    let this = object.copy_value();
-    // SAFETY: a fresh allocation of a `CallInfo`.
-    unsafe {
-        info.write(CallInfo {
-            func,
-            this,
-            op1_type: op.op1_type,
-        });
+pub(crate) struct MethodCall;
+
+impl Handler for MethodCall {
+    fn run(frame: Frame<'_>) -> c_int {
+        let op = Op::current(frame);
+        let Some(object) = op.op1() else {
+            return DISPATCH;
+        };
+        let receiver = match object.dereferenced().kind() {
+            IS_ARRAY => Receiver::Array,
+            IS_STRING => Receiver::String,
+            IS_RESOURCE => Receiver::Stream,
+            _ => return DISPATCH,
+        };
+        // SAFETY: Zend's request allocator, freed by the method call.
+        let info = unsafe { swr_zend_emalloc(size_of::<CallInfo>()) }.cast::<CallInfo>();
+        // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)` as upstream reads it.
+        let name = op
+            .at
+            .wrapping_byte_offset(offset(op.op2).cast_signed() as isize)
+            .cast::<zval>();
+        // SAFETY: a live literal; zvals are plain copies, as upstream's are.
+        let func = unsafe { name.read() };
+        let this = object.copy_value();
+        // SAFETY: a fresh allocation of a `CallInfo`.
+        unsafe {
+            info.write(CallInfo {
+                func,
+                this,
+                op1_type: op.op1_type,
+            });
+        }
+        let method = match receiver {
+            Receiver::Array => &METHODS[0],
+            Receiver::String => &METHODS[1],
+            Receiver::Stream => &METHODS[2],
+        }
+        .load(Ordering::Relaxed);
+        // SAFETY: a registered function; the frame passes `object` as upstream does.
+        let call =
+            unsafe { swr_zend_push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
+        // SAFETY: the frame just pushed, which nothing else reaches until this
+        // frame's `call` names it below.
+        let pushed = unsafe { &mut *call };
+        pushed.run_time_cache = info.cast();
+        // SAFETY: this live frame's header; the operands borrowed above are slots
+        // after it, and no Zend code runs while it is borrowed.
+        let current = unsafe { &mut *frame.as_ptr() };
+        pushed.prev_execute_data = current.call;
+        current.call = call;
+        frame.jump(op.at.wrapping_add(1));
+        CONTINUE
     }
-    let method = match receiver {
-        Receiver::Array => &METHODS[0],
-        Receiver::String => &METHODS[1],
-        Receiver::Stream => &METHODS[2],
-    }
-    .load(Ordering::Relaxed);
-    // SAFETY: a registered function; the frame passes `object` as upstream does.
-    let call =
-        unsafe { swr_zend_push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
-    // SAFETY: the frame just pushed, which nothing else reaches until this
-    // frame's `call` names it below.
-    let pushed = unsafe { &mut *call };
-    pushed.run_time_cache = info.cast();
-    // SAFETY: this live frame's header; the operands borrowed above are slots
-    // after it, and no Zend code runs while it is borrowed.
-    let current = unsafe { &mut *frame.as_ptr() };
-    pushed.prev_execute_data = current.call;
-    current.call = call;
-    frame.jump(op.at.wrapping_add(1));
-    CONTINUE
 }
 
 /// `prefix`, then `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`:

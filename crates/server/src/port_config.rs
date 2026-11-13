@@ -2,38 +2,46 @@
 use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
+use core::sync::atomic::Ordering::Relaxed;
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::Protocol;
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::Socket;
 use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
 
 use crate::records::ConnectionRecord;
+use crate::view::Port;
 
 /// The `ListenPort` methods crates/ports defines and the server calls. Ports
 /// depends on this crate, so `swoole_init` (crates/ffi) registers them with
-/// [`set_methods`]. A `port` is one of the server's live `ListenPort`s
-/// (`server_object::port_new`), passed as a raw pointer.
+/// [`set_methods`]. A port is one of the server's live `ListenPort`s
+/// (`server_object::port_new`): its settings, or their box while the server still
+/// makes it. The methods that take `&` write only the settings a `&` can
+/// ([`Setting`], [`Shared`], the socket's atomic), so they need no exclusive borrow
+/// of a port other threads read; `close`, which replaces the TLS context, takes the
+/// port's [`Port`] handle.
 pub struct PortMethods {
-    pub ssl_context_init: fn(port: *mut c_void) -> bool,
-    /// `ssl_create(sock)`, of a socket the port accepted.
-    pub ssl_create: fn(port: *mut c_void, sock: *mut c_void) -> bool,
-    /// `import(fd)`, of an inherited descriptor.
-    pub import: fn(port: *mut c_void, fd: c_int) -> bool,
-    pub close: fn(port: *mut c_void),
-    pub listen: fn(port: *mut c_void) -> c_int,
-    pub create_socket: fn(port: *mut c_void) -> c_int,
-    pub close_socket: fn(port: *mut c_void),
+    /// On a port being made, before the server keeps it.
+    pub ssl_context_init: fn(&mut PortConfig) -> bool,
+    /// `ssl_create(sock)`, of a socket the port accepted; `port` is its `ListenPort *`,
+    /// unchecked as the accept path passes it.
+    pub ssl_create: fn(port: *mut c_void, sock: Option<Socket<'_>>) -> bool,
+    /// `import(fd)`, of an inherited descriptor, on a port being made.
+    pub import: fn(&mut PortConfig, fd: c_int) -> bool,
+    pub close: fn(Port<'_>),
+    pub listen: fn(&PortConfig) -> c_int,
+    pub create_socket: fn(&PortConfig) -> c_int,
+    pub close_socket: fn(&PortConfig),
     pub get_protocols: fn(&PortConfig) -> &'static CStr,
-    pub init_protocol: fn(port: *mut c_void),
+    pub init_protocol: fn(&PortConfig),
     /// `destroy_http_request(conn)`, of a live connection.
     pub destroy_http_request: fn(conn: *mut ConnectionRecord),
     /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
     pub tls_free: fn(&mut PortConfig),
     /// `create_dtls_session(sock)` on a DTLS port; null if it fails to initialize.
-    pub dtls_create: fn(port: *mut c_void, sock: *mut SocketRecord) -> *mut DtlsSession,
+    pub dtls_create: fn(Port<'_>, Socket<'_>) -> *mut DtlsSession,
     /// The DTLS session on an fd; null if none.
     pub dtls_session: fn(&PortConfig, c_int) -> *mut DtlsSession,
     /// Frees the DTLS session on an fd, if any.
@@ -47,7 +55,9 @@ static METHODS: OnceLock<PortMethods> = OnceLock::new();
 ///
 /// # Safety
 /// Each method is sound for any live port, socket or connection of the server,
-/// which is all the server passes them.
+/// which is all the server passes them, and `close` and `close_socket` when the
+/// server calls them as `ListenPort`'s own did: with no handle to the port's socket
+/// and no borrow of what they replace held across the call.
 pub unsafe fn set_methods(methods: PortMethods) {
     METHODS.get_or_init(|| methods);
 }
@@ -64,7 +74,8 @@ pub(crate) fn methods() -> &'static PortMethods {
 pub struct PortConfig {
     pub object_id: u16,
     pub backlog: Setting<u16>,
-    pub listening: bool,
+    /// Set by `listen()` and `import()`, through `&`.
+    pub listening: Setting<bool>,
     pub tcp_defer_accept: Setting<c_int>,
     pub tcp_fastopen: Setting<c_int>,
     pub tcp_keepidle: Setting<c_int>,
@@ -77,8 +88,10 @@ pub struct PortConfig {
     pub buffer_low_watermark: Setting<u32>,
     pub r#type: c_int,
     pub ssl: u8,
-    pub port: c_int,
-    pub socket: *mut c_void,
+    pub port: Setting<c_int>,
+    /// The listening socket's record (`network::Socket *`), or null: stored by
+    /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
+    pub socket: AtomicPtr<c_void>,
     pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
@@ -105,7 +118,7 @@ pub struct PortConfig {
     /// `ListenPort::protocol`, which native code reads and writes by reference.
     pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
-    pub on_read: *mut c_void,
+    pub on_read: AtomicPtr<c_void>,
     /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
     /// Rust owner), or none: a nullable `SSLContext *` to native code.
     pub ssl_context: Option<TlsContext>,
@@ -223,17 +236,23 @@ impl PortConfig {
     /// The port's listening socket, or `None` before it has one or after it closes
     /// (`OP_PORT_CLOSE_SOCKET`), which ends every handle to it: one is used within the
     /// op that took it.
-    pub(crate) fn listening_socket(&self) -> Option<swoole_rs_reactor::Socket<'_>> {
+    /// The listening socket's record as native code holds it, or null.
+    #[must_use]
+    pub fn socket_ptr(&self) -> *mut c_void {
+        self.socket.load(Relaxed)
+    }
+    #[must_use]
+    pub fn listening_socket(&self) -> Option<Socket<'_>> {
         // SAFETY: null, or the live listening socket the port owns: closing it frees it
         // and nulls the field in one step.
-        unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket.cast()) }
+        unsafe { Socket::from_ptr(self.socket_ptr().cast()) }
     }
     /// A new port's settings.
     pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
         Box::new(Self {
             object_id: 0,
             backlog: Setting::new(512),
-            listening: false,
+            listening: Setting::new(false),
             tcp_defer_accept: Setting::new(0),
             tcp_fastopen: Setting::new(0),
             tcp_keepidle: Setting::new(3600),
@@ -246,8 +265,8 @@ impl PortConfig {
             buffer_low_watermark: Setting::new(0),
             r#type: 1,
             ssl: 0,
-            port: 0,
-            socket: core::ptr::null_mut(),
+            port: Setting::new(0),
+            socket: AtomicPtr::new(core::ptr::null_mut()),
             // Zero is the original native empty sentinel.
             thread_id: Shared::new(swoole_rs_corebase::sys::zeroed()),
             heartbeat_idle_time: Setting::new(0),
@@ -269,7 +288,7 @@ impl PortConfig {
             websocket_protocol: Published::default(),
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
-            on_read: core::ptr::null_mut(),
+            on_read: AtomicPtr::new(core::ptr::null_mut()),
             ssl_context: None,
             tls: Box::default(),
             length_owner: Shared::new(None),

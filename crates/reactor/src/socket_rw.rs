@@ -4,7 +4,8 @@
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
 
-/// A TLS read or write on `socket`: what `ssl_recv`/`ssl_send`/`SSL_peek` return.
+/// A TLS write on `socket` that C defines, for [`crate::socket_record_send`]: what
+/// `ssl_send` returns.
 pub type TlsIo =
     unsafe extern "C" fn(socket: *mut c_void, buffer: *mut c_void, length: usize) -> isize;
 
@@ -87,17 +88,13 @@ pub struct SslSendfileResult {
 }
 
 /// `Socket::ssl_sendfile`: pread(2) up to `SW_BUFFER_SIZE_BIG` bytes of `file_fd`
-/// at `*offset`, hand them to `send` once, and advance `*offset` by what it sent.
-/// A failed send warns when `catch_error` says it is an error.
-///
-/// # Safety
-/// `send` is valid for `socket`.
-pub unsafe fn ssl_sendfile(
+/// at `*offset`, hand them to `send` (the socket's TLS write) once, and advance
+/// `*offset` by what it sent. A failed send warns when `catch_error` says it is an error.
+pub fn ssl_sendfile(
     file_fd: c_int,
     offset: &mut libc::off_t,
     size: usize,
-    send: TlsIo,
-    socket: *mut c_void,
+    send: impl FnOnce(&[u8]) -> isize,
     kernel_nobufs: &mut bool,
 ) -> SslSendfileResult {
     const CHUNK: usize = 65536;
@@ -107,8 +104,8 @@ pub unsafe fn ssl_sendfile(
     if n <= 0 {
         return SslSendfileResult { value: -1, warn: 2 };
     }
-    // SAFETY: the caller's TLS write of the `n` bytes just read.
-    let sent = unsafe { send(socket, buffer.as_mut_ptr().cast(), n.cast_unsigned()) };
+    // pread(2) fills at most the buffer; a longer answer sends the buffer.
+    let sent = send(buffer.get(..n.cast_unsigned()).unwrap_or(&buffer));
     if sent < 0 {
         let error = Error::last_os_error().raw_os_error().unwrap_or(0);
         let failed = catch_error(error, kernel_nobufs) == ERROR;
@@ -174,11 +171,16 @@ mod tests {
         unreachable!("plain sockets never take the TLS call")
     }
 
+    /// No TLS calls, for a vector over a plain descriptor.
+    type Read = fn(crate::Fill<'_>) -> isize;
+    type Write = fn(crate::Drain<'_>) -> isize;
+    const NO_TLS: Option<&(Read, Write)> = None;
+
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn plain_send_recv_and_peek() {
-        use crate::{Socket, SocketRecord, socket_record_peek, socket_record_recv};
-        use crate::{socket_record_send, steady_ms};
+        use crate::lent::raw::{socket_record_peek, socket_record_recv};
+        use crate::{Socket, SocketRecord, socket_record_send, steady_ms};
         let [mut a, mut b] = pair().map(|fd| SocketRecord::with_fd(fd, 0));
         let (a, b) = (Socket::new(&mut a), Socket::new(&mut b));
         // SAFETY: local buffers, no TLS.
@@ -204,7 +206,8 @@ mod tests {
 
     #[test]
     fn tls_reads_accumulate_only_when_nonblocking_or_waitall() {
-        use crate::{Socket, SocketRecord, socket_record_recv, steady_ms};
+        use crate::lent::raw::socket_record_recv;
+        use crate::{Socket, SocketRecord, steady_ms};
         let mut buffer = [0_u8; 8];
         LEFT.set(7);
         let mut record = SocketRecord::with_fd(-1, 0);
@@ -271,9 +274,7 @@ mod tests {
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: the cursor names the two local iovecs.
-        let sent = unsafe {
-            swr_v1_socket_iov_owned(a, true, &raw mut *owner, None, std::ptr::null_mut())
-        };
+        let sent = unsafe { swr_v1_socket_iov_owned(a, true, &raw mut *owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((sent, state.remain_count), (7, 0));
 
@@ -291,9 +292,7 @@ mod tests {
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
         // SAFETY: as above, writable.
-        let read = unsafe {
-            swr_v1_socket_iov_owned(b, false, &raw mut *owner, None, std::ptr::null_mut())
-        };
+        let read = unsafe { swr_v1_socket_iov_owned(b, false, &raw mut *owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!(read, 7);
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
@@ -317,14 +316,20 @@ mod tests {
             },
         ];
         let mut owner = ReactorIov::new(&iov).unwrap();
-        // SAFETY: the counter stands in for the socket; the iovecs are local.
+        // The counter stands in for the socket; the iovecs are local.
+        let counter = (&raw mut left).cast();
         let read = unsafe {
             swr_v1_socket_iov_owned(
                 -1,
                 false,
                 &raw mut *owner,
-                Some(tls_in_pieces),
-                (&raw mut left).cast(),
+                Some(&(
+                    |mut fill: crate::Fill<'_>| {
+                        let slots = fill.slots();
+                        tls_in_pieces(counter, slots.as_mut_ptr().cast(), slots.len())
+                    },
+                    |_: crate::Drain<'_>| unreachable!("a read"),
+                )),
             )
         };
         let state = swr_v1_reactor_iov_view(&owner);
@@ -342,8 +347,8 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn sends_three(_: *mut c_void, _: *mut c_void, length: usize) -> isize {
-        length.min(3).cast_signed()
+    fn sends_three(data: &[u8]) -> isize {
+        data.len().min(3).cast_signed()
     }
 
     #[test]
@@ -353,33 +358,14 @@ mod tests {
         let file = std::fs::File::open(&path).unwrap();
         let mut offset: libc::off_t = 4;
         let mut nobufs = false;
-        // SAFETY: local offset and flag; the callback ignores its socket.
-        let result = unsafe {
-            ssl_sendfile(
-                file.as_raw_fd(),
-                &mut offset,
-                6,
-                sends_three,
-                std::ptr::null_mut(),
-                &mut nobufs,
-            )
-        };
+        let result = ssl_sendfile(file.as_raw_fd(), &mut offset, 6, sends_three, &mut nobufs);
         assert_eq!(
             (result, offset),
             (SslSendfileResult { value: 3, warn: 0 }, 7)
         );
         offset = 10;
-        // SAFETY: as above; nothing is left to read.
-        let result = unsafe {
-            ssl_sendfile(
-                file.as_raw_fd(),
-                &mut offset,
-                6,
-                sends_three,
-                std::ptr::null_mut(),
-                &mut nobufs,
-            )
-        };
+        // Nothing is left to read.
+        let result = ssl_sendfile(file.as_raw_fd(), &mut offset, 6, sends_three, &mut nobufs);
         assert_eq!(result, SslSendfileResult { value: -1, warn: 2 });
         std::fs::remove_file(&path).unwrap();
     }

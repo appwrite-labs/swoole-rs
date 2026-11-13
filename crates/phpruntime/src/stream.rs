@@ -26,15 +26,24 @@ use swoole_rs_zend::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, add_next_index_resource, php_stream, php_stream_context,
         php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param,
         sockaddr, swr_zend_stream_buffered, swr_zend_stream_context,
-        swr_zend_stream_context_options, swr_zend_stream_default_timeout, swr_zend_stream_expose,
-        swr_zend_stream_option, swr_zend_stream_progress, swr_zend_stream_set_option,
-        swr_zend_stream_share_context, swr_zend_stream_timeval, swr_zend_stream_vm_active, timeval,
-        zend_string, zval,
+        swr_zend_stream_default_timeout, swr_zend_stream_expose, swr_zend_stream_progress,
+        swr_zend_stream_set_option, swr_zend_stream_share_context, swr_zend_stream_timeval,
+        swr_zend_stream_vm_active, timeval, zend_string, zval,
     },
     value::empty_string,
 };
 
 unsafe extern "C" {
+    /// `php_stream_context_get_option`: null (`None`), or the option the
+    /// stream's context holds, which lives until PHP code changes the context.
+    fn swr_zend_stream_option<'a>(
+        stream: *mut php_stream,
+        wrapper: *const c_char,
+        name: *const c_char,
+    ) -> Option<&'a Value>;
+    /// `Z_ARRVAL(context->options)`: null (`None`) for a null context, or its
+    /// options, which live until PHP code changes the context.
+    fn swr_zend_stream_context_options<'a>(context: *mut php_stream_context) -> Option<&'a Array>;
     fn php_network_populate_name_from_sockaddr(
         sa: *mut sockaddr,
         sl: socklen_t,
@@ -237,10 +246,8 @@ fn context(stream: *mut php_stream) -> *mut php_stream_context {
 
 /// A copy of the stream's context option, if set.
 fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<Owned> {
-    // SAFETY: a live stream; Zend copies nothing.
-    let value = unsafe { swr_zend_stream_option(stream, wrapper.as_ptr(), name.as_ptr()) };
-    // SAFETY: null or the context's live option, copied before any PHP runs.
-    unsafe { Value::from_ptr(value) }.map(Value::copy)
+    // SAFETY: a live stream; the context's live option is copied before any PHP runs.
+    unsafe { swr_zend_stream_option(stream, wrapper.as_ptr(), name.as_ptr()) }.map(Value::copy)
 }
 
 /// `zval_is_true` of a context option, false when unset.
@@ -961,11 +968,9 @@ const SSL_ALIASES: [(&str, &str); 10] = [
 /// `socket_ssl_set_options`: an encrypted socket takes the context's `ssl`
 /// options; false if Swoole refuses them.
 fn ssl_set_options(socket: &Socket, context: *mut php_stream_context) -> Result<bool, Bailout> {
-    // SAFETY: null or a live context.
+    // SAFETY: null or a live context, whose options no PHP code changes while
+    // this runs.
     let options = unsafe { swr_zend_stream_context_options(context) };
-    // SAFETY: null or the context's live options, which no PHP code changes
-    // while this runs.
-    let options = unsafe { Array::from_ptr(options) };
     // `php_swoole_array_get_value_ex`: present and not null.
     let ssl = options.and_then(|options| options.get(b"ssl")?.array());
     let Some(ssl) = ssl.filter(|_| socket.ssl_enabled()) else {

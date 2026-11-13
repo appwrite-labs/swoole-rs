@@ -7,7 +7,6 @@
  "base64-consumers-upstream": 1,
  "base64-unit": 21,
  "buffer-network": 6,
- "buffer-string-compatibility": 17,
  "buffer-typed": 6,
  "buffer-unit": 4,
  "clients-http-format": 2,

@@ -39,9 +39,9 @@ class PhaseReports(unittest.TestCase):
 
     def test_independent_selection_stays_independent(self):
         result=subprocess.run([sys.executable,'tools/dev.py','integrate','--module', 'locks',
-            '--phase','buffer-string-compatibility','--plan'],cwd=ROOT,capture_output=True,text=True)
+            '--phase','string-originals','--plan'],cwd=ROOT,capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual([r['phase'] for r in json.loads(result.stdout)],['buffer-string-compatibility'])
+        self.assertEqual([r['phase'] for r in json.loads(result.stdout)],['string-originals'])
 
 
 class ExternalNetwork(unittest.TestCase):

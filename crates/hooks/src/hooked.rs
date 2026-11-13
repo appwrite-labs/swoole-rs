@@ -201,7 +201,7 @@ pub unsafe extern "C" fn swoole_coroutine_connect(
     match hooked(fd) {
         Some((_, socket)) => {
             // SAFETY: the caller's address.
-            if unsafe { socket.connect_addr(addr, len) } {
+            if socket.connect_addr(unsafe { crate::lifecycle::Peer::from_raw(addr, len) }) {
                 0
             } else {
                 -1

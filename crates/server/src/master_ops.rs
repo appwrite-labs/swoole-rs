@@ -495,10 +495,13 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_ON_CLOSE => {
-            let event = arg as *mut core::ffi::c_void;
-            let slot = o.state.callbacks.slot(CB_CLOSE)?;
-            // SAFETY: onClose's slot, the live server and the close event.
-            unsafe { slot.call(o.ctx.serv, event) };
+            // SAFETY: the close event `base_factory::end` lends at `arg` for the op.
+            let event = unsafe { &*(arg as *const swoole_rs_corebase::DataHead) };
+            // SAFETY: the context's live server (`answer`'s contract), read as it was
+            // before the slot took a handle: `o.server` would test for one.
+            let serv = unsafe { crate::view::Server::from_raw(o.ctx.serv) };
+            let callbacks = &o.state.callbacks;
+            callbacks.event(crate::callbacks::EventSlot::Close, serv, event);
             0
         }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -579,7 +582,7 @@ fn configure(o: &Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_DGRAM_PORT => {
             let fd = o.port_fd();
             let port = o.port();
-            let socket = port.socket;
+            let socket = port.socket_ptr();
             let size = port.socket_buffer_size.get().cast_unsigned();
             swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
             let config = config();
@@ -1868,7 +1871,7 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             unsafe { swoole_rs_tls::upstream::socket_free(o.ctx.sock.cast()) };
             0
         }
-        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.ctx.port, o.ctx.sock)),
+        OP_SSL_CREATE => u64::from((methods().ssl_create)(o.ctx.port, o.sock())),
         OP_COMMAND_HANDLER => {
             let handler: swoole_rs_reactor::Handler = accept_command_result;
             o.reactor().set_handler(SW_FD_PIPE, SW_EVENT_READ, handler);
@@ -1892,7 +1895,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use swoole_rs_corebase::{swoole_get_systemd_listen_fds, swoole_redirect_stdout_file};
     use swoole_rs_ossupport::swoole_daemon;
     use swoole_rs_utilities::{process_logger, swr_v1_logger_is_opened, swr_v1_logger_redirect};
-    let serv = o.ctx.serv;
     Some(match op {
         OP_LC_DAEMON => {
             match process_logger() {
@@ -1909,7 +1911,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // thread, base-mode worker or worker thread starts.
         OP_LC_INIT_PROTOCOLS => {
             for port in o.tables().ports() {
-                (crate::port_config::methods().init_protocol)(port.raw());
+                (crate::port_config::methods().init_protocol)(port.config());
             }
             0
         }
@@ -1918,9 +1920,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
         OP_MASTER_TIMER => {
-            let tick = crate::server_methods::master_timer_tick;
-            // SAFETY: `tick` takes the server, which outlives the master's timer.
-            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(1000, true, tick, serv) };
+            let node = crate::server_methods::master_timer(o.server());
             o.config().master_timer.store(node, Relaxed);
             u64::from(!node.is_null())
         }
@@ -1936,7 +1936,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let fd = socket.fd();
             let conn = o.tables().connection_at(fd)?;
             conn.set_fd(fd);
-            conn.set_socket(port.socket.cast());
+            conn.set_socket(port.socket_ptr().cast());
             conn.set_socket_type(port.r#type);
             conn.set_object(ls);
             let mut info = conn.info();
@@ -1946,7 +1946,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 &mut info.len,
                 port.r#type,
                 port.host.bytes_with_nul(),
-                port.port,
+                port.port.get(),
                 true,
             );
             conn.set_info(info);
@@ -1984,7 +1984,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// upstream symbols; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_DISPATCH_FUNC, CB_SHUTDOWN};
+    use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_SHUTDOWN};
     use crate::ops::{
         OP_ACCEPT_TIMER, OP_BEFORE_SHUTDOWN, OP_CLOSE_CONNECTION, OP_DISPATCH_FUNC, OP_FORCE_CLOSE,
         OP_FORCED_EXIT, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE,
@@ -1998,8 +1998,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const ACCEPT_RETRY_MSEC: libc::c_long =
         (swoole_rs_corebase::constants::SW_ACCEPT_RETRY_TIME * 1000.0) as libc::c_long;
-    let serv = o.ctx.serv;
-    let slot = |index| o.state.callbacks.slot(index);
     let reopen_logger = || {
         if let Some(logger) = swoole_rs_utilities::process_logger() {
             logger.reopen();
@@ -2069,15 +2067,17 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_CLOSE => {
             let port = o.tables().ports().get(usize::try_from(arg).ok()?)?;
-            (methods().close)(port.raw());
+            (methods().close)(*port);
             0
         }
         OP_DISPATCH_FUNC => {
             let fd = libc::c_long::from(o.ctx.server_fd);
-            let conn = o.state.connection_ptr(fd, 0);
-            let dispatch = slot(CB_DISPATCH_FUNC)?;
-            // SAFETY: dispatch_func's slot, the live server, connection and data.
-            sign(unsafe { dispatch.dispatch(serv, conn.cast(), o.ctx.send) })
+            // SAFETY: null, or the table's live slot of the fd, read for the call.
+            let conn = unsafe { o.state.connection_ptr(fd, 0).as_ref() };
+            // SAFETY: null, or the live `SendData` the dispatch lends, which is laid
+            // out as the `RecvData` the callback reads: its head and `len` bytes.
+            let send = unsafe { o.ctx.send.cast::<crate::reactor_entry::RecvData>().as_ref() };
+            sign(o.state.callbacks.dispatch(o.server(), conn, send))
         }
         op => return sends(o, op, arg),
     })
@@ -2461,7 +2461,7 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_PORT_NEW => {
             let mut port = port_new(serv);
             port.r#type = o.ctx.socket_type;
-            port.port = o.ctx.number;
+            port.port.set(o.ctx.number);
             if port.host.set(o.host().to_bytes()) < 0 {
                 // `throw std::bad_alloc()`, which nothing catches.
                 swoole_rs_corebase::fatal("out of memory storing a port's host");
@@ -2470,15 +2470,14 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 port.r#type = o.ctx.socket_type & !SOCK_SSL;
                 port.ssl = 1;
             }
-            let ls = Box::into_raw(port).cast();
-            o.ctx.port = ls;
             if arg != 0 {
-                (methods().ssl_context_init)(ls);
+                (methods().ssl_context_init)(&mut port);
             }
+            o.ctx.port = Box::into_raw(port).cast();
             0
         }
         OP_PORT_SOCKET => {
-            if (methods().create_socket)(o.ctx.port) < 0 {
+            if (methods().create_socket)(o.port()) < 0 {
                 log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
                 // SAFETY: the new port, deleted once.
                 unsafe { port_delete(o.ctx.port) };
@@ -2488,15 +2487,14 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             1
         }
         OP_PORT_IMPORT => {
-            let ls = Box::into_raw(port_new(serv)).cast();
+            let mut port = port_new(serv);
             #[expect(clippy::cast_possible_truncation, reason = "C++'s (int) arg")]
             let fd = arg as c_int;
-            if !(methods().import)(ls, fd) {
-                // SAFETY: the new port, deleted once.
-                unsafe { port_delete(ls) };
+            if !(methods().import)(&mut port, fd) {
+                crate::server_object::port_drop(port);
                 return Some(0);
             }
-            o.ctx.port = ls;
+            o.ctx.port = Box::into_raw(port).cast();
             // The record `import` made: O_NONBLOCK and O_CLOEXEC.
             o.port_socket()?
                 .edit(|socket| socket_set_fd_option(socket, 1, 1));

@@ -6,6 +6,7 @@ use core::sync::atomic::Ordering;
 
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::PoolRef;
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::workers::ops::{
     OP_ADD_HEARTBEAT_TIMER, OP_ADD_PIPES, OP_BUS_POP, OP_BUS_READ, OP_CLOSE_NOTIFY,
@@ -19,7 +20,7 @@ use swoole_rs_process::workers::ops::{
 use swoole_rs_reactor::{Event, Running};
 
 use super::Context;
-use crate::callbacks::{CB_FINISH, CB_PIPE_MESSAGE};
+use crate::callbacks::TaskSlot;
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::reactor_ops::sign;
 use crate::view;
@@ -73,11 +74,12 @@ impl Context<'_> {
     pub(super) fn bus(&self) -> Bus {
         self.state().message_bus()
     }
-    fn callback(&self, index: u32) {
-        if let Some(slot) = self.state().callbacks.slot(index) {
-            // SAFETY: the slot takes the server and the bus's `EventData`.
-            unsafe { slot.call(self.serv.raw(), self.bus().buffer().cast()) };
-        }
+    /// The event the bus just read, as its sender packed it: an `EventData`, its
+    /// head and the payload the head counts.
+    fn event_data(&self) -> Packed<'_> {
+        // SAFETY: the ops reading it run once the bus has read a whole event into its
+        // buffer, which only this thread's next read replaces.
+        unsafe { Packed::from_raw(self.bus().buffer().cast()) }
     }
     /// The context's event, which the ops reading it run with.
     pub(super) fn event(&self) -> &Event {
@@ -111,14 +113,14 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_INFO_TYPE => u64::from(ctx.bus().head().kind),
         OP_INFO_REACTOR_ID => sign(ctx.bus().head().reactor_id),
         OP_ON_PIPE_MESSAGE => {
-            ctx.callback(CB_PIPE_MESSAGE);
+            ctx.state()
+                .callbacks
+                .pipe_message(ctx.serv, ctx.event_data());
             0
         }
         OP_ON_FINISH => {
-            if let Some(slot) = ctx.state().callbacks.slot(CB_FINISH) {
-                // SAFETY: `onFinish` is `int (Server *, EventData *)`; its result is discarded.
-                let _ = unsafe { slot.receive(ctx.serv.raw(), ctx.bus().buffer().cast()) };
-            }
+            let callbacks = &ctx.state().callbacks;
+            let _ = callbacks.task(TaskSlot::Finish, ctx.serv, ctx.event_data());
             0
         }
         OP_STOP_ASYNC => {

@@ -4,10 +4,10 @@ use crate::{
     Class, Value, ZStr,
     bailout::{self, Bailout},
     sys::{
-        IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_property,
-        swr_zend_event_restore_shutdown, swr_zend_event_socket_fd, swr_zend_instanceof,
-        swr_zend_last_fatal_error, swr_zend_stack_restore, swr_zend_stack_unlimit,
-        swr_zend_stream_select_fd, zend_long, zend_memory_usage,
+        IS_RESOURCE, swr_zend_event_pause_shutdown, swr_zend_event_restore_shutdown,
+        swr_zend_event_socket_fd, swr_zend_instanceof, swr_zend_last_fatal_error,
+        swr_zend_stack_restore, swr_zend_stack_unlimit, swr_zend_stream_select_fd, zend_long,
+        zend_memory_usage,
     },
 };
 use std::ffi::{CStr, CString, c_char, c_int};
@@ -18,6 +18,14 @@ unsafe extern "C" {
     /// null for any other value or resource. It reads the zval, the resource's
     /// type and the two stream type numbers PHP registers at startup.
     safe fn swr_zend_stream_from_zval(value: &Value) -> *mut crate::sys::php_stream;
+    /// `zend_read_property_ex` of an object zval under its own class, inside
+    /// `zend_try` (nonzero for a bailout): `found` is null (`None`) or the
+    /// initialized zval the read lends, which lives until PHP code runs.
+    fn swr_zend_event_property(
+        object: &Value,
+        name: &ZStr,
+        found: &mut Option<&Value>,
+    ) -> std::ffi::c_int;
 }
 
 impl Value {
@@ -61,13 +69,12 @@ impl Value {
         if self.object().is_none() {
             return Ok(None);
         }
-        let mut found = ptr::null_mut();
-        // SAFETY: a live object and name; the shim contains a magic-method bailout.
-        if unsafe { swr_zend_event_property(self.as_ptr(), name.as_ptr(), &raw mut found) } != 0 {
+        let mut found = None;
+        // SAFETY: a live object and name; the shim contains a magic-method
+        // bailout, and what it lends is read before any PHP runs.
+        if unsafe { swr_zend_event_property(self, name, &mut found) } != 0 {
             return Err(Bailout);
         }
-        // SAFETY: null, or the initialized zval the lookup lends.
-        let found = unsafe { Self::from_ptr(found) };
         Ok(found.and_then(Self::as_long))
     }
 

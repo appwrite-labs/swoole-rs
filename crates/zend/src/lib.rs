@@ -28,6 +28,8 @@ pub mod host;
 pub mod local;
 mod minit;
 mod object;
+pub mod observer;
+pub mod opcode;
 pub mod registration;
 pub mod string;
 pub mod value;

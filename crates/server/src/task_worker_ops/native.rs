@@ -48,8 +48,7 @@ pub(super) fn native(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             u64::from(found)
         }
         OP_UNPACK_COMMAND => {
-            // SAFETY: the live command task.
-            let task = unsafe { Packed::from_raw(ctx.task.cast()) };
+            let task = ctx.packed_task();
             let unpacked = swoole_rs_buffer::string::with_thread_buffer(|buffer| {
                 task.unpack(buffer)
                     .map(|(data, _)| (data.len(), data.as_ptr().cast()))

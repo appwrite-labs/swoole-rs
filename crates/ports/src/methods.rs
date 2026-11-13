@@ -4,6 +4,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
+use std::sync::atomic::Ordering::Relaxed;
 
 use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
@@ -25,7 +26,7 @@ pub(crate) const FD_DGRAM_SERVER: c_int = 2;
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 const SOCK_NONBLOCK: c_int = 1 << 2;
 const SOCK_CLOEXEC: c_int = 1 << 3;
-use swoole_rs_server::port_config::{self, PortConfig};
+use swoole_rs_server::port_config::PortConfig;
 use swoole_rs_server::view;
 
 use swoole_rs_http_ffi::request_free;
@@ -95,27 +96,24 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
 
 /// `ListenPort::listen()`: listens unless already listening, then sets the
 /// socket options and the default high watermark. A failed option only warns.
-pub(crate) fn listen(port: *mut c_void) -> c_int {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
-    // SAFETY: the port's live socket, which only this thread touches.
-    let Some(socket) = (unsafe { Socket::from_ptr(config.socket.cast()) }) else {
+pub(crate) fn listen(config: &PortConfig) -> c_int {
+    let Some(socket) = config.listening_socket() else {
         return -1;
     };
     let backlog = c_int::from(config.backlog.get());
-    if !config.listening && socket.edit(|s| s.listen(backlog)) < 0 {
+    if !config.listening.get() && socket.edit(|s| s.listen(backlog)) < 0 {
         log::sys_warning(
             c"ListenPort::listen",
             format_args!(
                 "listen({}:{}, {}) failed",
                 host_text(config),
-                config.port,
+                config.port.get(),
                 config.backlog.get()
             ),
         );
         return -1;
     }
-    config.listening = true;
+    config.listening.set(true);
     let fd = socket.fd();
     for (level, option, name, value) in listen_options(config) {
         if swoole_rs_corebase::sys::setsockopt(fd, level, option, &value) != 0 {
@@ -151,20 +149,18 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
 /// reuses ports (Linux), else makes one, sets its options, binds it to the
 /// port's host and port, and takes the bound port. On failure it sets the last
 /// error to errno and frees the new socket, which the port still points at.
-pub(crate) fn create_socket(port: *mut c_void) -> c_int {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
+pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     let serv = config.protocol.get().private_data_2;
     // SAFETY: the port's live server, when it has one.
     let reuse_port = cfg!(target_os = "linux")
         && !serv.is_null()
         // SAFETY: the port's live server.
         && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port.get();
-    if !config.socket.is_null() {
+    if !config.socket_ptr().is_null() {
         if !reuse_port {
             return 0;
         }
-        close_socket(port);
+        close_socket(config);
     }
     let kind = config.r#type;
     let fd_type = if matches!(kind, 2 | 4 | 6) {
@@ -208,7 +204,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
         &mut address.len,
         kind,
         config.host.bytes_with_nul(),
-        config.port,
+        config.port.get(),
         true,
     );
     if error != 0 {
@@ -220,7 +216,7 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
                 "Invalid {} address '{}:{}'",
                 name.to_string_lossy(),
                 host_text(config),
-                config.port
+                config.port.get()
             ),
         );
         return fail();
@@ -235,10 +231,10 @@ pub(crate) fn create_socket(port: *mut c_void) -> c_int {
         return fail();
     }
     let info = socket.read(|s| s.info);
-    config.port = swr_v1_clients_address_port(&info);
+    config.port.set(swr_v1_clients_address_port(&info));
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
-    config.socket = made.cast();
+    config.socket.store(made.cast(), Relaxed);
     0
 }
 
@@ -247,10 +243,12 @@ fn errno() -> c_int {
 }
 
 /// `ListenPort::close_socket()`: closes and frees the port's socket.
-pub(crate) fn close_socket(port: *mut c_void) {
-    // SAFETY: a live port of the server, which `PortMethods` takes.
-    let config = unsafe { port_config::of(port) };
-    let socket = config.socket.cast::<SocketRecord>();
+pub(crate) fn close_socket(config: &PortConfig) {
+    // Taken first, so nothing finds the record once it is freed.
+    let socket = config
+        .socket
+        .swap(ptr::null_mut(), Relaxed)
+        .cast::<SocketRecord>();
     if socket.is_null() {
         return;
     }
@@ -265,7 +263,6 @@ pub(crate) fn close_socket(port: *mut c_void) {
         );
     }
     drop(socket);
-    config.socket = ptr::null_mut();
 }
 
 /// The `SWR_PORTS_*` protocol flags a port's settings turn on; `SWR_PORTS_DGRAM`
@@ -355,14 +352,25 @@ fn reader(
 
 /// `init_protocol` over the port's settings; `dtls` is `is_dtls()`, asked of a
 /// datagram port only.
-fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
+fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
     let datagram = matches!(config.r#type, 2 | 4 | 6);
     if datagram && !dtls() {
         return;
     }
-    let protocol = config.protocol.get_mut();
+    let on_read = config
+        .protocol
+        .update(|protocol| init_protocol_callbacks(config, protocol));
+    config.on_read.store(on_read, Relaxed);
+}
+
+/// The readable callback of the port's settings, whose protocol callbacks and
+/// framing it stores in `protocol`.
+fn init_protocol_callbacks(
+    config: &PortConfig,
+    protocol: &mut swoole_rs_corebase::net_types::Protocol,
+) -> *mut c_void {
     let c = &CALLBACKS;
-    config.on_read = if config.open_eof_check.get() {
+    if config.open_eof_check.get() {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
             #[expect(clippy::cast_possible_truncation, reason = "SW_DATA_EOF_MAXLEN is 8")]
             let max = SW_DATA_EOF_MAXLEN as u8;
@@ -402,7 +410,7 @@ fn init_protocol_over(config: &mut PortConfig, dtls: impl FnOnce() -> bool) {
         reader(readable_callback_redis)
     } else {
         reader(readable_callback_raw)
-    };
+    }
 }
 
 /// `SW_HTTP2_FRAME_HEADER_SIZE`.
@@ -411,9 +419,8 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
 
 /// `ListenPort::init_protocol()`, over the port's settings.
-pub fn init_protocol(config: &mut PortConfig) {
-    let dtls = config.is_dtls();
-    init_protocol_over(config, || dtls);
+pub fn init_protocol(config: &PortConfig) {
+    init_protocol_over(config, || config.is_dtls());
 }
 
 /// `ListenPort::set_eof_protocol(eof, find_from_right)`, given the string's bytes: at
@@ -503,7 +510,29 @@ readable_callbacks! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lifecycle::{close, context_create, ssl_context_init, ssl_init};
+    use crate::lifecycle::{context_create, ssl_init};
+    use swoole_rs_server::port_config;
+
+    /// The port at `at`, as the server passes one of its own.
+    fn port_at<'a>(at: *mut c_void) -> view::Port<'a> {
+        unsafe { view::Port::from_raw(at) }.expect("a port")
+    }
+    // The `ListenPort` methods over a port's address, as the tests name one.
+    fn listen(at: *mut c_void) -> c_int {
+        super::listen(port_at(at).config())
+    }
+    fn create_socket(at: *mut c_void) -> c_int {
+        super::create_socket(port_at(at).config())
+    }
+    fn close_socket(at: *mut c_void) {
+        super::close_socket(port_at(at).config());
+    }
+    fn close(at: *mut c_void) {
+        crate::lifecycle::close(port_at(at));
+    }
+    fn ssl_context_init(at: *mut c_void) -> bool {
+        crate::lifecycle::ssl_context_init(unsafe { port_config::of(at) })
+    }
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
     /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
@@ -593,7 +622,10 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let bound = listener.local_addr().unwrap().port();
         let fd = std::os::fd::IntoRawFd::into_raw_fd(listener);
-        assert!(crate::lifecycle::import(at, fd), "listening");
+        assert!(
+            crate::lifecycle::import(unsafe { port_config::of(at) }, fd),
+            "listening"
+        );
         let config = unsafe { port_config::of(at) };
         let socket = record(config);
         assert_eq!(
@@ -602,18 +634,21 @@ mod tests {
             "server socket"
         );
         assert_eq!(
-            (config.r#type, config.port),
+            (config.r#type, config.port.get()),
             (1, c_int::from(bound)),
             "type and port"
         );
         assert_eq!(host_text(config), "127.0.0.1", "host");
-        assert!(config.listening, "listening");
+        assert!(config.listening.get(), "listening");
         close(at);
-        assert!(config.socket.is_null(), "freed");
+        assert!(config.socket_ptr().is_null(), "freed");
         let stream = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(!crate::lifecycle::import(at, stream), "not listening");
         assert!(
-            config.socket.is_null(),
+            !crate::lifecycle::import(unsafe { port_config::of(at) }, stream),
+            "not listening"
+        );
+        assert!(
+            config.socket_ptr().is_null(),
             "the refused record freed, not kept"
         );
         unsafe { libc::close(stream) };
@@ -638,7 +673,7 @@ mod tests {
                     "bind(2)"
                 );
             }
-            (*config).socket = socket.cast();
+            *(*config).socket.get_mut() = socket.cast();
         }
         config
     }
@@ -669,9 +704,13 @@ mod tests {
         config.tcp_user_timeout.set(5);
         assert_eq!(listen(at), 0, "listened");
         let fd = unsafe { view::Port::from_raw(at) }.map_or(-1, view::Port::fd);
-        assert!(config.listening, "published");
+        assert!(config.listening.get(), "published");
         assert_eq!(
-            unsafe { (*config.socket.cast::<SocketRecord>()).fields.listened },
+            unsafe {
+                (*config.socket_ptr().cast::<SocketRecord>())
+                    .fields
+                    .listened
+            },
             1,
             "listen(2) succeeded"
         );
@@ -725,7 +764,7 @@ mod tests {
         let held = unsafe { libc::dup(fd) };
         assert!(held >= 0, "dup(2)");
         close_socket(at);
-        assert!(config.socket.is_null(), "socket released");
+        assert!(config.socket_ptr().is_null(), "socket released");
         assert_ne!(local_addr(fd), bound, "descriptor closed");
         unsafe { libc::close(held) };
         unsafe { port_config::swr_v1_port_config_free(port) };
@@ -738,7 +777,7 @@ mod tests {
         let at = port.cast::<c_void>();
         assert_eq!(listen(at), -1, "failed");
         let config = unsafe { port_config::of(at) };
-        assert!(!config.listening, "not published");
+        assert!(!config.listening.get(), "not published");
         assert_eq!(config.buffer_high_watermark.get(), 0, "options skipped");
         close_socket(at);
         unsafe { port_config::swr_v1_port_config_free(port) };
@@ -757,7 +796,7 @@ mod tests {
         }
         unsafe {
             (*config).r#type = kind;
-            (*config).port = number;
+            (*config).port.set(number);
             let set = swoole_rs_corebase::swr_v1_core_string_set(
                 &raw const *(*config).host,
                 host.as_ptr().cast(),
@@ -769,7 +808,7 @@ mod tests {
     }
 
     fn record<'a>(config: &PortConfig) -> &'a SocketFields {
-        unsafe { &*config.socket.cast::<SocketRecord>() }
+        unsafe { &*config.socket_ptr().cast::<SocketRecord>() }
     }
 
     #[test]
@@ -781,10 +820,10 @@ mod tests {
         let socket = record(config);
         assert_eq!(socket.fd_type, FD_STREAM_SERVER, "stream server fd");
         assert_eq!(socket.bound, 1, "bound");
-        assert_ne!(config.port, 0, "the kernel's port");
+        assert_ne!(config.port.get(), 0, "the kernel's port");
         assert_eq!(
             swr_v1_clients_address_port(&socket.info),
-            config.port,
+            config.port.get(),
             "getsockname's port"
         );
         assert_ne!(
@@ -797,9 +836,9 @@ mod tests {
         let fd_flags = unsafe { libc::fcntl(socket.fd, libc::F_GETFD) };
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "close-on-exec");
         // A port with a socket keeps it unless the server reuses ports.
-        let kept = config.socket;
+        let kept = config.socket_ptr();
         assert_eq!(create_socket(at), 0, "kept");
-        assert_eq!(config.socket, kept, "same socket");
+        assert_eq!(config.socket_ptr(), kept, "same socket");
         close_socket(at);
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
@@ -835,11 +874,11 @@ mod tests {
             "SO_REUSEPORT"
         );
         // Unmark the old record: only a new bind marks the port's record again.
-        unsafe { (*config.socket.cast::<SocketRecord>()).fields.bound = 0 };
-        let bound_port = config.port;
+        unsafe { (*config.socket_ptr().cast::<SocketRecord>()).fields.bound = 0 };
+        let bound_port = config.port.get();
         assert_eq!(create_socket(at), 0, "recreated");
         assert_eq!(record(config).bound, 1, "a new socket, bound");
-        assert_eq!(config.port, bound_port, "on the same port");
+        assert_eq!(config.port.get(), bound_port, "on the same port");
         assert_ne!(
             option(record(config).fd, libc::SOL_SOCKET, libc::SO_REUSEPORT),
             0,
@@ -856,7 +895,7 @@ mod tests {
         let port = unbound_port(5, &long, 0, false);
         let at = port.cast::<c_void>();
         assert_eq!(create_socket(at), -1, "invalid address");
-        assert!(unsafe { (*port).socket }.is_null(), "freed, not kept");
+        assert!(unsafe { (*port).socket_ptr() }.is_null(), "freed, not kept");
         unsafe { port_config::swr_v1_port_config_free(port) };
         // An address no local interface has: bind(2) fails.
         let port = unbound_port(1, "203.0.113.1", 0, false);
@@ -867,7 +906,7 @@ mod tests {
             libc::EADDRNOTAVAIL,
             "errno as the last error"
         );
-        assert!(unsafe { (*port).socket }.is_null(), "freed, not kept");
+        assert!(unsafe { (*port).socket_ptr() }.is_null(), "freed, not kept");
         unsafe { port_config::swr_v1_port_config_free(port) };
     }
 
@@ -921,7 +960,10 @@ mod tests {
             !config.open_length_check.get() && !config.open_eof_check.get(),
             "no framing"
         );
-        assert!(config.on_read.is_null(), "no reader before init_protocol");
+        assert!(
+            config.on_read.load(Relaxed).is_null(),
+            "no reader before init_protocol"
+        );
     }
 
     /// The EOF setter (was tests/modules/ports/settings.cc).
@@ -1072,7 +1114,7 @@ mod tests {
             }
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
             let p = config.protocol.get();
-            assert_eq!(config.on_read, on_read, "{flags}: reader");
+            assert_eq!(config.on_read.load(Relaxed), on_read, "{flags}: reader");
             assert_eq!(
                 package(p.on_package),
                 package(on_package),
@@ -1122,7 +1164,7 @@ mod tests {
             config.r#type = kind;
             init_protocol_over(config, || dtls);
             assert_eq!(
-                !config.on_read.is_null(),
+                !config.on_read.load(Relaxed).is_null(),
                 initialized,
                 "type {kind}, dtls {dtls}"
             );
@@ -1149,11 +1191,11 @@ mod tests {
     fn server_port_import() {
         log::swr_v1_core_set_log_host(crate::read::tests::record);
         let mut port = Fresh::new();
-        assert!(!crate::lifecycle::import(port.at(), libc::STDIN_FILENO));
+        assert!(!crate::lifecycle::import(port.config(), libc::STDIN_FILENO));
         assert_eq!(log::last_error(), libc::ENOTSOCK);
 
         let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        assert!(!crate::lifecycle::import(port.at(), sock));
+        assert!(!crate::lifecycle::import(port.config(), sock));
         assert_eq!(log::last_error(), libc::EINVAL);
         unsafe { libc::close(sock) };
     }
