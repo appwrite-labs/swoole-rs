@@ -986,6 +986,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
         use core::sync::atomic::Ordering::Relaxed;
         use swoole_rs_process::worker_record::{Worker, WorkerRecord};
