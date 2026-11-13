@@ -175,7 +175,7 @@ impl Co {
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
         let (context_ready, verify_peer) = self
-            .tls_fields(|fields| (fields.context.is_some(), fields.verify_peer != 0))
+            .tls_fields(|fields| (fields.context.is_some(), fields.verify_peer))
             .unwrap_or_default();
         let mut state = Handshake {
             socket: self,
@@ -301,9 +301,7 @@ impl Handshaking for Handshake {
 
     fn verify(&mut self) -> bool {
         // Verified only with a context.
-        let allow_self_signed = self
-            .socket
-            .tls_fields(|fields| fields.allow_self_signed != 0);
+        let allow_self_signed = self.socket.tls_fields(|fields| fields.allow_self_signed);
         self.socket
             .ssl_verify(allow_self_signed.unwrap_or_default())
     }

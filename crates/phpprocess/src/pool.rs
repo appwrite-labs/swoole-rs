@@ -580,10 +580,7 @@ fn set(call: &Call) {
     if let Some(value) = options.get(b"max_package_size") {
         let size = swoole_rs_phpswoole::php_swoole_parse_to_size(value);
         let pool = handle(pool);
-        pool.set_max_packet_size(packet_limit(
-            pool.use_msgqueue() != 0,
-            max_package_size(size),
-        ));
+        pool.set_max_packet_size(packet_limit(pool.use_msgqueue(), max_package_size(size)));
     }
     if let Some(value) = options.get(b"max_wait_time") {
         let Some(seconds) = value.applied_long() else {

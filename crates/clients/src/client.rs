@@ -1234,7 +1234,7 @@ fn ssl_handshake(this: Handle) -> c_int {
     let missing = this.edit_tls(|fields, record| {
         let missing = fields.context.is_none();
         if missing {
-            fields.http_v2 = u8::from(record.http2);
+            fields.http_v2 = record.http2;
         }
         missing
     });
@@ -1267,7 +1267,7 @@ fn ssl_handshake(this: Handle) -> c_int {
     }
     if this.tls_state() == SSL_STATE_READY {
         let (verify, self_signed) =
-            this.edit_tls(|fields, _| (fields.verify_peer != 0, fields.allow_self_signed != 0));
+            this.edit_tls(|fields, _| (fields.verify_peer, fields.allow_self_signed));
         if verify && ssl_verify(this, self_signed) < 0 {
             return ERR;
         }
