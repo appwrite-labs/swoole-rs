@@ -48,7 +48,8 @@ const WAIT: c_int = 2;
 const READY: c_int = 5;
 /// `SW_EVENT_RDWR`.
 const RDWR: u32 = (1 << 9) | (1 << 10);
-/// `SW_SOCKS5_STATE_HANDSHAKE` and `SW_SOCKS5_STATE_READY`.
+/// `SW_SOCKS5_STATE_HANDSHAKE` and `SW_SOCKS5_STATE_READY`, crates/clients's (a test
+/// compares them).
 const SOCKS5_HANDSHAKE: u8 = 1;
 const SOCKS5_READY: u8 = 4;
 /// The extra record's string slots: the connect host and the TLS host name.
@@ -669,6 +670,17 @@ pub fn ssl_handshake(ops: &mut impl Handshaking) -> bool {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use swoole_rs_clients::client;
+
+    #[test]
+    fn socks5_states_are_the_clients() {
+        assert_eq!(
+            c_int::from(SOCKS5_HANDSHAKE),
+            client::SOCKS5_HANDSHAKE,
+            "handshake"
+        );
+        assert_eq!(c_int::from(SOCKS5_READY), client::SOCKS5_READY, "ready");
+    }
 
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };

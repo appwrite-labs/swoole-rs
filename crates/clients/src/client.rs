@@ -128,12 +128,12 @@ pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// The proxy states of `native/protocols/swoole_proxy.h`, which asserts them.
-const SOCKS5_WAIT: c_int = 0;
-const SOCKS5_HANDSHAKE: c_int = 1;
-const SOCKS5_READY: c_int = 4;
-const HTTP_PROXY_WAIT: c_int = 0;
-const HTTP_PROXY_READY: c_int = 2;
+/// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
+pub const SOCKS5_WAIT: c_int = 0;
+pub const SOCKS5_HANDSHAKE: c_int = 1;
+pub const SOCKS5_READY: c_int = 4;
+pub const HTTP_PROXY_WAIT: c_int = 0;
+pub const HTTP_PROXY_READY: c_int = 2;
 const ERROR_OPERATION_NOT_SUPPORT: c_int = ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
 const ERROR_BAD_HOST_ADDR: c_int = ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;

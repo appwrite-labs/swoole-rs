@@ -13,23 +13,20 @@
 #include "swoole_rs_corebase_proxy.h"
 #include "swoole_rs_corebase_string_view.h"
 
+// Explicit, because crates/clients's tests read these values here.
 enum swHttpProxyState {
     SW_HTTP_PROXY_STATE_WAIT = 0,
-    SW_HTTP_PROXY_STATE_HANDSHAKE,
-    SW_HTTP_PROXY_STATE_READY,
+    SW_HTTP_PROXY_STATE_HANDSHAKE = 1,
+    SW_HTTP_PROXY_STATE_READY = 2,
 };
 
 enum swSocks5State {
     SW_SOCKS5_STATE_WAIT = 0,
-    SW_SOCKS5_STATE_HANDSHAKE,
-    SW_SOCKS5_STATE_AUTH,
-    SW_SOCKS5_STATE_CONNECT,
-    SW_SOCKS5_STATE_READY,
+    SW_SOCKS5_STATE_HANDSHAKE = 1,
+    SW_SOCKS5_STATE_AUTH = 2,
+    SW_SOCKS5_STATE_CONNECT = 3,
+    SW_SOCKS5_STATE_READY = 4,
 };
-
-static_assert(SW_SOCKS5_STATE_WAIT == 0 && SW_SOCKS5_STATE_HANDSHAKE == 1 && SW_SOCKS5_STATE_READY == 4 &&
-                  SW_HTTP_PROXY_STATE_WAIT == 0 && SW_HTTP_PROXY_STATE_READY == 2,
-              "the proxy states crates/clients/src/client.rs and crates/hooks/src/connect.rs copy");
 
 namespace swoole {
 static_assert(sizeof(swr_v1_core_proxy_fields) == 20 && offsetof(swr_v1_core_proxy_fields, port) == 8, "proxy scalar ABI");

@@ -3,6 +3,8 @@
 //! `catch_error`'s errno classification and `ssl_sendfile`.
 use std::io::Error;
 use std::os::raw::{c_int, c_void};
+use swoole_rs_corebase::constants::ReturnCode;
+use swoole_rs_error::ErrorCode;
 
 /// A TLS write on `socket` that C defines, for [`crate::socket_record_send`]: what
 /// `ssl_send` returns.
@@ -13,15 +15,13 @@ pub(crate) fn interrupted() -> bool {
     Error::last_os_error().raw_os_error() == Some(libc::EINTR)
 }
 
-/// `SW_ERROR_SSL_BAD_CLIENT` and `SW_ERROR_SSL_RESET` (native asserts them).
-const SSL_BAD_CLIENT: c_int = 1015;
-const SSL_RESET: c_int = 1017;
-/// `swReturnCode`.
-const WAIT: c_int = 2;
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const INVALID: c_int = 6;
-const REDUCE_SIZE: c_int = 7;
+const SSL_BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
+const SSL_RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
+const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
+const CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const INVALID: c_int = ReturnCode::SW_INVALID as c_int;
+const REDUCE_SIZE: c_int = ReturnCode::SW_REDUCE_SIZE as c_int;
 
 /// `Socket::catch_error`: what an errno (or Swoole TLS error) means for the socket.
 /// `ENOBUFS` waits and sets `kernel_nobufs`; `EFAULT` aborts, as upstream does.

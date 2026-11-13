@@ -15,9 +15,11 @@ use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{EventType, ReturnCode, SocketFlag};
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
+use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
@@ -35,25 +37,24 @@ unsafe extern "C" {
     safe fn X509_verify_cert_error_string(error: c_long) -> Option<CText<'static>>;
 }
 
-/// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY`, `SW_ERROR_INVALID_PARAMS`,
-/// `SW_ERROR_SSL_VERIFY_FAILED` and `SW_ERROR_SSL_BAD_PROTOCOL`.
+/// `SW_LOG_NOTICE` (a test reads it from `native/utilities/swoole_log.h`), `SW_LOG_WARNING`,
+/// `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_NOTICE: c_int = 3;
 const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = 702;
 const INVALID_PARAMS: c_int = 505;
 /// `SW_SOCKET_CORK_MIN_SIZE` and the typed queue's `SWR_BUFFER_EMPTY`.
 const CORK_MIN_SIZE: usize = 65536;
-/// `SW_FD_STREAM_SERVER` and `SW_SOCK_CLOEXEC`.
+/// `SW_FD_STREAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
-const SOCK_CLOEXEC: c_int = 1 << 3;
+const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const BUFFER_EMPTY: i32 = 1;
-const VERIFY_FAILED: c_int = 1014;
-const BAD_PROTOCOL: c_int = 1016;
-/// `swReturnCode`'s `SW_CLOSE` and `SW_ERROR`, `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
+const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
+const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
+const CLOSE: c_int = ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -1417,6 +1418,15 @@ pub extern "C-unwind" fn make_server_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_notice_is_the_native_level() {
+        let header = include_str!("../../../native/utilities/swoole_log.h");
+        assert!(
+            header.contains(&format!("SW_LOG_NOTICE = {LOG_NOTICE},")),
+            "native/utilities/swoole_log.h's SW_LOG_NOTICE"
+        );
+    }
 
     #[test]
     fn peer_prints_the_address_as_upstream() {

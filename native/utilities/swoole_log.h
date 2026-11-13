@@ -14,14 +14,15 @@
 #define SW_LOG_DATE_STRLEN 128
 #define SW_LOG_DEFAULT_DATE_FORMAT "%F %T"
 
+// Explicit, because crates/tls's tests read SW_LOG_NOTICE's value here.
 enum {
     SW_LOG_DEBUG = 0,
-    SW_LOG_TRACE,
-    SW_LOG_INFO,
-    SW_LOG_NOTICE,
-    SW_LOG_WARNING,
-    SW_LOG_ERROR,
-    SW_LOG_NONE,
+    SW_LOG_TRACE = 1,
+    SW_LOG_INFO = 2,
+    SW_LOG_NOTICE = 3,
+    SW_LOG_WARNING = 4,
+    SW_LOG_ERROR = 5,
+    SW_LOG_NONE = 6,
 };
 
 // Logger::set_rotation's values (log_rotation in crates/utilities/src/lib.rs); upstream's

@@ -735,3 +735,17 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     );
     free(client);
 }
+
+#[test]
+fn proxy_states_are_the_native_ones() {
+    let header = include_str!("../../../native/protocols/swoole_proxy.h");
+    for (name, value) in [
+        ("SW_SOCKS5_STATE_WAIT", SOCKS5_WAIT),
+        ("SW_SOCKS5_STATE_HANDSHAKE", SOCKS5_HANDSHAKE),
+        ("SW_SOCKS5_STATE_READY", SOCKS5_READY),
+        ("SW_HTTP_PROXY_STATE_WAIT", HTTP_PROXY_WAIT),
+        ("SW_HTTP_PROXY_STATE_READY", HTTP_PROXY_READY),
+    ] {
+        assert!(header.contains(&format!("{name} = {value},")), "{name}");
+    }
+}
