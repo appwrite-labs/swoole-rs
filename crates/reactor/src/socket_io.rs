@@ -44,7 +44,8 @@ impl IoError {
 }
 
 /// `SW_ERROR_SOCKET_POLL_TIMEOUT`.
-pub(crate) const POLL_TIMEOUT: c_int = 6002;
+pub(crate) const POLL_TIMEOUT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 
 /// `Socket::wait_event`: poll `fd` for `events` (already translated to poll bits)
 /// for `timeout_ms` (negative waits forever). On `EINTR` it fails if

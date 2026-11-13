@@ -11,7 +11,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
 /// `SW_ERR` and `SW_TIMER_MIN_SEC`.
-const ERR: c_long = -1;
+const ERR: c_long = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_long;
 const MIN_SEC: f64 = 0.001;
 
 pub(crate) fn timer() -> *mut Timer {

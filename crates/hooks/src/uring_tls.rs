@@ -16,8 +16,8 @@ use openssl_sys as ssl;
 use crate::uring::{self, Host};
 
 /// `SW_ERROR_SSL_BAD_PROTOCOL` and `SW_ERROR_SSL_RESET`.
-pub const SSL_BAD_PROTOCOL: c_int = 1016;
-pub const SSL_RESET: c_int = 1017;
+pub const SSL_BAD_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
+pub const SSL_RESET: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_RESET as c_int;
 
 /// The socket's side.
 pub trait TlsSocket: Copy {

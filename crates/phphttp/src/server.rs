@@ -63,7 +63,7 @@ const STATUS_CONNECTION: u8 = 1;
 const STATUS_HANDSHAKE: u8 = 2;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = 1005;
-const LOG_TRACE: c_int = 1;
+const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;

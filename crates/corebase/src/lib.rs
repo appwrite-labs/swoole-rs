@@ -20,6 +20,14 @@ pub mod hook;
 mod host;
 mod lifecycle;
 pub mod log;
+
+// crates/framing's return codes; it can't name these, since corebase depends on it.
+const _: () = assert!(
+    swoole_rs_framing::recv::SW_OK == constants::ResultCode::SW_OK as i32
+        && swoole_rs_framing::recv::SW_ERR == constants::ResultCode::SW_ERR as i32
+        && swoole_rs_framing::recv::SW_CLOSE == constants::ReturnCode::SW_CLOSE as i32,
+    "crates/framing's return codes"
+);
 pub mod native;
 pub mod net_address;
 pub mod net_types;

@@ -10,8 +10,8 @@ use swoole_rs_reactor::Socket;
 use swoole_rs_server::ConnectionRecord;
 
 /// `catch_read_error`'s `SW_CLOSE` and `SW_ERROR`.
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
+const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
 
 /// `swoole::RecvData`.
 #[repr(C)]

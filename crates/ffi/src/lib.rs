@@ -119,6 +119,21 @@ pub use swoole_rs_curl as curl;
 #[cfg(feature = "ssh2")]
 pub use swoole_rs_ssh2 as ssh2;
 
+// crates/ssh2 doesn't depend on corebase, nor crates/phphttp on error: their copies are
+// checked here.
+#[cfg(feature = "ssh2")]
+const _: () = assert!(
+    ssh2::READ == swoole_rs_corebase::constants::EventType::SW_EVENT_READ as std::ffi::c_int
+        && ssh2::WRITE
+            == swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as std::ffi::c_int,
+    "crates/ssh2's event bits"
+);
+#[cfg(feature = "php")]
+const _: () = assert!(
+    swoole_rs_phphttp::SSL_BAD_CLIENT == ErrorCode::SW_ERROR_SSL_BAD_CLIENT as std::ffi::c_int,
+    "crates/phphttp's SW_ERROR_SSL_BAD_CLIENT"
+);
+
 /// crates/ext's `get_module()` entry: phpswoole's, whose phases run the crates
 /// above it, which only this one links together.
 #[cfg(feature = "php")]

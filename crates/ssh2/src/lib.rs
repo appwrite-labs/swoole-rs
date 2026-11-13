@@ -42,9 +42,9 @@ use swoole_rs_ssh2_sys::{
     libssh2_userauth_publickey_frommemory,
 };
 
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const READ: c_int = 1 << 9;
-const WRITE: c_int = 1 << 10;
+/// `SW_EVENT_READ` and `SW_EVENT_WRITE` (crates/ffi checks them).
+pub const READ: c_int = 1 << 9;
+pub const WRITE: c_int = 1 << 10;
 
 /// `swr_v1_ssh2_ops`: what `swr_v1_ssh2_bound` lends.
 #[repr(C)]

@@ -6,7 +6,6 @@
 
 #include "swoole_socket.h"
 #include "swoole_rs_reactor.h"
-static_assert(SW_EVENT_READ == (1 << 9) && SW_EVENT_WRITE == (1 << 10) && SW_EVENT_DEAULT == 256 && SW_EVENT_ERROR == (1 << 11), "Reactor event ABI");
 
 namespace swoole {
 

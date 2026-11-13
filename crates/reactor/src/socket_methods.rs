@@ -9,9 +9,9 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::ReadSlot;
 
 /// `SW_OK`, `SW_ERR`, `SW_WAIT` and `SW_BACKLOG`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
-const WAIT: c_int = 2;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 const BACKLOG: c_int = 512;
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the

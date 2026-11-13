@@ -5,8 +5,8 @@ use crate::Socket;
 use std::ffi::c_int;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `BufferChunk::TYPE_SENDFILE` and `TYPE_CLOSE` (the typed kinds use the same numbers).
 const SENDFILE: c_int = 1;
 const CLOSE: c_int = 2;

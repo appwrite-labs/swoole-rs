@@ -39,6 +39,20 @@ pub extern "C" fn swr_v1_core_set_last_error(code: c_int) {
     set_last_error(code);
 }
 
+/// `swoole_log.h`'s levels (`SW_LOG_*`), which a test reads from that header.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(non_camel_case_types, reason = "the native level names")]
+pub enum LogLevel {
+    SW_LOG_DEBUG = 0,
+    SW_LOG_TRACE = 1,
+    SW_LOG_INFO = 2,
+    SW_LOG_NOTICE = 3,
+    SW_LOG_WARNING = 4,
+    SW_LOG_ERROR = 5,
+    SW_LOG_NONE = 6,
+}
+
 /// `swoole_sys_warning`, with errno set to the code first.
 pub const LOG_SYS_WARNING: c_int = 0;
 /// `swoole_warning`.
@@ -131,8 +145,7 @@ pub fn error_log(level: c_int, code: c_int, origin: &CStr, message: fmt::Argumen
 #[cold]
 #[track_caller]
 pub fn fatal(reason: &str) -> ! {
-    /// `SW_LOG_ERROR`.
-    const LEVEL: c_int = 5;
+    const LEVEL: c_int = LogLevel::SW_LOG_ERROR as c_int;
     let at = std::panic::Location::caller();
     if HOST.get().is_some() {
         emit(
@@ -160,6 +173,23 @@ mod tests {
 
     type Seen = (c_int, c_int, c_int, String, String);
     static SEEN: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+    #[test]
+    fn levels_are_the_native_ones() {
+        let header = include_str!("../../../native/utilities/swoole_log.h");
+        for level in [
+            LogLevel::SW_LOG_DEBUG,
+            LogLevel::SW_LOG_TRACE,
+            LogLevel::SW_LOG_INFO,
+            LogLevel::SW_LOG_NOTICE,
+            LogLevel::SW_LOG_WARNING,
+            LogLevel::SW_LOG_ERROR,
+            LogLevel::SW_LOG_NONE,
+        ] {
+            let line = format!("{level:?} = {},", level as c_int);
+            assert!(header.contains(&line), "swoole_log.h lacks {line}");
+        }
+    }
 
     fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
         let text = |s: &CStr| s.to_string_lossy().into_owned();

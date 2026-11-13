@@ -21,8 +21,8 @@ use swoole_rs_http::{
 };
 use swoole_rs_ossupport::create_tmpfile;
 
-const SW_OK: i32 = 0;
-const SW_ERR: i32 = -1;
+const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
+const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
 
 /// `swoole::String`'s head.
 #[repr(C)]
@@ -74,7 +74,7 @@ const UNLINK: u32 = 11;
 /// The errno `strtoull` leaves: bit 1 `ERANGE`, bit 2 its no-digits value.
 const NUMBER_ERRORS: u32 = 12;
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
-const NOTICE: c_int = 3;
+const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const WARNING: c_int = 4;
 const INVALID_REQUEST: c_int = 9010;
 

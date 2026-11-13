@@ -48,8 +48,8 @@ const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
 ];
 
 /// `SW_OK`/`SW_ERR`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const PHP_FATAL_ERROR: c_int = 503;
 const PHP_RUNTIME_NOTICE: c_int = 510;

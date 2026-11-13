@@ -11,7 +11,7 @@ use core::ptr;
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 /// `SW_WAIT`.
-const WAIT: c_int = 2;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// The native socket's effects the packet framing uses: the timers, the read
 /// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The

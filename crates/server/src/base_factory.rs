@@ -44,8 +44,8 @@ const DATA_PTR: u8 = 1 << 1;
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `swLog_level`'s `SW_LOG_TRACE`, `SW_LOG_NOTICE`; the `SW_ERROR_SESSION_*` codes.
-const LOG_TRACE: c_int = 1;
-const LOG_NOTICE: c_int = 3;
+const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SESSION_CLOSING: c_int = 1003;
 const SESSION_CLOSED: c_int = 1004;
 const SESSION_NOT_EXIST: c_int = 1005;

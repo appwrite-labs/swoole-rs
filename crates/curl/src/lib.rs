@@ -40,11 +40,11 @@ use swoole_rs_curl_sys::{
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const READ: c_int = 1 << 9;
-const WRITE: c_int = 1 << 10;
+const READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_OK` and `SW_ERR`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_ERROR_CO_CANCELED`.
 const CO_CANCELED: c_int = 10017;
 /// What [`swr_v1_curl_multi_exec`] returns when it must wait without a

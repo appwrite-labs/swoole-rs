@@ -191,7 +191,7 @@ impl ServerState {
     /// `Server::set_document_root(path)`: the path's real path, if it exists.
     pub(crate) fn set_document_root(&self, path: &[u8]) -> bool {
         /// `SW_LOG_WARNING`.
-        const LOG_WARNING: c_int = 4;
+        const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
         use std::os::unix::ffi::OsStrExt;
         let origin = c"Server::set_document_root";
         if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {

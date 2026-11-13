@@ -254,7 +254,7 @@ const NOT_FOUND: c_int = 404;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
-const SW_ERR: c_int = -1;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = 65536;
@@ -290,7 +290,7 @@ fn address(socket: Co) -> (ZString, c_int) {
 }
 
 /// `SW_EVENT_READ`.
-const EVENT_READ: u32 = 1 << 9;
+const EVENT_READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
 /// `SW_HTTP2_FRAME_HEADER_SIZE`.
 const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
@@ -465,8 +465,8 @@ fn construct(call: &Call) {
     }
 }
 
-/// `SW_ERROR_SSL_BAD_CLIENT`.
-const SSL_BAD_CLIENT: c_int = 1015;
+/// `SW_ERROR_SSL_BAD_CLIENT` (crates/ffi checks it).
+pub const SSL_BAD_CLIENT: c_int = 1015;
 /// `SW_ACCEPT_RETRY_TIME`.
 const ACCEPT_RETRY_TIME: c_int = 1;
 

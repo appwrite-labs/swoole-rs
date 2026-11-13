@@ -645,8 +645,8 @@ pub trait PoolNative: Sync {
 /// An export's result when a callback bailed out: the caller raises it.
 pub const RAISE: i64 = i64::MIN;
 
-const SW_OK: i64 = 0;
-const SW_ERR: i64 = -1;
+const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
+const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
 
 /// `swIPCMode`: how a pool's master reaches its workers.
 #[repr(u8)]

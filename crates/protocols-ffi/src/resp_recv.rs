@@ -6,8 +6,8 @@ use swoole_rs_corebase::{log, set_errno, sw_calloc};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};
 
-pub(crate) const SW_OK: c_int = 0;
-pub const SW_ERR: c_int = -1;
+pub(crate) const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+pub const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 pub const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
 
 /// [`RespConnection::recv`]: the connection closes (`SW_ERR`).

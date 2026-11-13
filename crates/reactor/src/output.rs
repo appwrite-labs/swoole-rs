@@ -7,10 +7,10 @@ use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
 /// `swReturnCode`: `SW_WAIT`, `SW_CLOSE`, `SW_ERROR`; and `SW_ERR`.
-const WAIT: c_int = 2;
-const CLOSE: c_int = 3;
-const ERROR: c_int = 4;
-const ERR: c_int = -1;
+const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
+const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
+const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
+const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait OutputEffects {
@@ -221,7 +221,7 @@ mod tests {
     use super::*;
     use std::os::raw::c_void;
 
-    const OK: c_int = 0;
+    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     use std::cell::RefCell;
 
     #[derive(Default)]

@@ -35,8 +35,8 @@ use std::{
 use swoole_rs_corebase::CCast;
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const READ: c_int = 1 << 9;
-const WRITE: c_int = 1 << 10;
+const READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// How long one wait lasts before libpq is asked again: on macOS `poll` may
 /// miss readiness, so a short timeout lets the caller retry.

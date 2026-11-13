@@ -118,8 +118,10 @@ pub fn host_type(host: &[u8]) -> HostType {
 }
 
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-pub(crate) const NONBLOCK: c_int = 1 << 2;
-pub(crate) const CLOEXEC: c_int = 1 << 3;
+pub(crate) const NONBLOCK: c_int =
+    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
+pub(crate) const CLOEXEC: c_int =
+    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.

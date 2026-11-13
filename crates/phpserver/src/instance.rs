@@ -187,8 +187,8 @@ pub(crate) fn send(serv: view::Server<'_>, fd: c_long, bytes: &[u8]) -> bool {
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_ERROR` and `SW_ERROR_SERVER_WORKER_TERMINATED`.
-const LOG_NOTICE: c_int = 3;
-const LOG_ERROR: c_int = 5;
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 const SW_ERROR_SERVER_WORKER_TERMINATED: c_int = 9003;
 
 /// `php_swoole_server_rshutdown`: a worker whose request ended (`exit()`,

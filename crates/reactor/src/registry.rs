@@ -89,8 +89,8 @@ pub extern "C" fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> 
 mod tests {
     use super::*;
 
-    const SW_EVENT_READ: c_int = 1 << 9;
-    const SW_EVENT_WRITE: c_int = 1 << 10;
+    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+    const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
     #[test]
     fn registers_and_snapshots() {
