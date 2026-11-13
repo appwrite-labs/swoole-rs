@@ -1,53 +1,53 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `ad9a160`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `e75c64f`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `server` | 463 |  |
-| `zend` | 341 |  |
-| `tls` | 222 |  |
-| `hooks` | 214 |  |
-| `corebase` | 157 |  |
+| `server` | 453 |  |
+| `zend` | 347 |  |
+| `tls` | 211 |  |
+| `hooks` | 208 |  |
+| `corebase` | 144 |  |
 | `reactor` | 141 |  |
 | `phpcoroutines` | 134 |  |
-| `process` | 125 |  |
+| `process` | 120 |  |
 | `phpruntime` | 101 |  |
 | `phpclients` | 97 |  |
 | `phpstdext` | 97 |  |
-| `phpswoole` | 95 |  |
+| `phpswoole` | 92 |  |
 | `ports` | 91 |  |
 | `coroutine` | 87 |  |
-| `clients` | 80 |  |
+| `clients` | 73 |  |
 | `phphttp` | 71 |  |
-| `memory` | 70 |  |
-| `curl` | 69 |  |
-| `protocols-ffi` | 51 |  |
+| `memory` | 69 |  |
+| `curl` | 56 |  |
 | `locks` | 50 |  |
-| `ossupport` | 44 |  |
+| `phpprocess` | 45 |  |
 | `http-ffi` | 43 |  |
-| `phpprocess` | 43 |  |
 | `buffer` | 41 |  |
 | `phpthread` | 41 |  |
-| `ssh2` | 41 |  |
-| `odbc` | 39 |  |
-| `pgsql` | 32 |  |
-| `oci` | 29 |  |
+| `ssh2` | 39 |  |
+| `ossupport` | 34 |  |
+| `protocols-ffi` | 33 |  |
+| `odbc` | 31 |  |
 | `timer` | 27 |  |
 | `bus` | 26 |  |
+| `pgsql` | 26 |  |
 | `utilities` | 26 |  |
 | `phpserver` | 24 |  |
-| `websocket-ffi` | 23 |  |
-| `sqlite` | 21 |  |
+| `sqlite` | 15 |  |
 | `zlib` | 15 |  |
-| `firebird` | 14 |  |
 | `oracle` | 14 |  |
-| `error-ffi` | 12 |  |
+| `websocket-ffi` | 14 |  |
+| `oci` | 13 |  |
 | `brotli` | 9 |  |
+| `firebird` | 8 |  |
 | `locale` | 7 |  |
-| `curl-sys` | 3 |  |
+| `error-ffi` | 4 |  |
 | `cares-sys` | 2 |  |
 | `ssh2-sys` | 2 |  |
+| `curl-sys` | 1 |  |
 | `firebird-sys` | 1 |  |
 | `base64` | 0 | ✅ |
 | `crc32` | 0 | ✅ |
@@ -72,4 +72,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 3,335. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 3,183. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
