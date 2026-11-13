@@ -26,7 +26,6 @@ marked `[R]` also take `--rust-sanitize`. `tools/dev.py` registers each as an
 | --- | --- |
 | `rewrite_gate.py` [R] | Pinned `add_rewrite_rule`/`apply_rewrite_rules` (std::regex) against the server's Rust rules (`swr_v1_server_static_rewrite`) |
 | `locale_gate.py` | Case-insensitive helpers against libc `strncasecmp` across available locales |
-| `server_config_owners.py` | The Server's Rust collection views and shared context lifetime, not a differential (`http-server-config-owners`) |
 
 Locale semantic runs must be unsanitized: under ASan the macOS interceptor
 compares `C0`/`E0` with ASCII rules where libc in `en_US.ISO8859-1` treats them

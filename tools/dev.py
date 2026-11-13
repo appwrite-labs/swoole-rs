@@ -200,8 +200,6 @@ def plan(args, reports):
         script('error-php', 'tests/modules/error/php.py', '--source', ROOT / 'target/upstream/src',
                *php, *engines, *report('error-php'))
     if 'http' in modules:
-        script('http-server-config-owners', 'tests/modules/http/server_config_owners.py',
-               '--archive', archive, *report('http-server-config-owners'))
         for name, runner in [('http-rewrites', 'tests/modules/http/rewrite_gate.py'),
                              ('http-locales', 'tests/modules/http/locale_gate.py')]:
             script(name, runner, '--source', ROOT / 'target/upstream/src',

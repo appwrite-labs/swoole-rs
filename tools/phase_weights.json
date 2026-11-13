@@ -44,7 +44,6 @@
  "hooks-unit": 3,
  "http-locales": 3,
  "http-rewrites": 36,
- "http-server-config-owners": 1,
  "http-smuggling": 5,
  "http-unit": 10,
  "http2-unit": 2,

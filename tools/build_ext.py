@@ -40,8 +40,7 @@ HOOK_SWITCHES = {'iouring': '--enable-iouring', 'pgsql': '--enable-swoole-pgsql'
 
 
 def headers_for(modules):
-    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h',
-               ROOT / 'native/include/swoole_rs_server_strings.h']
+    headers = [ROOT / 'native/include/swoole_rs.h', ROOT / 'native/include/swoole_rs_server_state.h']
     headers.extend((ROOT / 'native/include').glob('swoole_rs_corebase_*.h'))
     for module in modules:
         if module != 'corebase':
