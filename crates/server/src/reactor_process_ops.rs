@@ -23,7 +23,6 @@ use swoole_rs_process::workers::ops::{
 };
 use swoole_rs_reactor::{Event, SocketRecord};
 
-use crate::ConnectionRecord;
 use crate::callbacks::CB_START;
 use crate::port_config::methods;
 use crate::reactor_handle::Reactor;
@@ -39,7 +38,7 @@ struct Context<'a> {
     worker: Option<Worker<'a>>,
     reactor: Option<Reactor>,
     event: Option<&'a Event>,
-    conn: *mut ConnectionRecord,
+    conn: Option<crate::Connection<'a>>,
     now: f64,
 }
 
@@ -282,14 +281,14 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
                 .at(fd)
                 .filter(|conn| crate::reactor_ops::valid(Some(*conn)));
             let valid = conn.is_some();
-            ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
+            ctx.conn = conn;
             return Some(u64::from(valid));
         }
         OP_EVENT_CONN_ACTIVE => {
             let fd = ctx.event().fd();
             let conn = server.at(fd);
             let active = conn.is_some_and(crate::Connection::is_active);
-            ctx.conn = conn.map_or(core::ptr::null_mut(), crate::Connection::as_ptr);
+            ctx.conn = conn;
             return Some(u64::from(active));
         }
         OP_EVENT_SOCKET_REMOVED => {

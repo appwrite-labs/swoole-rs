@@ -182,14 +182,19 @@ pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
 )]
 #[must_use]
 pub unsafe extern "C" fn read(this: &SocketPair, buffer: *mut c_void, length: usize) -> isize {
-    let [_, Some(socket)] = ends(this) else {
-        return -1;
-    };
     let buffer: &mut [MaybeUninit<u8>] = if buffer.is_null() {
         &mut []
     } else {
         // SAFETY: as the caller promises, lent until this returns.
         unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) }
+    };
+    read_into(this, buffer)
+}
+
+/// [`read`] into `buffer`: the bytes read, or -1.
+pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> isize {
+    let [_, Some(socket)] = ends(this) else {
+        return -1;
     };
     if this.blocking {
         read_sync(socket, buffer)

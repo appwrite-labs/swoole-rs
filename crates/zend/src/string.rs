@@ -64,17 +64,6 @@ pub fn copy(bytes: &[u8]) -> *mut zend_string {
     buffer.into_zstring().into_raw()
 }
 
-/// `ZSTR_LEN(string) = length; ZSTR_VAL(string)[length] = '\0'`.
-/// # Safety
-/// `string` is live, unshared and holds at least `length` bytes.
-#[inline]
-pub unsafe fn truncate(string: *mut zend_string, length: usize) {
-    // SAFETY: per the caller.
-    unsafe { (*string).len = length };
-    // SAFETY: an allocation of at least `length` bytes has room for the NUL.
-    unsafe { *val(string).wrapping_add(length) = 0 };
-}
-
 /// `zend_string_free` of a live, unshared, non-interned string nothing else references.
 pub use crate::sys::swr_zend_string_free as free;
 /// `zend_string_realloc(string, length, 0)` of a live, unshared, non-interned string.
@@ -175,10 +164,14 @@ impl ZBuf {
     #[must_use]
     pub fn into_zstring(self) -> crate::ZString {
         let this = std::mem::ManuallyDrop::new(self);
-        // SAFETY: an unshared string of at least `len` bytes.
-        unsafe { truncate(this.string, this.len) };
+        let (string, len) = (this.string, this.len);
+        // `ZSTR_LEN(string) = len; ZSTR_VAL(string)[len] = '\0'`.
+        // SAFETY: a live, unshared string.
+        unsafe { (*string).len = len };
+        // SAFETY: an allocation of at least `len` bytes has room for the NUL.
+        unsafe { *val(string).wrapping_add(len) = 0 };
         // SAFETY: the string's only reference, which this gives up.
-        unsafe { crate::ZString::from_raw(this.string) }
+        unsafe { crate::ZString::from_raw(string) }
     }
 }
 

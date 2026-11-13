@@ -44,6 +44,45 @@ pub unsafe extern "C" fn reactor_change(
     changed(unsafe { crate::swr_v1_reactor_change(owner, socket, op, events, swr_v1_reactor_log) })
 }
 
+/// `Reactor::add` (op 0) or `set` (1) of a socket that is never freed while registered.
+/// A registered record's address stays in the registry and with the kernel until its
+/// removal, which a `'static` record outlives: it is live until an unsafe free, whose
+/// caller answers for every user left, the reactor among them. Any other op is `del`.
+#[must_use]
+pub fn change(
+    reactor: crate::Running<'_>,
+    socket: crate::Socket<'static>,
+    op: u32,
+    events: c_int,
+) -> c_int {
+    // SAFETY: the handle's live state, which no reference borrows (its contract), and
+    // a record that is live for as long as it stays registered; the log reads neither.
+    changed(unsafe {
+        crate::swr_v1_reactor_change(
+            reactor.state(),
+            socket.as_ptr(),
+            op,
+            events,
+            swr_v1_reactor_log,
+        )
+    })
+}
+
+/// `Reactor::interest` (`add_event` 0, `del_event` 1, `add_read_event` 2,
+/// `add_write_event` 3, `remove_read_event` 4, `remove_write_event` 5) of a socket that
+/// is never freed while registered, as [`change`] takes one: the change's result, or 0
+/// when nothing changes.
+#[must_use]
+pub fn interest(
+    reactor: crate::Running<'_>,
+    socket: crate::Socket<'static>,
+    kind: u32,
+    event: c_int,
+) -> c_int {
+    crate::change::interest_change(socket, kind, event)
+        .map_or(0, |(op, events)| change(reactor, socket, op, events))
+}
+
 /// `int Reactor::del(Socket *socket)` of any live socket: a removal leaves the
 /// record's address neither in the registry nor with the kernel.
 pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_int {

@@ -21,7 +21,10 @@ pub fn key_ptr(key: &[u8]) -> *const c_char {
 pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
     if !crate::bailout::pending() {
         let value = value.map_or_else(crate::Owned::null, |v| crate::ZString::new(v).into());
-        // SAFETY: per the caller.
-        unsafe { crate::zval::symtable_update(array, key, value) };
+        let mut value = value.into_zval();
+        // SAFETY: per the caller; the array takes the value, and Zend copies the key.
+        crate::bailout::defer(crate::bailout::trapped(unsafe {
+            crate::sys::swr_zend_try_symtable_update(array, key_ptr(key), key.len(), &raw mut value)
+        }));
     }
 }

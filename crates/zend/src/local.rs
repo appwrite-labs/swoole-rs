@@ -8,7 +8,8 @@
 //! which a non-thread-safe PHP grants one thread at a time. A thread outside such a
 //! scope (a Rust thread, or a PHP thread once the call that leased it returned)
 //! holds none, so it can't reach a process value at the same time.
-use std::marker::PhantomData;
+use crate::sys;
+use std::{ffi::c_int, marker::PhantomData};
 
 /// This thread runs PHP for `'a`: it executes only while it is the one thread
 /// running PHP (a thread-context coroutine that yields is parked until it holds the
@@ -31,9 +32,77 @@ impl<'a> Php<'a> {
     #[must_use]
     pub fn function_table(self) -> &'a crate::Array {
         // SAFETY: this thread runs PHP, whose executor has its function table.
-        let table = unsafe { crate::sys::swr_zend_facade_function_table() };
+        let table = unsafe { sys::swr_zend_facade_function_table() };
         // SAFETY: the executor's live table, which nothing frees while PHP runs.
         unsafe { &*table.cast() }
+    }
+
+    /// `EG(active)`: whether the executor is running, so a coroutine can wait.
+    #[must_use]
+    pub fn vm_active(self) -> bool {
+        // SAFETY: this thread runs PHP; one executor flag is read.
+        unsafe { sys::swr_zend_stream_vm_active() }
+    }
+
+    /// `FG(default_socket_timeout)`: the `default_socket_timeout` ini value, in seconds.
+    #[must_use]
+    pub fn default_socket_timeout(self) -> sys::zend_long {
+        // SAFETY: this thread runs PHP; one ini value is read.
+        unsafe { sys::swr_zend_stream_default_timeout() }
+    }
+
+    /// `PG(max_input_vars)`: the `max_input_vars` ini value.
+    #[must_use]
+    pub fn max_input_vars(self) -> sys::zend_long {
+        // SAFETY: this thread runs PHP; one ini value is read.
+        unsafe { sys::swr_zend_http_max_input_vars() }
+    }
+
+    /// `EG(error_reporting)`: the level `@` saves and restores.
+    #[must_use]
+    pub fn error_reporting(self) -> c_int {
+        // SAFETY: this thread runs PHP; one executor value is read.
+        unsafe { sys::swr_zend_error_reporting() }
+    }
+
+    /// `&EG(vm_interrupt)`: this thread's executor's interrupt flag, which lives
+    /// as long as its executor does. Only the address is taken.
+    #[must_use]
+    pub fn vm_interrupt(self) -> *mut sys::zend_atomic_bool {
+        // SAFETY: this thread runs PHP, so its executor globals exist.
+        unsafe { sys::swr_zend_vm_interrupt() }
+    }
+
+    /// `zend_get_executed_lineno`, as upstream's tracer reads it: the line of the
+    /// innermost user-code frame; 0 outside any.
+    #[must_use]
+    pub fn executed_lineno(self) -> u32 {
+        // SAFETY: this thread runs PHP; the shim walks its live frames, checking
+        // each pointer it follows, and runs no PHP code.
+        unsafe { sys::swr_zend_tracer_lineno() }
+    }
+
+    /// `tsrm_env_lock()`, held until the guard drops (`tsrm_env_unlock()`):
+    /// nothing on a PHP without thread safety. The lock is not recursive: a
+    /// second guard on the same thread waits for the first forever.
+    #[must_use]
+    pub fn env_lock(self) -> EnvLock<'a> {
+        // SAFETY: this thread runs PHP, so TSRM has made its environment mutex;
+        // the guard unlocks it once, on this thread.
+        unsafe { sys::swr_zend_runtime_env_lock(true) };
+        EnvLock(PhantomData)
+    }
+}
+
+/// PHP's environment lock ([`Php::env_lock`]), released on drop. Neither `Send`
+/// nor `Sync`: the thread that locked it unlocks it.
+pub struct EnvLock<'a>(PhantomData<&'a *const ()>);
+
+impl Drop for EnvLock<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `env_lock` locked the mutex on this thread, and only this
+        // drop unlocks it.
+        unsafe { sys::swr_zend_runtime_env_lock(false) };
     }
 }
 

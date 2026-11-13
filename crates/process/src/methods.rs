@@ -732,7 +732,7 @@ pub(crate) mod tests {
         let address = pool_ipc_address(unsafe { &*pool.ipc });
         assert_eq!(address, Some((c"127.0.0.1", 9501)), "and its address");
         // SAFETY: the pool's IPC state, not used again.
-        unsafe { pool_ipc_free(pool.ipc, keep) };
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
     }
 
     #[test]
@@ -791,7 +791,7 @@ pub(crate) mod tests {
             "SW_ERROR_INVALID_PARAMS"
         );
         // SAFETY: the pool's IPC state, not used again.
-        unsafe { pool_ipc_free(pool.ipc, keep) };
+        pool_ipc_free(*unsafe { Box::from_raw(pool.ipc) }, keep);
     }
 
     #[test]

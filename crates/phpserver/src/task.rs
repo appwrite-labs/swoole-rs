@@ -106,9 +106,8 @@ impl TaskHost for Host<'_> {
 
     fn read_notify(&mut self) -> isize {
         let Some(pipe) = &self.pipe else { return -1 };
-        let mut notify = 0u64;
-        // SAFETY: a local of that size.
-        unsafe { socket_pair::read(pipe, (&raw mut notify).cast(), size_of::<u64>()) }
+        let mut notify = [std::mem::MaybeUninit::uninit(); size_of::<u64>()];
+        socket_pair::read_into(pipe, &mut notify)
     }
 
     fn lock(&mut self, on: bool) {
@@ -136,9 +135,9 @@ fn task_state(serv: view::Server<'_>, sync: bool) -> Tasks<'_, Host<'_>> {
         let id = swoole_get_worker_id() as u16;
         // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
         host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
-        let worker = serv.worker(id);
-        // SAFETY: this worker's live record.
-        host.lock = unsafe { (*worker).lock };
+        host.lock = serv
+            .worker_record(id)
+            .and_then(swoole_rs_process::worker_record::Worker::lock);
         let results = serv.config().task_results.as_ptr().cast::<u8>();
         let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
         result = results.wrapping_add(usize::from(id) * size);

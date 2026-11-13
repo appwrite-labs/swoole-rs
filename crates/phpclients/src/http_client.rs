@@ -23,14 +23,14 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, UNDEF,
-    Value, ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
+    ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    set_object,
+    object_zval,
     sys::{
         E_WARNING, ZEND_ACC_PUBLIC, swr_zend_sensitive_parameter, zend_class_entry, zend_object,
-        zval, zval_ptr_dtor,
+        zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -326,19 +326,17 @@ impl Client {
     /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
     /// 2 if it bailed out.
     fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
-        let mut args = [UNDEF; 2];
+        // The string argument's reference, released when it drops.
+        let data = Owned::string(ZString::new(data));
         // SAFETY: the object outlives its client, so the call; it is borrowed
         // for the call as upstream's `ZVAL_OBJ`.
-        unsafe { set_object(&raw mut args[0], self.object) };
-        args[1] = Owned::string(ZString::new(data)).into_zval();
-        let result = match callable.call(&mut args, None, false) {
+        let this = unsafe { object_zval(self.object) };
+        let mut args = [this, data.copy_value()];
+        match callable.call(&mut args, None, false) {
             Ok(true) => 0,
             Ok(false) => 1,
             Err(bailout::Bailout) => 2,
-        };
-        // SAFETY: the string argument's reference.
-        unsafe { zval_ptr_dtor(&raw mut args[1]) };
-        result
+        }
     }
 
     /// `zval_get_long` of a declared property of the client object.
@@ -944,8 +942,8 @@ impl Client {
                 break;
             }
             received = socket.recv_input();
-            let input = socket.input();
-            let (buffer, mut length, size) = (input.as_mut_ptr(), input.len(), input.size());
+            let (buffer, mut length, size) =
+                socket.with_input(|input| (input.as_mut_ptr(), input.len(), input.size()));
             if received <= 0 {
                 if received == 0 {
                     socket.set_err(libc::ECONNRESET);
@@ -959,11 +957,14 @@ impl Client {
             let mut count = received.unsigned_abs();
             if !header_completed {
                 length += count;
-                // SAFETY: the receive just wrote `count` bytes after the content.
-                unsafe { input.set_len(length) };
-                input.set_offset(0);
-                let unparsed = input.view().get(header_offset..).unwrap_or_default();
-                if request::header_end(unparsed).is_none() {
+                let ended = socket.with_input(|input| {
+                    // SAFETY: the receive just wrote `count` bytes after the content.
+                    unsafe { input.set_len(length) };
+                    input.set_offset(0);
+                    let unparsed = input.view().get(header_offset..).unwrap_or_default();
+                    request::header_end(unparsed).is_some()
+                });
+                if !ended {
                     if length == size {
                         socket.set_err(INVALID_PROTOCOL);
                         break;
@@ -974,7 +975,7 @@ impl Client {
                 header_completed = true;
                 header_offset = 0;
                 count = length;
-                input.clear();
+                socket.with_input(swoole_rs_buffer::string::CppString::clear);
             }
             total += count;
             // SAFETY: the buffer's first `count` bytes are this response's data.
@@ -1002,11 +1003,12 @@ impl Client {
                     // Keep the bytes past the handshake (`reduce`).
                     #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
                     let parsed = parsed as i64;
-                    let input = socket.input();
-                    // SAFETY: the buffer's first `count` bytes are this response's data.
-                    unsafe { input.set_len(count) };
-                    input.set_offset(parsed);
-                    input.reduce(parsed);
+                    socket.with_input(|input| {
+                        // SAFETY: the buffer's first `count` bytes are this response's data.
+                        unsafe { input.set_len(count) };
+                        input.set_offset(parsed);
+                        input.reduce(parsed);
+                    });
                 }
                 success = true;
                 break;
@@ -2076,17 +2078,14 @@ fn get_header_out(call: &Call) {
     let client = client(call);
     // The buffer the socket's close left, which the conn keeps until the next close.
     let written = client.conn.written.borrow();
-    let buffer = match client.co() {
-        Some(socket) => Some(&*socket.write_buffer()),
-        None => written.buffer(),
-    };
-    let Some(buffer) = buffer else {
-        return call.set_bool(false);
-    };
-    let data = buffer.view();
-    match request::header_end(data) {
+    let respond = |data: &[u8]| match request::header_end(data) {
         Some(end) if end > 0 => call.set_bytes(data.get(..end).unwrap_or(data)),
         _ => call.set_bool(false),
+    };
+    match (client.co(), written.buffer()) {
+        (Some(socket), _) => socket.with_write_buffer(|buffer| respond(buffer.view())),
+        (None, Some(buffer)) => respond(buffer.view()),
+        (None, None) => call.set_bool(false),
     }
 }
 

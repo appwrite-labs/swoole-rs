@@ -55,8 +55,7 @@ fn with_current<R>(f: impl FnOnce(&mut AsyncThreads) -> R) -> Option<R> {
 
 /// A heap copy of `event` holding its own reference to the request.
 fn copy(event: &AsyncEvent) -> *mut AsyncEvent {
-    // SAFETY: the event's request record is null or live while the event is.
-    if let Some(record) = unsafe { event.data.as_ref() } {
+    if let Some(record) = event.record() {
         swoole_rs_corebase::swr_v1_core_resolver_retain(record);
     }
     Box::into_raw(Box::new(event.clone()))

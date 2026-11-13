@@ -15,9 +15,19 @@ pub use libc::tm as Tm;
 /// An all-zero `tm`, as a native `tm{}`.
 #[must_use]
 pub fn zeroed() -> Tm {
-    // SAFETY: zero is a valid value for every field of libc's tm: integers and, where
-    // present, a nullable zone pointer.
-    unsafe { std::mem::zeroed() }
+    Tm {
+        tm_sec: 0,
+        tm_min: 0,
+        tm_hour: 0,
+        tm_mday: 0,
+        tm_mon: 0,
+        tm_year: 0,
+        tm_wday: 0,
+        tm_yday: 0,
+        tm_isdst: 0,
+        tm_gmtoff: 0,
+        tm_zone: std::ptr::null_mut(),
+    }
 }
 /// `strptime(date, format, tm)`: whether `date` parsed.
 pub fn strptime(date: &CStr, format: &CStr, tm: &mut Tm) -> bool {

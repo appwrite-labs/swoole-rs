@@ -2,7 +2,7 @@
 //! zval and string returns (crates/phpprocess).
 use crate::{
     Call, Invalid, bailout,
-    sys::{swr_zval_stringl, zend_array, zend_execute_data, zval},
+    sys::{swr_zval_stringl, zend_execute_data, zval},
 };
 use std::mem::MaybeUninit;
 
@@ -35,17 +35,6 @@ impl Call {
     #[inline]
     pub fn zval_or_null(&self, n: u32) -> Option<&crate::Value> {
         self.value(n).filter(|value| !value.is_null())
-    }
-
-    /// `Z_PARAM_ARRAY` of argument `n` as its table, or `None` when not passed.
-    /// # Errors
-    /// The argument is not an array; Zend has thrown.
-    #[inline]
-    pub fn array_table(&self, n: u32) -> Result<Option<*mut zend_array>, Invalid> {
-        if !self.passed_arg(n) {
-            return Ok(None);
-        }
-        self.array_ref(n).map(|array| Some(array.as_ptr()))
     }
 
     /// `ZEND_THIS`: the zval holding `$this`, in a non-static method.

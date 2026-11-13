@@ -14,7 +14,6 @@ use std::{
     mem,
     ptr::{self, NonNull},
 };
-use swoole_rs_zend::Value;
 use swoole_rs_zend::sys::{
     IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
     swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
@@ -25,8 +24,9 @@ use swoole_rs_zend::sys::{
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
     zend_object, zend_observer_fiber_destroy_notify, zend_observer_fiber_init_notify,
-    zend_observer_fiber_switch_notify, zend_op_array, zval, zval_ptr_dtor,
+    zend_observer_fiber_switch_notify, zval, zval_ptr_dtor,
 };
+use swoole_rs_zend::{Function, Value};
 
 /// Upstream's `INVALID_PTR`: a destroyed context object, or an unusable fiber
 /// field.
@@ -424,12 +424,15 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
     let handler = ctx.with(|context| context.call.fcc.function_handler);
-    // SAFETY: a resolved callable's handler; every zend_function starts with
-    // its type, a byte.
-    if !fiber.is_null() && unsafe { handler.cast::<u8>().read() } == USER_FUNCTION {
+    // SAFETY: a resolved callable's handler, which the context's call holds.
+    let function = unsafe { Function::from_ptr(handler) };
+    if !fiber.is_null()
+        && let Some(function) = function.filter(|function| function.kind() == Function::USER)
+        && let Some(opcodes) = function.opcodes()
+    {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
-        // SAFETY: a user function is its op array.
-        frame.opline = unsafe { (*handler.cast::<zend_op_array>()).opcodes };
+        // A user function is its op array.
+        frame.opline = opcodes;
         frame.func = handler;
         // SAFETY: the frame outlives the notification.
         let previous = unsafe { swr_zend_coroutine_set_frame(&raw mut frame) };

@@ -11,8 +11,7 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_socket_typed;
 use swoole_rs_tls::{
-    DtlsSession, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
-    swr_v1_tls_dtls_session_listen,
+    DtlsSession, dtls_session_listen, swr_v1_tls_dtls_append, swr_v1_tls_dtls_append_buffer,
 };
 
 use crate::ops::EVENT_INCOMING;
@@ -185,8 +184,7 @@ pub(crate) unsafe fn on_packet(
     let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
     appended(swr_v1_tls_dtls_append(session, data));
     let socket = session.socket();
-    // SAFETY: the session's live socket.
-    if !unsafe { swr_v1_tls_dtls_session_listen(session) } {
+    if !dtls_session_listen(session) {
         // SAFETY: the reactor and the session's socket.
         return i64::from(unsafe { crate::reactor_entry::close_connection(reactor, socket) });
     }
@@ -245,6 +243,5 @@ pub(crate) fn on_read(port: &mut port_config::PortConfig, sock: Socket<'_>, fd: 
     let session = unsafe { &*session };
     // SAFETY: the session takes the buffer.
     appended(unsafe { swr_v1_tls_dtls_append_buffer(session, buffer.cast()) });
-    // SAFETY: the session's live socket.
-    !session.listened() && !unsafe { swr_v1_tls_dtls_session_listen(session) }
+    !session.listened() && !dtls_session_listen(session)
 }
