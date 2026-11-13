@@ -5,9 +5,11 @@ name: Debug PHP
 # makes the test's output differ, so the runner fails it. gate.py then fails what passes on
 # upstream and not on cargo, with the merge tier's re-runs, and lists every leak or
 # assertion report, upstream's own among them (recorded, not gated). File each cargo-only
-# report as a kind:bug. The debug PHP has the database extensions built in, the engines have
-# the merge tier's service hooks (.github/actions/phpt-build), and the shards and re-runs get its
-# services and external network (.github/actions/phpt-env). Nightly, and on a PR that changes this run.
+# report as a kind:bug. The cargo engine is Cargo's release-checked profile, so an integer
+# overflow or a failed debug assertion in Rust aborts its test: file that as a p0. The debug
+# PHP has the database extensions built in, the engines have the merge tier's service hooks
+# (.github/actions/phpt-build), and the shards and re-runs get its services and external
+# network (.github/actions/phpt-env). Nightly, and on a PR that changes this run.
 on:
   schedule:
     - cron: '41 2 * * *'
@@ -28,8 +30,8 @@ jobs:
         with:
           packages: libgmp-dev firebird-dev libaio1t64
       - uses: ./.github/actions/instantclient
-      # Main's release build: the dependencies; zend-sys and the crates above it rebuild
-      # against this PHP (PHP_CONFIG). Build trees must start clean.
+      # Main's release cache, for its downloaded crates: the release-checked profile builds
+      # every crate, against this PHP (PHP_CONFIG). Build trees must start clean.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release
@@ -60,7 +62,7 @@ jobs:
           hooks=(--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd "--configure=--with-swoole-odbc=unixODBC,/usr" --configure=--with-swoole-firebird
             --configure=--enable-swoole-sqlite "--configure=--with-swoole-oracle=instantclient,/usr/local/instantclient" --configure=--enable-swoole-curl --configure=--with-swoole-ssh2)
           python3 tools/build_upstream.py --php-config "$php/php-config" --phpize "$php/phpize" "${hooks[@]}" | tee upstream.log
-          python3 tools/build_ext.py --php-config "$php/php-config" "${hooks[@]}"
+          python3 tools/build_ext.py --profile release-checked --php-config "$php/php-config" "${hooks[@]}"
           mkdir -p target/phpt
           cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
           cp target/ext/swoole.so target/phpt/cargo.so
