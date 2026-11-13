@@ -1112,6 +1112,7 @@ extern "C" fn on_dispatch(
     if argc == 4 {
         dtor(&mut args[3]);
     }
+    drop(owner);
     bailout::finish();
     c_int::try_from(worker_id).unwrap_or(-1)
 }
