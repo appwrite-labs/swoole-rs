@@ -5,10 +5,9 @@
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
     FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING,
-    OP_ST_ABORT_COUNT, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
-    OP_ST_REACTOR_CLOSE, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_SOCK_FREE, OP_ST_SOCK_OBJECT,
-    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
+    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING, OP_ST_FINISH,
+    OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_TIMER,
+    OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
@@ -18,7 +17,6 @@ use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::ffi::{CStr, CString};
-use swoole_rs_corebase::StringSlot;
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
@@ -42,8 +40,8 @@ pub struct ServerState {
     /// (`None`: `/tmp`), as `set()` gave it.
     upload_tmp_dir: std::sync::Mutex<Option<Box<[u8]>>>,
     /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in `TEXT_*`
-    /// order; native views them as `RustStringView`s.
-    texts: [StringSlot; TEXT_COUNT],
+    /// order. Readers share the value; a write replaces it.
+    texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; TEXT_COUNT],
     /// `Server::lock_`, the connection list's fd range lock: whether it is held,
     /// and how many threads wait for it.
     locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
@@ -104,7 +102,7 @@ impl ServerState {
             ports: std::sync::Mutex::new(Vec::new()),
             callbacks: crate::callbacks::ServerCallbacks::new(),
             upload_tmp_dir: std::sync::Mutex::new(None),
-            texts: [const { StringSlot::new() }; TEXT_COUNT],
+            texts: Default::default(),
             locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
@@ -177,21 +175,25 @@ impl ServerState {
             .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
     }
 
-    /// One of `texts`' slots.
-    pub(crate) fn text_slot(&self, index: usize) -> Option<&StringSlot> {
-        self.texts.get(index)
+    /// Text member `index` (`TEXT_*`), empty past the last.
+    pub(crate) fn text(&self, index: usize) -> std::sync::Arc<[u8]> {
+        self.texts
+            .get(index)
+            .map_or_else(Default::default, |text| std::sync::Arc::clone(&lock(text)))
     }
 
-    /// The bytes of one of `texts`, which no other thread sets meanwhile.
-    pub(crate) fn text(&self, index: usize) -> &[u8] {
-        self.text_slot(index).map_or(&[], StringSlot::bytes)
+    /// Sets text member `index` (`TEXT_*`); none past the last.
+    pub(crate) fn set_text(&self, index: usize, value: &[u8]) {
+        if let Some(text) = self.texts.get(index) {
+            *lock(text) = value.into();
+        }
     }
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub(crate) fn set_isolation(&self) {
-        let text = |index| CString::new(self.text(index)).unwrap_or_default();
+        let text = |index| CString::new(&*self.text(index)).unwrap_or_default();
         let (root, user, group) = (text(0), text(1), text(2));
         swoole_rs_ossupport::set_isolation(&group, &user, &root);
     }
@@ -345,15 +347,6 @@ impl ServerState {
     }
 }
 
-/// `Server`'s text member `index` (`SWR_SERVER_TEXT_*`), or null past the last;
-/// the slot lives as long as `state`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_text_slot(state: &ServerState, index: usize) -> *const StringSlot {
-    state
-        .text_slot(index)
-        .map_or(core::ptr::null(), core::ptr::from_ref)
-}
-
 /// `text.c_str()`: the bytes up to the first NUL.
 fn c_path(text: &[u8]) -> CString {
     let end = text
@@ -377,13 +370,12 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
             let path = core::ptr::with_exposed_provenance::<c_char>(usize::try_from(arg).ok()?);
             // SAFETY: per the caller.
             let path = unsafe { CStr::from_ptr(path) }.to_bytes();
-            // SAFETY: a slot of this state, set only while the server is configured.
-            unsafe { state.texts[TEXT_DOCUMENT_ROOT].set_shared(path) };
+            state.set_text(TEXT_DOCUMENT_ROOT, path);
         }
         OP_LC_WRITE_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                let file = c_path(file);
+                let file = c_path(&file);
                 let pid = std::process::id().cast_signed().to_string();
                 swoole_rs_ossupport::file_put_contents(&file, pid.as_bytes());
             }
@@ -391,7 +383,7 @@ pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Opti
         OP_LC_UNLINK_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
-                swoole_rs_corebase::sys::unlink(&c_path(file));
+                swoole_rs_corebase::sys::unlink(&c_path(&file));
             }
         }
         _ => return None,
@@ -564,18 +556,6 @@ fn init_pipe_sockets<H: Host>(h: &mut H) -> crate::Effect<()> {
     Ok(())
 }
 
-/// `Server::abort_connection`: counted, then closed through the reactor when it is
-/// a connection, else freed.
-fn abort_connection<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_ST_ABORT_COUNT)?;
-    if h.is(OP_ST_SOCK_OBJECT)? {
-        h.get(OP_ST_REACTOR_CLOSE)?;
-    } else {
-        h.get(OP_ST_SOCK_FREE)?;
-    }
-    Ok(())
-}
-
 /// `Server::send`: through the factory, then the server's, port's and worker's counts.
 /// A base or thread mode worker that owns the session sends it here, as
 /// `BaseFactory::finish` would, without a second trip through native code.
@@ -612,8 +592,7 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 /// The operations of `crate::run` this module runs.
 pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
     use crate::ops::{
-        RUN_ST_ABORT, RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS,
-        RUN_ST_STORE_PIPE_FD,
+        RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
     };
     Ok(Some(match operation {
         RUN_ST_DOCUMENT_ROOT => {
@@ -631,10 +610,6 @@ pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect
         }
         RUN_ST_INIT_PIPE_SOCKETS => {
             init_pipe_sockets(h)?;
-            0
-        }
-        RUN_ST_ABORT => {
-            abort_connection(h)?;
             0
         }
         RUN_ST_CLEAR_TIMER => {
@@ -722,21 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn connections_abort_iterate_and_send() {
-        let mut s = Script::with(&[(OP_ST_SOCK_OBJECT, 1)]);
-        abort_connection(&mut s).unwrap();
-        assert_eq!(
-            (
-                s.called(OP_ST_ABORT_COUNT),
-                s.called(OP_ST_REACTOR_CLOSE),
-                s.called(OP_ST_SOCK_FREE)
-            ),
-            (1, 1, 0)
-        );
-        let mut s = Script::default();
-        abort_connection(&mut s).unwrap();
-        assert_eq!(s.called(OP_ST_SOCK_FREE), 1);
-
+    fn connections_iterate_and_send() {
         let data = four_bytes();
         let process = |facts: &[(u32, u64)]| {
             let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
@@ -808,9 +769,9 @@ mod tests {
         let root = c"/srv/www";
         let arg = root.as_ptr().expose_provenance() as u64;
         assert_eq!(unsafe { native_fact(&state, OP_ST_SET_ROOT, arg) }, Some(0));
-        assert_eq!(state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
-        assert_eq!(state.text(TEXT_PID_FILE), b"");
-        assert!(state.text_slot(TEXT_COUNT).is_none());
+        assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
+        assert_eq!(&*state.text(TEXT_PID_FILE), b"");
+        assert!(state.text(TEXT_COUNT).is_empty());
         assert_eq!(unsafe { native_fact(&state, OP_SET_MAXFD, 0) }, None);
 
         let state = std::sync::Arc::new(state);
@@ -854,7 +815,7 @@ mod tests {
         assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
-        unsafe { state.texts[TEXT_PID_FILE].set_shared(bytes) };
+        state.set_text(TEXT_PID_FILE, bytes);
         assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

@@ -518,12 +518,7 @@ pub(crate) fn answer(
             0
         }
         OP_RD_ABORT => {
-            let port = ctx.port.map_or(ptr::null_mut(), view::Port::raw);
-            let sock = ctx
-                .sock
-                .map_or(ptr::null_mut(), |sock| sock.as_ptr().cast());
-            // SAFETY: the live server, this thread's reactor, the port and its socket.
-            unsafe { methods::abort_connection(serv, reactor, port, sock) };
+            crate::connection::abort(server, handle?, ctx.port, ctx.sock?);
             0
         }
         OP_PORT_LISTEN | OP_PORT_READ => {
