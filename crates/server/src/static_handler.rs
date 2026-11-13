@@ -11,9 +11,6 @@ use swoole_rs_http::{
 
 /// The path kinds' directory bit (`crates/http/src/static_path.rs`).
 const PATH_IS_DIRECTORY: u32 = 16;
-/// The static collections (`static_config` kinds).
-const LOCATIONS: u32 = 0;
-const INDEX_FILES: u32 = 1;
 /// `PATH_MAX`, the context's filename capacity.
 const PATH_MAX: usize = libc::PATH_MAX as usize;
 /// `SW_HTTP_PAGE_CSS` and `SW_HTTP_POWER_BY`.
@@ -160,11 +157,14 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
         let root = self.server.document_root();
         let has_index = self
             .server
-            .static_strings(INDEX_FILES, |enabled, files| enabled && !files.is_empty());
+            .static_strings(crate::StaticCollection::IndexFiles, |enabled, files| {
+                enabled && !files.is_empty()
+            });
         let autoindex = self.autoindex();
-        self.server.static_strings(LOCATIONS, |_, locations| {
-            context.try_serve(&root, locations, has_index, autoindex, &self.effects)
-        })
+        self.server
+            .static_strings(crate::StaticCollection::Locations, |_, locations| {
+                context.try_serve(&root, locations, has_index, autoindex, &self.effects)
+            })
     }
 
     /// With `http_index_files`, the directory's first index file becomes the
@@ -172,13 +172,14 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     #[must_use]
     pub fn try_serve_index_file(&self) -> bool {
         let autoindex = self.autoindex();
-        self.server.static_strings(INDEX_FILES, |enabled, files| {
-            self.context.borrow_mut().try_serve_index_file(
-                if enabled { files } else { &[] },
-                autoindex,
-                &self.effects,
-            )
-        })
+        self.server
+            .static_strings(crate::StaticCollection::IndexFiles, |enabled, files| {
+                self.context.borrow_mut().try_serve_index_file(
+                    if enabled { files } else { &[] },
+                    autoindex,
+                    &self.effects,
+                )
+            })
     }
 
     /// The directory's listing page.
