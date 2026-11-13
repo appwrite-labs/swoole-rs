@@ -27,10 +27,7 @@ use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, pop_message, push_stop, reload_warn,
     swoole_set_worker_id, swoole_set_worker_pid, worker_report_error,
 };
-use swoole_rs_process::pool::{
-    PoolCall, WARN_ACCEPT, WARN_BAD_PACKET, WARN_MSGRCV, WARN_PIPE, WARN_READ, WARN_SEND,
-    WARN_TASK_FAILED, raise_bailout,
-};
+use swoole_rs_process::pool::{PoolCall, Warning, raise_bailout};
 use swoole_rs_process::process_pool::{
     CB_BEFORE_RELOAD, CB_MAIN_LOOP, CB_SHUTDOWN, CB_START, CB_WORKER_START, CB_WORKER_STOP, Hooks,
     MainLoopFn, Op, PoolNative, PoolRef, RAISE, RecvData, pool_run_main,
@@ -818,51 +815,51 @@ impl PoolNative for Native {
         });
     }
 
-    /// A `WARN_*`; the `TRACE_*` logs exist only in trace builds, which this one isn't.
-    fn warn(&self, c: &PoolCall, kind: c_int, a: i64, b: i64) {
+    /// A worker loop's warning. Upstream's trace logs exist only in trace builds,
+    /// which this one isn't, so nothing reports them.
+    fn warn(&self, c: &PoolCall, warning: Warning) {
         let (pool, worker) = (c.pool(), c.worker());
         let id = worker.map_or(0, Record::id);
         let origin = loop_origin(pool);
-        match kind {
-            WARN_MSGRCV => {
+        match warning {
+            Warning::Msgrcv => {
                 let queue = pool.queue_id();
                 log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
             }
-            WARN_ACCEPT => {
+            Warning::Accept => {
                 log::sys_warning(
                     origin,
                     format_args!("[Worker#{id}] accept({}) failed", fd(ipc_listener(pool))),
                 );
             }
-            WARN_READ => {
+            Warning::Read => {
                 let fd = fd(worker.and_then(|worker| worker_pipe(worker, false)));
                 log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
             }
-            WARN_BAD_PACKET => log::error_log(
+            Warning::BadPacket { received, length } => log::error_log(
                 4, // SW_LOG_WARNING
                 swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
                 origin,
                 format_args!(
-                    "[Worker#{id}] bad task packet, received data length[{a}], packet length[{b}]"
+                    "[Worker#{id}] bad task packet, received data length[{received}], packet length[{length}]"
                 ),
             ),
-            WARN_TASK_FAILED => log::warning(
+            Warning::TaskFailed(task) => log::warning(
                 origin,
-                format_args!("[Worker#{id}] the execution of task#{a} has failed"),
+                format_args!("[Worker#{id}] the execution of task#{task} has failed"),
             ),
-            WARN_PIPE => log::sys_warning(
+            Warning::Pipe => log::sys_warning(
                 origin,
                 format_args!("[Worker #{id}]failed to read data from pipe"),
             ),
-            WARN_SEND => log::warning(
+            Warning::Send { size, worker } => log::warning(
                 c"ProcessPool::dispatch",
                 format_args!(
                     "send {} bytes to worker#{} failed",
-                    a.c_cast::<c_int>(),
-                    b.c_cast::<c_int>()
+                    size.c_cast::<c_int>(),
+                    worker.c_cast::<c_int>()
                 ),
             ),
-            _ => {}
         }
     }
 }

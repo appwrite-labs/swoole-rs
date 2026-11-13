@@ -9,14 +9,18 @@ use std::ffi::c_int;
 
 use crate::reload_task::{ReloadTask, Warn};
 
-/// No reload was started this iteration.
-pub const RELOAD_NONE: u32 = 0;
-/// A reload started: signal its first worker now.
-pub const RELOAD_KILL_ONE: u32 = 1;
-/// The reload request was refused: start the next iteration.
-pub const RELOAD_SKIP: u32 = 2;
-/// A reload started and every worker was already signalled: carry on reaping.
-pub const RELOAD_SIGNALLED: u32 = 3;
+/// What [`Reap::start_reload`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReloadStart {
+    /// No reload was started this iteration.
+    None,
+    /// A reload started: signal its first worker now.
+    KillOne,
+    /// The reload request was refused: start the next iteration.
+    Skip,
+    /// A reload started and every worker was already signalled: carry on reaping.
+    Signalled,
+}
 
 /// One manager's side of the loop.
 pub trait Reap {
@@ -38,8 +42,8 @@ pub trait Reap {
     fn service(&mut self);
     /// Report a failed wait (`errno` as the service step left it, as upstream).
     fn wait_failed(&mut self);
-    /// Start a requested reload: one of the `RELOAD_*` values.
-    fn start_reload(&mut self) -> u32;
+    /// Start a requested reload.
+    fn start_reload(&mut self) -> ReloadStart;
     /// A child exited: restart its worker (or report it). False when the pid was no
     /// worker of the pool's, which ends the iteration.
     fn reap(&mut self, pid: c_int, status: c_int) -> bool;
@@ -90,9 +94,9 @@ pub fn run(host: &mut impl Reap) {
         let mut kill_next = false;
         if host.running() {
             match host.start_reload() {
-                RELOAD_KILL_ONE => kill_next = true,
-                RELOAD_SKIP => continue,
-                _ => {}
+                ReloadStart::KillOne => kill_next = true,
+                ReloadStart::Skip => continue,
+                ReloadStart::None | ReloadStart::Signalled => {}
             }
             if !kill_next {
                 if pid < 0 || (host.skip_no_child() && pid == 0) {
@@ -135,7 +139,7 @@ mod tests {
         waits: VecDeque<(c_int, c_int)>,
         running: bool,
         reload_requested: bool,
-        start: VecDeque<u32>,
+        start: VecDeque<ReloadStart>,
         task: Option<Box<ReloadTask>>,
         log: Vec<String>,
         leave_when_stopped: bool,
@@ -179,11 +183,11 @@ mod tests {
         fn wait_failed(&mut self) {
             self.log.push("wait failed".into());
         }
-        fn start_reload(&mut self) -> u32 {
-            let action = self.start.pop_front().unwrap_or(RELOAD_NONE);
-            if action != RELOAD_NONE {
+        fn start_reload(&mut self) -> ReloadStart {
+            let action = self.start.pop_front().unwrap_or(ReloadStart::None);
+            if action != ReloadStart::None {
                 self.reload_requested = false;
-                self.log.push(format!("start {action}"));
+                self.log.push(format!("start {action:?}"));
             }
             action
         }
@@ -203,7 +207,7 @@ mod tests {
     thread_local! {
         static WARNED: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
     }
-    extern "C" fn warn(_kind: c_int, pid: c_int, _id: u32) {
+    fn warn(_kind: crate::reload_task::KillWarning, pid: c_int, _id: u32) {
         WARNED.with(|w| w.borrow_mut().push(pid));
     }
 
@@ -249,7 +253,7 @@ mod tests {
         let mut s = Script {
             waits: VecDeque::from([(0, 0), (gone, 0)]),
             reload_requested: true,
-            start: VecDeque::from([RELOAD_KILL_ONE]),
+            start: VecDeque::from([ReloadStart::KillOne]),
             task: Some(Box::new(reload)),
             ..Script::default()
         };
@@ -259,7 +263,7 @@ mod tests {
             [
                 "wait nonblock=true",
                 "service",
-                "start 1",
+                "start KillOne",
                 "wait nonblock=false",
                 "service",
                 format!("reap {gone} 9").as_str(),
@@ -289,13 +293,13 @@ mod tests {
     fn a_skipped_reload_starts_the_next_iteration() {
         let mut s = Script {
             waits: VecDeque::from([(12, 0)]),
-            start: VecDeque::from([RELOAD_SKIP]),
+            start: VecDeque::from([ReloadStart::Skip]),
             ..Script::default()
         };
         run(&mut s, false, true);
         assert_eq!(
             s.log,
-            ["wait nonblock=false", "service", "start 2", "service"]
+            ["wait nonblock=false", "service", "start Skip", "service"]
         );
     }
 
