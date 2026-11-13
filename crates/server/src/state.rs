@@ -4,19 +4,18 @@
 //! and the startup error message.
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
-    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, LOG_ST_ROOT_MISSING,
-    LOG_ST_ROOT_TOO_LONG, OP_FIELD, OP_MAXFD, OP_MODE, OP_SET_MAXFD, OP_SET_WARNING, OP_ST_FINISH,
-    OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD, OP_ST_ROOT_PATH, OP_ST_SET_ROOT, OP_ST_TIMER,
-    OP_ST_TIMER_DEL, OP_WORKER_IDLE,
+    FIELD_TASK_IPC_MODE, FIELD_TASK_WORKER_NUM, FIELD_WORKER_NUM, OP_FIELD, OP_MAXFD, OP_MODE,
+    OP_SET_MAXFD, OP_SET_WARNING, OP_ST_FINISH, OP_ST_INIT_PIPE, OP_ST_PIPE_BIND, OP_ST_PIPE_FD,
+    OP_ST_TIMER, OP_ST_TIMER_DEL, OP_WORKER_IDLE,
 };
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
 use crate::{Host, MODE_PROCESS, SW_OK};
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use swoole_rs_tls::socket_pair::SocketPair;
 
 /// Owned by `Server::state_`, from the constructor to the destructor. Reactor threads
@@ -189,6 +188,37 @@ impl ServerState {
         }
     }
 
+    /// `Server::set_document_root(path)`: the path's real path, if it exists.
+    pub(crate) fn set_document_root(&self, path: &[u8]) -> bool {
+        /// `SW_LOG_WARNING`.
+        const LOG_WARNING: c_int = 4;
+        use std::os::unix::ffi::OsStrExt;
+        let origin = c"Server::set_document_root";
+        if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
+            let code = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as c_int;
+            let m = format_args!(
+                "The length of document_root must be less than {}",
+                libc::PATH_MAX
+            );
+            swoole_rs_corebase::log::error_log(LOG_WARNING, code, origin, m);
+            return false;
+        }
+        // `realpath` reads the path up to its first NUL.
+        let path = path.split(|byte| *byte == 0).next().unwrap_or_default();
+        let real = std::fs::canonicalize(std::ffi::OsStr::from_bytes(path));
+        let Ok(real) = real else {
+            let code = swoole_rs_error::ErrorCode::SW_ERROR_DIR_NOT_EXIST as c_int;
+            let m = format_args!(
+                "document_root[{}] does not exist",
+                String::from_utf8_lossy(path)
+            );
+            swoole_rs_corebase::log::error_log(LOG_WARNING, code, origin, m);
+            return false;
+        };
+        self.set_text(TEXT_DOCUMENT_ROOT, real.as_os_str().as_bytes());
+        true
+    }
+
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -356,22 +386,13 @@ fn c_path(text: &[u8]) -> CString {
     CString::new(text.get(..end).unwrap_or_default()).unwrap_or_default()
 }
 
-/// Answers the ops over `texts` and the lock, which need only the state.
-///
-/// # Safety
-/// `state` is live; `OP_ST_SET_ROOT`'s `arg` addresses a NUL-terminated path.
+/// Answers the ops over the pid file and the lock, which need only the state.
 #[inline(always)]
-pub(crate) unsafe fn native_fact(state: &ServerState, op: u32, arg: u64) -> Option<u64> {
+pub(crate) fn native_fact(state: &ServerState, op: u32) -> Option<u64> {
     match op {
         OP_SET_STOPPING => state.stopping.store(true, Ordering::Release),
         OP_LOCK => state.lock(),
         OP_UNLOCK => state.unlock(),
-        OP_ST_SET_ROOT => {
-            let path = core::ptr::with_exposed_provenance::<c_char>(usize::try_from(arg).ok()?);
-            // SAFETY: per the caller.
-            let path = unsafe { CStr::from_ptr(path) }.to_bytes();
-            state.set_text(TEXT_DOCUMENT_ROOT, path);
-        }
         OP_LC_WRITE_PID => {
             let file = state.text(TEXT_PID_FILE);
             if !file.is_empty() {
@@ -499,30 +520,6 @@ pub(crate) fn idle_worker<H: Host>(h: &mut H) -> crate::Effect<i64> {
     Ok(i64::from(key))
 }
 
-/// `Server::set_document_root(path)`: the path's real path, if it exists.
-fn document_root<H: Host>(h: &mut H, path: &[u8]) -> crate::Effect<bool> {
-    if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
-        h.get(LOG_ST_ROOT_TOO_LONG)?;
-        return Ok(false);
-    }
-    // `realpath` reads the path up to its first NUL.
-    let path = path.split(|byte| *byte == 0).next().unwrap_or_default();
-    let real = {
-        use std::os::unix::ffi::OsStrExt;
-        std::fs::canonicalize(std::ffi::OsStr::from_bytes(path)).ok()
-    }
-    .and_then(|real| {
-        use std::os::unix::ffi::OsStringExt;
-        CString::new(real.into_os_string().into_vec()).ok()
-    });
-    let Some(real) = real else {
-        h.get(LOG_ST_ROOT_MISSING)?;
-        return Ok(false);
-    };
-    h.op(OP_ST_SET_ROOT, real.as_ptr().expose_provenance() as u64)?;
-    Ok(true)
-}
-
 /// `Server::store_pipe_fd`: both ends of a worker pipe map to the pipe, and the
 /// highest fd grows to cover them.
 fn store_pipe_fd<H: Host>(h: &mut H) -> crate::Effect<()> {
@@ -590,20 +587,9 @@ pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
 }
 
 /// The operations of `crate::run` this module runs.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<Option<i64>> {
-    use crate::ops::{
-        RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD,
-    };
+pub(crate) fn run<H: Host>(h: &mut H, operation: u32) -> crate::Effect<Option<i64>> {
+    use crate::ops::{RUN_ST_CLEAR_TIMER, RUN_ST_INIT_PIPE_SOCKETS, RUN_ST_STORE_PIPE_FD};
     Ok(Some(match operation {
-        RUN_ST_DOCUMENT_ROOT => {
-            let address = usize::try_from(h.get(OP_ST_ROOT_PATH)?).unwrap_or(0);
-            let len = usize::try_from(arg).unwrap_or(0);
-            // SAFETY: native passes the path's `len` bytes, live for the call.
-            let path = unsafe {
-                core::slice::from_raw_parts(core::ptr::with_exposed_provenance::<u8>(address), len)
-            };
-            i64::from(document_root(h, path)?)
-        }
         RUN_ST_STORE_PIPE_FD => {
             store_pipe_fd(h)?;
             0
@@ -664,17 +650,29 @@ mod tests {
 
     #[test]
     fn document_root_is_the_real_path() {
-        let mut s = Script::default();
-        assert!(document_root(&mut s, b"/").unwrap());
-        assert_eq!(s.called(OP_ST_SET_ROOT), 1);
-        let mut s = Script::default();
-        assert!(!document_root(&mut s, b"/does/not/exist/swoole-rs").unwrap());
-        assert_eq!(s.called(LOG_ST_ROOT_MISSING), 1);
-        assert_eq!(s.called(OP_ST_SET_ROOT), 0);
+        let state = ServerState::new();
+        let dir = std::env::temp_dir().join(format!("swoole-rs-root-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("inner")).unwrap();
+        let dotted = dir.join("inner/..");
+        assert!(state.set_document_root(dotted.to_str().unwrap().as_bytes()));
+        let real = std::fs::canonicalize(&dir).unwrap();
+        assert_eq!(
+            &*state.text(TEXT_DOCUMENT_ROOT),
+            real.to_str().unwrap().as_bytes(),
+            "the real path"
+        );
+        let mut nul = real.to_str().unwrap().as_bytes().to_vec();
+        nul.extend_from_slice(b"\0/ignored");
+        assert!(state.set_document_root(&nul), "read up to the first NUL");
+        assert!(!state.set_document_root(b"/does/not/exist/swoole-rs"));
         let long = vec![b'a'; usize::try_from(libc::PATH_MAX).unwrap() + 1];
-        let mut s = Script::default();
-        assert!(!document_root(&mut s, &long).unwrap());
-        assert_eq!(s.called(LOG_ST_ROOT_TOO_LONG), 1);
+        assert!(!state.set_document_root(&long), "too long");
+        assert_eq!(
+            &*state.text(TEXT_DOCUMENT_ROOT),
+            real.to_str().unwrap().as_bytes(),
+            "failures keep the root"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -748,7 +746,7 @@ mod tests {
 
     #[test]
     fn startup_error_falls_back_to_the_code() {
-        let text = |message: &CStr, code| startup_error(message.to_owned(), code);
+        let text = |message: &std::ffi::CStr, code| startup_error(message.to_owned(), code);
         assert_eq!(text(c"bind failed", 98), c"bind failed");
         assert_eq!(text(c"", 1004), c"1004");
         assert_eq!(text(c"", 0), c"");
@@ -766,16 +764,14 @@ mod tests {
     #[test]
     fn texts_and_the_lock_are_answered_without_native() {
         let state = ServerState::new();
-        let root = c"/srv/www";
-        let arg = root.as_ptr().expose_provenance() as u64;
-        assert_eq!(unsafe { native_fact(&state, OP_ST_SET_ROOT, arg) }, Some(0));
+        state.set_text(TEXT_DOCUMENT_ROOT, b"/srv/www");
         assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
         assert_eq!(&*state.text(TEXT_PID_FILE), b"");
         assert!(state.text(TEXT_COUNT).is_empty());
-        assert_eq!(unsafe { native_fact(&state, OP_SET_MAXFD, 0) }, None);
+        assert_eq!(native_fact(&state, OP_SET_MAXFD), None);
 
         let state = std::sync::Arc::new(state);
-        assert_eq!(unsafe { native_fact(&state, OP_LOCK, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LOCK), Some(0));
         // Two waiters: the unlock wakes one, whose unlock wakes the other.
         let waiters: Vec<_> = (0..2)
             .map(|_| {
@@ -794,7 +790,7 @@ mod tests {
             !waiters.iter().any(std::thread::JoinHandle::is_finished),
             "the lock is held"
         );
-        assert_eq!(unsafe { native_fact(&state, OP_UNLOCK, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_UNLOCK), Some(0));
         for waiter in waiters {
             waiter.join().unwrap();
         }
@@ -811,17 +807,17 @@ mod tests {
         swoole_rs_corebase::swr_v1_core_set_max_file_content(64 * 1024 * 1024);
         let state = ServerState::new();
         // No pid_file: neither op touches the file system.
-        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
-        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
+        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
         state.set_text(TEXT_PID_FILE, bytes);
-        assert_eq!(unsafe { native_fact(&state, OP_LC_WRITE_PID, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             std::process::id().to_string()
         );
-        assert_eq!(unsafe { native_fact(&state, OP_LC_UNLINK_PID, 0) }, Some(0));
+        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
         assert!(!path.exists());
     }
 }

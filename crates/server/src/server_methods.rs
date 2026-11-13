@@ -14,8 +14,7 @@ use crate::ops::{OP_FACTORY_END, OP_FACTORY_NOTIFY, OP_PIPE_TO_WORKER};
 use crate::ops::{
     RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
     RUN_NATIVE_OP, RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN,
-    RUN_ST_CLEAR_TIMER, RUN_ST_DOCUMENT_ROOT, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD,
-    RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_ST_CLEAR_TIMER, RUN_ST_SEND, RUN_ST_STORE_PIPE_FD, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
 };
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_SIGNAL, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
@@ -362,11 +361,7 @@ fn until_nul(text: &[u8]) -> &[u8] {
     reason = "`swoole_server_set` ignores the result, as upstream's does"
 )]
 pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.data = path.as_ptr().cast();
-    ctx.bytes = until_nul(path);
-    // SAFETY: the live server; the path lives for the call.
-    unsafe { run(RUN_ST_DOCUMENT_ROOT, path.len() as u64, &mut ctx) != 0 }
+    serv.state().set_document_root(path)
 }
 
 /// [`set_document_root`] for the C++ test fixtures and tests/modules/http's cases.

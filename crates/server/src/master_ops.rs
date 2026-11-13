@@ -30,20 +30,19 @@ use crate::ops::{
     LOG_MAX_CONNECTION_MINIMUM, LOG_NO_IDLE_WORKER, LOG_NOT_REGULAR, LOG_PORT_CREATED,
     LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA,
     LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME,
-    LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_ST_ROOT_MISSING, LOG_ST_ROOT_TOO_LONG, LOG_STAT,
-    LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS,
-    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER,
-    OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
-    OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME,
-    OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE,
-    OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK,
-    OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY,
-    OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN,
-    OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN, OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET,
-    OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_ST_ROOT_PATH,
-    OP_ST_TIMER, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET, OP_VERIFY_CONN,
-    OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
-    OP_WRONG_OPERATION,
+    LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
+    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD,
+    OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND,
+    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH,
+    OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE,
+    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS,
+    OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND,
+    OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
+    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET,
+    OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY,
+    OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -218,10 +217,6 @@ impl<'a> Objects<'a> {
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
         // SAFETY: the ops reading it pass a live socket.
         unsafe { Socket::from_ptr(arg as *mut SocketRecord) }
-    }
-    /// [`Objects::data_bytes`] as text.
-    fn data(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(self.data_bytes())
     }
     /// `SendfileTask::filename` in the context's buffer, which follows its 16-byte head.
     fn filename(&self) -> std::borrow::Cow<'_, str> {
@@ -888,29 +883,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_ST_ROOT_TOO_LONG => {
-            let m = format_args!(
-                "The length of document_root must be less than {}",
-                libc::PATH_MAX
-            );
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_NAME_TOO_LONG,
-                c"Server::set_document_root",
-                m,
-            );
-            0
-        }
-        LOG_ST_ROOT_MISSING => {
-            let m = format_args!("document_root[{}] does not exist", o.data());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_DIR_NOT_EXIST,
-                c"Server::set_document_root",
-                m,
-            );
-            0
-        }
         LOG_BASE_ALLOC_CONNECTIONS => {
             let size = o.tables().max_connection as usize * size_of::<ConnectionRecord>();
             log::sys_warning(
@@ -1034,7 +1006,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_SENDFILE_NAME_LEN => u64::from(o.ctx.length),
         OP_SENDFILE_NAME_MAX => (IPC_BUFFER_SIZE - SENDFILE_TASK_SIZE - 1) as u64,
         OP_SENDFILE_OFFSET => sign(o.ctx.offset),
-        OP_ST_ROOT_PATH => o.ctx.data as u64,
         OP_SC_ADVANCE => {
             #[expect(clippy::cast_possible_truncation, reason = "a length within the data")]
             let step = arg as u32;

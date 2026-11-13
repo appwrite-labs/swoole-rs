@@ -5,8 +5,7 @@
 //! comparing every answer, every effect in order, and errno.
 use super::{Effects, StaticHandler};
 use crate::ServerConfig;
-use crate::ops::OP_ST_SET_ROOT;
-use crate::state::{ServerState, native_fact};
+use crate::state::ServerState;
 use crate::view;
 use core::cell::RefCell;
 use core::ffi::{CStr, c_char, c_long, c_void};
@@ -341,9 +340,8 @@ impl Server {
             state,
             config: Box::into_raw(Box::new(server_config)),
         }));
-        let root = c"/root".as_ptr().expose_provenance() as u64;
-        // SAFETY: the live state and a NUL-terminated root.
-        unsafe { native_fact(&*state, OP_ST_SET_ROOT, root) };
+        // SAFETY: the state boxed above, live with the server.
+        unsafe { &*state }.set_text(crate::state::TEXT_DOCUMENT_ROOT, b"/root");
         if config.location {
             server.strings(0, 4, b"/");
         }
