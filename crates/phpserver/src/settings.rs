@@ -7,7 +7,7 @@ use std::{
     ffi::{CStr, CString, c_int},
     sync::atomic::Ordering,
 };
-use swoole_rs_server::{ServerConfig, server_methods, view};
+use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
@@ -228,15 +228,6 @@ impl<'a> Settings<'a> {
 
     fn fact(&self, id: u32) -> i64 {
         fact(self.serv, id)
-    }
-
-    /// The server's configuration, borrowed for `f`, which runs no PHP code
-    /// and reaches the configuration no other way.
-    pub(crate) fn configure<R>(&self, f: impl FnOnce(&mut ServerConfig) -> R) -> R {
-        // SAFETY: a live server being configured on this thread, not started
-        // (set() checked), so no other thread reads its config; the borrow ends
-        // with `f`, and no other reference to the config is live meanwhile.
-        f(unsafe { self.serv.config_mut() })
     }
 
     fn set(&self, id: u32, value: i64) {
@@ -614,7 +605,8 @@ fn cpu_affinity_ignore(s: &Settings, value: &Value) -> Result<bool, Stop> {
         fatal(E_ERROR, c"cpu_affinity_ignore excludes all available CPUs");
         return Err(Stop);
     }
-    s.configure(|c| c.cpu_affinity_available = cpus);
+    let cpus = Some(std::sync::Arc::new(cpus));
+    s.server().config().cpu_affinity_available.set(cpus);
     Ok(true)
 }
 

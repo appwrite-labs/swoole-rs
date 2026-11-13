@@ -128,7 +128,7 @@ struct ServerConfig {
     enable_coroutine: bool,
     single_thread: bool,
     running: bool,
-    cpu_affinity_available: Vec<c_int>,
+    cpu_affinity_available: Native,
     pipe_command: Native,
     send_timeout: f64,
     heartbeat_check_interval: u16,
