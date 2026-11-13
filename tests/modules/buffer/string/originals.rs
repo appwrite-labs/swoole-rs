@@ -295,6 +295,7 @@ fn reduce_3() {
 }
 
 #[test]
+#[cfg_attr(miri, ignore = "Miri has no printf, which `print` calls")]
 fn append_number() {
     let data = b"hello";
     let s = new_sized_string(data.len() + 32, None);
