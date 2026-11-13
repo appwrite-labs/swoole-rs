@@ -193,27 +193,22 @@ pub(crate) fn header_end(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
-/// `swoole_http_token_list_contains_value`: -1 when the list is too long to
-/// check (upstream callers treat that as found), 1 when found, else 0.
-pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> i32 {
+/// `swoole_http_token_list_contains_value` as its callers read it: a list too long
+/// to check (-1 upstream) counts as found.
+pub(crate) fn token_list_contains(list: &[u8], value: &[u8]) -> bool {
     if list.is_empty() {
-        return 0;
+        return false;
     }
-    if list.len() >= TOKEN_LIST_LIMIT {
-        return -1;
-    }
-    if list.eq_ignore_ascii_case(value) {
-        return 1;
+    if list.len() >= TOKEN_LIST_LIMIT || list.eq_ignore_ascii_case(value) {
+        return true;
     }
     // strtok over a NUL-terminated copy: the list stops at its first NUL.
-    let found = list
-        .split(|&b| b == 0)
+    list.split(|&b| b == 0)
         .next()
         .unwrap_or_default()
         .split(|&b| b == b',')
         .filter(|token| !token.is_empty())
-        .any(|token| trim(token).eq_ignore_ascii_case(value));
-    i32::from(found)
+        .any(|token| trim(token).eq_ignore_ascii_case(value))
 }
 
 /// `swoole::ltrim` then `swoole::rtrim` (C `isspace`).
@@ -389,28 +384,24 @@ mod tests {
 
     #[test]
     fn token_lists_match_case_insensitively() {
-        assert_eq!(token_list_contains(b"", b"websocket"), 0, "empty");
-        assert_eq!(
+        assert!(!token_list_contains(b"", b"websocket"), "empty");
+        assert!(
             token_list_contains(b"WebSocket", b"websocket"),
-            1,
             "whole value"
         );
-        assert_eq!(
+        assert!(
             token_list_contains(b"keep-alive, Upgrade", b"Upgrade"),
-            1,
             "a listed token"
         );
-        assert_eq!(
+        assert!(
             token_list_contains(b"a,,  b ", b"b"),
-            1,
             "trimmed, empty skipped"
         );
-        assert_eq!(token_list_contains(b"a\0, b", b"b"), 0, "stops at a NUL");
-        assert_eq!(token_list_contains(b"close", b"Upgrade"), 0, "absent");
-        assert_eq!(
+        assert!(!token_list_contains(b"a\0, b", b"b"), "stops at a NUL");
+        assert!(!token_list_contains(b"close", b"Upgrade"), "absent");
+        assert!(
             token_list_contains(&[b'a'; TOKEN_LIST_LIMIT], b"b"),
-            -1,
-            "too long to check"
+            "too long to check counts as found"
         );
     }
 
