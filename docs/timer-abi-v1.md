@@ -41,7 +41,8 @@ No callback, Zend jump or bailout continuation runs under a Rust frame
 
 ## Operations
 
-Each returns a [`Status`](../crates/timer/src/lib.rs). A failing operation
+`add`, `get`, `update`, `remove`, `begin`, `next`, `complete`, `end`, `ids` and
+`drain` return a [`Status`](../crates/timer/src/lib.rs). A failing operation
 returns the default (zeroed) view; only statuses that carry metadata return a
 filled one. Reserved fields are always zero. `end`'s delay defaults to -1. ID 0
 means no active node; real IDs start at 1.
