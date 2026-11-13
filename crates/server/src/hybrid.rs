@@ -37,6 +37,28 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
+    /// A worker's `SW_SERVER_EVENT_SHUTDOWN_SIGNAL` to the master, through the first
+    /// reactor pipe: whether it went.
+    fn send_shutdown(&self, _serv: Server<'_>) -> bool {
+        missing()
+    }
+
+    /// `ReactorThread::shutdown` of the server's first reactor thread, over this
+    /// thread's reactor.
+    fn thread0_shutdown(&self, _serv: Server<'_>) {
+        missing()
+    }
+
+    /// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN`, then `onBeforeShutdown`, each when set.
+    fn before_shutdown(&self, _serv: Server<'_>) {
+        missing()
+    }
+
+    /// `Server::reload(reload_all_workers)`.
+    fn reload(&self, _serv: Server<'_>, _all_workers: bool) -> bool {
+        missing()
+    }
+
     /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
     /// the event workers.
     fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
@@ -79,6 +101,12 @@ pub(crate) mod tests {
         Notify(c_long, i16, u8, u16),
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
+        ThreadMode(u32),
+        StopSingleWorker,
+        SendShutdown,
+        Thread0Shutdown,
+        BeforeShutdown,
+        Reload(bool),
     }
 
     thread_local! {
@@ -115,6 +143,31 @@ pub(crate) mod tests {
         fn pipe_to_worker(&self, _: Server<'_>, worker_id: u32, message: &TaskBuffer) -> bool {
             let sent = message.bytes().len();
             hear(Call::Pipe(worker_id, message.head().kind, sent))
+        }
+
+        fn thread_mode(&self, _: Server<'_>, operation: u32) -> i64 {
+            hear(Call::ThreadMode(operation));
+            0
+        }
+
+        fn stop_single_worker(&self, _: Server<'_>) {
+            hear(Call::StopSingleWorker);
+        }
+
+        fn send_shutdown(&self, _: Server<'_>) -> bool {
+            hear(Call::SendShutdown)
+        }
+
+        fn thread0_shutdown(&self, _: Server<'_>) {
+            hear(Call::Thread0Shutdown);
+        }
+
+        fn before_shutdown(&self, _: Server<'_>) {
+            hear(Call::BeforeShutdown);
+        }
+
+        fn reload(&self, _: Server<'_>, all_workers: bool) -> bool {
+            hear(Call::Reload(all_workers))
         }
     }
 }

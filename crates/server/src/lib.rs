@@ -285,29 +285,12 @@ pub(crate) unsafe fn run_method(
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
     use ops::{
-        RUN_CHILD_EXIT, RUN_CREATE, RUN_DESTROY, RUN_MASTER_TIMER, RUN_SHUTDOWN, RUN_SIGNAL,
-        RUN_SIGNAL_SHUTDOWN, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STOP_MASTER_THREAD,
-        RUN_STORE_LISTEN_SOCKET,
+        RUN_CREATE, RUN_DESTROY, RUN_START_CHECK, RUN_START_MASTER_THREAD, RUN_STORE_LISTEN_SOCKET,
     };
     Ok(match operation {
         ops::RUN_NATIVE_OP => h
             .op(u32::try_from(arg).unwrap_or(u32::MAX), 0)?
             .cast_signed(),
-        RUN_SHUTDOWN => i64::from(control::shutdown(h)?),
-        RUN_SIGNAL => {
-            control::signal(h, i32::try_from(arg).unwrap_or(0))?;
-            SW_OK
-        }
-        RUN_SIGNAL_SHUTDOWN => i64::from(control::signal_shutdown(h)?),
-        RUN_CHILD_EXIT => i64::from(control::child_exit(h)?),
-        RUN_STOP_MASTER_THREAD => {
-            control::stop_master_thread(h)?;
-            SW_OK
-        }
-        RUN_MASTER_TIMER => {
-            control::master_timer(h)?;
-            SW_OK
-        }
         RUN_CREATE => startup::create(h)?,
         RUN_START_CHECK => startup::start_check(h)?,
         ops::RUN_START => startup::start(h)?,
@@ -322,11 +305,8 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         _ => match reactor_io::run(h, operation, arg)? {
             Some(result) => result,
-            None => match state::run(h, operation)? {
-                Some(result) => result,
-                None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
-                None => reactor_thread::run(h, operation, arg)?,
-            },
+            None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
+            None => reactor_thread::run(h, operation, arg)?,
         },
     })
 }

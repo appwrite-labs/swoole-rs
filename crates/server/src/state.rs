@@ -4,10 +4,9 @@
 //! and the startup error message.
 use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{
-    FIELD_WORKER_NUM, OP_FIELD, OP_MODE, OP_SET_WARNING, OP_ST_FINISH, OP_ST_TIMER,
-    OP_ST_TIMER_DEL, OP_WORKER_IDLE,
+    FIELD_WORKER_NUM, OP_FIELD, OP_MODE, OP_SET_WARNING, OP_ST_FINISH, OP_WORKER_IDLE,
 };
-use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_SET_STOPPING, OP_UNLOCK};
+use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 #[cfg(test)]
 use crate::ops::{OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES};
 use crate::send::send_to_connection;
@@ -389,7 +388,6 @@ fn c_path(text: &[u8]) -> CString {
 #[inline(always)]
 pub(crate) fn native_fact(state: &ServerState, op: u32) -> Option<u64> {
     match op {
-        OP_SET_STOPPING => state.stopping.store(true, Ordering::Release),
         OP_LOCK => state.lock(),
         OP_UNLOCK => state.unlock(),
         OP_LC_WRITE_PID => {
@@ -539,31 +537,6 @@ pub(crate) fn send<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
     Ok(true)
 }
 
-/// `master_timer`, `heartbeat_timer`, `enable_accept_timer`.
-const TIMERS: u64 = 3;
-
-/// `Server::clear_timer`: each armed timer is deleted and forgotten.
-pub(crate) fn clear_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
-    for timer in 0..TIMERS {
-        if h.op(OP_ST_TIMER, timer)? != 0 {
-            h.op(OP_ST_TIMER_DEL, timer)?;
-        }
-    }
-    Ok(())
-}
-
-/// The operations of `crate::run` this module runs.
-pub(crate) fn run<H: Host>(h: &mut H, operation: u32) -> crate::Effect<Option<i64>> {
-    use crate::ops::RUN_ST_CLEAR_TIMER;
-    Ok(Some(match operation {
-        RUN_ST_CLEAR_TIMER => {
-            clear_timer(h)?;
-            0
-        }
-        _ => return Ok(None),
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,13 +647,6 @@ mod tests {
         assert_eq!((s.called(OP_ST_FINISH), s.called(OP_SC_SEND)), (0, 1));
         let mut s = Script::default();
         assert!(!send(&mut s, &data).unwrap(), "no session");
-    }
-
-    #[test]
-    fn clear_timer_deletes_armed_timers() {
-        let mut s = Script::default().queue(OP_ST_TIMER, &[1, 0, 1]);
-        clear_timer(&mut s).unwrap();
-        assert_eq!(s.args(OP_ST_TIMER_DEL), vec![0, 2]);
     }
 
     #[test]

@@ -1,166 +1,275 @@
 //! Signals, the master timer and shutdown.
+use crate::hybrid::hybrid;
 use crate::ops::{
-    LOG_MANAGER_EXIT, LOG_NO_IDLE_WORKER, LOG_SHUTDOWN_FAILED, OP_BEFORE_SHUTDOWN, OP_FORCED_EXIT,
-    OP_IS_MASTER_THREAD, OP_IS_STARTED, OP_KILL_TERM, OP_KILL_WINCH, OP_MANAGER_PID, OP_MASTER_PID,
-    OP_MAX_WAIT_TIME, OP_MODE, OP_PIPE_COMMAND_DEL, OP_PORT_COUNT, OP_PORT_DGRAM,
-    OP_PORT_REACTOR_DEL, OP_PORT_REMOVED, OP_REACTOR_STOP, OP_REACTOR_WAIT_EXIT, OP_RUNNING,
-    OP_SEND_SHUTDOWN, OP_SET_MINFD, OP_SET_RUNNING, OP_SET_STOPPING, OP_SIGNAL_ACTIVE,
-    OP_SIGNAL_FD, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGNAL_READ_MESSAGE, OP_SIGNAL_RELOAD,
-    OP_SIGNAL_REOPEN, OP_SIGRTMIN, OP_SINGLE_THREAD, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
-    OP_THREAD0_SHUTDOWN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WRONG_OPERATION,
+    OP_MODE, OP_SET_MINFD, OP_SIGNAL_FD, OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_SIGRTMIN,
 };
+use crate::reactor_handle::Reactor;
+use crate::view::Server;
 use crate::{Host, MODE_BASE, MODE_PROCESS, MODE_THREAD};
+use core::ffi::{CStr, c_int};
+use core::sync::atomic::AtomicI64;
+use core::sync::atomic::Ordering::{Relaxed, Release};
+use swoole_rs_corebase::log;
+use swoole_rs_error::ErrorCode as E;
 
 fn signal_number(signo: i32) -> u64 {
     u64::from(signo.cast_unsigned())
 }
 
+fn mode(serv: Server<'_>) -> u64 {
+    u64::from(serv.config().mode_)
+}
+
+fn warn(code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
+    /// `SW_LOG_WARNING`.
+    const LOG_WARNING: c_int = 4;
+    log::error_log(LOG_WARNING, code as c_int, origin, message);
+}
+
 /// `Server::shutdown`: ask the master to stop, by pipe in process mode (a worker may
 /// not be allowed to signal it) and by `SIGTERM` otherwise.
-pub(crate) fn shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_IS_STARTED)? {
-        h.get(OP_WRONG_OPERATION)?;
-        return Ok(false);
+#[expect(
+    clippy::must_use_candidate,
+    reason = "callers ignore the result where upstream's do"
+)]
+pub fn shutdown(serv: Server<'_>) -> bool {
+    /// `THREAD_MASTER`.
+    const THREAD_MASTER: u8 = 1;
+    if !serv.is_started() {
+        log::set_last_error(E::SW_ERROR_WRONG_OPERATION as c_int);
+        return false;
     }
-    let mode = h.get(OP_MODE)?;
+    let mode = mode(serv);
     // A worker thread masks signals; the master thread stops itself.
-    if mode == MODE_THREAD && h.is(OP_IS_MASTER_THREAD)? {
-        stop_master_thread(h)?;
-        return Ok(true);
+    if mode == MODE_THREAD && swoole_rs_corebase::thread_kind() == THREAD_MASTER {
+        stop_master_thread(serv);
+        return true;
     }
     if mode == MODE_PROCESS {
-        return h.is(OP_SEND_SHUTDOWN);
+        return hybrid().send_shutdown(serv);
     }
     // A worker thread that asks may exit before the master sees the signal; marked
     // stopping now, the manager does not respawn it. `running` stays set until the
     // master handles the SIGTERM, which it ignores once the server is not running.
     if mode == MODE_THREAD {
-        h.op(OP_SET_STOPPING, 0)?;
+        serv.state().stopping.store(true, Release);
     }
-    let manager = h.signed(OP_MANAGER_PID)?;
+    let gs = serv.counters();
+    let manager = gs.manager_pid.load(Relaxed);
     let pid = if mode == MODE_BASE && manager != 0 {
         manager
     } else {
-        h.signed(OP_MASTER_PID)?
+        gs.master_pid.load(Relaxed)
     };
-    if h.op(OP_KILL_TERM, pid.cast_unsigned())?.cast_signed() < 0 {
-        h.op(LOG_SHUTDOWN_FAILED, pid.cast_unsigned())?;
-        return Ok(false);
+    if swoole_rs_process::os::kill(pid, libc::SIGTERM) < 0 {
+        let m = format_args!("failed to shutdown, kill({pid}, SIGTERM) failed");
+        warn(E::SW_ERROR_SYSTEM_CALL_FAIL, c"Server::shutdown", m);
+        return false;
     }
-    Ok(true)
+    true
 }
 
-/// `Server::master_signal_handler`.
-pub(crate) fn signal<H: Host>(h: &mut H, signo: i32) -> crate::Effect<()> {
-    if !h.is(OP_SIGNAL_ACTIVE)? {
-        return Ok(());
+/// `Server::master_signal_handler`, while the server runs.
+pub(crate) fn signal(serv: Server<'_>, signo: c_int) {
+    if swoole_rs_corebase::swr_v1_core_running() && serv.state().running() {
+        dispatch(serv, signo);
     }
+}
+
+/// What each signal does to a running server.
+fn dispatch(serv: Server<'_>, signo: c_int) {
     match signo {
-        libc::SIGTERM => {
-            signal_shutdown(h)?;
-        }
+        libc::SIGTERM => signal_shutdown(serv),
         libc::SIGCHLD => {
-            child_exit(h)?;
+            child_exit(serv);
         }
         libc::SIGUSR1 | libc::SIGUSR2 => {
-            h.op(OP_SIGNAL_RELOAD, u64::from(signo == libc::SIGUSR1))?;
+            _ = hybrid().reload(serv, signo == libc::SIGUSR1);
+            reopen_log();
         }
-        libc::SIGIO => {
-            h.get(OP_SIGNAL_READ_MESSAGE)?;
-        }
-        libc::SIGWINCH => reopen_logger(h)?,
-        _ => {
-            let rtmin = h.get(OP_SIGRTMIN)?;
-            if rtmin != 0 && signal_number(signo) == rtmin {
-                reopen_logger(h)?;
-            }
-        }
+        libc::SIGIO => serv.event_pool_ref().set_read_message(true),
+        libc::SIGWINCH => reopen_logger(serv),
+        _ if sigrtmin() == Some(signo) => reopen_logger(serv),
+        _ => {}
     }
-    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn sigrtmin() -> Option<c_int> {
+    Some(libc::SIGRTMIN())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sigrtmin() -> Option<c_int> {
+    None
+}
+
+/// This process's log file reopens.
+fn reopen_log() {
+    if let Some(logger) = swoole_rs_utilities::process_logger() {
+        logger.reopen();
+    }
 }
 
 /// `Server::signal_handler_reopen_logger`: the log file reopens, and in process mode
 /// the manager is told to reopen its own.
-pub(crate) fn reopen_logger<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_SIGNAL_REOPEN)?;
-    if h.get(OP_MODE)? == MODE_PROCESS {
-        let manager = h.get(OP_MANAGER_PID)?;
-        h.op(OP_KILL_WINCH, manager)?;
+fn reopen_logger(serv: Server<'_>) {
+    reopen_log();
+    if mode(serv) == MODE_PROCESS {
+        let manager = serv.counters().manager_pid.load(Relaxed);
+        swoole_rs_process::os::kill(manager, libc::SIGWINCH);
     }
-    Ok(())
 }
 
 /// `Server::signal_handler_shutdown`.
-pub(crate) fn signal_shutdown<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if h.get(OP_MODE)? == MODE_BASE {
-        if h.signed(OP_MANAGER_PID)? > 0 {
-            h.op(OP_SET_RUNNING, 0)?;
+fn signal_shutdown(serv: Server<'_>) {
+    if mode(serv) == MODE_BASE {
+        if serv.counters().manager_pid.load(Relaxed) > 0 {
+            serv.state().set_running(false);
         } else {
             // A single worker process exits directly.
-            h.get(OP_STOP_SINGLE_WORKER)?;
+            serv.event_pool_ref().set_running(false);
+            hybrid().stop_single_worker(serv);
         }
-        return Ok(true);
+        return;
     }
-    h.get(OP_BEFORE_SHUTDOWN)?;
-    h.op(OP_SET_RUNNING, 0)?;
-    stop_master_thread(h)?;
-    Ok(true)
+    hybrid().before_shutdown(serv);
+    serv.state().set_running(false);
+    stop_master_thread(serv);
 }
 
 /// `Server::signal_handler_child_exit`: reap and report the manager's exit.
-pub(crate) fn child_exit<H: Host>(h: &mut H) -> crate::Effect<bool> {
-    if !h.is(OP_RUNNING)? || h.get(OP_MODE)? == MODE_BASE {
-        return Ok(false);
+fn child_exit(serv: Server<'_>) -> bool {
+    if !serv.state().running() || mode(serv) == MODE_BASE {
+        return false;
     }
-    let mut status: libc::c_int = 0;
+    let mut status: c_int = 0;
     let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), libc::WNOHANG);
-    if pid > 0 && i64::from(pid) == h.signed(OP_MANAGER_PID)? {
-        h.op(LOG_MANAGER_EXIT, u64::from(status.cast_unsigned()))?;
+    if pid > 0 && pid == serv.counters().manager_pid.load(Relaxed) {
+        let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
+        let signal = signal.as_cstr().to_string_lossy();
+        let exit = libc::WEXITSTATUS(status);
+        let m = format_args!("Fatal Error: manager process exit. status={exit}, signal=[{signal}]");
+        log::warning(c"Server::signal_handler_child_exit", m);
     }
-    Ok(true)
+    true
 }
 
 /// `Server::stop_master_thread`: stop accepting and let the reactor drain.
-pub(crate) fn stop_master_thread<H: Host>(h: &mut H) -> crate::Effect<()> {
-    h.get(OP_REACTOR_WAIT_EXIT)?;
-    let mode = h.get(OP_MODE)?;
-    for index in 0..h.get(OP_PORT_COUNT)? {
-        if h.op(OP_PORT_DGRAM, index)? != 0 && mode != MODE_BASE {
+pub(crate) fn stop_master_thread(serv: Server<'_>) {
+    let reactor = Reactor::thread();
+    reactor.handle().set_wait_exit(true);
+    let mode = mode(serv);
+    for (index, port) in serv.ports().iter().enumerate() {
+        if matches!(port.config().r#type, 2 | 4 | 6) && mode != MODE_BASE {
             continue;
         }
-        if h.op(OP_PORT_REMOVED, index)? == 0 {
-            h.op(OP_PORT_REACTOR_DEL, index)?;
+        let removed = port.with_socket(|s| s.read(|s| s.removed));
+        if removed == Some(false)
+            && let Some(sock) = serv.port_socket_at(index)
+        {
+            reactor.del(sock);
         }
     }
-    h.get(OP_PIPE_COMMAND_DEL)?;
-    crate::state::clear_timer(h)?;
-    if h.signed(OP_MAX_WAIT_TIME)? > 0 {
-        h.get(OP_FORCED_EXIT)?;
+    if let Some(master) = serv
+        .config()
+        .command_pipe()
+        .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
+    {
+        reactor.change(master, 2, 0);
+    }
+    clear_timer(serv);
+    if serv.config().max_wait_time.get() > 0 {
+        exit_after_max_wait_time(serv);
     }
     if mode == MODE_THREAD {
-        h.get(OP_STOP_WORKER_THREADS)?;
+        hybrid().thread_mode(
+            serv,
+            swoole_rs_process::workers::ops::RUN_STOP_WORKER_THREADS,
+        );
     }
-    if mode == MODE_PROCESS && h.is(OP_SINGLE_THREAD)? {
-        h.get(OP_THREAD0_SHUTDOWN)?;
+    if mode == MODE_PROCESS && serv.config().single_thread.get() {
+        hybrid().thread0_shutdown(serv);
     }
-    Ok(())
 }
 
-/// `Server::timer_callback`: rate-limited scheduler warnings, the timer hook, and
-/// stopping once the server no longer runs.
-pub(crate) fn master_timer<H: Host>(h: &mut H) -> crate::Effect<()> {
-    let now = swoole_rs_corebase::time_now();
-    for pool in [0, 1] {
-        if h.op(OP_WARNING, pool)? != 0 && h.op(OP_WARNING_TIME, pool)?.cast_signed() < now {
-            h.op(OP_WARNING_RESET, (now.cast_unsigned() << 1) | pool)?;
-            h.op(LOG_NO_IDLE_WORKER, pool)?;
+/// When the forced-termination exit condition stops the loop: `max_wait_time` after
+/// the shutdown began.
+static FORCED_EXIT_DEADLINE: AtomicI64 = AtomicI64::new(0);
+
+/// The loop stops by force once the server's `max_wait_time` has passed.
+fn exit_after_max_wait_time(serv: Server<'_>) {
+    /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
+    const EXIT_CONDITION_FORCED_TERMINATION: c_int = 8;
+    let wait = libc::time_t::from(serv.config().max_wait_time.get());
+    FORCED_EXIT_DEADLINE.store(swoole_rs_corebase::time_now() + wait, Relaxed);
+    swoole_rs_reactor::swr_v1_event_set_exit_condition(
+        EXIT_CONDITION_FORCED_TERMINATION,
+        forced_exit,
+    );
+}
+
+/// The forced-termination exit condition: past `max_wait_time`, stop the loop.
+extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
+    if swoole_rs_corebase::time_now() > FORCED_EXIT_DEADLINE.load(Relaxed) {
+        let m = format_args!("graceful shutdown failed, forced termination");
+        warn(
+            E::SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT,
+            c"Server::stop_master_thread",
+            m,
+        );
+        Reactor::thread().handle().set_running(false);
+    }
+    true
+}
+
+/// `Server::clear_timer`: each armed timer is deleted and forgotten.
+pub(crate) fn clear_timer(serv: Server<'_>) {
+    let config = serv.config();
+    let timers = [
+        &config.master_timer,
+        &config.heartbeat_timer,
+        &serv.state().tables_ref().enable_accept_timer,
+    ];
+    for timer in timers {
+        let node = timer.swap(core::ptr::null_mut(), Relaxed);
+        if !node.is_null() {
+            // SAFETY: one of this thread's live timer nodes, forgotten above.
+            unsafe { swoole_rs_timer::swoole_timer_del(node.cast()) };
         }
     }
-    if !h.is(OP_RUNNING)? {
-        h.get(OP_REACTOR_STOP)?;
-        stop_master_thread(h)?;
+}
+
+/// `Server::timer_callback`: rate-limited scheduler warnings, then stopping once the
+/// server no longer runs.
+pub(crate) fn master_timer(serv: Server<'_>) {
+    let now = swoole_rs_corebase::time_now();
+    let config = serv.config();
+    if config.scheduler_warning.load(Relaxed) && config.warning_time.load(Relaxed) < now {
+        config.scheduler_warning.store(false, Relaxed);
+        config.warning_time.store(now, Relaxed);
+        let m = format_args!("No idle worker is available");
+        warn(
+            E::SW_ERROR_SERVER_NO_IDLE_WORKER,
+            c"Server::timer_callback",
+            m,
+        );
     }
-    Ok(())
+    let pool = serv.task_pool_ref();
+    if pool.scheduler_warning() && pool.warning_time() < now {
+        pool.set_scheduler_warning(false);
+        pool.set_warning_time(now);
+        let m = format_args!("No idle task worker is available");
+        warn(
+            E::SW_ERROR_SERVER_NO_IDLE_WORKER,
+            c"Server::timer_callback",
+            m,
+        );
+    }
+    if !serv.state().running() {
+        Reactor::thread().handle().set_running(false);
+        stop_master_thread(serv);
+    }
 }
 
 /// `Server::init_signal_handler`.
@@ -195,146 +304,215 @@ pub(crate) fn init_signals<H: Host>(h: &mut H) -> crate::Effect<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::LiveServer;
+    use crate::hybrid::tests::{Call, calls};
     use crate::script::Script;
 
+    fn set_mode(live: &LiveServer, mode: u64) {
+        // SAFETY: the fixture's config, which nothing else reads meanwhile.
+        unsafe { (*live.state().config()).mode_ = u8::try_from(mode).unwrap() };
+    }
+
+    /// A pid no process has: `kill` fails with `ESRCH`.
+    const NO_PROCESS: libc::pid_t = libc::pid_t::MAX;
+
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn shutdown_by_mode() {
-        let mut s = Script::with(&[]);
-        assert!(!shutdown(&mut s).unwrap(), "not started");
-        assert_eq!(s.called(OP_WRONG_OPERATION), 1, "error set");
-
-        let mut s = Script::with(&[
-            (OP_IS_STARTED, 1),
-            (OP_MODE, MODE_PROCESS),
-            (OP_SEND_SHUTDOWN, 1),
-        ]);
-        assert!(shutdown(&mut s).unwrap(), "pipe message sent");
-        assert_eq!(s.called(OP_KILL_TERM), 0, "no signal");
-
-        let mut s = Script::with(&[(OP_IS_STARTED, 1), (OP_MODE, MODE_BASE), (OP_MASTER_PID, 7)]);
-        assert!(shutdown(&mut s).unwrap(), "signalled");
-        assert_eq!(s.args(OP_KILL_TERM), vec![7], "no manager: master");
-
-        let mut s = Script::with(&[
-            (OP_IS_STARTED, 1),
-            (OP_MODE, MODE_BASE),
-            (OP_MANAGER_PID, 8),
-            (OP_KILL_TERM, u64::MAX),
-        ]);
-        assert!(!shutdown(&mut s).unwrap(), "kill failed");
+        let live = LiveServer::new();
+        let serv = live.server();
+        calls();
+        assert!(!shutdown(serv), "not started");
         assert_eq!(
-            s.args(LOG_SHUTDOWN_FAILED),
-            vec![8],
-            "manager signalled and warned"
+            log::last_error(),
+            E::SW_ERROR_WRONG_OPERATION as c_int,
+            "error set"
         );
 
-        let mut s = Script::with(&[
-            (OP_IS_STARTED, 1),
-            (OP_MODE, MODE_THREAD),
-            (OP_IS_MASTER_THREAD, 1),
-        ]);
-        assert!(shutdown(&mut s).unwrap(), "master thread stops itself");
-        assert_eq!(s.called(OP_REACTOR_WAIT_EXIT), 1, "stopped");
+        live.counters().start.store(1, Relaxed);
+        assert!(shutdown(serv), "process mode: the pipe message went");
+        assert_eq!(calls(), [Call::SendShutdown], "by pipe, no signal");
 
-        let mut s = Script::with(&[
-            (OP_IS_STARTED, 1),
-            (OP_MODE, MODE_THREAD),
-            (OP_MASTER_PID, 7),
-        ]);
-        assert!(shutdown(&mut s).unwrap(), "a worker thread signals");
-        assert_eq!(s.called(OP_SET_STOPPING), 1, "stopping before the signal");
+        // Base mode signals the manager, or the master without one.
+        set_mode(&live, MODE_BASE);
+        let gs = live.counters();
+        let mut master = sleeper();
+        gs.master_pid.store(pid(&master), Relaxed);
+        assert!(shutdown(serv), "signalled");
         assert_eq!(
-            s.called(OP_SET_RUNNING),
-            0,
+            terminated_by(&mut master),
+            Some(libc::SIGTERM),
+            "no manager: the master"
+        );
+        let mut manager = sleeper();
+        gs.manager_pid.store(pid(&manager), Relaxed);
+        gs.master_pid.store(NO_PROCESS, Relaxed);
+        assert!(shutdown(serv), "signalled");
+        assert_eq!(
+            terminated_by(&mut manager),
+            Some(libc::SIGTERM),
+            "the manager"
+        );
+        gs.manager_pid.store(NO_PROCESS, Relaxed);
+        assert!(!shutdown(serv), "kill failed");
+
+        // A worker thread marks the server stopping, then signals the master.
+        set_mode(&live, MODE_THREAD);
+        live.state().set_running(true);
+        let mut master = sleeper();
+        gs.master_pid.store(pid(&master), Relaxed);
+        assert!(shutdown(serv), "a worker thread signals the master");
+        assert_eq!(terminated_by(&mut master), Some(libc::SIGTERM));
+        assert!(
+            live.state().stopping.load(Relaxed),
+            "stopping before the signal"
+        );
+        assert!(
+            live.state().running(),
             "running until the master handles it"
         );
-        assert_eq!(s.args(OP_KILL_TERM), vec![7], "master signalled");
+        assert_eq!(calls(), [], "no pipe outside process mode");
+    }
+
+    /// A child that sleeps until a signal ends it.
+    fn sleeper() -> std::process::Child {
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap()
+    }
+
+    fn pid(child: &std::process::Child) -> libc::pid_t {
+        libc::pid_t::try_from(child.id()).unwrap()
+    }
+
+    fn terminated_by(child: &mut std::process::Child) -> Option<c_int> {
+        use std::os::unix::process::ExitStatusExt;
+        child.wait().unwrap().signal()
     }
 
     #[test]
-    fn signals_dispatch() {
-        let run = |signo: i32| {
-            let mut s = Script::with(&[
-                (OP_SIGNAL_ACTIVE, 1),
-                (OP_MODE, MODE_PROCESS),
-                (OP_SIGRTMIN, 34),
-            ]);
-            signal(&mut s, signo).unwrap();
-            s
-        };
-        assert_eq!(
-            run(libc::SIGUSR1).args(OP_SIGNAL_RELOAD),
-            vec![1],
-            "reload all"
-        );
-        assert_eq!(
-            run(libc::SIGUSR2).args(OP_SIGNAL_RELOAD),
-            vec![0],
-            "reload task"
-        );
-        assert_eq!(
-            run(libc::SIGIO).called(OP_SIGNAL_READ_MESSAGE),
-            1,
-            "message"
-        );
-        assert_eq!(run(libc::SIGWINCH).called(OP_SIGNAL_REOPEN), 1, "reopen");
-        assert_eq!(run(34).called(OP_SIGNAL_REOPEN), 1, "SIGRTMIN reopens");
-        assert_eq!(run(libc::SIGTERM).called(OP_BEFORE_SHUTDOWN), 1, "shutdown");
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn signal_shutdown_by_mode() {
+        let live = LiveServer::new();
+        let serv = live.server();
+        calls();
+        set_mode(&live, MODE_BASE);
+        live.state().set_running(true);
+        live.counters().manager_pid.store(3, Relaxed);
+        signal_shutdown(serv);
+        assert!(!live.state().running(), "the manager stops the workers");
+        assert_eq!(calls(), [], "no worker stopped here");
 
-        let mut s = Script::with(&[]);
-        signal(&mut s, libc::SIGTERM).unwrap();
+        live.counters().manager_pid.store(0, Relaxed);
+        live.state().set_running(true);
+        signal_shutdown(serv);
+        assert_eq!(calls(), [Call::StopSingleWorker], "a single worker exits");
+        assert!(live.state().running(), "running untouched");
+
+        set_mode(&live, MODE_PROCESS);
+        signal_shutdown(serv);
         assert_eq!(
-            s.called(OP_BEFORE_SHUTDOWN),
-            0,
-            "inactive server ignores signals"
+            calls(),
+            [Call::BeforeShutdown],
+            "hooks and onBeforeShutdown"
+        );
+        assert!(!live.state().running(), "stopped");
+        assert!(
+            live.reactor().handle().wait_exit(),
+            "the master thread stops"
         );
     }
 
     #[test]
-    fn signal_shutdown_in_base_mode() {
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE), (OP_MANAGER_PID, 3)]);
-        assert!(signal_shutdown(&mut s).unwrap(), "handled");
-        assert_eq!(s.args(OP_SET_RUNNING), vec![0], "manager stops the workers");
-
-        let mut s = Script::with(&[(OP_MODE, MODE_BASE)]);
-        signal_shutdown(&mut s).unwrap();
-        assert_eq!(s.called(OP_STOP_SINGLE_WORKER), 1, "single worker exits");
-        assert_eq!(s.called(OP_SET_RUNNING), 0, "running untouched");
-    }
-
-    #[test]
-    fn stop_master_thread_keeps_dgram_ports_outside_base_mode() {
-        let mut s = Script::with(&[
-            (OP_MODE, MODE_PROCESS),
-            (OP_PORT_COUNT, 3),
-            (OP_SINGLE_THREAD, 1),
-            (OP_MAX_WAIT_TIME, 3),
-        ])
-        .queue(OP_PORT_DGRAM, &[1, 0, 0])
-        .queue(OP_PORT_REMOVED, &[0, 1]);
-        stop_master_thread(&mut s).unwrap();
-        assert_eq!(
-            s.args(OP_PORT_REACTOR_DEL),
-            vec![1],
-            "stream port not yet removed"
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn stop_master_thread_by_mode() {
+        let live = LiveServer::new();
+        let serv = live.server();
+        calls();
+        // SAFETY: the fixture's config, which nothing else reads meanwhile.
+        unsafe {
+            (*live.state().config()).single_thread.set(true);
+            (*live.state().config()).max_wait_time.set(3);
+        }
+        live.reactor().add(live.port_socket(), 1);
+        stop_master_thread(serv);
+        assert!(live.reactor().handle().wait_exit(), "draining");
+        assert!(
+            live.reactor().del(live.port_socket()) < 0,
+            "the stream port left the reactor"
         );
-        assert_eq!(s.called(OP_FORCED_EXIT), 1, "max_wait_time");
-        assert_eq!(s.called(OP_THREAD0_SHUTDOWN), 1, "single thread");
-        assert_eq!(s.called(OP_STOP_WORKER_THREADS), 0, "process mode");
+        assert_eq!(calls(), [Call::Thread0Shutdown], "single thread");
+        assert!(
+            FORCED_EXIT_DEADLINE.load(Relaxed) >= swoole_rs_corebase::time_now() + 2,
+            "max_wait_time"
+        );
+
+        set_mode(&live, MODE_THREAD);
+        stop_master_thread(serv);
+        let stop = swoole_rs_process::workers::ops::RUN_STOP_WORKER_THREADS;
+        assert_eq!(calls(), [Call::ThreadMode(stop)], "the worker threads stop");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn master_timer_warns_once_per_second_and_stops() {
-        let mut s =
-            Script::with(&[(OP_WARNING, 1)]).queue(OP_WARNING_TIME, &[0, i64::MAX.cast_unsigned()]);
-        master_timer(&mut s).unwrap();
-        assert_eq!(
-            s.args(LOG_NO_IDLE_WORKER),
-            vec![0],
-            "server warned, task pool not due"
+        let live = LiveServer::new();
+        let serv = live.server();
+        let config = serv.config();
+        config.scheduler_warning.store(true, Relaxed);
+        let pool = serv.task_pool_ref();
+        pool.set_scheduler_warning(true);
+        pool.set_warning_time(i64::MAX);
+        live.state().set_running(true);
+        live.reactor().handle().set_running(true);
+        master_timer(serv);
+        assert!(!config.scheduler_warning.load(Relaxed), "server warned");
+        assert!(config.warning_time.load(Relaxed) > 0, "and reset");
+        assert!(pool.scheduler_warning(), "the task pool's not due");
+        assert!(
+            live.reactor().handle().running(),
+            "running: the loop goes on"
         );
-        assert_eq!(s.args(OP_WARNING_RESET)[0] & 1, 0, "server pool reset");
-        assert_eq!(s.called(OP_REACTOR_STOP), 1, "not running");
+        assert!(!live.reactor().handle().wait_exit());
+
+        live.state().set_running(false);
+        master_timer(serv);
+        assert!(!live.reactor().handle().running(), "not running: stopped");
+        assert!(live.reactor().handle().wait_exit(), "and draining");
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn signals_dispatch() {
+        let live = LiveServer::new();
+        let serv = live.server();
+        set_mode(&live, MODE_BASE);
+        calls();
+        dispatch(serv, libc::SIGUSR1);
+        dispatch(serv, libc::SIGUSR2);
+        assert_eq!(
+            calls(),
+            [Call::Reload(true), Call::Reload(false)],
+            "reload all, then the task workers"
+        );
+        dispatch(serv, libc::SIGIO);
+        assert!(serv.event_pool_ref().read_message(), "a message to read");
+        dispatch(serv, libc::SIGWINCH);
+        dispatch(serv, libc::SIGTERM);
+        assert_eq!(
+            calls(),
+            [Call::StopSingleWorker],
+            "the log reopens; SIGTERM stops base mode's single worker"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn signals_need_a_running_server() {
+        let live = LiveServer::new();
+        signal(live.server(), libc::SIGIO);
+        assert!(!live.server().event_pool_ref().read_message(), "ignored");
     }
 
     #[test]

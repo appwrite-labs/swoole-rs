@@ -28,40 +28,34 @@ use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
     LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_FDS_START, LOG_FILE_EMPTY, LOG_HOST_TOO_LONG,
-    LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LC_ONLY_ONE, LOG_LISTEN_PID, LOG_MANAGER_EXIT,
-    LOG_MAX_CONNECTION_MINIMUM, LOG_NO_IDLE_WORKER, LOG_NOT_REGULAR, LOG_PORT_CREATED,
-    LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA,
-    LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME,
-    LOG_SENDWAIT, LOG_SHUTDOWN_FAILED, LOG_STAT, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
-    LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD,
-    OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER, OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND,
-    OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED, OP_IS_MASTER, OP_KILL_TERM, OP_KILL_WINCH,
-    OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH, OP_PORT_TYPE,
-    OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS,
-    OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND,
-    OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_SYNC,
-    OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
+    LOG_INVALID_PORT, LOG_INVALID_SESSION, LOG_LC_ONLY_ONE, LOG_LISTEN_PID,
+    LOG_MAX_CONNECTION_MINIMUM, LOG_NOT_REGULAR, LOG_PORT_CREATED, LOG_REACTOR_NUM,
+    LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA, LOG_SC_NO_SESSION_EVENT,
+    LOG_SC_SOCKET_OVERFLOW, LOG_SEND_IN_MASTER, LOG_SENDFILE_NAME, LOG_SENDWAIT, LOG_STAT,
+    LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_TOO_MANY_PORTS, LOG_WORKER_NUM, OP_BASE_REACTORS,
+    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_CONN_UID, OP_CONN_WORKER,
+    OP_DGRAM_PORT, OP_FD_CONN, OP_HAS_PIPE_COMMAND, OP_HOST_MAXSIZE, OP_HOST_SIZE, OP_IS_CREATED,
+    OP_IS_MASTER, OP_NEW_PORT_TYPE, OP_PIN_WORKER, OP_PORT_IDLE_TIME, OP_PORT_NUMBER, OP_PORT_PUSH,
+    OP_PORT_TYPE, OP_SC_ADD, OP_SC_ADD_READ, OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL,
+    OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER, OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ,
+    OP_SC_SEND, OP_SC_SET, OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR,
+    OP_SEND_SYNC, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SENDFILE_NAME, OP_SENDFILE_NAME_LEN,
     OP_SENDFILE_NAME_MAX, OP_SENDFILE_OFFSET, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID,
-    OP_SIGNAL_FD, OP_SIGRTMIN, OP_ST_TIMER, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET,
-    OP_VERIFY_CONN, OP_WARNING, OP_WARNING_RESET, OP_WARNING_TIME, OP_WORKER_CONCURRENCY,
-    OP_WORKER_COROUTINES, OP_WRONG_OPERATION,
+    OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE, OP_STREAM_PORT, OP_TASKING, OP_TASKING_RESET,
+    OP_VERIFY_CONN, OP_WORKER_CONCURRENCY, OP_WORKER_COROUTINES,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
     OP_ALLOC_PORT_GS, OP_ALLOC_SESSIONS, OP_ALLOC_TASK_RESULTS, OP_ALLOC_WORKERS,
     OP_CREATE_FACTORY, OP_DESTROY_FACTORY, OP_DESTROY_WORKER, OP_FREE_USER_WORKERS,
     OP_HTTP_DEFAULTS, OP_INIT_LOCAL_ADDRS, OP_LC_BEFORE_START, OP_LC_CHECK, OP_LC_PREPARE_WORKERS,
-    OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER, OP_SIGNAL_ACTIVE,
-    OP_SIGNAL_READ_MESSAGE, OP_STOP_SINGLE_WORKER, OP_STOP_WORKER_THREADS,
+    OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER,
 };
 use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
+use crate::ops::{OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_SC_CLOSE, OP_WORKER_IDLE};
 use crate::ops::{
-    OP_IP_KEY, OP_PIPE_COMMAND_ADD, OP_PIPE_COMMAND_DEL, OP_SC_CLOSE, OP_WORKER_IDLE,
-};
-use crate::ops::{
-    OP_IS_MASTER_THREAD, OP_MASTER_THREAD, OP_OUT_EMPTY, OP_PORT_REACTOR_DEL, OP_REACTOR_STOP,
-    OP_REACTOR_WAIT_EXIT, OP_SC_APPEND, OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL, OP_SC_OUT_HIGH,
-    OP_SC_QUEUE_CLOSE,
+    OP_MASTER_THREAD, OP_OUT_EMPTY, OP_SC_APPEND, OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL,
+    OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
 };
 use crate::port_config::PortConfig;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -78,7 +72,6 @@ use swoole_rs_memory::members::Shm;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
-    RUN_STOP_WORKER_THREADS,
 };
 use swoole_rs_utilities::misc::swoole_hash_php;
 
@@ -553,41 +546,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_SHUTDOWN_FAILED => {
-            let pid = arg as libc::pid_t;
-            let m = format_args!("failed to shutdown, kill({pid}, SIGTERM) failed");
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SYSTEM_CALL_FAIL,
-                c"Server::shutdown",
-                m,
-            );
-            0
-        }
-        LOG_MANAGER_EXIT => {
-            let status = arg.c_cast::<c_int>();
-            let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
-            let signal = signal.as_cstr().to_string_lossy();
-            let exit = libc::WEXITSTATUS(status);
-            let m =
-                format_args!("Fatal Error: manager process exit. status={exit}, signal=[{signal}]");
-            log::warning(c"Server::signal_handler_child_exit", m);
-            0
-        }
-        LOG_NO_IDLE_WORKER => {
-            let m = if arg != 0 {
-                format_args!("No idle task worker is available")
-            } else {
-                format_args!("No idle worker is available")
-            };
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_SERVER_NO_IDLE_WORKER,
-                c"Server::timer_callback",
-                m,
-            );
-            0
-        }
         LOG_ALLOC_SESSIONS => {
             let m = format_args!("sw_shm_calloc(1048576, {SESSION_SIZE}) for session_list failed");
             log::sys_warning(c"Server::create", m);
@@ -901,38 +859,8 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         // The server's own records.
         OP_SIGRTMIN => sigrtmin(),
         OP_SIGNAL_FD => sign(swoole_rs_corebase::swr_v1_core_signal_fd()),
-        OP_WRONG_OPERATION => {
-            log::set_last_error(E::SW_ERROR_WRONG_OPERATION as c_int);
-            0
-        }
-        // arg 1 (bit 0 for the reset) names the task pool's.
-        OP_WARNING if arg == 0 => u64::from(o.config().scheduler_warning.load(Relaxed)),
-        OP_WARNING_TIME if arg == 0 => sign(o.config().warning_time.load(Relaxed)),
-        OP_WARNING_RESET if arg & 1 == 0 => {
-            o.config().scheduler_warning.store(false, Relaxed);
-            let now = (arg >> 1).cast_signed();
-            o.config().warning_time.store(now, Relaxed);
-            0
-        }
-        OP_WARNING => u64::from(o.server().task_pool_ref().scheduler_warning()),
-        OP_WARNING_TIME => sign(o.server().task_pool_ref().warning_time()),
-        OP_WARNING_RESET => {
-            let pool = o.server().task_pool_ref();
-            pool.set_scheduler_warning(false);
-            pool.set_warning_time((arg >> 1).cast_signed());
-            0
-        }
-        OP_SIGNAL_READ_MESSAGE => {
-            o.server().event_pool_ref().set_read_message(true);
-            0
-        }
         OP_SEND_TIMEOUT => o.config().send_timeout.get().to_bits(),
         OP_HAS_PIPE_COMMAND => u64::from(!o.config().pipe_command.is_null()),
-        OP_ST_TIMER => u64::from(match arg {
-            0 => !o.config().master_timer.load(Relaxed).is_null(),
-            1 => !o.config().heartbeat_timer.load(Relaxed).is_null(),
-            _ => !o.tables().enable_accept_timer.load(Relaxed).is_null(),
-        }),
         OP_SET_MASTER_PID => {
             o.gs()
                 .master_pid
@@ -943,15 +871,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TASKING_RESET => {
             o.gs().tasking_num.store(0, SeqCst);
             0
-        }
-        OP_KILL_TERM | OP_KILL_WINCH => {
-            let pid = arg as libc::pid_t;
-            let signal = if op == OP_KILL_TERM {
-                libc::SIGTERM
-            } else {
-                libc::SIGWINCH
-            };
-            sign(swoole_rs_process::os::kill(pid, signal))
         }
 
         // The context's port.
@@ -1107,9 +1026,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             call_hook(o, ServerHook::AfterShutdown);
             0
         }
-        OP_SIGNAL_ACTIVE => {
-            u64::from(swoole_rs_corebase::swr_v1_core_running() && o.state.running())
-        }
         OP_MASTER_WORKER => {
             swoole_rs_process::methods::set_worker_type(WorkerType::Master);
             if arg == MODE_THREAD {
@@ -1166,15 +1082,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let started = hybrid().thread_mode(o.server(), RUN_START_WORKER_THREADS);
             sign(started.c_cast::<c_int>())
         }
-        OP_STOP_WORKER_THREADS => {
-            hybrid().thread_mode(o.server(), RUN_STOP_WORKER_THREADS);
-            0
-        }
-        OP_STOP_SINGLE_WORKER => {
-            o.server().event_pool_ref().set_running(false);
-            hybrid().stop_single_worker(o.server());
-            0
-        }
         #[cfg(all(feature = "upstream-symbols", not(test)))]
         crate::ops::OP_INIT_TASK_WORKERS => {
             u64::from(crate::task_worker_ops::init_task_workers(o.server()))
@@ -1200,8 +1107,6 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `THREAD_MASTER`.
     const THREAD_MASTER: u8 = 1;
-    let reactor = crate::reactor_handle::Reactor::thread;
-    let listener = || o.server().port_socket_at(usize::try_from(arg).ok()?);
     // The send path's output buffer, which `OP_SC_ENSURE_BUFFER` made before any op reads it.
     let out = || {
         let out = o.sock().map(|sock| sock.read(|s| s.output.out_buffer));
@@ -1209,22 +1114,8 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         unsafe { &*out.unwrap_or(core::ptr::null_mut()).cast::<CppBuffer>() }
     };
     Some(match op {
-        OP_IS_MASTER_THREAD => u64::from(swoole_rs_corebase::thread_kind() == THREAD_MASTER),
         OP_MASTER_THREAD => {
             swoole_rs_corebase::set_thread(THREAD_MASTER, arg.c_cast::<u16>());
-            0
-        }
-        // `SwooleTG.reactor->del` on a listening socket.
-        OP_PORT_REACTOR_DEL => {
-            reactor().del(listener()?);
-            0
-        }
-        OP_REACTOR_WAIT_EXIT => {
-            reactor().handle().set_wait_exit(true);
-            0
-        }
-        OP_REACTOR_STOP => {
-            reactor().handle().set_running(false);
             0
         }
         OP_SC_ENSURE_BUFFER => {
@@ -1380,17 +1271,14 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             o.reactor().close(o.sock()?);
             0
         }
-        // `ctx->reactor->add` and `SwooleTG.reactor->del` of the command pipe's master end.
-        OP_PIPE_COMMAND_ADD | OP_PIPE_COMMAND_DEL => {
-            if let Some(pipe) = o.config().command_pipe() {
-                let (reactor, kind, events) = if op == OP_PIPE_COMMAND_ADD {
-                    (o.reactor(), 0, SW_EVENT_READ)
-                } else {
-                    (crate::reactor_handle::Reactor::thread(), 2, 0)
-                };
-                if let Some(master) = pipe.master_end() {
-                    reactor.change(master, kind, events);
-                }
+        // `ctx->reactor->add` of the command pipe's master end.
+        OP_PIPE_COMMAND_ADD => {
+            if let Some(master) = o
+                .config()
+                .command_pipe()
+                .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
+            {
+                o.reactor().change(master, 0, SW_EVENT_READ);
             }
             0
         }
@@ -1404,9 +1292,8 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_COMMAND_HANDLER, OP_EVENT_FREE, OP_EVENT_WAIT, OP_LC_CLEAR_ERROR, OP_MARK_SHUTDOWN,
-        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_ST_TIMER_DEL, OP_TIMER_DETACHED, OP_TIMER_REINIT,
+        OP_SIGNAL_HANDLE, OP_SIGNAL_IGNORE, OP_TIMER_DETACHED, OP_TIMER_REINIT,
     };
-    use swoole_rs_timer::swoole_timer_del;
     /// `SW_FD_PIPE`.
     const SW_FD_PIPE: c_int = 3;
     use swoole_rs_error::swoole_clear_last_error_msg;
@@ -1427,17 +1314,6 @@ fn native(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_TIMER_DETACHED => u64::from(crate::objects::timer_detached()),
         OP_TIMER_REINIT => {
             crate::objects::timer_reinit(false);
-            0
-        }
-        OP_ST_TIMER_DEL => {
-            let null = core::ptr::null_mut();
-            let node = match arg {
-                0 => o.config().master_timer.swap(null, Relaxed),
-                1 => o.config().heartbeat_timer.swap(null, Relaxed),
-                _ => o.tables().enable_accept_timer.swap(null, Relaxed),
-            };
-            // SAFETY: null or one of this thread's live timer nodes, forgotten above.
-            unsafe { swoole_timer_del(node.cast()) };
             0
         }
         OP_SIGNAL_IGNORE | OP_SIGNAL_HANDLE => {
@@ -1561,21 +1437,13 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// upstream symbols; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::callbacks::{CB_BEFORE_SHUTDOWN, CB_SHUTDOWN};
+    use crate::callbacks::CB_SHUTDOWN;
     use crate::ops::{
-        OP_BEFORE_SHUTDOWN, OP_DISPATCH_FUNC, OP_FORCE_CLOSE, OP_FORCED_EXIT,
-        OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT, OP_ON_SHUTDOWN, OP_PORT_CLOSE,
-        OP_SIGNAL_RELOAD, OP_SIGNAL_REOPEN, OP_THREAD0_SHUTDOWN,
+        OP_DISPATCH_FUNC, OP_FORCE_CLOSE, OP_JOIN_REACTOR_THREADS, OP_NOTIFY_CONNECT,
+        OP_ON_SHUTDOWN, OP_PORT_CLOSE,
     };
-    /// `Reactor::EXIT_CONDITION_FORCED_TERMINATION`.
-    const EXIT_CONDITION_FORCED_TERMINATION: c_int = 8;
     /// `SW_SERVER_EVENT_CONNECT`.
     const EVENT_CONNECT: c_int = 5;
-    let reopen_logger = || {
-        if let Some(logger) = swoole_rs_utilities::process_logger() {
-            logger.reopen();
-        }
-    };
     Some(match op {
         OP_NOTIFY_CONNECT => u64::from(crate::server_methods::notify(
             o.server(),
@@ -1587,37 +1455,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             conn.set_close_force(true);
             let mut event = conn.event(0, 0);
             o.reactor().trigger_close(&mut event);
-            0
-        }
-        OP_FORCED_EXIT => {
-            let wait = libc::time_t::from(o.config().max_wait_time.get());
-            FORCED_EXIT_DEADLINE.store(swoole_rs_corebase::time_now() + wait, Relaxed);
-            swoole_rs_reactor::swr_v1_event_set_exit_condition(
-                EXIT_CONDITION_FORCED_TERMINATION,
-                forced_exit,
-            );
-            0
-        }
-        OP_THREAD0_SHUTDOWN => {
-            // The server's first reactor thread, over this thread's reactor.
-            let reactor = crate::reactor_handle::Reactor::thread();
-            crate::reactor_entry::thread_shutdown(o.server(), reactor, 0);
-            0
-        }
-        OP_BEFORE_SHUTDOWN => {
-            call_hook(o, ServerHook::BeforeShutdown);
-            o.state
-                .callbacks
-                .call_server(CB_BEFORE_SHUTDOWN, o.server());
-            0
-        }
-        OP_SIGNAL_RELOAD => {
-            _ = crate::manager_ops::reload(o.server(), arg != 0);
-            reopen_logger();
-            0
-        }
-        OP_SIGNAL_REOPEN => {
-            reopen_logger();
             0
         }
         OP_ON_SHUTDOWN => {
@@ -1644,28 +1481,6 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         op => return sends(o, op, arg),
     })
-}
-
-/// When `Server::stop_master_thread`'s forced exit gives up: its start plus the
-/// server's `max_wait_time`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-static FORCED_EXIT_DEADLINE: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
-
-/// The forced-termination exit condition: past `max_wait_time`, stop the loop.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-extern "C-unwind" fn forced_exit(_: &mut usize) -> bool {
-    if swoole_rs_corebase::time_now() > FORCED_EXIT_DEADLINE.load(Relaxed) {
-        error(
-            SW_LOG_WARNING,
-            E::SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT,
-            c"Server::stop_master_thread",
-            format_args!("graceful shutdown failed, forced termination"),
-        );
-        crate::reactor_handle::Reactor::thread()
-            .handle()
-            .set_running(false);
-    }
-    true
 }
 
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
@@ -1706,16 +1521,13 @@ struct SendfileTask {
 fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::ops::{
         OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FEEDBACK_SEND, OP_FEEDBACK_THREAD, OP_FORWARD,
-        OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SEND_SHUTDOWN, OP_SENDFILE_FINISH,
+        OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE, OP_SENDFILE_FINISH,
     };
     use swoole_rs_corebase::DataHead;
-    use swoole_rs_tls::upstream::{
-        socket_send_async as send_async, socket_sendfile_async as sendfile_async,
-    };
-    /// `SW_SERVER_EVENT_SEND_FILE`, `_BUFFER_FULL` and `_SHUTDOWN_SIGNAL`.
+    use swoole_rs_tls::upstream::socket_sendfile_async as sendfile_async;
+    /// `SW_SERVER_EVENT_SEND_FILE` and `_BUFFER_FULL`.
     const EVENT_SEND_FILE: u8 = 3;
     const EVENT_BUFFER_FULL: c_int = 13;
-    const EVENT_SHUTDOWN_SIGNAL: u8 = 19;
     // The connection's session and reactor in a head of `kind` (C++'s uint8_t).
     let head = |kind: u64| {
         let conn = o.conn();
@@ -1773,21 +1585,6 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<c_char>()) };
             let socket = o.conn_socket();
             sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
-        }
-        OP_SEND_SHUTDOWN => {
-            // A worker may run as a user that cannot signal the master.
-            let send = SendData {
-                info: DataHead {
-                    kind: EVENT_SHUTDOWN_SIGNAL,
-                    ..DataHead::default()
-                },
-                data: core::ptr::null(),
-            };
-            // `serv->get_reactor_pipe_socket(0, 0)`.
-            let pipe = o.server().worker_pipe(0, false)?;
-            let data = (&raw const send).cast();
-            // SAFETY: the worker's live pipe socket and the send's bytes.
-            u64::from(unsafe { send_async(pipe, data, size_of::<SendData>()) } > 0)
         }
         OP_SENDFILE_FINISH => {
             // `SendfileTask::offset`, the head of `Server::sendfile`'s buffer.
@@ -2253,13 +2050,6 @@ mod tests {
             assert!(!(*config).send_yield.get());
             answer(&raw mut ctx, None, &*state, OP_BASE_REACTORS, 0);
             assert_eq!((*config).reactor_num.get(), 6);
-            (*config).scheduler_warning.store(true, Relaxed);
-            answer(&raw mut ctx, None, &*state, OP_WARNING_RESET, 7 << 1);
-            assert!(!(*config).scheduler_warning.load(Relaxed));
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_WARNING_TIME, 0),
-                Some(7)
-            );
             crate::state::free_state(state);
         }
     }
@@ -2314,10 +2104,6 @@ mod tests {
             config.gs = Shm::calloc(1, size_of::<ServerCounters>());
             let gs = config.gs.as_ptr().cast::<ServerCounters>();
             gs.write(ServerCounters::default());
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_SIGNAL_ACTIVE, 0),
-                Some(0)
-            );
             for op in [
                 OP_ALLOC_WORKERS,
                 OP_ALLOC_TASK_RESULTS,

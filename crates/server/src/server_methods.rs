@@ -13,11 +13,11 @@ use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
 use crate::ops::{
     RUN_ADD_PORT, RUN_BASE_CREATE, RUN_FEEDBACK, RUN_IDLE_TASK_WORKERS, RUN_IDLE_WORKERS,
-    RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_SHUTDOWN, RUN_ST_CLEAR_TIMER,
-    RUN_ST_SEND, RUN_SYSTEMD_SOCKETS, RUN_TASKING,
+    RUN_SC_SEND, RUN_SCHEDULE_WORKER, RUN_SENDFILE, RUN_SENDWAIT, RUN_ST_SEND, RUN_SYSTEMD_SOCKETS,
+    RUN_TASKING,
 };
 use crate::ops::{
-    RUN_CREATE, RUN_DESTROY, RUN_SIGNAL, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
+    RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
     RUN_STORE_LISTEN_SOCKET,
 };
 use crate::view;
@@ -131,10 +131,8 @@ impl Narrow for u32 {
 }
 
 plain_methods! {
-    fn shutdown() -> bool = RUN_SHUTDOWN;
     fn get_idle_worker_num() -> u32 = RUN_IDLE_WORKERS;
     fn start() -> c_int = RUN_START;
-    fn clear_timer() -> () = RUN_ST_CLEAR_TIMER;
     fn add_systemd_socket() -> c_int = RUN_SYSTEMD_SOCKETS;
     fn get_idle_task_worker_num() -> c_int = RUN_IDLE_TASK_WORKERS;
     fn get_tasking_num() -> c_int = RUN_TASKING;
@@ -147,10 +145,13 @@ plain_methods! {
 /// # Safety
 /// Runs as a signal handler while `SwooleG.server` is live.
 pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
-    let mut ctx = NativeContext::new(swoole_rs_corebase::swr_v1_core_server());
     // SAFETY: as the caller guarantees.
-    unsafe { run(RUN_SIGNAL, i64::from(signo).cast_unsigned(), &mut ctx) };
+    if let Some(serv) = unsafe { view::Server::current() } {
+        crate::control::signal(serv, signo);
+    }
 }
+
+pub use crate::control::shutdown;
 
 /// `Server::create()`: `SW_ERR` once created, else the hook and then startup's create.
 #[must_use]
@@ -409,7 +410,7 @@ pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut c_void {
         // SAFETY: the server that armed its master timer, on its own thread; it
         // outlives its timers, which `clear_timer` deletes before it goes.
         let serv = unsafe { view::Server::from_raw(serv) };
-        run_on(serv, crate::ops::RUN_MASTER_TIMER, 0);
+        crate::control::master_timer(serv);
     })
 }
 
@@ -718,7 +719,7 @@ mod tests {
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.object = ptr::without_provenance_mut(0x70);
         match op {
-            RUN_SHUTDOWN | RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,
+            RUN_ADD_PORT | RUN_BASE_CREATE | RUN_ST_SEND => 1,
             RUN_SC_SEND => -1,
             RUN_IDLE_WORKERS => -1,
             _ => 0,
@@ -756,8 +757,6 @@ mod tests {
     fn methods_fill_the_context_their_forward_did() {
         let serv = fake_serv();
         let sv = serv.addr();
-        assert!(shutdown(server()), "shutdown's 1 is true");
-        assert_eq!(last().0, RUN_SHUTDOWN, "shutdown op");
         assert_eq!(get_idle_worker_num(server()), u32::MAX, "(uint32_t) -1");
         unsafe {
             assert_eq!(
