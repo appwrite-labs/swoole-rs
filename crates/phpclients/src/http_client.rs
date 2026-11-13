@@ -401,7 +401,7 @@ impl Client {
             completed: Cell::new(false),
             event_stream: Cell::new(false),
             in_callback: Cell::new(false),
-            parser: RefCell::new(Parser::new(llhttp::RESPONSE)),
+            parser: RefCell::new(Parser::new(llhttp::Kind::Response)),
             has_upload_files: Cell::new(false),
             download_name: RefCell::default(),
             download_offset: Cell::new(0),
