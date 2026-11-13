@@ -1,7 +1,7 @@
 //! Server startup's worker-array publication and ordered lookup. Native calls
 //! enter here between the daemon/fork and factory/user callbacks, so no Rust
 //! frame spans a fork hook, PHP bailout or whole-thread exit.
-use crate::process_pool::PoolRecord;
+use crate::process_pool::PoolRef;
 use crate::worker_record::Worker;
 use crate::worker_record::WorkerRecord;
 use core::ffi::c_void;
@@ -9,9 +9,9 @@ use core::ffi::c_void;
 /// Loans of the existing canonical arrays. Event/task records belong to their
 /// shared pools; user records belong to the Server's shared allocation.
 #[repr(C)]
-pub struct ServerWorkers {
-    pub event_pool: *mut PoolRecord,
-    pub task_pool: *mut PoolRecord,
+pub struct ServerWorkers<'a> {
+    pub event_pool: PoolRef<'a>,
+    pub task_pool: PoolRef<'a>,
     pub event_workers: *mut WorkerRecord,
     pub user_workers: *mut WorkerRecord,
     pub event_count: u32,
@@ -25,14 +25,15 @@ pub struct ServerWorkers {
 ///
 /// # Safety
 /// `view` loans initialized pool/array records exclusively during startup.
-/// `pending` loans `user_count` live worker pointers. `server` is an opaque loan.
+/// `pending` holds live worker pointers, of which the first `user_count` are
+/// numbered. `server` is an opaque loan.
 pub unsafe fn swr_v1_process_server_workers_start(
-    view: &ServerWorkers,
+    view: &ServerWorkers<'_>,
     server: *mut c_void,
-    pending: *const *mut WorkerRecord,
+    pending: &[*mut c_void],
 ) {
     // SAFETY: startup exclusively owns the event pool before factory start.
-    let pool = unsafe { &mut *view.event_pool };
+    let pool = unsafe { &mut *view.event_pool.raw() };
     pool.ptr = server;
     // The canonical event array, live for the pool's worker count.
     pool.workers = view.event_workers;
@@ -44,31 +45,27 @@ pub unsafe fn swr_v1_process_server_workers_start(
         let Some(worker) = pool.worker(index as usize) else {
             break;
         };
-        worker.set_pool(view.event_pool.cast());
+        worker.set_pool(view.event_pool.raw().cast());
         worker.set_id(index);
         worker.set_kind(crate::worker_record::WorkerType::Event.code());
     }
     let first_user = view.event_count.wrapping_add(view.task_count);
-    for index in 0..view.user_count {
-        // SAFETY: the pending configuration list loans this live worker pointer.
-        let worker = unsafe { pending.wrapping_add(index).read() };
+    for (index, &worker) in pending.iter().enumerate().take(view.user_count) {
         let index = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
-        // SAFETY: startup owns the pending user worker identity; preserve u32 wrap.
-        unsafe { Worker::new(worker) }.set_id(first_user.wrapping_add(index));
+        // SAFETY: the pending configuration list loans this live worker pointer, and
+        // startup owns the pending user worker identity; preserve u32 wrap.
+        unsafe { Worker::new(worker.cast()) }.set_id(first_user.wrapping_add(index));
     }
 }
 
-/// Select a worker from the event, task or user category in its original order.
-///
-/// # Safety
-/// `view` loans live pools and arrays with the stated counts. The returned
-/// pointer remains a loan of the selected array, without extending its lifetime.
+/// Select a worker from the event, task or user category in its original order:
+/// its slot's address in the selected array, which nothing here reads, or null past
+/// the last. The pointer is a loan of that array, without extending its lifetime.
 #[must_use]
-pub unsafe fn swr_v1_process_server_worker(view: &ServerWorkers, id: u16) -> *mut WorkerRecord {
+pub fn swr_v1_process_server_worker(view: &ServerWorkers<'_>, id: u16) -> *mut WorkerRecord {
     let id = u32::from(id);
     if id < view.event_count {
-        // SAFETY: the event pool is live.
-        let published = unsafe { (*view.event_pool).workers };
+        let published = view.event_pool.workers();
         // The pool holds the event array from `start`; before it, `workers[id]` is the
         // array's, which `get_idle_worker_id` reads after `create`.
         let workers = if published.is_null() {
@@ -80,8 +77,8 @@ pub unsafe fn swr_v1_process_server_worker(view: &ServerWorkers, id: u16) -> *mu
     }
     let user_start = view.event_count.wrapping_add(view.task_count);
     if id < user_start {
-        // SAFETY: the task pool is live and its canonical array has task_count slots.
-        let workers = unsafe { (*view.task_pool).workers };
+        // The task pool's canonical array has task_count slots.
+        let workers = view.task_pool.workers();
         return workers.wrapping_add(id.wrapping_sub(view.event_count) as usize);
     }
     let users = u32::try_from(view.user_count & u32::MAX as usize).unwrap_or_default();
@@ -101,7 +98,7 @@ pub unsafe fn swr_v1_process_server_worker(view: &ServerWorkers, id: u16) -> *mu
 /// Server's live registry. Lookup is serialized with registry mutation.
 #[must_use]
 pub unsafe fn swr_v1_process_server_worker_by_pid(
-    view: &ServerWorkers,
+    view: &ServerWorkers<'_>,
     registry: *const crate::worker_registry::WorkerRegistry,
     pid: core::ffi::c_int,
 ) -> *mut WorkerRecord {
@@ -120,9 +117,10 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
     if !worker.is_null() {
         return worker;
     }
-    // SAFETY: the caller loans the initialized task pool, which keeps its registry.
-    let task_pool = unsafe { &*view.task_pool };
-    let worker = task_pool
+    // The task pool keeps its registry.
+    let worker = view
+        .task_pool
+        .record()
         .with_registry(|tasks| tasks.lookup(pid))
         .unwrap_or(core::ptr::null_mut());
     if !worker.is_null() {
@@ -135,6 +133,7 @@ pub unsafe fn swr_v1_process_server_worker_by_pid(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process_pool::PoolRecord;
 
     fn worker() -> WorkerRecord {
         // Every WorkerRecord field is an integer, boolean or nullable raw pointer.
@@ -159,8 +158,8 @@ mod tests {
         let tasks = Box::into_raw(Box::<WorkerRegistry>::default());
         task_pool.registry = tasks;
         let view = ServerWorkers {
-            event_pool: &raw mut event_pool,
-            task_pool: &raw mut task_pool,
+            event_pool: unsafe { PoolRef::new(&raw mut event_pool) },
+            task_pool: unsafe { PoolRef::new(&raw mut task_pool) },
             event_workers: workers,
             user_workers: &raw mut user,
             event_count: 2,
@@ -213,17 +212,17 @@ mod tests {
             (events.as_mut_ptr(), tasks.as_mut_ptr(), users.as_mut_ptr());
         let mut pending = [worker(), worker()];
         let pending_ptrs = [
-            &raw mut pending[0],
-            &raw mut pending[1],
-            &raw mut pending[0],
+            (&raw mut pending[0]).cast(),
+            (&raw mut pending[1]).cast(),
+            (&raw mut pending[0]).cast(),
         ];
         let mut event_pool = pool();
         let mut task_pool = pool();
         task_pool.workers = tasks_ptr;
         event_pool.reload_count = 91;
         let view = ServerWorkers {
-            event_pool: &raw mut event_pool,
-            task_pool: &raw mut task_pool,
+            event_pool: unsafe { PoolRef::new(&raw mut event_pool) },
+            task_pool: unsafe { PoolRef::new(&raw mut task_pool) },
             event_workers: events_ptr,
             user_workers: users_ptr,
             event_count: 2,
@@ -232,11 +231,7 @@ mod tests {
         };
         let mut server = 0_u8;
         unsafe {
-            swr_v1_process_server_workers_start(
-                &view,
-                (&raw mut server).cast(),
-                pending_ptrs.as_ptr(),
-            );
+            swr_v1_process_server_workers_start(&view, (&raw mut server).cast(), &pending_ptrs);
         }
         assert_eq!(event_pool.workers, events_ptr);
         assert_eq!(event_pool.ptr, (&raw mut server).cast());
@@ -263,7 +258,7 @@ mod tests {
             users_ptr.wrapping_add(2),
         ];
         for (id, expected) in expected.into_iter().enumerate() {
-            let found = unsafe { swr_v1_process_server_worker(&view, u16::try_from(id).unwrap()) };
+            let found = swr_v1_process_server_worker(&view, u16::try_from(id).unwrap());
             assert_eq!(found, expected);
             unsafe {
                 Worker::new(found).set_pid(123);
@@ -274,7 +269,7 @@ mod tests {
                 "lookup lends canonical mutable records"
             );
         }
-        assert!(unsafe { swr_v1_process_server_worker(&view, 6) }.is_null());
+        assert!(swr_v1_process_server_worker(&view, 6).is_null());
         for (id, event) in events.iter().enumerate() {
             assert_eq!(
                 unsafe { Worker::new(event).id() },

@@ -20,7 +20,6 @@ use swoole_rs_zend::host::{callable, function_call};
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
-    sys::swr_zend_callable_warning,
 };
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
@@ -192,7 +191,6 @@ fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool
             ptr::null_mut(),
             coroutine,
             create_coroutine,
-            swr_zend_callable_warning,
             swoole_rs_zend::host::NO_THEN,
         )
     };

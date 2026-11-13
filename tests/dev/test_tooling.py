@@ -366,7 +366,7 @@ class Lanes(unittest.TestCase):
             # phphelpers' runtime fixtures call stdext helpers, so only stdext plans run them.
             stdext = dict(dev.plan(SimpleNamespace(**vars(args), stdext=True), ROOT / 'target/reports/all-registered-stdext'))
         self.assertNotIn('phphelpers-runtime', commands)
-        self.assertIn('corebase-native',commands)
+        self.assertNotIn('corebase-native', commands)  # Its cases run in corebase-unit.
         self.assertIn('ossupport-unit', commands)
         self.assertNotIn('http-rewrites', commands)  # Its cases run in http-unit.
         self.assertIn('swoole-rs-coroutine', commands['coroutine-rust-asan'])

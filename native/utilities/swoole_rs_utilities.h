@@ -35,6 +35,9 @@ int32_t swr_v1_utils_pretty_range(const uint8_t *, size_t, uint8_t strip, size_t
  * and stdout redirection call back into the host (swr_logger_host, crates/process), and
  * diagnostics into corebase's log host, after the logger's lock is released. */
 typedef struct SwrLogger SwrLogger;
+/* Rust's Text (crates/corebase/src/sys.rs): a NUL-terminated string, live and unchanged
+ * for the call, never null. */
+typedef const char *SwrText;
 struct SwrLoggerIdentity { int worker_id, worker_pid; char worker_symbol; };
 struct SwrLoggerHost {
     void (*redirect)(int fd);
@@ -47,8 +50,9 @@ enum SwrLoggerSetting {
     SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3
 };
 SwrLogger *swr_v1_logger_new(FILE *stdout_stream, struct SwrLoggerHost host);
+/* Null, or the logger swr_v1_logger_new made, which is not used again. */
 void swr_v1_logger_free(SwrLogger *);
-bool swr_v1_logger_open(const SwrLogger *, const char *file);
+bool swr_v1_logger_open(const SwrLogger *, SwrText file);
 void swr_v1_logger_reopen(const SwrLogger *);
 void swr_v1_logger_close(const SwrLogger *);
 void swr_v1_logger_set_stream(const SwrLogger *, FILE *stream);
@@ -56,7 +60,7 @@ void swr_v1_logger_put(const SwrLogger *, int level, const char *content, size_t
 int swr_v1_logger_level(const SwrLogger *);
 void swr_v1_logger_set_level(const SwrLogger *, int level);
 void swr_v1_logger_set(const SwrLogger *, enum SwrLoggerSetting, int value);
-bool swr_v1_logger_set_date_format(const SwrLogger *, const char *format);
+bool swr_v1_logger_set_date_format(const SwrLogger *, SwrText format);
 bool swr_v1_logger_is_opened(const SwrLogger *);
 /* get_file (false) or get_real_file (true), valid until the file next changes. */
 const char *swr_v1_logger_file(const SwrLogger *, bool real);

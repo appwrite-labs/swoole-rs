@@ -334,12 +334,13 @@ impl Socket {
     /// # Errors
     /// A warning's error handler bailed out.
     pub(crate) fn set_ssl(&self, settings: &Value) -> Result<bool, Bailout> {
-        let (socket, settings) = (self.raw(), settings.as_ptr());
+        let socket = self.co();
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // SAFETY: a live socket and settings value, which crates/phpclients
-                // ignores unless it is an array; its settings apply the SSL ones (2).
+                // crates/phpclients ignores settings that are no array; 2 applies
+                // the SSL ones.
+                // SAFETY: inside the trap below.
                 applied = unsafe { (families.socket_settings)(socket, settings, 2) };
             }
         };
@@ -357,23 +358,12 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
     let certificate = Owned::default();
     // The caller's bytes, copied into a new string, which drops outside the body.
     let string = Owned::string(ZString::new(pem));
-    let (argument, retval) = (string.as_ptr(), certificate.as_ptr());
     let read = || {
-        let name = c"openssl_x509_read";
-        // SAFETY: one live argument and the caller's writable result.
-        unsafe {
-            swoole_rs_zend::host::named_call_into(
-                name.as_ptr(),
-                name.count_bytes(),
-                1,
-                argument,
-                retval,
-            );
-        }
+        let arguments = std::slice::from_ref(&string);
+        swoole_rs_zend::host::named_call_into(b"openssl_x509_read", arguments, &certificate);
         bailout::finish();
     };
-    // SAFETY: the body holds the slots of `string` and `certificate`, which live
-    // outside it.
+    // SAFETY: the body borrows `string` and `certificate`, which live outside it.
     unsafe { bailout::trap_with(read) }?;
     Ok(certificate)
 }
@@ -446,7 +436,7 @@ pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>>
 /// What the client classes (crates/phpclients, crates/phphttp and crates/phphttp2)
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
-    use libc::{c_int, c_void, iovec};
+    use libc::{c_int, c_void};
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
@@ -526,15 +516,17 @@ pub mod co {
     /// `writev_all`, with the vector index and byte offset where it stopped.
     #[must_use]
     pub fn vector(socket: Co, vectors: Vectors<'_, '_>, all: bool) -> (isize, c_int, usize) {
-        let (vectors, count, write) = match vectors {
-            Vectors::Read(read) => (read.as_ptr().cast::<iovec>(), read.len(), false),
-            Vectors::Write(written) => (written.as_ptr().cast::<iovec>(), written.len(), true),
+        let (count, vectors) = match vectors {
+            Vectors::Read(read) => (read.len(), swoole_rs_hooks::vector::Vectors::Read(read)),
+            Vectors::Write(written) => (
+                written.len(),
+                swoole_rs_hooks::vector::Vectors::Write(written),
+            ),
         };
-        let count = c_int::try_from(count)
-            .unwrap_or_else(|_| swoole_rs_corebase::fatal("too many I/O vectors for an int"));
-        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so
-        // these are `count` vectors over live bytes, writable for a read.
-        let Some(mut vector) = (unsafe { IoVector::new(vectors, count, write) }) else {
+        if c_int::try_from(count).is_err() {
+            swoole_rs_corebase::fatal("too many I/O vectors for an int");
+        }
+        let Some(mut vector) = IoVector::new(vectors) else {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             swoole_rs_corebase::fatal("the I/O vectors can't be built");
         };

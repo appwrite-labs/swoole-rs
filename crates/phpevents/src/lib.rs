@@ -125,10 +125,10 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(minit => register);
-
 /// MINIT: `Swoole\Event` (not instantiable) and the `swoole_event_*` functions.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&EVENT, c"Swoole\\Event", &METHODS.0);
     minit.function_aliases(&EVENT, &METHODS.0, &ALIASES)
 }

@@ -37,7 +37,7 @@ pub use system::{
     thread_set_name,
 };
 mod msg_queue;
-pub use msg_queue::{QueueRecord, swr_v1_os_msg_queue_pop, swr_v1_os_msg_queue_push};
+pub use msg_queue::QueueRecord;
 mod pool;
 pub use pool::{Pool, PoolHooks, complete as pool_complete};
 

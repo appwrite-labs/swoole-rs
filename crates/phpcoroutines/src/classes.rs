@@ -100,10 +100,10 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_coroutine_minit => register);
-
 /// `php_swoole_coroutine_minit`, after `Swoole\Exception` and SPL's classes.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     let shortname = host::flag(host::SHORTNAME);
     let alias = |class: &Class, name: &CStr| -> Result<(), Bailout> {
         if shortname {

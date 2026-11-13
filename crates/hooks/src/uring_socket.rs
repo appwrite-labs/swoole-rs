@@ -182,7 +182,7 @@ impl UringSocketOps {
 
     /// `readv`/`writev`. The transfer borrows the vector, so it advances here, once
     /// per transfer, after that borrow ends.
-    fn vector(&self, vector: &mut IoVector) -> isize {
+    fn vector(&self, vector: &mut IoVector<'_>) -> isize {
         let write = vector.write();
         let event = if write { EVENT_WRITE } else { EVENT_READ };
         let (host, tls) = (self.host(), self.tls);
@@ -328,7 +328,7 @@ fn transfer_result(result: isize, total: usize) -> isize {
 /// and some remains.
 pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps,
-    vector: &mut IoVector,
+    vector: &mut IoVector<'_>,
     all: bool,
 ) -> isize {
     if !all {
@@ -549,6 +549,7 @@ mod tests {
     use super::*;
     use crate::co_socket::TestSocket;
     use crate::uring::testing::{HOST, with_engine};
+    use crate::vector::Vectors;
     use std::cell::RefCell;
 
     thread_local! {
@@ -598,7 +599,7 @@ mod tests {
     fn tls_vector_moves_the_vector_once() {
         let mut buffer = [0u8; 8];
         let base = buffer.as_mut_ptr();
-        let source = [
+        let mut source = [
             libc::iovec {
                 iov_base: base.cast(),
                 iov_len: 4,
@@ -609,7 +610,8 @@ mod tests {
             },
         ];
         // SAFETY: two iovecs over `buffer`, which outlives the vector.
-        let mut vector = unsafe { IoVector::new(source.as_ptr(), 2, false) }.unwrap();
+        let lent = unsafe { core::slice::from_raw_parts_mut(source.as_mut_ptr().cast(), 2) };
+        let mut vector = IoVector::new(Vectors::Read(lent)).unwrap();
         let mut calls = Vec::new();
         let mut transfer = |vector: &mut IoVector, results: &[isize]| {
             let mut results = results.iter().copied();
@@ -631,8 +633,10 @@ mod tests {
         assert_eq!((moved, made), (2, vec![(6, 2)]));
         assert!(vector.iovecs().is_empty());
         // Nothing moved: the failure itself.
+        drop(vector);
         // SAFETY: as above.
-        let mut fresh = unsafe { IoVector::new(source.as_ptr(), 2, false) }.unwrap();
+        let lent = unsafe { core::slice::from_raw_parts_mut(source.as_mut_ptr().cast(), 2) };
+        let mut fresh = IoVector::new(Vectors::Read(lent)).unwrap();
         assert_eq!(fresh.transfer_each(|_| -1), -1);
     }
 

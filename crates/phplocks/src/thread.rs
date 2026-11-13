@@ -181,16 +181,12 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(thread_locks_minit => register);
-
 /// MINIT (`php_swoole_thread_atomic_minit`, then `php_swoole_thread_lock_minit`,
 /// sharing `Swoole\Lock`'s lock types): register the final classes, the lock's
 /// constants and `errCode`.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "minit! raises the bailout a MINIT body returns"
-)]
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn thread_locks_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<ThreadAtomic>(
         c"Swoole\\Thread\\Atomic",
         &ATOMIC_METHODS.0,

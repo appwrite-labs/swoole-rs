@@ -12,7 +12,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, errno};
+use swoole_rs_corebase::sys::{self, Text, errno};
 
 const SW_LOG_INFO: c_int = 2;
 const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
@@ -371,21 +371,16 @@ pub extern "C" fn swr_v1_logger_new(stdout_stream: *mut FILE, host: LoggerHost) 
     Box::into_raw(Box::new(Logger::new(stdout_stream, host)))
 }
 
-/// # Safety
-/// `logger` came from `swr_v1_logger_new` and is not used again.
+/// `delete logger`: native code hands back, once, the box `swr_v1_logger_new` made.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_free(logger: *mut Logger) {
-    // SAFETY: the caller's unique logger.
-    drop(unsafe { Box::from_raw(logger) });
+pub extern "C" fn swr_v1_logger_free(logger: Option<Box<Logger>>) {
+    drop(logger);
 }
 
 /// `Logger::open`.
-/// # Safety
-/// `file` is NUL-terminated.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_open(logger: &Logger, file: *const c_char) -> bool {
-    // SAFETY: a NUL-terminated path.
-    logger.open(unsafe { CStr::from_ptr(file) })
+pub extern "C" fn swr_v1_logger_open(logger: &Logger, file: Text<'_>) -> bool {
+    logger.open(file.get())
 }
 
 /// `Logger::reopen`.
@@ -422,20 +417,18 @@ pub unsafe extern "C" fn swr_v1_logger_put(
 ) {
     let precision = length.c_cast::<i32>();
     // printf precision is a signed int: negative means read through the terminator.
+    let limit = usize::try_from(precision).unwrap_or(usize::MAX);
     let data = content.cast::<u8>();
-    let content = match usize::try_from(precision) {
-        Ok(0) => &[],
-        // SAFETY: negative precision requires a NUL-terminated input.
-        Err(_) => unsafe { CStr::from_ptr(content) }.to_bytes(),
-        Ok(limit) => {
-            let mut length = 0;
-            // SAFETY: the input is readable through its first NUL or `precision` bytes.
-            while length < limit && unsafe { data.wrapping_add(length).read() } != 0 {
-                length += 1;
-            }
-            // SAFETY: the loop read exactly these `length` bytes.
-            unsafe { std::slice::from_raw_parts(data, length) }
+    let content = if limit == 0 {
+        &[]
+    } else {
+        let mut length = 0;
+        // SAFETY: the input is readable through its first NUL or `precision` bytes.
+        while length < limit && unsafe { data.wrapping_add(length).read() } != 0 {
+            length += 1;
         }
+        // SAFETY: the loop read exactly these `length` bytes.
+        unsafe { std::slice::from_raw_parts(data, length) }
     };
     logger.put(level, content);
 }
@@ -480,28 +473,17 @@ pub extern "C" fn swr_v1_logger_set(logger: &Logger, setting: LoggerSetting, val
 }
 
 /// `Logger::set_date_format`: false, with a warning, if the format renders nothing.
-/// # Safety
-/// `format` is NUL-terminated.
+/// The format is measured before `strftime` reads it; upstream measured it only to
+/// keep it or to log its length.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_set_date_format(
-    logger: &Logger,
-    format: *const c_char,
-) -> bool {
-    // Upstream hands `format` to strftime unmeasured, which stops reading once the date
-    // overflows, and measures it only to keep it or for a warning that logs: its own
-    // test passes an unterminated one.
+pub extern "C" fn swr_v1_logger_set_date_format(logger: &Logger, format: Text<'_>) -> bool {
+    let format = format.get();
     let mut date = [0u8; SW_LOG_DATE_STRLEN];
-    let fits = sys::localtime_r(now().0).is_some_and(|tm| {
-        // SAFETY: `date` is writable for its length, `tm` is live and strftime reads
-        // `format` only as far as upstream's did.
-        unsafe { libc::strftime(date.as_mut_ptr().cast(), date.len(), format, &raw const tm) != 0 }
-    });
+    let fits = strftime(&mut date, format, now().0) != 0;
     if !fits && LOG_WARNING < logger.level.load(Relaxed) {
         log::set_last_error(INVALID_PARAMS);
         return false;
     }
-    // SAFETY: NUL-terminated wherever upstream measured it: kept, or in a warning that logs.
-    let format = unsafe { CStr::from_ptr(format) };
     logger.with(|state, effects| {
         if !fits {
             let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
@@ -698,10 +680,10 @@ pub(crate) mod tests {
         let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
         let (name, file_path) = path("put");
         unsafe {
-            assert!(swr_v1_logger_open(&*logger, name.as_ptr()), "opened");
+            assert!(swr_v1_logger_open(&*logger, (&*name).into()), "opened");
             assert!(swr_v1_logger_is_opened(&*logger), "is_opened");
             assert!(
-                swr_v1_logger_set_date_format(&*logger, c"%Y".as_ptr()),
+                swr_v1_logger_set_date_format(&*logger, c"%Y".into()),
                 "date format"
             );
             swr_v1_logger_put(&*logger, 1, c"hidden".as_ptr(), 6);
@@ -714,7 +696,7 @@ pub(crate) mod tests {
                 name.to_str().unwrap(),
                 "but not the real file"
             );
-            swr_v1_logger_free(logger);
+            swr_v1_logger_free(Some(Box::from_raw(logger)));
         }
         let written = std::fs::read_to_string(&file_path).unwrap();
         let (year, rest) = written.strip_prefix('[').unwrap().split_at(4);
@@ -738,7 +720,7 @@ pub(crate) mod tests {
         host();
         unsafe {
             assert!(
-                !swr_v1_logger_open(&*logger, c"/nonexistent/dir/log".as_ptr()),
+                !swr_v1_logger_open(&*logger, c"/nonexistent/dir/log".into()),
                 "open fails"
             );
             assert_eq!(
@@ -765,7 +747,7 @@ pub(crate) mod tests {
 
             let long = CString::new("%Y".repeat(100)).unwrap();
             assert!(
-                !swr_v1_logger_set_date_format(&*logger, long.as_ptr()),
+                !swr_v1_logger_set_date_format(&*logger, (&*long).into()),
                 "too long"
             );
             assert_eq!(
@@ -803,7 +785,7 @@ pub(crate) mod tests {
                 [warning("no log file opened"), warning("no redirected")],
                 "redirect diagnostics"
             );
-            swr_v1_logger_free(logger);
+            swr_v1_logger_free(Some(Box::from_raw(logger)));
         }
     }
 
@@ -816,7 +798,7 @@ pub(crate) mod tests {
             swr_v1_logger_set(&*logger, LoggerSetting::Rotation, 2);
             swr_v1_logger_set_level(&*logger, 99);
             assert_eq!(swr_v1_logger_level(&*logger), 6, "clamped");
-            assert!(swr_v1_logger_open(&*logger, name.as_ptr()), "opened");
+            assert!(swr_v1_logger_open(&*logger, (&*name).into()), "opened");
             let mut date = [0u8; 16];
             let length = swr_v1_logger_rotation_date(&*logger, &mut date);
             assert_eq!(length, 8, "daily: %Y%m%d");
@@ -836,7 +818,7 @@ pub(crate) mod tests {
                 "reset rotation is daily too"
             );
             swr_v1_logger_close(&*logger);
-            swr_v1_logger_free(logger);
+            swr_v1_logger_free(Some(Box::from_raw(logger)));
             std::fs::remove_file(expected).unwrap_or_default();
         }
         assert!(host().is_empty(), "no diagnostics");
@@ -850,7 +832,7 @@ pub(crate) mod tests {
         unsafe impl Sync for Shared {}
         let logger = Shared(swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE));
         let (name, file_path) = path("threads");
-        unsafe { assert!(swr_v1_logger_open(&*logger.0, name.as_ptr()), "opened") };
+        unsafe { assert!(swr_v1_logger_open(&*logger.0, (&*name).into()), "opened") };
         std::thread::scope(|scope| {
             for thread in 0..4 {
                 let logger = &logger;
@@ -869,7 +851,7 @@ pub(crate) mod tests {
                 }
             });
         });
-        unsafe { swr_v1_logger_free(logger.0) };
+        swr_v1_logger_free(Some(unsafe { Box::from_raw(logger.0) }));
         let written = std::fs::read_to_string(&file_path).unwrap();
         let mut seen: Vec<&str> = written
             .lines()

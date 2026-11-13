@@ -224,10 +224,9 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: u32) {
     };
     let data = (&raw const head).cast();
     if let Some(sock) = sock {
-        // SAFETY: a live pipe socket, and the head's bytes.
-        let _ = unsafe {
-            swoole_rs_tls::upstream::socket_send_sync(sock, data, size_of::<DataHead>(), 0)
-        };
+        // SAFETY: the head's bytes.
+        let data = unsafe { swoole_rs_reactor::Drain::from_raw(data, size_of::<DataHead>()) };
+        _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
     }
 }
 

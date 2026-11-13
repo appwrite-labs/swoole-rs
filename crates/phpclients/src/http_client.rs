@@ -1570,12 +1570,12 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(http_client_minit => register);
-
 /// MINIT, as `php_swoole_http_client_coro_minit` did: the class (and short
 /// name), the `SensitiveParameter` on `setBasicAuth`'s password, the
 /// properties, the exception class and the error-status constants.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
     FEATURES.store(swoole_rs_phpswoole::codecs(), Ordering::Relaxed);
     minit.register_object::<Data>(c"Swoole\\Coroutine\\Http\\Client", &METHODS.0, 0);

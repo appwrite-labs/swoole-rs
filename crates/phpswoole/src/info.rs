@@ -117,7 +117,7 @@ impl Info {
         } else {
             Self::enabled(C::Execinfo, C::Execinfo)?;
         }
-        // SAFETY: ssh2's and ftp's MINFO, a native body whose bailout the trap's
+        // SAFETY: ssh2's MINFO, a native body whose bailout the trap's
         // setjmp catches below every Rust frame; PHP lends its live module entry.
         unsafe { bailout::trap(crate::optional::client_minfo, module) }?;
         // SAFETY: closes the PHP information table; output bailouts are contained.

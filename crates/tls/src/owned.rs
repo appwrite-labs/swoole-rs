@@ -421,25 +421,21 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
     0
 }
 
-#[repr(C)]
-pub struct OwnedTlsSessionResult {
-    pub status: c_int,
-    pub error: std::os::raw::c_ulong,
-}
 /// Create and configure one coroutine TLS session, including moving write buffers
-/// and the context/automatic hostname precedence. Native only formats diagnostics.
+/// and the context/automatic hostname precedence.
+///
+/// # Errors
+/// As [`crate::socket_ssl_new`].
+///
 /// # Safety
 /// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
 pub unsafe fn swr_v1_tls_owner_socket_session(
     owner: *const OwnedTlsContext,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: *const StringSlot,
-) -> OwnedTlsSessionResult {
+) -> Result<(), crate::SslNewError> {
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
-        return OwnedTlsSessionResult {
-            status: 0,
-            error: 0,
-        };
+        return Ok(());
     }
     // SAFETY: as the caller promises.
     let owner = unsafe { Lent::new(owner) };
@@ -450,12 +446,8 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
         let fields = owner.fields();
         (fields.context.as_deref(), fields.disable_tls_host_name)
     };
-    let mut error = 0;
-    let status = crate::socket_ssl_new(record, context, 0, &mut error);
+    crate::socket_ssl_new(record, context, 0)?;
     let ssl = crate::Ssl::of(record);
-    if status != 0 {
-        return OwnedTlsSessionResult { status, error };
-    }
     let explicit = &owner_ref.strings[TLS_HOST_NAME];
     let selected = if !explicit.bytes().is_empty() {
         Some(explicit.c_str())
@@ -469,10 +461,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     if let (Some(name), Some(ssl)) = (selected, ssl) {
         _ = ssl.set_host_name(name);
     }
-    OwnedTlsSessionResult {
-        status: 0,
-        error: 0,
-    }
+    Ok(())
 }
 
 /// A text setting the `SSLContext` setters (`set_ssl_*`) write, for
@@ -719,7 +708,7 @@ mod tests {
                 assert!((*prepared.fields).http_v2);
                 let result =
                     swr_v1_tls_owner_socket_session(prepared.owner, handle, Arc::as_ptr(&hostname));
-                assert_eq!(result.status, 0);
+                assert_eq!(result, Ok(()));
                 let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
                 assert_eq!(
                     openssl_sys::SSL_get_ex_data(ssl, crate::swr_v1_tls_connection_index()),
@@ -738,8 +727,8 @@ mod tests {
                     0
                 );
                 assert_eq!(
-                    swr_v1_tls_owner_socket_session(ptr::null(), handle, ptr::null()).status,
-                    0
+                    swr_v1_tls_owner_socket_session(ptr::null(), handle, ptr::null()),
+                    Ok(())
                 );
                 openssl_sys::SSL_free(ssl);
                 swoole_rs_reactor::SocketRecord::free(socket);

@@ -4,7 +4,7 @@
 //! `_writable_callback` and `drain_write_buffer`), defined under their upstream
 //! symbols over the Rust socket methods. `swoole_rs_reactor`'s
 //! `swr_v1_reactor_write`, `_flush` and `_drain` decide; these are their effects.
-use crate::upstream::{socket_free, socket_handle_send, socket_handle_sendfile, socket_send};
+use crate::upstream::{send_drain, socket_free, socket_handle_send, socket_handle_sendfile};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::CCast;
@@ -12,7 +12,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Event, FlushEffects, Running, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects, WritePayload,
+    Drain, Event, FlushEffects, Running, SOCKET_DEFAULTS, Socket, SocketRecord, WriteEffects,
+    WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
@@ -49,8 +50,10 @@ impl WriteEffects for Write<'_> {
         let payload = self.payload;
         let socket = self.socket;
         if !payload.data.is_null() {
-            // SAFETY: `socket->send(buf, n, 0)` over the payload's bytes.
-            return unsafe { socket_send(socket, payload.data.cast(), payload.length, 0) };
+            // SAFETY: the payload's bytes, which its maker keeps readable for the write.
+            let data = unsafe { Drain::from_raw(payload.data.cast(), payload.length) };
+            // `socket->send(buf, n, 0)`.
+            return send_drain(socket, data, 0);
         }
         let fd = socket.fd();
         let count = c_int::try_from(payload.count).unwrap_or(c_int::MAX);

@@ -165,18 +165,15 @@ impl Drop for Bus {
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use swoole_rs_tls::upstream::socket_free as free_socket;
 #[cfg(feature = "upstream-symbols")]
-use swoole_rs_tls::upstream::socket_writev_sync as writev_sync;
+use swoole_rs_tls::upstream::writev_sync;
 
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
-///
-/// # Safety
-/// `iov` denotes `count` readable iovecs.
 #[cfg(not(feature = "upstream-symbols"))]
-unsafe fn writev_sync(socket: Socket<'_>, iov: *const libc::iovec, count: usize) -> isize {
-    let count = c_int::try_from(count).unwrap_or(c_int::MAX);
+fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
+    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
     let fd = socket.fd();
-    // SAFETY: as the caller promises.
-    unsafe { libc::writev(fd, iov, count) }
+    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
+    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
 }
 
 fn aligned(size: usize) -> usize {
@@ -737,10 +734,10 @@ impl Bus {
                 // `write`'s iovecs, over `head` and inside the caller's `data`.
                 unsafe { event_api::swoole_event_writev(socket.cast(), iov.as_ptr(), iov.len()) }
             } else {
-                record.map_or(-1, |record| {
-                    // SAFETY: as above.
-                    unsafe { writev_sync(record, iov.as_ptr(), iov.len()) }
-                })
+                // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
+                // chunk inside the caller's `data`, each readable for the call.
+                let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+                record.map_or(-1, |record| writev_sync(record, vectors))
             }
         };
         let reduce = || {

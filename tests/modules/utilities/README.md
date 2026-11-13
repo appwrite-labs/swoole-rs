@@ -39,6 +39,14 @@ a real shared fork wake, and the futex wait channel and fallback.
 The Logger is Rust (`crates/utilities/src/logger.rs`); its crate tests cover
 files, rotation, diagnostics and concurrent `put` with `reopen`.
 
+Its C exports state their callers' contract in the parameter types where one exists:
+`swr_v1_logger_free` takes back the box `swr_v1_logger_new` made, and `swr_v1_logger_open`
+and `swr_v1_logger_set_date_format` take a NUL-terminated string as corebase's `Text`
+(`SwrText` in `swoole_rs_utilities.h`). `set_date_format` therefore measures its format
+before `strftime` reads it. Upstream's `log.date_format_long_string` passed a
+`swoole::String`'s unterminated buffer with warnings filtered, where upstream never
+measured it; its port (below) passes a terminated one.
+
 `core-tests/src/core/log.cpp`'s TESTs that read the log back are ported to
 `crates/utilities/src/logger/ported.rs`, one Rust test per TEST with the same
 inputs and expected values, over a logger of their own:

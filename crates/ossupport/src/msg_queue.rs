@@ -3,7 +3,7 @@
 //! queue, with upstream's warnings. Rust allocates and frees the queue; native code
 //! holds only its pointer.
 use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
-use swoole_rs_corebase::log;
+use swoole_rs_corebase::{log, sys::Pod};
 
 // the XSI message queue calls, declared here because libc omits them on
 // Darwin, with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
@@ -126,8 +126,27 @@ impl QueueRecord {
             invalid();
             return false;
         };
+        self.send(node, kind, length)
+    }
+
+    /// [`Self::push`] of a `QueueNode` held in words: its type, then `length`
+    /// payload bytes.
+    #[must_use]
+    pub fn push_words(&self, node: &[u64], length: usize) -> bool {
+        let kind = node.first().map_or(0, |kind| kind.cast_signed());
+        self.send(node, kind, length)
+    }
+
+    /// `msgsnd` of `node`, whose type is `kind`, with `length` payload bytes; a
+    /// node too short for them is `EINVAL`.
+    fn send(&self, node: &[impl Pod], kind: c_long, length: usize) -> bool {
+        if size_of_val(node) < size_of::<c_long>().saturating_add(length) {
+            invalid();
+            return false;
+        }
         loop {
-            // SAFETY: `node` is a `long` type and `length` payload bytes, read for the call.
+            // SAFETY: `node` holds a `long` type and at least `length` payload bytes,
+            // checked above, read for the call.
             if unsafe { msgsnd(self.id, node.as_ptr().cast(), length, self.flags) } == 0 {
                 return true;
             }
@@ -155,7 +174,25 @@ impl QueueRecord {
             invalid();
             return -1;
         };
-        // SAFETY: `node` is a writable `long` type and `size` payload bytes.
+        self.receive(node, kind, size)
+    }
+
+    /// [`Self::pop`] into a `QueueNode` held in words: the type it holds, then room
+    /// for `size` payload bytes.
+    pub fn pop_words(&self, node: &mut [u64], size: usize) -> isize {
+        let kind = node.first().map_or(0, |kind| kind.cast_signed());
+        self.receive(node, kind, size)
+    }
+
+    /// `msgrcv` into `node` of a message of type `kind` with at most `size` payload
+    /// bytes; a node too short for them is `EINVAL`.
+    fn receive(&self, node: &mut [impl Pod], kind: c_long, size: usize) -> isize {
+        if size_of_val(node) < size_of::<c_long>().saturating_add(size) {
+            invalid();
+            return -1;
+        }
+        // SAFETY: `node` is writable for a `long` type and at least `size` payload
+        // bytes, checked above, and any bytes are a value of its plain elements.
         let result = unsafe { msgrcv(self.id, node.as_mut_ptr().cast(), size, kind, self.flags) };
         if result < 0 {
             let error = errno();
@@ -226,38 +263,10 @@ fn node_parts(node: &[u8]) -> Option<(c_long, usize)> {
     Some((c_long::from_ne_bytes(*kind), payload.len()))
 }
 
-/// `queue->push(node, length)`, which the hooks system tests link by name.
-/// # Safety
-/// `queue` is live; `node` is a `long` type followed by `length` payload bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_os_msg_queue_push(
-    queue: *const QueueRecord,
-    node: *const c_void,
-    length: usize,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let queue = unsafe { &*queue };
-    // SAFETY: as the caller promises.
-    let node =
-        unsafe { std::slice::from_raw_parts(node.cast::<u8>(), size_of::<c_long>() + length) };
-    queue.push(node)
-}
-
-/// `queue->pop(node, size)`.
-/// # Safety
-/// `queue` is live; `node` is a writable `long` type followed by `size` payload bytes.
-pub unsafe fn swr_v1_os_msg_queue_pop(
-    queue: *const QueueRecord,
-    node: *mut c_void,
-    size: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let queue = unsafe { &*queue };
-    // SAFETY: as the caller promises.
-    let node =
-        unsafe { std::slice::from_raw_parts_mut(node.cast::<u8>(), size_of::<c_long>() + size) };
-    queue.pop(node)
-}
+const _: () = assert!(
+    size_of::<c_long>() == size_of::<u64>(),
+    "a QueueNode held in words starts with its long type"
+);
 
 /// `struct msqid_ds`, which libc omits on Darwin.
 #[cfg(target_os = "linux")]

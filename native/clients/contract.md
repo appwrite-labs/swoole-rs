@@ -82,7 +82,7 @@ into a `Vec<u8>`, added and removed with `swr_v1_core_name_resolver_add`/`_remov
   (query packet, one send and one receive, then the answer's A/AAAA addresses as
   text), the invalid-domain warning and the last error. crates/hooks opens and
   deletes the coroutine UDP socket, sets its timeout, and maps `ECANCELED`.
-- Both `network::gethostbyname` variants are `clients_gethostbyname`
+- Both `network::gethostbyname` variants are corebase's `gethostbyname`
   (`gethostbyname2_r` with a growing buffer on Linux, `gethostbyname2` under a
   lock elsewhere); `network::getaddrinfo` is `clients_getaddrinfo` into a native
   array of `SW_DNS_HOST_BUFFER_SIZE`.

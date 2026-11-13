@@ -13,6 +13,7 @@ use openssl_sys::{
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong, c_void};
 use swoole_rs_corebase::constants::{ResultCode, ReturnCode};
+use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::SocketFields;
@@ -113,18 +114,24 @@ pub fn swr_v1_socket_ssl_send(tls: &mut SocketTls, ssl: Ssl, data: &[u8]) -> Ssl
     classify(tls, ssl, n, true)
 }
 
+/// What a failed handshake step logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeLog {
+    Nothing,
+    /// A bad client (accept).
+    BadClient,
+    /// A failed handshake, with its `SSL_get_error` code.
+    Failed(c_int),
+}
+
 /// A handshake step for `Socket::ssl_accept`/`ssl_connect`, which also sets the
-/// socket's want flags and, once it changes, `ssl_state`. Native code sets the last
-/// error when `last_error` is nonzero, then logs: 1 a bad client (accept), 2 a failed
-/// handshake with `ssl_error`, 3 a peer that closed (connect, debug). `code` is what
-/// the method returns.
-#[repr(C)]
+/// socket's want flags and, once it changes, `ssl_state`. The caller sets the last
+/// error when `last_error` is nonzero, then logs. `code` is what the method returns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SslHandshakeResult {
     pub code: c_int,
     pub last_error: c_int,
-    pub log: c_int,
-    pub ssl_error: c_int,
+    pub log: HandshakeLog,
 }
 
 impl SslHandshakeResult {
@@ -132,8 +139,7 @@ impl SslHandshakeResult {
         Self {
             code,
             last_error: 0,
-            log: 0,
-            ssl_error: 0,
+            log: HandshakeLog::Nothing,
         }
     }
 }
@@ -162,17 +168,14 @@ pub fn swr_v1_socket_ssl_accept(tls: &mut SocketTls, ssl: Ssl, dtls: bool) -> Ss
             want(tls, false, true);
             result.code = WAIT;
         }
-        SSL_ERROR_SSL => result.log = 1,
+        SSL_ERROR_SSL => result.log = HandshakeLog::BadClient,
         SSL_ERROR_SYSCALL => {
             if dtls && errno() == 0 {
                 want(tls, true, false);
                 result.code = WAIT;
             }
         }
-        _ => {
-            result.log = 2;
-            result.ssl_error = error;
-        }
+        _ => result.log = HandshakeLog::Failed(error),
     }
     result
 }
@@ -201,7 +204,6 @@ pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeR
         }
         SSL_ERROR_ZERO_RETURN => {
             result.last_error = RESET;
-            result.log = 3;
             return result;
         }
         SSL_ERROR_SYSCALL if n != 0 => {
@@ -211,8 +213,7 @@ pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeR
         SSL_ERROR_SYSCALL => {}
         _ => result.last_error = HANDSHAKE_FAILED,
     }
-    result.log = 2;
-    result.ssl_error = error;
+    result.log = HandshakeLog::Failed(error);
     result
 }
 
@@ -340,15 +341,43 @@ pub fn swr_v1_socket_ssl_shutdown(
     shutdown(tls, ssl, closed, quiet, repaired, &mut OpenSsl)
 }
 
+/// The `Socket::ssl_create` step that made no SSL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SslNewError {
+    New,
+    /// `SSL_set_fd`, with the peeked error.
+    SetFd(c_ulong),
+    ExData,
+}
+
+impl SslNewError {
+    /// `Socket::ssl_create`'s warning.
+    pub fn warn(self) {
+        let origin = c"Socket::ssl_create";
+        match self {
+            Self::New => log::warning(origin, format_args!("SSL_new() failed")),
+            Self::SetFd(error) => log::warning(
+                origin,
+                format_args!(
+                    "SSL_set_fd() failed. Error: {}[{error}]",
+                    crate::reason_text(error)
+                ),
+            ),
+            Self::ExData => log::warning(origin, format_args!("SSL_set_ex_data() failed")),
+        }
+    }
+}
+
 /// `Socket::ssl_create`: a new SSL from `context` on `record`'s descriptor, in
 /// connect state for `SW_SSL_CLIENT` or accept state for `SW_SSL_SERVER`, carrying
 /// `socket` as its ex data at `index`, after clearing the want flags. It accepts a
 /// write retried from another buffer: `Socket::ssl_sendfile` reads each try into a
 /// new one, where upstream's stack buffer happens to keep its address. The record
-/// owns the SSL once made, and its state is cleared on success. Returns 0, or 1 when
-/// `SSL_new` failed, 2 when `SSL_set_fd` failed (`error` holds the peeked error) and
-/// 3 when `SSL_set_ex_data` failed; native code warns. Without a context `SSL_new`
-/// fails.
+/// owns the SSL once made, and its state is cleared on success. Without a context
+/// `SSL_new` fails.
+///
+/// # Errors
+/// The step that failed; the caller warns.
 ///
 /// # Safety
 /// `socket` is null or the socket record that owns `record`, live while the SSL is:
@@ -359,8 +388,7 @@ pub unsafe fn swr_v1_socket_ssl_new(
     flags: c_int,
     index: c_int,
     socket: *mut c_void,
-    error: &mut c_ulong,
-) -> c_int {
+) -> Result<(), SslNewError> {
     want(&mut record.tls, false, false);
     clear_errors();
     let made = crate::context::new_ssl(context);
@@ -368,13 +396,12 @@ pub unsafe fn swr_v1_socket_ssl_new(
     unsafe { record.set_ssl(made.cast()) };
     // SAFETY: null or the new SSL, which the record frees only in `ssl_close`.
     let Some(ssl) = (unsafe { Ssl::new(made) }) else {
-        return 1;
+        return Err(SslNewError::New);
     };
     ssl.set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
     // SAFETY: the new SSL has no BIOs yet, so none is freed.
     if !unsafe { ssl.set_fd(record.fd) } {
-        *error = peek_error();
-        return 2;
+        return Err(SslNewError::SetFd(peek_error()));
     }
     if flags & CLIENT != 0 {
         ssl.set_connect_state();
@@ -382,25 +409,27 @@ pub unsafe fn swr_v1_socket_ssl_new(
         ssl.set_accept_state();
     }
     if crate::handle::SSL_set_ex_data(ssl, index, socket) == 0 {
-        return 3;
+        return Err(SslNewError::ExData);
     }
     record.tls.state = 0;
-    0
+    Ok(())
 }
 
 /// [`swr_v1_socket_ssl_new`] for `socket`'s record, which the new SSL carries at the
-/// connection's index: `error` holds the peeked error when `SSL_set_fd` failed.
+/// connection's index.
+///
+/// # Errors
+/// As [`swr_v1_socket_ssl_new`].
 pub fn socket_ssl_new(
     socket: swoole_rs_reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
-    error: &mut c_ulong,
-) -> c_int {
+) -> Result<(), SslNewError> {
     let (this, index) = (socket.as_ptr().cast(), crate::swr_v1_tls_connection_index());
     socket.edit(|record| {
         // SAFETY: the SSL's ex data is the record that owns it, which a record
         // outlives; OpenSSL calls nothing back while making the SSL.
-        unsafe { swr_v1_socket_ssl_new(record, context, flags, index, this, error) }
+        unsafe { swr_v1_socket_ssl_new(record, context, flags, index, this) }
     })
 }
 
@@ -494,9 +523,8 @@ mod tests {
             let failed = swr_v1_socket_ssl_connect(&mut tls, handle(ssl));
             assert_eq!(
                 (failed.code, failed.last_error, failed.log),
-                (ERR, HANDSHAKE_FAILED, 2)
+                (ERR, HANDSHAKE_FAILED, HandshakeLog::Failed(SSL_ERROR_SSL))
             );
-            assert_eq!(failed.ssl_error, SSL_ERROR_SSL);
             assert_eq!(
                 (tls.state, tls.want_read),
                 (STATE_WAIT_STREAM, false),
@@ -613,7 +641,6 @@ mod tests {
             assert_eq!(pem_of(cert, &mut short, true), 10, "bounded by the buffer");
 
             let context = SSL_CTX_new(TLS_method());
-            let mut error = 0;
             let mut socket = 7_u8;
             let index = SSL_get_ex_new_index(0, std::ptr::null_mut(), None, None, None);
             let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
@@ -628,9 +655,8 @@ mod tests {
                 CLIENT,
                 index,
                 (&raw mut socket).cast(),
-                &mut error,
             );
-            assert_eq!(made, 0);
+            assert_eq!(made, Ok(()));
             assert_eq!(
                 record.tls,
                 SocketTls::default(),
@@ -647,9 +673,8 @@ mod tests {
                     SERVER,
                     index,
                     std::ptr::null_mut(),
-                    &mut error
                 ),
-                0
+                Ok(())
             );
             let ssl = record.take_ssl();
             assert_eq!(SSL_is_server(ssl.cast()), 1, "accept state");
@@ -862,16 +887,14 @@ mod shutdown_tests {
                     SSL_set_fd(client, fds[1]);
                     // The server end as `Socket::ssl_create` makes it.
                     let mut record = swoole_rs_reactor::SocketRecord::with_fd(fds[0], 0);
-                    let mut error = 0;
                     let made = swr_v1_socket_ssl_new(
                         &mut record,
                         server_ctx.cast::<crate::SslCtx>().as_ref(),
                         SERVER,
                         0,
                         ptr::null_mut(),
-                        &mut error,
                     );
-                    assert_eq!(made, 0);
+                    assert_eq!(made, Ok(()));
                     record.take_ssl().cast()
                 } else {
                     let server = SSL_new(server_ctx);

@@ -3,8 +3,7 @@
 The corebase overlay deletes `src/core/base.cc` and `src/core/misc.cc` so that helper policy (type
 size, gcd/lcm, stoi env parsing, itoa/radix/hex, version compare, dirname,
 recursive mkdir), the lifecycles (clean, thread init/clean, fork, task
-tmpdir), the hooks and `swoole_init` (crates/ffi) come from Rust; swoole.h keeps
-base.cc's throwing APIs inline. Rust owns `SwooleG` and `SwooleTG` (`crates/corebase/src/
+tmpdir), the hooks and `swoole_init` (crates/ffi) come from Rust. Rust owns `SwooleG` and `SwooleTG` (`crates/corebase/src/
 config_state.rs`, `global.rs`, `lifecycle.rs`); `swoole::Global` and
 `swoole::ThreadGlobal` are their C++ views. Native code keeps the C++ objects,
 allocation, logging and callback execution. See `native/corebase/contract.md`.
@@ -18,23 +17,47 @@ native-TU gates.
   core/error identifiers and defaults against the clean pin, including C++ types,
   sizes, signedness and string bytes in Apple and non-Apple configuration branches.
 
-- `differential.py --source CONFIGURED_PINNED --archive A --output R [--sanitize] [--signed-char | --unsigned-char] [--include DIR]`
-  (`corebase-native`): compiles the complete original `base.cc` (pinned) and, for
-  the hybrid, a unit that only includes `swoole.h`, whose inline `swoole_get_env` is
-  what is left of base.cc (with the headers and `config.h` of the build `A` comes
-  from), into separate binaries with `driver.cc`, feeds
-  both the corpus from `cases.py` and requires identical output/errno, plus the
-  independently expected values. It also runs seven extracted upstream `TEST(base, ...)`
-  bodies (dec2hex, hex2dec, version_compare, common_divisor, common_multiple,
-  itoa, type_size) and the `allocator.cc` strndup interposer. The hybrid
-  binary must contain real calls to each Rust helper; the original none. For the
-  helpers Rust defines under upstream's own symbols (gcd, lcm, version compare,
-  dec2hex) the hybrid unit must not define them and the archive must.
-  `--unsigned-char` also covers bytes 128..255.
 - `mkdir_startup.py --engine native=... --engine cargo=... --build-manifest M --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
   slashes, file parent), comparing warnings and `swoole_last_error`. The Cargo
   engine must be the one `tools/build_ext.py` recorded in `M` (`tools/ext_identity.py`).
+## The number helpers record
+
+`numbers.rs` (`cargo test -p swoole-rs-corebase --test numbers`, in `corebase-unit`) holds
+what the `corebase-native` gate (`differential.py`, `driver.cc`, `cases.py`, `patching.py`,
+`allocator.cc`) asked of the number helpers in `crates/corebase/src/lib.rs`. The gate built
+the complete pinned `base.cc` and a hybrid unit into two binaries with `driver.cc`, fed
+both `cases.py`'s corpus and required the same value and errno per case, plus the
+independently computed value. The test calls the Rust functions with typed arguments and
+the same pinned bodies, which `crates/oracle` copies unchanged from the vendored `base.cc`
+(`shim/corebase.cc`), in one process: each case presets errno, calls, and reads errno back,
+on each side. Same inputs, same order within an operation, same independent values; each
+operation's test asserts its share of the corpus (5,455 cases and 915 independent values
+in all where `char` is signed, 6,095 and 1,171 where it is unsigned), counting a locale
+the host lacks as unavailable, never as passed.
+
+`--signed-char` and `--unsigned-char` compiled the gate's C++ with `-fsigned-char` or
+`-funsigned-char`; the second added the single bytes 128 to 255 to the hex inputs. The
+Rust `swoole_hex2dec` promotes in the target's plain-`char` mode and the oracle compiles
+the pin in that same mode, so each target proves its own: 1 to 127 where `char` is signed
+(x86-64, macOS), 1 to 255 where it is unsigned (arm64 Linux).
+
+| Gate part | Rust test or reason |
+| --- | --- |
+| `type` (128), `gcd` (9), `lcm` (15), `radix` (348), `decimal` (115) cases with their expected values | `corpus_type`, `corpus_gcd`, `corpus_lcm`, `corpus_radix` and `corpus_decimal`, over `swoole_type_size`, `swoole_common_divisor`, `swoole_common_multiple`, `swoole_dec2hex` and `swoole_itoa`. `swoole_itoa` took `char *`; it writes into a 128-byte slice, as the driver's buffer was, and the count, digits and NUL are compared |
+| `hex` cases in five locales from errno 7, the C and POSIX ones with expected values (750, or 1,390 with high bytes) | `corpus_hex`, over `swoole_hex2dec` |
+| `version` cases in five locales from errno 0 and 7 (4,000) | `corpus_version`, over `swoole_version_compare` |
+| `envstoi` cases in five locales from errno 34 (90): the pinned `swoole_get_env` against `swoole.h`'s inline one, which asked `swr_v1_corebase_parse_stoi` first and ran `std::stoi` itself where that refused | `corpus_envstoi`: `parse_stoi` gives the pin's value from the same errno wherever the pin returns one, as does `get_env`, which reads the variable itself, and none exactly where `std::stoi` threw `invalid_argument` or `out_of_range`, with the pin's output left alone. The exception's `what()` and the errno after a throw came from `std::stoi` on both sides, the header's own on the hybrid's; that header function is gone |
+| `envstoi_allocfail`: a failed `std::string` allocation inside the header's `swoole_get_env` throws `bad_alloc` before Rust runs | none: it tested only the deleted C++ wrapper; `parse_stoi` takes a slice and allocates nothing |
+| The seven extracted `TEST(base, ...)` bodies, run on each binary | `base_dec2hex`, `base_hex2dec`, `base_version_compare`, `base_common_divisor`, `base_common_multiple`, `base_itoa`, `base_type_size`: one test per TEST, same inputs and expected values, on the Rust function and on the pinned body |
+| `allocator.cc`: a `strndup` interposer under `swoole_dec2hex` on each binary (one allocation of the exact length, a reentrant `swoole_hex2dec`, `ENOMEM` and null, a retry) | `dec2hex_allocates_once_through_strndup`: the test binary defines `strndup`, so both sides allocate through it; same three calls, counts, lengths and errno |
+| `prove_calls`: the hybrid binary must call `swr_v1_corebase_parse_stoi` and the original must not | none: the export and its one caller, `swoole.h`'s inline `swoole_get_env`, are gone, since no C++ but the driver called either |
+| `prove_definitions`: the archive, not the hybrid unit, defines the seven upstream symbols | none for the test, which calls the functions by path. `swoole_itoa`'s symbol is gone with its `char *` form; the other six are still defined under `upstream-symbols` |
+
+The gate compiled its C++ under ASan and UBSan (`--sanitize`), which covered the pinned
+bodies, `driver.cc` and the `swoole.h` inline wrapper, not the Rust archive. The test has
+no sanitizer of its own; `cargo fuzz`'s ASan build instruments the oracle's C++.
+
 ## The resolver record
 
 `resolver.rs` (`cargo test -p swoole-rs-corebase --test resolver`) holds what two native
@@ -74,8 +97,6 @@ their assertions run now:
 
 `sw_wait_for` has no upstream case; `crates/locks` `poll` keeps its backoff.
 
-`patching.py` and `cases.py` are shared helpers.
-
 `dns-timeout-originals.json` holds the original
 `swoole_coroutine_system/gethostbyname_timeout.phpt`. On an ordinary resolver the
 unknown name fails before its 1 ms deadline on both engines (last error 711, not
@@ -106,7 +127,7 @@ that took their callers, same inputs and expected values (`cargo test`):
 
 ## Known failures and gaps
 
-- Locales missing on the host are reported as unavailable, not passed.
-- The corpus targets LP64 macOS/Linux only.
+- `numbers.rs` reports locales missing on the host as unavailable, not passed.
+- Its corpus targets LP64 macOS/Linux only.
 - Not covered: Rust-side sanitizers, malloc/system OOM, PHP init with the Rust
   init path, `SW_THREAD` runtime, and performance.

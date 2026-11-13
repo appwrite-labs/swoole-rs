@@ -144,8 +144,6 @@ size_t swoole_random_bytes(char *buf, size_t size);
 uint32_t swoole_common_multiple(uint32_t u, uint32_t v);
 uint32_t swoole_common_divisor(uint32_t u, uint32_t v);
 
-int swoole_itoa(char *buf, long value);
-
 int swoole_rand();
 int swoole_rand(int min, int max);
 
@@ -199,20 +197,6 @@ struct EventData {
 #include "swoole_rs_corebase.h"
 #include "swoole_rs_corebase_state.h"
 #include "swoole_rs_corebase_string_view.h"
-
-// base.cc's throwing APIs, which only C++ callers see: Rust reads the environment
-// itself (swoole_rs_corebase::get_env).
-static inline bool swoole_get_env(const char *name, int *value) {
-    const char *e = getenv(name);
-    if (!e) {
-        return false;
-    }
-    const std::string input(e);
-    if (!swr_v1_corebase_parse_stoi(input.c_str(), value)) {
-        *value = std::stoi(input);  // throws, as upstream
-    }
-    return true;
-}
 
 namespace swoole {
 // A SwooleG member whose value Rust holds (crates/corebase/src/global.rs): reads

@@ -3,8 +3,8 @@
 //! Native `Socket` calls these inline (`swoole_socket.h`); a TLS socket passes its
 //! OpenSSL call, which runs only when the record holds an `SSL`.
 use crate::socket_rw::interrupted;
-use crate::{Drain, Fill, Socket, SocketAddress, SocketFields, TlsIo};
-use std::ffi::{c_int, c_void};
+use crate::{Drain, Fill, Socket, SocketAddress, SocketFields};
+use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::ReadSlot;
 
@@ -217,28 +217,6 @@ pub fn record_send(
     sent
 }
 
-/// [`record_send`] of the `length` bytes at `buffer`, with a TLS write C defines.
-///
-/// # Safety
-/// `buffer` denotes `length` readable bytes; `tls` is valid for the socket.
-pub unsafe fn socket_record_send(
-    socket: Socket<'_>,
-    buffer: *const c_void,
-    length: usize,
-    flags: c_int,
-    tls: TlsIo,
-    now: SteadyMs,
-) -> isize {
-    // SAFETY: the caller lends `length` readable bytes.
-    let data = unsafe { Drain::from_raw(buffer, length) };
-    let tls = |socket: Socket<'_>, data: Drain<'_>| {
-        let (record, at) = (socket.as_ptr().cast(), data.as_ptr().cast_mut());
-        // SAFETY: the caller's TLS write for this socket; it only reads the bytes.
-        unsafe { tls(record, at, data.len()) }
-    };
-    record_send(socket, data, flags, tls, now)
-}
-
 /// `Socket::peek`: recv(2) with `MSG_PEEK`, or `tls` (`SSL_peek`), retried on EINTR.
 /// `tls` runs only for a record that holds an `SSL`.
 pub fn record_peek<S: ReadSlot>(
@@ -281,7 +259,8 @@ pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
 mod tests {
     use super::*;
     use crate::SocketRecord;
-    use crate::lent::raw::{socket_record_peek, socket_record_recv};
+    use crate::lent::raw::{socket_record_peek, socket_record_recv, socket_record_send};
+    use std::ffi::c_void;
 
     #[test]
     fn native_event_want_preserves_write_priority_and_default() {

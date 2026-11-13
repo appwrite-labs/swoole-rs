@@ -55,11 +55,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_coroutine_system_minit => register);
-
 /// MINIT: `Swoole\Coroutine\System` (`Co\System`), not
 /// instantiable, and the `FILE_LOCK` constant.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_coroutine_system_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_static(&SYSTEM, c"Swoole\\Coroutine\\System", &METHODS.0);
     if host::flag(host::SHORTNAME) {
         minit.alias(&SYSTEM, c"Co\\System")?;

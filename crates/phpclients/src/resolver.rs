@@ -146,11 +146,10 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(php_swoole_name_resolver_minit => register);
-
 /// MINIT: register `Swoole\NameResolver\Context`.
-#[expect(clippy::unnecessary_wraps, reason = "the shape `minit!` takes")]
-fn register(minit: &Minit) -> Result<(), bailout::Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn php_swoole_name_resolver_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
     minit.register_object::<Held>(c"Swoole\\NameResolver\\Context", &METHODS.0, 0);
     Ok(())
 }

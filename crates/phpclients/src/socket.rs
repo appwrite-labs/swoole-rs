@@ -204,13 +204,13 @@ pub fn socket() -> &'static Class {
     &SOCKET
 }
 
-swoole_rs_zend::minit!(socket_minit => register);
-
 /// MINIT, as `php_swoole_socket_coro_minit` did, after `Swoole\Exception`: both
 /// classes, their short names when `shortname`, the properties (with the
 /// `ext/sockets` bridge ones when the build has it), and the socket constants
 /// unless `ext/sockets` is loaded (the `AI_*` ones that configure found).
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn socket_minit(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
     minit.register_object::<Data>(c"Swoole\\Coroutine\\Socket", &METHODS.0, 0);
     if shortname {

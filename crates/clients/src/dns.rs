@@ -8,7 +8,7 @@
 //! hosts file.
 use crate::ip::swr_v1_clients_ip_text;
 use crate::{
-    dns_endpoint, domain_decode, domain_encode, hosts_match, resolv_line, swr_v1_clients_port,
+    ResolvLine, dns_endpoint, domain_decode, domain_encode, hosts_match, resolv_line, valid_port,
 };
 use std::ffi::{CStr, c_char, c_int};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -94,17 +94,16 @@ fn config() -> MutexGuard<'static, Config> {
 /// The text ends at its first NUL, and the port converts as `sw_atoi` (`strtol`
 /// narrowed to `int`).
 pub fn set_dns_server(server: &[u8]) {
-    let plan = dns_endpoint(server);
+    let (host, digits) = dns_endpoint(server);
     let mut port = DNS_PORT;
-    if plan.has_port != 0 {
-        let digits = server.get(plan.port_offset..).unwrap_or_default();
+    if let Some(digits) = digits {
         let parsed = swoole_rs_corebase::atoi(digits);
-        if swr_v1_clients_port(parsed, 1) != 0 {
+        if valid_port(parsed, true) {
             port = parsed;
         }
     }
     let mut config = config();
-    config.host = server.get(..plan.host_length).unwrap_or_default().to_vec();
+    config.host = host.to_vec();
     config.port = port;
 }
 
@@ -309,8 +308,6 @@ pub fn lookup<S: DnsSocket>(
     exchange.found
 }
 
-pub use swoole_rs_corebase::swr_v1_clients_gethostbyname;
-
 /// The first `nameserver` of the file at `path`, read in `fgets` lines of up to 99
 /// bytes: the server, if one (at most 15 bytes, nonempty) is named.
 fn resolv_conf(path: &CStr) -> std::io::Result<Option<Vec<u8>>> {
@@ -331,15 +328,11 @@ fn resolv_conf(path: &CStr) -> std::io::Result<Option<Vec<u8>>> {
         let (text, next) = rest.split_at(end);
         rest = next;
         let text = crate::c_str(text);
-        let plan = resolv_line(text);
-        if plan.kind == 0 {
-            continue;
-        }
-        if plan.kind == 1 && plan.length < 16 && plan.length != 0 {
-            let token = text.get(plan.offset..plan.offset + plan.length);
-            return Ok(token.map(<[u8]>::to_vec));
-        }
-        return Ok(None);
+        return Ok(match resolv_line(text) {
+            ResolvLine::Other => continue,
+            ResolvLine::Nameserver(token) if !token.is_empty() => Some(token.to_vec()),
+            ResolvLine::Nameserver(_) | ResolvLine::Invalid => None,
+        });
     }
     Ok(None)
 }
@@ -369,10 +362,8 @@ pub fn hosts_lookup(domain: &[u8], spaces: &[u8; 256]) -> Option<Vec<u8>> {
         if let Some(comment) = line.iter_mut().find(|byte| **byte == b'#') {
             *comment = 0;
         }
-        let found = hosts_match(&line, domain, spaces);
-        if found.found != 0 {
-            let address = line.get(found.offset..found.offset + found.length);
-            return Some(address.unwrap_or_default().to_vec());
+        if let Some(address) = hosts_match(&line, domain, spaces) {
+            return Some(address.to_vec());
         }
     }
     None
@@ -492,34 +483,15 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn resolves_through_libc() {
-        let mut addr: [c_char; 16] = [0; 16];
+        let addr = swoole_rs_corebase::gethostbyname(libc::AF_INET, c"localhost");
         assert_eq!(
-            unsafe {
-                swr_v1_clients_gethostbyname(
-                    libc::AF_INET,
-                    c"localhost".as_ptr(),
-                    addr.as_mut_ptr(),
-                )
-            },
-            0
-        );
-        assert_eq!(
-            addr[..4]
+            addr.unwrap()[..4]
                 .iter()
                 .map(|&b| b.to_ne_bytes()[0])
                 .collect::<Vec<_>>(),
             [127, 0, 0, 1]
         );
-        assert_eq!(
-            unsafe {
-                swr_v1_clients_gethostbyname(
-                    libc::AF_UNIX,
-                    c"localhost".as_ptr(),
-                    addr.as_mut_ptr(),
-                )
-            },
-            -1
-        );
+        assert!(swoole_rs_corebase::gethostbyname(libc::AF_UNIX, c"localhost").is_none());
     }
 
     #[test]

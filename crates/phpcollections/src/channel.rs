@@ -94,11 +94,11 @@ method_table! {
     ];
 }
 
-swoole_rs_zend::minit!(channel_minit => register);
-
 /// `php_swoole_channel_coro_minit`: register the class, its properties and
 /// constants, with `Co\Channel` and `Chan` when short names are on.
-fn register(minit: &Minit) -> Result<(), Bailout> {
+/// # Errors
+/// A registration bailed out.
+pub fn channel_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Chan>(c"Swoole\\Coroutine\\Channel", &METHODS.0, 0);
     if swoole_rs_phpswoole::globals().use_shortname.get() {
         minit.alias(&CHANNEL, c"Co\\Channel")?;

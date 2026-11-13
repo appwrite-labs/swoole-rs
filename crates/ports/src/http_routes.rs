@@ -74,7 +74,7 @@ pub mod exports {
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::log;
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
-    use swoole_rs_reactor::{Socket, SocketRecord};
+    use swoole_rs_reactor::{Drain, Socket, SocketRecord};
     use swoole_rs_server::{ConnectionRecord, view};
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
@@ -253,9 +253,9 @@ pub mod exports {
                 // SAFETY: as the caller guarantees, a live connection socket.
                 let socket = unsafe { Socket::from_ptr(socket) };
                 if let Some(socket) = socket.filter(|_| size != 0) {
-                    let reply = reply.as_ptr().cast();
                     // SAFETY: the encoded reply's `size` bytes.
-                    _ = unsafe { swoole_rs_tls::upstream::socket_send(socket, reply, size, 0) };
+                    let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
+                    _ = swoole_rs_tls::upstream::send_drain(socket, reply, 0);
                 }
                 return -1;
             }

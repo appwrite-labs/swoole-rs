@@ -104,10 +104,14 @@ struct Socks5Proxy : private ProxyOwner {
             return nullptr;
         }
         std::unique_ptr<Socks5Proxy> proxy(new Socks5Proxy());
-        swr_v1_core_string_view_t texts[]{{host.data(), host.size()}, {user.data(), user.size()}, {pwd.data(), pwd.size()}};
-        auto result = swr_v1_core_proxy_configure(proxy->handle(), texts, port, config == 2, socket_type);
-        RustStringView *views[] = {&proxy->host, &proxy->username, &proxy->password};
-        if (result.status) views[result.index]->check(result.status);
+        proxy->host = host;
+        proxy->port = port;
+        proxy->dns_tunnel = 1;
+        proxy->socket_type = socket_type;
+        if (config == 2) {
+            proxy->username = user;
+            proxy->password = pwd;
+        }
         return proxy.release();
     }
 };

@@ -747,18 +747,13 @@ fn blank() -> HttpRequest {
 }
 
 #[must_use]
-pub fn request_new() -> *mut HttpRequest {
-    Box::into_raw(Box::new(blank()))
+pub fn request_new() -> Box<HttpRequest> {
+    Box::new(blank())
 }
 
-/// `delete request` of one [`request_new`] made: the destructor, then the memory.
-///
-/// # Safety
-/// `request` is null or from [`request_new`], not used afterwards.
-pub unsafe fn request_free(request: *mut HttpRequest) {
-    if !request.is_null() {
-        // SAFETY: per the contract: the request is boxed and nothing uses it after.
-        let mut request = unsafe { Box::from_raw(request) };
+/// `delete request` of one [`request_new`] made, if any: the destructor, then the memory.
+pub fn request_free(request: Option<Box<HttpRequest>>) {
+    if let Some(mut request) = request {
         request.destroy_multipart_parser();
     }
 }

@@ -27,7 +27,7 @@ use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
     bailout::{self, Bailout},
     long_zval, message, report,
-    sys::{swr_zend_callable_warning, zend_fcall_info_cache, zval, zval_ptr_dtor},
+    sys::{zend_fcall_info_cache, zval, zval_ptr_dtor},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -126,7 +126,6 @@ pub(crate) fn invoke(
             retval,
             coroutine,
             create_coroutine,
-            swr_zend_callable_warning,
             swoole_rs_zend::host::NO_THEN,
         )
     };
@@ -1036,7 +1035,6 @@ fn call_unlimited(
                 retval,
                 false,
                 create_coroutine,
-                swr_zend_callable_warning,
                 swoole_rs_zend::host::NO_THEN,
             )
         }

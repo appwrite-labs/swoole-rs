@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo, sockaddr_in6, sockaddr_storage};
 use swoole_rs_corebase::{
-    PreparedResolver, ResolverRequest, swr_v1_core_resolver_finish, swr_v1_core_resolver_free,
+    PreparedResolver, ResolverCompletion, ResolverRequest, swr_v1_core_resolver_free,
 };
 
 /// What the faked `getaddrinfo` answers on this thread.
@@ -145,9 +145,8 @@ fn bytes(addresses: &[sockaddr_in6]) -> &[u8] {
 /// unknown family's zero slot.
 #[test]
 fn diagnostic_refusal_cleans_up_and_publishes_nothing() {
-    let inaccessible = std::ptr::without_provenance::<c_int>(1);
-    // SAFETY: a failed await reads no request error.
-    let failed_await = unsafe { swr_v1_core_resolver_finish(-1, 4003, inaccessible, 4003, 712) };
+    let inaccessible = || unreachable!("a failed await reads no request error");
+    let failed_await = ResolverCompletion::after_await(-1, 4003, inaccessible, 4003, 712);
     assert!(failed_await.failed && failed_await.error == 712);
     let request = Request::new(AF_INET, SOCK_STREAM, b"127.0.0.1");
     let record = request.record();

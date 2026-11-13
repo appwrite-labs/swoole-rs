@@ -174,12 +174,8 @@ unsafe extern "C" {
 /// `php_swoole_runtime_minit`: `Swoole\Runtime` (not instantiable), the
 /// `SWOOLE_HOOK_*` constants, native curl, `proc_open`'s resource and the
 /// `async.file` wrapper.
-/// # Safety
-/// Called once, at MINIT.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_runtime_minit(module_number: i32) {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { Minit::new(module_number) };
+pub fn php_swoole_runtime_minit(minit: &Minit) {
+    let module_number = minit.module();
     minit.register_static(&RUNTIME, c"Swoole\\Runtime", &METHODS.0);
     let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
@@ -209,7 +205,6 @@ pub unsafe extern "C" fn php_swoole_runtime_minit(module_number: i32) {
 }
 
 /// `php_swoole_runtime_mshutdown`: native curl's.
-#[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_runtime_mshutdown() {
     #[cfg(feature = "curl")]
     // SAFETY: MSHUTDOWN, after its MINIT.
@@ -523,10 +518,6 @@ pub extern "C" fn swr_v1_phpruntime_rinit() -> u8 {
 
 /// `php_swoole_runtime_rshutdown`, on the main thread: unhook everything,
 /// restore every function and class; a trapped bailout is raised last.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "php_swoole_runtime_rshutdown")
-)]
 pub extern "C" fn rshutdown() {
     if !main_thread() {
         return;

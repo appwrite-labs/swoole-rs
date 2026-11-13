@@ -68,8 +68,7 @@ fn put(logger: &Logger, level: c_int, text: &str) {
 fn open(logger: &Logger, file: &CStr) -> bool {
     // unlink removes the directory with the last file; a test that opens again recreates it.
     std::fs::create_dir_all(path(file).parent().unwrap()).unwrap();
-    // SAFETY: a NUL-terminated path.
-    unsafe { swr_v1_logger_open(logger, file.as_ptr()) }
+    swr_v1_logger_open(logger, file.into())
 }
 
 fn real_file(logger: &Logger) -> String {
@@ -159,8 +158,7 @@ fn date_format_long_string() {
     let format = "x".repeat(120) + "day %d of %B in the year %Y. Time: %I:%S %p";
     let format = CString::new(format).unwrap();
 
-    // SAFETY: a NUL-terminated format.
-    let retval = unsafe { swr_v1_logger_set_date_format(logger, format.as_ptr()) };
+    let retval = swr_v1_logger_set_date_format(logger, (&*format).into());
 
     assert!(!retval);
     assert_eq!(log::last_error(), INVALID_PARAMS);

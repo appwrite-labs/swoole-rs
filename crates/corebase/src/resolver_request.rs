@@ -300,46 +300,19 @@ impl ResolverCompletion {
         }
     }
 }
-/// `ResolverCompletion::after_await` with the request's error slot.
-/// # Safety
-/// `request_error` may be null. Otherwise it is readable only when `retval != -1`;
-/// a failed await deliberately permits a still-inaccessible worker field.
-#[must_use]
-pub unsafe extern "C" fn swr_v1_core_resolver_finish(
-    retval: isize,
-    event_error: c_int,
-    request_error: *const c_int,
-    timeout_error: c_int,
-    resolution_timeout: c_int,
-) -> ResolverCompletion {
-    let request_error = || {
-        // SAFETY: null, or the await succeeded and the caller lends its error slot.
-        unsafe { request_error.as_ref() }.copied().unwrap_or(0)
-    };
-    ResolverCompletion::after_await(
-        retval,
-        event_error,
-        request_error,
-        timeout_error,
-        resolution_timeout,
-    )
-}
 
 #[cfg(test)]
 mod completion_tests {
     use super::*;
     #[test]
     fn failed_await_never_reads_worker_error() {
-        let inaccessible = core::ptr::without_provenance::<c_int>(1);
-        let completion = unsafe { swr_v1_core_resolver_finish(-1, 4003, inaccessible, 4003, 712) };
+        let inaccessible = || unreachable!("a failed await reads no request error");
+        let completion = ResolverCompletion::after_await(-1, 4003, inaccessible, 4003, 712);
         assert!(completion.failed);
         assert_eq!(completion.error, 712);
         let completed_error = 7;
-        assert!(
-            unsafe { swr_v1_core_resolver_finish(0, 0, &raw const completed_error, 4003, 712) }
-                .failed
-        );
-        assert!(!unsafe { swr_v1_core_resolver_finish(1, 0, core::ptr::null(), 4003, 712) }.failed);
+        assert!(ResolverCompletion::after_await(0, 0, || completed_error, 4003, 712).failed);
+        assert!(!ResolverCompletion::after_await(1, 0, || 0, 4003, 712).failed);
     }
 
     #[test]
