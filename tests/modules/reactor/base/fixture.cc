@@ -8,7 +8,6 @@
 #include "swoole_pipe.h"
 #include "swoole_reactor.h"
 #include "swoole_signal.h"
-#include "swoole_timer.h"
 
 using namespace swoole;
 using network::Socket;

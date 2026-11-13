@@ -311,8 +311,7 @@ fn birth() {
     q.golden(&["call:A", "drop:A", "call:C", "drop:C", "call:B", "drop:B"]);
 }
 
-/// `snapshot`: the `snapshot_mutation` topic, over `swr_v1_timer_ids`, which
-/// `swoole_timer.h` still reads.
+/// `snapshot`: the `snapshot_mutation` topic, over `swr_v1_timer_ids`.
 #[test]
 fn snapshot() {
     let c = Node::new("C");

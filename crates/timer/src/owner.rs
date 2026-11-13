@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/timer.cc (Swoole contributors).
 //! `swoole::Timer` (upstream `src/core/timer.cc`, which the timer patch deletes): a
-//! Rust-owned record over this crate's queue, and its nodes.
-//! `native/timer/swoole_timer.h` is its C++ view.
+//! Rust-owned record over this crate's queue, and its nodes. C++ sees both only
+//! through pointers.
 use crate::{
     BUSY, CLOSING, DEFERRED, EMPTY, OK, RELEASE, RELEASE_OVERFLOW, Timer as Queue, TimerView,
     absolute_msec, swr_v1_timer_add_delay, swr_v1_timer_backend, swr_v1_timer_delay_deadline,
@@ -47,8 +47,9 @@ pub struct Info {
     pub removed: bool,
 }
 
-/// `swoole::TimerNode`; `native/timer/swoole_timer.h` asserts the offsets. Only
-/// `TimerNode::new` makes one, so `plain` can trail what C++ sees.
+/// `swoole::TimerNode`. Only `TimerNode::new` makes one, so `plain` can trail the head
+/// the test fixtures read (tests/modules/hooks/system and http/server), which the
+/// assertion below pins.
 #[repr(C)]
 pub struct TimerNode {
     pub(crate) id: c_long,
@@ -67,6 +68,12 @@ pub struct TimerNode {
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
 }
+const _: () = assert!(
+    std::mem::offset_of!(TimerNode, exec_msec) == 16
+        && std::mem::offset_of!(TimerNode, removed) == 48
+        && std::mem::offset_of!(TimerNode, destructor) == 72,
+    "the TimerNode head the fixtures read"
+);
 
 pub(crate) use closure::Closure;
 

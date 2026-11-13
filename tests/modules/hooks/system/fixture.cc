@@ -7,7 +7,6 @@
 #include "swoole_coroutine_system.h"
 #include "swoole_rs_coroutine_socket.h"
 #include "swoole_async.h"
-#include "swoole_timer.h"
 #include "swoole_rs_process_pool.h"
 
 #include <arpa/inet.h>

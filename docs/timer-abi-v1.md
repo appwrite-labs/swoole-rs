@@ -2,9 +2,8 @@
 
 The queue is `crates/timer`'s `Timer`, whose methods `swoole::Timer`
 (`crates/timer/src/owner.rs`, see [ownership.md](../native/timer/ownership.md))
-calls. Feature value 4. Three reads stay C exports for `native/timer/swoole_timer.h`
-(`native/include/swoole_rs_timer.h`): `swr_v1_timer_token`, `swr_v1_timer_stats_get`
-and `swr_v1_timer_ids`. The operations below are the methods, named as before:
+calls. Feature value 4. Three reads are C exports that no C calls: `swr_v1_timer_token`,
+`swr_v1_timer_stats_get` and `swr_v1_timer_ids`. The operations below are the methods, named as before:
 `next` is `select_next` and `stats` is `stats`. `crates/timer/src/kernel.rs` holds
 what the retired C++ harness (`kernel.cc`) checked, one test per topic.
 

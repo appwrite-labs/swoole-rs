@@ -110,7 +110,7 @@ struct TlsCopy {
     index: u32,
 }
 
-/// `swr_v1_reactor_iov_prepared` (native/reactor/swoole_rs_reactor.h).
+/// `ReactorIovPrepared` (crates/reactor/src/iov_owned.rs).
 #[repr(C)]
 struct IovPrepared {
     owner: *mut c_void,
