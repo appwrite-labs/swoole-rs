@@ -9,7 +9,7 @@ use std::{
 };
 use swoole_rs_corebase::Thread;
 use swoole_rs_phpthread::Arguments;
-use swoole_rs_process::workers::thread::{WorkerMain, set_worker_thread_start};
+use swoole_rs_server::thread_mode::{WorkerMain, set_worker_thread_start};
 use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,

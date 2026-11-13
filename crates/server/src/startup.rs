@@ -7,6 +7,7 @@ use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::{PortCounters, ServerCounters};
+use crate::thread_mode::ThreadOp;
 use crate::{MODE_BASE, MODE_PROCESS, MODE_THREAD, view};
 use core::ffi::c_int;
 use core::mem::offset_of;
@@ -18,9 +19,6 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::worker_record::{WorkerRecord, WorkerType};
-use swoole_rs_process::workers::ops::{
-    RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
-};
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -83,7 +81,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> c_int {
             // Before the worker threads start, which read it in onWorkerStart.
             set_master_pid(gs);
             hybrid()
-                .thread_mode(serv, RUN_START_WORKER_THREADS)
+                .thread_mode(serv, ThreadOp::StartWorkers)
                 .c_cast::<c_int>()
         }
         _ => swoole_rs_corebase::fatal("an unknown server start mode"),
@@ -160,7 +158,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
         MODE_BASE => crate::base_factory::create(serv),
         MODE_PROCESS => hybrid().process_factory(serv),
         _ => {
-            let made = hybrid().thread_mode(serv, RUN_CREATE_THREAD_FACTORY);
+            let made = hybrid().thread_mode(serv, ThreadOp::CreateFactory);
             core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0))
         }
     };
@@ -517,7 +515,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     match mode {
         MODE_BASE => destroy_base_factory(state),
         MODE_PROCESS => _ = hybrid().step(serv, Step::DestroyProcessFactory),
-        _ => _ = hybrid().thread_mode(serv, RUN_DESTROY_THREAD_FACTORY),
+        _ => _ = hybrid().thread_mode(serv, ThreadOp::DestroyFactory),
     }
     if config().task_worker_num.get() > 0 {
         config().task_results.free();
@@ -607,10 +605,7 @@ mod tests {
         for (mode, run) in [
             (MODE_BASE, steps(&base)),
             (MODE_PROCESS, steps(&[StartProcess])),
-            (
-                MODE_THREAD,
-                vec![Call::ThreadMode(RUN_START_WORKER_THREADS)],
-            ),
+            (MODE_THREAD, vec![Call::ThreadMode(ThreadOp::StartWorkers)]),
         ] {
             set_mode(&live, mode);
             live.counters().start.store(0, SeqCst);

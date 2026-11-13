@@ -547,7 +547,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
 #[must_use]
 pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
     if serv.config().mode_ == MODE_THREAD {
-        return crate::thread_mode_ops::reload_worker_threads(serv, reload_all_workers);
+        return crate::thread_mode::native::reload_worker_threads(serv, reload_all_workers);
     }
     let manager_pid = serv.counters().manager_pid.load(Relaxed);
     if manager_pid == 0 {
