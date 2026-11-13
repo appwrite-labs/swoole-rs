@@ -3,6 +3,7 @@
 //! context. Each method fills the context the way its C++ forward did and runs over
 //! it in Rust.
 
+use crate::records::Lookup;
 use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
@@ -531,7 +532,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
     // `get_connection(int)` of the session id, as master.cc did.
     #[expect(clippy::cast_possible_truncation, reason = "C++'s int parameter")]
     let fd = session_id as c_int;
-    let Some(conn) = state.connection(c_long::from(fd), 0) else {
+    let Some(conn) = state.connection(c_long::from(fd), Lookup::ByFd) else {
         return false;
     };
     let Some(socket) = conn.socket() else {

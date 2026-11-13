@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
     RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
     SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo, SQLHANDLE, SQLHDBC, SQLHSTMT,
-    SQLHWND, SQLINTEGER, SQLLEN, SQLMoreResults, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN,
-    SQLRowCount, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN, SQLRowCount,
+    SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
 /// A statement or connection handle the driver handed over: live, as ODBC's
@@ -250,15 +250,6 @@ pub unsafe extern "C" fn swoole_odbc_SQLGetData(
             )
         }
     })
-}
-
-/// `swoole_odbc_SQLMoreResults`.
-/// # Safety
-/// As `SQLMoreResults`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLMoreResults(statement: SQLHSTMT) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLMoreResults(statement) })
 }
 
 /// `swoole_odbc_SQLDescribeCol`.

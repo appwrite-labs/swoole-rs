@@ -1,7 +1,7 @@
 /* The coroutine ODBC calls crates/odbc exports (--with-swoole-odbc), and the
  * macros that point the bundled pdo_odbc driver at them. The driver includes
- * this first, after defining SW_USE_ODBC_HOOK, and gets its php_pdo_odbc_int.h
- * (the ODBC flavour's headers) from here. */
+ * this first and gets its php_pdo_odbc_int.h (the ODBC flavour's headers) from
+ * here. */
 #ifndef PHP_SWOOLE_ODBC_H
 #define PHP_SWOOLE_ODBC_H
 #include "php_swoole.h"
@@ -37,11 +37,9 @@ SQLRETURN SQL_API swoole_odbc_SQLRowCount(SQLHSTMT stmt, SQLLEN *rows);
 SQLRETURN SQL_API swoole_odbc_SQLDescribeCol(SQLHSTMT stmt, SQLUSMALLINT column, SQLCHAR *name, SQLSMALLINT buffer_len,
                                              SQLSMALLINT *name_len, SQLSMALLINT *data_type, SQLULEN *size,
                                              SQLSMALLINT *decimal_digits, SQLSMALLINT *nullable);
-SQLRETURN SQL_API swoole_odbc_SQLMoreResults(SQLHSTMT stmt);
 SQLRETURN SQL_API swoole_odbc_SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT completion);
 SQLRETURN SQL_API swoole_odbc_SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle);
 SQLRETURN SQL_API swoole_odbc_SQLDisconnect(SQLHDBC dbc);
-#ifdef SW_USE_ODBC_HOOK
 #define SQLConnect swoole_odbc_SQLConnect
 #define SQLDriverConnect swoole_odbc_SQLDriverConnect
 #define SQLExecDirect swoole_odbc_SQLExecDirect
@@ -57,7 +55,6 @@ SQLRETURN SQL_API swoole_odbc_SQLDisconnect(SQLHDBC dbc);
 #define SQLEndTran swoole_odbc_SQLEndTran
 #define SQLFreeHandle swoole_odbc_SQLFreeHandle
 #define SQLDisconnect swoole_odbc_SQLDisconnect
-#endif
 END_EXTERN_C()
 #endif
 #endif

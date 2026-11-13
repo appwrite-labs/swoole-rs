@@ -3,6 +3,7 @@
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
 //! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
 //! they make is Rust's.
+use crate::records::Lookup;
 use core::ffi::{c_int, c_long, c_void};
 
 use swoole_rs_corebase::DataHead;
@@ -176,7 +177,7 @@ pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_in
 pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let fd = c_long::from(event.fd());
     let mut ctx = event_context(reactor, event);
-    ctx.conn = ctx.serv.state().connection_ptr(fd, 0);
+    ctx.conn = ctx.serv.state().connection_ptr(fd, Lookup::ByFd);
     run_with(Facts::Read, &mut ctx, crate::conn_io::read)
 }
 

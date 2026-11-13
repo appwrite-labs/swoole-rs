@@ -1,6 +1,6 @@
 /* The coroutine Firebird calls crates/firebird exports (--with-swoole-firebird),
  * and the macros that point the bundled pdo_firebird driver at them. The driver
- * includes this first, after defining SW_USE_FIREBIRD_HOOK. */
+ * includes this first. */
 #ifndef PHP_SWOOLE_FIREBIRD_H
 #define PHP_SWOOLE_FIREBIRD_H
 #include "php_swoole.h"
@@ -36,7 +36,6 @@ ISC_STATUS swoole_isc_create_blob(ISC_STATUS *, isc_db_handle *, isc_tr_handle *
 ISC_STATUS swoole_isc_dsql_set_cursor_name(ISC_STATUS *, isc_stmt_handle *, const ISC_SCHAR *, unsigned short);
 ISC_STATUS swoole_fb_ping(ISC_STATUS *, isc_db_handle *);
 int swoole_isc_version(isc_db_handle *, ISC_VERSION_CALLBACK, void *);
-#ifdef SW_USE_FIREBIRD_HOOK
 #define isc_attach_database swoole_isc_attach_database
 #define isc_detach_database swoole_isc_detach_database
 #define isc_dsql_execute swoole_isc_dsql_execute
@@ -59,7 +58,6 @@ int swoole_isc_version(isc_db_handle *, ISC_VERSION_CALLBACK, void *);
 #define isc_dsql_set_cursor_name swoole_isc_dsql_set_cursor_name
 #define fb_ping swoole_fb_ping
 #define isc_version swoole_isc_version
-#endif
 END_EXTERN_C()
 #endif
 #endif

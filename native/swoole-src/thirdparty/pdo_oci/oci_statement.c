@@ -14,7 +14,6 @@
   +----------------------------------------------------------------------+
 */
 
-#define SW_USE_ORACLE_HOOK
 #include "php_swoole_oracle.h"
 #include "php.h"
 #include "php_ini.h"

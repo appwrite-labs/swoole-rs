@@ -42,7 +42,7 @@ const SW_FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 const EVENT_SHUTDOWN: u8 = 16;
 const SW_TASK_WORKER: c_int = 4;
-use crate::records::{VERIFIED, VERIFIED_TLS};
+use crate::records::Lookup;
 
 /// The context's objects, each live when the op reading it runs.
 impl Context<'_> {
@@ -97,7 +97,11 @@ impl Context<'_> {
     }
     /// The connection the head's session names, verified (and TLS-ready when `tls`).
     fn session(&self, tls: bool) -> Option<crate::Connection<'_>> {
-        let kind = if tls { VERIFIED_TLS } else { VERIFIED };
+        let kind = if tls {
+            Lookup::VerifiedTls
+        } else {
+            Lookup::Verified
+        };
         self.state().connection(self.info().fd, kind)
     }
     /// The event the bus just read, as its sender packed it: an `EventData`, its

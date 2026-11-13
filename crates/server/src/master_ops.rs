@@ -3,6 +3,7 @@
 //! and shared counters, and the context's connection, socket and port. Rust
 //! answers them before any native call, so master.cc no longer has a case for
 //! them. Logs name the upstream function that wrote them.
+use crate::records::Lookup;
 use core::ffi::{CStr, c_char, c_int};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
 
@@ -1306,9 +1307,9 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_FD_CONN | OP_VERIFY_CONN => {
             let (key, kind) = if op == OP_FD_CONN {
-                (libc::c_long::from(o.ctx.server_fd), 0)
+                (libc::c_long::from(o.ctx.server_fd), Lookup::ByFd)
             } else {
-                (arg.cast_signed(), 3)
+                (arg.cast_signed(), Lookup::VerifiedTls)
             };
             o.ctx.conn = state.connection(key, kind);
             u64::from(o.ctx.conn.is_some())
@@ -1650,9 +1651,9 @@ fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// returns every fact the send reads, or 0 when there is none.
 fn verify(o: &mut Objects<'_>) -> u64 {
     let kind = if o.send().info.kind == EVENT_CLOSE {
-        2
+        Lookup::Verified
     } else {
-        3
+        Lookup::VerifiedTls
     };
     let conn = o.state.connection(o.ctx.session_id, kind);
     o.ctx.conn = conn;
@@ -1748,7 +1749,7 @@ fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_IP_KEY => {
             let fd = libc::c_long::from(o.ctx.server_fd);
-            let addr = if let Some(conn) = o.state.connection(fd, 0) {
+            let addr = if let Some(conn) = o.state.connection(fd, Lookup::ByFd) {
                 conn.info()
             } else {
                 // No connection: the context sends a datagram.
@@ -2073,7 +2074,7 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_DISPATCH_FUNC => {
             let fd = libc::c_long::from(o.ctx.server_fd);
             // SAFETY: null, or the table's live slot of the fd, read for the call.
-            let conn = unsafe { o.state.connection_ptr(fd, 0).as_ref() };
+            let conn = unsafe { o.state.connection_ptr(fd, Lookup::ByFd).as_ref() };
             // SAFETY: null, or the live `SendData` the dispatch lends, which is laid
             // out as the `RecvData` the callback reads: its head and `len` bytes.
             let send = unsafe { o.ctx.send.cast::<crate::reactor_entry::RecvData>().as_ref() };

@@ -14,7 +14,6 @@
   +----------------------------------------------------------------------+
 */
 
-#define SW_USE_ODBC_HOOK
 #include "php_swoole_odbc.h"
 
 #if PHP_VERSION_ID >= 80300 && PHP_VERSION_ID < 80400
