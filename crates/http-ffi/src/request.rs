@@ -740,9 +740,17 @@ impl Parts for HttpRequest {
     }
 }
 
+/// A request with no host, which is all zero bytes. Not inlined: built in place it
+/// lets the compiler ask the allocator for zeroed memory, and glibc's `calloc`
+/// skips its per-thread cache, at several hundred instructions a request.
+#[inline(never)]
+fn blank() -> HttpRequest {
+    HttpRequest::new(None)
+}
+
 #[must_use]
 pub fn request_new() -> *mut HttpRequest {
-    Box::into_raw(Box::new(HttpRequest::new(None)))
+    Box::into_raw(Box::new(blank()))
 }
 
 /// `delete request` of one [`request_new`] made: the destructor, then the memory.
