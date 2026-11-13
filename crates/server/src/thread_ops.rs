@@ -352,8 +352,7 @@ pub(crate) fn answer(
             0
         }
         OP_RT_INIT_PIPE_SOCKETS => {
-            // SAFETY: the live server and this thread's bus.
-            unsafe { methods::init_pipe_sockets(server, bus_of(ctx)?) };
+            methods::init_pipe_sockets(server, ctx.thread_record()?.message_bus());
             0
         }
         OP_RT_THREAD_WORKER => {

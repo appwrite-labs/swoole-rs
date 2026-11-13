@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The C ABI over crates/error: its `swr_v1_*` exports, upstream's C++ symbols, libc's
-//! messages for system errors, and the ignored-error handles native code owns.
+//! messages for system errors, and the process-global ignored-error set.
 #![cfg_attr(
     not(test),
     deny(
@@ -9,7 +9,7 @@
     )
 )]
 
-use std::alloc::{Layout, alloc, dealloc};
+use std::collections::TryReserveError;
 use std::ffi::c_char;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use swoole_rs_error::IgnoredErrors;
@@ -114,73 +114,41 @@ pub extern "C" fn export_throw_error(code: i32) -> ! {
     swoole_rs_error::swoole_throw_error(code)
 }
 
-/// Insert idempotently. Invalid output is -1; allocation failure is -2.
-/// A failed first insertion leaves the native handle null.
-/// # Safety
-/// `state` must be writable and contain null or this API's live handle. Access
-/// must be serialized; the original native set also forbids concurrent mutation.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_error_ignore(state: *mut *mut IgnoredErrors, code: i32) -> i32 {
-    // SAFETY: the caller passes null or a writable slot, and serializes access.
-    let Some(slot) = (unsafe { state.as_mut() }) else {
-        return -1;
-    };
-    // SAFETY: a non-null slot holds this API's live handle, and access is serialized.
-    if let Some(values) = unsafe { slot.as_mut() } {
-        return if values.try_insert(code).is_ok() {
-            0
-        } else {
-            -2
-        };
+/// The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`:
+/// null until the first insert, then a set that lives for the rest of the process,
+/// so a read is one load and a lookup, as upstream's unsynchronized set was.
+struct Ignored(AtomicPtr<IgnoredErrors>);
+
+static IGNORED: Ignored = Ignored::new();
+
+impl Ignored {
+    const fn new() -> Self {
+        Self(AtomicPtr::new(std::ptr::null_mut()))
     }
-    let Ok(values) = IgnoredErrors::try_with(code) else {
-        return -2;
-    };
-    // Not a Box: Box::new aborts when it cannot allocate, and this reports -2.
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "alloc honours Layout::new::<IgnoredErrors>()"
-    )]
-    // SAFETY: `IgnoredErrors` is not zero-sized; null is handled below.
-    let handle = unsafe { alloc(Layout::new::<IgnoredErrors>()) }.cast::<IgnoredErrors>();
-    if handle.is_null() {
-        return -2;
+
+    /// Insert idempotently. When allocation fails the set, or its absence, is unchanged.
+    /// # Safety
+    /// No other thread inserts or reads during the call: upstream's set forbids
+    /// concurrent mutation too.
+    unsafe fn insert(&self, code: i32) -> Result<(), TryReserveError> {
+        // SAFETY: null or the set a first insert leaked, which the caller alone uses.
+        if let Some(values) = unsafe { self.0.load(Ordering::Relaxed).as_mut() } {
+            return values.try_insert(code);
+        }
+        let values = IgnoredErrors::try_with(code)?;
+        // A one-element Vec, not a Box: Box::new aborts when it cannot allocate.
+        let mut holder = Vec::new();
+        holder.try_reserve_exact(1)?;
+        holder.push(values);
+        self.0.store(holder.leak().as_mut_ptr(), Ordering::Relaxed);
+        Ok(())
     }
-    // SAFETY: `handle` is a fresh, non-null allocation with this type's layout.
-    unsafe { handle.write(values) };
-    *slot = handle;
-    0
-}
 
-/// Whether a null or live handle holds `code`.
-#[unsafe(no_mangle)]
-#[must_use]
-pub extern "C" fn swr_v1_error_is_ignored(state: Option<&IgnoredErrors>, code: i32) -> i32 {
-    i32::from(state.is_some_and(|values| values.contains(code)))
-}
-
-/// # Safety
-/// A nonnull handle must be uniquely owned and released exactly once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_error_ignored_release(state: *mut IgnoredErrors) {
-    if !state.is_null() {
-        // SAFETY: the caller owns this live handle uniquely and releases it once.
-        unsafe { state.drop_in_place() };
-        // SAFETY: `state` came from `alloc` with this layout and its value was just dropped.
-        unsafe { dealloc(state.cast(), Layout::new::<IgnoredErrors>()) };
+    fn contains(&self, code: i32) -> bool {
+        // SAFETY: null or the leaked set, which nothing frees; inserts exclude readers.
+        unsafe { self.0.load(Ordering::Relaxed).as_ref() }
+            .is_some_and(|values| values.contains(code))
     }
-}
-
-/// The process-global set behind `swoole_ignore_error` and `swoole_is_ignored_error`.
-static IGNORED: AtomicPtr<IgnoredErrors> = AtomicPtr::new(std::ptr::null_mut());
-
-/// `swr_v1_error_ignore` on the process-global set; `swoole_ignore_error` aborts on -2.
-/// # Safety
-/// Access must be serialized, as upstream's unsynchronized set requires.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_error_ignore_global(code: i32) -> i32 {
-    // SAFETY: the slot holds null or this API's live handle, and access is serialized.
-    unsafe { swr_v1_error_ignore(IGNORED.as_ptr(), code) }
 }
 
 /// `void swoole_ignore_error(int)`. Upstream threw `std::bad_alloc` when the set could not
@@ -191,7 +159,7 @@ pub unsafe extern "C" fn swr_v1_error_ignore_global(code: i32) -> i32 {
 )]
 pub extern "C" fn swoole_ignore_error(code: i32) {
     // SAFETY: the extension serializes ignored-error writes, as upstream required.
-    if unsafe { swr_v1_error_ignore_global(code) } != 0 {
+    if unsafe { IGNORED.insert(code) }.is_err() {
         #[expect(
             clippy::unused_result_ok,
             reason = "the process aborts next, stderr or not"
@@ -216,15 +184,13 @@ pub extern "C" fn swoole_ignore_error(code: i32) {
 )]
 #[must_use]
 pub extern "C" fn swoole_is_ignored_error(code: i32) -> bool {
-    // SAFETY: the slot holds null or this API's live handle, which is never released.
-    let state = unsafe { IGNORED.load(Ordering::Relaxed).as_ref() };
-    swr_v1_error_is_ignored(state, code) != 0
+    IGNORED.contains(code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, System};
+    use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
     thread_local! { static FAIL: Cell<usize> = const { Cell::new(0) }; }
     struct FailureAllocator;
@@ -302,30 +268,75 @@ mod tests {
 
     #[test]
     fn allocation_failure_preserves_membership_and_publication() {
-        let mut state: *mut IgnoredErrors = std::ptr::null_mut();
+        let state = Ignored::new();
         unsafe {
-            assert_eq!(swr_v1_error_ignore(std::ptr::null_mut(), 1), -1);
-            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), 1), 0);
+            assert!(!state.contains(1));
             FAIL.with(|flag| flag.set(1));
-            assert_eq!(swr_v1_error_ignore(&raw mut state, 1), -2);
-            assert!(state.is_null());
+            assert!(state.insert(1).is_err());
+            assert!(state.0.load(Ordering::Relaxed).is_null());
             FAIL.with(|flag| flag.set(2)); // Fail handle allocation after bucket allocation.
-            assert_eq!(swr_v1_error_ignore(&raw mut state, 1), -2);
-            assert!(state.is_null());
-            assert_eq!(swr_v1_error_ignore(&raw mut state, 1), 0);
+            assert!(state.insert(1).is_err());
+            assert!(state.0.load(Ordering::Relaxed).is_null());
+            assert!(state.insert(1).is_ok());
             // Fill the actual allocation so the next distinct value must reserve.
-            let capacity = (*state).capacity();
+            let capacity = (*state.0.load(Ordering::Relaxed)).capacity();
             for code in 2..=i32::try_from(capacity).expect("capacity fits an error code") {
-                assert_eq!(swr_v1_error_ignore(&raw mut state, code), 0);
+                assert!(state.insert(code).is_ok());
             }
             FAIL.with(|flag| flag.set(1));
-            assert_eq!(swr_v1_error_ignore(&raw mut state, i32::MIN), -2);
-            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), i32::MIN), 0);
-            assert_eq!(swr_v1_error_is_ignored(state.as_ref(), 1), 1);
-            assert_eq!(swr_v1_error_ignore(&raw mut state, 1), 0);
-            swr_v1_error_ignored_release(state);
-            swr_v1_error_ignored_release(std::ptr::null_mut());
+            assert!(state.insert(i32::MIN).is_err());
+            assert!(!state.contains(i32::MIN));
+            assert!(state.contains(1));
+            assert!(state.insert(1).is_ok());
+            // The global set lives for the process; this one is the test's to free. A
+            // one-element allocation has a Box's layout.
+            drop(Box::from_raw(state.0.load(Ordering::Relaxed)));
         }
+    }
+
+    /// The former `tests/modules/error/allocator.cc`, on the process-global set: bucket,
+    /// handle and growth allocation failures keep membership, a duplicate does not
+    /// allocate, a retry succeeds and `swoole_ignore_error` aborts on a failure.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fork")]
+    fn global_set_allocation_faults() {
+        fn fail_insert(code: i32, allocation: usize) {
+            FAIL.with(|flag| flag.set(allocation));
+            assert!(unsafe { IGNORED.insert(code) }.is_err());
+            assert_eq!(FAIL.with(Cell::get), 0);
+            assert!(!swoole_is_ignored_error(code));
+        }
+        fail_insert(1, 1); // Bucket allocation.
+        fail_insert(1, 2); // Opaque handle after a successful bucket allocation.
+        swoole_ignore_error(1);
+        assert!(swoole_is_ignored_error(1));
+        FAIL.with(|flag| flag.set(1));
+        swoole_ignore_error(1); // Duplicate must not consume an allocation failure.
+        assert_eq!(FAIL.with(Cell::get), 1);
+        let mut failed = 0;
+        for code in 2..100 {
+            if unsafe { IGNORED.insert(code) }.is_err() {
+                failed = code;
+                break;
+            }
+        }
+        assert!(failed > 1 && FAIL.with(Cell::get) == 0);
+        assert!(!swoole_is_ignored_error(failed));
+        for code in 1..failed {
+            assert!(swoole_is_ignored_error(code));
+        }
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            FAIL.with(|flag| flag.set(1));
+            swoole_ignore_error(failed);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+        assert!(libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGABRT);
+        swoole_ignore_error(failed);
+        assert!(swoole_is_ignored_error(failed));
     }
 
     #[test]

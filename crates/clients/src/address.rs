@@ -107,27 +107,22 @@ pub fn assign(
 /// [`assign`] for native code, whose `resolve` is native `gethostbyname` or null.
 ///
 /// # Safety
-/// `address` points to the union, `length` to its `socklen_t`, `host` to a
-/// NUL-terminated string of `host_length` bytes before that NUL; `resolve` is
-/// native `gethostbyname` or null (`resolve_name` false).
+/// `host` points to a NUL-terminated string of `host_length` bytes before that
+/// NUL; `resolve` is native `gethostbyname` or null (`resolve_name` false).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_clients_address_assign(
-    address: *mut c_void,
-    length: *mut libc::socklen_t,
+    address: &mut AddressStorage,
+    length: &mut libc::socklen_t,
     kind: c_int,
     host: *const c_char,
     host_length: usize,
     port: c_int,
     resolve: Option<Resolve>,
 ) -> c_int {
-    // SAFETY: the caller passes the union.
-    let storage = unsafe { &mut *address.cast::<AddressStorage>() };
-    // SAFETY: and its length.
-    let size = unsafe { &mut *length };
-    // SAFETY: and `host_length` bytes of host, then its NUL.
+    // SAFETY: the caller passes `host_length` bytes of host, then its NUL.
     let bytes =
         unsafe { std::slice::from_raw_parts(host.cast::<u8>(), host_length.saturating_add(1)) };
-    assign_with(storage, size, kind, bytes, port, |family, name| {
+    assign_with(address, length, kind, bytes, port, |family, name| {
         let Some(resolve) = resolve else {
             return Err(BAD_HOST_ADDR);
         };
@@ -375,8 +370,8 @@ mod tests {
         let mut length = 0;
         let error = unsafe {
             swr_v1_clients_address_assign(
-                (&raw mut address).cast(),
-                &raw mut length,
+                &mut *(&raw mut address).cast::<AddressStorage>(),
+                &mut length,
                 kind,
                 host.as_ptr(),
                 host.to_bytes().len(),
@@ -454,8 +449,8 @@ mod tests {
         };
         let error = unsafe {
             swr_v1_clients_address_assign(
-                (&raw mut address.addr).cast(),
-                &raw mut address.len,
+                &mut address.addr,
+                &mut address.len,
                 kind,
                 host.as_ptr(),
                 host.to_bytes().len(),

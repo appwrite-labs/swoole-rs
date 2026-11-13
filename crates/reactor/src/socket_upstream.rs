@@ -256,9 +256,15 @@ pub extern "C" fn make_socket_typed(
     fd_type: c_int,
     flags: c_int,
 ) -> *mut SocketRecord {
+    make_typed(socket_type, fd_type, flags).map_or(std::ptr::null_mut(), Box::into_raw)
+}
+
+/// [`make_socket_typed`]'s record, still its maker's own; none where that is null.
+#[must_use]
+pub fn make_typed(socket_type: c_int, fd_type: c_int, flags: c_int) -> Option<Box<SocketRecord>> {
     let mut unknown = false;
-    let socket = SocketRecord::open_typed(socket_type, fd_type, flags, &mut unknown);
-    if socket.is_null() {
+    let socket = SocketRecord::opened_typed(socket_type, fd_type, flags, &mut unknown);
+    if socket.is_none() {
         let error = errno();
         if unknown {
             log::warning(

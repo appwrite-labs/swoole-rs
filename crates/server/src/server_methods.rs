@@ -217,18 +217,16 @@ pub(crate) fn start_master_thread(
 }
 
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
-///
-/// # Safety
-/// `mb` is a live `MessageBus`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) unsafe fn init_pipe_sockets(serv: view::Server<'_>, mb: *mut c_void) {
+pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
     }
     let mut ctx = NativeContext::new(serv.raw());
-    ctx.object = mb;
-    // SAFETY: as the caller guarantees.
+    ctx.object = ptr::from_ref(&mb).cast_mut().cast();
+    // SAFETY: the live server, and the handle of a live bus, lent for the call: all
+    // the operation reads.
     unsafe { run(crate::ops::RUN_ST_INIT_PIPE_SOCKETS, 0, &mut ctx) };
 }
 

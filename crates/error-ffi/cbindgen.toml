@@ -13,6 +13,5 @@ include = ["swoole-rs-error"]
 include = ["ErrorCode"]
 [export.rename]
 "ErrorCode" = "swErrorCode"
-"IgnoredErrors" = "SwrErrorIgnored"
 [enum]
 prefix_with_name = false

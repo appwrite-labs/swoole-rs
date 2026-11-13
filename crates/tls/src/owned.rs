@@ -7,7 +7,7 @@ use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
     cell::{Cell, UnsafeCell},
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, c_char, c_int},
     marker::PhantomData,
     sync::Arc,
 };
@@ -233,6 +233,11 @@ pub fn owner_tls_host_name(owner: &OwnedTlsContext) -> swoole_rs_corebase::CoreS
 pub fn owner_host_name(owner: &OwnedTlsContext) -> &[u8] {
     owner.strings[TLS_HOST_NAME].bytes()
 }
+/// `tls_host_name` up to its first NUL, as C reads it, borrowed as [`owner_host_name`]'s.
+#[must_use]
+pub fn owner_host_c_str(owner: &OwnedTlsContext) -> &CStr {
+    owner.strings[TLS_HOST_NAME].c_str()
+}
 /// An owner whose caller serializes it: the borrow every operation here takes once,
 /// instead of each field access promising it again. It is not `Sync`, so only the
 /// thread holding it writes through it.
@@ -281,16 +286,15 @@ fn configuration(owner: &OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig 
     }
 }
 /// # Safety
-/// `slot` is the owner's live passphrase slot (the binding's userdata) and `buffer`
-/// holds `capacity` writable bytes, as OpenSSL's password callback lends them.
+/// `buffer` holds `capacity` writable bytes, as OpenSSL's password callback lends
+/// them; `slot` is the owner's passphrase slot (the binding's userdata).
 unsafe extern "C" fn slot_password(
     buffer: *mut c_char,
     capacity: c_int,
     _verify: c_int,
-    slot: *mut c_void,
+    slot: &StringSlot,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let passphrase = unsafe { &*slot.cast::<StringSlot>() }.bytes_with_nul();
+    let passphrase = slot.bytes_with_nul();
     let capacity = usize::try_from(capacity).unwrap_or(0);
     // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
     let mut buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer.cast(), capacity) };
@@ -311,7 +315,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
         Some(Arc::clone(&state.strings[PASSPHRASE]))
     };
     let password = PasswordBinding {
-        userdata: slot.cast_mut().cast(),
+        userdata: slot,
         callback: slot_password,
     };
     // SAFETY: local configuration, stable string slots and a live password binding.
@@ -347,10 +351,10 @@ pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> 
 /// Path access and assignment are one Rust operation. 1 access denied, otherwise
 /// `string_set`'s status; only cert(4), key(5) and client certificate(7) are accepted.
 /// # Safety
-/// owner is live/exclusive; path is terminated and readable for length bytes.
+/// owner is exclusive; path is terminated and readable for length bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_owner_set_path(
-    owner: *const OwnedTlsContext,
+    owner: &OwnedTlsContext,
     index: u32,
     path: *const c_char,
     length: usize,
@@ -362,8 +366,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_set_path(
     if unsafe { libc::access(path, libc::R_OK) } < 0 {
         return 1;
     }
-    // SAFETY: the owner is live and index names one of its stable slots.
-    let Some(slot) = (unsafe { &(*owner).strings }).get(index as usize) else {
+    let Some(slot) = owner.strings.get(index as usize) else {
         return -1;
     };
     let slot = Arc::as_ptr(slot);
@@ -659,6 +662,7 @@ impl OwnedTlsContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_void;
     use std::ptr;
     fn warning(_function: &CStr, _message: &str) {
         panic!("unexpected TLS warning");
@@ -837,10 +841,7 @@ mod tests {
             let password = (*destination.owner).context_password.get();
             let slot = Arc::as_ptr((&*password).as_ref().unwrap());
             let mut output = [0u8; 16];
-            assert_eq!(
-                slot_password(output.as_mut_ptr().cast(), 16, 0, slot.cast_mut().cast()),
-                6
-            );
+            assert_eq!(slot_password(output.as_mut_ptr().cast(), 16, 0, &*slot), 6);
             assert_eq!(&output[..7], b"source\0");
             assert_eq!(
                 openssl_sys::SSL_CTX_get_options(context),
@@ -854,7 +855,7 @@ mod tests {
         unsafe {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
-            let slot = prepared.strings[PASSPHRASE].cast_mut().cast();
+            let slot = &*prepared.strings[PASSPHRASE];
             assert_eq!(
                 swoole_rs_corebase::swr_v1_core_string_set(
                     prepared.strings[PASSPHRASE],
@@ -866,7 +867,8 @@ mod tests {
             assert!(create(&mut Lent::new(owner)));
             let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
-            assert!(password_binding_matches(ctx, slot, slot_password));
+            let data = ptr::from_ref(slot).cast_mut().cast();
+            assert!(password_binding_matches(ctx, data, slot_password));
             for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
                 assert_eq!(
                     swoole_rs_corebase::swr_v1_core_string_set(

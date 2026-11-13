@@ -22,6 +22,7 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 
@@ -307,12 +308,13 @@ pub struct TlsConfig {
 /// OpenSSL's `pem_password_cb`: the buffer and its capacity, whether to verify, and
 /// the userdata it was installed with.
 pub(crate) type PasswordCallback =
-    unsafe extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int;
+    unsafe extern "C" fn(*mut c_char, c_int, c_int, &StringSlot) -> c_int;
 
 /// One upstream method: its log name and the configuration it reads.
 #[derive(Clone, Copy)]
 pub(crate) struct PasswordBinding {
-    pub userdata: *mut c_void,
+    /// What OpenSSL hands the callback: a slot that outlives the context.
+    pub userdata: *const StringSlot,
     pub callback: PasswordCallback,
 }
 
@@ -525,9 +527,11 @@ impl Method<'_> {
         if !config.passphrase.is_empty()
             && let Some(binding) = self.password
         {
+            let userdata = binding.userdata.cast_mut().cast();
             // SAFETY: a live context; the binding's owner outlives the borrowed context.
-            unsafe { SSL_CTX_set_default_passwd_cb_userdata(raw, binding.userdata) };
-            // SAFETY: a live context; a plain callback with the binding's userdata.
+            unsafe { SSL_CTX_set_default_passwd_cb_userdata(raw, userdata) };
+            // SAFETY: a live context; OpenSSL calls the callback with the buffer it
+            // lends and the userdata set above, the binding's slot.
             unsafe { SSL_CTX_set_default_passwd_cb(raw, binding.callback) };
         }
         if let Some(path) = config.cert_file.path() {

@@ -126,8 +126,6 @@ pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// `SSLContext::TLS_HOST_NAME`'s string slot.
-const TLS_HOST_NAME: usize = 8;
 /// OpenSSL's `SSL_CTRL_SET_TLSEXT_HOSTNAME` and `TLSEXT_NAMETYPE_host_name`.
 const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
 const TLSEXT_NAMETYPE_HOST_NAME: libc::c_long = 0;
@@ -316,7 +314,8 @@ pub struct Client {
     sock_flags: Cell<c_int>,
     server_host: RefCell<CString>,
     server_port: Cell<c_int>,
-    timer: Cell<*mut c_void>,
+    /// The id of the pending connect timer.
+    timer: Cell<Option<swoole_rs_timer::Held>>,
     high_watermark: Cell<u32>,
     low_watermark: Cell<u32>,
     listener: Cell<Option<Listener>>,
@@ -538,9 +537,10 @@ impl Handle {
 
     /// The context's SNI host name, NUL-terminated and empty when unset.
     fn tls_host_name(self) -> &'static CStr {
-        let slot = self.tls().strings[TLS_HOST_NAME];
-        // SAFETY: the live context's slot.
-        unsafe { &*slot }.c_str()
+        let tls = self.get().tls.get();
+        swoole_rs_tls::owner_host_c_str(
+            tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
+        )
     }
 
     fn proxy(self, which: Proxy) -> Option<&'static ProxyState> {
@@ -680,10 +680,8 @@ impl Handle {
     }
 
     fn timer_clear(self) {
-        let timer = self.get().timer.replace(core::ptr::null_mut());
-        if !timer.is_null() {
-            // SAFETY: a pending timer this client added.
-            unsafe { swoole_timer_del(timer.cast()) };
+        if let Some(timer) = self.get().timer.take() {
+            del_id(timer);
         }
     }
 
@@ -696,9 +694,9 @@ impl Handle {
 
 // The unit tests log timers instead.
 #[cfg(not(test))]
-use swoole_rs_timer::{add_fn_sec, swoole_timer_del};
+use swoole_rs_timer::{add_fn_sec_id, del_id};
 #[cfg(test)]
-use tests::{add_fn_sec, swoole_timer_del};
+use tests::{add_fn_sec_id, del_id};
 
 /// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
 #[repr(C)]
@@ -807,9 +805,8 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         FD_DGRAM_CLIENT
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
-    let socket = ops::make_socket(kind, fd_type, flags);
-    // SAFETY: null or the new socket record, which nothing else holds yet.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+    // The new socket record, which nothing else holds yet.
+    let Some(record) = ops::make_socket(kind, fd_type, flags) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
@@ -832,7 +829,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         sock_flags: Cell::new(0),
         server_host: RefCell::new(CString::default()),
         server_port: Cell::new(0),
-        timer: Cell::new(core::ptr::null_mut()),
+        timer: Cell::new(None),
         high_watermark: Cell::new(0),
         low_watermark: Cell::new(0),
         listener: Cell::new(None),
@@ -844,7 +841,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     });
     client.set(ASYNC, is_async);
     let fields = client.record.get_mut();
-    fields.socket = socket;
+    fields.socket = record.as_ptr();
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
@@ -1489,9 +1486,9 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
             // handler runs the proxy and TLS handshakes.
             if ret < 0 && timeout > 0.0 {
                 // The client deletes the timer before it goes.
-                let timer = add_fn_sec(timeout, false, move || on_timeout(this));
+                let timer = add_fn_sec_id(timeout, false, move || on_timeout(this));
                 this.get().timer.set(timer);
-                if timer.is_null() {
+                if timer.is_none() {
                     return ERR;
                 }
             }
@@ -1617,9 +1614,13 @@ mod ops {
     use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
-    /// `make_socket(type, fd_type, flags)`: the record or null.
-    pub(super) fn make_socket(kind: c_int, fd_type: c_int, flags: c_int) -> *mut SocketRecord {
-        socket_upstream::make_socket_typed(kind, fd_type, flags)
+    /// `make_socket(type, fd_type, flags)`: the new record's socket, or none.
+    pub(super) fn make_socket(
+        kind: c_int,
+        fd_type: c_int,
+        flags: c_int,
+    ) -> Option<swoole_rs_reactor::Socket<'static>> {
+        socket_upstream::make_typed(kind, fd_type, flags).map(SocketRecord::into_socket)
     }
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
@@ -2025,7 +2026,7 @@ fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `Client_onTimeout`: the async connect of the client timed out.
 fn on_timeout(this: Handle) {
     log::set_last_error(libc::ETIMEDOUT);
-    this.get().timer.set(core::ptr::null_mut());
+    this.get().timer.set(None);
     if this.flag(OPEN_SSL) && this.tls_state() != SSL_STATE_READY {
         this.set(ACTIVE, false);
     }

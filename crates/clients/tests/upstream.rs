@@ -234,8 +234,8 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     // SAFETY: the union, its length and a NUL-terminated host of `host.len()` bytes.
     let error = unsafe {
         swr_v1_clients_address_assign(
-            (&raw mut address.addr).cast(),
-            &raw mut address.len,
+            &mut address.addr,
+            &mut address.len,
             kind,
             text.as_ptr().cast(),
             host.len(),

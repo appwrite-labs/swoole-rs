@@ -139,7 +139,7 @@ Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divis
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
 struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
 `swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
-`sw_malloc`/`sw_free`/`sw_calloc`/`sw_realloc`, which call libc's allocator
+`sw_malloc`/`sw_free`/`sw_calloc`, which call libc's allocator
 directly. The `corebase-native` gate compares them with the pinned `base.cc`.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their

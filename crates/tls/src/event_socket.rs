@@ -2,7 +2,7 @@
 //! `Swoole\Event`'s user sockets.
 use crate::upstream::socket_free;
 use std::ffi::c_int;
-use swoole_rs_reactor::{Socket, event_api, socket_upstream};
+use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
 
 /// `make_socket(fd, fd_type)`, non-blocking, which this owns until [`EventSocket::free`].
 /// Its event calls do nothing, and fail, without a reactor.
@@ -15,12 +15,9 @@ fn reactor() -> bool {
 impl EventSocket {
     #[must_use]
     pub fn new(fd: c_int, fd_type: c_int) -> Self {
-        let record = socket_upstream::make_socket_fd(fd, fd_type);
-        // SAFETY: the new record, which this owns until `free`; the reactor reaches it only
+        // The new record, which this owns until `free`; the reactor reaches it only
         // through the calls below.
-        let Some(socket) = (unsafe { Socket::from_ptr(record) }) else {
-            swoole_rs_corebase::fatal("make_socket_fd returned null")
-        };
+        let socket = Box::new(SocketRecord::with_fd(fd, fd_type)).into_socket();
         socket.edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
         Self(socket)
     }

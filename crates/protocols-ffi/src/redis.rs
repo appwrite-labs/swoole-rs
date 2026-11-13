@@ -1,34 +1,9 @@
 //! RESP's C ABI over crates/protocols' codec. Besides the module's native gate,
 //! the oracle's candidate redis.cc (the protocols overlay patch) calls them.
 use swoole_rs_protocols::{
-    RespPhpState, RespRequest, RespSpan, resp_extend_size, resp_format, resp_handler_key,
-    resp_php_next, resp_receive_range, resp_spans,
+    RespPhpState, RespRequest, RespSpan, resp_extend_size, resp_format, resp_php_next,
+    resp_receive_range, resp_spans,
 };
-
-/// [`resp_handler_key`]: the key's length, or zero on invalid input; always
-/// terminates on success.
-/// # Safety
-/// Input is borrowed/readable. Output covers 64 exclusive writable bytes,
-/// disjoint from input. No pointers are retained.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_handler_key(
-    data: *const u8,
-    length: usize,
-    output: *mut u8,
-) -> usize {
-    // SAFETY: `data` lends `length` initialized bytes (null only when empty) for this call.
-    let Some(bytes) = (unsafe { crate::input(data, length) }) else {
-        return 0;
-    };
-    if output.is_null() {
-        return 0;
-    }
-    let (key, length) = resp_handler_key(bytes);
-    // SAFETY: `output` is non-null (checked above) and covers 64 exclusive writable bytes,
-    // disjoint from the local 64-byte `key`.
-    unsafe { std::ptr::copy_nonoverlapping(key.as_ptr(), output, key.len()) };
-    length
-}
 
 /// [`resp_php_next`]: 1 event, 0 end, -1 invalid. Invalid input leaves state and
 /// span unchanged.
@@ -73,26 +48,14 @@ fn set(flag: &mut Option<&mut u8>, value: u8) {
     }
 }
 
-/// # Safety
-/// Input is borrowed/readable. Output is aligned, disjoint and writable for
-/// capacity spans; null/zero capacity performs validation and returns count.
-/// Invalid input (-1) or short output (-2) leaves output unchanged.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_parse(
-    data: *const u8,
-    length: usize,
-    output: *mut RespSpan,
-    capacity: usize,
-) -> i64 {
-    // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe { swr_v1_resp_parse_range(data, length, output, capacity, None) }
-}
-
 /// The optional range output reports libc-compatible signed-long overflow,
 /// including numbers whose following delimiter is malformed. Existing errno
 /// belongs to native code; a zero range flag must not clear it.
 /// # Safety
-/// Same buffer contract as parse; range is null or exclusive writable/disjoint.
+/// Input is borrowed/readable. Output is aligned, disjoint and writable for
+/// capacity spans; null/zero capacity performs validation and returns count.
+/// Invalid input (-1) or short output (-2) leaves output unchanged. Range is null
+/// or exclusive writable/disjoint.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_resp_parse_range(
     data: *const u8,
@@ -205,26 +168,12 @@ pub unsafe extern "C" fn swr_v1_resp_format(
     )
 }
 
-/// # Safety
-/// Buffer is borrowed/readable; request and `set_offset` are aligned exclusive
-/// writable values, disjoint from the buffer and one another.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_resp_receive(
-    data: *const u8,
-    length: usize,
-    capacity: usize,
-    maximum: usize,
-    request: Option<&mut RespRequest>,
-    set_offset: Option<&mut u8>,
-) -> i32 {
-    // SAFETY: forwards the caller's input and output contract; the range output is omitted.
-    unsafe { swr_v1_resp_receive_range(data, length, capacity, maximum, request, set_offset, None) }
-}
-
 /// [`resp_receive_range`]: its action, with `set_offset` written; -1 for invalid input.
 /// # Safety
-/// Same contract as receive; range is null or exclusive writable/disjoint.
-/// Reports overflow even when a later protocol delimiter is malformed.
+/// Buffer is borrowed/readable; request and `set_offset` are aligned exclusive
+/// writable values, disjoint from the buffer and one another; range is null or
+/// exclusive writable/disjoint. Reports overflow even when a later protocol
+/// delimiter is malformed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_resp_receive_range(
     data: *const u8,
@@ -272,25 +221,6 @@ pub extern "C" fn swr_v1_resp_extend_size(
 )]
 mod tests {
     use super::*;
-    #[test]
-    fn handler_keys_reject_invalid_outputs() {
-        let mut output = [99; 64];
-        assert_eq!(
-            unsafe { swr_v1_resp_handler_key(b"EcHo".as_ptr(), 4, output.as_mut_ptr()) },
-            13
-        );
-        assert_eq!(&output[..14], b"_handler_echo\0");
-        let mut output = [99; 64];
-        assert_eq!(
-            unsafe { swr_v1_resp_handler_key(std::ptr::null(), 1, output.as_mut_ptr()) },
-            0
-        );
-        assert_eq!(output, [99; 64]);
-        assert_eq!(
-            unsafe { swr_v1_resp_handler_key(std::ptr::null(), 0, std::ptr::null_mut()) },
-            0
-        );
-    }
     #[test]
     fn php_next_leaves_state_and_span_on_error() {
         let malformed = b"$9223372036854775808x\r\n";
@@ -364,7 +294,9 @@ mod tests {
         assert_eq!((output[0].integer, range), (1, 1));
         output[0].integer = 42;
         assert_eq!(
-            unsafe { swr_v1_resp_parse(wire.as_ptr(), wire.len(), output.as_mut_ptr(), 2) },
+            unsafe {
+                swr_v1_resp_parse_range(wire.as_ptr(), wire.len(), output.as_mut_ptr(), 2, None)
+            },
             -1
         );
         assert_eq!(output[0].integer, 42);

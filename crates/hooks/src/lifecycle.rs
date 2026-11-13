@@ -58,20 +58,27 @@ impl<'a> Peer<'a> {
     }
 }
 
-/// The syscalls: `shutdown(2)`, `connect(2)` and `getsockopt(SO_ERROR)` into the
-/// int it is given. Tests script them.
+/// The syscalls: `shutdown(2)`, `connect(2)` to a lent address and
+/// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
 #[derive(Clone, Copy)]
 struct Sys {
     shutdown: fn(c_int, c_int) -> c_int,
-    connect: unsafe extern "C" fn(c_int, *const libc::sockaddr, libc::socklen_t) -> c_int,
+    connect: fn(c_int, Peer<'_>) -> c_int,
     option: fn(c_int, &mut c_int) -> c_int,
 }
 
 const SYS: Sys = Sys {
     shutdown: crate::shutdown::sys_shutdown,
-    connect: libc::connect,
+    connect: sys_connect,
     option: so_error,
 };
+
+/// `connect(2)` of `fd` to `peer`.
+fn sys_connect(fd: c_int, peer: Peer<'_>) -> c_int {
+    // SAFETY: connect(2) reads the lent address: `len` readable bytes, or null,
+    // which it refuses.
+    unsafe { libc::connect(fd, peer.at, peer.len) }
+}
 
 impl Co {
     /// `Socket::shutdown(how)`.
@@ -221,8 +228,7 @@ fn connect(socket: Co, peer: Peer<'_>, sys: Sys) -> bool {
     }
     let fd = socket.sock_fd();
     let result = loop {
-        // SAFETY: the socket's descriptor and the lent address, which connect(2) reads.
-        let result = unsafe { (sys.connect)(fd, peer.at, peer.len) };
+        let result = (sys.connect)(fd, peer);
         if result >= 0 || errno() != libc::EINTR {
             break result;
         }
@@ -346,7 +352,8 @@ mod tests {
         let address: libc::sockaddr = unsafe { core::mem::zeroed() };
         let length = libc::socklen_t::try_from(size_of::<libc::sockaddr>()).unwrap();
         let retval = loop {
-            let retval = unsafe { (sys.connect)(s.sock_fd(), &raw const address, length) };
+            let peer = unsafe { Peer::from_raw(&raw const address, length) };
+            let retval = (sys.connect)(s.sock_fd(), peer);
             if !(retval < 0 && errno() == libc::EINTR) {
                 break retval;
             }
@@ -410,11 +417,7 @@ mod tests {
         }
         result
     }
-    unsafe extern "C" fn fake_connect(
-        fd: c_int,
-        _: *const libc::sockaddr,
-        _: libc::socklen_t,
-    ) -> c_int {
+    fn fake_connect(fd: c_int, _: Peer<'_>) -> c_int {
         log(format!("connect:{fd}"));
         let value = CONNECTS.with_borrow_mut(|c| c.remove(0));
         if value < 0 {

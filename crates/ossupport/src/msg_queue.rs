@@ -288,8 +288,26 @@ const _: () = assert!(size_of::<MsqidDs>() == 116, "Darwin's packed msqid_ds");
 
 /// `msgctl(id, IPC_STAT)`.
 fn queue_stat(id: c_int) -> Option<MsqidDs> {
-    // SAFETY: integers and integer arrays: zeroed is a valid `msqid_ds`.
-    let mut stat: MsqidDs = unsafe { std::mem::zeroed() };
+    #[cfg(target_os = "linux")]
+    let mut stat: MsqidDs = swoole_rs_corebase::sys::zeroed();
+    #[cfg(target_os = "macos")]
+    let mut stat = MsqidDs {
+        msg_perm: swoole_rs_corebase::sys::zeroed(),
+        msg_first: 0,
+        msg_last: 0,
+        __msg_cbytes: 0,
+        msg_qnum: 0,
+        msg_qbytes: 0,
+        msg_lspid: 0,
+        msg_lrpid: 0,
+        msg_stime: 0,
+        msg_pad1: 0,
+        msg_rtime: 0,
+        msg_pad2: 0,
+        msg_ctime: 0,
+        msg_pad3: 0,
+        msg_pad4: [0; 4],
+    };
     (msgctl(id, libc::IPC_STAT, Some(&mut stat)) == 0).then_some(stat)
 }
 

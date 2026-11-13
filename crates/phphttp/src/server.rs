@@ -43,7 +43,7 @@ pub fn server_class() -> &'static Class {
 
 /// `php_swoole_http_server_minit`, after `Swoole\Server`'s.
 pub fn server_minit(args: &MinitArgs) {
-    let minit = &args.minit;
+    let minit = args.minit;
     let parent = minit.parent(swoole_rs_phpserver::server_class_ref());
     minit.register_child(&SERVER, c"Swoole\\Http\\Server", &[], parent, |entry, _| {
         entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;

@@ -21,3 +21,11 @@ libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-websocket = { path = "../websocket" }
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+# The codec against the pinned C++ bodies (tests/modules/websocket/README.md).
+[[test]]
+name = "codec"
+path = "../../tests/modules/websocket/codec.rs"

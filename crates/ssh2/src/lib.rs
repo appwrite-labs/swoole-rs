@@ -31,15 +31,14 @@ use swoole_rs_ssh2_sys::{
     libssh2_channel_forward_listen_ex, libssh2_channel_get_exit_status, libssh2_channel_open_ex,
     libssh2_channel_process_startup, libssh2_channel_read_ex, libssh2_channel_request_pty_ex,
     libssh2_channel_request_pty_size_ex, libssh2_channel_send_eof, libssh2_channel_setenv_ex,
-    libssh2_channel_write_ex, libssh2_scp_recv, libssh2_scp_send_ex,
-    libssh2_session_block_directions, libssh2_session_disconnect_ex, libssh2_session_handshake,
-    libssh2_session_last_errno, libssh2_sftp_close_handle, libssh2_sftp_fstat_ex,
-    libssh2_sftp_init, libssh2_sftp_mkdir_ex, libssh2_sftp_open_ex, libssh2_sftp_read,
-    libssh2_sftp_readdir_ex, libssh2_sftp_rename_ex, libssh2_sftp_rmdir_ex, libssh2_sftp_stat_ex,
-    libssh2_sftp_symlink_ex, libssh2_sftp_tell, libssh2_sftp_unlink_ex, libssh2_sftp_write,
-    libssh2_userauth_authenticated, libssh2_userauth_hostbased_fromfile_ex,
-    libssh2_userauth_keyboard_interactive_ex, libssh2_userauth_list, libssh2_userauth_password_ex,
-    libssh2_userauth_publickey_fromfile_ex, libssh2_userauth_publickey_frommemory,
+    libssh2_channel_write_ex, libssh2_scp_recv, libssh2_scp_send_ex, libssh2_session_disconnect_ex,
+    libssh2_session_handshake, libssh2_sftp_close_handle, libssh2_sftp_fstat_ex, libssh2_sftp_init,
+    libssh2_sftp_mkdir_ex, libssh2_sftp_open_ex, libssh2_sftp_read, libssh2_sftp_readdir_ex,
+    libssh2_sftp_rename_ex, libssh2_sftp_rmdir_ex, libssh2_sftp_stat_ex, libssh2_sftp_symlink_ex,
+    libssh2_sftp_tell, libssh2_sftp_unlink_ex, libssh2_sftp_write, libssh2_userauth_authenticated,
+    libssh2_userauth_hostbased_fromfile_ex, libssh2_userauth_keyboard_interactive_ex,
+    libssh2_userauth_list, libssh2_userauth_password_ex, libssh2_userauth_publickey_fromfile_ex,
+    libssh2_userauth_publickey_frommemory,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
@@ -63,10 +62,26 @@ fn event(directions: c_int) -> c_int {
     }
 }
 
+/// The session an export parks on: live for as long as the value is used,
+/// which [`Wait::new`], the only place that makes one, has its caller promise.
+/// A `LIBSSH2_SESSION *`'s layout, and neither `Send` nor `Sync`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Session(*mut LIBSSH2_SESSION);
+
+// libssh2's own declarations of two calls that read a live session's state and
+// nothing else, with the session typed as the handle it is.
+unsafe extern "C" {
+    #[link_name = "libssh2_session_block_directions"]
+    safe fn block_directions(session: Session) -> c_int;
+    #[link_name = "libssh2_session_last_errno"]
+    safe fn session_last_errno(session: Session) -> c_int;
+}
+
 /// The lent wait and the session it parks on, as an export received them.
 struct Wait<'a> {
     ops: &'a Ops,
-    session: *mut LIBSSH2_SESSION,
+    session: Session,
 }
 
 impl Wait<'_> {
@@ -76,25 +91,26 @@ impl Wait<'_> {
     unsafe fn new(ops: *const Ops, session: *mut LIBSSH2_SESSION) -> Self {
         // SAFETY: per the caller.
         let ops = unsafe { &*ops };
-        Self { ops, session }
+        Self {
+            ops,
+            session: Session(session),
+        }
     }
 
     /// The event to wait for on the session.
     fn blocked(&self) -> c_int {
-        // SAFETY: the session is live (`new`).
-        event(unsafe { libssh2_session_block_directions(self.session) })
+        event(block_directions(self.session))
     }
 
     /// The session's `last_errno`.
     fn last_errno(&self) -> c_int {
-        // SAFETY: the session is live (`new`).
-        unsafe { libssh2_session_last_errno(self.session) }
+        session_last_errno(self.session)
     }
 
     /// Park the coroutine until `event` on the session's socket.
     fn park(&self, event: c_int) -> bool {
         // SAFETY: the lent table's wait, on the session it can wait on (`new`).
-        unsafe { (self.ops.wait)(self.session, event) }
+        unsafe { (self.ops.wait)(self.session.0, event) }
     }
 
     /// `ssh2_async_call`: `call` until it stops saying `EAGAIN`, waiting for

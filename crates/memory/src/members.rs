@@ -519,14 +519,6 @@ upstream! {
     pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
         Shm(payload).free();
     }
-    "_Z14sw_shm_protectPvi", "_Z14sw_shm_protectPvi" =>
-    /// `int sw_shm_protect(void *ptr, int flags)`.
-    ///
-    /// # Safety
-    /// `payload` is a live `sw_shm_malloc` payload.
-    pub unsafe extern "C" fn sw_shm_protect(payload: *mut c_void, flags: c_int) -> c_int {
-        Shm(payload).protect(flags)
-    }
 }
 
 // ---------------------------------------------------------------- Table

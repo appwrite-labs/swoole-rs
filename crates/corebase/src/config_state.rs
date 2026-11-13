@@ -3,8 +3,9 @@
 //! code reads in place, then its empty accessor members (`RustField` over
 //! `global.rs`'s record), whose bytes `views` reserves. Both sides assert the
 //! layout.
-use std::cell::UnsafeCell;
 use std::ffi::{CStr, CString, c_char, c_void};
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[repr(C)]
@@ -36,51 +37,37 @@ impl TrustedAllocator {
     }
 }
 
-impl CoreAllocator {
-    const NONE: Self = Self {
-        malloc: None,
-        calloc: None,
-        realloc: None,
-        free: None,
-    };
-}
-
-/// `swoole::Global`.
+/// `swoole::Global`. Native code reads and writes the fields in place, as upstream's
+/// plain `SwooleG`, so each is an atomic of its C type's size: Rust loads and stores
+/// whole words and holds no reference to their contents. Rust writes them only in
+/// `swoole_init` and `swoole_clean`, before and after any other thread, as upstream does.
 #[repr(C)]
-pub struct Global {
-    pub max_sockets: u32,
-    pub dns_cache_refresh_time: f64,
-    pub std_allocator: CoreAllocator,
+struct Global {
+    max_sockets: AtomicU32,
+    /// A `double`'s bits.
+    dns_cache_refresh_time: AtomicU64,
+    /// `swoole::Allocator`: `malloc`, `calloc`, `realloc` and `free`, or null.
+    std_allocator: [AtomicPtr<c_void>; 4],
     /// The empty accessor members' bytes.
-    views: [u8; 7],
+    views: [AtomicU8; 7],
 }
 
 const _: () = assert!(
     std::mem::offset_of!(Global, dns_cache_refresh_time) == 8
         && std::mem::offset_of!(Global, std_allocator) == 16
-        && size_of::<Global>() == 56,
+        && size_of::<Global>() == 56
+        && size_of::<CoreAllocator>() == 32,
     "swoole.h asserts the same `swoole::Global` layout"
 );
 
-impl Global {
-    /// Upstream's `SwooleG = {}`.
-    const ZERO: Self = Self {
-        max_sockets: 0,
-        dns_cache_refresh_time: 0.0,
-        std_allocator: CoreAllocator::NONE,
-        views: [0; 7],
-    };
-}
-
-struct Storage(UnsafeCell<Global>);
-
-// SAFETY: native code reads the fields in place, as upstream's plain `SwooleG`;
-// Rust writes them only in `swoole_init` and `swoole_clean`, before and after
-// any other thread, as upstream does.
-unsafe impl Sync for Storage {}
-
+/// Upstream's `SwooleG = {}`.
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "SwooleG"))]
-static SWOOLE_G: Storage = Storage(UnsafeCell::new(Global::ZERO));
+static SWOOLE_G: Global = Global {
+    max_sockets: AtomicU32::new(0),
+    dns_cache_refresh_time: AtomicU64::new(0),
+    std_allocator: [const { AtomicPtr::new(std::ptr::null_mut()) }; 4],
+    views: [const { AtomicU8::new(0) }; 7],
+};
 
 /// `SwooleG.task_tmpfile`, `None` when empty. Its lock is `sw_thread_lock`, which
 /// `swoole_set_task_tmpdir` holds. Readers clone the `Arc`, so a path another
@@ -91,15 +78,10 @@ fn task_slot() -> MutexGuard<'static, Option<Arc<CStr>>> {
     TASK_TMPFILE.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn global() -> *mut Global {
-    SWOOLE_G.0.get()
-}
-
 /// `SwooleG.max_sockets`.
 #[must_use]
 pub fn max_sockets() -> u32 {
-    // SAFETY: a plain read of the live static, written only by init and clean.
-    unsafe { (*global()).max_sockets }
+    SWOOLE_G.max_sockets.load(Relaxed)
 }
 
 /// A task file path; the paths built here hold no NUL.
@@ -114,29 +96,32 @@ pub fn task_tmpfile() -> Arc<CStr> {
     task_slot().clone().unwrap_or_else(|| Arc::from(c""))
 }
 
-/// `change` over `SwooleG`'s fields, for `swoole_init` and `swoole_clean` alone.
-fn edit(change: impl FnOnce(&mut Global)) {
-    // SAFETY: init and clean, this function's only callers, run with no other thread
-    // using `SwooleG`, and `change` calls nothing that reads it.
-    change(unsafe { &mut *global() });
+/// `SwooleG.std_allocator = allocator`, null for none.
+fn set_allocator(allocator: [*mut c_void; 4]) {
+    for (slot, callback) in SWOOLE_G.std_allocator.iter().zip(allocator) {
+        slot.store(callback, Relaxed);
+    }
 }
 
 /// `SwooleG = {}`: the fields and the paths (lifecycle.rs clears the name resolvers with them).
 pub(crate) fn reset() {
-    edit(|global| *global = Global::ZERO);
+    SWOOLE_G.max_sockets.store(0, Relaxed);
+    SWOOLE_G.dns_cache_refresh_time.store(0, Relaxed);
+    set_allocator([std::ptr::null_mut(); 4]);
+    for byte in &SWOOLE_G.views {
+        byte.store(0, Relaxed);
+    }
     *task_slot() = None;
 }
 
 /// `swoole_init`'s first step: libc's allocator.
 pub(crate) fn init_allocator() {
-    edit(|global| {
-        global.std_allocator = CoreAllocator {
-            malloc: Some(libc::malloc),
-            calloc: Some(libc::calloc),
-            realloc: Some(libc::realloc),
-            free: Some(libc::free),
-        };
-    });
+    set_allocator([
+        libc::malloc as *mut c_void,
+        libc::calloc as *mut c_void,
+        libc::realloc as *mut c_void,
+        libc::free as *mut c_void,
+    ]);
 }
 
 /// `swoole_init`'s configuration once the logger exists: the resolver and task
@@ -144,7 +129,7 @@ pub(crate) fn init_allocator() {
 pub(crate) fn init() {
     let observed = crate::swr_v1_core_max_sockets(SW_SESSION_LIST_SIZE);
     let limit = u32::try_from(observed).unwrap_or(crate::constants::SW_MAX_SOCKETS_DEFAULT);
-    edit(|global| global.max_sockets = limit);
+    SWOOLE_G.max_sockets.store(limit, Relaxed);
     if observed < 0 {
         crate::log::sys_warning(c"swoole_init", format_args!("getrlimit() failed"));
     }
@@ -277,7 +262,11 @@ mod tests {
     fn storage_init_task_directory_and_reset() {
         init_allocator();
         init();
-        let allocator = unsafe { (*global()).std_allocator };
+        let allocator = unsafe {
+            std::ptr::from_ref(&SWOOLE_G.std_allocator)
+                .cast::<CoreAllocator>()
+                .read()
+        };
         let allocation = unsafe { (allocator.malloc.unwrap())(19) };
         assert!(!allocation.is_null());
         unsafe { (allocator.free.unwrap())(allocation) };
@@ -333,7 +322,12 @@ mod tests {
 
         reset();
         assert_eq!(max_sockets(), 0);
-        assert!(unsafe { (*global()).std_allocator.malloc }.is_none());
+        let allocator = unsafe {
+            std::ptr::from_ref(&SWOOLE_G.std_allocator)
+                .cast::<CoreAllocator>()
+                .read()
+        };
+        assert!(allocator.malloc.is_none());
         assert_eq!(path(), b"");
     }
 }

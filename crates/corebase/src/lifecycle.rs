@@ -6,7 +6,7 @@
 //! registers (`native.rs`); without it there is nothing to set up or tear down.
 use crate::log;
 use crate::native;
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
@@ -23,14 +23,14 @@ const HOOK_AFTER_FORK: c_int = 12;
 /// struct asserts this layout.
 #[repr(C)]
 pub struct ThreadGlobal {
-    id: u16,
-    kind: u8,
-    main_thread: bool,
-    buffer_stack: *mut c_void,
-    reactor: *mut c_void,
-    timer: *mut c_void,
-    message_bus: *mut c_void,
-    async_threads: *mut c_void,
+    id: Cell<u16>,
+    kind: Cell<u8>,
+    main_thread: Cell<bool>,
+    buffer_stack: Cell<*mut c_void>,
+    reactor: Cell<*mut c_void>,
+    timer: Cell<*mut c_void>,
+    message_bus: Cell<*mut c_void>,
+    async_threads: Cell<*mut c_void>,
 }
 
 const _: () = assert!(
@@ -42,24 +42,25 @@ const _: () = assert!(
 );
 
 thread_local! {
-    static THREAD: UnsafeCell<ThreadGlobal> = const {
-        UnsafeCell::new(ThreadGlobal {
-            id: 0,
-            kind: 0,
-            main_thread: false,
-            buffer_stack: ptr::null_mut(),
-            reactor: ptr::null_mut(),
-            timer: ptr::null_mut(),
-            message_bus: ptr::null_mut(),
-            async_threads: ptr::null_mut(),
-        })
+    static THREAD: ThreadGlobal = const {
+        ThreadGlobal {
+            id: Cell::new(0),
+            kind: Cell::new(0),
+            main_thread: Cell::new(false),
+            buffer_stack: Cell::new(ptr::null_mut()),
+            reactor: Cell::new(ptr::null_mut()),
+            timer: Cell::new(ptr::null_mut()),
+            message_bus: Cell::new(ptr::null_mut()),
+            async_threads: Cell::new(ptr::null_mut()),
+        }
     };
 }
 
-/// This thread's `SwooleTG`, live for the thread's life (it has no destructor).
+/// This thread's `SwooleTG`, live for the thread's life (it has no destructor). Every
+/// field is a cell, so native code may write through the pointer.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_thread_global() -> *mut ThreadGlobal {
-    THREAD.with(UnsafeCell::get)
+    THREAD.with(|thread| ptr::from_ref(thread).cast_mut())
 }
 
 /// `&SwooleTG.timer`, for crates/timer and crates/server.
@@ -74,70 +75,70 @@ pub fn swr_v1_core_timer_slot() -> *mut *mut c_void {
 /// `SwooleTG.timer`: this thread's timer, or null.
 #[must_use]
 pub fn thread_timer() -> *mut c_void {
-    read(|thread| thread.timer)
+    with(|thread| thread.timer.get())
 }
 
-fn read<T: Copy>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
-    // SAFETY: this thread's live record; the borrow ends before any native call.
-    field(unsafe { &*swr_v1_core_thread_global() })
+/// Sets `SwooleTG.timer`.
+pub fn set_thread_timer(timer: *mut c_void) {
+    with(|thread| thread.timer.set(timer));
 }
 
-fn write(field: impl FnOnce(&mut ThreadGlobal)) {
-    // SAFETY: as `read`.
-    field(unsafe { &mut *swr_v1_core_thread_global() });
+/// `field` over this thread's `SwooleTG`.
+fn with<T>(field: impl FnOnce(&ThreadGlobal) -> T) -> T {
+    THREAD.with(field)
 }
 
 /// `SwooleTG.reactor`.
 #[must_use]
 pub fn thread_reactor() -> *mut c_void {
-    read(|thread| thread.reactor)
+    with(|thread| thread.reactor.get())
 }
 
 /// `swoole_get_thread_type()`: `SwooleTG.type`.
 #[must_use]
 pub fn thread_kind() -> u8 {
-    read(|thread| thread.kind)
+    with(|thread| thread.kind.get())
 }
 
 /// `swoole_set_thread_type(kind)` then `swoole_set_thread_id(id)`.
 pub fn set_thread(kind: u8, id: u16) {
-    write(|thread| {
-        thread.kind = kind;
-        thread.id = id;
+    with(|thread| {
+        thread.kind.set(kind);
+        thread.id.set(id);
     });
 }
 
 /// `swoole_get_thread_id()`: `SwooleTG.id`.
 #[must_use]
 pub fn thread_id() -> u16 {
-    read(|thread| thread.id)
+    with(|thread| thread.id.get())
 }
 
 /// `SwooleTG.message_bus`.
 #[must_use]
 pub fn thread_message_bus() -> *mut c_void {
-    read(|thread| thread.message_bus)
+    with(|thread| thread.message_bus.get())
 }
 
 /// Sets `SwooleTG.message_bus`.
 pub fn set_thread_message_bus(bus: *mut c_void) {
-    write(|thread| thread.message_bus = bus);
+    with(|thread| thread.message_bus.set(bus));
 }
 
 /// Sets `SwooleTG.reactor`.
 pub fn set_thread_reactor(reactor: *mut c_void) {
-    write(|thread| thread.reactor = reactor);
+    with(|thread| thread.reactor.set(reactor));
 }
 
 /// `SwooleTG.async_threads`.
 #[must_use]
 pub fn thread_async_threads() -> *mut c_void {
-    read(|thread| thread.async_threads)
+    with(|thread| thread.async_threads.get())
 }
 
 /// Sets `SwooleTG.async_threads`.
 pub fn set_thread_async_threads(threads: *mut c_void) {
-    write(|thread| thread.async_threads = threads);
+    with(|thread| thread.async_threads.set(threads));
 }
 
 /// `void swoole_init()`'s body: the core record's defaults, `SwooleG`'s
@@ -166,15 +167,15 @@ pub extern "C-unwind" fn swr_v1_core_swoole_init() {
 )]
 pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
     if let Some(host) = native::host()
-        && read(|thread| thread.buffer_stack.is_null())
+        && with(|thread| thread.buffer_stack.get().is_null())
     {
         let buffer = (host.new_buffer)();
-        write(|thread| thread.buffer_stack = buffer);
+        with(|thread| thread.buffer_stack.set(buffer));
     }
     if !main_thread {
         crate::signal_block_all();
     }
-    write(|thread| thread.main_thread = main_thread);
+    with(|thread| thread.main_thread.set(main_thread));
 }
 
 /// `void swoole_thread_clean(bool main_thread)`.
@@ -184,15 +185,15 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 )]
 pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
     let Some(host) = native::host() else { return };
-    if read(|thread| !thread.timer.is_null()) {
+    if with(|thread| !thread.timer.get().is_null()) {
         (host.timer_free)();
     }
-    if read(|thread| !thread.reactor.is_null()) {
+    if with(|thread| !thread.reactor.get().is_null()) {
         (host.event_free)();
     }
-    if read(|thread| !thread.buffer_stack.is_null()) {
+    if with(|thread| !thread.buffer_stack.get().is_null()) {
         (host.delete_buffer)();
-        write(|thread| thread.buffer_stack = ptr::null_mut());
+        with(|thread| thread.buffer_stack.set(ptr::null_mut()));
     }
 }
 
@@ -203,7 +204,7 @@ pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
 )]
 #[must_use]
 pub extern "C" fn swoole_is_main_thread() -> bool {
-    read(|thread| thread.main_thread)
+    with(|thread| thread.main_thread.get())
 }
 
 /// `void swoole_clean()`: the hooks, signals and this thread first, then the
@@ -249,7 +250,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
             // SAFETY: the frames a native longjmp skips own nothing.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
         }
-        if read(|thread| !thread.async_threads.is_null()) {
+        if with(|thread| !thread.async_threads.get().is_null()) {
             let message = c"can not fork after using async-threads";
             // SAFETY: as above.
             unsafe { crate::fatal_error(OPERATION_NOT_SUPPORT, message) };
@@ -272,7 +273,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
         crate::signal_mask::restore_after_fork(previous, false);
         return pid;
     }
-    if read(|thread| !thread.timer.is_null()) {
+    if with(|thread| !thread.timer.get().is_null()) {
         (host.timer_free)();
     }
     if flags & FORK_EXEC == 0 {
@@ -288,8 +289,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     unsafe { (host.signal_clear)() };
     crate::signal_mask::restore_after_fork(previous, true);
     if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
-        // SAFETY: the after-fork hooks take no argument.
-        unsafe { crate::swoole_call_hook(HOOK_AFTER_FORK, std::ptr::null_mut()) };
+        crate::hook::call_after_fork();
     }
     0
 }
@@ -312,7 +312,7 @@ pub fn fork_exec(child: impl FnOnce()) -> libc::pid_t {
 /// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
 #[must_use]
 pub fn thread_buffer() -> *mut c_void {
-    read(|thread| thread.buffer_stack)
+    with(|thread| thread.buffer_stack.get())
 }
 
 thread_local! {
@@ -349,12 +349,12 @@ unsafe impl Send for SharedThread {}
 /// This thread's [`SharedThread`].
 #[must_use]
 pub fn shared_thread() -> SharedThread {
-    SharedThread(read(|thread| {
+    SharedThread(with(|thread| {
         [
-            thread.buffer_stack,
-            thread.reactor,
-            thread.timer,
-            thread.async_threads,
+            thread.buffer_stack.get(),
+            thread.reactor.get(),
+            thread.timer.get(),
+            thread.async_threads.get(),
         ]
     }))
 }
@@ -362,11 +362,11 @@ pub fn shared_thread() -> SharedThread {
 /// Adopts `shared` in this new thread.
 pub fn adopt_shared_thread(shared: SharedThread) {
     let [buffer_stack, reactor, timer, async_threads] = shared.0;
-    write(|thread| {
-        thread.buffer_stack = buffer_stack;
-        thread.reactor = reactor;
-        thread.timer = timer;
-        thread.async_threads = async_threads;
+    with(|thread| {
+        thread.buffer_stack.set(buffer_stack);
+        thread.reactor.set(reactor);
+        thread.timer.set(timer);
+        thread.async_threads.set(async_threads);
     });
 }
 
