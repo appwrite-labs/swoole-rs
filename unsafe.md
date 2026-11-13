@@ -1,46 +1,46 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `2f7349a`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `3b863d2`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `server` | 411 |  |
-| `zend` | 347 |  |
-| `tls` | 211 |  |
-| `hooks` | 208 |  |
-| `corebase` | 144 |  |
-| `reactor` | 139 |  |
-| `phpcoroutines` | 134 |  |
-| `process` | 121 |  |
-| `phpruntime` | 101 |  |
+| `server` | 409 |  |
+| `zend` | 324 |  |
+| `hooks` | 206 |  |
+| `tls` | 202 |  |
+| `corebase` | 134 |  |
+| `reactor` | 130 |  |
+| `phpcoroutines` | 121 |  |
+| `process` | 119 |  |
 | `phpclients` | 97 |  |
-| `phpstdext` | 97 |  |
-| `phpswoole` | 92 |  |
-| `ports` | 91 |  |
+| `phpruntime` | 93 |  |
+| `phpstdext` | 93 |  |
+| `ports` | 90 |  |
 | `coroutine` | 87 |  |
-| `clients` | 73 |  |
-| `phphttp` | 71 |  |
+| `phpswoole` | 84 |  |
+| `phphttp` | 70 |  |
 | `memory` | 69 |  |
+| `clients` | 61 |  |
 | `curl` | 56 |  |
-| `locks` | 50 |  |
-| `phpprocess` | 45 |  |
-| `http-ffi` | 43 |  |
 | `buffer` | 41 |  |
 | `phpthread` | 41 |  |
 | `ssh2` | 39 |  |
+| `phpprocess` | 37 |  |
 | `ossupport` | 34 |  |
 | `protocols-ffi` | 33 |  |
 | `odbc` | 31 |  |
 | `bus` | 26 |  |
 | `pgsql` | 26 |  |
 | `utilities` | 26 |  |
-| `timer` | 25 |  |
+| `http-ffi` | 25 |  |
+| `timer` | 24 |  |
 | `phpserver` | 23 |  |
+| `locks` | 20 |  |
 | `sqlite` | 15 |  |
-| `zlib` | 15 |  |
 | `oracle` | 14 |  |
 | `websocket-ffi` | 14 |  |
 | `oci` | 13 |  |
+| `zlib` | 12 |  |
 | `brotli` | 9 |  |
 | `firebird` | 8 |  |
 | `locale` | 7 |  |
@@ -72,4 +72,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 3,137. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 2,973. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
