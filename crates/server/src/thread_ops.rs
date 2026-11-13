@@ -22,12 +22,9 @@ use crate::callbacks::{ReceiveSlot, TaskSlot};
 use crate::event_worker_ops::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
-use crate::ops::{
-    OP_CC_COUNT, OP_CC_HTTP_DESTROY, OP_PACKET_INIT, OP_PACKET_TASK, OP_PC_NOTIFY, OP_RECVFROM,
-    OP_WR_SEND, OP_WR_SENDFILE,
-};
-use crate::ops::{OP_CLOSE, OP_RD_ABORT, OP_RESUME_TIMER};
 use crate::ops::{OP_FACTORY_DISPATCH, OP_ON_PACKET, OP_ON_RECEIVE, OP_RD_PORT_READ};
+use crate::ops::{OP_PACKET_INIT, OP_PACKET_TASK, OP_RECVFROM};
+use crate::ops::{OP_RD_ABORT, OP_RESUME_TIMER};
 use crate::reactor_entry::{self as entry, thread};
 use crate::reactor_ops::{ReactorContext, ThreadRecord, sign};
 use crate::records::ConnectionRecord;
@@ -39,10 +36,8 @@ const SW_EVENT_READ: c_int = 1 << 9;
 const THREAD_REACTOR: u8 = 2;
 const SW_EVENT_WRITE: c_int = 1 << 10;
 const FD_PIPE: c_int = 3;
-/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SERVER_EVENT_CLOSE`, `SW_SOCK_UDP`
-/// and `Server::CLOSE_ACTIVELY`.
+/// `SW_SERVER_EVENT_RECV_DGRAM`, `SW_SOCK_UDP` and `Server::CLOSE_ACTIVELY`.
 const EVENT_RECV_DGRAM: u8 = 1;
-const EVENT_CLOSE: u8 = 4;
 const SOCK_UDP: c_int = 2;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// The longest resume back-off, in milliseconds.
@@ -189,10 +184,6 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
 }
 
 /// Answers `op` when it is one of this module's, else `None`, as `reactor_ops::answer`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per op, as master.cc's switch was"
-)]
 #[inline(always)]
 pub(crate) fn answer(
     ctx: &mut ReactorContext<'_>,
@@ -203,7 +194,6 @@ pub(crate) fn answer(
     let (server, handle) = (ctx.serv, ctx.reactor);
     let reactor = handle.map_or(ptr::null_mut(), Reactor::ptr);
     let config = || state.config_ref();
-    let reactor_id = || handle.map(|handle| handle.handle().id());
     Some(match op {
         OP_PACKET_INIT => {
             let fd = event_fd(ctx)?;
@@ -265,49 +255,7 @@ pub(crate) fn answer(
             ctx.task.data = ctx.pkt.cast();
             (&raw mut ctx.task).expose_provenance() as u64
         }
-        OP_WR_SENDFILE => sign(swoole_rs_tls::upstream::socket_handle_sendfile(ctx.sock?)),
-        OP_WR_SEND => sign(swoole_rs_tls::upstream::socket_handle_send(ctx.sock?)),
-        OP_PC_NOTIFY => {
-            let mut head = DataHead {
-                reactor_id: i16::try_from(reactor_id()?).unwrap_or_default(),
-                fd: c_long::from(event_fd(ctx)?),
-                kind: EVENT_CLOSE,
-                ..DataHead::default()
-            };
-            // arg: peer_closed, the connection is no longer available
-            ctx.connection()?.set_peer_closed(arg != 0);
-            ctx.sock?.edit(|s| s.close_notified = true);
-            u64::from(factory::notify(state, (&raw mut head).cast()))
-        }
-        OP_CC_COUNT => {
-            let gs = crate::shared::server_counters(state)?;
-            let port = port_config(ctx)?.counters()?;
-            gs.close_count.fetch_add(1, SeqCst);
-            port.close_count.fetch_add(1, SeqCst);
-            // arg: base mode, which counts connections per reactor
-            if arg == 0 {
-                gs.connection_num.fetch_sub(1, SeqCst);
-                port.connection_num.fetch_sub(1, SeqCst);
-            } else {
-                let id = usize::from(reactor_id()?);
-                for cells in [gs.cells(), port.cells()] {
-                    // SAFETY: base mode's per-reactor counts, one per reactor.
-                    unsafe { &*cells.wrapping_add(id) }.fetch_sub(1, SeqCst);
-                }
-            }
-            0
-        }
-        OP_CC_HTTP_DESTROY => {
-            (crate::port_config::methods().destroy_http_request)(ctx.conn);
-            0
-        }
         OP_RESUME_TIMER => u64::from(resume_timer(server, ctx.connection()?, ctx.sock?)),
-
-        OP_CLOSE => {
-            // This thread's reactor and the connection's live socket.
-            let socket = ctx.connection()?.socket();
-            sign(entry::close_socket(server, handle?, socket))
-        }
         OP_RD_ABORT => {
             crate::connection::abort(server, handle?, ctx.port, ctx.sock?);
             0
@@ -382,12 +330,11 @@ fn packet<'c>(ctx: &'c mut ReactorContext<'_>) -> Option<&'c mut DgramPacket> {
 
 /// The destroy callback of a reactor thread's reactor: close its connections.
 unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
-    // SAFETY: the callback's live reactor, on its own thread: a reactor thread's
-    // reactor, whose `ptr` is its live server.
-    let ctx = unsafe { entry::reactor_context(reactor) };
-    if let Some(reactor) = ctx.reactor {
-        crate::reactor_thread::close_reactor_connections(ctx.serv, reactor);
-    }
+    // SAFETY: the callback's live reactor, on its own thread.
+    let reactor = unsafe { Reactor::of(reactor) };
+    // SAFETY: a reactor thread's reactor, whose `ptr` is its live server.
+    let serv = unsafe { entry::server(reactor) };
+    crate::reactor_thread::close_reactor_connections(serv, reactor);
 }
 
 /// What a reactor thread Rust starts runs. As `state::ThreadEntry`, whose `void *`

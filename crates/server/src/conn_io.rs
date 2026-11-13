@@ -1,29 +1,41 @@
 //! A connection's read, write and close paths (`src/server/reactor_thread.cc`):
 //! `ReactorThread_onRead`, `ReactorThread_onWrite`, `ReactorThread_onClose` and
-//! `Server::close_connection`. Native code passes each entry's facts as its argument
-//! (the fact bits below), so the hot read path makes no call besides the port's
-//! own `onRead`.
+//! `Server::close_connection`. The read's entry passes its facts as its argument (the
+//! fact bits below), so the hot read path makes no call besides the port's own
+//! `onRead`.
 //!
-//! `--fix-halfclose` (M15) builds have the `halfclose` feature, which reports
-//! `PREQUEUE` (upstream's `SW_HALFCLOSE_PREQUEUE`): a synchronous process worker keeps its ordered response after a
-//! clean FIN, `close_notified` is the terminal read state, and a TLS close notify
+//! `--fix-halfclose` (M15) builds have the `halfclose` feature (upstream's
+//! `SW_HALFCLOSE_PREQUEUE`): a synchronous process worker keeps its ordered response
+//! after a clean FIN, `close_notified` is the terminal read state, and a TLS close notify
 //! still owed is queued behind the output (`native/halfclose/prequeue.md`).
-use crate::ops::{
-    LOG_CC_LINGER, OP_CC_COUNT, OP_CC_DTLS_FREE, OP_CC_FINISH, OP_CC_HTTP_DESTROY,
-    OP_CC_HTTP_OBJECT, OP_CC_LINGER, OP_CC_QUEUE_CLOSE, OP_CC_RECV_FREE, OP_CC_REDIS_FREE,
-    OP_CC_REDIS_OBJECT, OP_CC_SESSION_CLEAR, OP_CC_SSL_CLOSE, OP_CC_SSL_SHUTDOWN, OP_CC_SSL_WANT,
-    OP_CC_TIMER_DEL, OP_CC_VALID, OP_CC_WATCH_WRITE, OP_CC_WEBSOCKET_FREE, OP_CLOSE, OP_LOCK,
-    OP_MAXFD, OP_MINFD, OP_PC_NOTIFY, OP_RD_ABORT, OP_RD_DTLS, OP_RD_PORT_READ, OP_RD_UNREAD,
-    OP_RD_WRITE_FACTS, OP_REACTOR_DEL, OP_RESUME_TIMER, OP_RT_REMOVE_WRITE, OP_SET_MAXFD,
-    OP_SET_WAITING_TIME, OP_UNLOCK, OP_WR_BUFFER_EMPTY, OP_WR_CLEAR_OVERFLOW, OP_WR_CLOSE,
-    OP_WR_CLOSE_ERRNO, OP_WR_FRONT, OP_WR_NOTIFY_CLOSE, OP_WR_QUEUED, OP_WR_READ_ONLY, OP_WR_SEND,
-    OP_WR_SENDFILE, OP_WR_STATE, OP_WR_TIMER_DEL, OP_WR_TIMER_DELAY, OP_WR_WAIT,
-};
-use crate::reactor_thread::{SW_CONTINUE, SW_ERROR, SW_READY, SW_WAIT, verify_ssl};
-use crate::{Host, SW_ERR, SW_OK};
+use core::ffi::{c_int, c_long};
+use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 
-// The fact bits.
-/// The connection exists (and, for a read, belongs to a port; else is active).
+use swoole_rs_buffer::cpp::{
+    new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
+    swr_cpp_buffer_typed_front,
+};
+use swoole_rs_buffer::string::delete_string;
+use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+use swoole_rs_corebase::{CCast, DataHead};
+use swoole_rs_reactor::{Event, Socket, what_event_want};
+use swoole_rs_timer::{swoole_timer_del, swoole_timer_delay};
+use swoole_rs_tls::upstream as tls;
+
+use crate::callbacks::{CB_BUFFER_EMPTY, CB_DISPATCH_FUNC};
+use crate::ops::{
+    OP_RD_ABORT, OP_RD_DTLS, OP_RD_PORT_READ, OP_RD_UNREAD, OP_RD_WRITE, OP_RESUME_TIMER,
+    OP_SET_WAITING_TIME,
+};
+use crate::port_config::PortConfig;
+use crate::reactor_handle::Reactor;
+use crate::reactor_ops::{out_buffer, valid};
+use crate::reactor_thread::{SW_CONTINUE, SW_ERROR, SW_READY, SW_WAIT, verify_ssl};
+use crate::records::{Connection, Lookup};
+use crate::{Host, SW_OK, view};
+
+// `ReactorThread_onRead`'s fact bits.
+/// The connection exists and belongs to a port.
 pub(crate) const FOUND: u64 = 1 << 0;
 pub(crate) const CLOSE_NOTIFIED: u64 = 1 << 1;
 pub(crate) const CLOSE_QUEUED: u64 = 1 << 2;
@@ -36,50 +48,19 @@ pub(crate) const DTLS_SOCKET: u64 = 1 << 6;
 /// Built with the `halfclose` feature.
 pub(crate) const PREQUEUE: u64 = 1 << 7;
 pub(crate) const PROCESS: u64 = 1 << 8;
-pub(crate) const CLOSE_NOTIFY: u64 = 1 << 9;
-pub(crate) const DISABLE_NOTIFY: u64 = 1 << 10;
-pub(crate) const CLOSE_FORCE: u64 = 1 << 11;
-pub(crate) const CLOSE_RESET: u64 = 1 << 12;
-pub(crate) const PEER_CLOSED: u64 = 1 << 13;
-pub(crate) const HASH_DISPATCH: u64 = 1 << 14;
-pub(crate) const DISPATCH_FUNC: u64 = 1 << 15;
-pub(crate) const COROUTINE: u64 = 1 << 16;
-pub(crate) const CONN_SSL: u64 = 1 << 17;
-pub(crate) const SOCKET_SSL: u64 = 1 << 18;
-pub(crate) const CLOSE_ERRNO: u64 = 1 << 19;
-pub(crate) const TIMER: u64 = 1 << 20;
-pub(crate) const WEBSOCKET_BUFFER: u64 = 1 << 21;
-pub(crate) const REMOVED: u64 = 1 << 22;
-pub(crate) const BASE: u64 = 1 << 23;
-pub(crate) const RECV_BUFFER: u64 = 1 << 24;
-/// Built with `SW_USE_SOCKET_LINGER`.
-const LINGER: u64 = 1 << 25;
-/// The socket's TLS is ready and it is a stream.
-pub(crate) const TLS_READY_STREAM: u64 = 1 << 26;
-pub(crate) const SSL_CLOSED: u64 = 1 << 27;
-/// `overflow` is set and the output is below the socket's buffer size.
-pub(crate) const OVERFLOW_DRAINED: u64 = 1 << 28;
-/// `onBufferEmpty` is set, the connection is over its high watermark and the output
-/// is down to the port's low watermark.
-pub(crate) const LOW_WATERMARK: u64 = 1 << 29;
-pub(crate) const SEND_TIMER: u64 = 1 << 30;
-pub(crate) const OUT_EMPTY: u64 = 1 << 31;
 /// `OP_RD_PORT_READ`'s bits above its result: the connection is still active, then
 /// (only while it is) the workers hold more than `max_queued_bytes` and the read
 /// notified the close.
 pub(crate) const ACTIVE: u64 = 1 << 32;
 pub(crate) const QUEUE_OVER: u64 = 1 << 33;
 pub(crate) const READ_NOTIFIED: u64 = 1 << 34;
-/// `OP_WR_WAIT`'s bits.
-pub(crate) const CLOSE_WAIT: u64 = 1 << 35;
-pub(crate) const SEND_WAIT: u64 = 1 << 36;
 
 /// The low 32 bits, where native code packs a C `int`.
 fn low(bits: u64) -> u32 {
     u32::try_from(bits & u64::from(u32::MAX)).unwrap_or_default()
 }
 
-/// `BufferChunk::Type`, as `OP_WR_FRONT` returns it (plus one; 0 is an empty buffer).
+/// `BufferChunk::Type`'s sendfile and close chunks.
 const KIND_SENDFILE: u64 = 1;
 const KIND_CLOSE: u64 = 2;
 
@@ -98,8 +79,7 @@ pub(crate) fn read<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
         // Once a close is queued, a read only drives a TLS shutdown that wants one.
         if facts & CLOSE_QUEUED != 0 {
             return Ok(if facts & SSL_WANT_READ != 0 {
-                let facts = h.get(OP_RD_WRITE_FACTS)?;
-                write(h, facts)?
+                h.signed(OP_RD_WRITE)?
             } else {
                 SW_OK
             });
@@ -138,168 +118,330 @@ pub(crate) fn read<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
     Ok(retval)
 }
 
+/// Built with the `halfclose` feature.
+const BUILT_PREQUEUE: bool = cfg!(feature = "halfclose");
+
+/// `SW_OK` and `SW_ERR` as the reactor's handlers return them.
+const OK: c_int = 0;
+const ERR: c_int = -1;
+/// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
+const SW_EVENT_READ: c_int = 1 << 9;
+const SW_EVENT_WRITE: c_int = 1 << 10;
+const SSL_READY: u32 = 1;
+/// `SW_SERVER_EVENT_CLOSE` and `_BUFFER_EMPTY`.
+const EVENT_CLOSE: u8 = 4;
+const EVENT_BUFFER_EMPTY: c_int = 14;
+
+/// Whether the socket has TLS whose handshake is not finished.
+fn handshaking(sock: Socket<'_>) -> bool {
+    sock.read(|s| !s.ssl().is_null() && s.tls.state != SSL_READY)
+}
+
+/// The socket's queued output, in bytes, and whether none is queued.
+fn output(sock: Socket<'_>) -> (u32, bool) {
+    sock.read(|s| {
+        out_buffer(s).map_or((0, true), |b| {
+            (swr_cpp_buffer_length(b), swr_cpp_buffer_empty(b))
+        })
+    })
+}
+
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
-pub(crate) fn write<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
-    if facts & FOUND == 0 {
-        return Ok(SW_ERR);
+pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+    let state = serv.state();
+    let config = state.config_ref();
+    let fd = event.fd();
+    let port = serv.port_by_fd(fd).map(view::Port::config);
+    if u64::from(config.mode_) == crate::MODE_PROCESS {
+        debug_assert_eq!(
+            fd % c_int::from(config.reactor_num.get()),
+            c_int::from(reactor.handle().id()),
+            "a reactor thread writes only its own fds"
+        );
     }
-    if facts & CLOSE_NOTIFY != 0 {
-        if facts & SSL_PENDING != 0 {
-            return h.signed(OP_CLOSE);
+    let conn = state.connection(c_long::from(fd), Lookup::ByFd);
+    // A session's socket is the event's.
+    let Some((conn, sock)) = conn
+        .filter(|conn| conn.is_active())
+        .and_then(|conn| Some((conn, conn.socket()?)))
+    else {
+        return ERR;
+    };
+    if conn.close_notify() {
+        if handshaking(sock) {
+            return close_connection(serv, reactor, Some(sock));
         }
-        h.get(OP_WR_NOTIFY_CLOSE)?;
-        return Ok(SW_OK);
-    } else if facts & DISABLE_NOTIFY != 0 && facts & CLOSE_FORCE != 0 {
-        return h.signed(OP_CLOSE);
+        crate::server_methods::notify(serv, conn, c_int::from(EVENT_CLOSE));
+        conn.set_close_notify(false);
+        return OK;
+    } else if config.disable_notify && conn.close_force() {
+        return close_connection(serv, reactor, Some(sock));
     }
-    loop {
-        let ret = match h.get(OP_WR_FRONT)? {
-            0 => break,
-            front if front - 1 == KIND_CLOSE => return h.signed(OP_WR_CLOSE),
-            front if front - 1 == KIND_SENDFILE => h.signed(OP_WR_SENDFILE)?,
+    while let Some(kind) = sock.read(|s| {
+        let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
+        Some(u64::from(swr_cpp_buffer_typed_front(buffer).kind))
+    }) {
+        let ret = match kind {
+            KIND_CLOSE => return reactor.close(sock),
+            KIND_SENDFILE => tls::socket_handle_sendfile(sock),
             _ => {
-                let ret = h.signed(OP_WR_SEND)?;
-                if ret == SW_OK {
-                    h.get(OP_WR_QUEUED)?;
+                let ret = tls::socket_handle_send(sock);
+                if ret == OK {
+                    conn.set_send_queued_bytes(output(sock).0);
                 }
                 ret
             }
         };
         if ret < 0 {
-            let wait = h.get(OP_WR_WAIT)?;
-            if wait & CLOSE_WAIT != 0 {
-                return h.signed(OP_WR_CLOSE_ERRNO);
-            } else if wait & SEND_WAIT != 0 {
+            let (close_wait, send_wait) = sock.read(|s| (s.output.close_wait, s.output.send_wait));
+            if close_wait {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                conn.set_close_errno(errno.c_cast::<u16>());
+                return reactor.trigger_close(event);
+            } else if send_wait {
                 break;
             }
         }
     }
-    let mut state = h.get(OP_WR_STATE)?;
-    if state & OVERFLOW_DRAINED != 0 {
-        h.get(OP_WR_CLEAR_OVERFLOW)?;
+    if conn.overflow() && output(sock).0 < sock.read(|s| s.output.buffer_size) {
+        conn.set_overflow(false);
     }
-    if state & LOW_WATERMARK != 0 {
-        h.get(OP_WR_BUFFER_EMPTY)?;
-        // onBufferEmpty may have written more.
-        state = h.get(OP_WR_STATE)?;
+    let buffer_empty = state
+        .callbacks
+        .slot(CB_BUFFER_EMPTY)
+        .is_some_and(crate::callbacks::CallbackSlot::is_set);
+    let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
+    if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
+        conn.set_high_watermark(false);
+        crate::server_methods::notify(serv, conn, EVENT_BUFFER_EMPTY);
     }
-    if state & SEND_TIMER != 0 {
-        h.get(if state & OUT_EMPTY != 0 {
-            OP_WR_TIMER_DEL
-        } else {
-            OP_WR_TIMER_DELAY
-        })?;
+    let timer = sock.read(|s| s.output.send_timer);
+    if !timer.is_null() {
+        if output(sock).1 {
+            // SAFETY: the socket's live send timer.
+            unsafe { swoole_timer_del(timer.cast()) };
+            sock.edit(|s| s.output.send_timer = core::ptr::null_mut());
+        } else if let Some(port) = port {
+            let delay = port.max_idle_time.get().c_cast::<c_long>();
+            // SAFETY: the socket's live send timer.
+            unsafe { swoole_timer_delay(timer.cast(), delay) };
+        }
     }
-    if state & (PEER_CLOSED | REMOVED) == 0 && state & OUT_EMPTY != 0 {
+    if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
         // A notified close no longer reads: it only drains.
-        h.get(if facts & PREQUEUE != 0 {
-            OP_RT_REMOVE_WRITE
+        if BUILT_PREQUEUE {
+            reactor.interest(sock, 5, 0);
         } else {
-            OP_WR_READ_ONLY
-        })?;
+            reactor.change(sock, 1, SW_EVENT_READ);
+        }
     }
-    Ok(SW_OK)
+    OK
 }
 
 /// `ReactorThread_onClose`: the peer closed. Close now when nobody is told or a
 /// close is already queued, else mark the connection and notify the worker once.
-pub(crate) fn peer_close<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
-    if facts & FOUND == 0 {
-        return Ok(SW_ERR);
+pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+    let state = serv.state();
+    let fd = event.fd();
+    let conn = state.connection(c_long::from(fd), Lookup::ByFd);
+    let (Some(conn), Some(sock)) = (conn.filter(|conn| conn.is_active()), event.socket()) else {
+        return ERR;
+    };
+    if state.config_ref().disable_notify {
+        return close_connection(serv, reactor, Some(sock));
     }
-    if facts & DISABLE_NOTIFY != 0 {
-        return h.signed(OP_CLOSE);
+    if reactor.change(sock, 2, 0) != 0 {
+        return ERR;
     }
-    if h.signed(OP_REACTOR_DEL)? != 0 {
-        return Ok(SW_ERR);
+    if conn.close_queued() {
+        return close_connection(serv, reactor, Some(sock));
     }
-    if facts & CLOSE_QUEUED != 0 {
-        return h.signed(OP_CLOSE);
+    if sock.read(|s| s.close_notified) {
+        return OK;
     }
-    if facts & CLOSE_NOTIFIED != 0 {
-        return Ok(SW_OK);
-    }
-    Ok(h.op(OP_PC_NOTIFY, u64::from(peer_closed(facts)))?
-        .cast_signed())
+    let mut head = DataHead {
+        reactor_id: i16::try_from(reactor.handle().id()).unwrap_or_default(),
+        fd: c_long::from(fd),
+        kind: EVENT_CLOSE,
+        ..DataHead::default()
+    };
+    // The connection is no longer available.
+    conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
+    sock.edit(|s| s.close_notified = true);
+    c_int::from(crate::hybrid::hybrid().factory_notify(serv, &mut head))
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
 /// fixed-worker dispatch still owes its ordered response after a clean FIN; other
-/// modes, TLS and fatal closes are terminal (always, without `PREQUEUE`).
-fn peer_closed(facts: u64) -> bool {
-    facts & PREQUEUE == 0
-        || facts & PROCESS == 0
-        || facts & HASH_DISPATCH == 0
-        || facts & (DISPATCH_FUNC | COROUTINE | CONN_SSL | CLOSE_ERRNO | CLOSE_FORCE | CLOSE_RESET)
-            != 0
+/// modes, TLS and fatal closes are terminal (always, without `prequeue`).
+fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) -> bool {
+    let config = state.config_ref();
+    let dispatch_func = state
+        .callbacks
+        .slot(CB_DISPATCH_FUNC)
+        .is_some_and(crate::callbacks::CallbackSlot::is_set);
+    !prequeue
+        || u64::from(config.mode_) != crate::MODE_PROCESS
+        || !matches!(config.dispatch_mode.get(), 2 | 4 | 8)
+        || dispatch_func
+        || config.enable_coroutine.get()
+        || conn.ssl()
+        || conn.close_errno() != 0
+        || conn.close_force()
+        || conn.close_reset()
 }
 
 /// `Server::close_connection`: release what the connection holds, count the close,
 /// clear its session and move the max fd down past it, then close the socket.
-/// `facts` are its fact bits, the socket's fd above bit 32.
-pub(crate) fn close_connection<H: Host>(h: &mut H, facts: u64) -> crate::Effect<i64> {
-    let fd = i64::from(low(facts >> 32).cast_signed());
-    if facts & TIMER != 0 {
-        h.get(OP_CC_TIMER_DEL)?;
+pub(crate) fn close_connection(
+    serv: view::Server<'_>,
+    reactor: Reactor,
+    sock: Option<Socket<'_>>,
+) -> c_int {
+    let state = serv.state();
+    let Some(sock) = sock else {
+        return ERR;
+    };
+    let fd = sock.fd();
+    // A session socket's connection is its fd's slot.
+    let Some(conn) = state.connection(c_long::from(fd), Lookup::ByFd) else {
+        return ERR;
+    };
+    let port = serv.port_by_fd(fd).map(view::Port::config);
+    let timer = conn.timer();
+    if !timer.is_null() {
+        // SAFETY: the connection's live timer.
+        unsafe { swoole_timer_del(timer.cast()) };
+        conn.set_timer(core::ptr::null_mut());
     }
-    let removed = facts & REMOVED != 0;
+    let removed = sock.read(|s| s.removed);
     // A TLS close notify that cannot be sent now goes behind the queued output.
-    if facts & PREQUEUE != 0
-        && facts & TLS_READY_STREAM != 0
-        && facts & (PEER_CLOSED | CLOSE_FORCE | CLOSE_RESET | SSL_CLOSED) == 0
-        && !h.is(OP_CC_SSL_SHUTDOWN)?
-        && h.is(OP_CC_SSL_WANT)?
-    {
-        if facts & CLOSE_QUEUED == 0 {
-            h.get(OP_CC_QUEUE_CLOSE)?;
+    if BUILT_PREQUEUE && owes_close_notify(conn, sock) {
+        if !conn.close_queued() {
+            queue_close(conn, sock);
         }
-        if h.op(OP_CC_WATCH_WRITE, u64::from(removed))?.cast_signed() == SW_OK {
-            return Ok(SW_OK);
+        let events = sock.read(|s| what_event_want(s, SW_EVENT_WRITE));
+        if reactor.change(sock, u32::from(!removed), events) == OK {
+            return OK;
         }
     }
-    if facts & WEBSOCKET_BUFFER != 0 {
-        h.get(OP_CC_WEBSOCKET_FREE)?;
+    let websocket = conn.websocket_buffer();
+    if !websocket.is_null() {
+        // SAFETY: the connection's `new String`, not used again.
+        unsafe { delete_string(websocket.cast()) };
+        conn.set_websocket_buffer(core::ptr::null_mut());
     }
-    if !removed && h.signed(OP_REACTOR_DEL)? < 0 {
-        return Ok(SW_ERR);
+    if !removed && reactor.change(sock, 2, 0) < 0 {
+        return ERR;
     }
-    h.op(OP_CC_COUNT, u64::from(facts & BASE != 0))?;
-    if facts & SOCKET_SSL != 0 {
-        h.get(OP_CC_SSL_CLOSE)?;
+    count_close(state, port, reactor);
+    let (ssl, dtls, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.dtls, s.recv_buffer));
+    if ssl {
+        sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
+        // SAFETY: handles to a session live only for the operation that took them,
+        // and native code closes it between operations.
+        unsafe { tls::socket_ssl_close(sock) };
     }
-    if facts & DTLS_SOCKET != 0 {
-        h.get(OP_CC_DTLS_FREE)?;
+    if let Some(port) = port.filter(|_| dtls) {
+        (crate::port_config::methods().dtls_free)(port, fd);
     }
-    if facts & RECV_BUFFER != 0 {
-        h.get(OP_CC_RECV_FREE)?;
+    if !recv_buffer.is_null() {
+        // SAFETY: the socket's `new String`, not used again.
+        unsafe { delete_string(recv_buffer.cast()) };
+        sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
     }
-    if h.is(OP_CC_HTTP_OBJECT)? {
-        h.get(OP_CC_HTTP_DESTROY)?;
+    if let Some(port) = port {
+        if port.open_http_protocol.get() && !conn.object().is_null() {
+            (crate::port_config::methods().destroy_http_request)(conn.as_ptr());
+        }
+        if port.open_redis_protocol.get() && !conn.object().is_null() {
+            // SAFETY: the redis request the connection owns, not used again.
+            unsafe { swoole_rs_corebase::sw_free(conn.object()) };
+        }
     }
-    if h.is(OP_CC_REDIS_OBJECT)? {
-        h.get(OP_CC_REDIS_FREE)?;
+    if let Some(session) = state.session(conn.session_id()) {
+        session.set_fd(0);
     }
-    if facts & LINGER != 0 && facts & (CLOSE_FORCE | CLOSE_RESET) != 0 && h.is(OP_CC_LINGER)? {
-        h.get(LOG_CC_LINGER)?;
+    lower_max_fd(state, fd);
+    conn.active().store(0, Relaxed);
+    conn.set_socket(core::ptr::null_mut());
+    conn.set_object(core::ptr::null_mut());
+    // The slot's last write before close(fd): an accept that gets the fd back
+    // acquires it (OP_CONN_RESET) before reusing the slot.
+    conn.closed().store(1, Release);
+    // SAFETY: the closing socket, which nothing uses afterwards.
+    unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.ptr(), sock.as_ptr()) }
+}
+
+/// Whether a clean close of a ready TLS stream owes a close notify that its
+/// shutdown could not send now.
+fn owes_close_notify(conn: Connection<'_>, sock: Socket<'_>) -> bool {
+    let (ready_stream, ssl_closed) = sock.read(|s| {
+        let stream = matches!(s.socket_type, 1 | 3 | 5);
+        (
+            !s.ssl().is_null() && s.tls.state == SSL_READY && stream,
+            s.ssl_closed,
+        )
+    });
+    ready_stream
+        && !(conn.peer_closed() || conn.close_force() || conn.close_reset() || ssl_closed)
+        && !tls::socket_ssl_shutdown(sock)
+        && sock.read(|s| s.tls.want_read || s.tls.want_write)
+}
+
+/// Queues a close behind the socket's output.
+fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
+    if sock.read(|s| s.output.out_buffer.is_null()) {
+        let buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
+        sock.edit(|s| s.output.out_buffer = buffer);
     }
-    h.get(OP_CC_SESSION_CLEAR)?;
-    // The connection list's max fd, if it was this one.
-    h.get(OP_LOCK)?;
-    if fd == h.signed(OP_MAXFD)? {
+    sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+    conn.set_close_queued(true);
+}
+
+/// The close's counts: the server's and the port's closes and connections, which
+/// base mode counts per reactor.
+fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: Reactor) {
+    let gs = crate::shared::server_counters(state);
+    let (Some(gs), Some(port)) = (gs, port.and_then(PortConfig::counters)) else {
+        return;
+    };
+    gs.close_count.fetch_add(1, SeqCst);
+    port.close_count.fetch_add(1, SeqCst);
+    if u64::from(state.config_ref().mode_) == crate::MODE_BASE {
+        let id = usize::from(reactor.handle().id());
+        for cells in [gs.cells(), port.cells()] {
+            // SAFETY: base mode's per-reactor counts, one per reactor.
+            unsafe { &*cells.wrapping_add(id) }.fetch_sub(1, SeqCst);
+        }
+    } else {
+        gs.connection_num.fetch_sub(1, SeqCst);
+        port.connection_num.fetch_sub(1, SeqCst);
+    }
+}
+
+/// The connection list's max fd moves down past `fd`, if it was `fd`.
+fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
+    let Some(gs) = crate::shared::server_counters(state) else {
+        return;
+    };
+    state.lock();
+    if fd == gs.max_fd() {
         let mut find = fd - 1;
-        while h.op(OP_CC_VALID, find.cast_unsigned())? == 0 && find > h.signed(OP_MINFD)? {
+        while !valid(state.connection(c_long::from(find), Lookup::ByFd)) && find > gs.min_fd() {
             find -= 1;
         }
-        h.op(OP_SET_MAXFD, find.cast_unsigned())?;
+        gs.max_fd.store(find, Relaxed);
     }
-    h.get(OP_UNLOCK)?;
-    h.signed(OP_CC_FINISH)
+    state.unlock();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::LiveServer;
+    use crate::hybrid::tests::{Call, calls};
     use crate::ops::{OP_SSL_ACCEPT, OP_SSL_READY};
     use crate::script::Script;
 
@@ -323,7 +465,7 @@ mod tests {
             FOUND,
             Script::with(&[(OP_RD_PORT_READ, u64::from(u32::MAX))]),
         );
-        assert_eq!(code, SW_ERR);
+        assert_eq!(code, crate::SW_ERR);
     }
 
     #[test]
@@ -395,11 +537,11 @@ mod tests {
         );
         let (code, h) = read_with(
             FOUND | PREQUEUE | CLOSE_QUEUED | SSL_WANT_READ,
-            Script::with(&[(OP_RD_WRITE_FACTS, FOUND)]),
+            Script::default(),
         );
         assert_eq!((code, h.called(OP_RD_PORT_READ)), (SW_OK, 0));
         assert_eq!(
-            h.called(OP_WR_FRONT),
+            h.called(OP_RD_WRITE),
             1,
             "a TLS shutdown's read retries the write"
         );
@@ -422,188 +564,201 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_flushes_then_reads_again() {
-        let mut h = Script::with(&[(OP_WR_SEND, 0), (OP_WR_STATE, OUT_EMPTY | SEND_TIMER)])
-            .queue(OP_WR_FRONT, &[1, 1, 0]);
-        assert_eq!(write(&mut h, FOUND).unwrap(), SW_OK);
-        assert_eq!((h.called(OP_WR_SEND), h.called(OP_WR_QUEUED)), (2, 2));
-        assert_eq!(h.called(OP_WR_TIMER_DEL), 1);
-        assert_eq!(h.called(OP_WR_READ_ONLY), 1);
-        let mut h = Script::with(&[(OP_WR_STATE, OUT_EMPTY)]);
-        write(&mut h, FOUND | PREQUEUE).unwrap();
-        assert_eq!(
-            (h.called(OP_RT_REMOVE_WRITE), h.called(OP_WR_READ_ONLY)),
-            (1, 0),
-            "drains only"
-        );
-        let mut h = Script::with(&[(OP_WR_STATE, OUT_EMPTY | PEER_CLOSED)]);
-        write(&mut h, FOUND).unwrap();
-        assert_eq!(h.called(OP_WR_READ_ONLY), 0);
-        let mut h = Script::with(&[(OP_WR_STATE, SEND_TIMER | OVERFLOW_DRAINED | LOW_WATERMARK)]);
-        write(&mut h, FOUND).unwrap();
-        assert_eq!(h.called(OP_WR_TIMER_DELAY), 1);
-        assert_eq!(
-            (h.called(OP_WR_CLEAR_OVERFLOW), h.called(OP_WR_BUFFER_EMPTY)),
-            (1, 1)
-        );
-        assert_eq!(h.called(OP_WR_READ_ONLY), 0);
+    /// The live server with sessions 1 and 2 accepted, and their clients.
+    fn accepted() -> (LiveServer, [std::net::TcpStream; 2]) {
+        let live = LiveServer::new();
+        let clients = [live.connect(), live.connect()];
+        // SAFETY: the fixture's listener, live for the event.
+        let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+        crate::connection::accept(live.server(), live.reactor(), &event);
+        drop(calls());
+        (live, clients)
+    }
+
+    /// Session `id`, which its reactor thread reads.
+    fn session(live: &LiveServer, id: c_long) -> Connection<'_> {
+        let conn = live.state().connection(id, Lookup::Verified).unwrap();
+        let sock = conn.socket().unwrap();
+        if sock.read(|s| s.removed) {
+            assert_eq!(live.reactor().change(sock, 0, SW_EVENT_READ), OK);
+        }
+        conn
+    }
+
+    /// Edits the state's configuration, which the test alone touches.
+    fn configure(live: &LiveServer, edit: impl FnOnce(&mut crate::ServerConfig)) {
+        // SAFETY: the fixture's state, on this thread only.
+        edit(unsafe { &mut *live.state().config() });
+    }
+
+    fn closed(conn: Connection<'_>) -> bool {
+        !conn.is_active() && conn.closed().load(Relaxed) == 1 && conn.socket().is_none()
     }
 
     #[test]
-    fn write_stops_at_a_close_or_a_full_socket() {
-        let mut h = Script::with(&[(OP_WR_FRONT, 1 + KIND_CLOSE), (OP_WR_CLOSE, 7)]);
-        assert_eq!(write(&mut h, FOUND).unwrap(), 7);
-        let mut h = Script::with(&[
-            (OP_WR_FRONT, 1 + KIND_SENDFILE),
-            (OP_WR_SENDFILE, u64::MAX),
-            (OP_WR_WAIT, CLOSE_WAIT),
-            (OP_WR_CLOSE_ERRNO, 3),
-        ]);
-        assert_eq!(write(&mut h, FOUND).unwrap(), 3);
-        let mut h = Script::with(&[
-            (OP_WR_FRONT, 1),
-            (OP_WR_SEND, u64::MAX),
-            (OP_WR_WAIT, SEND_WAIT),
-        ]);
-        assert_eq!(write(&mut h, FOUND).unwrap(), SW_OK);
-        assert_eq!((h.called(OP_WR_QUEUED), h.called(OP_WR_STATE)), (0, 1));
-        let mut h = Script::default();
-        assert_eq!(write(&mut h, 0).unwrap(), SW_ERR);
-    }
-
-    #[test]
-    fn write_notifies_or_closes_a_pending_close() {
-        let mut h = Script::default();
-        assert_eq!(write(&mut h, FOUND | CLOSE_NOTIFY).unwrap(), SW_OK);
-        assert_eq!(
-            (h.called(OP_WR_NOTIFY_CLOSE), h.called(OP_WR_FRONT)),
-            (1, 0)
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn close_releases_counts_and_moves_the_max_fd() {
+        let (live, _clients) = accepted();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let (mut one, mut two) = (session(&live, 1), session(&live, 2));
+        if one.fd() > two.fd() {
+            core::mem::swap(&mut one, &mut two);
+        }
+        let gs = live.counters();
+        gs.max_fd.store(two.fd(), Relaxed);
+        gs.min_fd.store(0, Relaxed);
+        let (gs_before, port_before) = (
+            gs.connection_num.load(SeqCst),
+            live.port_counters().connection_num.load(SeqCst),
         );
-        let mut h = Script::default();
-        write(&mut h, FOUND | CLOSE_NOTIFY | SSL_PENDING).unwrap();
-        assert_eq!(h.called(OP_CLOSE), 1, "closed during the handshake");
-        let mut h = Script::default();
-        write(&mut h, FOUND | DISABLE_NOTIFY | CLOSE_FORCE).unwrap();
-        assert_eq!((h.called(OP_CLOSE), h.called(OP_WR_FRONT)), (1, 0));
+        let session_id = two.session_id();
+        assert_eq!(close_connection(serv, reactor, two.socket()), OK);
+        assert!(closed(two));
+        assert_eq!(gs.max_fd(), one.fd(), "down to the open session");
+        let session = live.state().session(session_id).unwrap();
+        assert_eq!(session.fd(), 0, "the session is clear");
+        gs.max_fd.store(one.fd() + 1, Relaxed);
+        assert_eq!(close_connection(serv, reactor, one.socket()), OK);
+        assert!(closed(one));
+        assert_eq!(gs.max_fd(), one.fd() + 1, "not the max fd");
+        assert_eq!(gs.close_count.load(SeqCst), 2);
+        assert_eq!(live.port_counters().close_count.load(SeqCst), 2);
+        assert_eq!(gs.connection_num.load(SeqCst), gs_before - 2);
+        assert_eq!(
+            live.port_counters().connection_num.load(SeqCst),
+            port_before - 2
+        );
+        assert_eq!(close_connection(serv, reactor, None), ERR);
+        assert_eq!(calls(), [], "nobody is told");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_notifies_once() {
-        let mut h = Script::with(&[(OP_PC_NOTIFY, 1)]);
-        assert_eq!(peer_close(&mut h, FOUND).unwrap(), 1);
-        assert_eq!(h.args(OP_PC_NOTIFY), vec![1], "peer closed");
-        let mut h = Script::default();
-        assert_eq!(peer_close(&mut h, FOUND | CLOSE_NOTIFIED).unwrap(), SW_OK);
-        assert_eq!(h.called(OP_PC_NOTIFY), 0);
-        let mut h = Script::with(&[(OP_REACTOR_DEL, u64::MAX)]);
-        assert_eq!(peer_close(&mut h, FOUND).unwrap(), SW_ERR);
-        let mut h = Script::default();
-        peer_close(&mut h, FOUND | CLOSE_QUEUED).unwrap();
-        assert_eq!((h.called(OP_CLOSE), h.called(OP_REACTOR_DEL)), (1, 1));
-        let mut h = Script::default();
-        peer_close(&mut h, FOUND | DISABLE_NOTIFY).unwrap();
-        assert_eq!((h.called(OP_CLOSE), h.called(OP_REACTOR_DEL)), (1, 0));
-        assert_eq!(peer_close(&mut Script::default(), 0).unwrap(), SW_ERR);
+        let (live, _clients) = accepted();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let conn = session(&live, 1);
+        let fd = conn.fd();
+        let event = conn.event(0, 0);
+        assert_eq!(peer_close(serv, reactor, &event), 1);
+        let close = Call::Notify(c_long::from(fd), 0, EVENT_CLOSE, 0);
+        assert_eq!(calls(), [close]);
+        assert!(conn.peer_closed(), "upstream: the connection is gone");
+        assert!(conn.socket().unwrap().read(|s| s.close_notified));
+        assert!(conn.is_active(), "the worker closes it");
+
+        let conn = session(&live, 2);
+        conn.set_close_queued(true);
+        assert_eq!(peer_close(serv, reactor, &conn.event(0, 0)), OK);
+        assert_eq!(calls(), [], "a queued close closes now");
+        assert!(closed(conn));
+        assert_eq!(peer_close(serv, reactor, &conn.event(0, 0)), ERR, "gone");
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn peer_close_closes_when_nobody_is_told() {
+        let (live, _clients) = accepted();
+        configure(&live, |c| c.disable_notify = true);
+        let conn = session(&live, 1);
+        let event = conn.event(0, 0);
+        assert_eq!(peer_close(live.server(), live.reactor(), &event), OK);
+        assert!(closed(conn));
+        assert_eq!(calls(), []);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn prequeue_keeps_a_synchronous_process_response() {
-        let owed = PREQUEUE | PROCESS | HASH_DISPATCH;
-        assert!(!peer_closed(owed));
-        assert!(peer_closed(owed & !PREQUEUE), "upstream");
-        assert!(peer_closed(owed & !PROCESS));
-        assert!(peer_closed(owed & !HASH_DISPATCH));
-        for terminal in [
-            DISPATCH_FUNC,
-            COROUTINE,
-            CONN_SSL,
-            CLOSE_ERRNO,
-            CLOSE_FORCE,
-            CLOSE_RESET,
-        ] {
-            assert!(peer_closed(owed | terminal));
+        let (live, _clients) = accepted();
+        let (state, conn) = (live.state(), session(&live, 1));
+        assert_eq!(state.config_ref().dispatch_mode.get(), 2, "fixed by fd");
+        state.config_ref().enable_coroutine.set(false);
+        assert!(!fin_ends(true, state, conn), "owed its response");
+        assert!(fin_ends(false, state, conn), "upstream");
+        state.config_ref().dispatch_mode.set(1);
+        assert!(fin_ends(true, state, conn), "round robin");
+        state.config_ref().dispatch_mode.set(2);
+        state.config_ref().enable_coroutine.set(true);
+        assert!(fin_ends(true, state, conn), "a coroutine worker");
+        state.config_ref().enable_coroutine.set(false);
+        let terminal: [fn(Connection<'_>, bool); 4] = [
+            |c, on| c.set_ssl(on),
+            |c, on| c.set_close_errno(u16::from(on)),
+            |c, on| c.set_close_force(on),
+            |c, on| c.set_close_reset(on),
+        ];
+        for set in terminal {
+            set(conn, true);
+            assert!(fin_ends(true, state, conn));
+            set(conn, false);
+        }
+        configure(&live, |c| c.mode_ = u8::try_from(crate::MODE_BASE).unwrap());
+        assert!(fin_ends(true, state, conn), "base mode");
+    }
+
+    /// `bytes` queued on the connection's socket.
+    fn queue(conn: Connection<'_>, bytes: &[u8]) {
+        let buffer = swoole_rs_buffer::cpp::new_buffer(0);
+        conn.socket()
+            .unwrap()
+            .edit(|s| s.output.out_buffer = buffer.cast());
+        // SAFETY: the socket's live buffer and the bytes.
+        unsafe {
+            swoole_rs_buffer::cpp::swr_cpp_buffer_append(
+                &*buffer,
+                bytes.as_ptr(),
+                bytes.len().try_into().unwrap(),
+            );
         }
     }
 
     #[test]
-    fn close_releases_and_moves_the_max_fd() {
-        let fd = 9u64 << 32;
-        let mut h = Script::with(&[
-            (OP_MAXFD, 9),
-            (OP_MINFD, 3),
-            (OP_CC_HTTP_OBJECT, 1),
-            (OP_CC_FINISH, 0),
-        ])
-        .queue(OP_CC_VALID, &[0, 0, 1]);
-        assert_eq!(
-            close_connection(
-                &mut h,
-                fd | TIMER | WEBSOCKET_BUFFER | SOCKET_SSL | RECV_BUFFER | BASE
-            )
-            .unwrap(),
-            SW_OK
-        );
-        for op in [
-            OP_CC_TIMER_DEL,
-            OP_CC_WEBSOCKET_FREE,
-            OP_REACTOR_DEL,
-            OP_CC_SSL_CLOSE,
-            OP_CC_RECV_FREE,
-            OP_CC_HTTP_DESTROY,
-            OP_CC_SESSION_CLEAR,
-        ] {
-            assert_eq!(h.called(op), 1, "{op}");
-        }
-        assert_eq!(h.args(OP_CC_COUNT), vec![1], "base mode");
-        assert_eq!(h.args(OP_CC_VALID), vec![8, 7, 6]);
-        assert_eq!(h.args(OP_SET_MAXFD), vec![6]);
-        assert_eq!(
-            (h.called(OP_CC_REDIS_FREE), h.called(OP_CC_SSL_SHUTDOWN)),
-            (0, 0)
-        );
-
-        let mut h = Script::with(&[(OP_MAXFD, 12), (OP_CC_LINGER, 1)]);
-        close_connection(&mut h, fd | REMOVED | LINGER | CLOSE_RESET).unwrap();
-        assert_eq!((h.called(OP_REACTOR_DEL), h.called(LOG_CC_LINGER)), (0, 1));
-        assert_eq!(h.called(OP_SET_MAXFD), 0, "not the max fd");
-        assert_eq!(h.args(OP_CC_COUNT), vec![0]);
-
-        let mut h = Script::with(&[(OP_REACTOR_DEL, u64::MAX)]);
-        assert_eq!(close_connection(&mut h, fd).unwrap(), SW_ERR);
-        assert_eq!(h.called(OP_CC_FINISH), 0);
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn write_flushes_the_output_then_reads_again() {
+        use std::io::Read;
+        let (live, [mut client, _]) = accepted();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let conn = session(&live, 1);
+        queue(conn, b"queued");
+        let sock = conn.socket().unwrap();
+        reactor.change(sock, 1, SW_EVENT_READ | SW_EVENT_WRITE);
+        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        let mut got = [0; 6];
+        client.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"queued");
+        assert_eq!(output(sock), (0, true));
+        assert_eq!(conn.send_queued_bytes(), 0);
+        let events = sock.read(|s| s.events);
+        assert_eq!(events & SW_EVENT_WRITE, 0, "reads only");
+        assert_eq!(calls(), []);
+        conn.active().store(0, Relaxed);
+        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), ERR, "gone");
     }
 
     #[test]
-    fn prequeue_close_queues_a_tls_close_notify() {
-        let tls = PREQUEUE | TLS_READY_STREAM;
-        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
-        assert_eq!(close_connection(&mut h, tls).unwrap(), SW_OK);
-        assert_eq!(
-            (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
-            (1, vec![0])
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn write_notifies_or_closes_a_pending_close() {
+        let (live, _clients) = accepted();
+        let (serv, reactor) = (live.server(), live.reactor());
+        let conn = session(&live, 1);
+        conn.set_close_notify(true);
+        queue(conn, b"kept");
+        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        let close = Call::Notify(
+            c_long::from(conn.fd()),
+            0,
+            EVENT_CLOSE,
+            conn.server_fd().c_cast(),
         );
-        assert_eq!(h.called(OP_CC_FINISH), 0, "drains first");
-        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
-        close_connection(&mut h, tls | CLOSE_QUEUED | REMOVED).unwrap();
-        assert_eq!(
-            (h.called(OP_CC_QUEUE_CLOSE), h.args(OP_CC_WATCH_WRITE)),
-            (0, vec![1])
-        );
-        let mut h = Script::with(&[(OP_CC_SSL_WANT, 1), (OP_CC_WATCH_WRITE, u64::MAX)]);
-        close_connection(&mut h, tls).unwrap();
-        assert_eq!(h.called(OP_CC_FINISH), 1, "could not watch: close now");
-        let mut h = Script::with(&[(OP_CC_SSL_SHUTDOWN, 1)]);
-        close_connection(&mut h, tls).unwrap();
-        assert_eq!(
-            (h.called(OP_CC_SSL_WANT), h.called(OP_CC_FINISH)),
-            (0, 1),
-            "sent"
-        );
-        for terminal in [PEER_CLOSED, CLOSE_FORCE, CLOSE_RESET, SSL_CLOSED, PREQUEUE] {
-            let mut h = Script::with(&[(OP_CC_SSL_WANT, 1)]);
-            close_connection(&mut h, tls ^ terminal).unwrap();
-            assert_eq!(h.called(OP_CC_SSL_SHUTDOWN), 0);
-        }
+        assert_eq!(calls(), [close]);
+        assert!(!conn.close_notify());
+        assert_eq!(output(conn.socket().unwrap()).0, 4, "nothing flushed");
+
+        configure(&live, |c| c.disable_notify = true);
+        let conn = session(&live, 2);
+        conn.set_close_force(true);
+        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(closed(conn), "a forced close nobody is told of");
     }
 }
