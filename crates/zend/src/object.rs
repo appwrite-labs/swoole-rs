@@ -3,11 +3,10 @@
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, IS_OBJECT_EX, object_init_ex, object_properties_init,
-        swr_zend_class_set_create_object, swr_zend_object_alloc, swr_zend_objects_hold,
-        swr_zend_property_slot, swr_zend_try_facade_update, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property, zend_value, zval,
+        IS_OBJECT, IS_OBJECT_EX, object_init_ex, object_properties_init, swr_zend_object_alloc,
+        swr_zend_objects_hold, swr_zend_property_slot, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property, zend_value, zval,
     },
 };
 use std::{
@@ -240,8 +239,8 @@ pub(crate) fn install_custom<T: Custom>(
     // Swoole's `SW_SET_CLASS_CUSTOM_OBJECT`: `create::<T>` makes `Object<T>`s
     // with `Object::create`, and `free::<T>` ends with `zend_object_std_dtor`
     // without freeing the object: Zend then frees the allocation at `std - OFFSET`.
-    // SAFETY: a registered entry, written at MINIT.
-    unsafe { swr_zend_class_set_create_object(entry, Some(create::<T>)) };
+    // `ce->create_object`, in the union it shares with an interface's hook.
+    entry.__bindgen_anon_2.create_object = Some(create::<T>);
     handlers.free_obj = Some(free::<T>);
     handlers.offset = c_int::try_from(Object::<T>::OFFSET).unwrap_or(c_int::MAX);
     if T::DESTRUCTS {

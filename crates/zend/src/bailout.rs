@@ -5,12 +5,18 @@
 use crate::{
     Invalid,
     sys::{
-        swr_zend_guard_pending, swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try,
-        swr_zend_try_call, swr_zend_try_report, swr_zend_try_report_code, zend_fcall_info,
-        zend_fcall_info_cache, zval,
+        swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try, swr_zend_try_call,
+        swr_zend_try_report, swr_zend_try_report_code, zend_fcall_info, zend_fcall_info_cache,
+        zval,
     },
 };
 use std::ffi::{CStr, c_char, c_int, c_void};
+
+unsafe extern "C" {
+    /// The shim's whole-thread exit mark: a C thread-local of its own, not
+    /// executor state, read on any thread; no arguments, and nothing runs.
+    safe fn swr_zend_guard_pending() -> c_int;
+}
 
 /// A trapped bailout. Its owner finishes its Rust work, then reports it to
 /// the C/C++ caller (for example as a flag), which calls `zend_bailout()`.
@@ -86,8 +92,7 @@ pub fn defer(result: Result<(), Bailout>) {
 /// Only `Swoole\Thread` marks one, and it needs ZTS: never on NTS.
 #[inline]
 pub(crate) fn thread_exit_pending() -> bool {
-    // SAFETY: a pure read of this OS thread's native pending outcome.
-    cfg!(zts) && unsafe { swr_zend_guard_pending() != 0 }
+    cfg!(zts) && swr_zend_guard_pending() != 0
 }
 
 /// Whether a bailout waits for [`finish`]. No error is raised meanwhile:

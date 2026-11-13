@@ -26,7 +26,8 @@ unsafe extern "C" {
 #[cfg(feature = "sockets")]
 // SAFETY: ext/sockets' class and import, which PHP exports when it has the extension.
 unsafe extern "C" {
-    static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
+    /// Written once, by ext/sockets' MINIT, before any request reads it.
+    safe static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
     fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
 }
 
@@ -95,10 +96,8 @@ pub fn socket_cast(value: &Value) -> c_int {
         let (Some(object), Some(class)) = (value.object(), value.class()) else {
             return -3;
         };
-        // SAFETY: ext/sockets' class, set at its MINIT.
-        let socket = unsafe { socket_ce };
         // SAFETY: two live classes.
-        if !unsafe { swoole_rs_zend::sys::swr_zend_instanceof(class, socket) } {
+        if !unsafe { swoole_rs_zend::sys::swr_zend_instanceof(class, socket_ce) } {
             return -3;
         }
         // SAFETY: a `Socket`, whose `php_socket` starts with its descriptor.

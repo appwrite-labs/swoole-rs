@@ -3,8 +3,9 @@
 //! into `network::Client`'s record and state here.
 use crate::native::{self, Cli, ErrorKind};
 use crate::net::{self, bailed, report, warn, warn_sys};
-use libc::{c_int, c_void};
+use libc::c_int;
 use swoole_rs_clients::client::ClientRecord;
+use swoole_rs_phpswoole::length::Named;
 use swoole_rs_ports::framing_recv::default_length_func;
 use swoole_rs_tls::{self as tls, Text, Value};
 use swoole_rs_zend::host::callable::Callable;
@@ -247,14 +248,15 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
         edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
-        let callable = bailed(native::callable(function))?;
-        if callable.is_null() {
+        let Some(callable) = bailed(native::owned_callable(function))? else {
             return Some(false);
-        }
-        let previous = option_pointer(cli, callable);
-        if !previous.is_null() {
-            bailed(native::callable_free(previous))?;
-        }
+        };
+        let named = Named::new(callable);
+        length_option(cli, &named);
+        bailed(native::free_owner(
+            cli.get()
+                .replace_length_owner(Some(std::rc::Rc::new(named))),
+        ))?;
     }
     let max_length = options
         .size("package_max_length")
@@ -323,16 +325,16 @@ fn proxies(cli: Cli, options: &Options) -> bool {
     true
 }
 
-/// Install `callable` as the client's length function, returning the previous one.
-fn option_pointer(cli: Cli, callable: *mut c_void) -> *mut c_void {
+/// Point the client's length function at `callable`, which the client then owns.
+fn length_option(cli: Cli, named: &Named) {
     edit(cli, |record| {
         let protocol = &mut record.protocol;
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
         protocol.package_length_size = 0;
         protocol.package_length_type = 0;
         protocol.package_length_offset = IPC_BUFFER_SIZE;
-        std::mem::replace(&mut protocol.private_data_1, callable)
-    })
+        protocol.private_data_1 = named.as_ptr();
+    });
 }
 
 fn proxy(

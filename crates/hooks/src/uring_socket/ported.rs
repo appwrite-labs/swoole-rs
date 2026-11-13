@@ -505,16 +505,7 @@ fn sendmsg_and_recvmsg() {
             msg.msg_iov = &raw mut ivec;
             msg.msg_iovlen = 1;
 
-            let ret = unsafe {
-                sock.ops.io(
-                    RECVMSG,
-                    ptr::null_mut(),
-                    0,
-                    (&raw mut msg).cast(),
-                    ptr::null_mut(),
-                    0,
-                )
-            };
+            let ret = unsafe { sock.ops.message(RECVMSG, &raw mut msg, 0) };
             buf.truncate(ret.max(0).unsigned_abs());
             assert_eq!(buf, text);
         },
@@ -528,16 +519,7 @@ fn sendmsg_and_recvmsg() {
             msg.msg_iov = &raw mut ivec;
             msg.msg_iovlen = 1;
 
-            let ret = unsafe {
-                sock.ops.io(
-                    SENDMSG,
-                    ptr::null_mut(),
-                    0,
-                    (&raw mut msg).cast(),
-                    ptr::null_mut(),
-                    0,
-                )
-            };
+            let ret = unsafe { sock.ops.message(SENDMSG, &raw mut msg, 0) };
             drop(sock);
             assert_eq!(ret, length.cast_signed());
         },
@@ -546,34 +528,33 @@ fn sendmsg_and_recvmsg() {
 
 /// `sendto(host, port, data)`: to the host's address of the socket's family.
 fn sendto(sock: &Sock, to: &Address, data: &[u8]) -> isize {
-    let mut length = to.len;
+    let mut address = SocketAddress {
+        len: to.len,
+        ..SocketAddress::default()
+    };
     unsafe {
-        sock.ops.io(
-            SENDTO,
-            data.as_ptr().cast_mut().cast(),
-            data.len(),
-            to.as_ptr().cast_mut().cast(),
-            &raw mut length,
-            0,
-        )
+        ptr::copy_nonoverlapping(
+            (&raw const to.storage).cast::<u8>(),
+            (&raw mut address.addr).cast::<u8>(),
+            to.len as usize,
+        );
     }
+    super::sendto(&sock.ops, data, &address)
 }
 
 fn recvfrom(sock: &Sock, buf: &mut [u8], from: Option<&mut Address>) -> isize {
-    let (addr, length) = match from {
-        Some(from) => ((&raw mut from.storage).cast::<c_void>(), &raw mut from.len),
-        None => (ptr::null_mut(), ptr::null_mut()),
-    };
-    unsafe {
-        sock.ops.io(
-            RECVFROM,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            addr,
-            length,
-            0,
-        )
+    let result = recvfrom_peer(&sock.ops, buf);
+    if let (Some(from), Some(info)) = (from, sock.ops.socket.net(|record| record.info)) {
+        from.len = info.len;
+        unsafe {
+            ptr::copy_nonoverlapping(
+                (&raw const info.addr).cast::<u8>(),
+                (&raw mut from.storage).cast::<u8>(),
+                info.len as usize,
+            );
+        }
     }
+    result
 }
 
 fn test_sendto_recvfrom(v6: bool) {

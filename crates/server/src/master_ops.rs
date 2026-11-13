@@ -2009,9 +2009,8 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             EVENT_CONNECT,
         )),
         OP_CLOSE_CONNECTION => {
-            let socket = o.conn().socket_ptr().cast();
-            // SAFETY: the context's live reactor and the connection's socket.
-            unsafe { crate::reactor_entry::close_connection(o.ctx.reactor, socket) };
+            // The context's live reactor and the connection's socket.
+            crate::reactor_entry::close_socket(o.server(), o.reactor(), o.conn_socket());
             0
         }
         OP_FORCE_CLOSE => {
@@ -2040,10 +2039,9 @@ fn closing(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_THREAD0_SHUTDOWN => {
-            let reactor = swoole_rs_corebase::thread_reactor();
-            let thread = crate::reactor_entry::thread(o.state, 0);
-            // SAFETY: the server's first reactor thread and this thread's reactor.
-            unsafe { crate::reactor_entry::thread_shutdown(thread, reactor) };
+            // The server's first reactor thread, over this thread's reactor.
+            let reactor = crate::reactor_handle::Reactor::thread();
+            crate::reactor_entry::thread_shutdown(o.server(), reactor, 0);
             0
         }
         OP_BEFORE_SHUTDOWN => {
@@ -2536,17 +2534,16 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                     unsafe {
                         swoole_rs_process::task_file::task_pack(
                             (&raw mut buf).cast(),
-                            c.message.cast(),
-                            c.length,
+                            c.message.as_ptr().cast(),
+                            c.message.len(),
                         )
                     }
                 } else {
-                    let length = c.length.min(IPC_BUFFER_SIZE);
-                    buf.info.len = u32::try_from(length).unwrap_or(u32::MAX);
-                    // SAFETY: the message's bytes, within the buffer.
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(c.message, buf.data.as_mut_ptr(), length);
-                    };
+                    // As much of the message as the buffer holds.
+                    let (message, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
+                    buf.info.len = u32::try_from(message.len()).unwrap_or(u32::MAX);
+                    let (data, _) = buf.data.split_at_mut(message.len());
+                    data.copy_from_slice(message);
                     true
                 };
                 head(&mut buf.info);
@@ -2578,30 +2575,18 @@ fn objects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
                 };
                 return Some(u64::from(sent));
             }
-            #[expect(clippy::cast_possible_truncation, reason = "DataHead's fields")]
-            let mut task = SendData {
-                info: swoole_rs_corebase::DataHead {
-                    reactor_id: process_id.cast_signed(),
-                    len: c.length as u32,
-                    ..Default::default()
-                },
-                data: c.message.cast(),
+            let mut info = swoole_rs_corebase::DataHead {
+                reactor_id: process_id.cast_signed(),
+                ..Default::default()
             };
-            head(&mut task.info);
-            let Some(worker) = o.server().worker_record(process_id) else {
+            head(&mut info);
+            // The worker's pipe: its worker end to a reactor thread, else its master end.
+            let to_worker = c.action != TO_REACTOR_THREAD;
+            let Some(pipe) = o.server().worker_pipe(process_id, to_worker) else {
                 return Some(0);
             };
-            let pipe = if c.action == TO_REACTOR_THREAD {
-                worker.pipe_worker()
-            } else {
-                worker.pipe_master()
-            };
-            let bus = o.state.message_bus();
-            // SAFETY: a worker pipe and the message.
-            u64::from(unsafe {
-                bus.rust()
-                    .send(pipe.cast(), &mut task.info, task.data.cast())
-            })
+            // The bus sets the head's length to the message's.
+            u64::from(o.state.message_bus().write(pipe, &mut info, c.message))
         }
         _ => return None,
     })

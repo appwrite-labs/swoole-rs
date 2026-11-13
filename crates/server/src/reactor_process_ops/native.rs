@@ -125,9 +125,9 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_COMMAND_REQUEST => {
-            let me = swoole_rs_process::worker_globals::current_worker();
-            // SAFETY: as above.
-            let id = u16::try_from(unsafe { &*me }.id()).unwrap_or(0);
+            // The worker this process runs.
+            let me = swoole_rs_process::worker_globals::with_current(|me| me.id())?;
+            let id = u16::try_from(me).unwrap_or(0);
             let pipe = worker_pipe(ctx.other(0)?, true);
             crate::commands::call_command_handler(ctx.server(), ctx.bus(), id, pipe);
             0
@@ -149,10 +149,11 @@ pub(super) fn native(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_PORT_ADD => {
             let port = *ctx.ports().get(usize::try_from(arg).ok()?)?;
-            let gs = port.config().counters()?;
+            // The worker's slot of the port's counters.
             let id = ctx.worker().id() as usize;
-            // SAFETY: the worker's slot of them.
-            unsafe { &*gs.cells().wrapping_add(id) }.store(0, Ordering::Relaxed);
+            ctx.server()
+                .port_worker_connections(port, id)?
+                .store(0, Ordering::Relaxed);
             sign(port.with_socket(|socket| ctx.reactor_handle().add(socket, EVENT_READ))?)
         }
         OP_REACTOR_SETUP => {

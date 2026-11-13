@@ -6,7 +6,6 @@ use crate::settings::Length;
 use libc::{c_int, c_void, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
-    mem::ManuallyDrop,
     ptr,
     rc::Rc,
 };
@@ -15,8 +14,9 @@ use swoole_rs_clients::{
     client::{self, Client, Op},
 };
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_hooks::co_socket::Co as Handle;
+use swoole_rs_hooks::{co_socket::Co as Handle, socket_extra};
 use swoole_rs_phpruntime::{Report, co, report};
+use swoole_rs_phpswoole::length::Named;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_protocols_ffi::set_protocol as mqtt_set_protocol;
 use swoole_rs_reactor::Socket as Net;
@@ -254,26 +254,23 @@ impl Co {
     /// # Errors
     /// The callable's destructor bailed out; the bailout stays pending.
     pub fn free_length_callable(self) -> Result<(), Bailout> {
-        let callable = self.0.edit_protocol(|protocol| {
-            std::mem::replace(&mut protocol.private_data_1, ptr::null_mut())
-        });
-        if callable.is_null() {
-            return Ok(());
-        }
-        callable_free(callable)
+        self.0
+            .edit_protocol(|protocol| protocol.private_data_1 = ptr::null_mut());
+        free_owner(socket_extra::replace_length_owner(self.handle(), None))
     }
 
-    /// `accept(timeout)`: the new connection, owned by the caller. It copies
-    /// the listener's length callable, so closing it leaves the listener's.
+    /// `accept(timeout)`: the new connection, owned by the caller. Its protocol is
+    /// the listener's, and it shares the listener's length callable, so closing
+    /// it leaves the listener's.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<NewSocket> {
         let conn = NewSocket(Self(self.0.accept(timeout)?));
-        let callable = self.0.protocol().private_data_1;
-        if !callable.is_null() {
-            let copy = callable_dup(callable);
-            conn.co()
-                .0
-                .edit_protocol(|protocol| protocol.private_data_1 = copy);
+        if let Some(owner) = socket_extra::length_owner(self.handle()) {
+            // A new socket, which has none to drop.
+            drop(socket_extra::replace_length_owner(
+                conn.co().handle(),
+                Some(owner),
+            ));
         }
         Some(conn)
     }
@@ -536,18 +533,17 @@ impl Co {
 /// one, which is freed once the socket no longer holds it. Nothing more is set
 /// once a bailout is pending.
 pub(crate) fn length_callable(socket: Co, value: &Value) {
-    let Ok(callable) = self::callable(value) else {
+    let Ok(Some(callable)) = owned_callable(value) else {
         return;
     };
-    if callable.is_null() {
-        return;
-    }
-    let old = socket.0.edit_protocol(|protocol| {
+    let named = Named::new(callable);
+    socket.0.edit_protocol(|protocol| {
         protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
-        std::mem::replace(&mut protocol.private_data_1, callable)
+        protocol.private_data_1 = named.as_ptr();
     });
     // The destructor may reach the socket, so it runs between the edits.
-    if !old.is_null() && callable_free(old).is_err() {
+    let old = socket_extra::replace_length_owner(socket.handle(), Some(Rc::new(named)));
+    if free_owner(old).is_err() {
         return;
     }
     socket.0.edit_protocol(|protocol| {
@@ -617,12 +613,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
 pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
-    let callable = cli.get().edit_record(|record| {
-        std::mem::replace(&mut record.protocol.private_data_1, ptr::null_mut())
-    });
-    if !callable.is_null() {
-        callable_free(callable)?;
-    }
+    cli.get()
+        .edit_record(|record| record.protocol.private_data_1 = ptr::null_mut());
+    free_owner(cli.get().replace_length_owner(None))?;
     let handle = cli.handle();
     let free = || {
         // SAFETY: `destroy` is the client's last operation.
@@ -632,36 +625,14 @@ pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
     unsafe { bailout::trap_with(free) }
 }
 
-/// `sw_callable_create(value)`, for a protocol's `private_data_1`: the slot's
-/// reference (`Rc::into_raw`), or null after a warning.
+/// Drop a `package_length_func` owner, out of its socket or client.
 /// # Errors
-/// The warning's handler bailed out; the bailout stays pending.
-pub(crate) fn callable(value: &Value) -> Result<*mut c_void, Bailout> {
-    let callable = Callable::new(value)?;
-    Ok(callable.map_or(ptr::null_mut(), |callable| {
-        Rc::into_raw(callable).cast_mut().cast()
-    }))
-}
-
-/// The slot's callable `callable` made, still the slot's: the caller's own
-/// reference.
-fn held(callable: *mut c_void) -> Rc<Callable> {
-    // SAFETY: a slot's live reference (`callable`), borrowed: the slot keeps it.
-    let slot = ManuallyDrop::new(unsafe { Rc::from_raw(callable.cast::<Callable>()) });
-    Rc::clone(&slot)
-}
-
-/// `callable->dup()`: another slot's reference to `callable`.
-fn callable_dup(callable: *mut c_void) -> *mut c_void {
-    Rc::into_raw(held(callable)).cast_mut().cast()
-}
-
-/// `sw_callable_free(callable)`, out of its slot: it is gone either way.
-/// # Errors
-/// A destructor bailed out; the bailout stays pending.
-pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
-    // SAFETY: the reference `callable` gave a slot, which holds it no more.
-    drop(unsafe { Rc::from_raw(callable.cast::<Callable>()) });
+/// Its destructor bailed out; the bailout stays pending.
+pub(crate) fn free_owner(owner: Option<Rc<dyn std::any::Any>>) -> Result<(), Bailout> {
+    if owner.is_none() {
+        return Ok(());
+    }
+    drop(owner);
     bailout::outcome(())
 }
 

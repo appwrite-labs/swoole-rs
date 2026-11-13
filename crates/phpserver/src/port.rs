@@ -110,10 +110,14 @@ impl PortData {
         let port = self.port.get();
         if !port.is_null() {
             if crate::lifecycle::owns_shared() {
-                // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
-                free_callable(take(
-                    &mut unsafe { port_config::of(port) }.protocol.private_data_1,
-                ));
+                let owner = {
+                    // SAFETY: a bound port, which outlives this call, on the thread that owns its slots.
+                    let config = unsafe { port_config::of(port) };
+                    config.protocol.private_data_1 = ptr::null_mut();
+                    config.length_owner.take()
+                };
+                // Out of the port first: a destructor this runs may reach it again.
+                drop(owner);
             }
             self.port.set(ptr::null_mut());
         }
@@ -176,22 +180,6 @@ pub(crate) fn bound_port(object: &Value) -> view::Port<'_> {
 pub(crate) fn release(object: &Value) {
     if let Some(data) = object.custom::<PortData>() {
         data.release();
-    }
-}
-
-/// A slot's callable, which leaves it null.
-fn take(slot: &mut *mut c_void) -> *mut c_void {
-    std::mem::replace(slot, ptr::null_mut())
-}
-
-/// Free a callable already out of its slot: a destructor this runs may reach
-/// the slot again, or leave a bailout pending.
-pub(crate) fn free_callable(callable: *mut c_void) {
-    if !callable.is_null() {
-        // SAFETY: the reference `Source::callable` gave the slot, owned by no slot now.
-        drop(unsafe {
-            std::rc::Rc::from_raw(callable.cast::<swoole_rs_zend::host::callable::Callable>())
-        });
     }
 }
 

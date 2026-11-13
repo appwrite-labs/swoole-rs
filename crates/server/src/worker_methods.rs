@@ -139,8 +139,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 #[must_use]
 pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members::Shm {
     let size = size_of::<WorkerRecord>();
-    let pending = serv.registry().pending();
-    let count = pending.len();
+    let count = serv.registry().pending().len();
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
     let copies = workers.as_ptr().cast::<WorkerRecord>();
     if copies.is_null() {
@@ -148,9 +147,8 @@ pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members:
         log::sys_warning(c"Server::create_user_workers", m);
         return workers;
     }
-    for (index, &worker) in pending.iter().enumerate() {
-        // SAFETY: null or a live worker `add_worker` added, which outlives the server.
-        let Some(worker) = (unsafe { Worker::from_raw(worker.cast()) }) else {
+    for index in 0..count {
+        let Some(worker) = serv.pending_worker(index) else {
             continue;
         };
         // SAFETY: its slot in the fresh shared array of `count` records.

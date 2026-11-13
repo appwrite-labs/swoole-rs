@@ -2,7 +2,7 @@
 //! connect and TLS host strings, the proxies, the TLS context and the destructor
 //! callback.
 use crate::co_socket::Co;
-use std::ffi::c_void;
+use std::{any::Any, ffi::c_void, rc::Rc};
 use swoole_rs_corebase::{ProxyState, StringSlot};
 use swoole_rs_tls::TlsContext;
 
@@ -20,6 +20,9 @@ pub struct SocketExtra {
     pub(crate) strings: [StringSlot; 3],
     /// `set_dtor`'s callback.
     close_hook: Option<CloseHook>,
+    /// The owner of the callable `protocol.private_data_1` names, when the
+    /// socket has a `package_length_func`.
+    length_owner: Option<Rc<dyn Any>>,
     /// `socks5_proxy` and `http_proxy`: each the socket's own, or none.
     pub(crate) proxies: [Option<Box<ProxyState>>; 2],
     /// The ring's host when the socket is a `UringSocket`, else none.
@@ -43,6 +46,7 @@ impl SocketExtra {
             strings: std::array::from_fn(|_| StringSlot::default()),
             tls: None,
             close_hook: None,
+            length_owner: None,
             proxies: [None, None],
             #[cfg(feature = "iouring")]
             uring: None,
@@ -68,6 +72,24 @@ pub extern "C" fn swr_v1_hook_co_socket_uring(socket: Co) {
 /// closes or is destroyed.
 pub fn set_close_hook(socket: Co, hook: CloseHook) {
     socket.with_extra(|extra| extra.close_hook = Some(hook));
+}
+
+/// The owner of the socket's `package_length_func`, which `owner` replaces. The
+/// caller drops the previous one outside the socket's loan: its destructor may
+/// reach the socket.
+#[must_use]
+pub fn replace_length_owner(socket: Co, owner: Option<Rc<dyn Any>>) -> Option<Rc<dyn Any>> {
+    socket
+        .with_extra(|extra| std::mem::replace(&mut extra.length_owner, owner))
+        .flatten()
+}
+
+/// Another reference to the socket's `package_length_func` owner.
+#[must_use]
+pub fn length_owner(socket: Co) -> Option<Rc<dyn Any>> {
+    socket
+        .with_extra(|extra| extra.length_owner.clone())
+        .flatten()
 }
 
 /// The destructor callback, once: `close()`'s release and `~Socket`. The socket may be

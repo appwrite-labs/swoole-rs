@@ -651,14 +651,16 @@ pub fn has_files(owner: &OwnedTlsContext) -> (bool, bool) {
     (set(&owner.strings[4]), set(&owner.strings[5]))
 }
 
-/// `verify_peer` with no client certificate file, cafile or capath.
-/// # Safety
-/// The caller serializes field writes against this read.
-pub unsafe fn verify_without_ca(owner: &OwnedTlsContext) -> bool {
-    let empty = |slot: &Arc<StringSlot>| slot.bytes().is_empty();
-    // SAFETY: as the caller promises.
-    let verify_peer = unsafe { &*owner.fields.get() }.verify_peer != 0;
-    verify_peer && empty(&owner.strings[7]) && empty(&owner.strings[9]) && empty(&owner.strings[10])
+impl OwnedTlsContext {
+    /// No client certificate file, cafile or capath: with `verify_peer`, a peer
+    /// verified without a CA.
+    #[must_use]
+    pub fn names_no_ca(&self) -> bool {
+        let [.., client_cert_file, _, cafile, capath] = &self.strings;
+        [client_cert_file, cafile, capath]
+            .iter()
+            .all(|slot| slot.bytes().is_empty())
+    }
 }
 
 #[cfg(test)]

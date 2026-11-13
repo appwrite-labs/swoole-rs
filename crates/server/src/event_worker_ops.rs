@@ -255,9 +255,9 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         }
         OP_CONN_REACTOR => u64::from(conn.reactor_id()),
         OP_CLOSE_CONNECTION => {
-            let reactor = swoole_rs_corebase::thread_reactor();
-            // SAFETY: the thread's live reactor and the connection's session socket.
-            unsafe { crate::reactor_entry::close_connection(reactor, conn.socket_ptr().cast()) };
+            // The thread's reactor and the connection's session socket.
+            let reactor = crate::reactor_handle::Reactor::thread();
+            crate::reactor_entry::close_socket(ctx.server(), reactor, conn.socket());
             0
         }
         _ => return None,
