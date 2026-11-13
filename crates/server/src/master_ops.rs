@@ -3,40 +3,29 @@
 //! and shared counters, and the context's connection, socket and port. Rust
 //! answers them before any native call, so master.cc no longer has a case for
 //! them. Logs name the upstream function that wrote them.
-use crate::records::Lookup;
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::WorkerType;
 
-use swoole_rs_buffer::cpp::{
-    CppBuffer, new_buffer, swr_cpp_buffer_append, swr_cpp_buffer_empty, swr_cpp_buffer_length,
-    swr_cpp_buffer_typed_close,
-};
-use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+use swoole_rs_buffer::cpp::swr_cpp_buffer_empty;
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 
-use crate::base_factory::SendData;
-use crate::callbacks::CallbackSlot;
 use crate::callbacks::{
     CB_BUFFER_EMPTY, CB_BUFFER_FULL, CB_CLOSE, CB_CONNECT, CB_RECEIVE, CB_TASK,
 };
 use crate::hybrid::hybrid;
+use crate::ops::OP_PIPE_COMMAND_ADD;
 use crate::ops::{
     LOG_ALLOC_PORT_GS, LOG_ALLOC_SESSIONS, LOG_ALLOC_TASK_RESULTS, LOG_ALLOC_WORKERS,
     LOG_BASE_ALLOC_CONNECTIONS, LOG_BASE_ALLOC_NUMS, LOG_BASE_ALLOC_PORT_NUMS,
     LOG_CALLBACK_DISPATCH, LOG_CALLBACK_REQUIRED, LOG_LC_ONLY_ONE, LOG_MAX_CONNECTION_MINIMUM,
-    LOG_REACTOR_NUM, LOG_SC_CLOSED_BY_CLIENT, LOG_SC_CONN_OVERFLOW, LOG_SC_NO_SESSION_DATA,
-    LOG_SC_NO_SESSION_EVENT, LOG_SC_SOCKET_OVERFLOW, LOG_TASK_POOL, LOG_TASK_WORKER_NUM,
-    LOG_WORKER_NUM, OP_BASE_REACTORS, OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING,
-    OP_HAS_PIPE_COMMAND, OP_IS_CREATED, OP_PORT_IDLE_TIME, OP_SC_ADD, OP_SC_ADD_READ,
-    OP_SC_ADD_WRITE, OP_SC_ADVANCE, OP_SC_DEL, OP_SC_FLAGS, OP_SC_HAS_SEND_TIMER,
-    OP_SC_HIGH_WATERMARK, OP_SC_OVERFLOW, OP_SC_REMOVE_READ, OP_SC_SEND, OP_SC_SET,
-    OP_SC_TOUCH_SEND, OP_SC_VERIFY, OP_SC_WRITABLE, OP_SC_YIELD_ERROR, OP_SEND_TIMEOUT,
-    OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY, OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN,
-    OP_STATE,
+    LOG_REACTOR_NUM, LOG_TASK_POOL, LOG_TASK_WORKER_NUM, LOG_WORKER_NUM, OP_BASE_REACTORS,
+    OP_CLEAR_MAX_QUEUED, OP_CLEAR_SEND_YIELD, OP_CONN_CLOSING, OP_HAS_PIPE_COMMAND, OP_IS_CREATED,
+    OP_PORT_IDLE_TIME, OP_SEND_TIMEOUT, OP_SEND_TIMEOUT_MIN, OP_SET_DISABLE_NOTIFY,
+    OP_SET_MASTER_PID, OP_SIGNAL_FD, OP_SIGRTMIN, OP_STATE,
 };
 use crate::ops::{
     OP_AFTER_CREATE, OP_AFTER_SHUTDOWN, OP_ALLOC_CONNECTION_NUMS, OP_ALLOC_PORT_CONNECTION_NUMS,
@@ -46,16 +35,11 @@ use crate::ops::{
     OP_LC_START_THREAD, OP_MASTER_REACTOR, OP_MASTER_WORKER,
 };
 use crate::ops::{OP_ALLOC_CONNECTIONS, OP_PORT_MAX_LENGTH, OP_PORT_MIN_LENGTH};
-use crate::ops::{
-    OP_MASTER_THREAD, OP_OUT_EMPTY, OP_SC_APPEND, OP_SC_ENSURE_BUFFER, OP_SC_OUT_FULL,
-    OP_SC_OUT_HIGH, OP_SC_QUEUE_CLOSE,
-};
-use crate::ops::{OP_PIPE_COMMAND_ADD, OP_SC_CLOSE};
+use crate::ops::{OP_MASTER_THREAD, OP_OUT_EMPTY};
 use crate::port_config::PortConfig;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use crate::port_config::methods;
 use crate::records::{ConnectionRecord, SessionRecord};
-use crate::send;
 use crate::server_methods::NativeContext;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::view::ServerHook;
@@ -68,16 +52,11 @@ use swoole_rs_process::workers::ops::{
     RUN_CREATE_THREAD_FACTORY, RUN_DESTROY_THREAD_FACTORY, RUN_START_WORKER_THREADS,
 };
 
-const SW_LOG_TRACE: c_int = 1;
-const SW_LOG_NOTICE: c_int = 3;
 const SW_LOG_WARNING: c_int = 4;
 const SW_LOG_ERROR: c_int = 5;
 const SW_EVENT_READ: c_int = 1 << 9;
 /// `SW_FD_STREAM_SERVER`.
 const SW_FD_STREAM_SERVER: c_int = 1;
-const SW_EVENT_WRITE: c_int = 1 << 10;
-/// `SW_SERVER_EVENT_CLOSE`.
-const EVENT_CLOSE: u8 = 4;
 /// `sizeof(Session)` and `sizeof(sw_atomic_t)`.
 const SESSION_SIZE: usize = size_of::<SessionRecord>();
 const ATOMIC_SIZE: usize = 4;
@@ -135,18 +114,6 @@ impl<'a> Objects<'a> {
             .conn
             .unwrap_or_else(|| swoole_rs_corebase::fatal("a master op without a connection"))
     }
-    fn sock(&self) -> Option<Socket<'_>> {
-        // SAFETY: the ops reading it run with a live socket in the context.
-        unsafe { Socket::from_ptr(self.ctx.sock.cast()) }
-    }
-    /// `edit` over the context's socket, or the default without one.
-    fn edit_sock<R: Default>(&self, edit: impl FnOnce(&mut SocketFields) -> R) -> R {
-        self.sock().map(|sock| sock.edit(edit)).unwrap_or_default()
-    }
-    /// `Reactor::change`'s `op` of `socket` with `events`, or -1 without one.
-    fn change(&self, socket: Option<Socket<'_>>, op: u32, events: c_int) -> c_int {
-        socket.map_or(-1, |socket| self.reactor().change(socket, op, events))
-    }
     fn port(&self) -> &PortConfig {
         // SAFETY: the ops reading it run with a live port in the context, which no
         // op writes while it reads.
@@ -163,11 +130,6 @@ impl<'a> Objects<'a> {
     fn reactor(&self) -> crate::reactor_handle::Reactor {
         // SAFETY: the ops reading it run on the context's live reactor, on its thread.
         unsafe { crate::reactor_handle::Reactor::of(self.ctx.reactor) }
-    }
-    /// The live `SendData` the send path lends.
-    fn send(&self) -> &SendData {
-        // SAFETY: the ops reading it run with a live send in the context.
-        unsafe { &*self.ctx.send.cast::<SendData>() }
     }
     /// The live socket native code passes as `arg`.
     fn arg_socket<'s>(arg: u64) -> Option<Socket<'s>> {
@@ -239,8 +201,10 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
         crate::ops::OP_QUEUE_CLOSE => {
             // A live session socket of this thread's reactor.
             let socket = Objects::arg_socket(arg)?;
-            socket
-                .read(|s| crate::reactor_ops::out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+            socket.read(|s| {
+                crate::reactor_ops::out_buffer(s)
+                    .map(|b| swoole_rs_buffer::cpp::swr_cpp_buffer_typed_close(b))
+            });
             // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
             u64::from(
                 !cfg!(feature = "halfclose")
@@ -560,62 +524,6 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             );
             0
         }
-        LOG_SC_NO_SESSION_DATA => {
-            let (length, session) = (o.ctx.length.cast_signed(), o.ctx.session_id);
-            let m = format_args!("send {length} byte failed, session#{session} does not exist");
-            error(
-                SW_LOG_TRACE,
-                E::SW_ERROR_SESSION_NOT_EXIST,
-                c"Server::send_to_connection",
-                m,
-            );
-            0
-        }
-        LOG_SC_NO_SESSION_EVENT => {
-            // send_to_connection's context holds its send data.
-            let kind = o.send().info.kind;
-            let m = format_args!(
-                "send event[{kind}] failed, session#{} does not exist",
-                o.ctx.session_id
-            );
-            error(
-                SW_LOG_TRACE,
-                E::SW_ERROR_SESSION_NOT_EXIST,
-                c"Server::send_to_connection",
-                m,
-            );
-            0
-        }
-        LOG_SC_SOCKET_OVERFLOW => {
-            let m = format_args!("socket#{} output buffer overflow", o.conn().fd());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
-                c"Server::send_to_connection",
-                m,
-            );
-            0
-        }
-        LOG_SC_CLOSED_BY_CLIENT => {
-            let m = format_args!("socket#{} is closed by client", o.conn().fd());
-            error(
-                SW_LOG_NOTICE,
-                E::SW_ERROR_SESSION_CLOSED_BY_CLIENT,
-                c"Server::send_to_connection",
-                m,
-            );
-            0
-        }
-        LOG_SC_CONN_OVERFLOW => {
-            let m = format_args!("connection#{} output buffer overflow", o.conn().fd());
-            error(
-                SW_LOG_WARNING,
-                E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
-                c"Server::send_to_connection",
-                m,
-            );
-            0
-        }
         LOG_BASE_ALLOC_CONNECTIONS => {
             let size = o.tables().max_connection as usize * size_of::<ConnectionRecord>();
             log::sys_warning(
@@ -648,74 +556,13 @@ fn ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
 
-        OP_SC_HAS_SEND_TIMER => u64::from(o.edit_sock(|s| !s.output.send_timer.is_null())),
-
         OP_CONN_CLOSING => {
             u64::from(o.conn().closed().load(Relaxed) != 0 || o.conn().close_force())
-        }
-        OP_SC_OVERFLOW => {
-            o.conn().set_overflow(true);
-            0
-        }
-        OP_SC_HIGH_WATERMARK => {
-            o.conn().set_high_watermark(true);
-            0
-        }
-
-        // The context's own fields.
-        OP_SC_ADVANCE => {
-            #[expect(clippy::cast_possible_truncation, reason = "a length within the data")]
-            let step = arg as u32;
-            o.ctx.data = o.ctx.data.cast::<u8>().wrapping_add(step as usize).cast();
-            o.ctx.length = o.ctx.length.wrapping_sub(step);
-            0
-        }
-
-        OP_SC_SET => {
-            let read = if arg & 1 != 0 { SW_EVENT_READ } else { 0 };
-            let write = if arg & 2 != 0 { SW_EVENT_WRITE } else { 0 };
-            sign(o.change(o.sock(), 1, read | write))
-        }
-        OP_SC_DEL => sign(o.change(o.sock(), 2, 0)),
-        OP_SC_ADD => sign(o.change(o.sock(), 0, SW_EVENT_READ)),
-        OP_SC_REMOVE_READ | OP_SC_ADD_READ | OP_SC_ADD_WRITE => {
-            let kind = match op {
-                OP_SC_REMOVE_READ => 4,
-                OP_SC_ADD_READ => 2,
-                _ => 3,
-            };
-            let result = o
-                .sock()
-                .map_or(-1, |sock| o.reactor().interest(sock, kind, 0));
-            if op == OP_SC_ADD_WRITE {
-                0
-            } else {
-                sign(result)
-            }
-        }
-        OP_SC_WRITABLE => u64::from(o.edit_sock(|s| s.events) & SW_EVENT_WRITE != 0),
-        OP_SC_SEND => {
-            let (data, length) = (o.ctx.data, o.ctx.length as usize);
-            let send = |sock| {
-                // SAFETY: the context's live socket and the data it sends.
-                unsafe { swoole_rs_tls::upstream::socket_send(sock, data.cast(), length, 0) }
-            };
-            sign(o.sock().map_or(-1, send) as i64)
-        }
-        OP_SC_FLAGS => send_flags(o),
-        OP_SC_VERIFY => verify(o),
-        OP_SC_TOUCH_SEND => {
-            o.conn().set_last_send_time(swoole_rs_corebase::microtime());
-            0
         }
 
         // The server's state and the worker records.
         OP_STATE => core::ptr::from_ref(state).expose_provenance() as u64,
         OP_IS_CREATED => u64::from(!o.config().factory_.is_null()),
-        OP_SC_YIELD_ERROR => {
-            log::set_last_error(E::SW_ERROR_OUTPUT_SEND_YIELD as c_int);
-            0
-        }
         // Lifecycle effects over process-wide state Rust owns: hooks, the
         // worker globals, the master reactor and the server's shared allocations.
         OP_LC_BEFORE_START => {
@@ -811,124 +658,13 @@ fn lifecycle(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 fn effects(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     /// `THREAD_MASTER`.
     const THREAD_MASTER: u8 = 1;
-    // The send path's output buffer, which `OP_SC_ENSURE_BUFFER` made before any op reads it.
-    let out = || {
-        let out = o.sock().map(|sock| sock.read(|s| s.output.out_buffer));
-        // SAFETY: as above, the socket's live buffer.
-        unsafe { &*out.unwrap_or(core::ptr::null_mut()).cast::<CppBuffer>() }
-    };
     Some(match op {
         OP_MASTER_THREAD => {
             swoole_rs_corebase::set_thread(THREAD_MASTER, arg.c_cast::<u16>());
             0
         }
-        OP_SC_ENSURE_BUFFER => {
-            let sock = o.sock()?;
-            if sock.read(|s| s.output.out_buffer.is_null()) {
-                let buffer = new_buffer(SW_SEND_BUFFER_SIZE).cast();
-                sock.edit(|s| s.output.out_buffer = buffer);
-            }
-            0
-        }
-        OP_SC_OUT_FULL => {
-            let size = o.sock()?.read(|s| s.output.buffer_size);
-            u64::from(swr_cpp_buffer_length(out()) >= size)
-        }
-        OP_SC_OUT_HIGH => {
-            u64::from(swr_cpp_buffer_length(out()) >= o.port().buffer_high_watermark.get())
-        }
-        OP_SC_APPEND => {
-            // SAFETY: the context lends `length` bytes at `data`.
-            unsafe { swr_cpp_buffer_append(out(), o.ctx.data.cast(), o.ctx.length) };
-            o.conn().set_send_queued_bytes(swr_cpp_buffer_length(out()));
-            0
-        }
-        OP_SC_QUEUE_CLOSE => {
-            swr_cpp_buffer_typed_close(out());
-            o.conn().set_close_queued(true);
-            0
-        }
         op => return sockets(o, op, arg),
     })
-}
-
-/// `OP_SC_VERIFY`: selects the send's connection (`get_connection_verify`, or
-/// `get_connection_verify_no_ssl` for a close), its reactor, port and socket, and
-/// returns every fact the send reads, or 0 when there is none.
-fn verify(o: &mut Objects<'_>) -> u64 {
-    let kind = if o.send().info.kind == EVENT_CLOSE {
-        Lookup::Verified
-    } else {
-        Lookup::VerifiedTls
-    };
-    let conn = o.state.connection(o.ctx.session_id, kind);
-    o.ctx.conn = conn;
-    let Some(conn) = conn else {
-        return 0;
-    };
-    o.ctx.reactor = swoole_rs_corebase::thread_reactor();
-    o.ctx.port = o
-        .server()
-        .port_by_server_fd(conn.server_fd())
-        .map_or(core::ptr::null_mut(), crate::view::Port::raw);
-    o.ctx.sock = conn.socket_ptr();
-    let config = o.config();
-    debug_assert!(
-        config.single_thread.get()
-            || i64::from(conn.fd()) % i64::from(config.reactor_num.get())
-                == i64::from(swoole_rs_corebase::thread_id()),
-        "a connection is sent to on its own reactor thread"
-    );
-    let Some(sock) = o.sock() else {
-        return 0;
-    };
-    let (out_empty, direct_send) = sock.read(|s| {
-        let out = crate::reactor_ops::out_buffer(s);
-        (out.is_none_or(|b| swr_cpp_buffer_empty(b)), s.direct_send)
-    });
-    let bit = |set: bool, bit| if set { bit } else { 0 };
-    send_flags(o)
-        | send::FOUND
-        | bit(cfg!(feature = "halfclose"), send::HALFCLOSE)
-        | bit(config.send_yield.get(), send::SEND_YIELD)
-        | bit(out_empty, send::OUT_EMPTY)
-        | bit(direct_send, send::DIRECT_SEND)
-        | (u64::from(o.ctx.length) << 32)
-}
-
-/// `OP_SC_FLAGS`: the connection's flags, then its socket's and the server's buffer callbacks.
-fn send_flags(o: &Objects<'_>) -> u64 {
-    let conn = o.conn();
-    let (removed, notified, events) = o.sock().map_or((false, false, 0), |sock| {
-        sock.read(|s| (s.removed, s.close_notified, s.events))
-    });
-    let callback = |index| {
-        o.state
-            .callbacks
-            .slot(index)
-            .is_some_and(CallbackSlot::is_set)
-    };
-    [
-        (conn.overflow(), send::OVERFLOW),
-        (conn.close_reset(), send::CLOSE_RESET),
-        (conn.close_force(), send::CLOSE_FORCE),
-        (conn.peer_closed(), send::PEER_CLOSED),
-        (conn.closed().load(Relaxed) != 0, send::CLOSED),
-        (conn.close_queued(), send::CLOSE_QUEUED),
-        (conn.high_watermark(), send::HIGH_WATERMARK),
-        (removed, send::REMOVED),
-        (
-            cfg!(feature = "halfclose") && notified,
-            send::CLOSE_NOTIFIED,
-        ),
-        (events & SW_EVENT_READ != 0, send::EVENT_READ),
-        (events & SW_EVENT_WRITE != 0, send::EVENT_WRITE),
-        (callback(CB_BUFFER_FULL), send::ON_BUFFER_FULL),
-        (callback(CB_BUFFER_EMPTY), send::ON_BUFFER_EMPTY),
-    ]
-    .into_iter()
-    .filter_map(|(set, bit)| set.then_some(bit))
-    .fold(0, |flags, bit| flags | bit)
 }
 
 /// `DgramPacket` up to its address.
@@ -942,10 +678,6 @@ pub(crate) struct DgramPacket {
 /// workers and the dispatch address, which Rust lays out; else `None`.
 fn sockets(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     Some(match op {
-        OP_SC_CLOSE => {
-            o.reactor().close(o.sock()?);
-            0
-        }
         // `ctx->reactor->add` of the command pipe's master end.
         OP_PIPE_COMMAND_ADD => {
             if let Some(master) = o
@@ -1027,7 +759,7 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
     use crate::callbacks::CB_START;
     use crate::ops::{
         OP_LC_DAEMON, OP_LC_FACTORY_START, OP_LC_INIT_PROTOCOLS, OP_LC_START_PROCESS,
-        OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_ST_FINISH, OP_STORE_LISTEN,
+        OP_MASTER_START, OP_MASTER_TIMER, OP_MAX_SOCKETS, OP_STORE_LISTEN,
     };
     use swoole_rs_clients::address::assign;
     use swoole_rs_corebase::swoole_redirect_stdout_file;
@@ -1053,7 +785,6 @@ fn startup(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             }
             0
         }
-        OP_ST_FINISH => u64::from(crate::factory::finish(o.state, o.ctx.send)),
         // The master starts its reactor threads.
         OP_LC_START_PROCESS => sign(crate::reactor_entry::start_reactor_threads(o.server())),
         OP_MAX_SOCKETS => u64::from(swoole_rs_corebase::max_sockets()),
@@ -1156,46 +887,30 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus {
 /// `OP_BASE_PASS`: the worker message bus takes `send`, then `worker_accept_event`
 /// of it.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &SendData) {
+pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
     let bus = worker_message_bus(serv.state());
     bus.rust().pass(&send.info, send.data);
     let mut head = bus.head();
     crate::event_worker_ops::accept_event(serv, &mut head);
 }
 
-/// `SendfileTask`'s head: its offset and length, then its name.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
-#[repr(C)]
-struct SendfileTask {
-    offset: libc::off_t,
-    length: usize,
-}
-
 /// The send ops that call a `Server` or `Socket` method crates/server,
 /// crates/process or crates/tls defines; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
-    use crate::ops::{
-        OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FORWARD, OP_SC_NOTIFY_FULL, OP_SC_SENDFILE, OP_SEND_HERE,
-    };
+    use crate::ops::{OP_ACCEPT_EVENT, OP_BASE_PASS, OP_FORWARD, OP_SEND_HERE};
     use swoole_rs_corebase::DataHead;
-    use swoole_rs_tls::upstream::socket_sendfile_async as sendfile_async;
-    /// `SW_SERVER_EVENT_BUFFER_FULL`.
-    const EVENT_BUFFER_FULL: c_int = 13;
     // The `SendData` native code lends at arg.
     let lent = || {
         // SAFETY: as above.
-        unsafe { &*(arg as *const SendData) }
+        unsafe { &*(arg as *const crate::base_factory::SendData) }
     };
     Some(match op {
         OP_SEND_HERE => {
-            // SAFETY: the context's send and its data.
-            sign(unsafe { crate::server_methods::send_to_connection(o.server(), o.send()) })
-        }
-        OP_SC_NOTIFY_FULL => {
-            crate::server_methods::notify(o.server(), o.conn(), EVENT_BUFFER_FULL);
-            o.conn().set_high_watermark(true);
-            0
+            // SAFETY: the live `SendData` the send path lends.
+            let send = unsafe { &*o.ctx.send.cast::<crate::base_factory::SendData>() };
+            // SAFETY: its data.
+            sign(unsafe { crate::server_methods::send_to_connection(o.server(), send) })
         }
         OP_ACCEPT_EVENT => {
             // SAFETY: the `DataHead` native code lends at arg.
@@ -1208,15 +923,6 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_FORWARD => forward(o, lent()),
-        OP_SC_SENDFILE => {
-            let task = o.ctx.data.cast::<SendfileTask>();
-            // SAFETY: the send's `SendfileTask`, whose name follows its head.
-            let SendfileTask { offset, length } = unsafe { task.read() };
-            // SAFETY: the task's NUL-terminated name, which follows its head.
-            let name = unsafe { CStr::from_ptr(task.wrapping_add(1).cast::<core::ffi::c_char>()) };
-            let socket = o.conn().socket();
-            sign(socket.map_or(-1, |socket| sendfile_async(socket, name, offset, length)))
-        }
         op => return factory_ops(o, op, arg),
     })
 }
@@ -1224,7 +930,7 @@ fn sends(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// `OP_FORWARD`: the worker message bus writes `send` to the pipe of the worker
 /// that owns its session.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-fn forward(o: &Objects<'_>, send: &SendData) -> u64 {
+fn forward(o: &Objects<'_>, send: &crate::base_factory::SendData) -> u64 {
     let Some(session) = o.state.session(send.info.fd) else {
         return 0;
     };
@@ -1324,33 +1030,9 @@ fn factory_ops(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
 /// The ops over the server's timers, barriers and pipe buffers; else `None`.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 fn objects(o: &mut Objects<'_>, op: u32) -> Option<u64> {
-    use crate::ops::{
-        OP_MANAGER_BARRIER, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS, OP_SC_IDLE_TIMER,
-    };
+    use crate::ops::{OP_MANAGER_BARRIER, OP_REACTOR_BARRIER, OP_RELEASE_PIPE_BUFFERS};
     use crate::server_object::barrier;
     Some(match op {
-        // `swoole_timer_add(sec2msec(port->max_idle_time), true, get_timeout_callback(...))`
-        // for the context socket's sends.
-        OP_SC_IDLE_TIMER => {
-            let idle = o.port().max_idle_time.get();
-            let sock = o.sock()?;
-            let tick = crate::connection::idle_tick;
-            let msec = (idle * 1000.0).c_cast::<libc::c_long>();
-            let conn = o
-                .ctx
-                .conn
-                .map_or(core::ptr::null_mut(), |conn| conn.as_ptr().cast());
-            // SAFETY: `tick` takes the live connection, which deletes the timer
-            // before it goes.
-            let node = unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, conn) };
-            let now = swoole_rs_reactor::steady_ms();
-            sock.edit(|sock| {
-                sock.timeouts.write = idle;
-                sock.last_sent_time = now;
-                sock.output.send_timer = node;
-            });
-            0
-        }
         OP_REACTOR_BARRIER | OP_MANAGER_BARRIER => {
             swoole_rs_locks::barrier_wait(barrier(o.server(), op == OP_MANAGER_BARRIER));
             0
@@ -1501,22 +1183,6 @@ mod tests {
     }
 
     #[test]
-    fn advance_moves_the_data() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        let data = [0u8; 8];
-        ctx.data = data.as_ptr().cast();
-        ctx.length = 8;
-        // SAFETY: the context's data is live above.
-        unsafe {
-            answer(&raw mut ctx, None, &*state, OP_SC_ADVANCE, 3);
-            crate::state::free_state(state);
-        }
-        assert_eq!(ctx.length, 5);
-        assert_eq!(ctx.data, data[3..].as_ptr().cast());
-    }
-
-    #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn allocation_ops_fill_the_config_tables_and_counters() {
         let state = crate::swr_v1_server_state_new();
@@ -1553,63 +1219,6 @@ mod tests {
             (*gs).connection_nums.free();
             tables.session_list.free();
             config.gs.free();
-            crate::state::free_state(state);
-        }
-    }
-
-    #[test]
-    fn send_buffer_ops_queue_on_the_sockets_output() {
-        let state = crate::swr_v1_server_state_new();
-        let mut ctx = context();
-        // SAFETY: plain records, for which zero is valid.
-        let mut sock: SocketRecord = unsafe { core::mem::zeroed() };
-        // SAFETY: as above.
-        let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        // A `ListenPort` is its settings.
-        let config = crate::port_config::swr_v1_port_config_new(0);
-        sock.output.buffer_size = 4;
-        // SAFETY: the settings allocated above.
-        unsafe { (*config).buffer_high_watermark.set(2) };
-        let data = *b"abc";
-        ctx.sock = (&raw mut sock).cast();
-        // SAFETY: the live record above, which only this test's ops and reads touch.
-        ctx.conn = unsafe { crate::Connection::from_ptr(&raw mut conn) };
-        ctx.port = config.cast();
-        ctx.data = data.as_ptr().cast();
-        ctx.length = 3;
-        let socket = (&raw const sock).expose_provenance() as u64;
-        // SAFETY: the context's records are live above.
-        unsafe {
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
-                Some(1)
-            );
-            answer(&raw mut ctx, None, &*state, OP_SC_ENSURE_BUFFER, 0);
-            assert!(!sock.output.out_buffer.is_null());
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
-                Some(1)
-            );
-            answer(&raw mut ctx, None, &*state, OP_SC_APPEND, 0);
-            assert_eq!(conn.send_queued_bytes, 3);
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_OUT_EMPTY, socket),
-                Some(0)
-            );
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_SC_OUT_FULL, 0),
-                Some(0)
-            );
-            assert_eq!(
-                answer(&raw mut ctx, None, &*state, OP_SC_OUT_HIGH, 0),
-                Some(1)
-            );
-            answer(&raw mut ctx, None, &*state, OP_SC_QUEUE_CLOSE, 0);
-            assert!(conn.close_queued);
-            let buffer = sock.output.out_buffer.cast::<CppBuffer>();
-            assert_eq!(swoole_rs_buffer::cpp::swr_cpp_buffer_count(&*buffer), 2);
-            swoole_rs_buffer::cpp::delete_buffer(buffer);
-            crate::port_config::swr_v1_port_config_free(config);
             crate::state::free_state(state);
         }
     }

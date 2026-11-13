@@ -2,11 +2,7 @@
 //! command id counter) and the operations over the rest of `Server` that
 //! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
-use crate::base_factory::{SEND_DATA, SendData, sends_here};
 use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
-use crate::ops::{OP_MODE, OP_ST_FINISH};
-use crate::send::send_to_connection;
-use crate::{Host, MODE_PROCESS, SW_OK};
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::ffi::CString;
@@ -469,31 +465,9 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
     CString::new(code.to_string()).unwrap_or_default()
 }
 
-/// `Server::send`: through the factory, then the server's, port's and worker's counts.
-/// A base or thread mode worker that owns the session sends it here, as
-/// `BaseFactory::finish` would, without a second trip through native code.
-pub(crate) fn send<H: Host>(h: &mut H, send: &SendData) -> crate::Effect<bool> {
-    let here = h.get(OP_MODE)? != MODE_PROCESS && sends_here(h, send)?;
-    let sent = if here {
-        match h.send_now(send)? {
-            Some(sent) if sent == i64::from(send.info.len) => true,
-            first => send_to_connection(h, u64::from(SEND_DATA), first)? == SW_OK,
-        }
-    } else {
-        h.is(OP_ST_FINISH)?
-    };
-    if !sent {
-        return Ok(false);
-    }
-    crate::shared::count_send(h.state()?, send.info.fd, send.info.len);
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MODE_PROCESS;
-    use crate::script::Script;
 
     #[test]
     fn document_root_is_the_real_path() {
@@ -520,49 +494,6 @@ mod tests {
             "failures keep the root"
         );
         std::fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn connections_iterate_and_send() {
-        let data = four_bytes();
-        let process = |facts: &[(u32, u64)]| {
-            let mut s = Script::with(&[(OP_MODE, MODE_PROCESS)]);
-            s.facts.extend(facts.iter().copied());
-            s
-        };
-        let mut s = process(&[(OP_ST_FINISH, 1)]);
-        assert!(send(&mut s, &data).unwrap());
-        let mut s = process(&[]);
-        assert!(!send(&mut s, &data).unwrap());
-    }
-
-    /// A 4-byte send to session 1.
-    fn four_bytes() -> SendData {
-        SendData {
-            info: swoole_rs_corebase::DataHead {
-                fd: 1,
-                kind: SEND_DATA,
-                len: 4,
-                ..Default::default()
-            },
-            data: core::ptr::null(),
-        }
-    }
-
-    #[test]
-    fn base_mode_sends_here_without_the_factory() {
-        use crate::ops::{OP_SC_SEND, OP_SC_VERIFY, OP_SC_WRITABLE};
-        use crate::send::{DIRECT_SEND, FOUND, OUT_EMPTY};
-        let data = four_bytes();
-        let mut s = Script::with(&[
-            (OP_SC_VERIFY, FOUND | OUT_EMPTY | DIRECT_SEND | (4 << 32)),
-            (OP_SC_SEND, 4),
-            (OP_SC_WRITABLE, 1),
-        ]);
-        assert!(send(&mut s, &data).unwrap());
-        assert_eq!((s.called(OP_ST_FINISH), s.called(OP_SC_SEND)), (0, 1));
-        let mut s = Script::default();
-        assert!(!send(&mut s, &data).unwrap(), "no session");
     }
 
     #[test]
