@@ -121,13 +121,14 @@ impl<T> Shared<T> {
     }
 
     /// `f` over a copy, which then replaces the value.
-    pub fn update(&self, f: impl FnOnce(&mut T))
+    pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R
     where
         T: Copy,
     {
         let mut value = self.get();
-        f(&mut value);
+        let result = f(&mut value);
         self.set(value);
+        result
     }
 
     pub fn get_mut(&mut self) -> &mut T {
@@ -137,6 +138,33 @@ impl<T> Shared<T> {
     /// The value's address, which native code reads and writes by reference.
     pub const fn as_ptr(&self) -> *mut T {
         self.0.get()
+    }
+}
+
+/// A value set while the server or a port is configured and read by every thread
+/// once it runs. A reader takes its own reference under the lock and a write swaps
+/// it, so neither sees a value the other frees. A thin box: native code's mirror
+/// holds a `void *` here.
+#[repr(transparent)]
+#[derive(Default)]
+pub struct Published<T>(Box<std::sync::Mutex<Option<std::sync::Arc<T>>>>);
+
+impl<T> Published<T> {
+    #[must_use]
+    pub fn get(&self) -> Option<std::sync::Arc<T>> {
+        self.slot().clone()
+    }
+
+    /// Publishes `value`; the one it replaces drops once the lock is released.
+    pub fn set(&self, value: T) {
+        let previous = self.slot().replace(std::sync::Arc::new(value));
+        drop(previous);
+    }
+
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<std::sync::Arc<T>>> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
