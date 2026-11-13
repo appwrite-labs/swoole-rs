@@ -30,7 +30,7 @@ use swoole_rs_process::{
     task_file::{Packed, TaskBuffer},
     task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting},
 };
-use swoole_rs_server::{task_worker_ops::finish, view};
+use swoole_rs_server::{task_worker::native::finish, view};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout,

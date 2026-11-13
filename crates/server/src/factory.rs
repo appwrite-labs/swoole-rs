@@ -7,12 +7,8 @@ use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 
 use crate::base_factory::SendData;
-use crate::factory_ops::run;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_process::workers::ops::{
-    EVENT_CLOSE, RUN_PROCESS_DISPATCH, RUN_PROCESS_END, RUN_PROCESS_FACTORY_SHUTDOWN,
-    RUN_PROCESS_FACTORY_START, RUN_PROCESS_FINISH, RUN_THREAD_FACTORY_START,
-};
+use swoole_rs_process::workers::ops::RUN_THREAD_FACTORY_START;
 use swoole_rs_process::workers::thread::ThreadManager;
 
 use crate::state::ServerState;
@@ -92,10 +88,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
             }
         }
         Step::ClearSignals => signal_upstream::clear(),
-        Step::DestroyProcessFactory => {
-            use swoole_rs_process::workers::ops::RUN_DESTROY_PROCESS_FACTORY;
-            crate::factory_ops::run_server(serv, RUN_DESTROY_PROCESS_FACTORY);
-        }
+        Step::DestroyProcessFactory => crate::process_factory::native::destroy(serv),
         Step::DestroyTaskPool => swoole_rs_process::methods::destroy(serv.task_pool_ref()),
         Step::DeleteFactory => {
             // SAFETY: `delete factory_`, which the caller then forgets.
@@ -115,18 +108,18 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
         Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
         Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
-        Step::StartManager => return crate::manager_ops::start_manager_process(serv),
+        Step::StartManager => return crate::manager::native::start_manager_process(serv),
         Step::EventInit => return swoole_rs_reactor::swoole_event_init(0),
-        Step::WorkerSignalInit => crate::event_worker_ops::worker_signal_init(serv),
+        Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
         Step::WorkerStart(id) | Step::WorkerStop(id) => {
             let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
                 return -1;
             };
             if step == Step::WorkerStart(id) {
-                crate::event_worker_ops::worker_start_callback(serv, worker);
+                crate::event_worker::native::worker_start_callback(serv, worker);
             } else {
-                crate::event_worker_ops::call_worker_stop_callback(serv, worker);
+                crate::event_worker::native::call_worker_stop_callback(serv, worker);
             }
         }
         Step::HeartbeatTimer => {
@@ -230,18 +223,7 @@ fn of(state: &ServerState) -> (*mut c_void, u64) {
     (config.factory_, u64::from(config.mode_))
 }
 
-/// `ProcessFactory`'s member `op` over the server of `factory`, sending `send`.
-fn process(factory: *mut c_void, op: u32, send: *mut SendData, arg: u64) -> bool {
-    // SAFETY: the server's live process factory, whose server and send are live.
-    let serv = unsafe { (*factory.cast::<Factory>()).server };
-    // SAFETY: as above.
-    let serv = unsafe { crate::view::Server::from_raw(serv) };
-    // SAFETY: as above: null or the live send, which nothing else borrows during the op.
-    let send = unsafe { send.as_mut() };
-    run(serv, op, None, send, None, arg) != 0
-}
-
-/// The server of base or thread mode's `factory`.
+/// The server of `factory`.
 fn base(factory: *mut c_void) -> crate::view::Server<'static> {
     // SAFETY: the server's live factory, whose server outlives it.
     let serv = unsafe { (*factory.cast::<Factory>()).server };
@@ -252,7 +234,7 @@ fn base(factory: *mut c_void) -> crate::view::Server<'static> {
 /// `factory_->start()`.
 pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
     match of(serv.state()) {
-        (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_FACTORY_START, ptr::null_mut(), 0),
+        (_, MODE_PROCESS) => crate::process_factory::native::start(serv),
         (_, MODE_THREAD) => crate::thread_mode_ops::run_server(serv, RUN_THREAD_FACTORY_START) != 0,
         _ => true,
     }
@@ -261,9 +243,7 @@ pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
 /// `factory_->shutdown()`.
 pub(crate) fn shutdown(state: &ServerState) -> bool {
     match of(state) {
-        (factory, MODE_PROCESS) => {
-            process(factory, RUN_PROCESS_FACTORY_SHUTDOWN, ptr::null_mut(), 0)
-        }
+        (factory, MODE_PROCESS) => crate::process_factory::native::shutdown(base(factory)),
         (factory, MODE_THREAD) => {
             // SAFETY: the server's live factory.
             if let Some(manager) = unsafe { manager(factory) } {
@@ -277,25 +257,25 @@ pub(crate) fn shutdown(state: &ServerState) -> bool {
 
 /// `factory_->dispatch(task)`.
 pub(crate) fn dispatch(state: &ServerState, task: *mut c_void) -> bool {
-    match of(state) {
-        (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_DISPATCH, task.cast(), 0),
-        (factory, _) => {
-            // SAFETY: the live task the caller lends, which nothing else borrows.
-            let task = unsafe { &mut *task.cast::<SendData>() };
-            crate::base_factory::dispatch(base(factory), task, false)
-        }
+    let (factory, mode) = of(state);
+    // SAFETY: the live task the caller lends, which nothing else borrows.
+    let task = unsafe { &mut *task.cast::<SendData>() };
+    if mode == MODE_PROCESS {
+        crate::process_factory::dispatch(base(factory), task)
+    } else {
+        crate::base_factory::dispatch(base(factory), task, false)
     }
 }
 
 /// `factory_->finish(data)`.
 pub(crate) fn finish(state: &ServerState, data: *mut c_void) -> bool {
-    match of(state) {
-        (factory, MODE_PROCESS) => process(factory, RUN_PROCESS_FINISH, data.cast(), 0),
-        (factory, _) => {
-            // SAFETY: the live send the caller lends.
-            let send = unsafe { &*data.cast::<SendData>() };
-            crate::base_factory::finish(base(factory), send)
-        }
+    let (factory, mode) = of(state);
+    // SAFETY: the live send the caller lends.
+    let send = unsafe { &*data.cast::<SendData>() };
+    if mode == MODE_PROCESS {
+        crate::process_factory::finish(base(factory), send)
+    } else {
+        crate::base_factory::finish(base(factory), send)
     }
 }
 
@@ -309,7 +289,7 @@ pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
                 info: unsafe { *info.cast::<DataHead>() },
                 data: ptr::null(),
             };
-            process(factory, RUN_PROCESS_DISPATCH, &raw mut task, 0)
+            crate::process_factory::dispatch(base(factory), &mut task)
         }
         (factory, _) => {
             // SAFETY: the live event the caller lends, which nothing else borrows.
@@ -322,19 +302,7 @@ pub(crate) fn notify(state: &ServerState, info: *mut c_void) -> bool {
 /// `factory_->end(session_id, flags)`.
 pub(crate) fn end(state: &ServerState, session_id: c_long, flags: c_int) -> bool {
     match of(state) {
-        (factory, MODE_PROCESS) => {
-            // A close of the session.
-            let mut close = SendData {
-                info: DataHead {
-                    fd: session_id,
-                    kind: u8::try_from(EVENT_CLOSE).unwrap_or_default(),
-                    ..DataHead::default()
-                },
-                data: ptr::null(),
-            };
-            let flags = u64::from(flags.cast_unsigned());
-            process(factory, RUN_PROCESS_END, &raw mut close, flags)
-        }
+        (factory, MODE_PROCESS) => crate::process_factory::end(base(factory), session_id, flags),
         (factory, _) => crate::base_factory::end(base(factory), session_id, flags),
     }
 }
@@ -360,7 +328,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn accept_event(&self, serv: crate::view::Server<'_>, head: &mut DataHead) {
-        crate::event_worker_ops::accept_event(serv, head);
+        crate::event_worker::native::accept_event(serv, head);
     }
 
     fn forward(&self, serv: crate::view::Server<'_>, send: &SendData) -> bool {
@@ -368,9 +336,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn process_factory(&self, serv: crate::view::Server<'_>) -> *mut c_void {
-        use swoole_rs_process::workers::ops::RUN_CREATE_PROCESS_FACTORY;
-        let made = crate::factory_ops::run_server(serv, RUN_CREATE_PROCESS_FACTORY);
-        ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0))
+        crate::process_factory::native::create(serv)
     }
 
     fn factory_new(&self, serv: crate::view::Server<'_>) -> *mut c_void {
@@ -411,7 +377,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn task_workers(&self, serv: crate::view::Server<'_>) -> bool {
-        crate::task_worker_ops::init_task_workers(serv)
+        crate::task_worker::native::init(serv)
     }
 
     fn step(&self, serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {
@@ -469,7 +435,7 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {
         swoole_rs_process::worker_globals::with_current(|worker| {
-            crate::event_worker_ops::stop_async_worker(serv, *worker);
+            crate::event_worker::native::stop_async_worker(serv, *worker);
         });
     }
 
@@ -508,7 +474,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn reload(&self, serv: crate::view::Server<'_>, all_workers: bool) -> bool {
-        crate::manager_ops::reload(serv, all_workers)
+        crate::manager::native::reload(serv, all_workers)
     }
 
     fn command_send(
@@ -527,7 +493,16 @@ impl crate::hybrid::Hybrid for Linked {
         finish(serv.state(), (&raw mut *send).cast())
     }
 
+    fn process_send(
+        &self,
+        serv: crate::view::Server<'_>,
+        to: crate::process_factory::Pipe,
+        send: &mut SendData,
+    ) -> bool {
+        crate::process_factory::native::send(serv, to, send)
+    }
+
     fn to_reactor_thread(&self, serv: crate::view::Server<'_>, head: &DataHead) -> isize {
-        crate::event_worker_ops::send_to_reactor_thread(serv, head)
+        crate::event_worker::native::send_to_reactor_thread(serv, head)
     }
 }

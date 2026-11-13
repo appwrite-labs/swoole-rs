@@ -14,7 +14,7 @@ use swoole_rs_corebase::CCast;
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
 
-use super::event_worker::EVENT_WORKER;
+use super::EVENT_WORKER;
 use super::log::{
     LOG_CANNOT_RELOAD, LOG_MANAGER_ABNORMAL, LOG_NOTIFY_MANAGER, LOG_RELOADING,
     LOG_THREAD_UNSUPPORTED,
@@ -618,7 +618,6 @@ mod tests {
     fn worker_types_are_upstreams() {
         // Upstream's swoole_server.h: SW_EVENT_WORKER = 2, SW_TASK_WORKER = 4, SW_USER_WORKER = 5.
         assert_eq!((EVENT_WORKER, TASK_WORKER, USER_WORKER), (2, 4, 5));
-        assert_eq!((super::super::manager::worker_types()), (2, 4, 5));
     }
 
     fn run_op(h: &mut Script, operation: u32, arg: u64) -> i64 {

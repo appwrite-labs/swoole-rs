@@ -87,7 +87,7 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
     // SAFETY: a reactor process pool's `ptr` is its live server, as `main_loop`'s.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    crate::manager_ops::restart_worker_process(serv, status)
+    crate::manager::native::restart_worker_process(serv, status)
 }
 
 /// This thread's reactor reads its pipes with [`on_pipe_read`].
@@ -122,7 +122,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus) -> bool {
         }
         EVENT_SHUTDOWN => {
             if let Some(worker) = serv.worker_record(reactor.handle().id()) {
-                crate::event_worker_ops::stop_async_worker(serv, worker);
+                crate::event_worker::native::stop_async_worker(serv, worker);
             }
         }
         EVENT_SEND_FILE => {

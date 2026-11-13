@@ -16,7 +16,7 @@ use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::base_factory::SendData;
 use crate::callbacks::TaskSlot;
-use crate::event_worker_ops::{
+use crate::event_worker::native::{
     call_worker_start_callback, call_worker_stop_callback, stop_async_worker,
 };
 use crate::reactor_entry::{self as entry, thread};
