@@ -877,6 +877,20 @@ pub(crate) mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    fn read_fails_on_a_port_without_on_read() {
+        let (live, _clients) = reading();
+        live.port().on_read.store(core::ptr::null_mut(), Relaxed);
+        let conn = session(&live, 1);
+        assert_eq!(
+            read(live.server(), live.reactor(), &mut conn.event(0, 0)),
+            ERR
+        );
+        assert_eq!(reads(), [], "nothing read");
+        assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 0);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_pauses_a_process_connection_over_its_queue() {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
