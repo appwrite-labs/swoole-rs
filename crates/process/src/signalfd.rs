@@ -109,55 +109,40 @@ pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
     previous
 }
 
-/// What creating the descriptor did.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Created {
-    /// 0 created `fd`; 1 one already exists; 2 signalfd failed; 3 blocking the mask
-    /// failed (the descriptor is closed again).
-    pub status: u32,
-    pub fd: c_int,
-    /// The errno of status 2 and 3.
-    pub error: i32,
+/// Why creating the descriptor failed, with the errno where there is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateError {
+    /// One already exists.
+    Exists,
+    /// signalfd failed.
+    Signalfd(i32),
+    /// Blocking the mask failed; the descriptor is closed again.
+    Mask(i32),
 }
 
 /// `swoole_signalfd_create`: a non-blocking signalfd for the mask, which is then
 /// blocked for the process.
-pub fn signalfd_create() -> Created {
-    let existing = FD.load(Relaxed);
-    if existing != -1 {
-        return Created {
-            status: 1,
-            fd: existing,
-            error: 0,
-        };
+///
+/// # Errors
+/// The [`CreateError`] when there is one already or a call failed.
+pub fn signalfd_create() -> Result<c_int, CreateError> {
+    if FD.load(Relaxed) != -1 {
+        return Err(CreateError::Exists);
     }
     let mask = sigset();
     let fd = signalfd(-1, &mask);
     if fd < 0 {
-        return Created {
-            status: 2,
-            fd,
-            error: errno(),
-        };
+        return Err(CreateError::Signalfd(errno()));
     }
     if sigprocmask(libc::SIG_BLOCK, &mask) == -1 {
         let error = errno();
         // `fd` was just opened here.
         sys::close(fd);
-        return Created {
-            status: 3,
-            fd,
-            error,
-        };
+        return Err(CreateError::Mask(error));
     }
     FD.store(fd, Relaxed);
     PID.store(crate::os::getpid(), Relaxed);
-    Created {
-        status: 0,
-        fd,
-        error: 0,
-    }
+    Ok(fd)
 }
 
 /// `swoole_signalfd_close` once native has released its `Socket`: closes the descriptor.
@@ -181,16 +166,18 @@ pub fn signalfd_clear() -> bool {
 }
 
 /// What one readable event on the descriptor asks for.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Received {
-    /// 0 call `handler`; 1 the read failed; 2 the signal number is out of range;
-    /// 3 nothing to do (not registered, or `SIG_IGN`); 4 registered without a handler.
-    pub status: u32,
-    pub signo: u32,
-    pub handler: usize,
-    /// The errno of status 1.
-    pub error: i32,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Received {
+    /// Call `handler` with `signo`.
+    Handler { signo: u32, handler: usize },
+    /// The read failed with this errno.
+    ReadFailed(i32),
+    /// The signal number is out of range.
+    OutOfRange(u32),
+    /// Nothing to do: not registered, or `SIG_IGN`.
+    Nothing,
+    /// Registered without a handler.
+    NoHandler(u32),
 }
 
 /// `swoole_signalfd_event_callback`: reads one `signalfd_siginfo` from `fd`.
@@ -198,32 +185,17 @@ pub fn signalfd_receive(fd: c_int) -> Received {
     // One `signalfd_siginfo`, which begins with its `ssi_signo`.
     let mut info = [0_u8; size_of::<libc::signalfd_siginfo>()];
     if sys::read(fd, &mut info) < 0 {
-        return Received {
-            status: 1,
-            error: errno(),
-            ..Received::default()
-        };
+        return Received::ReadFailed(errno());
     }
     let [a, b, c, d, ..] = info;
     let signo = u32::from_ne_bytes([a, b, c, d]);
     let Some(slot) = c_int::try_from(signo).ok().and_then(slot) else {
-        return Received {
-            status: 2,
-            signo,
-            ..Received::default()
-        };
+        return Received::OutOfRange(signo);
     };
-    let handler = slot.handler.load(Relaxed);
-    let status = match (slot.activated.load(Relaxed), handler) {
-        (false, _) | (true, SIG_IGN) => 3,
-        (true, 0) => 4,
-        _ => 0,
-    };
-    Received {
-        status,
-        signo,
-        handler,
-        error: 0,
+    match (slot.activated.load(Relaxed), slot.handler.load(Relaxed)) {
+        (false, _) | (true, SIG_IGN) => Received::Nothing,
+        (true, 0) => Received::NoHandler(signo),
+        (true, handler) => Received::Handler { signo, handler },
     }
 }
 
@@ -240,16 +212,19 @@ mod tests {
         let handler = handler as *const () as usize;
         swoole_signalfd_init();
         assert_eq!(signalfd_set(libc::SIGURG, handler), 0);
-        let created = signalfd_create();
-        assert_eq!(created.status, 0);
+        let fd = signalfd_create().unwrap();
         assert!(signalfd_owned());
-        assert_eq!(signalfd_create().status, 1);
+        assert_eq!(signalfd_create(), Err(CreateError::Exists));
         // SAFETY: SIGURG is blocked, so it waits on the signalfd (and is ignored by default).
         unsafe { libc::raise(libc::SIGURG) };
-        let received = signalfd_receive(created.fd);
-        assert_eq!((received.status, received.handler), (0, handler));
-        assert_eq!(received.signo, libc::SIGURG.cast_unsigned());
-        assert_eq!(signalfd_receive(created.fd).status, 1);
+        assert_eq!(
+            signalfd_receive(fd),
+            Received::Handler {
+                signo: libc::SIGURG.cast_unsigned(),
+                handler
+            }
+        );
+        assert!(matches!(signalfd_receive(fd), Received::ReadFailed(_)));
         assert!(signalfd_clear());
         signalfd_close();
         assert_eq!(signalfd_fd(), -1);

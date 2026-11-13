@@ -3,14 +3,15 @@
 //! `worker_id % count`-th of them, and the pin itself (the calling thread in thread
 //! mode, the process otherwise). `crates/server/src/event_worker/native.rs` logs the warnings.
 
-/// What pinning a worker did.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AffinityOutcome {
-    /// 0 pinned; 1 reading the process's affinity failed; 2 no CPU left; 3 setting failed.
-    pub status: u32,
-    /// The errno of status 1 and 3.
-    pub error: i32,
+/// Why pinning a worker failed, with the errno where there is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AffinityError {
+    /// Reading the process's affinity failed.
+    Get(i32),
+    /// No CPU left.
+    NoCpu,
+    /// Setting the affinity failed.
+    Set(i32),
 }
 
 /// The `worker_id % count`-th of the `count` allowed CPUs, or `None` if there are none.
@@ -23,28 +24,28 @@ fn select(allowed: impl Fn(usize) -> bool, worker_id: u32, set_size: usize) -> O
 
 /// Pins the calling worker. `available` is `Server::cpu_affinity_available` (none for
 /// every CPU); `thread` is `Server::is_thread_mode()`.
+///
+/// # Errors
+/// The [`AffinityError`] that stopped the pinning.
 #[cfg(target_os = "linux")]
-#[must_use]
-pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) -> AffinityOutcome {
+pub fn worker_affinity(
+    worker_id: u32,
+    available: Option<&[i32]>,
+    thread: bool,
+) -> Result<(), AffinityError> {
     use swoole_rs_ossupport::CpuSet;
-    let failed = |status| AffinityOutcome {
-        status,
-        error: std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
-    };
+    let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     let mut current = CpuSet::empty();
     let pid = crate::os::getpid();
     if current.get_process(pid) < 0 {
-        return failed(1);
+        return Err(AffinityError::Get(errno()));
     }
     let allowed = |cpu: usize| {
         current.contains(cpu)
             && available.is_none_or(|cpus| cpus.iter().any(|&c| usize::try_from(c) == Ok(cpu)))
     };
     let Some(cpu) = select(allowed, worker_id, CpuSet::SIZE) else {
-        return AffinityOutcome {
-            status: 2,
-            error: 0,
-        };
+        return Err(AffinityError::NoCpu);
     };
     let mut selected = CpuSet::empty();
     selected.insert(cpu);
@@ -52,14 +53,14 @@ pub fn worker_affinity(worker_id: u32, available: Option<&[i32]>, thread: bool) 
         selected.set_thread()
     } else {
         if selected.set_process(pid) < 0 {
-            return failed(3);
+            return Err(AffinityError::Set(errno()));
         }
         0
     };
     if error != 0 {
-        return AffinityOutcome { status: 3, error };
+        return Err(AffinityError::Set(error));
     }
-    AffinityOutcome::default()
+    Ok(())
 }
 
 #[cfg(test)]
@@ -79,7 +80,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_setaffinity_np")]
     fn pins_the_thread_to_an_allowed_cpu() {
-        let outcome = super::worker_affinity(0, None, true);
-        assert_eq!(outcome, super::AffinityOutcome::default());
+        assert_eq!(super::worker_affinity(0, None, true), Ok(()));
     }
 }
