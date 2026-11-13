@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{CoreAllocator, DataHead};
+use swoole_rs_corebase::{CoreAllocator, DataHead, TrustedAllocator};
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -141,9 +141,14 @@ impl PoolBus {
         }
     }
 
-    /// The Rust bus and the allocator of its packets, as they are now.
-    pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, &'static CoreAllocator) {
-        (&self.bus, self.allocator.get())
+    /// The Rust bus and the allocator of its buffer and packets, as they are now.
+    pub(crate) fn parts(&self) -> (&swoole_rs_bus::MessageBus, TrustedAllocator) {
+        // SAFETY: the allocator keeps the allocator contract: it is libc's
+        // (`STD_ALLOCATOR`), another record's, or one stored in place since, by
+        // `Server::set_bus_allocator` from a `TrustedAllocator` or by a pool's owner
+        // through the record's layout, which is that owner's unsafe write of one.
+        let allocator = unsafe { TrustedAllocator::new(self.allocator.get()) };
+        (&self.bus, allocator)
     }
 }
 
@@ -177,7 +182,7 @@ impl ThreadRecord {
                 bus: PoolBus {
                     bus: swoole_rs_bus::MessageBus::create(size),
                     // A record's own allocator, which every `Bus` carries.
-                    allocator: Cell::new(like.allocator()),
+                    allocator: Cell::new(like.allocator().get()),
                 },
             })
             .collect()

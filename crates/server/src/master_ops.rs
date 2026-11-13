@@ -58,7 +58,7 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
     // SAFETY: a live pipe socket and the send it writes.
     unsafe {
         bus.rust()
-            .send(socket.as_ptr(), &mut info, send.data.cast())
+            .send_raw(socket.as_ptr(), &mut info, send.data.cast())
     }
 }
 

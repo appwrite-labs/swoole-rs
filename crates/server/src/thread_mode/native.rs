@@ -272,15 +272,15 @@ fn create_message_bus(serv: view::Server<'_>) {
     let counter = core::ptr::from_ref(&serv.counters().pipe_packet_msg_id);
     // SAFETY: the server's shared counters, mapped until `swr_v1_server_delete`,
     // after this thread has freed its bus.
-    let bus = pool_native::new_bus(unsafe { &*counter });
-    // SAFETY: the new bus, used by this thread alone.
-    let handle = unsafe { Bus::of(bus) };
+    let bus = Box::new(pool_native::new_bus(unsafe { &*counter }));
+    // The new bus, used by this thread alone.
+    let handle = Bus::over(&bus);
     handle.set_always_chunked();
     if !handle.alloc_buffer(serv.config().ipc_max_size() as usize) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
     }
     server_methods::init_pipe_sockets(serv, handle);
-    swoole_rs_corebase::set_thread_message_bus(bus);
+    swoole_rs_corebase::set_thread_message_bus(Box::into_raw(bus).cast());
 }
 
 /// What a thread runs inside `worker_thread_start`: its server, slot and worker.

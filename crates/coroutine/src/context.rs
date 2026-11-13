@@ -5,7 +5,7 @@
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
 use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
-use crate::stack::{swr_v1_context_stack_alloc, swr_v1_context_stack_free};
+use crate::stack::Stack;
 use crate::thread::{self, Started, THREAD};
 use crate::{Coroutine, Routine};
 use core::cell::Cell;
@@ -24,9 +24,8 @@ pub struct Context {
     /// The suspended context.
     fctx: *mut c_void,
     swap_fctx: *mut c_void,
-    stack: *mut u8,
-    stack_size: u32,
-    flags: u32,
+    /// The stack it runs on and its flags: none under [`THREAD`].
+    stack: Stack,
     entry: Routine,
     data: *mut c_void,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
@@ -56,7 +55,7 @@ impl Context {
     /// The C stack and its size; null under [`THREAD`].
     #[must_use]
     pub fn stack(&self) -> (*mut u8, usize) {
-        (self.stack, self.stack_size as usize)
+        (self.stack.base(), self.stack.size())
     }
 
     /// Allocates the stack and makes the context that runs `entry(data)` on it.
@@ -77,9 +76,7 @@ impl Context {
         let mut context = Self {
             fctx: ptr::null_mut(),
             swap_fctx: ptr::null_mut(),
-            stack: ptr::null_mut(),
-            stack_size: 0,
-            flags,
+            stack: Stack::none(flags),
             entry,
             data,
             asan_bottom: ptr::null(),
@@ -98,8 +95,7 @@ impl Context {
         }
         let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
-        let stack = swr_v1_context_stack_alloc(size, flags).cast::<u8>();
-        if stack.is_null() {
+        let Some(stack) = Stack::alloc(stack_size, flags) else {
             // SAFETY: nothing on this frame owns a destructor.
             unsafe {
                 swoole_rs_corebase::fatal_error(
@@ -108,25 +104,18 @@ impl Context {
                 );
             }
             std::process::exit(254);
-        }
+        };
+        let top = stack.base().wrapping_add(size);
         // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
-        context.fctx = unsafe { make_fcontext(stack.wrapping_add(size).cast(), size, first_frame) };
+        context.fctx = unsafe { make_fcontext(top.cast(), size, first_frame) };
         context.stack = stack;
-        context.stack_size = stack_size;
         Ok(context)
     }
 }
 
+#[cfg(tsan)]
 impl Drop for Context {
     fn drop(&mut self) {
-        if !self.stack.is_null() {
-            // SAFETY: allocated by `new` with this size and these flags, freed once;
-            // the context is not running.
-            unsafe {
-                swr_v1_context_stack_free(self.stack.cast(), self.stack_size as usize, self.flags);
-            }
-        }
-        #[cfg(tsan)]
         // SAFETY: the context's own fiber, which is not running: the context ended or never ran.
         unsafe {
             __tsan_destroy_fiber(self.tsan_fiber);
@@ -200,8 +189,8 @@ pub unsafe fn swap_in(ctx: *mut Context) -> bool {
             unsafe {
                 start(
                     &raw mut fake_stack,
-                    ctx.stack.cast(),
-                    ctx.stack_size as usize,
+                    ctx.stack.base().cast(),
+                    ctx.stack.size(),
                 );
             };
         }
@@ -304,7 +293,10 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn record_layout_keeps_the_offsets_c_reads() {
         assert_eq!(std::mem::offset_of!(Context, stack), 16);
-        assert_eq!(std::mem::offset_of!(Context, stack_size), 24);
+        assert_eq!(
+            std::mem::offset_of!(Context, stack) + Stack::SIZE_OFFSET,
+            24
+        );
         assert_eq!(std::mem::offset_of!(Context, end), 64);
     }
 

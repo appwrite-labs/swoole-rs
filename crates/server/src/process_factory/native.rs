@@ -233,7 +233,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             // SAFETY: the live pipe, and the data sent.
             unsafe {
                 bus.rust()
-                    .send(socket.as_ptr(), &mut send.info, send.data.cast())
+                    .send_raw(socket.as_ptr(), &mut send.info, send.data.cast())
             }
         }
         Pipe::Reactor(id) => {
@@ -243,7 +243,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let bus = state.message_bus();
             // SAFETY: the live pipe, and the data sent.
             unsafe {
-                bus.rust().send(
+                bus.rust().send_raw(
                     worker.pipe_worker().cast(),
                     &mut send.info,
                     send.data.cast(),

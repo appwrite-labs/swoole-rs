@@ -98,13 +98,13 @@ fn easy(url: &str) -> *mut CURL {
     let cp = unsafe { curl_easy_init() };
     let url = CString::new(url).unwrap();
     unsafe { curl_easy_setopt(cp, CURLOPT_URL, url.as_ptr()) };
-    unsafe { swr_v1_curl_create_handle(cp) };
+    swr_v1_curl_create_handle(Easy(cp));
     cp
 }
 
 fn close(cp: *mut CURL) {
-    unsafe { swr_v1_curl_destroy_handle(cp) };
-    assert!(unsafe { swr_v1_curl_get_handle(cp) }.is_null(), "destroyed");
+    unsafe { swr_v1_curl_destroy_handle(Easy(cp)) };
+    assert!(swr_v1_curl_get_handle(Easy(cp)).is_null(), "destroyed");
     unsafe { curl_easy_cleanup(cp) };
 }
 
@@ -142,11 +142,11 @@ fn poll_actions_map_to_reactor_events() {
 #[test]
 fn a_handle_survives_reset_and_is_destroyed() {
     let cp = easy("http://127.0.0.1/");
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    let handle = swr_v1_curl_get_handle(Easy(cp));
     assert!(!handle.is_null(), "created");
-    unsafe { swoole_curl_easy_reset(cp) };
+    unsafe { swoole_curl_easy_reset(Easy(cp)) };
     assert_eq!(
-        unsafe { swr_v1_curl_get_handle(cp) },
+        swr_v1_curl_get_handle(Easy(cp)),
         handle,
         "kept across reset"
     );
@@ -158,7 +158,7 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
     LOOP.with(|on| on.set(true));
     take();
     let cp = easy("http://127.0.0.1:1/");
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    let handle = swr_v1_curl_get_handle(Easy(cp));
     let multi = new_multi();
     assert_eq!(
         swr_v1_curl_multi_exec(multi, unsafe { &mut *handle }),
@@ -195,7 +195,7 @@ fn transfer() -> Transfer {
     take();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let cp = easy(&format!("http://{}/", listener.local_addr().unwrap()));
-    let handle = unsafe { swr_v1_curl_get_handle(cp) };
+    let handle = swr_v1_curl_get_handle(Easy(cp));
     let multi = new_multi();
     assert_eq!(multi.add_handle(unsafe { &mut *handle }), CURLM_OK, "added");
     for _ in 0..100 {

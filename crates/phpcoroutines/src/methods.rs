@@ -8,7 +8,7 @@ use crate::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
     },
-    runtime,
+    leased, runtime, tracer,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -19,14 +19,13 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray,
+    Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
     bailout::{self, Bailout},
     set_object,
     sys::{
-        object_properties_init, swr_zend_coroutine_called_by_destructor, swr_zend_coroutine_locate,
-        swr_zend_coroutine_print_trace, swr_zend_coroutine_redirect,
+        object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
         swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
-        zend_fetch_debug_backtrace, zend_objects_new, zend_throw_exception_object,
+        zend_objects_new, zend_throw_exception_object,
     },
 };
 
@@ -75,9 +74,7 @@ fn create(call: &Call) {
     } else {
         ptr::null_mut()
     };
-    // SAFETY: called from a handler.
-    if host::flag(host::SHUTDOWN_FUNCTIONS) && unsafe { swr_zend_coroutine_called_by_destructor() }
-    {
+    if host::flag(host::SHUTDOWN_FUNCTIONS) && leased::called_by_destructor(call.php()) {
         host::fatal_error(
             E_ERROR,
             c"can not use coroutine in __destruct after php_request_shutdown",
@@ -85,7 +82,13 @@ fn create(call: &Call) {
         call.set_bool(false);
         return;
     }
-    match runtime::create(&raw mut fcc, argc, argv, &raw mut fci.function_name) {
+    match runtime::create(
+        call.php(),
+        &raw mut fcc,
+        argc,
+        argv,
+        &raw mut fci.function_name,
+    ) {
         Ok(cid) if cid > 0 => call.set_long(cid),
         Ok(_) => call.set_bool(false),
         Err(Bailout) => runtime::raise(),
@@ -387,16 +390,13 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let timer = swoole_rs_timer::add_fn_sec(timeout, false, move || time_limit(cid));
-    if timer.is_null() {
+    let Some(timer) = swoole_rs_timer::add_fn_sec_id(timeout, false, move || time_limit(cid))
+    else {
         call.set_bool(false);
         return;
-    }
-    let old = ctx.timer_limit();
-    ctx.set_timer_limit(timer);
-    if !old.is_null() {
-        // SAFETY: the coroutine's armed timer.
-        unsafe { swoole_rs_timer::swoole_timer_del(old.cast()) };
+    };
+    if let Some(old) = context::swap_time_limit(ctx, cid, Some(timer)) {
+        swoole_rs_timer::del_id(old);
     }
     call.set_bool(true);
 }
@@ -404,7 +404,7 @@ fn set_time_limit(call: &Call) {
 fn time_limit(cid: c_long) {
     if let Some(ctx) = context::by_cid(cid) {
         // Its timer has fired.
-        ctx.set_timer_limit(ptr::null_mut());
+        let _fired = context::swap_time_limit(ctx, cid, None);
         throw_exception(cid, true, classes::timeout());
     }
 }
@@ -559,8 +559,8 @@ fn get_back_trace(call: &Call) {
         return;
     };
     let (options, limit) = (narrow(options), narrow(limit));
-    // SAFETY: the return slot.
-    let trace = || unsafe { zend_fetch_debug_backtrace(call.return_value(), 0, options, limit) };
+    // The return slot holds nothing yet, as the frames were written straight into it.
+    let trace = || call.set_owned(tracer::backtrace(options, limit));
     if cid == 0 || cid == runtime::get_cid() {
         return trace();
     }
@@ -580,6 +580,7 @@ fn narrow(value: i64) -> i32 {
 
 /// `sw_php_print_backtrace`.
 fn print_backtrace(
+    php: Php<'_>,
     cid: c_long,
     options: i64,
     limit: i64,
@@ -587,8 +588,7 @@ fn print_backtrace(
 ) -> Result<(), Bailout> {
     let (options, limit) = (narrow(options), narrow(limit));
     if cid == 0 || cid == runtime::get_cid() {
-        // SAFETY: output handlers run inside the shim's zend_try.
-        return trapped(unsafe { swr_zend_coroutine_print_trace(1, options, limit) });
+        return leased::print_trace(php, 1, options, limit);
     }
     let Some(ctx) = context::by_cid(cid) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
@@ -597,20 +597,18 @@ fn print_backtrace(
         }
         return Ok(());
     };
-    // SAFETY: in the coroutine's frame; output handlers run inside the shim's zend_try.
-    ctx.in_frame(|| trapped(unsafe { swr_zend_coroutine_print_trace(0, options, limit) }))
-}
-
-/// A shim's trapped-bailout flag.
-fn trapped(bailed: std::ffi::c_int) -> Result<(), Bailout> {
-    if bailed == 0 { Ok(()) } else { Err(Bailout) }
+    // In the coroutine's frame.
+    ctx.in_frame(|| leased::print_trace(php, 0, options, limit))
 }
 
 /// `sw_php_print_backtrace(cid)`, printed (crates/phpswoole's fatal error).
 /// # Errors
 /// The output bailed out.
 pub fn print_coroutine_backtrace(cid: c_long) -> Result<(), Bailout> {
-    print_backtrace(cid, 0, 0, None)
+    // SAFETY: crates/phpswoole's fatal-error report, which the PHP thread that
+    // raised the error runs before it returns to Zend.
+    let php = unsafe { Php::assume() };
+    print_backtrace(php, cid, 0, 0, None)
 }
 
 /// `Co::printBackTrace(int $cid = 0, int $options = 0, int $limit = 0)`.
@@ -619,7 +617,7 @@ fn print_back_trace(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if print_backtrace(cid, options, limit, Some(call)).is_err() {
+    if print_backtrace(call.php(), cid, options, limit, Some(call)).is_err() {
         runtime::raise();
     }
 }

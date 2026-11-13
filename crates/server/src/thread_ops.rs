@@ -348,7 +348,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let sock = event.socket()?;
     ctx.resp = bus.buffer();
     loop {
-        if crate::pool_native::read_bus(bus.rust(), bus.allocator(), sock, true) <= 0 {
+        if bus.read_dgram(sock) <= 0 {
             return Some(0);
         }
         let head = *ctx.message()?;

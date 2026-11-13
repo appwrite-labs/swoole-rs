@@ -20,7 +20,7 @@ use swoole_rs_framing::recv::{
     RECV_DONE,
 };
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
-use swoole_rs_reactor::{Socket, SocketFields, SocketRecord, swr_v1_socket_reset_on_close};
+use swoole_rs_reactor::{Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
@@ -90,7 +90,7 @@ impl Packages for Callbacks {
         unsafe {
             dispatch(
                 r.protocol(),
-                r.socket.as_ptr(),
+                r.socket,
                 b.as_ptr().wrapping_add(start),
                 length,
             )
@@ -142,13 +142,8 @@ fn paused(socket: &SocketFields) -> bool {
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.
 ///
 /// # Safety
-/// The live socket, and `length` readable bytes at `data`.
-unsafe fn dispatch(
-    protocol: &Protocol,
-    socket: *mut SocketRecord,
-    data: *const u8,
-    length: u64,
-) -> c_int {
+/// `length` readable bytes at `data`, a package of the socket `protocol` reads.
+unsafe fn dispatch(protocol: &Protocol, socket: Socket<'_>, data: *const u8, length: u64) -> c_int {
     let packet = RecvData {
         info: DataHead {
             len: u32::try_from(length).unwrap_or(u32::MAX),
@@ -159,7 +154,7 @@ unsafe fn dispatch(
     match protocol.on_package {
         // SAFETY: upstream's call, over the live protocol, socket and packet.
         Some(on_package) => unsafe {
-            on_package(protocol, socket.cast(), (&raw const packet).cast())
+            on_package(protocol, socket.as_ptr().cast(), (&raw const packet).cast())
         },
         None => -1,
     }
@@ -313,7 +308,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, ar
             // Each part to `onPackage`, while the socket stays.
             b.split(eof, |data, length| {
                 // SAFETY: the live protocol and socket, and the part inside the buffer.
-                let result = unsafe { dispatch(p, s.as_ptr(), data, length as u64) };
+                let result = unsafe { dispatch(p, s, data, length as u64) };
                 result >= 0 && !s.read(|s| s.removed)
             }) as i64
         }
@@ -413,13 +408,9 @@ pub(crate) unsafe fn receive<K: Packages>(
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`.
 fn client_recv<const LENGTH: bool>(
     protocol: *const Protocol,
-    socket: *mut SocketRecord,
+    socket: Socket<'_>,
     buffer: *mut CppString,
 ) -> c_int {
-    // SAFETY: the live socket `Framing::new` asks for.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
-    };
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     // SAFETY: the live protocol and input buffer `Framing::new` asks for.
     unsafe { receive::<Callbacks>(protocol, socket, buffer, mode) }
@@ -516,6 +507,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use swoole_rs_corebase::CCast;
+    use swoole_rs_reactor::SocketRecord;
 
     thread_local! {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
@@ -532,6 +524,11 @@ mod tests {
             unsafe { core::slice::from_raw_parts((*packet).data, (*packet).info.len as usize) };
         PACKAGES.with_borrow_mut(|p| p.push(bytes.to_vec()));
         0
+    }
+
+    /// The handle a client's read passes for its live socket.
+    fn handle(socket: &mut SocketRecord) -> Socket<'_> {
+        unsafe { Socket::from_ptr(socket) }.expect("a socket")
     }
 
     /// A connected socket with `sent` waiting, the protocol and an 8-byte buffer.
@@ -566,9 +563,9 @@ mod tests {
         protocol.package_length_size = 2;
         protocol.package_body_offset = 2;
         protocol.get_package_length = Some(default_length_func);
-        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
         assert_eq!(status, 0);
-        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| {
             assert_eq!(
@@ -578,7 +575,7 @@ mod tests {
         });
         unsafe { libc::close(peer) };
         // The peer's close ends the next receive.
-        let status = client_recv::<true>(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status = client_recv::<true>(&raw const protocol, handle(&mut socket), &raw mut buffer);
         assert_eq!(status, -1);
         buffer.dispose();
         unsafe { libc::close(socket.fd) };
@@ -591,7 +588,8 @@ mod tests {
         protocol.package_eof_len = 2;
         protocol.split_by_eof = true;
         buffer.extend(64);
-        let status = client_recv::<false>(&raw const protocol, &raw mut socket, &raw mut buffer);
+        let status =
+            client_recv::<false>(&raw const protocol, handle(&mut socket), &raw mut buffer);
         assert_eq!(status, 0);
         PACKAGES.with_borrow(|p| assert_eq!(*p, [b"ab\r\n".to_vec(), b"cd\r\n".to_vec()]));
         assert_eq!(buffer.len(), 1);

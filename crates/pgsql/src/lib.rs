@@ -21,9 +21,8 @@ pub mod minit;
 pub mod pdo;
 
 use pq_sys::{
-    ConnStatusType, Oid, PGconn, PGresult, PQclear, PQconnectStart, PQconninfoFree,
-    PQconninfoOption, PQfinish, PQsendPrepare, PQsendQuery, PQsendQueryParams, PQsendQueryPrepared,
-    PostgresPollingStatusType,
+    ConnStatusType, Oid, PGconn, PGresult, PQclear, PQconninfoFree, PQconninfoOption, PQfinish,
+    PQsendPrepare, PQsendQueryParams, PQsendQueryPrepared, PostgresPollingStatusType,
 };
 use std::{
     cell::RefCell,
@@ -32,7 +31,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, sys::Text};
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
 const READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
@@ -72,6 +71,12 @@ unsafe extern "C" {
     safe fn PQflush(conn: Conn) -> c_int;
     safe fn PQgetResult(conn: Conn) -> *mut PGresult;
     safe fn PQconninfo(conn: Conn) -> *mut PQconninfoOption;
+    /// A new connection, or null: libpq copies what it needs of `conninfo`, which it
+    /// only reads, and runs no callback.
+    safe fn PQconnectStart(conninfo: Text<'_>) -> *mut PGconn;
+    /// Queue `query`, which libpq copies into the connection's output buffer. It
+    /// parses no input, so it runs no notice callback.
+    safe fn PQsendQuery(conn: Conn, query: Text<'_>) -> c_int;
     #[cfg(feature = "php")]
     safe fn PQresetStart(conn: Conn) -> c_int;
     #[cfg(feature = "php")]
@@ -365,36 +370,32 @@ fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusTy
 /// Only a driver built against libpq 17 or later (`HAVE_PQCLOSEPREPARED`)
 /// calls it, so the call is looked up rather than linked: an older libpq
 /// still loads.
-/// # Safety
-/// As `PQclosePrepared`.
+/// `PQclosePrepared`'s whole contract is the live connection and the name's string,
+/// which the types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_close_prepared(
-    conn: Conn,
-    stmt_name: *const c_char,
-) -> *mut PGresult {
-    type Send = unsafe extern "C" fn(Conn, *const c_char) -> c_int;
+pub extern "C" fn swoole_pgsql_close_prepared(conn: Conn, stmt_name: Text<'_>) -> *mut PGresult {
+    type Send = extern "C" fn(Conn, Text<'_>) -> c_int;
     // SAFETY: a NUL-terminated name.
     let send = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"PQsendClosePrepared".as_ptr()) };
-    // SAFETY: null or libpq's `PQsendClosePrepared`, of this type.
+    // SAFETY: null or libpq's `PQsendClosePrepared`, of this type. As `PQsendQuery`, it
+    // asks for a live connection and a string, queues the request and runs no callback,
+    // so it is safe to call with both.
     let send = unsafe { std::mem::transmute::<*mut c_void, Option<Send>>(send) };
     let Some(send) = send else {
         return ptr::null_mut();
     };
-    // SAFETY: per the caller.
-    if unsafe { send(conn, stmt_name) } == 0 {
+    if send(conn, stmt_name) == 0 {
         return ptr::null_mut();
     }
     get_result(conn)
 }
 
 /// `swoole_pgsql_connectdb`: `PQconnectStart`, then poll the handshake to its
-/// end or its `connect_timeout`.
-/// # Safety
-/// `conninfo` is a NUL-terminated string.
+/// end or its `connect_timeout`. `PQconnectdb`'s whole contract is the string the
+/// type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_connectdb(conninfo: *const c_char) -> *mut PGconn {
-    // SAFETY: per the caller.
-    let started = unsafe { PQconnectStart(conninfo) };
+pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
+    let started = PQconnectStart(conninfo);
     if started.is_null() {
         return started;
     }
@@ -460,14 +461,11 @@ pub unsafe extern "C" fn swoole_pgsql_exec_prepared(
     finish(conn, sent)
 }
 
-/// `swoole_pgsql_exec`: `PQsendQuery`, then its result.
-/// # Safety
-/// As `PQexec`.
+/// `swoole_pgsql_exec`: `PQsendQuery`, then its result. `PQexec`'s whole contract is
+/// the live connection and the query's string, which the types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_exec(conn: Conn, query: *const c_char) -> *mut PGresult {
-    // SAFETY: per the caller.
-    let sent = unsafe { PQsendQuery(conn.0, query) };
-    finish(conn, sent)
+pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresult {
+    finish(conn, PQsendQuery(conn, query))
 }
 
 /// `swoole_pgsql_exec_params`: `PQsendQueryParams`, then its result.

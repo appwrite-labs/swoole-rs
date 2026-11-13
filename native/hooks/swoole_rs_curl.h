@@ -37,9 +37,12 @@ int swr_v1_curl_multi_remove_handle(const struct swr_v1_curl_multi *multi, struc
 /* After swoole_curl_check_bound_co. */
 int swr_v1_curl_multi_perform(const struct swr_v1_curl_multi *multi);
 long swr_v1_curl_multi_select(const struct swr_v1_curl_multi *multi, void *co, double timeout);
-struct swr_v1_curl_handle *swr_v1_curl_get_handle(void *cp);
-struct swr_v1_curl_handle *swr_v1_curl_create_handle(void *cp);
-void swr_v1_curl_destroy_handle(void *cp);
+/* A live easy handle (a CURL *), as Rust's Easy takes it. */
+typedef void *swr_v1_curl_easy;
+struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
+struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
+/* No transfer of cp runs, and nothing uses its handle afterwards. */
+void swr_v1_curl_destroy_handle(swr_v1_curl_easy cp);
 /* Curl's FILE* may be a PHP stream cookie, so fread/fwrite must not run in an AIO thread. */
 void swoole_curl_easy_reset(CURL *curl);
 #define curl_easy_reset swoole_curl_easy_reset

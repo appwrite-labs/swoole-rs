@@ -24,9 +24,9 @@ use swoole_rs_zend::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
         swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
         swr_zend_runtime_free_arginfo, swr_zend_runtime_instanceof, swr_zend_runtime_parent,
-        swr_zend_runtime_set_parent, swr_zend_runtime_unsupported, swr_zend_try_lookup_class,
-        zend_class_entry, zend_execute_data, zend_fcall_info, zend_function,
-        zend_internal_arg_info, zend_string, zif_handler, zval,
+        swr_zend_runtime_set_parent, swr_zend_runtime_unsupported, zend_class_entry,
+        zend_execute_data, zend_fcall_info, zend_function, zend_internal_arg_info, zend_string,
+        zif_handler, zval,
     },
 };
 
@@ -414,13 +414,7 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
 
 /// `zend_lookup_class`, which may run an autoloader.
 fn lookup_class(name: &CStr) -> Result<*mut zend_class_entry, Bailout> {
-    let mut found = ptr::null_mut();
-    let name = ZString::new(name.to_bytes());
-    // SAFETY: a live string and a writable slot; the shim traps a bailout.
-    if unsafe { swr_zend_try_lookup_class(name.as_ptr(), &raw mut found) } != 0 {
-        return Err(Bailout);
-    }
-    Ok(found)
+    swoole_rs_zend::lookup_class(&ZString::new(name.to_bytes()))
 }
 
 fn parent(ce: *mut zend_class_entry) -> *mut zend_class_entry {

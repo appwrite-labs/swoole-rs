@@ -4,7 +4,7 @@
 //! last error.
 use crate::ip::swr_v1_clients_ip;
 use std::cell::Cell;
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use std::io::Write;
 use std::net::Ipv4Addr;
 use swoole_rs_corebase::CCast;
@@ -18,11 +18,14 @@ use swoole_rs_tls::CText;
 
 // libc's own declarations. `inet_pton` reads the NUL-terminated source and
 // writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
+// `inet_ntop` reads the family's 4 or 16 bytes of the address (none for a family it
+// doesn't know) and writes its text, at most an IPv6 address's 46 bytes and never
+// more than `size`, returning the text's address or null; it keeps neither.
 unsafe extern "C" {
-    fn inet_ntop(
+    safe fn inet_ntop(
         family: c_int,
-        address: *const c_void,
-        text: *mut c_char,
+        address: &[u8; 16],
+        text: &Cell<[u8; 46]>,
         size: libc::socklen_t,
     ) -> *const c_char;
     safe fn inet_pton(family: c_int, source: CText<'_>, destination: &mut [u8; 16]) -> c_int;
@@ -130,14 +133,16 @@ fn address_size(family: c_int) -> usize {
 /// short for the family.
 #[must_use]
 pub fn address_string(family: c_int, address: &[u8]) -> *const c_char {
-    if address.len() < address_size(family) {
+    let Some(given) = address.get(..address_size(family)) else {
         return std::ptr::null();
+    };
+    // The family's bytes, in room for either's.
+    let mut bytes = [0; 16];
+    for (byte, &given) in bytes.iter_mut().zip(given) {
+        *byte = given;
     }
-    ADDRESS_SCRATCH.with(|scratch| {
-        // SAFETY: this thread alone accesses its fixed scratch; inet_ntop reads the
-        // family's bytes, writes at most its supplied capacity and retains neither.
-        unsafe { inet_ntop(family, address.as_ptr().cast(), scratch.as_ptr().cast(), 46) }
-    })
+    // This thread alone accesses its fixed scratch.
+    ADDRESS_SCRATCH.with(|scratch| inet_ntop(family, &bytes, scratch, 46))
 }
 
 /// `Address::verify_ip` for Rust: whether `host` is an IP literal of `family`. The

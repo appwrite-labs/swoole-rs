@@ -467,7 +467,7 @@ mod tests {
                 core::ptr::null_mut()
             };
             record.removed = removed;
-            let event_socket = s.0.socket.get();
+            let event_socket = s.0.socket_ptr();
             unsafe { &mut *s.state() }.bind(READ, (&raw mut reader).cast());
             unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());
             ON_RESUME.set(Some(Box::new(move |cid| {

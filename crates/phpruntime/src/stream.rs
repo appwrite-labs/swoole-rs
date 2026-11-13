@@ -18,7 +18,7 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, sys::Text};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
@@ -26,9 +26,8 @@ use swoole_rs_zend::{
     sys::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, add_next_index_resource, php_stream, php_stream_context,
         php_stream_ops, php_stream_statbuf, php_stream_xport_crypto_param, php_stream_xport_param,
-        sockaddr, swr_zend_stream_context, swr_zend_stream_expose, swr_zend_stream_progress,
-        swr_zend_stream_set_option, swr_zend_stream_share_context, swr_zend_stream_timeval,
-        timeval, zend_long, zend_string, zval,
+        sockaddr, swr_zend_stream_expose, swr_zend_stream_progress, swr_zend_stream_set_option,
+        swr_zend_stream_timeval, timeval, zend_long, zend_string, zval,
     },
     value::empty_string,
 };
@@ -42,13 +41,22 @@ unsafe extern "C" {
     /// `stream->has_buffered_data` (false before PHP 8.3): a read of the
     /// stream's own flag.
     safe fn swr_zend_stream_buffered(stream: &php_stream) -> bool;
-    /// `php_stream_context_get_option`: null (`None`), or the option the
-    /// stream's context holds, which lives until PHP code changes the context.
-    fn swr_zend_stream_option<'a>(
-        stream: *mut php_stream,
-        wrapper: *const c_char,
-        name: *const c_char,
+    /// `PHP_STREAM_CONTEXT(stream)`: the context the stream's resource names,
+    /// or null. A read of the stream's own field.
+    safe fn swr_zend_stream_context(stream: &php_stream) -> *mut php_stream_context;
+    /// `php_stream_context_get_option`: the option `name` that the stream's
+    /// context holds for `wrapper`; null (`None`) without a context, without
+    /// options for `wrapper`, or where either level is no array. The option
+    /// lives until PHP code changes the context, which none does while the
+    /// stream is borrowed.
+    safe fn swr_zend_stream_option<'a>(
+        stream: &'a php_stream,
+        wrapper: Text<'_>,
+        name: Text<'_>,
     ) -> Option<&'a Value>;
+    /// `client->ctx = server->ctx`, with a reference of its own when there is
+    /// one. What `client` named before is not released.
+    safe fn swr_zend_stream_share_context(client: &mut php_stream, server: &php_stream);
     /// `Z_ARRVAL(context->options)`: null (`None`) for a null context, or its
     /// options, which live until PHP code changes the context.
     fn swr_zend_stream_context_options<'a>(context: *mut php_stream_context) -> Option<&'a Array>;
@@ -254,14 +262,15 @@ pub(crate) fn seconds(time: *const timeval) -> f64 {
 
 /// `PHP_STREAM_CONTEXT(stream)`: the stream's context, or null.
 fn context(stream: *mut php_stream) -> *mut php_stream_context {
-    // SAFETY: a live stream.
-    unsafe { swr_zend_stream_context(stream) }
+    fields(stream, |stream| swr_zend_stream_context(stream))
 }
 
 /// A copy of the stream's context option, if set.
 fn context_option(stream: *mut php_stream, wrapper: &CStr, name: &CStr) -> Option<Owned> {
-    // SAFETY: a live stream; the context's live option is copied before any PHP runs.
-    unsafe { swr_zend_stream_option(stream, wrapper.as_ptr(), name.as_ptr()) }.map(Value::copy)
+    // The context's live option is copied before any PHP runs.
+    fields(stream, |stream| {
+        swr_zend_stream_option(stream, wrapper.into(), name.into()).map(Value::copy)
+    })
 }
 
 /// `zval_is_true` of a context option, false when unset.
@@ -822,8 +831,12 @@ fn accept(
     let ops = fields(stream, |stream| stream.ops);
     let connection = alloc(ops, Rc::new(client), ptr::null())?;
     if !connection.is_null() {
-        // SAFETY: both live; the client counts its reference.
-        unsafe { swr_zend_stream_share_context(connection, stream) };
+        // The new stream, which names no context yet, counts its reference.
+        fields(connection, |client| {
+            fields(stream, |server| {
+                swr_zend_stream_share_context(client, server);
+            });
+        });
     }
     param.outputs.client = connection;
     Ok(SUCCESS)

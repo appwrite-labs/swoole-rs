@@ -19,6 +19,12 @@ use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
 
+// c-ares' description of a status: a static NUL-terminated string for every code
+// (`"unknown"` for one it has none for), which reads nothing else.
+unsafe extern "C" {
+    safe fn ares_strerror(code: std::ffi::c_int) -> swoole_rs_corebase::sys::Text<'static>;
+}
+
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
 /// `swoole_rs_coroutine::Coroutine`.
 mod co {
@@ -360,8 +366,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         // SAFETY: keep query storage alive until all synchronous destruction callbacks return.
         unsafe { sdk::ares_destroy(channel) };
     } else {
-        // SAFETY: c-ares' static description of the status, NUL-terminated.
-        let reason = unsafe { CStr::from_ptr(sdk::ares_strerror(status)) }.to_string_lossy();
+        let reason = ares_strerror(status).get().to_string_lossy();
         log::warning(
             ORIGIN,
             format_args!("ares_init_options() failed, Error: {reason}[{status}]"),

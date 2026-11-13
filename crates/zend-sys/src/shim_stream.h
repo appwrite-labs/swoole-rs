@@ -12,13 +12,14 @@ bool swr_zend_stream_buffered(const php_stream *stream);
 /* php_stream_notify_progress_increment(PHP_STREAM_CONTEXT(stream), bytes, 0)
  * inside zend_try: 1 if the notifier bailed out. */
 int swr_zend_stream_progress(php_stream *stream, size_t bytes);
-/* php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), wrapper, name),
- * null without a context. */
-zval *swr_zend_stream_option(php_stream *stream, const char *wrapper, const char *name);
+/* php_stream_context_get_option(PHP_STREAM_CONTEXT(stream), wrapper, name):
+ * null without a context, without options for `wrapper`, or where the
+ * context's options or the wrapper's are no array. */
+zval *swr_zend_stream_option(const php_stream *stream, const char *wrapper, const char *name);
 /* php_stream_context_set_option(PHP_STREAM_CONTEXT(stream), wrapper, name, value). */
 void swr_zend_stream_set_option(php_stream *stream, const char *wrapper, const char *name, zval *value);
 /* PHP_STREAM_CONTEXT(stream). */
-php_stream_context *swr_zend_stream_context(php_stream *stream);
+php_stream_context *swr_zend_stream_context(const php_stream *stream);
 /* The context's options array; null without a context or an array. */
 zend_array *swr_zend_stream_context_options(php_stream_context *context);
 /* client->ctx = server->ctx, counted. */
@@ -35,6 +36,10 @@ void swr_zend_stream_timeval(const struct timeval *time, double *seconds, double
 bool swr_zend_stream_vm_active(void);
 /* php_stream_from_zval_no_verify: null if not a stream. */
 php_stream *swr_zend_stream_from_zval(zval *value);
+/* Whether `value` is a stream resource (php_stream_from_zval_no_verify) whose
+ * read buffer holds bytes not yet read (writepos > readpos). */
+bool swr_zend_stream_zval_buffered(zval *value);
+
 /* FG(default_socket_timeout). */
 zend_long swr_zend_stream_default_timeout(void);
 /* One stream free effect inside zend_try; Rust chooses the PHP_STREAM_FREE flags. */

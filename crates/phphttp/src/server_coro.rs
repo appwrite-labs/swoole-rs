@@ -22,7 +22,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_httpbindings::Setting;
-use swoole_rs_phpclients::{get_socket, is_socket_closed, php_swoole_socket_set_protocol};
+use swoole_rs_phpclients::{get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
@@ -535,7 +535,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     };
     // SAFETY: a bailout here skips this frame's copies of the settings and the
     // callable, which are the request heap's.
-    if !unsafe { php_swoole_socket_set_protocol(socket, &settings) } {
+    if !unsafe { socket_settings(socket, &settings, 1) } {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());

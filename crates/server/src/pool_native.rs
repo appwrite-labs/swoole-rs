@@ -17,8 +17,7 @@ use swoole_rs_process::worker_record::WorkerType;
 use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
 use core::sync::atomic::AtomicU64;
-use swoole_rs_bus::{BUS_ALLOCATE, BusRead, MessageBus};
-use swoole_rs_corebase::CoreAllocator;
+use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
@@ -112,57 +111,6 @@ fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
     sock.map_or(-1, |sock| bus_of(pool).read(sock))
 }
 
-/// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`) over the bus and its
-/// default allocator: allocates each packet block the bus asks for.
-pub(crate) fn read_bus(
-    bus: &MessageBus,
-    allocator: *const CoreAllocator,
-    sock: Socket<'_>,
-    dgram: bool,
-) -> isize {
-    let mut state = BusRead {
-        received: 0,
-        size: 0,
-        data: ptr::null_mut(),
-        allocator: ptr::null(),
-        chunks: 0,
-        resume: false,
-        event: 0,
-    };
-    loop {
-        // The receive only ever sets `kernel_nobufs`, so it edits the record only then:
-        // in thread mode, other threads read this worker's pipe meanwhile.
-        let mut nobufs = false;
-        let n = bus.receive(sock.fd(), dgram, &mut nobufs, &mut state);
-        if nobufs {
-            sock.edit(|sock| sock.kernel_nobufs = true);
-        }
-        if state.event != BUS_ALLOCATE {
-            return n;
-        }
-        let allocator = if state.data.is_null() {
-            allocator
-        } else {
-            state.allocator.cast()
-        };
-        // SAFETY: a live `swoole::Allocator`.
-        let allocator = unsafe { &*allocator };
-        let data = match (state.data.is_null(), allocator.malloc, allocator.realloc) {
-            // SAFETY: a fresh block of the size the bus asked for.
-            (true, Some(malloc), _) => unsafe { malloc(state.size) },
-            // SAFETY: the block the bus asked to grow, from this allocator.
-            (false, _, Some(realloc)) => unsafe { realloc(state.data, state.size) },
-            _ => ptr::null_mut(),
-        };
-        if data.is_null() {
-            // `throw std::bad_alloc()`, which nothing catches.
-            swoole_rs_corebase::fatal("out of memory");
-        }
-        // SAFETY: the block just allocated, from `allocator`.
-        unsafe { bus.adopt(data, state.size, ptr::from_ref(allocator).cast()) };
-    }
-}
-
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
     let bus = bus_of(pool);
@@ -185,14 +133,15 @@ fn new_message_bus() -> *mut c_void {
         return ptr::null_mut();
     };
     *msg_id.get_mut() = 1;
-    new_bus(msg_id)
+    Box::into_raw(Box::new(new_bus(msg_id))).cast()
 }
 
-/// `new MessageBus()` numbering its messages from `counter`; [`free_bus`] frees it.
-pub(crate) fn new_bus(counter: &'static AtomicU64) -> *mut c_void {
+/// `new MessageBus()` numbering its messages from `counter`. Its owner boxes and
+/// leaks it into the `MessageBus *` it keeps, which [`free_bus`] frees.
+pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
     let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
     bus.count_ids(counter);
-    Box::into_raw(Box::new(PoolBus::std(bus))).cast()
+    PoolBus::std(bus)
 }
 
 fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
@@ -712,6 +661,16 @@ impl PoolNative for Native {
 
     fn bus_deliver(&self, c: &mut PoolCall) {
         bus_deliver(c.pool());
+    }
+
+    fn bus_write(
+        &self,
+        pool: PoolRef<'_>,
+        worker: Record<'_>,
+        head: &mut DataHead,
+        message: &[u8],
+    ) -> bool {
+        worker_pipe(worker, true).is_some_and(|pipe| bus_of(pool).write(pipe, head, message))
     }
 
     fn task(&self, c: &mut PoolCall) {

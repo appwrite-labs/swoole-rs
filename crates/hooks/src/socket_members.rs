@@ -687,7 +687,9 @@ mod tests {
             unsafe { init(&raw mut (*native).record) };
             let mut object = Self(native);
             let record = object.record();
-            record.socket.set(SocketRecord::with_fd(-1, 6).into_raw());
+            record
+                .socket
+                .set(Some(Box::new(SocketRecord::with_fd(-1, 6)).into_socket()));
             record.sock_fd.set(100);
             record.socket_mut().object = native.cast();
             object
@@ -699,7 +701,7 @@ mod tests {
             unsafe { Co::of(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.record().socket.get().cast()) }
+            unsafe { Event::new(-1, 0, 6, self.record().socket_ptr().cast()) }
         }
         fn bind(&mut self, event: u32, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -709,7 +711,7 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.record().socket.get());
+                SocketRecord::free(self.record().socket_ptr());
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }
@@ -721,7 +723,7 @@ mod tests {
     }
     impl SocketMut for CoSocket {
         fn socket_mut(&mut self) -> &mut SocketFields {
-            unsafe { &mut *self.socket.get() }
+            unsafe { &mut *self.socket_ptr() }
         }
     }
 

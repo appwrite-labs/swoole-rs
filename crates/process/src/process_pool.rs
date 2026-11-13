@@ -644,6 +644,16 @@ pub trait PoolNative: Sync {
     fn bus_read(&self, call: &mut PoolCall);
     /// `onMessage` with the bus's packet, then `message_bus->pop()`.
     fn bus_deliver(&self, call: &mut PoolCall);
+    /// `message_bus->write(worker->pipe_master, {head, message})` over `pool`'s
+    /// bus, which it has, `head.len` set to the message's length: whether the whole
+    /// message went. False for a worker without a pipe.
+    fn bus_write(
+        &self,
+        pool: PoolRef<'_>,
+        worker: Worker<'_>,
+        head: &mut swoole_rs_corebase::DataHead,
+        message: &[u8],
+    ) -> bool;
     /// `onTask(pool, worker, data)`.
     fn task(&self, call: &mut PoolCall);
     /// `onMessage` with `length` bytes at `data`.

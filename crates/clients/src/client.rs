@@ -180,7 +180,7 @@ use swoole_rs_tls::reactor_write::reactor_writable_callback as writable_callback
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live protocol, socket and input buffer.
-pub type Framed = fn(*const Protocol, *mut SocketRecord, *mut CppString) -> c_int;
+pub type Framed = fn(*const Protocol, Socket<'_>, *mut CppString) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
@@ -1860,7 +1860,7 @@ fn on_read(this: Handle) -> c_int {
         let protocol = this.protocol();
         // The live protocol, socket and input buffer `Framing::new` asks for. A
         // package callback may destroy the client; its socket outlives this handler.
-        let n = framed(protocol, socket.as_ptr(), this.input());
+        let n = framed(protocol, socket, this.input());
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(Flag::Closed) {
