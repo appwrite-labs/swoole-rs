@@ -331,32 +331,27 @@ impl Co {
     /// read buffer.
     pub(crate) fn recv_packet(self, timeout: f64, clear_empty: bool) -> ssize_t {
         let retval = swoole_rs_hooks::packet::recv_packet(self.0, timeout);
-        if retval == 0
-            && clear_empty
-            && let Some(buffer) = self.read_buffer()
-        {
-            buffer.clear();
+        if retval == 0 && clear_empty && !self.0.read_buffer().is_null() {
+            self.0
+                .with_buffer(false, swoole_rs_buffer::string::CppString::clear);
         }
         retval
-    }
-
-    fn read_buffer<'a>(self) -> Option<&'a mut swoole_rs_buffer::string::CppString> {
-        let buffer = self.0.read_buffer();
-        // SAFETY: the socket's live read buffer, or null before the first read.
-        unsafe {
-            buffer
-                .cast::<swoole_rs_buffer::string::CppString>()
-                .as_mut()
-        }
     }
 
     /// `pop_packet()`: the `length`-byte packet [`Co::recv_packet`] returned,
     /// or None after `set_err(ENOMEM)`.
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.0.buffer_init_size();
-        let packet = match self.read_buffer() {
-            Some(buffer) if buffer.offset() != 0 => buffer.pop(init_size),
-            _ => ptr::null_mut(),
+        let packet = if self.0.read_buffer().is_null() {
+            ptr::null_mut()
+        } else {
+            self.0.with_buffer(false, |buffer| {
+                if buffer.offset() == 0 {
+                    ptr::null_mut()
+                } else {
+                    buffer.pop(init_size)
+                }
+            })
         };
         if packet.is_null() {
             self.set_err(libc::ENOMEM);

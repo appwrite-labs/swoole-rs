@@ -359,12 +359,11 @@ fn proxy(
 /// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `context`,
 /// a client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
-    let owner = context.as_ptr();
-    // SAFETY: the context `context` keeps live, which nothing else writes during the call.
-    let value = |value| unsafe { tls::set_value(owner, value) };
+    // SAFETY: the context `context` keeps live, which nothing else reaches during the call.
+    let owner = unsafe { tls::Lent::new(context.as_ptr()) };
+    let value = |value| owner.set_value(value);
     let options = Options(settings);
-    // SAFETY: as above.
-    let set_text = |which, text: &[u8]| unsafe { tls::set_text(owner, which, text) };
+    let set_text = |which, text: &[u8]| owner.set_text(which, text);
     let text = |key: &str, which| {
         if let Some(text) = options.string(key) {
             set_text(which, text.bytes());

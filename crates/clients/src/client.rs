@@ -410,18 +410,21 @@ impl Handle {
         self.get().set(name, value);
     }
 
-    /// The client's public record: live with the client, and borrowed only
-    /// between effects, as the state is. Each call reborrows the whole record, so
-    /// it ends the borrow an earlier call (or `socket`/`socket_ptr`) returned:
-    /// call those first and keep only the last borrow.
-    fn fields(self) -> &'static mut ClientRecord {
-        // SAFETY: the live client's record, which SDK callers reach only between
-        // its operations.
-        unsafe { &mut *self.get().record.as_ptr() }
+    /// A copy of the client's public record.
+    fn record(self) -> ClientRecord {
+        self.get().record()
+    }
+
+    /// The record's protocol, in place: its callbacks take it by address.
+    fn protocol(self) -> *const Protocol {
+        let record = self.get().record.as_ptr();
+        record
+            .wrapping_byte_add(core::mem::offset_of!(ClientRecord, protocol))
+            .cast()
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
-        self.fields().socket
+        self.record().socket
     }
 
     fn socket(self) -> Socket<'static> {
@@ -466,39 +469,34 @@ impl Handle {
         ops::event(self, op, events)
     }
 
-    /// `Socket::recv`: one read, through the TLS session when there is one.
-    fn recv_once(self, buffer: &mut [impl ReadSlot]) -> isize {
-        net::recv(self.socket(), buffer, 0)
-    }
-
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
     fn sendto(self, data: &[u8]) -> isize {
-        // The descriptor first: `socket()` borrows the record again.
         let fd = self.socket().fd();
-        let address = &self.fields().server_addr;
-        address.sendto(fd, data, 0)
+        self.record().server_addr.sendto(fd, data, 0)
     }
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
     /// retried on EINTR.
     fn recvfrom(self, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
         let fd = self.socket().fd();
-        let address = &mut self.fields().remote_addr;
-        let mut n = -1;
-        for _ in 0..SOCKET_RETRY_COUNT {
-            n = address.recvfrom(fd, &mut *buffer, flags);
-            if n >= 0 || errno() != libc::EINTR {
-                break;
+        self.get().edit_record(|record| {
+            let mut n = -1;
+            for _ in 0..SOCKET_RETRY_COUNT {
+                n = record.remote_addr.recvfrom(fd, &mut *buffer, flags);
+                if n >= 0 || errno() != libc::EINTR {
+                    break;
+                }
             }
-        }
-        n
+            n
+        })
     }
 
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
     fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-        // The socket first: `socket()` borrows the record again.
         let socket = self.socket();
-        net::recvfrom_sync(socket, buffer, flags, &mut self.fields().remote_addr)
+        self.get().edit_record(|record| {
+            net::recvfrom_sync(socket, buffer, flags, &mut record.remote_addr)
+        })
     }
 
     /// The TLS context's view; TLS is on.
@@ -507,9 +505,12 @@ impl Handle {
         swr_v1_tls_owner_view(tls.unwrap_or_else(|| std::process::abort()))
     }
 
-    fn tls_fields(self) -> &'static mut OwnedTlsFields {
-        // SAFETY: the live context's fields, borrowed only between effects.
-        unsafe { &mut *self.tls().fields }
+    /// `edit` over the context's fields and a copy of the record; TLS is on.
+    /// `edit` is a plain fn, which cannot reach the client to borrow the fields again.
+    fn edit_tls<R>(self, edit: fn(&mut OwnedTlsFields, ClientRecord) -> R) -> R {
+        let record = self.record();
+        // SAFETY: the live context's fields, which only `edit` reaches meanwhile.
+        edit(unsafe { &mut *self.tls().fields }, record)
     }
 
     /// The context's SNI host name, NUL-terminated and empty when unset.
@@ -550,14 +551,16 @@ impl Handle {
 
     /// The input buffer (`cli->buffer`), null until an async connect makes it.
     fn input(self) -> *mut CppString {
-        self.fields().buffer.cast()
+        self.record().buffer.cast()
     }
 
-    /// The input buffer, which exists.
-    fn input_mut(self) -> &'static mut CppString {
-        // SAFETY: the Box `input_init` made, live until `input_free`, and
-        // borrowed only between effects.
-        unsafe { &mut *self.input() }
+    /// `edit` over the input buffer, which exists, and the client's socket.
+    /// `edit` is a plain fn, which cannot reach the client to borrow the buffer again.
+    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>) -> R) -> R {
+        let socket = self.socket();
+        // SAFETY: the Box `input_init` made, live until `input_free`, which only
+        // `edit` reaches meanwhile.
+        edit(unsafe { &mut *self.input() }, socket)
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
@@ -565,7 +568,8 @@ impl Handle {
         if self.input().is_null() {
             let mut buffer = Box::new(CppString::EMPTY);
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            self.fields().buffer = Box::into_raw(buffer).cast();
+            let buffer = Box::into_raw(buffer).cast();
+            self.get().edit_record(|record| record.buffer = buffer);
         }
     }
 
@@ -573,7 +577,8 @@ impl Handle {
     fn input_free(self) {
         let buffer = self.input();
         if !buffer.is_null() {
-            self.fields().buffer = core::ptr::null_mut();
+            self.get()
+                .edit_record(|record| record.buffer = core::ptr::null_mut());
             // SAFETY: the Box `input_init` made, released once.
             unsafe { Box::from_raw(buffer) }.dispose();
         }
@@ -581,24 +586,23 @@ impl Handle {
 
     /// The input buffer's free tail; the buffer exists.
     fn input_tail(self) -> Tail {
-        let buffer = self.input_mut();
-        let length = buffer.len();
-        Tail {
-            str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-            size: buffer.size() - length,
-        }
+        self.edit_input(|buffer, _| {
+            let length = buffer.len();
+            Tail {
+                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
+                size: buffer.size() - length,
+            }
+        })
     }
 
-    /// The input buffer's length grows by `n` read bytes.
-    fn input_grow(self, n: usize) {
-        let buffer = self.input_mut();
-        // SAFETY: its one caller read `n` bytes into `input_tail`, which bounds them.
-        unsafe { buffer.set_len(buffer.len() + n) };
+    /// One read into the input buffer's free tail; the buffer exists.
+    fn input_recv(self) -> isize {
+        self.edit_input(|buffer, socket| net::recv(socket, buffer.spare(), 0))
     }
 
     /// `buffer->clear()`.
     fn input_clear(self) {
-        self.input_mut().clear();
+        self.edit_input(|buffer, _| buffer.clear());
     }
 
     /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
@@ -976,7 +980,7 @@ impl Handle {
     /// received address; streams ask the kernel through the socket's operation.
     pub fn peer_name(self, address: &mut SocketAddress) -> c_int {
         if is_dgram(self.socket_type()) {
-            *address = self.fields().remote_addr;
+            *address = self.record().remote_addr;
             OK
         } else {
             self.socket().read(|socket| socket.get_peer_name(address))
@@ -1010,19 +1014,13 @@ impl Handle {
 
 /// The client protocol's length of the packet in `data`.
 fn package_length(this: Handle, data: &[u8]) -> isize {
-    let record = this.fields();
+    let record = this.record();
     let Some(get) = record.protocol.get_package_length else {
         return -1;
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe {
-        get(
-            &raw const record.protocol,
-            record.socket.cast(),
-            &mut packet,
-        )
-    }
+    unsafe { get(this.protocol(), record.socket.cast(), &mut packet) }
 }
 
 /// One of the flags above; false for any other.
@@ -1202,7 +1200,7 @@ pub extern "C" fn swr_v1_clients_ssl_context(client: &Client) -> *const OwnedTls
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
 fn enable_dtls(this: Handle) {
-    this.tls_fields().protocols = SSL_DTLS;
+    this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
         socket.dtls = 1;
         socket.chunk_size = SSL_BUFFER_SIZE;
@@ -1220,12 +1218,16 @@ fn ssl_handshake(this: Handle) -> c_int {
         .tls
         .get()
         .map_or(core::ptr::null(), TlsContext::as_ptr);
-    if this.tls_fields().context.is_none() {
-        this.tls_fields().http_v2 = u8::from(this.fields().http2);
-        // SAFETY: the client's live context.
-        if !unsafe { ssl_context_create(tls) } {
-            return ERR;
+    let missing = this.edit_tls(|fields, record| {
+        let missing = fields.context.is_none();
+        if missing {
+            fields.http_v2 = u8::from(record.http2);
         }
+        missing
+    });
+    // SAFETY: the client's live context.
+    if missing && !unsafe { ssl_context_create(tls) } {
+        return ERR;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = 1);
@@ -1251,8 +1253,9 @@ fn ssl_handshake(this: Handle) -> c_int {
         return ERR;
     }
     if this.tls_state() == SSL_STATE_READY {
-        let fields = this.tls_fields();
-        if fields.verify_peer != 0 && ssl_verify(this, fields.allow_self_signed != 0) < 0 {
+        let (verify, self_signed) =
+            this.edit_tls(|fields, _| (fields.verify_peer != 0, fields.allow_self_signed != 0));
+        if verify && ssl_verify(this, self_signed) < 0 {
             return ERR;
         }
     }
@@ -1621,14 +1624,15 @@ mod ops {
         let Some(address) = address_of(this.socket_type(), host, port, resolve) else {
             return false;
         };
-        this.fields().server_addr = address;
+        this.get()
+            .edit_record(|record| record.server_addr = address);
         true
     }
 
     /// Connects the socket to `server_addr`, by `mode` (`CONNECT_*`); errno is the call's.
     pub(super) fn connect(this: Handle, mode: c_int) -> c_int {
         let socket = this.socket();
-        let address = &this.fields().server_addr;
+        let address = &this.record().server_addr;
         match mode {
             CONNECT_ASYNC => {
                 socket.edit(|socket| socket_upstream::socket_connect_async(socket, address))
@@ -1797,9 +1801,11 @@ fn on_read(this: Handle) -> c_int {
     let do_ssl_handshake = this.flag(OPEN_SSL);
     let http = this.proxy_state(Proxy::Http);
     if http >= 0 && http != HTTP_PROXY_READY {
-        let n = this.recv_once(this.input_mut().spare());
-        let input = this.input_mut();
-        if n <= 0 || !http_handshake(input, input.len() + n.cast_unsigned()) {
+        let accepted = this.edit_input(|input, socket| {
+            let n = net::recv(socket, input.spare(), 0);
+            n > 0 && http_handshake(input, input.len() + n.cast_unsigned())
+        });
+        if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
             return connect_failed(this);
         }
@@ -1812,12 +1818,18 @@ fn on_read(this: Handle) -> c_int {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5 >= 0 && socks5 != SOCKS5_READY {
-        let n = this.recv_once(this.input_mut().spare());
+        let n = this.edit_input(|input, socket| {
+            let n = net::recv(socket, input.spare(), 0);
+            if n > 0 {
+                // SAFETY: the read filled `n` bytes of the free tail, which bounds them.
+                unsafe { input.set_len(input.len() + n.cast_unsigned()) };
+            }
+            n
+        });
         if n <= 0 {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        this.input_grow(n.cast_unsigned());
         // Upstream hands the handshake the buffer's free size, not what was read.
         if !this.socks5_handshake(buf, size) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
@@ -1843,14 +1855,14 @@ fn on_read(this: Handle) -> c_int {
         return OK;
     }
     // No reference crosses the receiving callback, which may destroy the client.
-    let fields = this.fields();
-    let (eof, length) = (fields.open_eof_check, fields.open_length_check);
+    let record = this.record();
+    let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
         // `swoole_init` registered them before any client existed.
         let framing = FRAMING.get().unwrap_or_else(|| std::process::abort());
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
-        let protocol = &raw const this.fields().protocol;
+        let protocol = this.protocol();
         // The live protocol, socket and input buffer `Framing::new` asks for. A
         // package callback may destroy the client; its socket outlives this handler.
         let n = framed(protocol, socket.as_ptr(), this.input());
@@ -1861,7 +1873,7 @@ fn on_read(this: Handle) -> c_int {
         }
         return OK;
     }
-    let n = this.recv_once(this.input_mut().spare());
+    let n = this.input_recv();
     if n < 0 {
         let socket = this.socket();
         return match socket.catch_error(errno()) {
