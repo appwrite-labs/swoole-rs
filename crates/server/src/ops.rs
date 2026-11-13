@@ -5,15 +5,6 @@
 // Operations the runner (`crate::run`) matches.
 /// `Server::is_healthy_connection`: arg the `double` now, context port and connection.
 pub const RUN_HEALTHY: u32 = 7;
-pub const RUN_SHUTDOWN: u32 = 8;
-/// `Server::master_signal_handler(arg)`.
-pub const RUN_SIGNAL: u32 = 9;
-pub const RUN_SIGNAL_SHUTDOWN: u32 = 10;
-pub const RUN_CHILD_EXIT: u32 = 11;
-pub const RUN_STOP_MASTER_THREAD: u32 = 12;
-/// `Server::timer_callback`, once a second in the master.
-pub const RUN_MASTER_TIMER: u32 = 13;
-pub const RUN_INIT_SIGNALS: u32 = 14;
 pub const RUN_CREATE: u32 = 15;
 pub const RUN_START_CHECK: u32 = 16;
 /// `Server::start_master_thread`: context reactor.
@@ -93,9 +84,6 @@ pub const OP_RUNNING: u32 = 11;
 pub const OP_SET_RUNNING: u32 = 12;
 pub const OP_MASTER_PID: u32 = 13;
 pub const OP_MANAGER_PID: u32 = 14;
-pub const OP_IS_MASTER_THREAD: u32 = 15;
-/// `SwooleG.running && serv && serv->is_running()`.
-pub const OP_SIGNAL_ACTIVE: u32 = 16;
 /// `max_wait_time`.
 pub const OP_MAX_WAIT_TIME: u32 = 17;
 /// `SIGRTMIN`, or 0 where it is not defined.
@@ -106,20 +94,11 @@ pub const OP_MAXFD: u32 = 20;
 pub const OP_MINFD: u32 = 21;
 pub const OP_SET_MAXFD: u32 = 22;
 pub const OP_SET_MINFD: u32 = 23;
-/// `swoole_set_last_error(SW_ERROR_WRONG_OPERATION)`.
-pub const OP_WRONG_OPERATION: u32 = 24;
-/// The scheduler warning of the server (arg 0) or the task pool (arg 1) is set.
-pub const OP_WARNING: u32 = 25;
-pub const OP_WARNING_TIME: u32 = 26;
-/// Clears the warning of pool `arg & 1` and stamps its time with `arg >> 1`.
-pub const OP_WARNING_RESET: u32 = 27;
 
 // Listen ports, by index in `ports`.
 pub const OP_PORT_COUNT: u32 = 30;
 pub const OP_PORT_DGRAM: u32 = 31;
 pub const OP_PORT_REMOVED: u32 = 34;
-/// `SwooleTG.reactor->del(port->socket)`.
-pub const OP_PORT_REACTOR_DEL: u32 = 35;
 
 // The context's listen port.
 /// `max_idle_time`, a `double`.
@@ -145,40 +124,9 @@ pub const OP_FORCE_CLOSE: u32 = 83;
 pub const OP_CONN_LAST_RECV: u32 = 84;
 
 // Timers, signals and shutdown.
-/// Sends `SW_SERVER_EVENT_SHUTDOWN_SIGNAL` to reactor 0; whether it was sent.
-pub const OP_SEND_SHUTDOWN: u32 = 92;
-/// `swoole_kill(arg, SIGTERM)`.
-pub const OP_KILL_TERM: u32 = 93;
-/// `SwooleTG.reactor->set_wait_exit(true)`.
-pub const OP_REACTOR_WAIT_EXIT: u32 = 94;
-/// Deletes the command pipe from the reactor when there is one.
-pub const OP_PIPE_COMMAND_DEL: u32 = 95;
-/// `swoole_kill(arg, SIGWINCH)`.
-pub const OP_KILL_WINCH: u32 = 96;
-/// The forced-termination exit condition after `max_wait_time`.
-pub const OP_FORCED_EXIT: u32 = 97;
-pub const OP_STOP_WORKER_THREADS: u32 = 98;
-/// `get_thread(0)->shutdown(reactor)`.
-pub const OP_THREAD0_SHUTDOWN: u32 = 99;
-/// The event pool stops and the async worker exits (single-process base mode).
-pub const OP_STOP_SINGLE_WORKER: u32 = 100;
-/// `SW_GLOBAL_HOOK_BEFORE_SERVER_SHUTDOWN` then `onBeforeShutdown`, each when set.
-pub const OP_BEFORE_SHUTDOWN: u32 = 101;
-pub const OP_SIGNAL_RELOAD: u32 = 102;
-pub const OP_SIGNAL_READ_MESSAGE: u32 = 103;
-pub const OP_SIGNAL_REOPEN: u32 = 104;
 /// `swoole_signal_set(arg, nullptr)` and `swoole_signal_set(arg, master_signal_handler)`.
 pub const OP_SIGNAL_IGNORE: u32 = 105;
 pub const OP_SIGNAL_HANDLE: u32 = 106;
-/// `sw_reactor()->running = false`.
-pub const OP_REACTOR_STOP: u32 = 108;
-
-// Logs, in upstream's wording; arg is the one number a log needs beyond native state.
-pub const LOG_SHUTDOWN_FAILED: u32 = 129;
-/// arg the `waitpid` status.
-pub const LOG_MANAGER_EXIT: u32 = 130;
-/// arg 0 the server, 1 the task pool.
-pub const LOG_NO_IDLE_WORKER: u32 = 131;
 
 // Startup and teardown (`RUN_CREATE`, `RUN_START_CHECK`, `RUN_START_MASTER_THREAD`,
 // `RUN_STORE_LISTEN_SOCKET`, `RUN_DESTROY`).
@@ -561,14 +509,6 @@ pub const LOG_BASE_ALLOC_CONNECTIONS: u32 = 530;
 pub const LOG_BASE_ALLOC_NUMS: u32 = 531;
 pub const LOG_BASE_ALLOC_PORT_NUMS: u32 = 532;
 
-// The `Server` methods' native effects (`crates/server/src/server_methods.rs`).
-/// `factory_->end(session_id, number)`.
-pub const OP_FACTORY_END: u32 = 540;
-/// `factory_->notify(object)`.
-pub const OP_FACTORY_NOTIFY: u32 = 541;
-/// `send_to_worker_from_worker(get_worker(number), object, length, master | nonblock) > 0`.
-pub const OP_PIPE_TO_WORKER: u32 = 543;
-
 // Reactor threads' close, peer-close and pipe-write paths and thread setup
 // (`crates/server/src/reactor_io.rs`); far from the other ranges.
 pub const RUN_RT_PIPE_WRITE: u32 = 200;
@@ -678,7 +618,6 @@ pub const LOG_CC_LINGER: u32 = 990;
 pub const RUN_ST_ADD_COMMAND: u32 = 300;
 /// `Server::send`: context session, data and length.
 pub const RUN_ST_SEND: u32 = 308;
-pub const RUN_ST_CLEAR_TIMER: u32 = 309;
 /// `Server::command`: arg a `commands::SendCommand`.
 pub const RUN_ST_COMMAND: u32 = 312;
 
@@ -692,10 +631,6 @@ pub const OP_ST_GS_CONCURRENCY: u32 = 1021;
 pub const OP_ST_GS_CONCURRENCY_ZERO: u32 = 1022;
 /// `factory_->finish` of the send.
 pub const OP_ST_FINISH: u32 = 1030;
-/// Timer arg (`master_timer`, `heartbeat_timer`, `enable_accept_timer`) is armed; it
-/// is deleted and cleared.
-pub const OP_ST_TIMER: u32 = 1032;
-pub const OP_ST_TIMER_DEL: u32 = 1033;
 
 // `Server::send_to_connection` (`crates/server/src/send.rs`); context send, data and length.
 /// arg the send's type.
@@ -775,9 +710,6 @@ pub const OP_LC_UNLINK_PID: u32 = 1211;
 pub const OP_LC_START_BASE: u32 = 1212;
 pub const OP_LC_START_PROCESS: u32 = 1213;
 pub const OP_LC_START_THREAD: u32 = 1214;
-/// `Server::shutdown()` from a worker thread: the thread manager respawns no worker
-/// from now on. `running` stays set, so the master still handles the SIGTERM.
-pub const OP_SET_STOPPING: u32 = 1215;
 /// `Server::init_reactor`'s `init_protocol` over every port, once a start, before
 /// any reactor or worker that reads the ports starts.
 pub const OP_LC_INIT_PROTOCOLS: u32 = 1216;

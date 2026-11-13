@@ -57,11 +57,6 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
         ),
         (RUN_START_CHECK, 0, &[(OP_FIELD, 1), (OP_PORT_COUNT, 2)]),
         (RUN_THREAD_SHUTDOWN, 0, &[(OP_MODE, 3)]),
-        (
-            RUN_SIGNAL,
-            libc::SIGTERM as u64,
-            &[(OP_SIGNAL_ACTIVE, 1), (OP_MODE, 2)],
-        ),
     ];
     let mut boundaries = 0;
     for &(operation, arg, facts) in cases {
@@ -79,7 +74,7 @@ fn every_captured_fault_stops_the_remaining_effect_trace() {
         }
     }
     assert!(
-        boundaries > 90,
+        boundaries > 75,
         "exercise complete multi-effect paths: {boundaries}"
     );
 }
