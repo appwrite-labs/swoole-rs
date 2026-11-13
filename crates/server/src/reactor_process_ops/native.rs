@@ -237,7 +237,7 @@ fn create_pool(ctx: &Context<'_>) -> u64 {
     let record = unsafe { &mut *pool };
     record.ptr = ctx.serv.raw();
     record.max_wait_time = config.max_wait_time.get();
-    record.use_msgqueue = 0;
+    record.use_msgqueue = false;
     record.main_loop = Some(main_loop);
     record.on_worker_not_found = Some(worker_not_found);
     let count = config.worker_num.get() as usize;

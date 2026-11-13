@@ -350,7 +350,7 @@ fn finishing(ctx: &mut Context, op: u32, arg: u64) -> Option<u64> {
             // SAFETY: its live pool.
             let pool = unsafe { &*pool };
             // Only a stream pool has IPC state: an event worker's pool has none.
-            let connection = if pool.use_socket != 0 {
+            let connection = if pool.use_socket {
                 pool.ipc_connection()
             } else {
                 core::ptr::null_mut()

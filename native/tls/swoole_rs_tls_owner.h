@@ -14,10 +14,10 @@ extern "C" {
 #endif
 typedef struct swr_v1_tls_owner swr_v1_tls_owner;
 typedef struct {
-  uint8_t http, http_v2, prefer_server_ciphers, session_tickets, stapling,
-      stapling_verify;
-  uint8_t disable_tls_host_name, grease, verify_depth, disable_compress,
-      verify_peer, allow_self_signed;
+  bool http, http_v2, prefer_server_ciphers, session_tickets, stapling,
+      stapling_verify, disable_tls_host_name;
+  uint8_t grease, verify_depth;
+  bool disable_compress, verify_peer, allow_self_signed;
   uint32_t protocols;
   uint8_t create_flag;
   SSL_CTX *context;

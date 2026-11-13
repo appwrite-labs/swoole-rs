@@ -19,18 +19,18 @@ const PASSPHRASE: usize = 6;
 #[repr(C)]
 #[derive(Default)]
 pub struct OwnedTlsFields {
-    pub http: u8,
-    pub http_v2: u8,
-    pub prefer_server_ciphers: u8,
-    pub session_tickets: u8,
-    pub stapling: u8,
-    pub stapling_verify: u8,
-    pub disable_tls_host_name: u8,
+    pub http: bool,
+    pub http_v2: bool,
+    pub prefer_server_ciphers: bool,
+    pub session_tickets: bool,
+    pub stapling: bool,
+    pub stapling_verify: bool,
+    pub disable_tls_host_name: bool,
     pub grease: u8,
     pub verify_depth: u8,
-    pub disable_compress: u8,
-    pub verify_peer: u8,
-    pub allow_self_signed: u8,
+    pub disable_compress: bool,
+    pub verify_peer: bool,
+    pub allow_self_signed: bool,
     pub protocols: u32,
     pub create_flag: u8,
     /// The owner's reference to its `SSL_CTX`, released with the fields; native
@@ -273,11 +273,11 @@ fn configuration(owner: &OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig 
         capath: strings[10].into(),
         protocols: fields.protocols,
         verify_depth: fields.verify_depth,
-        http: fields.http != 0,
-        http_v2: fields.http_v2 != 0,
-        prefer_server_ciphers: fields.prefer_server_ciphers != 0,
-        disable_compress: fields.disable_compress != 0,
-        verify_peer: fields.verify_peer != 0,
+        http: fields.http,
+        http_v2: fields.http_v2,
+        prefer_server_ciphers: fields.prefer_server_ciphers,
+        disable_compress: fields.disable_compress,
+        verify_peer: fields.verify_peer,
         warn: owner.warn,
     }
 }
@@ -454,7 +454,7 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
         if dtls {
             fields.protocols = crate::SslVersion::SW_SSL_DTLS as u32;
         }
-        fields.http_v2 = u8::from(http2);
+        fields.http_v2 = http2;
     });
     if dtls {
         socket.edit(|record| {
@@ -507,7 +507,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     let explicit = &owner_ref.strings[TLS_HOST_NAME];
     let selected = if !explicit.bytes().is_empty() {
         Some(explicit.c_str())
-    } else if disable_tls_host_name == 0 {
+    } else if !disable_tls_host_name {
         // SAFETY: the enclosing socket lends its live automatic hostname slot.
         let automatic = unsafe { &*hostname };
         (!automatic.bytes().is_empty()).then(|| automatic.c_str())
@@ -606,7 +606,7 @@ impl Lent<'_> {
             swoole_rs_corebase::fatal("out of memory storing a TLS setting");
         }
         if matches!(which, Text::HostName) {
-            self.edit(|fields| fields.disable_tls_host_name = value.is_empty().into());
+            self.edit(|fields| fields.disable_tls_host_name = value.is_empty());
         }
         true
     }
@@ -615,12 +615,12 @@ impl Lent<'_> {
     pub fn set_value(&self, value: Value) {
         self.edit(|fields| match value {
             Value::Protocols(value) => fields.protocols = value.c_cast::<u32>(),
-            Value::DisableCompress(value) => fields.disable_compress = value.into(),
-            Value::VerifyPeer(value) => fields.verify_peer = value.into(),
-            Value::AllowSelfSigned(value) => fields.allow_self_signed = value.into(),
+            Value::DisableCompress(value) => fields.disable_compress = value,
+            Value::VerifyPeer(value) => fields.verify_peer = value,
+            Value::AllowSelfSigned(value) => fields.allow_self_signed = value,
             Value::VerifyDepth(value) => fields.verify_depth = value,
             Value::Grease(value) => fields.grease = value,
-            Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value.into(),
+            Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value,
         });
     }
 
@@ -687,9 +687,9 @@ mod tests {
             };
             assert!(lent.set_text(Text::HostName, b"example.test"));
             assert_eq!(text(8), b"example.test");
-            assert_eq!((*prepared.fields).disable_tls_host_name, 0);
+            assert!(!(*prepared.fields).disable_tls_host_name);
             assert!(lent.set_text(Text::HostName, b""));
-            assert_eq!((*prepared.fields).disable_tls_host_name, 1);
+            assert!((*prepared.fields).disable_tls_host_name);
             assert!(lent.set_text(Text::Ciphers, b"HIGH"));
             assert_eq!(text(0), b"HIGH");
             assert!(!lent.set_text(Text::CertFile, b"/nonexistent/cert.pem"));
@@ -709,7 +709,7 @@ mod tests {
             lent.set_value(Value::VerifyPeer(true));
             assert_eq!((*prepared.fields).protocols, 1 << 3);
             assert_eq!((*prepared.fields).verify_depth, 7);
-            assert_eq!((*prepared.fields).verify_peer, 1);
+            assert!((*prepared.fields).verify_peer);
             swr_v1_tls_owner_free(owner);
         }
     }
@@ -745,7 +745,7 @@ mod tests {
                     ),
                     0
                 );
-                (*prepared.fields).disable_tls_host_name = u8::from(disabled);
+                (*prepared.fields).disable_tls_host_name = disabled;
                 let hostname = StringSlot::empty();
                 assert_eq!(
                     swoole_rs_corebase::swr_v1_core_string_set(
@@ -763,7 +763,7 @@ mod tests {
                     0
                 );
                 assert!((*socket).fields.output.ssl_send);
-                assert_eq!((*prepared.fields).http_v2, 1);
+                assert!((*prepared.fields).http_v2);
                 let result =
                     swr_v1_tls_owner_socket_session(prepared.owner, handle, Arc::as_ptr(&hostname));
                 assert_eq!(result.status, 0);

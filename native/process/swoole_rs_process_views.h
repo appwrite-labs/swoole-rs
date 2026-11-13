@@ -14,7 +14,7 @@
     uint8_t status; \
     uint8_t type; \
     uint8_t msgqueue_mode; \
-    uint8_t child_process; \
+    bool child_process; \
     uint32_t concurrency; \
     time_t start_time; \
     sw_atomic_long_t dispatch_count; \
@@ -42,14 +42,14 @@
     time_t reload_last_time; \
     uint8_t type; \
     uint16_t start_id; \
-    uint8_t use_msgqueue; \
-    uint8_t use_socket; \
+    bool use_msgqueue; \
+    bool use_socket; \
     uint32_t max_packet_size_; \
     key_t msgqueue_key; \
     uint32_t worker_num; \
     uint32_t max_request; \
     uint32_t max_request_grace; \
-    uint8_t scheduler_warning; \
+    bool scheduler_warning; \
     time_t warning_time; \
     void (*onStart)(ProcessPool *); \
     void (*onShutdown)(ProcessPool *); \
