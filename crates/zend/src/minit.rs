@@ -1,23 +1,23 @@
 //! MINIT's registrations, safe behind the token Zend's MINIT hands a family
 //! ([`minit!`](crate::minit)): constants, classes and their function aliases.
 use crate::{
-    Class,
+    Class, Owned,
     bailout::Bailout,
+    class::Layout,
     function::{arg_info, deny},
     sys::{
-        CONST_PERSISTENT, HashTable, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_facade_compiler_functions,
-        swr_zend_http_intern, zend_class_entry, zend_class_implements,
-        zend_declare_class_constant_long, zend_declare_property_bool, zend_declare_property_double,
-        zend_declare_property_long, zend_declare_property_null, zend_declare_property_string,
-        zend_function_entry, zend_long, zend_object_handlers, zend_register_bool_constant,
-        zend_register_double_constant, zend_register_long_constant, zend_register_string_constant,
+        CONST_PERSISTENT, HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE,
+        swr_zend_facade_compiler_functions, swr_zend_http_intern, zend_class_entry,
+        zend_class_implements, zend_declare_class_constant_long, zend_declare_property,
+        zend_declare_property_string, zend_function_entry, zend_long, zend_object_handlers,
+        zend_register_bool_constant, zend_register_double_constant, zend_register_long_constant,
+        zend_register_string_constant,
     },
 };
 use std::{
     ffi::{CStr, c_int},
     marker::PhantomData,
     mem::offset_of,
-    ptr,
 };
 
 unsafe extern "C" {
@@ -45,6 +45,13 @@ pub struct Minit {
 /// A registered class another may extend.
 #[derive(Clone, Copy)]
 pub struct Parent(*mut zend_class_entry);
+
+impl Parent {
+    /// The class's entry.
+    pub(crate) fn entry(self) -> *mut zend_class_entry {
+        self.0
+    }
+}
 
 impl Minit {
     /// # Safety
@@ -220,10 +227,6 @@ impl Minit {
 
     /// [`Class::register_child`] of a class that is no
     /// [`CustomClass`](crate::CustomClass)'s, with `methods` (none when empty).
-    #[expect(
-        clippy::unused_self,
-        reason = "the token is what proves this runs at MINIT"
-    )]
     fn register_plain(
         &self,
         class: &Class,
@@ -232,11 +235,7 @@ impl Minit {
         parent: Option<Parent>,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
-        let (class, methods) = (plain(class), table(methods));
-        let parent = parent.map_or(ptr::null_mut(), |parent| parent.0);
-        // SAFETY: MINIT (the token), with a plain class, a static, terminated
-        // table or none, and a registered parent or none.
-        unsafe { class.register_child(name, methods, parent, configure) };
+        plain(class).register_child(self, name, methods, parent, None, configure);
     }
 
     /// Swoole's `SW_CLASS_ALIAS`: `name` (no leading backslash) names `class` too.
@@ -270,18 +269,23 @@ impl Minit {
         flags: u32,
     ) {
         let class = T::class();
-        let table = terminated(methods);
+        terminated(methods);
         assert!(class.entry().is_null(), "a class registers once");
-        let configure = |entry: &mut zend_class_entry, handlers: &mut _| {
+        let configure = |entry: &mut zend_class_entry, _: &mut _| {
             entry.ce_flags |= flags;
             if !T::serializable() {
                 entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
             }
-            crate::object::install_custom::<T>(entry, handlers);
         };
-        // SAFETY: MINIT, with a static, terminated table; `configure` gives the
-        // class `T`'s handlers.
-        unsafe { class.register_child(name, table, ptr::null_mut(), configure) };
+        // `T`'s layout gives the class `T`'s handlers.
+        class.register_child(
+            self,
+            name,
+            methods,
+            None,
+            Some(Layout::of::<T>()),
+            configure,
+        );
     }
 
     /// `zend_declare_class_constant_long` on a registered class.
@@ -303,45 +307,49 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn property_long(&self, class: &Class, name: &CStr, value: zend_long, access: u32) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name.
-        unsafe {
-            zend_declare_property_long(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-                flags(access),
-            );
-        }
+        self.property(class, name, &Owned::long(value), access);
     }
 
     /// `zend_declare_property_double` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_double(&self, class: &Class, name: &CStr, value: f64, access: u32) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name.
-        unsafe {
-            zend_declare_property_double(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
-                value,
-                flags(access),
-            );
-        }
+        self.property(class, name, &Owned::double(value), access);
     }
 
     /// `zend_declare_property_bool` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_bool(&self, class: &Class, name: &CStr, value: bool, access: u32) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name.
+        self.property(class, name, &Owned::bool(value), access);
+    }
+
+    /// `zend_declare_property_null` with `access` flags.
+    /// # Panics
+    /// `class` is not registered.
+    pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
+        self.property(class, name, &Owned::null(), access);
+    }
+
+    /// `zend_declare_property` of a scalar default, as Zend's typed
+    /// `zend_declare_property_{long,double,bool,null}` each call it.
+    /// # Panics
+    /// `class` is not registered, or `value` is no scalar: an internal class's
+    /// default must not be a request allocation.
+    #[expect(
+        clippy::unused_self,
+        reason = "the token is what proves this runs at MINIT"
+    )]
+    fn property(&self, class: &Class, name: &CStr, value: &Owned, access: u32) {
+        assert!(value.kind() < IS_STRING, "a scalar default");
+        // SAFETY: MINIT, with a registered class; Zend copies the name and
+        // the scalar zval.
         unsafe {
-            zend_declare_property_bool(
+            zend_declare_property(
                 registered(class),
                 name.as_ptr(),
                 name.count_bytes(),
-                zend_long::from(value),
+                value.as_ptr(),
                 flags(access),
             );
         }
@@ -358,21 +366,6 @@ impl Minit {
                 name.as_ptr(),
                 name.count_bytes(),
                 value.as_ptr(),
-                flags(access),
-            );
-        }
-    }
-
-    /// `zend_declare_property_null` with `access` flags.
-    /// # Panics
-    /// `class` is not registered.
-    pub fn property_null(&self, class: &Class, name: &CStr, access: u32) {
-        // SAFETY: MINIT, with a registered class; Zend copies the name.
-        unsafe {
-            zend_declare_property_null(
-                registered(class),
-                name.as_ptr(),
-                name.count_bytes(),
                 flags(access),
             );
         }
@@ -471,15 +464,6 @@ fn registered(class: &Class) -> *mut zend_class_entry {
     entry
 }
 
-/// `methods` as a table pointer: null when empty, else checking its `PHP_FE_END`.
-fn table(methods: &'static [zend_function_entry]) -> *const zend_function_entry {
-    if methods.is_empty() {
-        ptr::null()
-    } else {
-        terminated(methods)
-    }
-}
-
 /// `methods` as a table pointer, checking its `PHP_FE_END`.
 fn terminated(methods: &'static [zend_function_entry]) -> *const zend_function_entry {
     assert!(
@@ -508,6 +492,7 @@ macro_rules! minit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr;
 
     #[test]
     fn a_plain_class_registers_through_register() {

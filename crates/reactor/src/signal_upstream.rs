@@ -31,16 +31,6 @@ const PRIORITY_SIGNAL_CALLBACK: c_int = 3;
 
 use swoole_rs_process::signal::Callback as SignalHandler;
 
-// SAFETY: crates/reactor's.
-unsafe extern "C" {
-    #[cfg(target_os = "linux")]
-    #[link_name = "_Z16swoole_event_addPN6swoole7network6SocketEi"]
-    fn swoole_event_add(socket: *mut SocketRecord, events: c_int) -> c_int;
-    #[cfg(target_os = "linux")]
-    #[link_name = "_Z16swoole_event_delPN6swoole7network6SocketE"]
-    fn swoole_event_del(socket: *mut SocketRecord) -> c_int;
-}
-
 // SAFETY: crates/tls's `Socket::free`, the same archive; declared, since crates/tls
 // depends on this crate.
 #[cfg(target_os = "linux")]
@@ -148,9 +138,11 @@ fn report(kind: u8, signo: i32, error: i32) {
 mod descriptor {
     use super::{
         EVENT_READ, EXIT_CONDITION_SIGNALFD, FD_SIGNAL, OPS, PRIORITY_SIGNAL_CALLBACK, c_int,
-        c_void, socket_free, swoole_event_add, swoole_event_del,
+        c_void, socket_free,
     };
-    use crate::event_api::{FdHandler, swoole_event_isset_handler, swoole_event_set_fd_handler};
+    use crate::event_api::{
+        FdHandler, event_add, event_del, swoole_event_isset_handler, swoole_event_set_fd_handler,
+    };
     use crate::socket_upstream::make_socket_fd;
     use crate::{Socket, SocketRecord};
     use core::ptr;
@@ -165,34 +157,36 @@ mod descriptor {
         SOCKET.store(make_socket_fd(fd, FD_SIGNAL), Relaxed);
     }
 
+    /// The wrapper, while there is one.
+    fn socket() -> Option<Socket<'static>> {
+        // SAFETY: null, or the record `make` allocated, which only `free` releases,
+        // after taking it out of SOCKET; only this module's calls, each on the signal
+        // thread and none keeping the handle, reach it.
+        unsafe { Socket::from_ptr(SOCKET.load(Relaxed)) }
+    }
+
     /// Frees the wrapper but not the descriptor, which the signalfd backend closes.
     pub(super) fn free() {
-        // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
-        let Some(socket) = (unsafe { Socket::from_ptr(SOCKET.swap(ptr::null_mut(), Relaxed)) })
-        else {
+        let Some(socket) = socket() else {
             return;
         };
+        SOCKET.store(ptr::null_mut(), Relaxed);
         socket.edit(|record| record.fd = -1);
-        // SAFETY: as above.
+        // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
         unsafe { socket_free(socket.as_ptr()) };
     }
 
     pub(super) fn events() -> i32 {
-        // SAFETY: SOCKET's wrapper.
-        unsafe { Socket::from_ptr(SOCKET.load(Relaxed)) }
-            .map_or(0, |socket| socket.read(|record| record.events))
+        socket().map_or(0, |socket| socket.read(|record| record.events))
     }
 
     pub(super) fn add(events: i32) -> i32 {
-        // SAFETY: SOCKET's wrapper, on the thread's available loop.
-        unsafe { swoole_event_add(SOCKET.load(Relaxed), events) }
+        socket().map_or(-1, |socket| event_add(socket, events))
     }
 
     pub(super) fn del() {
-        let socket = SOCKET.load(Relaxed);
-        if !socket.is_null() {
-            // SAFETY: SOCKET's wrapper, which the thread's loop holds.
-            unsafe { swoole_event_del(socket) };
+        if let Some(socket) = socket() {
+            _ = event_del(socket);
         }
     }
 

@@ -156,12 +156,12 @@ fn appended(status: c_int) {
 /// incoming on its reactor thread. `SW_ERR` when no session could be made.
 ///
 /// # Safety
-/// `reactor` is live, `port` is the DTLS port of `serv` the packet arrived on and
-/// `pkt` the received packet.
+/// `port` is the DTLS port of `serv` the packet arrived on and `pkt` the received
+/// packet; `reactor` is the reactor of `serv` it arrived on.
 pub(crate) unsafe fn on_packet(
     serv: crate::view::Server<'_>,
     single_thread: bool,
-    reactor: *mut c_void,
+    reactor: crate::reactor_handle::Reactor,
     close: Option<swoole_rs_reactor::ReactorClose>,
     port: *mut c_void,
     pkt: *mut DgramPacket,
@@ -184,12 +184,12 @@ pub(crate) unsafe fn on_packet(
     let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
     appended(swr_v1_tls_dtls_append(session, data));
     let socket = session.socket();
-    if !dtls_session_listen(session) {
-        // SAFETY: the reactor and the session's socket.
-        return i64::from(unsafe { crate::reactor_entry::close_connection(reactor, socket) });
-    }
     // SAFETY: the live session's socket.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
+    let record = unsafe { Socket::from_ptr(socket) };
+    if !dtls_session_listen(session) {
+        return i64::from(crate::reactor_entry::close_socket(serv, reactor, record));
+    }
+    let Some(record) = record else {
         return -1;
     };
     // A session socket's object is its live connection.
@@ -200,7 +200,8 @@ pub(crate) unsafe fn on_packet(
     };
     let failed = if single_thread {
         // SAFETY: the live reactor and connection of the server.
-        let incoming = unsafe { crate::server_methods::connection_incoming(serv, reactor, conn) };
+        let incoming =
+            unsafe { crate::server_methods::connection_incoming(serv, reactor.ptr(), conn) };
         incoming < 0
     } else {
         let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
@@ -214,7 +215,7 @@ pub(crate) unsafe fn on_packet(
     };
     if failed && let Some(close) = close {
         // SAFETY: the live reactor and the session's socket.
-        unsafe { close(reactor, socket.cast()) };
+        unsafe { close(reactor.ptr(), socket.cast()) };
     }
     0
 }

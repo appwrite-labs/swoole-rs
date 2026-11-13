@@ -124,13 +124,11 @@ pub(crate) fn install(
 ) -> Option<libc::sigaction> {
     let mut action: libc::sigaction = swoole_rs_corebase::sys::zeroed();
     action.sa_sigaction = func;
-    let fill: unsafe extern "C" fn(*mut libc::sigset_t) -> c_int = if mask {
-        libc::sigfillset
+    if mask {
+        swoole_rs_corebase::sys::sigfillset(&mut action.sa_mask);
     } else {
-        libc::sigemptyset
-    };
-    // SAFETY: `sa_mask` is a valid sigset_t.
-    unsafe { fill(&raw mut action.sa_mask) };
+        swoole_rs_corebase::sys::sigemptyset(&mut action.sa_mask);
+    }
     action.sa_flags = if restart { libc::SA_RESTART } else { 0 };
     // `func` is a handler or SIG_IGN/SIG_DFL.
     sigaction(signo, &action)

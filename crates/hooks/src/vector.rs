@@ -19,6 +19,14 @@ pub struct IoVector {
     write: bool,
 }
 
+/// What is left of one of an [`IoVector`]'s buffers, lent in the vector's direction:
+/// slots to read into, or bytes to write.
+#[cfg(feature = "iouring")]
+pub(crate) enum Lent<'a> {
+    Read(&'a mut [core::mem::MaybeUninit<u8>]),
+    Write(&'a [u8]),
+}
+
 impl IoVector {
     /// A vector over a copy of the `count` iovecs at `vectors`, to write from when
     /// `write` and to read into otherwise; none when the copy fails, where
@@ -26,7 +34,8 @@ impl IoVector {
     ///
     /// # Safety
     /// `vectors` holds `count` iovecs, and their buffers stay valid while the
-    /// vector lives: readable when `write`, writable otherwise.
+    /// vector lives: readable when `write`, writable otherwise, and no reference to
+    /// one is live during a transfer over the vector.
     #[must_use]
     pub unsafe fn new(vectors: *const libc::iovec, count: c_int, write: bool) -> Option<Self> {
         let vectors = match usize::try_from(count).ok()? {
@@ -80,6 +89,38 @@ impl IoVector {
     pub(crate) fn update(&mut self, result: isize) {
         // SAFETY: the live owner; no reference to it is held across the call.
         unsafe { self.owner.as_mut() }.advance(result);
+    }
+
+    /// `io` over each remaining buffer in order while it moves data, again over what a
+    /// short transfer left of one. The bytes moved, or the failing result when none
+    /// moved; the caller advances the vector by that, once ([`update`](Self::update)).
+    #[cfg(feature = "iouring")]
+    pub(crate) fn transfer_each(&mut self, mut io: impl FnMut(Lent<'_>) -> isize) -> isize {
+        let write = self.write;
+        let mut total = 0isize;
+        let mut result = 0isize;
+        'iovecs: for iov in self.iovecs() {
+            let mut done = 0usize;
+            while done < iov.iov_len {
+                let (at, n) = (iov.iov_base.wrapping_byte_add(done), iov.iov_len - done);
+                result = io(if write {
+                    // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
+                    // readable while the vector lives (`new`'s contract).
+                    Lent::Write(unsafe { core::slice::from_raw_parts(at.cast(), n) })
+                } else {
+                    // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
+                    // writable and unreferenced while the vector lives (`new`'s
+                    // contract); lent for this call only, one buffer at a time.
+                    Lent::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), n) })
+                });
+                if result <= 0 {
+                    break 'iovecs;
+                }
+                total += result;
+                done += result.unsigned_abs();
+            }
+        }
+        if total > 0 { total } else { result }
     }
 
     /// The `IOVector *` the `network::Socket` calls take.

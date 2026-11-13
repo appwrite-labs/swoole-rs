@@ -79,11 +79,17 @@ pub fn exception() -> *mut zend_object {
     unsafe { sys::swr_zend_facade_exception() }
 }
 
-unsafe fn fatal_exception() {
+/// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
+/// inside the C trap, its bailout deferred: what a callback outside the VM
+/// does about an exception nothing caught. Like [`exception`] it takes
+/// nothing from its caller: it reads the executor's slot itself.
+fn fatal_exception() {
     // Observed only after the preceding call returned.
     let exception = exception();
     if !exception.is_null() {
-        // SAFETY: Zend's fatal exception reporter runs inside the C trap.
+        // SAFETY: the exception the executor holds, live until Zend clears
+        // it; the reporter is C and runs inside the C trap, so a bailout
+        // crosses no Rust frame.
         bailout::defer(unsafe {
             bailout::trap(sys::swr_zend_facade_exception_error, exception.cast())
         });
@@ -150,8 +156,8 @@ pub unsafe extern "C" fn swr_v1_phphelpers_call(
     // SAFETY: forwarding the caller's initialized arguments and native warning reporter.
     let result = unsafe { direct_call(name, cache, argc, argv, retval, report) };
     if fatal && !bailout::pending() {
-        // SAFETY: preserve the immediate fatal exception check for loop callbacks.
-        unsafe { fatal_exception() };
+        // Preserve the immediate fatal exception check for loop callbacks.
+        fatal_exception();
     }
     bailout::finish();
     result
@@ -252,8 +258,8 @@ pub unsafe fn function_call(
     };
     // `then` ran with no exception pending, as this check would have found it.
     if !ran && !bailout::pending() {
-        // SAFETY: callbacks outside the VM must report an exception immediately.
-        unsafe { fatal_exception() };
+        // Callbacks outside the VM must report an exception immediately.
+        fatal_exception();
     }
     if bailout::pending() {
         Err(bailout::Bailout)
@@ -302,8 +308,8 @@ pub unsafe fn named_call_into(
         // The local function-name string owns one reference.
         drop(function);
         if !bailout::pending() {
-            // SAFETY: preserve the fatal exception check after function-name cleanup.
-            unsafe { fatal_exception() };
+            // Preserve the fatal exception check after function-name cleanup.
+            fatal_exception();
         }
     }
 }

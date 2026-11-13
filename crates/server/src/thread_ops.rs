@@ -487,9 +487,9 @@ pub(crate) fn answer(
             sign(unsafe { methods::connection_incoming(server, reactor, conn) })
         }
         OP_CLOSE => {
-            let socket = ctx.connection()?.socket_ptr().cast();
-            // SAFETY: this thread's reactor and the connection's live socket.
-            sign(unsafe { entry::close_connection(reactor, socket) })
+            // This thread's reactor and the connection's live socket.
+            let socket = ctx.connection()?.socket();
+            sign(entry::close_socket(server, handle?, socket))
         }
         OP_CONN_HEALTHY => u64::from(server.healthy(f64::from_bits(arg), ctx.connection()?)),
         OP_SEND_CLOSE_FORCE => {
@@ -604,22 +604,22 @@ unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
     run(RUN_CLOSE_REACTOR_CONNECTIONS, 0, &mut ctx);
 }
 
-/// What a reactor thread Rust starts runs.
-unsafe extern "C" fn reactor_thread_entry(serv: *mut c_void, id: u64) {
+/// What a reactor thread Rust starts runs. As `state::ThreadEntry`, whose `void *`
+/// a [`view::Server`] is laid out as: `ServerState::start_thread` calls it with the
+/// live server, on its new reactor thread.
+extern "C" fn reactor_thread_entry(server: view::Server<'_>, id: u64) {
     swoole_rs_corebase::swoole_thread_init(false);
     let id = c_int::try_from(id).unwrap_or_default();
-    // SAFETY: the live server, on its new reactor thread.
-    entry::reactor_thread_main_loop(unsafe { view::Server::from_raw(serv) }, id);
+    entry::reactor_thread_main_loop(server, id);
     swoole_rs_corebase::swoole_thread_clean(false);
 }
 
-/// What the heartbeat thread Rust starts runs, its signals blocked.
-unsafe extern "C" fn heartbeat_main(serv: *mut c_void, _: u64) {
+/// What the heartbeat thread Rust starts runs, its signals blocked. Called with the
+/// live server, as [`reactor_thread_entry`] is.
+extern "C" fn heartbeat_main(server: view::Server<'_>, _: u64) {
     // Else a process-directed signal (the shutdown's SIGTERM) can land here rather
     // than on the master's signalfd, and its default action kills the master.
     swoole_rs_corebase::signal_block_all();
-    // SAFETY: the live server.
-    let server = unsafe { view::Server::from_raw(serv) };
     let reactors = server.state().config_ref().reactor_num.get();
     // upstream sets THREAD_HEARTBEAT, then overwrites the type with this.
     let kind = (reactors.wrapping_add(1) & 0xff) as u8;

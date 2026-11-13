@@ -197,14 +197,6 @@ struct MsgHdr {
     flags: c_int,
 }
 
-#[repr(C)]
-struct SockAddrIn {
-    family: u16,
-    port: u16,
-    addr: [u8; 4],
-    zero: [u8; 8],
-}
-
 unsafe extern "C" {
     fn swr_v1_hook_co_socket_connect_host(
         socket: *mut Record,
@@ -1648,27 +1640,14 @@ fn test_sendto_recvfrom(sock_type: c_int) {
             .sendto(ip_c.to_bytes(), port + 1, &server_text[..server_length]);
 
         let mut data_from_server = [0_u8; 128];
-        // `inet_addr(ip)`: the IPv4 address, or INADDR_NONE for "::1".
-        let addr = ip
-            .parse::<std::net::Ipv4Addr>()
-            .map_or([0xff; 4], |a| a.octets());
-        let mut serveraddr = SockAddrIn {
-            family: u16::try_from(AF_INET).unwrap(),
-            port: u16::try_from(port).unwrap().to_be(),
-            addr,
-            zero: [0; 8],
-        };
-        let mut addr_length = u32::try_from(size_of::<SockAddrIn>()).unwrap();
+        // The sender's address goes to storage of the caller's, as upstream's
+        // `serveraddr` took it.
+        let mut serveraddr = swoole_rs_corebase::sys::zeroed();
 
         // receive data from server
-        // SAFETY: the address storage.
-        let result = unsafe {
-            sock_client.co().recvfrom(
-                &mut data_from_server[..server_length],
-                (&raw mut serveraddr).cast(),
-                &raw mut addr_length,
-            )
-        };
+        let (result, _) = sock_client
+            .co()
+            .recvfrom_into(&mut data_from_server[..server_length], &mut serveraddr);
         assert_eq!(
             result,
             server_length.cast_signed(),

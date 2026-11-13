@@ -314,12 +314,37 @@ impl<'a> Server<'a> {
             return total.load(Ordering::Relaxed) as usize;
         }
         (0..self.config().worker_num.get() as usize)
-            .map(|i| {
-                // SAFETY: the server's records hold one cell per event worker.
-                let cell = unsafe { &*cells.wrapping_add(i) };
-                cell.load(Ordering::Relaxed) as usize
-            })
+            .filter_map(|id| self.cell(cells, id))
+            .map(|cell| cell.load(Ordering::Relaxed) as usize)
             .fold(0, usize::wrapping_add)
+    }
+
+    /// Event worker `id`'s cell of one of the server's records' per-worker connection
+    /// `cells`; `None` without cells, or past the last event worker.
+    fn cell(self, cells: *mut AtomicU32, id: usize) -> Option<&'a AtomicU32> {
+        if cells.is_null() || id >= self.config().worker_num.get() as usize {
+            return None;
+        }
+        // SAFETY: the server's records hold one cell per event worker, mapped for its life.
+        Some(unsafe { &*cells.wrapping_add(id) })
+    }
+
+    /// Event worker `id`'s count of the server's connections (base mode's
+    /// `gs->connection_nums[id]`), if the server counts them per worker.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn worker_connections(self, id: usize) -> Option<&'a AtomicU32> {
+        self.cell(self.counters().cells(), id)
+    }
+
+    /// Event worker `id`'s count of `port`'s connections, as [`Self::worker_connections`];
+    /// `port` is one of this server's.
+    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    pub(crate) fn port_worker_connections(
+        self,
+        port: Port<'a>,
+        id: usize,
+    ) -> Option<&'a AtomicU32> {
+        self.cell(port.config().counters()?.cells(), id)
     }
 
     /// `Server::get_connection_verify(session_id)`.
@@ -452,6 +477,16 @@ impl<'a> Server<'a> {
         unsafe { Worker::from_raw(self.worker(id)) }
     }
 
+    /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
+    /// last.
+    #[cfg(feature = "upstream-symbols")]
+    pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
+        let &worker = self.registry().pending().get(index)?;
+        // SAFETY: null, or a live worker `add_worker` added, which outlives the server
+        // (its contract; nothing else adds to the server's pending workers).
+        unsafe { Worker::from_raw(worker.cast()) }
+    }
+
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
     #[must_use]
     pub(crate) fn worker_pipe(self, id: u16, master: bool) -> Option<Socket<'a>> {
@@ -573,8 +608,9 @@ impl ServerState {
 }
 
 /// A setter for a field of a port's settings, which writes through the port's pointer
-/// and forms no reference to the settings. Crate-private: only the master's startup
-/// ops call them, before any reader holds a `&PortConfig` from [`Port::config`].
+/// and forms no reference to the settings. Crate-private: the master's startup ops
+/// call them, before any reader holds a `&PortConfig` from [`Port::config`], and the
+/// reactor thread that binds a datagram port records itself (`set_thread_id`).
 macro_rules! port_setter {
     ($(#[$doc:meta])* $set:ident: $($field:ident).+: $ty:ty) => {
         $(#[$doc])*
@@ -631,6 +667,14 @@ impl<'a> Port<'a> {
     port_setter!(
         /// `port->protocol.package_max_length = length`.
         set_package_max_length: protocol.package_max_length: u32
+    );
+    port_setter!(
+        /// `port->heartbeat_idle_time = seconds`.
+        set_heartbeat_idle_time: heartbeat_idle_time: u16
+    );
+    port_setter!(
+        /// `port->thread_id = thread`: the reactor thread that reads a datagram port.
+        set_thread_id: thread_id: libc::pthread_t
     );
 
     /// The port's settings, to write.

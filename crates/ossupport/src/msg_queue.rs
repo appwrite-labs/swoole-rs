@@ -6,12 +6,15 @@ use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
 use swoole_rs_corebase::log;
 
 // SAFETY: the XSI message queue calls, declared here because libc omits them on
-// Darwin, with their C signatures; `msgget` takes no pointer.
+// Darwin, with their C signatures; `msgget` takes no pointer. `msgctl` takes none or
+// a live, writable `msqid_ds`, the largest record a command reads or fills
+// (`IPC_STAT` fills it, `IPC_SET` reads it, `IPC_RMID` takes none); the kernel
+// rejects a command that needs the one it wasn't given.
 unsafe extern "C" {
     safe fn msgget(key: libc::key_t, flags: c_int) -> c_int;
     fn msgsnd(id: c_int, msg: *const c_void, size: usize, flags: c_int) -> c_int;
     fn msgrcv(id: c_int, msg: *mut c_void, size: usize, kind: c_long, flags: c_int) -> isize;
-    fn msgctl(id: c_int, cmd: c_int, buf: *mut c_void) -> c_int;
+    safe fn msgctl(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int;
 }
 
 fn errno() -> c_int {
@@ -102,7 +105,7 @@ impl QueueRecord {
             return false;
         };
         stat.msg_qbytes = libc::c_ulong::try_from(bytes).unwrap_or(libc::c_ulong::MAX);
-        if control(self.id, libc::IPC_SET, Some(&mut stat)) == 0 {
+        if msgctl(self.id, libc::IPC_SET, Some(&mut stat)) == 0 {
             return true;
         }
         sys_warning(
@@ -180,7 +183,7 @@ impl QueueRecord {
 
     /// Remove the kernel queue; a failure warns and keeps the id.
     pub fn destroy(&mut self) -> bool {
-        if control(self.id, libc::IPC_RMID, None) != 0 {
+        if msgctl(self.id, libc::IPC_RMID, None) != 0 {
             sys_warning(
                 c"MsgQueue::destroy",
                 format_args!("msgctl({}, IPC_RMID) failed", self.id),
@@ -283,20 +286,11 @@ struct MsqidDs {
 #[cfg(target_os = "macos")]
 const _: () = assert!(size_of::<MsqidDs>() == 116, "Darwin's packed msqid_ds");
 
-/// `msgctl(id, cmd, stat)`: `IPC_STAT` fills `stat`, `IPC_SET` reads it and
-/// `IPC_RMID` takes none.
-fn control(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int {
-    let stat = stat.map_or(std::ptr::null_mut(), std::ptr::from_mut);
-    // SAFETY: null or a live, writable `msqid_ds`, the largest record a command reads
-    // or fills; the kernel rejects a command that needs the one it wasn't given.
-    unsafe { msgctl(id, cmd, stat.cast()) }
-}
-
 /// `msgctl(id, IPC_STAT)`.
 fn queue_stat(id: c_int) -> Option<MsqidDs> {
     // SAFETY: integers and integer arrays: zeroed is a valid `msqid_ds`.
     let mut stat: MsqidDs = unsafe { std::mem::zeroed() };
-    (control(id, libc::IPC_STAT, Some(&mut stat)) == 0).then_some(stat)
+    (msgctl(id, libc::IPC_STAT, Some(&mut stat)) == 0).then_some(stat)
 }
 
 #[cfg(test)]

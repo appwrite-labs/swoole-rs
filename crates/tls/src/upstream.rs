@@ -1135,8 +1135,18 @@ pub unsafe extern "C" fn socket_sendfile_sync(
     length: usize,
 ) -> c_int {
     // SAFETY: as the caller promises.
-    let Some(mut request) = file_request(unsafe { CStr::from_ptr(filename) }, offset, length)
-    else {
+    sendfile_sync(socket, unsafe { CStr::from_ptr(filename) }, offset, length)
+}
+
+/// [`socket_sendfile_sync`] of the file `filename` names.
+#[must_use]
+pub fn sendfile_sync(
+    socket: Socket<'_>,
+    filename: &CStr,
+    offset: libc::off_t,
+    length: usize,
+) -> c_int {
+    let Some(mut request) = file_request(filename, offset, length) else {
         return -1;
     };
     let total = request.length();

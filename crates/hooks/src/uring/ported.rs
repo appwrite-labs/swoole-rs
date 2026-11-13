@@ -13,6 +13,7 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 use std::{mem, thread};
+use swoole_rs_corebase::net_types::SocketAddress;
 
 const TEST_TMP_FILE: &CStr = c"/tmp/swoole_core_test_file";
 const TEST_STR: &str = "hello world, hello swoole\n";
@@ -385,8 +386,10 @@ fn accept() {
         let server_sock =
             uring_create_server_socket(&mut actual_server_addr, &mut actual_server_addr_len);
 
-        let mut client_addr: libc::sockaddr_in = mem::zeroed();
-        let mut client_addr_len = socklen::<libc::sockaddr_in>();
+        let mut client_addr = SocketAddress {
+            len: socklen::<libc::sockaddr_in>(),
+            ..SocketAddress::default()
+        };
 
         let client = thread::spawn(move || {
             with_engine(|| {
@@ -413,14 +416,7 @@ fn accept() {
             });
         });
 
-        let client_sock = uring::accept(
-            &HOST,
-            server_sock,
-            (&raw mut client_addr).cast(),
-            &raw mut client_addr_len,
-            0,
-            -1.0,
-        );
+        let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, -1.0);
         assert!(client_sock > 0, "accept");
 
         let mut buffer = [0_u8; 256];
@@ -609,17 +605,12 @@ fn accept_timeout() {
         let server_sock =
             uring_create_server_socket(&mut actual_server_addr, &mut actual_server_addr_len);
 
-        let mut client_addr: libc::sockaddr_in = mem::zeroed();
-        let mut client_addr_len = socklen::<libc::sockaddr_in>();
+        let mut client_addr = SocketAddress {
+            len: socklen::<libc::sockaddr_in>(),
+            ..SocketAddress::default()
+        };
 
-        let client_sock = uring::accept(
-            &HOST,
-            server_sock,
-            (&raw mut client_addr).cast(),
-            &raw mut client_addr_len,
-            0,
-            0.1,
-        );
+        let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, 0.1);
         assert_eq!(client_sock, -1, "timed out");
 
         let _closed = uring::close_fd(&HOST, server_sock);

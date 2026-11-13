@@ -14,7 +14,7 @@ use crate::{
 use std::{
     cell::RefCell,
     collections::VecDeque,
-    ffi::{c_int, c_void},
+    ffi::c_int,
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
@@ -379,16 +379,16 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
 }
 
 /// A queued request's turn (`swoole_event_defer`): run its handler, then
-/// release its objects.
-/// # Safety
-/// `ctx` is a queued server request's live context.
-unsafe extern "C-unwind" fn deferred(ctx: *mut c_void) {
-    let Some(ctx) = std::ptr::NonNull::new(ctx) else {
-        return;
-    };
-    // SAFETY: per the caller.
-    let mut ctx = unsafe { Ctx::of(ctx.cast()) };
-    bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
+/// release its objects. The context is a queued server request's, alive until
+/// its deferred request ends.
+struct Turn(Ctx);
+
+impl swoole_rs_reactor::event_api::Deferred for Turn {
+    fn run(self) {
+        let mut ctx = self.0;
+        bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
+    }
+    fn dispose(self) {}
 }
 
 /// Where `onReceive` sends data before any parsing.
@@ -689,11 +689,10 @@ pub(crate) fn release_request() {
     worker.server_concurrency.fetch_sub(1, SeqCst);
     worker.concurrency.fetch_sub(1, SeqCst);
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
-        let reactor = swoole_rs_reactor::event_api::swr_v1_event_reactor();
-        // SAFETY: the thread's live reactor, which begins with its prepared state.
-        let fields = unsafe { (*reactor.cast::<swoole_rs_reactor::ReactorPrepared>()).fields };
-        // SAFETY: a queued context, alive until its deferred request ends.
-        unsafe { swoole_rs_reactor::defer(fields, deferred, ctx.raw().cast(), None) };
+        // Upstream dereferences `sw_reactor()` here unchecked.
+        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
+            std::process::abort();
+        }
     }
 }
 

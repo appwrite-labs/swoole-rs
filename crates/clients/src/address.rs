@@ -12,7 +12,11 @@ use swoole_rs_corebase::net_address::{
     UNIX_STREAM, platform_parses,
 };
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
+use swoole_rs_corebase::ntop;
+use swoole_rs_tls::CText;
 
+// SAFETY: libc's own declarations. `inet_pton` reads the NUL-terminated source and
+// writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
 unsafe extern "C" {
     fn inet_ntop(
         family: c_int,
@@ -20,7 +24,7 @@ unsafe extern "C" {
         text: *mut c_char,
         size: libc::socklen_t,
     ) -> *const c_char;
-    fn inet_pton(family: c_int, source: *const c_char, destination: *mut c_void) -> c_int;
+    safe fn inet_pton(family: c_int, source: CText<'_>, destination: &mut [u8; 16]) -> c_int;
 }
 
 /// `network::gethostbyname(family, name, address)`: writes the address, < 0 on failure.
@@ -32,9 +36,7 @@ fn parse_ip(family: c_int, host: &CStr, destination: &mut [u8; 16]) -> bool {
     let text = host.to_bytes();
     // Other families, and the hosts crates/corebase leaves to it, go to the platform.
     if (family != libc::AF_INET && family != libc::AF_INET6) || platform_parses(family, text) {
-        // SAFETY: a NUL-terminated host and room for an IPv4 or IPv6 address; another
-        // family writes nothing.
-        return unsafe { inet_pton(family, host.as_ptr(), destination.as_mut_ptr().cast()) } == 1;
+        return inet_pton(family, host.into(), destination) == 1;
     }
     let version = if family == libc::AF_INET { 4 } else { 6 };
     let allow_zeroes = u8::from(cfg!(target_os = "macos"));
@@ -237,21 +239,24 @@ pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const
 /// into this call's own buffer rather than the thread's scratch, so nothing can
 /// overwrite it while `f` runs.
 pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
-    let mut text = [0u8; 46];
-    let written = if inet4(address.kind) {
+    if inet4(address.kind) {
         // `inet_ntop(AF_INET)` writes the four octets in decimal, as `Ipv4Addr` displays;
         // at most 15 characters, which leave the buffer its terminator.
+        let mut text = [0u8; 46];
         let ip = Ipv4Addr::from(address.addr.v4().sin_addr.s_addr.to_ne_bytes());
         if write!(&mut text[..45], "{ip}").is_err() {
             return f(c"");
         }
-        return f(CStr::from_bytes_until_nul(&text).unwrap_or_default());
+        f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
     } else if inet6(address.kind) {
-        // inet6 selects the initialized IPv6 union member.
-        let ip = (&raw const address.addr.inet_v6)
-            .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_in6, sin6_addr));
-        // SAFETY: the field holds an IPv6 address and `text` has 46 bytes.
-        unsafe { inet_ntop(libc::AF_INET6, ip.cast(), text.as_mut_ptr().cast(), 46) }
+        let ip = address.addr.v6().sin6_addr.s6_addr;
+        // `inet_ntop(AF_INET6)`'s text, empty when it fails.
+        let text = ntop(
+            libc::AF_INET6,
+            &ip.map(|byte| c_char::from_ne_bytes([byte])),
+        );
+        let text = text.unwrap_or([0; 46]).map(|unit| unit.to_ne_bytes()[0]);
+        f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
     } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
         let path = address.addr.unix().sun_path;
         // A byte past the path, so an unterminated one still ends.
@@ -259,14 +264,10 @@ pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
         for (byte, c) in bytes.iter_mut().zip(path) {
             *byte = c.to_ne_bytes()[0];
         }
-        return f(CStr::from_bytes_until_nul(&bytes).unwrap_or_default());
+        f(CStr::from_bytes_until_nul(&bytes).unwrap_or_default())
     } else {
-        return f(c"unknown");
-    };
-    if written.is_null() {
-        return f(c"");
+        f(c"unknown")
     }
-    f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
 }
 
 /// `Address::get_port`.

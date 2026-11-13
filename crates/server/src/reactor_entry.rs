@@ -9,7 +9,7 @@ use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
-use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE, RUN_THREAD_SHUTDOWN};
+use crate::ops::{RUN_PACKET_RECEIVED, RUN_PIPE_READ, RUN_RT_PIPE_WRITE};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{Facts, ReactorContext, ThreadRecord, facts};
 use crate::view;
@@ -201,15 +201,26 @@ pub unsafe extern "C-unwind" fn close_connection(
     run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
 }
 
-/// `void ReactorThread::shutdown(Reactor *)`.
-///
-/// # Safety
-/// `thread` is the live `ReactorThread` that `reactor` belongs to.
-pub unsafe fn thread_shutdown(thread: *mut c_void, reactor: *mut c_void) {
-    // SAFETY: per the caller: the thread's reactor holds its live server.
-    let mut ctx = unsafe { reactor_context(reactor) };
-    ctx.thread = thread;
-    run(RUN_THREAD_SHUTDOWN, 0, &mut ctx);
+/// [`close_connection`] for the callers that hold the handles: `serv`'s reactor
+/// `reactor` closes `sock`, a session socket of it.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn close_socket(
+    serv: view::Server<'_>,
+    reactor: Reactor,
+    sock: Option<swoole_rs_reactor::Socket<'_>>,
+) -> c_int {
+    let mut ctx = ReactorContext::new(serv, Some(reactor));
+    ctx.sock = sock;
+    run_with(Facts::Close, &mut ctx, crate::conn_io::close_connection)
+}
+
+/// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and
+/// its reactor.
+#[cfg(all(feature = "upstream-symbols", not(test)))]
+pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
+    let mut ctx = ReactorContext::new(serv, Some(reactor));
+    ctx.thread = thread(serv.state(), id);
+    run(crate::ops::RUN_THREAD_SHUTDOWN, 0, &mut ctx);
 }
 
 /// `void Server::init_reactor(Reactor *)`, over one of the server's reactors.
