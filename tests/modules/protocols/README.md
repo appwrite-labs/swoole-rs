@@ -86,7 +86,8 @@ Five of the gate's assertions checked the exports' own argument validation, whic
 went with the exports: a null pointer with a nonzero length (`swr_v1_mqtt_frame_length`,
 `swr_v1_socks_auth`, `swr_v1_resp_format`), `swr_v1_resp_parse_range`'s -2 for a
 non-null output of capacity 0, and `swr_v1_resp_receive_range`'s -1 for a length past
-its capacity. Slices cannot carry those arguments, and the codec has no such cases.
+its capacity. Slices cannot carry the first four, and the receive loop, the codec's
+one caller, never passes more bytes than its buffer holds.
 The one export left that takes a pointer and a length, `Socks5Proxy::handshake_step`,
 refuses a null reply in its own test.
 
