@@ -570,10 +570,6 @@ upstream! {
     pub extern "C" fn swr_string_write_string(this: &mut CppString, offset: i64, source: &CppString) {
         this.write(offset, source.view());
     }
-    "_ZN6swoole6String19set_null_terminatedEv", "_ZN6swoole6String19set_null_terminatedEv" =>
-    pub extern "C" fn swr_string_set_null_terminated(this: &mut CppString) {
-        this.set_null_terminated();
-    }
     "_ZNK6swoole6String5printEb", "_ZNK6swoole6String5printEb" =>
     /// `print(bool)`, through C's stdout as upstream.
     pub extern "C" fn swr_string_print(this: &CppString, value: bool) {

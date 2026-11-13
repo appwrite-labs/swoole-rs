@@ -36,7 +36,7 @@ newest first.
 Create, run, resume, yield (with or without a cancel function), the timed
 `yield_ex`, cancel and bailout are whole Rust operations, in upstream's order (the
 resume callback still sees the old current; yield clears the resume code before
-its callback). They call back through `swr_v1_coroutine_hooks`: `swap_in` (returns
+its callback). They call back through the scheduler's `hooks`: `swap_in` (returns
 whether the coroutine ended), `swap_out` and `destroy` (frees the record and its
 stack, or joins its thread), Rust functions over the live coroutine; `bailout`
 (`on_bailout`, a C function and its data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
