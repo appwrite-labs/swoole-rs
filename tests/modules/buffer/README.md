@@ -66,9 +66,9 @@ The project-written `compatibility.cc` consumer is ported there too:
 
 The header declares only what C++ still calls or a fixture links: the sized constructor,
 copy and move construction, the destructor, `substr`, `extend`, `reserve`,
-`release`, `append` (bytes and `int`), `append_random_bytes`, `write(String)`,
-`set_null_terminated`, `print`, `pop`, `reduce` and the `format` templates. Assignment is
-deleted; the byte-pointer constructor, `grow`, `repeat`, `contains`, `starts_with`,
+`release`, `append` (bytes and `int`), `append_random_bytes` (the http server fixture
+links it), `write(String)`, `print`, `pop`, `reduce` and the `format` templates. Assignment is
+deleted; the byte-pointer constructor, `set_null_terminated`, `grow`, `repeat`, `contains`, `starts_with`,
 `ends_with`, `equals`, `append(String)`, `write(bytes)` and `split` have no C++ caller and
 no symbol: Rust uses `CppString`'s methods and its `view()`.
 

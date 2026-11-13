@@ -11,8 +11,6 @@
 #include <string>
 #include <type_traits>
 
-#define SW_STRINGL(s) s->str, s->length
-
 namespace swoole {
 class String {
   public:
@@ -64,7 +62,6 @@ class String {
     void append(int value);
     bool append_random_bytes(size_t length, bool base64 = false);
     void write(off_t _offset, const String &write_str);
-    void set_null_terminated();
 
     void print(bool print_value = true) const;
 
@@ -108,8 +105,4 @@ class String {
 static_assert(std::is_standard_layout<String>::value && sizeof(String) == 40 && offsetof(String, offset) == 16 &&
                   offsetof(String, str) == 24 && offsetof(String, allocator) == 32 && sizeof(off_t) == 8,
               "swoole::String matches crates/buffer/src/string.rs");
-
-inline String *make_string(size_t size, const Allocator *allocator = nullptr) {
-    return new String(size, allocator);
-}
 }  // namespace swoole
