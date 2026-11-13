@@ -122,7 +122,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) -
     // A TLS connection that never finished its handshake has nobody to notify.
     let handshaking = conn.ssl() && !conn.ssl_ready();
     if serv.state().config_ref().disable_notify || conn.close_force() || handshaking {
-        return crate::reactor_entry::close_socket(serv, reactor, conn.socket());
+        return crate::conn_io::close_connection(serv, reactor, conn.socket());
     }
     conn.set_close_force(true);
     reactor.trigger_close(&mut conn.event(0, 0));
@@ -154,7 +154,7 @@ pub(crate) fn close_reactor_connections(serv: view::Server<'_>, reactor: Reactor
     let id = reactor.handle().id();
     each_connection(serv.state(), |conn| {
         if u16::from(conn.reactor_id()) == id {
-            crate::reactor_entry::close_socket(serv, reactor, conn.socket());
+            crate::conn_io::close_connection(serv, reactor, conn.socket());
         }
     });
 }
@@ -354,10 +354,12 @@ mod tests {
         assert_eq!(close(serv, reactor, 1), 0);
         assert_eq!(handled(), [("told", fd)], "the worker is told");
         assert!(session(&live).close_force());
-        close(serv, reactor, 1);
-        // The close itself runs conn_io's close path, whose counts only the hybrid
-        // answers: here, only that the worker isn't told again shows.
+        let conn = session(&live);
+        live.reactor()
+            .change(conn.socket().unwrap(), 0, SW_EVENT_READ);
+        assert_eq!(close(serv, reactor, 1), 0);
         assert_eq!(handled(), [], "a forced close closes now");
+        assert!(!conn.is_active() && conn.socket().is_none());
     }
 
     #[test]

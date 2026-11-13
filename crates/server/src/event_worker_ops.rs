@@ -242,7 +242,7 @@ fn connection(ctx: &mut Context<'_>, op: u32, arg: u64) -> Option<u64> {
         OP_CLOSE_CONNECTION => {
             // The thread's reactor and the connection's session socket.
             let reactor = crate::reactor_handle::Reactor::thread();
-            crate::reactor_entry::close_socket(ctx.server(), reactor, conn.socket());
+            crate::conn_io::close_connection(ctx.server(), reactor, conn.socket());
             0
         }
         _ => return None,

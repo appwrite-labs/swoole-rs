@@ -402,7 +402,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
         return;
     }
     if serv.config().disable_notify || conn.closed().load(Relaxed) != 0 || conn.close_force() {
-        crate::reactor_entry::close_socket(serv, reactor, conn.socket());
+        crate::conn_io::close_connection(serv, reactor, conn.socket());
         return;
     }
     conn.set_close_force(true);

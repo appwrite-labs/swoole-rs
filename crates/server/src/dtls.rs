@@ -180,7 +180,7 @@ pub(crate) unsafe fn on_packet(
     let data = unsafe { std::slice::from_raw_parts(data, usize::try_from(length).unwrap_or(0)) };
     appended(swr_v1_tls_dtls_append(session, data));
     if !dtls_session_listen(session) {
-        return i64::from(crate::reactor_entry::close_socket(
+        return i64::from(crate::conn_io::close_connection(
             serv,
             reactor,
             Some(record),
