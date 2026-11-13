@@ -572,7 +572,7 @@ def main(argv=None):
         command = commands.add_parser(name)
         command.add_argument('--commit', help='sha or branch (default: main)')
         command.add_argument('--workflow', default='merge.yml')
-        command.add_argument('--timeout', type=int, default=3600, help='seconds (default 3600)')
+        command.add_argument('--timeout', type=int, help='seconds (default 3600; 6300 to wait for the hourly merge tier on main)')
         command.add_argument('--poll', type=float, default=15, help=argparse.SUPPRESS)
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
@@ -608,7 +608,9 @@ def main(argv=None):
               '\n'.join(f"#{row['number']} {row.get('priority') or ', '.join(row['blocking'])} {row['title']}"
                         for row in queue))
         return 0 if queue or stall else 2
-    deadline = time.monotonic() + args.timeout
+    # An hourly run on main can take 75 minutes to appear, then 30 to finish.
+    timeout = args.timeout or (6300 if args.command == 'wait' and args.workflow == 'merge.yml' else 3600)
+    deadline = time.monotonic() + timeout
     RETRY_DEADLINE, RETRY_BASE = deadline, min(RETRY_BASE, args.poll) if args.poll else 0.0
     try:
         sha = resolve(args.commit)
