@@ -799,6 +799,15 @@ pub unsafe fn delete_string(string: *mut CppString) {
     unsafe { Box::from_raw(string) }.dispose();
 }
 
+/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone.
+pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    swoole_rs_corebase::lend_thread_buffer(|| {
+        // SAFETY: the calling thread's live buffer, which `swoole_thread_init` set
+        // up, lent to `f` alone.
+        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

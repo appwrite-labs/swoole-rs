@@ -17,6 +17,8 @@ use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::OnceLock;
 use swoole_rs_buffer::string::CppString;
+#[cfg(not(test))]
+use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{
     EventType, FdType, ResultCode, ReturnCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE,
     SW_SEND_BUFFER_SIZE, SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
@@ -24,8 +26,6 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
-#[cfg(not(test))]
-use swoole_rs_corebase::thread_buffer;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
@@ -51,7 +51,8 @@ use swoole_rs_tls::{
 use tests::{
     async_dispatch, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
     socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
-    socket_ssl_verify, ssl_context_create, swoole_event_write, thread_buffer, writable_callback,
+    socket_ssl_verify, ssl_context_create, swoole_event_write, with_thread_buffer,
+    writable_callback,
 };
 
 /// The flags `swr_v1_clients_flag` reads.
@@ -774,16 +775,6 @@ pub fn listen(client: &Client, events: u32, listener: Listener) {
 
 use swoole_rs_corebase::sys::errno;
 
-/// `f` over the thread's shared String (`sw_tg_buffer()`), which a proxy
-/// handshake packs into and a sync one reads into whole.
-fn with_shared_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
-    swoole_rs_corebase::lend_thread_buffer(|| {
-        // SAFETY: the thread's shared String, set up by `swoole_init` before any
-        // proxied connect, and lent to `f` alone.
-        f(unsafe { &mut *thread_buffer().cast::<CppString>() })
-    })
-}
-
 /// `HttpProxy::handshake` of `buffer`, its length set to `length`: a recv just
 /// filled it to there (its free tail bounds the read).
 fn http_handshake(buffer: &mut CppString, length: usize) -> bool {
@@ -1420,7 +1411,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         // Each answer lands at the start of the emptied buffer.
-        let ready = with_shared_buffer(|shared| {
+        let ready = with_thread_buffer(|shared| {
             loop {
                 shared.clear();
                 let spare = shared.spare();
@@ -1437,7 +1428,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return ERR;
         }
     } else if this.proxy_state(Proxy::Http) >= 0
-        && !with_shared_buffer(|shared| {
+        && !with_thread_buffer(|shared| {
             if send(this, this.http_pack(shared), 0) < 0 {
                 return false;
             }
@@ -1988,7 +1979,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
-        let request = with_shared_buffer(|shared| this.http_pack(shared).to_vec());
+        let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "upstream returns the send result as an int"
