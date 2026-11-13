@@ -18,7 +18,33 @@ pub struct Ops {
     pub descriptor: Option<&'static DescriptorOps>,
     /// Run a handler `set` registered.
     pub invoke: unsafe fn(usize, i32),
-    pub report: fn(u8, i32, i32),
+    pub report: fn(Report),
+}
+
+/// A warning the event loop logs, with the signal number or errno it names. The
+/// errno-carrying ones also set errno.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Report {
+    /// `swoole_signal_callback` on an out-of-range signal.
+    CallbackOutOfRange(i32),
+    /// `swoole_signal_get_handler` on an out-of-range signal.
+    HandlerOutOfRange(i32),
+    /// `swoole_signal_callback` on a signal with no handler.
+    CallbackUnregistered(i32),
+    /// `signalfd()` failed.
+    SignalfdFailed(i32),
+    /// Blocking the signalfd's mask failed.
+    MaskFailed(i32),
+    /// Unblocking the signalfd's mask failed.
+    UnblockFailed(i32),
+    /// Reading the signalfd failed.
+    ReadFailed(i32),
+    /// The signalfd read an out-of-range signal.
+    UnknownSignal(i32),
+    /// The signalfd read a signal with no handler.
+    ReadUnregistered(i32),
+    /// Setting a signal on the kqueue failed.
+    KeventFailed { signo: i32, error: i32 },
 }
 
 /// The signalfd socket's reactor effects. The reactor side keeps the socket
@@ -37,9 +63,6 @@ pub struct DescriptorOps {
     pub installed: fn() -> bool,
     pub install: fn(),
     pub erase_end: fn(),
-}
-fn report(ops: &Ops, kind: u8, signo: i32, error: i32) {
-    (ops.report)(kind, signo, error);
 }
 #[cfg(any(
     target_os = "linux",
@@ -77,7 +100,10 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
         let kq = (ops.native_handle)();
         let previous = crate::signal_kqueue::signal_kqueue_set(kq, signo, handler, &mut failed);
         if failed {
-            report(ops, 9, signo, errno());
+            (ops.report)(Report::KeventFailed {
+                signo,
+                error: errno(),
+            });
         }
         return previous;
     }
@@ -88,15 +114,15 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
 pub fn get(signo: i32, ops: &Ops) -> usize {
     let lookup = signal::signal_lookup(signo);
     if lookup == signal::Lookup::OutOfRange {
-        report(ops, 1, signo, 0);
+        (ops.report)(Report::HandlerOutOfRange(signo));
     }
     lookup.handler()
 }
 /// `swoole_signal_callback`: runs the handler registered for `signo`.
 pub fn callback(signo: i32, ops: &Ops) {
     match signal::signal_lookup(signo) {
-        signal::Lookup::OutOfRange => report(ops, 0, signo, 0),
-        signal::Lookup::Default => report(ops, 2, signo, 0),
+        signal::Lookup::OutOfRange => (ops.report)(Report::CallbackOutOfRange(signo)),
+        signal::Lookup::Default => (ops.report)(Report::CallbackUnregistered(signo)),
         // SAFETY: a handler `set` registered.
         signal::Lookup::Handler(handler) => unsafe { (ops.invoke)(handler, signo) },
         signal::Lookup::Ignored => {}
@@ -114,15 +140,19 @@ fn setup(ops: &Ops) -> bool {
         return false;
     };
     if crate::signalfd::signalfd_fd() == -1 {
-        let created = crate::signalfd::signalfd_create();
-        match created.status {
-            0 => {
-                (descriptor.make)(created.fd);
-                corebase::swr_v1_core_set_signal_fd(created.fd);
+        use crate::signalfd::CreateError;
+        match crate::signalfd::signalfd_create() {
+            Ok(fd) => {
+                (descriptor.make)(fd);
+                corebase::swr_v1_core_set_signal_fd(fd);
             }
-            1 => return false,
-            status => {
-                report(ops, if status == 2 { 3 } else { 4 }, 0, created.error);
+            Err(CreateError::Exists) => return false,
+            Err(CreateError::Signalfd(error)) => {
+                (ops.report)(Report::SignalfdFailed(error));
+                return false;
+            }
+            Err(CreateError::Mask(error)) => {
+                (ops.report)(Report::MaskFailed(error));
                 return false;
             }
         }
@@ -157,7 +187,7 @@ pub fn clear(ops: &Ops) {
         && crate::signalfd::signalfd_fd() != -1
     {
         if !crate::signalfd::signalfd_clear() {
-            report(ops, 5, 0, errno());
+            (ops.report)(Report::UnblockFailed(errno()));
         }
         close(ops);
         return;
@@ -182,14 +212,16 @@ pub fn clear(ops: &Ops) {
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn read(fd: i32, ops: &Ops) -> i32 {
-    let received = crate::signalfd::signalfd_receive(fd);
-    match received.status {
-        1 => report(ops, 6, 0, received.error),
-        2 => report(ops, 7, received.signo.cast_signed(), 0),
-        4 => report(ops, 8, received.signo.cast_signed(), 0),
+    use crate::signalfd::Received;
+    match crate::signalfd::signalfd_receive(fd) {
+        Received::ReadFailed(error) => (ops.report)(Report::ReadFailed(error)),
+        Received::OutOfRange(signo) => (ops.report)(Report::UnknownSignal(signo.cast_signed())),
+        Received::NoHandler(signo) => (ops.report)(Report::ReadUnregistered(signo.cast_signed())),
         // SAFETY: a handler `set` registered.
-        0 => unsafe { (ops.invoke)(received.handler, received.signo.cast_signed()) },
-        _ => {}
+        Received::Handler { signo, handler } => unsafe {
+            (ops.invoke)(handler, signo.cast_signed());
+        },
+        Received::Nothing => {}
     }
     0
 }

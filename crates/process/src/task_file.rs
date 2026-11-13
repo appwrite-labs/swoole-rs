@@ -23,18 +23,15 @@ use swoole_rs_ossupport::fd_write_all;
 use crate::process_pool::SW_IPC_MAX_SIZE;
 use crate::worker_globals::swr_v1_worker_global_get;
 
-/// What reading a task's temporary file did.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TaskFileRead {
-    /// 0 read and (unless peeking) unlinked; 1 open failed; 2 short read at EOF;
-    /// 3 pread failed after `read` bytes.
-    pub status: u32,
-    /// The errno of status 1 and 3.
-    pub error: i32,
-    /// The descriptor that status 3's pread used.
-    pub fd: i32,
-    /// Bytes read.
-    pub read: usize,
+/// Why reading a task's temporary file failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaskFileError {
+    /// Opening it failed with this errno.
+    Open(i32),
+    /// It ended after `read` bytes.
+    Short { read: usize },
+    /// pread on `fd` failed with `error` after `read` bytes.
+    Pread { error: i32, fd: i32, read: usize },
 }
 
 pub(crate) fn errno() -> i32 {
@@ -43,49 +40,34 @@ pub(crate) fn errno() -> i32 {
 
 /// Fills `buffer` from the start of the file at `path`, and unlinks the file once
 /// it is read whole, unless `peek`.
-fn read_file(path: &CStr, buffer: &mut [u8], peek: bool) -> TaskFileRead {
+fn read_file(path: &CStr, buffer: &mut [u8], peek: bool) -> Result<(), TaskFileError> {
     let path = std::ffi::OsStr::from_bytes(path.to_bytes());
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) => {
-            return TaskFileRead {
-                status: 1,
-                error: error.raw_os_error().unwrap_or(0),
-                fd: -1,
-                read: 0,
-            };
-        }
-    };
-    let mut outcome = TaskFileRead {
-        fd: file.as_raw_fd(),
-        ..TaskFileRead::default()
-    };
-    while let Some(rest) = buffer
-        .get_mut(outcome.read..)
-        .filter(|rest| !rest.is_empty())
-    {
-        match file.read_at(rest, outcome.read as u64) {
-            Ok(0) => {
-                outcome.status = 2;
-                break;
-            }
-            Ok(n) => outcome.read += n,
+    let file = std::fs::File::open(path)
+        .map_err(|error| TaskFileError::Open(error.raw_os_error().unwrap_or(0)))?;
+    let mut read = 0;
+    while let Some(rest) = buffer.get_mut(read..).filter(|rest| !rest.is_empty()) {
+        match file.read_at(rest, read as u64) {
+            Ok(0) => return Err(TaskFileError::Short { read }),
+            Ok(n) => read += n,
             Err(error)
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock
                 ) => {}
             Err(error) => {
-                (outcome.status, outcome.error) = (3, error.raw_os_error().unwrap_or(0));
-                break;
+                return Err(TaskFileError::Pread {
+                    error: error.raw_os_error().unwrap_or(0),
+                    fd: file.as_raw_fd(),
+                    read,
+                });
             }
         }
     }
     drop(file);
-    if outcome.status == 0 && !peek {
+    if !peek {
         std::fs::remove_file(path).unwrap_or_default();
     }
-    outcome
+    Ok(())
 }
 
 /// `SW_TASK_TMP_PATH_SIZE`.
@@ -458,26 +440,23 @@ impl<'a> Packed<'a> {
         // Zeroed first: past the String's content, its allocation is uninitialized. It
         // holds `pkg.length` bytes by now.
         let target = buffer.zeroed(pkg.length).unwrap_or_default();
-        let read = read_file(pkg.path(), target, flags & PEEK != 0);
-        if read.status != 0 {
-            if read.error != 0 {
-                swoole_rs_corebase::sys::set_errno(read.error);
-            }
-            let name = pkg.path().to_string_lossy();
-            if read.status == 1 {
+        match read_file(pkg.path(), target, flags & PEEK != 0) {
+            Ok(()) => {}
+            Err(TaskFileError::Short { .. }) => return None,
+            Err(TaskFileError::Open(error)) => {
+                swoole_rs_corebase::sys::set_errno(error);
+                let name = pkg.path().to_string_lossy();
                 log::sys_warning(c"Server::task_unpack", format_args!("open({name}) failed"));
-            } else if read.status == 3 {
+                return None;
+            }
+            Err(TaskFileError::Pread { error, fd, read }) => {
+                swoole_rs_corebase::sys::set_errno(error);
                 log::sys_warning(
                     c"Server::task_unpack",
-                    format_args!(
-                        "pread({}, {str:p}, {}, {}) failed",
-                        read.fd,
-                        pkg.length - read.read,
-                        read.read
-                    ),
+                    format_args!("pread({fd}, {str:p}, {}, {read}) failed", pkg.length - read),
                 );
+                return None;
             }
-            return None;
         }
         // SAFETY: the read filled the buffer's first `pkg.length` bytes.
         unsafe { buffer.set_len(pkg.length) };
@@ -488,13 +467,13 @@ impl<'a> Packed<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataHead, EVENT_TASK, PacketTask, TaskBuffer, TaskFileRead, TaskPack, pack_payload,
+        DataHead, EVENT_TASK, PacketTask, TaskBuffer, TaskFileError, TaskPack, pack_payload,
         read_file, spill,
     };
     use crate::methods::tests::{install, logged};
     use std::ffi::CString;
 
-    fn read(path: &CString, length: usize, peek: bool) -> (TaskFileRead, Vec<u8>) {
+    fn read(path: &CString, length: usize, peek: bool) -> (Result<(), TaskFileError>, Vec<u8>) {
         let mut buffer = vec![0; length];
         let outcome = read_file(path, &mut buffer, peek);
         (outcome, buffer)
@@ -536,22 +515,19 @@ mod tests {
         let path = CString::new(file.to_str().unwrap()).unwrap();
 
         let (outcome, data) = read(&path, 7, true);
-        assert_eq!(
-            (outcome.status, outcome.read, data.as_slice()),
-            (0, 7, &b"payload"[..])
-        );
+        assert_eq!((outcome, data.as_slice()), (Ok(()), &b"payload"[..]));
         assert!(file.exists());
 
         let (outcome, _) = read(&path, 9, false);
-        assert_eq!((outcome.status, outcome.read), (2, 7));
+        assert_eq!(outcome, Err(TaskFileError::Short { read: 7 }));
         assert!(file.exists());
 
         let (outcome, _) = read(&path, 7, false);
-        assert_eq!(outcome.status, 0);
+        assert_eq!(outcome, Ok(()));
         assert!(!file.exists());
 
         let (outcome, _) = read(&path, 7, false);
-        assert_eq!((outcome.status, outcome.error), (1, libc::ENOENT));
+        assert_eq!(outcome, Err(TaskFileError::Open(libc::ENOENT)));
     }
 
     #[test]
