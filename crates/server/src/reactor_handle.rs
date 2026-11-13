@@ -12,7 +12,8 @@ use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reac
 use swoole_rs_reactor::{ChangeOp, Handler, Interest, ReactorPrepared, Running, Socket};
 
 /// `SW_EVENT_READ`.
-pub(crate) const EVENT_READ: c_int = 1 << 9;
+pub(crate) const EVENT_READ: c_int =
+    swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 
 /// A live `Reactor`, used by the thread that runs it.
 #[derive(Clone, Copy)]

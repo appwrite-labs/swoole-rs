@@ -78,7 +78,7 @@ pub(crate) enum RecvOp {
 }
 
 /// `SW_WAIT`.
-pub(crate) const SW_WAIT: i32 = 2;
+pub(crate) const SW_WAIT: i32 = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as i32;
 
 /// A `SocketImpl *`, owned: deleted on drop.
 pub(crate) struct Socket {
@@ -544,9 +544,9 @@ pub mod co {
     }
 
     /// `SW_EVENT_READ`.
-    pub const READ: u32 = 1 << 9;
+    pub const READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
     /// `SW_EVENT_WRITE`.
-    pub const WRITE: u32 = 1 << 10;
+    pub const WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;

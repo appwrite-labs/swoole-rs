@@ -2,6 +2,7 @@
 //! handshake steps, reads and writes, host and verify checks, PEM export and error
 //! reasons, and the socket's TLS state group they set. `upstream` defines the
 //! `Socket` methods over them, errno, the last error and logs included.
+use crate::SslState;
 use crate::handle::Ssl;
 use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
@@ -11,28 +12,26 @@ use openssl_sys::{
 };
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong, c_void};
+use swoole_rs_corebase::constants::{ResultCode, ReturnCode};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::SocketFields;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
 const SERVER: c_int = 1;
 const CLIENT: c_int = 2;
 
-/// `SW_ERROR_SSL_BAD_CLIENT` and `SW_ERROR_SSL_RESET`.
-const BAD_CLIENT: c_int = 1015;
-const RESET: c_int = 1017;
-/// `SW_ERROR_SSL_HANDSHAKE_FAILED`.
-const HANDSHAKE_FAILED: c_int = 1018;
-/// `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`; `SW_OK`/`SW_ERR`.
-const WAIT: c_int = 2;
-const ERROR: c_int = 4;
-const READY: c_int = 5;
-const OK: c_int = 0;
-const ERR: c_int = -1;
-/// `SW_SSL_STATE_READY` and `SW_SSL_STATE_WAIT_STREAM`.
-const STATE_READY: u32 = 1;
-const STATE_WAIT_STREAM: u32 = 2;
+const BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
+const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
+const HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
+const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const READY: c_int = ReturnCode::SW_READY as c_int;
+const OK: c_int = ResultCode::SW_OK as c_int;
+const ERR: c_int = ResultCode::SW_ERR as c_int;
+const STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
+const STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)

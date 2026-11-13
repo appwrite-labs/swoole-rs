@@ -57,7 +57,7 @@ const INVALID_PROTOCOL: c_int = 7102;
 const HANDSHAKE_FAILED: c_int = 8504;
 const PACK_FAILED: c_int = 8505;
 /// `SW_EVENT_WRITE` and `SW_EVENT_RDWR`.
-const EVENT_WRITE: c_int = 1 << 10;
+const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const EVENT_RDWR: c_int = (1 << 9) | (1 << 10);
 /// `SW_HTTP_SWITCHING_PROTOCOLS`, `NO_CONTENT`, `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`.
 const SWITCHING_PROTOCOLS: u16 = 101;

@@ -84,17 +84,3 @@ struct Socket : swr_v1_socket {
 
 network::Socket *make_socket(int fd, FdType fd_type);
 }  // namespace swoole
-
-/* Constants the Rust socket code mirrors. */
-static_assert(SW_SENDFILE_CHUNK_SIZE == 65536, "crates/reactor/src/socket_io.rs");
-static_assert(SW_SOCK_NONBLOCK == 1 << 2 && SW_SOCK_CLOEXEC == 1 << 3 && SW_ERROR_SOCKET_POLL_TIMEOUT == 6002,
-              "crates/reactor/src/socket_upstream.rs");
-static_assert(SW_ERROR_SSL_BAD_CLIENT == 1015 && SW_ERROR_SSL_RESET == 1017 && SW_REDUCE_SIZE == 7,
-              "crates/reactor/src/socket_rw.rs's catch_error codes");
-static_assert(SW_WAIT == 2 && SW_ERROR == 4 && SW_READY == 5 && SW_OK == 0 && SW_ERR == -1,
-              "crates/tls/src/socket.rs's codes");
-static_assert(SW_LOG_NOTICE == 3 && SW_ERROR_SSL_VERIFY_FAILED == 1014 && SW_ERROR_SSL_BAD_PROTOCOL == 1016 &&
-                  SW_CLOSE == 3 && SW_SOCKET_RETRY_COUNT == 10 && SW_EVENT_READ == 1 << 9 && SW_EVENT_WRITE == 1 << 10,
-              "crates/tls/src/upstream.rs");
-static_assert(SW_SSL_STATE_READY == 1 && SW_SSL_STATE_WAIT_STREAM == 2 && SW_ERROR_SSL_HANDSHAKE_FAILED == 1018,
-              "crates/tls/src/socket.rs's states");

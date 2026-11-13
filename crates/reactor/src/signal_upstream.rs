@@ -20,7 +20,7 @@ use swoole_rs_process::signal_loop::{self, Ops, Report};
 #[cfg(target_os = "linux")]
 const FD_SIGNAL: c_int = 9;
 #[cfg(target_os = "linux")]
-const EVENT_READ: c_int = 1 << 9;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const LOG_WARNING: c_int = 4;
 const UNREGISTERED_SIGNAL: c_int = 721;
 /// `Reactor::EXIT_CONDITION_SIGNALFD` and `Reactor::PRIORITY_SIGNAL_CALLBACK`.

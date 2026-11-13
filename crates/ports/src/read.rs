@@ -135,10 +135,10 @@ enum Log {
 }
 
 /// `swReturnCode` values `catch_read_error` returns.
-const SW_CLOSE: u64 = 3;
-const SW_ERROR: u64 = 4;
-const SW_OK: i32 = 0;
-const SW_ERR: i32 = -1;
+const SW_CLOSE: u64 = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as u64;
+const SW_ERROR: u64 = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as u64;
+const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
+const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
 /// `SW_BUFFER_SIZE_BIG`.
 const HTTP_PRI: u8 = 27;

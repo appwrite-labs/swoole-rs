@@ -10,7 +10,7 @@ use swoole_rs_protocols::{
 };
 
 /// `SW_LOG_NOTICE`.
-const NOTICE: c_int = 3;
+const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 /// `SW_ERROR_SOCKS5_*`.
 const UNSUPPORT_VERSION: c_int = 7001;
 const UNSUPPORT_METHOD: c_int = 7002;

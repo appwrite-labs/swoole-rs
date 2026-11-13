@@ -21,8 +21,8 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 use swoole_rs_tls::{Bio, OwnedBio, Ssl};
 
-const EVENT_READ: u32 = 1 << 9;
-const EVENT_WRITE: u32 = 1 << 10;
+const EVENT_READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
+const EVENT_WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 const EVENT_RDWR: u32 = EVENT_READ | EVENT_WRITE;
 
 /// The socket's view and effects.

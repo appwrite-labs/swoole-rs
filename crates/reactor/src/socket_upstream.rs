@@ -8,16 +8,15 @@ use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{EventType, ResultCode, ReturnCode};
 use swoole_rs_corebase::log;
 
-/// `SW_OK`, `SW_ERR`; `swReturnCode`'s `SW_WAIT`, `SW_ERROR` and `SW_READY`.
-const OK: c_int = 0;
-const ERR: c_int = -1;
-const WAIT: c_int = 2;
-const ERROR: c_int = 4;
-const READY: c_int = 5;
-/// `SW_EVENT_WRITE`.
-const EVENT_WRITE: c_int = 1 << 10;
+const OK: c_int = ResultCode::SW_OK as c_int;
+const ERR: c_int = ResultCode::SW_ERR as c_int;
+const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
+const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
+const READY: c_int = ReturnCode::SW_READY as c_int;
+const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)

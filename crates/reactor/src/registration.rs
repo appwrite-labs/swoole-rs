@@ -4,9 +4,9 @@
 //! as the kernel left it, for `swr_v1_reactor_change`'s warnings.
 use std::ffi::{c_int, c_void};
 
-const SW_EVENT_DEAULT: c_int = 1 << 8;
-const SW_EVENT_READ: c_int = 1 << 9;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_DEAULT: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_DEAULT as c_int;
+const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// `Reactor::isset_read_event`.
 fn reads(events: c_int) -> bool {
@@ -21,7 +21,7 @@ fn writes(events: c_int) -> bool {
 mod epoll {
     use super::{c_int, c_void, reads, writes};
 
-    const SW_EVENT_ERROR: c_int = 1 << 11;
+    const SW_EVENT_ERROR: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
     const SW_EVENT_ONCE: c_int = 1 << 12;
 
     /// `ReactorEpoll::get_events`.

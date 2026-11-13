@@ -28,15 +28,15 @@ const BUFFER_FULL: c_int = 13;
 const PAUSE_RECV: u8 = 11;
 const RESUME_RECV: u8 = 12;
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`.
-const EVENT_READ: c_int = 1 << 9;
-const EVENT_WRITE: c_int = 1 << 10;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_OK` and `SW_ERR`.
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_LOG_TRACE`, `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
-const LOG_TRACE: c_int = 1;
-const LOG_NOTICE: c_int = 3;
-const LOG_WARNING: c_int = 4;
+const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
+const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 fn error(level: c_int, code: E, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, c"Server::send_to_connection", message);

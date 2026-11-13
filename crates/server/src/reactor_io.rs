@@ -14,9 +14,9 @@ use crate::records::Lookup;
 use crate::{SW_ERR, SW_OK, ServerState, view};
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_WAIT`.
-const SW_LOG_NOTICE: c_int = 3;
-const SW_LOG_WARNING: c_int = 4;
-const SW_WAIT: c_int = 2;
+const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
+const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
 /// those for connections the server already closed.

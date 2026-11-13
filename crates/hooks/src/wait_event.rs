@@ -11,9 +11,9 @@ use swoole_rs_corebase::constants::FdType;
 pub use native::Watch;
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
-pub(crate) const READ: i32 = 1 << 9;
-pub(crate) const WRITE: i32 = 1 << 10;
-pub(crate) const ERROR: i32 = 1 << 11;
+pub(crate) const READ: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i32;
+pub(crate) const WRITE: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i32;
+pub(crate) const ERROR: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as i32;
 
 /// The reactor's and the coroutine's side of an `EventWaiter`; `S` is its reactor
 /// socket, which dropping takes off the reactor and releases, not its fd.

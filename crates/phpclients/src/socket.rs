@@ -34,8 +34,8 @@ const BACKLOG: i64 = 512;
 pub(crate) mod owner;
 
 /// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const EVENT_READ: i64 = 1 << 9;
-const EVENT_WRITE: i64 = 1 << 10;
+const EVENT_READ: i64 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i64;
+const EVENT_WRITE: i64 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i64;
 /// `IOV_MAX` on Linux and Apple.
 const IOV_MAX: u32 = 1024;
 

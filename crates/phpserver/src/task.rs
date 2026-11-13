@@ -54,9 +54,9 @@ const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
 /// `SW_ERROR_TASK_TIMEOUT`, `SW_LOG_WARNING`.
 const SW_ERROR_TASK_TIMEOUT: c_int = 2003;
-const SW_LOG_WARNING: c_int = 4;
-const SW_OK: c_int = 0;
-const SW_ERR: c_int = -1;
+const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `DATA`'s `Swoole\Server\TaskResult`.
 const TASK_RESULT: usize = 4;
 

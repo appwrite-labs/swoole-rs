@@ -18,9 +18,9 @@ unsafe extern "C" {
 }
 
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
-const READ: i32 = 1 << 9;
-const WRITE: i32 = 1 << 10;
-const ERROR: i32 = 1 << 11;
+const READ: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i32;
+const WRITE: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i32;
+const ERROR: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as i32;
 const EVENTS: [i32; 3] = [READ, WRITE, ERROR];
 
 /// `zend::KeyValue`: where a stream sat in its array, and a reference to it.

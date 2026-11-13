@@ -19,7 +19,7 @@ use swoole_rs_reactor::{
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
 const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
-const SW_EVENT_WRITE: c_int = 1 << 10;
+const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// One write: the reactor, the socket and the payload. Only [`write`], whose caller
 /// promises a live reactor, builds one, so it stays live while it does.

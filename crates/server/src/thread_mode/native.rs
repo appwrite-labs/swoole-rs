@@ -21,11 +21,11 @@ use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
 
 /// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
-const EVENT_READ: c_int = 1 << 9;
+const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const THREAD_WORKER: u8 = 4;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
-const WARNING: c_int = 4;
-const ERROR: c_int = 5;
+const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 /// `Server::MODE_THREAD`.
 const MODE_THREAD: u8 = 3;
 
