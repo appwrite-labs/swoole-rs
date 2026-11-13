@@ -5,7 +5,7 @@ use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::{PortCounters, ServerCounters};
 use crate::thread_mode::ThreadOp;
-use crate::{Mode, view};
+use crate::{Mode, TaskIpcMode, view};
 use core::ffi::c_int;
 use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
@@ -24,15 +24,6 @@ const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
 
-/// `Server::DispatchMode` values that hash a connection to one worker.
-const DISPATCH_FDMOD: u64 = 2;
-const DISPATCH_IPMOD: u64 = 4;
-const DISPATCH_CO_CONN_LB: u64 = 8;
-
-/// `Server::TaskIpcMode`, and the pool's IPC mode for each.
-const TASK_IPC_MSGQUEUE: u64 = 2;
-const TASK_IPC_PREEMPTIVE: u64 = 3;
-const TASK_IPC_STREAM: u64 = 4;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, and the direct methods' `SW_OK` and `SW_ERR`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
@@ -253,9 +244,9 @@ fn bound_workers(config: &crate::ServerConfig, cpu: u32) {
 fn create_task_workers(serv: view::Server<'_>) -> Option<Shm> {
     let state = serv.state();
     let config = state.config_ref();
-    let ipc = match u64::from(config.task_ipc_mode.get()) {
-        TASK_IPC_MSGQUEUE | TASK_IPC_PREEMPTIVE => IpcMode::MsgQueue,
-        TASK_IPC_STREAM => IpcMode::Socket,
+    let ipc = match config.task_ipc() {
+        Some(TaskIpcMode::MsgQueue | TaskIpcMode::Preemptive) => IpcMode::MsgQueue,
+        Some(TaskIpcMode::Stream) => IpcMode::Socket,
         _ => IpcMode::UnixSock,
     };
     let master = crate::shared::server_counters(state).map_or(0, |gs| gs.master_pid.load(Relaxed));
@@ -295,11 +286,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     let callbacks = &state.callbacks;
     let has = |id| callbacks.slot(id).is_some_and(CallbackSlot::is_set);
     if config.mode_ == Mode::Process {
-        let mode = config.dispatch_mode.get();
-        let hashed = matches!(
-            u64::from(mode),
-            DISPATCH_FDMOD | DISPATCH_IPMOD | DISPATCH_CO_CONN_LB
-        );
+        let (mode, hashed) = (config.dispatch_mode.get(), config.hash_dispatch());
         if !hashed && !config.enable_unsafe_event.get() {
             for (id, event) in [
                 (CallbackKind::Connect, "onConnect"),
@@ -776,17 +763,17 @@ mod tests {
         config(&live).worker_num.set(2);
         calls();
         for (mode, ipc, socket) in [
-            (TASK_IPC_STREAM, IpcMode::Socket, true),
-            (TASK_IPC_PREEMPTIVE, IpcMode::MsgQueue, false),
-            (TASK_IPC_MSGQUEUE, IpcMode::MsgQueue, false),
-            (1, IpcMode::UnixSock, false),
+            (TaskIpcMode::Stream, IpcMode::Socket, true),
+            (TaskIpcMode::Preemptive, IpcMode::MsgQueue, false),
+            (TaskIpcMode::MsgQueue, IpcMode::MsgQueue, false),
+            (TaskIpcMode::UnixSock, IpcMode::UnixSock, false),
         ] {
-            config(&live).task_ipc_mode.set(u8::try_from(mode).unwrap());
+            config(&live).task_ipc_mode.set(mode as u8);
             let mut results = create_task_workers(live.server()).unwrap();
             assert_eq!(
                 calls(),
                 [Call::TaskPool(ipc.code(), socket)],
-                "only stream mode listens, mode {mode}"
+                "only stream mode listens, mode {mode:?}"
             );
             assert!(!results.is_null(), "results");
             assert!(

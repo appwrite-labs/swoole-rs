@@ -1,7 +1,7 @@
 //! The event worker's native side: the events it receives from the message bus, its
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
-use crate::Mode;
+use crate::{DispatchMode, Mode};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
@@ -49,9 +49,6 @@ const PIPE_MASTER: c_int = 1;
 const HOOK_BEFORE_WORKER_START: c_int = 2;
 const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
 const HOOK_BEFORE_WORKER_STOP: c_int = 8;
-/// `Server::DISPATCH_CO_CONN_LB`, `DISPATCH_CO_REQ_LB`.
-const DISPATCH_CO_CONN_LB: u8 = 8;
-const DISPATCH_CO_REQ_LB: u8 = 9;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const INVALID_PARAMS: c_int = 505;
@@ -655,8 +652,8 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
     }
     if matches!(
-        config.dispatch_mode.get(),
-        DISPATCH_CO_CONN_LB | DISPATCH_CO_REQ_LB
+        config.dispatch(),
+        Some(DispatchMode::CoConnLb | DispatchMode::CoReqLb)
     ) {
         COUNTED.set(worker.raw());
         let count = count_coroutines;

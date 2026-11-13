@@ -1,25 +1,18 @@
 //! Choosing a worker, sends from workers, and listen ports.
-use crate::Mode;
 use crate::base_factory::SendData;
 use crate::callbacks::{CallbackKind, CallbackSlot};
 use crate::port_config::{PortConfig, methods};
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
 use crate::view::{Port, Server};
+use crate::{DispatchMode, Mode};
 use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
-/// `Server::DispatchMode`, `DISPATCH_RESULT_USERFUNC_FALLBACK`; native asserts each.
-const DISPATCH_ROUND: u8 = 1;
-const DISPATCH_FDMOD: u8 = 2;
-const DISPATCH_IPMOD: u8 = 4;
-const DISPATCH_UIDMOD: u8 = 5;
-const DISPATCH_CO_CONN_LB: u8 = 8;
-const DISPATCH_CO_REQ_LB: u8 = 9;
-const DISPATCH_CONCURRENT_LB: u8 = 10;
+/// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
 const USERFUNC_FALLBACK: c_int = -3;
 
 /// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
@@ -53,15 +46,15 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     let fd_key = fd.cast_unsigned();
     let workers = config.worker_num.get().max(1);
     let conn = || state.connection(key, Lookup::ByFd);
-    let key = match config.dispatch_mode.get() {
-        DISPATCH_ROUND => state.next_round(),
-        DISPATCH_FDMOD => fd_key,
-        DISPATCH_IPMOD => ip_key(state, key, send),
-        DISPATCH_UIDMOD => match conn().map_or(0, crate::Connection::uid) {
+    let key = match config.dispatch() {
+        Some(DispatchMode::Round) => state.next_round(),
+        Some(DispatchMode::FdMod) => fd_key,
+        Some(DispatchMode::IpMod) => ip_key(state, key, send),
+        Some(DispatchMode::UidMod) => match conn().map_or(0, crate::Connection::uid) {
             0 => fd_key,
             uid => uid,
         },
-        DISPATCH_CO_CONN_LB => {
+        Some(DispatchMode::CoConnLb) => {
             let Some(conn) = conn() else {
                 return (fd_key % workers).cast_signed();
             };
@@ -73,8 +66,8 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
             conn.set_worker_id(lowest);
             return lowest;
         }
-        DISPATCH_CO_REQ_LB => return lowest(serv, Load::Coroutines),
-        DISPATCH_CONCURRENT_LB => return lowest(serv, Load::Concurrency),
+        Some(DispatchMode::CoReqLb) => return lowest(serv, Load::Coroutines),
+        Some(DispatchMode::ConcurrentLb) => return lowest(serv, Load::Concurrency),
         // Deliver to an idle worker.
         _ => return idle_worker(serv),
     };
@@ -490,13 +483,13 @@ mod tests {
     }
 
     impl Workers {
-        fn new(n: u32, dispatch: u8) -> Self {
+        fn new(n: u32, dispatch: DispatchMode) -> Self {
             let live = LiveServer::new();
             let mut records: Vec<WorkerRecord> = (0..n).map(|_| *WorkerRecord::boxed()).collect();
             // SAFETY: the fixture's configuration, which nothing else reads during the write.
             let config = unsafe { &mut *live.state().config() };
             config.worker_num.set(n);
-            config.dispatch_mode.set(dispatch);
+            config.dispatch_mode.set(dispatch as u8);
             config.workers = crate::records::tests::naming_at(records.as_mut_ptr());
             Self { live, records }
         }
@@ -542,20 +535,24 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn schedule_by_mode() {
-        assert_eq!(Workers::new(4, DISPATCH_FDMOD).schedule(10), 2, "fd mod");
-        let round = Workers::new(4, DISPATCH_ROUND);
+        assert_eq!(
+            Workers::new(4, DispatchMode::FdMod).schedule(10),
+            2,
+            "fd mod"
+        );
+        let round = Workers::new(4, DispatchMode::Round);
         assert_eq!(
             [round.schedule(10), round.schedule(10)],
             [0, 1],
             "round robin"
         );
-        let uid = Workers::new(4, DISPATCH_UIDMOD);
+        let uid = Workers::new(4, DispatchMode::UidMod);
         assert_eq!(uid.schedule(10), 2, "no uid: fd");
         assert_eq!(uid.schedule(UNLISTED), 0, "no connection: fd");
         connect(&uid, 10, 5, -1);
         assert_eq!(uid.schedule(10), 1, "uid");
 
-        let mut co = Workers::new(4, DISPATCH_CO_CONN_LB);
+        let mut co = Workers::new(4, DispatchMode::CoConnLb);
         assert_eq!(co.schedule(UNLISTED), 0, "no connection: fd");
         co.records[0].coroutine_num = 5;
         connect(&co, 10, 0, -1);
@@ -565,16 +562,16 @@ mod tests {
         co.records[1].coroutine_num = 9;
         assert_eq!(co.schedule(10), 1, "pinned");
 
-        let mut req = Workers::new(4, DISPATCH_CO_REQ_LB);
+        let mut req = Workers::new(4, DispatchMode::CoReqLb);
         for (record, load) in req.records.iter_mut().zip([5, 3, 3, 9]) {
             record.coroutine_num = load;
         }
         assert_eq!(req.schedule(10), 1, "the first lowest load");
-        let concurrent = Workers::new(3, DISPATCH_CONCURRENT_LB);
+        let concurrent = Workers::new(3, DispatchMode::ConcurrentLb);
         concurrent.records[0].concurrency.store(2, Relaxed);
         assert_eq!(concurrent.schedule(10), 1, "the lowest concurrency");
 
-        let idle = Workers::new(3, 3);
+        let idle = Workers::new(3, DispatchMode::IdleWorker);
         idle.set(&[1], WorkerStatus::Idle);
         assert_eq!(idle.schedule(10), 1, "the first idle worker round robin");
         assert!(!idle.warned());
@@ -605,7 +602,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_dispatch_function_comes_first_unless_it_falls_back() {
-        let w = Workers::new(4, DISPATCH_FDMOD);
+        let w = Workers::new(4, DispatchMode::FdMod);
         let callbacks = &w.live.state().callbacks;
         callbacks.set(crate::callbacks::Callback::DispatchFunc(to_six));
         assert_eq!(w.schedule(10), 6, "user function");
@@ -616,7 +613,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_datagram_hashes_its_sender() {
-        let w = Workers::new(4, DISPATCH_IPMOD);
+        let w = Workers::new(4, DispatchMode::IpMod);
         // SAFETY: a plain record, for which zero is valid.
         let mut packet: crate::master_ops::DgramPacket = unsafe { core::mem::zeroed() };
         packet.socket_addr.kind = 2;
@@ -653,7 +650,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn idle_and_tasking_counts() {
-        let w = Workers::new(3, DISPATCH_FDMOD);
+        let w = Workers::new(3, DispatchMode::FdMod);
         w.set(&[0, 2], WorkerStatus::Idle);
         assert_eq!(idle_workers(w.serv(), false), 2, "idle event workers");
         assert_eq!(idle_workers(w.serv(), true), 0, "no task workers");

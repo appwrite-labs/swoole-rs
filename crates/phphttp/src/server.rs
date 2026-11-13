@@ -28,7 +28,7 @@ use swoole_rs_phpserver::{
 };
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_record::WorkerType;
-use swoole_rs_server::{Connection, Mode, view};
+use swoole_rs_server::{Connection, DispatchMode, Mode, view};
 use swoole_rs_zend::sys::{
     ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
     zend_long, zval,
@@ -99,8 +99,6 @@ struct Receive {
 const HOOK_BEFORE_REQUEST: c_int = 26;
 /// `SW_SOCK_TCP6`.
 const SOCK_TCP6: c_int = 3;
-/// `Server::DISPATCH_FDMOD`.
-const DISPATCH_FDMOD: u8 = 2;
 
 // The connection's addresses and its peer's port and loopback check.
 use swoole_rs_clients::address::{
@@ -284,7 +282,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
 pub fn can_cache_session_addr(server: view::Server<'_>) -> bool {
     let config = server.config();
     config.mode_ == Mode::Base
-        || (config.mode_ == Mode::Process && config.dispatch_mode.get() == DISPATCH_FDMOD)
+        || (config.mode_ == Mode::Process && config.dispatch() == Some(DispatchMode::FdMod))
 }
 
 /// `Server::is_enable_coroutine`.

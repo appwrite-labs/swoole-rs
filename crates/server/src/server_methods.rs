@@ -91,8 +91,6 @@ pub(crate) fn start_master_thread(
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus) {
-    /// `Server::TASK_IPC_UNIXSOCK`.
-    const TASK_IPC_UNIXSOCK: u8 = 1;
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
         swoole_rs_corebase::fatal("pipe sockets set up before the server started");
@@ -100,7 +98,7 @@ pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus)
     let config = serv.config();
     let workers = config.worker_num.get();
     // Task workers have pipes only when they talk over unix sockets.
-    let task_pipes = config.task_ipc_mode.get() == TASK_IPC_UNIXSOCK;
+    let task_pipes = config.task_ipc() == Some(crate::TaskIpcMode::UnixSock);
     let total = if task_pipes {
         workers + config.task_worker_num.get()
     } else {

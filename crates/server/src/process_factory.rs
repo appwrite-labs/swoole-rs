@@ -36,10 +36,6 @@ pub(crate) enum Pipe {
 /// `Server::DISPATCH_RESULT_*`.
 const DISPATCH_DISCARD_PACKET: c_int = -1;
 const DISPATCH_CLOSE_CONNECTION: c_int = -2;
-/// `Server::DISPATCH_FDMOD`, `DISPATCH_IPMOD`, `DISPATCH_CO_CONN_LB`.
-const DISPATCH_FDMOD: u8 = 2;
-const DISPATCH_IPMOD: u8 = 4;
-const DISPATCH_CO_CONN_LB: u8 = 8;
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -63,14 +59,6 @@ const DATA_LENGTH_TOO_LARGE: c_int = 1203;
 /// A worker id, as `Server::get_worker(uint16_t)` narrows it.
 fn worker_id(id: i64) -> u16 {
     u16::try_from(id & 0xffff).unwrap_or_default()
-}
-
-/// Whether the dispatch mode binds a connection to one worker.
-fn hash_dispatch(config: &crate::ServerConfig) -> bool {
-    matches!(
-        config.dispatch_mode.get(),
-        DISPATCH_FDMOD | DISPATCH_IPMOD | DISPATCH_CO_CONN_LB
-    )
 }
 
 /// This process's worker id, as `swoole_get_worker_id()`'s `int`.
@@ -157,7 +145,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     if conn.overflow() && (kind == EVENT_SEND_DATA || kind == EVENT_SEND_FILE) {
         // `process_is_supported_send_yield`: the worker that owns the connection waits.
         let owner = || i64::from(schedule_worker(serv, conn.fd(), None)) == current_worker();
-        if config.send_yield.get() && hash_dispatch(config) && owner() {
+        if config.send_yield.get() && config.hash_dispatch() && owner() {
             log::set_last_error(OUTPUT_SEND_YIELD);
         } else {
             let m = format_args!("send failed, session={session} output buffer overflow");
@@ -202,7 +190,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     }
     // Only an active close may be in another worker's binding: forward it there.
     if conn.close_actively() {
-        let hash = hash_dispatch(config);
+        let hash = config.hash_dispatch();
         let worker = if hash {
             i64::from(schedule_worker(serv, conn.fd(), None))
         } else {

@@ -468,7 +468,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
         .is_some_and(crate::callbacks::CallbackSlot::is_set);
     !prequeue
         || config.mode_ != Mode::Process
-        || !matches!(config.dispatch_mode.get(), 2 | 4 | 8)
+        || !config.hash_dispatch()
         || dispatch_func
         || config.enable_coroutine.get()
         || conn.ssl()

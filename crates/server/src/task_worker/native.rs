@@ -75,10 +75,7 @@ fn server_of(pool: PoolRef<'_>) -> view::Server<'_> {
 /// its callbacks, its scheduling and its workers.
 pub(crate) fn init(serv: view::Server<'_>) -> bool {
     let config = serv.config();
-    let (mode, coroutine) = (
-        config.task_ipc_mode.get(),
-        config.task_enable_coroutine.get(),
-    );
+    let (mode, coroutine) = (config.task_ipc(), config.task_enable_coroutine.get());
     if !super::coroutines_allowed(mode, coroutine) {
         return false;
     }
