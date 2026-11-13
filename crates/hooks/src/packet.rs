@@ -13,6 +13,17 @@ pub struct ReadBuffer {
     pub str: *mut u8,
 }
 
+/// Why a packet receive gave up, for the host's diagnostics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    /// The protocol could not read a length from the header.
+    LengthNotFound,
+    /// The header's length exceeds `package_max_length`.
+    TooLarge,
+    /// The buffer filled to `package_max_length` with no EOF.
+    NoEof,
+}
+
 struct Packet {
     socket: crate::co_socket::Co,
     view: ReadBuffer,
@@ -49,7 +60,7 @@ impl Packet {
     fn recv(&mut self, at: usize, length: usize) -> isize {
         self.receive(at, length, false)
     }
-    fn fail(&mut self, kind: u32, length: isize) {
+    fn fail(&mut self, kind: Failure, length: isize) {
         self.sync(1, 0);
         (crate::co_io::host().packet_fail)(self.socket, kind, length);
     }
@@ -92,7 +103,7 @@ impl Packet {
                 &mut header,
             );
             if packet < 0 {
-                self.fail(0, packet);
+                self.fail(Failure::LengthNotFound, packet);
                 return 0;
             }
             if packet == 0 {
@@ -103,7 +114,7 @@ impl Packet {
             }
             if packet.unsigned_abs() > protocol.package_max_length as usize {
                 self.clear();
-                self.fail(1, packet);
+                self.fail(Failure::TooLarge, packet);
                 return -1;
             }
             let wanted = packet.unsigned_abs();
@@ -164,7 +175,7 @@ impl Packet {
             }
             if buffer.length == maximum {
                 self.clear();
-                self.fail(2, 0);
+                self.fail(Failure::NoEof, 0);
                 return -1;
             }
             if buffer.length == buffer.size && buffer.size < maximum {
@@ -257,7 +268,7 @@ pub(crate) mod tests {
         storage: Vec<u8>,
         buffer: ReadBuffer,
         chunks: VecDeque<Vec<u8>>,
-        failures: Vec<u32>,
+        failures: Vec<super::Failure>,
         timed_out: bool,
         gets: usize,
         receives: usize,
@@ -306,7 +317,7 @@ pub(crate) mod tests {
         6 + (u32::from_be_bytes(bytes.try_into().unwrap())).c_cast::<isize>()
     }
 
-    unsafe extern "C" fn fail(context: *mut c_void, kind: u32, _: isize) {
+    unsafe fn fail(context: *mut c_void, kind: super::Failure) {
         unsafe { fake(context) }.failures.push(kind);
     }
 
@@ -379,9 +390,9 @@ pub(crate) mod tests {
         let at = unsafe { fake(ctx) }.buffer.str;
         unsafe { package_length(ctx, at, size, header) }
     }
-    pub(crate) fn failure(socket: crate::co_socket::Co, kind: u32, length: isize) {
+    pub(crate) fn failure(socket: crate::co_socket::Co, kind: super::Failure, _: isize) {
         let ctx = socket.resolve_context();
-        unsafe { fail(ctx, kind, length) };
+        unsafe { fail(ctx, kind) };
     }
 
     fn run(
@@ -432,7 +443,7 @@ pub(crate) mod tests {
         let wire = [&b"ab"[..], &[0, 0, 4, 0]].concat();
         let (results, fake) = run(&[&wire], 64, true, b"", 1024);
         assert_eq!(results, [-1]);
-        assert_eq!(fake.failures, [1]);
+        assert_eq!(fake.failures, [super::Failure::TooLarge]);
         assert_eq!(fake.buffer.length, 0);
     }
 
@@ -447,7 +458,7 @@ pub(crate) mod tests {
     fn eof_protocol_fails_at_the_maximum_without_a_delimiter() {
         let (results, fake) = run(&[b"0123456789abcdef"], 16, false, b"\r\n", 16);
         assert_eq!(results, [-1]);
-        assert_eq!(fake.failures, [2]);
+        assert_eq!(fake.failures, [super::Failure::NoEof]);
     }
 
     #[test]
