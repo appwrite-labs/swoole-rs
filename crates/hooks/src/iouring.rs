@@ -171,7 +171,7 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
         return;
     };
     let socket = iouring.socket.map_or(ptr::null_mut(), |record| {
-        if record.read(|record| record.removed) == 0 {
+        if !record.read(|record| record.removed) {
             _ = event_del(record);
         }
         // The engine closes the fd.

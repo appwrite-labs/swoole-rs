@@ -49,10 +49,10 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
         };
         if result < 0 {
             let output = socket.read(|record| record.output);
-            if output.close_wait != 0 {
+            if output.close_wait {
                 return ops.trigger_close();
             }
-            if output.send_wait != 0 {
+            if output.send_wait {
                 return SW_OK;
             }
         }
@@ -80,7 +80,7 @@ pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
             break;
         }
         swr_v1_reactor_flush(socket, ops);
-        if socket.read(|record| record.output.close_wait != 0 || record.removed != 0) {
+        if socket.read(|record| record.output.close_wait || record.removed) {
             break;
         }
     }
@@ -140,7 +140,7 @@ mod tests {
                 swr_cpp_buffer_pop(unsafe { &*(buffer as *const CppBuffer) });
             } else if close_wait {
                 let socket = unsafe { Socket::from_ptr(record as *mut SocketRecord) }.unwrap();
-                socket.edit(|record| record.output.close_wait = 1);
+                socket.edit(|record| record.output.close_wait = true);
             }
             result
         }
@@ -176,10 +176,10 @@ mod tests {
                 std::ptr::null_mut()
             },
             buffer_size: 0,
-            close_wait: 0,
-            nonblock: 0,
-            ssl_send: 0,
-            send_wait: 0,
+            close_wait: false,
+            nonblock: false,
+            ssl_send: false,
+            send_wait: false,
         }
     }
 
@@ -236,7 +236,7 @@ mod tests {
         );
         // A failed send while send_wait stops there, timer and interest untouched.
         let mut waiting = SocketOutput {
-            send_wait: 1,
+            send_wait: true,
             ..block(true)
         };
         assert_eq!(run(&mut waiting, &[0], vec![-1], false), (0, vec!["send"]));
@@ -246,7 +246,7 @@ mod tests {
             (0, vec!["remove_write_event"])
         );
         let mut waiting = SocketOutput {
-            send_wait: 1,
+            send_wait: true,
             ..block(false)
         };
         assert_eq!(
@@ -305,7 +305,7 @@ mod tests {
                 effect("close");
                 let record = FACADE.with_borrow(|f| f.record) as *mut SocketRecord;
                 let socket = unsafe { Socket::from_ptr(record) }.unwrap();
-                socket.edit(|record| record.removed = 1);
+                socket.edit(|record| record.removed = true);
                 while !FACADE.with_borrow(|f| f.kinds.is_empty()) {
                     pop();
                 }
@@ -338,10 +338,10 @@ mod tests {
                     std::ptr::null_mut()
                 },
                 buffer_size: 0,
-                close_wait: 0,
-                nonblock: 1,
-                ssl_send: 0,
-                send_wait: 0,
+                close_wait: false,
+                nonblock: true,
+                ssl_send: false,
+                send_wait: false,
             };
             let socket = unsafe { Socket::from_ptr(&raw mut record) }.unwrap();
             FACADE.with_borrow_mut(|f| {
@@ -359,7 +359,7 @@ mod tests {
             }
             unsafe { delete_buffer(buffer) };
             let output = record.output;
-            let removed = record.removed;
+            let removed = u8::from(record.removed);
             let mut trace = FACADE.with_borrow_mut(|f| {
                 let remaining = f.kinds.len();
                 let mut trace = std::mem::take(&mut f.trace);

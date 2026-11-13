@@ -505,14 +505,14 @@ fn prepare(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c_int
     };
     ops.event.set(event);
     if hangup {
-        socket.edit(|record| record.event_hup = 1);
+        socket.edit(|record| record.event_hup = true);
     }
     fd_type
 }
 
 /// Whether `socket` is still registered (`!socket->removed`).
 fn registered(socket: Socket<'_>) -> bool {
-    socket.read(|record| record.removed == 0)
+    socket.read(|record| !record.removed)
 }
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
@@ -654,7 +654,7 @@ mod tests {
             end,
         };
         assert_eq!(wait(&ops), 0);
-        let removed = socket.removed != 0;
+        let removed = socket.removed;
         unsafe {
             assert!((*state.fields).start);
             (*state.fields).defer_tasks = std::ptr::null_mut();

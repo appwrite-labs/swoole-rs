@@ -22,10 +22,10 @@ pub struct SocketOutput {
     /// `TimerNode *send_timer`.
     pub send_timer: *mut c_void,
     pub buffer_size: u32,
-    pub close_wait: u8,
-    pub nonblock: u8,
-    pub ssl_send: u8,
-    pub send_wait: u8,
+    pub close_wait: bool,
+    pub nonblock: bool,
+    pub ssl_send: bool,
+    pub send_wait: bool,
 }
 
 impl SocketOutput {
@@ -108,7 +108,7 @@ pub unsafe fn swr_v1_reactor_write(
         buffer_size = default_buffer_size;
         socket.edit(|record| record.output.buffer_size = buffer_size);
     }
-    if output.nonblock == 0 {
+    if !output.nonblock {
         ops.set_nonblock();
     }
     // Upstream compares `(uint32_t) _len`.
@@ -128,7 +128,7 @@ pub unsafe fn swr_v1_reactor_write(
             };
         }
     } else {
-        if output.ssl_send == 0 {
+        if !output.ssl_send {
             loop {
                 sent = ops.send();
                 if sent > 0 {
@@ -264,10 +264,10 @@ mod tests {
             out_buffer: std::ptr::null_mut(),
             send_timer: std::ptr::null_mut(),
             buffer_size: 0,
-            close_wait: 0,
-            nonblock: 0,
-            ssl_send: 0,
-            send_wait: 0,
+            close_wait: false,
+            nonblock: false,
+            ssl_send: false,
+            send_wait: false,
         }
     }
 
@@ -283,7 +283,7 @@ mod tests {
 
         // Partial send: the rest is queued in a new buffer, with write interest.
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"hello", vec![2], 0);
@@ -294,13 +294,13 @@ mod tests {
 
         // EINTR retries; EAGAIN waits and queues everything.
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"hey", vec![-1, 3], libc::EINTR);
         assert_eq!((r, trace, held), (done(3), vec!["send", "send"], 0));
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"hey", vec![-1], libc::EAGAIN);
@@ -311,13 +311,13 @@ mod tests {
 
         // Other errors fail with the last error; TLS skips the direct send.
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             ..socket()
         };
         assert_eq!(run(&mut s, b"x", vec![-1], libc::EPIPE).0, failed(3));
         let mut s = SocketOutput {
-            nonblock: 1,
-            ssl_send: 1,
+            nonblock: true,
+            ssl_send: true,
             ..socket()
         };
         let (r, trace, held) = run(&mut s, b"tls", vec![], 0);
@@ -325,7 +325,7 @@ mod tests {
 
         // Too large for the buffer size; queued output that would overflow.
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             buffer_size: 2,
             ..socket()
         };
@@ -333,7 +333,7 @@ mod tests {
         let held_buffer = new_buffer(0);
         unsafe { swr_cpp_buffer_append(&*held_buffer, b"12345".as_ptr(), 5) };
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             buffer_size: 6,
             out_buffer: held_buffer.cast(),
             ..socket()
@@ -345,7 +345,7 @@ mod tests {
         assert_eq!(run(&mut s, b"ab", vec![], 0).0, overflow);
         // Behind queued output, it's appended without a send.
         let mut s = SocketOutput {
-            nonblock: 1,
+            nonblock: true,
             buffer_size: 64,
             out_buffer: held_buffer.cast(),
             ..socket()

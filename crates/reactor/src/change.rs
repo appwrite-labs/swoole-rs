@@ -31,8 +31,8 @@ struct Seen {
     fd: c_int,
     fd_type: c_int,
     events: c_int,
-    removed: u8,
-    silent_remove: u8,
+    removed: bool,
+    silent_remove: bool,
 }
 
 struct Change {
@@ -53,7 +53,7 @@ impl Change {
     /// `ReactorImpl::after_removal_failure`.
     fn removal_failed(&self, error: c_int) {
         let socket = &self.socket;
-        if socket.silent_remove == 0 {
+        if !socket.silent_remove {
             self.warn(
                 c"ReactorImpl::after_removal_failure",
                 SW_ERROR_EVENT_REMOVE_FAILED,
@@ -71,7 +71,7 @@ impl Change {
     fn epoll(&self, epfd: c_int, token: *mut c_void) -> bool {
         let (socket, id) = (&self.socket, self.id);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
-        if self.op > SET && socket.removed != 0 {
+        if self.op > SET && socket.removed {
             self.warn(
                 c"ReactorEpoll::del",
                 SW_ERROR_EVENT_REMOVE_FAILED,
@@ -176,7 +176,7 @@ impl Change {
                 failed == 0
             }
             _ => {
-                if socket.removed != 0 {
+                if socket.removed {
                     self.warn(
                         c"ReactorKqueue::del",
                         SW_ERROR_EVENT_REMOVE_FAILED,
@@ -224,7 +224,7 @@ impl Change {
                 ),
             ),
             ADD | SET => return true,
-            _ if socket.removed != 0 => (
+            _ if socket.removed => (
                 c"ReactorPoll::del",
                 SW_ERROR_SOCKET_NOT_EXISTS,
                 format!(
@@ -377,9 +377,9 @@ mod tests {
             assert_eq!(change(&mut first, 1, SW_EVENT_WRITE), 0);
             assert_eq!(first.events, SW_EVENT_WRITE);
             assert_eq!(change(&mut first, 2, 0), 0);
-            assert_eq!(first.removed, 1);
+            assert!(first.removed);
             assert_eq!(change(&mut first, 2, 0), -1);
-            second.removed = 0;
+            second.removed = false;
             assert_eq!(change(&mut second, 2, 0), -1);
             let set_missing = "[Reactor#3] failed to set events[fd=10, fd_type=5, events=512], the socket#10 has already been removed";
             let exists = "[Reactor#3] failed to add events[fd=10, fd_type=5, events=512], the socket#10 is already exists";
@@ -444,7 +444,7 @@ mod tests {
                 swr_v1_reactor_change(state.owner, &raw mut socket, 2, 0, log),
                 0
             );
-            assert_eq!(socket.removed, 1);
+            assert!(socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 0
@@ -505,7 +505,7 @@ mod tests {
             assert_eq!(interest(&mut socket, 4, 0), 0);
             assert_eq!(socket.events, SW_EVENT_WRITE);
             assert_eq!(interest(&mut socket, 5, 0), 0);
-            assert_eq!((socket.events, socket.removed), (0, 1));
+            assert_eq!((socket.events, socket.removed), (0, true));
             // A failed set keeps the events upstream wrote first.
             let mut missing = SocketRecord::with_fd(21, 5);
             missing.events = SW_EVENT_READ;

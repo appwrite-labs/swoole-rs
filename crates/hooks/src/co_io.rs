@@ -359,7 +359,7 @@ pub(crate) fn available(socket: Co, event: u32) -> bool {
     }
     let error = if socket.is_closed() {
         libc::EBADF
-    } else if socket.net(|record| record.output.close_wait != 0) == Some(true) {
+    } else if socket.net(|record| record.output.close_wait) == Some(true) {
         CLOSE_WAIT_ERROR
     } else {
         return true;
@@ -887,7 +887,7 @@ mod tests {
             let mut ids = [5, 7];
             bind(&socket, bound, &mut ids);
             socket.0.sock_fd = if state == 1 { -1 } else { 100 };
-            unsafe { socket.0.record() }.output.close_wait = u8::from(state == 2);
+            unsafe { socket.0.record() }.output.close_wait = state == 2;
             let target = socket.co();
             if closes {
                 ON_BOUND.set(Some(Box::new(move || target.set_sock_fd(-1))));

@@ -363,7 +363,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             0
         }
         OP_DIRECT_SEND => {
-            o.edit_sock(|s| s.direct_send = 1);
+            o.edit_sock(|s| s.direct_send = true);
             0
         }
         OP_EVENT_FD => sign(o.ctx.server_fd),
@@ -413,7 +413,7 @@ fn connection(o: &mut Objects<'_>, op: u32, arg: u64) -> Option<u64> {
             let conn = o.conn_ptr();
             o.edit_sock(|sock| {
                 sock.object = conn;
-                sock.removed = 1;
+                sock.removed = true;
                 sock.output.buffer_size = buffer_size;
                 sock.timeouts.write = 0.0;
                 sock.timeouts.read = 0.0;
@@ -1678,10 +1678,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
     };
     let (out_empty, direct_send) = sock.read(|s| {
         let out = crate::reactor_ops::out_buffer(s);
-        (
-            out.is_none_or(|b| swr_cpp_buffer_empty(b)),
-            s.direct_send != 0,
-        )
+        (out.is_none_or(|b| swr_cpp_buffer_empty(b)), s.direct_send)
     });
     let bit = |set: bool, bit| if set { bit } else { 0 };
     send_flags(o)
@@ -1697,7 +1694,7 @@ fn verify(o: &mut Objects<'_>) -> u64 {
 fn send_flags(o: &Objects<'_>) -> u64 {
     let conn = o.conn();
     let (removed, notified, events) = o.sock().map_or((false, false, 0), |sock| {
-        sock.read(|s| (s.removed != 0, s.close_notified != 0, s.events))
+        sock.read(|s| (s.removed, s.close_notified, s.events))
     });
     let callback = |index| {
         o.state

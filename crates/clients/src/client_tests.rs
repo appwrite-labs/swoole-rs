@@ -689,7 +689,7 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         OK
     );
     assert_eq!(taken(), ["call 2 4"]);
-    sock().output.close_wait = 1;
+    sock().output.close_wait = true;
     assert_eq!(
         unsafe {
             on_package(

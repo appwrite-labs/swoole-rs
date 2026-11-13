@@ -111,14 +111,14 @@ impl<K> With<'_, K> {
         let wait = flags & FLAG_WAIT != 0;
         if wait != self.1 {
             self.1 = wait;
-            self.0.socket.edit(|s| s.recv_wait = u8::from(wait));
+            self.0.socket.edit(|s| s.recv_wait = wait);
         }
     }
 }
 
 fn socket_flags(socket: &SocketFields) -> u32 {
-    (if socket.removed != 0 { FLAG_REMOVED } else { 0 })
-        | (if socket.recv_wait != 0 { FLAG_WAIT } else { 0 })
+    (if socket.removed { FLAG_REMOVED } else { 0 })
+        | (if socket.recv_wait { FLAG_WAIT } else { 0 })
         | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
         | (if paused(socket) { FLAG_PAUSED } else { 0 })
 }
@@ -126,7 +126,7 @@ fn socket_flags(socket: &SocketFields) -> u32 {
 /// A session socket out of the reactor whose connection no one is closing: `pause`
 /// took it out to stop reading.
 fn paused(socket: &SocketFields) -> bool {
-    if socket.removed == 0 || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
+    if !socket.removed || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
         return false;
     }
     // SAFETY: a session socket's object is its live connection.
@@ -316,12 +316,12 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: u32, a
             b.split(eof, |data, length| {
                 // SAFETY: the live protocol and socket, and the part inside the buffer.
                 let result = unsafe { dispatch(p, s.as_ptr(), data, length as u64) };
-                result >= 0 && s.read(|s| s.removed) == 0
+                result >= 0 && !s.read(|s| s.removed)
             }) as i64
         }
         OP_SSL_PENDING => swoole_rs_tls::Ssl::of(s).map_or(0, |ssl| i64::from(ssl.pending())),
         OP_CLEAR_SKIP => {
-            s.edit(|s| s.skip_recv = 0);
+            s.edit(|s| s.skip_recv = false);
             0
         }
         OP_PAGE => i64::from(swr_v1_core_pagesize()),
@@ -395,7 +395,7 @@ pub(crate) unsafe fn receive<K: Packages>(
         PhantomData,
     );
     let p = r.0.protocol();
-    let (mut flags, skip) = socket.read(|s| (socket_flags(s), s.skip_recv != 0));
+    let (mut flags, skip) = socket.read(|s| (socket_flags(s), s.skip_recv));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {

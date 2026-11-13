@@ -601,7 +601,7 @@ mod tests {
         let state = swr_v1_server_state_new();
         let mut socket = swoole_rs_reactor::SocketRecord::new();
         socket.fd = 7;
-        socket.removed = 1;
+        socket.removed = true;
         let ports: Vec<_> = [1, 2]
             .into_iter()
             .map(|kind| {
