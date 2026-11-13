@@ -349,15 +349,27 @@ unsafe extern "C" fn after_reload(_: *mut c_void, _: *mut c_void) {
 /// `reload_all_workers`' and `reload_all_workers2`'s `onWorkerStart`: worker 1 records its
 /// pid in `filename` and signals `target` to reload the task workers, then all of them;
 /// its replacement checks it is a new process, then stops the server.
-fn reload_on_worker_start(serv: Server, worker: *mut WorkerRecord, filename: &str, target: c_int) {
+///
+/// The workers start before the master publishes its pid, which it does once the
+/// manager has installed its signal handlers. Until then `master_pid` is 0, and
+/// `kill(0, ...)` would signal the whole process group, so worker 1 waits for it.
+fn reload_on_worker_start(
+    serv: Server,
+    worker: *mut WorkerRecord,
+    filename: &str,
+    target: fn(Server) -> c_int,
+) {
     if worker_id(worker) != 1 {
         return;
     }
     if std::fs::File::open(filename).is_err() {
         std::fs::write(filename, pid().to_string()).unwrap();
-        signal(target, SIGUSR2);
+        while master_pid(serv) == 0 {
+            sleep(0.001);
+        }
+        signal(target(serv), SIGUSR2);
         sleep(1.0);
-        signal(target, SIGUSR1);
+        signal(target(serv), SIGUSR1);
     } else {
         // `char buf[10]; file >> buf; stringstream(buf) >> oldPid`.
         let old_pid = std::fs::read_to_string(filename)
@@ -377,7 +389,7 @@ unsafe extern "C" fn reload_all_workers_start(
     worker: *mut WorkerRecord,
 ) {
     let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_1.pid", manager_pid(serv));
+    reload_on_worker_start(serv, worker, "/tmp/worker_1.pid", manager_pid);
 }
 
 unsafe extern "C" fn reload_all_workers2_start(
@@ -386,7 +398,7 @@ unsafe extern "C" fn reload_all_workers2_start(
     worker: *mut WorkerRecord,
 ) {
     let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_2.pid", master_pid(serv));
+    reload_on_worker_start(serv, worker, "/tmp/worker_2.pid", master_pid);
 }
 
 /// `reload_all_workers`' and `reload_all_workers2`'s Server: two workers and two task
