@@ -1,5 +1,5 @@
 //! Choosing a worker, sends from workers, and listen ports.
-use crate::MODE_PROCESS;
+use crate::Mode;
 use crate::base_factory::SendData;
 use crate::callbacks::{CallbackKind, CallbackSlot};
 use crate::port_config::{PortConfig, methods};
@@ -187,7 +187,7 @@ pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: c_int) -> 
         kind: event.c_cast::<u8>(),
         ..Default::default()
     };
-    if u64::from(serv.config().mode_) == MODE_PROCESS {
+    if serv.config().mode_ == Mode::Process {
         return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
     }
     let send = SendData {

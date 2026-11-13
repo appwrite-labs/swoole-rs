@@ -1,6 +1,7 @@
 //! Thread mode's native side: the thread factory and its connections, the worker,
 //! user, task and manager threads' bodies, the manager thread's loop and the reloads
 //! it walks.
+use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
 
@@ -26,8 +27,6 @@ const THREAD_WORKER: u8 = 4;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
-/// `Server::MODE_THREAD`.
-const MODE_THREAD: u8 = 3;
 
 /// Runs thread-mode `operation` over `serv`.
 pub(crate) fn run(serv: view::Server<'_>, operation: ThreadOp) -> i64 {
@@ -50,7 +49,7 @@ pub(crate) fn run(serv: view::Server<'_>, operation: ThreadOp) -> i64 {
 /// The server's thread factory's manager; thread mode's server has one.
 fn manager(serv: view::Server<'_>) -> &ThreadManager {
     let factory = serv.config().factory_;
-    let manager = (serv.config().mode_ == MODE_THREAD && !factory.is_null())
+    let manager = (serv.config().mode_ == Mode::Thread && !factory.is_null())
         // SAFETY: the server's live factory, which `factory::new` made.
         .then(|| unsafe { factory::manager(factory) });
     let manager = manager.flatten();
@@ -86,7 +85,7 @@ fn create_factory(serv: view::Server<'_>) -> *mut c_void {
             ERROR,
             E::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
             ORIGIN,
-            format_args!("Thread support is not enabled, cannot create server with MODE_THREAD"),
+            format_args!("Thread support is not enabled, cannot create server with Mode::Thread"),
         );
         return core::ptr::null_mut();
     }

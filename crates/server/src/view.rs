@@ -4,6 +4,7 @@
 //! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
 //! callbacks }`, and a `ListenPort *` is the box of the port's settings.
 //! `ServerGS` is `shared::ServerShared`.
+use crate::Mode;
 use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::records::Lookup;
@@ -183,7 +184,7 @@ impl<'a> Server<'a> {
     /// `allocator` from now on.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
     pub fn set_bus_allocator(self, worker: bool, allocator: swoole_rs_corebase::TrustedAllocator) {
-        let thread_mode = u64::from(self.config().mode_) == crate::MODE_THREAD;
+        let thread_mode = self.config().mode_ == Mode::Thread;
         let bus = if worker && thread_mode {
             swoole_rs_corebase::thread_message_bus()
         } else {
@@ -289,7 +290,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn ran_its_single_worker_here(self) -> bool {
         let config = self.config();
-        u64::from(config.mode_) == crate::MODE_BASE
+        config.mode_ == Mode::Base
             && self.is_single_worker()
             && self.counters().master_pid.load(Ordering::Relaxed)
                 == std::process::id().cast_signed()
@@ -299,10 +300,9 @@ impl<'a> Server<'a> {
     /// `Server::is_worker_thread()`: thread mode, on a worker thread.
     #[must_use]
     pub fn is_worker_thread(self) -> bool {
-        /// `Server::MODE_THREAD` and `THREAD_WORKER`.
-        const MODE_THREAD: u8 = 3;
+        /// `THREAD_WORKER`.
         const THREAD_WORKER: u8 = 4;
-        self.config().mode_ == MODE_THREAD && swoole_rs_corebase::thread_kind() == THREAD_WORKER
+        self.config().mode_ == Mode::Thread && swoole_rs_corebase::thread_kind() == THREAD_WORKER
     }
 
     /// `Server::get_connection_num()`: the per-worker cells when there are any.
@@ -731,7 +731,7 @@ mod tests {
         let config = unsafe { serv.config_mut() };
         config.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
-        config.mode_ = 1;
+        config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
         config.factory_ = (&raw mut factory).cast();
@@ -745,9 +745,9 @@ mod tests {
         config.factory_ = core::ptr::null_mut();
         assert!(!serv.ran_its_single_worker_here(), "destroyed");
         config.factory_ = (&raw mut factory).cast();
-        config.mode_ = 2;
+        config.mode_ = Mode::Process;
         assert!(!serv.ran_its_single_worker_here(), "process mode");
-        config.mode_ = 1;
+        config.mode_ = Mode::Base;
         config.worker_num.set(2);
         assert!(
             !serv.ran_its_single_worker_here(),
