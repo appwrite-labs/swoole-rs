@@ -2,7 +2,7 @@
 //! `swoole_rs_phpruntime::co` and the socket's record, plus Swoole's PHP error
 //! reporting; and `Swoole\Client`'s `network::Client`, whose operations
 //! crates/clients runs.
-use crate::settings::php_swoole_length_func;
+use crate::settings::Length;
 use libc::{c_int, c_void, size_t, ssize_t};
 use std::{
     ffi::{CStr, CString},
@@ -25,7 +25,6 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     host::callable::Callable,
     string::{self, ZBuf},
-    sys::zval,
 };
 
 /// `SW_LOG_WARNING`.
@@ -544,7 +543,7 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
         return;
     }
     let old = socket.0.edit_protocol(|protocol| {
-        protocol.get_package_length = Some(php_swoole_length_func);
+        protocol.get_package_length = Some(swoole_rs_phpswoole::length::length::<Length>);
         std::mem::replace(&mut protocol.private_data_1, callable)
     });
     // The destructor may reach the socket, so it runs between the edits.
@@ -672,23 +671,6 @@ pub(crate) fn callable_free(callable: *mut c_void) -> Result<(), Bailout> {
 /// The warning's handler bailed out; the bailout stays pending.
 pub(crate) fn owned_callable(value: &Value) -> Result<Option<Rc<Callable>>, Bailout> {
     Callable::new(value)
-}
-
-/// `sw_zend_call_function_ex2(nullptr, callable->ptr(), argv, retval)`: whether
-/// the call succeeded.
-/// # Errors
-/// The callable bailed out.
-pub(crate) fn invoke(
-    callable: *mut c_void,
-    argv: &mut [zval],
-    retval: &mut zval,
-) -> Result<bool, Bailout> {
-    // Its own reference: the callable may close the socket, freeing the slot's.
-    let callable = held(callable);
-    let called = callable.call(argv, Some(Value::of(retval)), true);
-    // The last reference, then: its destructor's bailout is the caller's to raise.
-    drop(callable);
-    called.and_then(bailout::outcome)
 }
 
 /// A `Socket` over a dup of the client's fd: `php_swoole_convert_to_socket`, which
