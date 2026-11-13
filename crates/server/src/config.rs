@@ -210,8 +210,8 @@ pub struct ServerConfig {
     /// Cleared by whichever thread stops the server while the others read it
     /// ([`crate::ServerState::running`]).
     pub running: AtomicBool,
-    /// The CPUs `cpu_affinity_ignore` leaves workers; empty for every CPU.
-    pub cpu_affinity_available: Vec<c_int>,
+    /// The CPUs `cpu_affinity_ignore` leaves workers; none for every CPU.
+    pub cpu_affinity_available: Published<Vec<c_int>>,
     pub pipe_command: *mut c_void,
     pub send_timeout: Setting<f64>,
     pub heartbeat_check_interval: Setting<u16>,
@@ -234,7 +234,7 @@ pub struct ServerConfig {
     pub private_data_3: AtomicPtr<c_void>,
     pub private_data_4: *mut c_void,
     pub factory_: *mut c_void,
-    pub manager_: *mut c_void,
+    pub manager_: Shared<*mut c_void>,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
     pub task_max_request: Setting<u32>,
@@ -296,7 +296,7 @@ impl Default for ServerConfig {
             enable_coroutine: Setting::new(true),
             single_thread: Setting::new(false),
             running: AtomicBool::new(true),
-            cpu_affinity_available: Vec::new(),
+            cpu_affinity_available: Published::default(),
             pipe_command: core::ptr::null_mut(),
             send_timeout: Setting::new(0.0),
             heartbeat_check_interval: Setting::new(0),
@@ -317,7 +317,7 @@ impl Default for ServerConfig {
             private_data_3: AtomicPtr::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: core::ptr::null_mut(),
-            manager_: core::ptr::null_mut(),
+            manager_: Shared::new(core::ptr::null_mut()),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(1),
             task_max_request: Setting::new(0),

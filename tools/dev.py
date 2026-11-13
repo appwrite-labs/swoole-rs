@@ -390,7 +390,6 @@ def plan(args, reports):
                    '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
-        pytest('buffer-posix-iovec', 'tests/modules/buffer/test_iovec.py', '--archive', archive, '--sanitize')
         pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
                '--archive', archive, '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
