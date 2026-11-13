@@ -2,7 +2,6 @@
 //! command id counter) and the operations over the rest of `Server` that
 //! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
-use crate::ops::{OP_LC_UNLINK_PID, OP_LC_WRITE_PID, OP_LOCK, OP_UNLOCK};
 use core::ffi::c_int;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
 use std::ffi::CString;
@@ -360,6 +359,23 @@ impl ServerState {
         c_path(dir.as_deref().unwrap_or(b"/tmp"))
     }
 
+    /// The master's pid in the pid file, when there is one.
+    pub(crate) fn write_pid(&self) {
+        let file = self.text(TEXT_PID_FILE);
+        if !file.is_empty() {
+            let pid = std::process::id().cast_signed().to_string();
+            swoole_rs_ossupport::file_put_contents(&c_path(&file), pid.as_bytes());
+        }
+    }
+
+    /// The pid file removed, when there is one.
+    pub(crate) fn unlink_pid(&self) {
+        let file = self.text(TEXT_PID_FILE);
+        if !file.is_empty() {
+            swoole_rs_corebase::sys::unlink(&c_path(&file));
+        }
+    }
+
     /// The round before this call; it wraps as `sw_atomic_fetch_add` does.
     pub(crate) fn next_round(&self) -> u32 {
         self.round.fetch_add(1, Ordering::SeqCst)
@@ -373,31 +389,6 @@ fn c_path(text: &[u8]) -> CString {
         .position(|byte| *byte == 0)
         .unwrap_or(text.len());
     CString::new(text.get(..end).unwrap_or_default()).unwrap_or_default()
-}
-
-/// Answers the ops over the pid file and the lock, which need only the state.
-#[inline(always)]
-pub(crate) fn native_fact(state: &ServerState, op: u32) -> Option<u64> {
-    match op {
-        OP_LOCK => state.lock(),
-        OP_UNLOCK => state.unlock(),
-        OP_LC_WRITE_PID => {
-            let file = state.text(TEXT_PID_FILE);
-            if !file.is_empty() {
-                let file = c_path(&file);
-                let pid = std::process::id().cast_signed().to_string();
-                swoole_rs_ossupport::file_put_contents(&file, pid.as_bytes());
-            }
-        }
-        OP_LC_UNLINK_PID => {
-            let file = state.text(TEXT_PID_FILE);
-            if !file.is_empty() {
-                swoole_rs_corebase::sys::unlink(&c_path(&file));
-            }
-        }
-        _ => return None,
-    }
-    Some(0)
 }
 
 /// # Safety
@@ -519,10 +510,9 @@ mod tests {
         assert_eq!(&*state.text(TEXT_DOCUMENT_ROOT), b"/srv/www");
         assert_eq!(&*state.text(TEXT_PID_FILE), b"");
         assert!(state.text(TEXT_COUNT).is_empty());
-        assert_eq!(native_fact(&state, crate::ops::OP_SET_MINFD), None);
 
         let state = std::sync::Arc::new(state);
-        assert_eq!(native_fact(&state, OP_LOCK), Some(0));
+        state.lock();
         // Two waiters: the unlock wakes one, whose unlock wakes the other.
         let waiters: Vec<_> = (0..2)
             .map(|_| {
@@ -541,7 +531,7 @@ mod tests {
             !waiters.iter().any(std::thread::JoinHandle::is_finished),
             "the lock is held"
         );
-        assert_eq!(native_fact(&state, OP_UNLOCK), Some(0));
+        state.unlock();
         for waiter in waiters {
             waiter.join().unwrap();
         }
@@ -557,18 +547,18 @@ mod tests {
         // What swoole_init sets.
         swoole_rs_corebase::swr_v1_core_set_max_file_content(64 * 1024 * 1024);
         let state = ServerState::new();
-        // No pid_file: neither op touches the file system.
-        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
-        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
+        // No pid_file: neither touches the file system.
+        state.write_pid();
+        state.unlink_pid();
         let path = std::env::temp_dir().join(format!("swoole-rs-pid-{}", std::process::id()));
         let bytes = path.to_str().unwrap().as_bytes();
         state.set_text(TEXT_PID_FILE, bytes);
-        assert_eq!(native_fact(&state, OP_LC_WRITE_PID), Some(0));
+        state.write_pid();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             std::process::id().to_string()
         );
-        assert_eq!(native_fact(&state, OP_LC_UNLINK_PID), Some(0));
+        state.unlink_pid();
         assert!(!path.exists());
     }
 }

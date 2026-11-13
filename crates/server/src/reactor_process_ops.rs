@@ -118,7 +118,7 @@ pub fn release_abandoned(server: view::Server<'_>) -> bool {
     }
     // The live event pool only this process uses; destroy frees each part once.
     pool_destroy(server.event_pool_ref());
-    crate::master_ops::release_abandoned_base(server);
+    crate::startup::release_abandoned_base(server);
     true
 }
 

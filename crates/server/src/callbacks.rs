@@ -218,10 +218,24 @@ impl ServerCallbacks {
     pub(crate) fn slot(&self, index: u32) -> Option<&CallbackSlot> {
         self.0.get(index as usize)
     }
+
+    /// `serv->onX(serv)` for slot `index`, one of the `(Server *)` slots; nothing
+    /// when the slot is empty or of another signature.
+    pub(crate) fn call_server(&self, index: u32, serv: Server<'_>) {
+        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>);
+        let Some(slot) = self.slot(index).filter(|_| SERVER_SLOTS.contains(&index)) else {
+            return;
+        };
+        let invoke = slot.invoke.load(Relaxed);
+        // SAFETY: a `(Server *)` slot holds null or a `void (*)(void *, Server *)`.
+        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
+        if let Some(invoke) = invoke {
+            invoke(slot.ctx.load(Relaxed), serv);
+        }
+    }
 }
 
 /// The slots of a `void (Server *)` signature.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
 const SERVER_SLOTS: [u32; 7] = [
     CB_START,
     CB_BEFORE_SHUTDOWN,
@@ -315,21 +329,6 @@ pub(crate) enum WorkerSlot {
 /// [`Callback`]'s but `C-unwind`, as a callback native code assigned may unwind.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ServerCallbacks {
-    /// `serv->onX(serv)` for slot `index`, one of the `(Server *)` slots; nothing
-    /// when the slot is empty or of another signature.
-    pub(crate) fn call_server(&self, index: u32, serv: Server<'_>) {
-        type Invoke = extern "C-unwind" fn(Ctx, Server<'_>);
-        let Some(slot) = self.slot(index).filter(|_| SERVER_SLOTS.contains(&index)) else {
-            return;
-        };
-        let invoke = slot.invoke.load(Relaxed);
-        // SAFETY: a `(Server *)` slot holds null or a `void (*)(void *, Server *)`.
-        let invoke = unsafe { core::mem::transmute::<*mut c_void, Option<Invoke>>(invoke) };
-        if let Some(invoke) = invoke {
-            invoke(slot.ctx.load(Relaxed), serv);
-        }
-    }
-
     /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
     /// empty. A caller that discards the result (onFinish) still calls through the
     /// int type the slot holds.
