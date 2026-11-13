@@ -23,7 +23,7 @@ use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
 /// `swoole_rs_coroutine::Coroutine`.
 mod co {
     use std::ffi::c_void;
-    use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, STATE_WAITING};
+    use swoole_rs_coroutine::{Coroutine, RC_CANCELED, RC_TIMEDOUT, State};
 
     pub(super) use swoole_rs_coroutine::{resume, yield_ex};
 
@@ -39,7 +39,7 @@ mod co {
         co
     }
 
-    fn record(co: *mut c_void) -> (i32, i32) {
+    fn record(co: *mut c_void) -> (State, i32) {
         let co = co.cast::<Coroutine>();
         // SAFETY: a live coroutine's scalar fields.
         let co = unsafe { &*co };
@@ -47,7 +47,7 @@ mod co {
     }
 
     pub(super) fn suspending(co: *mut c_void) -> bool {
-        record(co).0 == STATE_WAITING
+        record(co).0 == State::Waiting
     }
 
     pub(super) fn canceled(co: *mut c_void) -> bool {

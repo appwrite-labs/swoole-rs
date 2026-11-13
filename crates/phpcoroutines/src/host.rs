@@ -301,7 +301,7 @@ pub(crate) fn origin_cid(co: Co) -> c_long {
     live_or_none(live(co).origin).map_or(-1, |origin| origin.cid)
 }
 
-pub(crate) fn state_of(co: Co) -> c_int {
+pub(crate) fn state_of(co: Co) -> swoole_rs_coroutine::State {
     live(co).state
 }
 
@@ -381,7 +381,7 @@ impl Coroutine {
     #[must_use]
     pub fn is_suspending(self) -> Option<bool> {
         self.live()
-            .map(|co| state_of(co) == swoole_rs_coroutine::STATE_WAITING)
+            .map(|co| state_of(co) == swoole_rs_coroutine::State::Waiting)
     }
 
     /// Wake it from a wait: `Coroutine::resume()`, or `cancel()` so its yield
@@ -460,7 +460,7 @@ pub(crate) fn is_canceled(co: Co) -> bool {
 /// `co->is_end()`: a context that ended is closed and freed before anything
 /// else runs, so a live coroutine has ended only while it closes.
 pub(crate) fn is_end(co: Co) -> bool {
-    state_of(co) == swoole_rs_coroutine::STATE_END
+    state_of(co) == swoole_rs_coroutine::State::End
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
