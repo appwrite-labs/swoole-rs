@@ -3,8 +3,8 @@
 //! same inputs, callbacks and expected values.
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 
-const HTTP_REQUEST: u8 = llhttp::REQUEST;
-const HTTP_RESPONSE: u8 = llhttp::RESPONSE;
+const HTTP_REQUEST: llhttp::Kind = llhttp::Kind::Request;
+const HTTP_RESPONSE: llhttp::Kind = llhttp::Kind::Response;
 const HPE_OK: i32 = llhttp::HPE_OK;
 const HPE_PAUSED_H2_UPGRADE: i32 = llhttp::HPE_PAUSED_H2_UPGRADE;
 const HTTP_GET: u8 = 1;
@@ -58,7 +58,7 @@ impl Callbacks for Http {
 }
 
 impl Http {
-    fn new(kind: u8) -> Self {
+    fn new(kind: llhttp::Kind) -> Self {
         Http {
             parser: Parser::new(kind),
             ctx: HttpContext::default(),
@@ -357,7 +357,7 @@ const RESPONSE_ERRORS: &[(&[u8], &str)] = &[
     (b"HTTP/1.1 200 OK\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5;ilovew3=\"abc\";somuchlove=\"def; ghi\r\nhello\r\n6;blahblah;blah\r\n world\r\n0\r\n", "Invalid character in chunk extensions quoted value"),
 ];
 
-fn error_cases(kind: u8, cases: &[(&[u8], &str)]) {
+fn error_cases(kind: llhttp::Kind, cases: &[(&[u8], &str)]) {
     let mut http = Http::new(kind);
     for (i, (protocol, message)) in cases.iter().enumerate() {
         http.execute(protocol);
@@ -512,7 +512,7 @@ const RESPONSE_SUCCESS: &[&[u8]] = &[
     b"HTTP/1.1 200 OK\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n5;ilovew3=\"I love; extensions\";somuchlove=\"aretheseparametersfor\";blah;foo=bar\r\nhello\r\n6;blahblah;blah\r\n world\r\n0\r\n",
 ];
 
-fn success_cases(kind: u8, cases: &[&[u8]]) {
+fn success_cases(kind: llhttp::Kind, cases: &[&[u8]]) {
     let mut http = Http::new(kind);
     for (i, protocol) in cases.iter().enumerate() {
         http.execute(protocol);

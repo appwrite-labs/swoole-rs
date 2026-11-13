@@ -13,7 +13,8 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_extra::set_close_hook};
 use swoole_rs_http2::{
-    FrameAction, Http2FrameFacts, Http2Settings, Http2WindowPlan, Media, QueueAction,
+    FrameAction, HeaderKind, HeaderRole, Http2FrameFacts, Http2Settings, Http2WindowPlan, Media,
+    QueueAction,
     hpack::{Decoder, Encoder, Error},
     send_frame_size, sw_rs_http2_chunk, sw_rs_http2_decode_frame, sw_rs_http2_default_settings,
     sw_rs_http2_header_plan, sw_rs_http2_headers_flags, sw_rs_http2_inflate_step,
@@ -51,13 +52,6 @@ const FLAG_END_STREAM: u32 = 1;
 const FLAG_PRIORITY: u32 = 0x20;
 /// `SW_HTTP2_STREAM_PIPELINE_REQUEST`.
 const STREAM_PIPELINE_REQUEST: u32 = 2;
-/// `SwRsHttp2HeaderRole` and `SwRsHttp2HeaderKind`.
-const RESPONSE_HEADERS: u32 = 1;
-const CLIENT_HEADERS: u32 = 3;
-const HEADER_STATUS: u32 = 8;
-const HEADER_CONTENT_ENCODING: u32 = 9;
-const HEADER_SET_COOKIE: u32 = 10;
-const HEADER_HOST: u32 = 13;
 /// `SW_HTTP2_SETTING_HEADER_TABLE_SIZE` and `..._MAX_HEADER_LIST_SIZE`.
 const SETTING_HEADER_TABLE_SIZE: u16 = 1;
 const SETTING_MAX_HEADER_LIST_SIZE: u16 = 6;
@@ -617,7 +611,7 @@ impl Client {
                 continue;
             };
             let value = value.string();
-            if header_kind(CLIENT_HEADERS, key) == HEADER_HOST {
+            if header_kind(HeaderRole::Client, key) == HeaderKind::Host {
                 set.set(AUTHORITY, b":authority", value.bytes());
                 host = true;
             } else {
@@ -1077,20 +1071,20 @@ impl Client {
             input = input.get(step.read..).unwrap_or_default();
             let flags = step.flags();
             if let Some((name, text)) = step.header {
-                let kind = header_kind(RESPONSE_HEADERS, name);
+                let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
-                    if kind == HEADER_STATUS
+                    if kind == HeaderKind::Status
                         && let Some(stream) = self.streams.borrow().get(&id)
                         && let Some(props) = stream.response.props()
                     {
                         props.own().long(c"statusCode", atol(text));
                     }
                 } else {
-                    if kind == HEADER_CONTENT_ENCODING && media_kind(text) == Media::Gzip {
+                    if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
                         if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
                             stream.gzip = Some(Inflate::gzip_only());
                         }
-                    } else if kind == HEADER_SET_COOKIE {
+                    } else if kind == HeaderKind::SetCookie {
                         swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
                     headers.insert_bytes(name, Some(text));
@@ -1156,7 +1150,7 @@ fn fold(bytes: &[u8]) -> ([u8; 33], usize) {
     (folded, n)
 }
 
-fn header_kind(role: u32, name: &[u8]) -> u32 {
+fn header_kind(role: HeaderRole, name: &[u8]) -> HeaderKind {
     let (folded, n) = fold(name);
     sw_rs_http2_header_plan(role, folded.get(..n).unwrap_or_default(), name.len(), false).kind
 }

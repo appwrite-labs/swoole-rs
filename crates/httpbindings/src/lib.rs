@@ -20,11 +20,3 @@ pub use request::*;
 pub use response::*;
 pub use server::*;
 pub use settings::*;
-
-/// One step of [`swr_v1_httpbindings_settings`].
-#[derive(Default)]
-pub struct Action {
-    pub kind: u32,
-    /// The settings key to look up, for a lookup.
-    pub text: &'static [u8],
-}
