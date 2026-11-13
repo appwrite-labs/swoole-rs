@@ -554,6 +554,16 @@ mod tests {
     }
 
     #[test]
+    fn a_task_buffer_is_upstreams_event_data() {
+        // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
+        assert_eq!(
+            size_of::<TaskBuffer>() as u64,
+            crate::process_pool::SW_IPC_MAX_SIZE
+        );
+        assert_eq!(align_of::<TaskBuffer>(), 8);
+    }
+
+    #[test]
     fn a_task_buffer_counts_the_payload_it_packs() {
         let mut buf = TaskBuffer::default();
         assert_eq!(

@@ -173,7 +173,7 @@ impl MultiTask for Multi<'_> {
             reason = "task_sync's event is a zeroed Vec<u64> of SW_IPC_MAX_SIZE bytes"
         )]
         let event = event.cast::<TaskBuffer>();
-        // SAFETY: as above, an aligned `EventData` buffer it lends for the call.
+        // SAFETY: as above, an aligned `TaskBuffer` it lends for the call.
         let event = unsafe { &mut *event };
         encode(data, event).map_err(|Bailout| Bailed)
     }
@@ -846,13 +846,6 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn event_data_matches_the_header() {
-        // Upstream's `sizeof(EventData)`: SW_IPC_MAX_SIZE (8192, 2048 on macOS).
-        assert_eq!(std::mem::size_of::<EventData>() as u64, SW_IPC_MAX_SIZE);
-        assert_eq!(std::mem::align_of::<EventData>(), 8);
-    }
 
     #[test]
     fn pending_tasks_are_per_server() {
