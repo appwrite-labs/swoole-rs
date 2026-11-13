@@ -526,67 +526,10 @@ pub const OP_CC_FINISH: u32 = 976;
 pub const LOG_CC_LINGER: u32 = 990;
 
 // Rust-owned state and the rest of `master.cc` (`crates/server/src/state.rs`).
-/// `Server::send`: context session, data and length.
-pub const RUN_ST_SEND: u32 = 308;
 /// `gs->concurrency`: subtract arg; read; set 0.
 pub const OP_ST_GS_CONCURRENCY_SUB: u32 = 1020;
 pub const OP_ST_GS_CONCURRENCY: u32 = 1021;
 pub const OP_ST_GS_CONCURRENCY_ZERO: u32 = 1022;
-/// `factory_->finish` of the send.
-pub const OP_ST_FINISH: u32 = 1030;
-
-// `Server::send_to_connection` (`crates/server/src/send.rs`); context send, data and length.
-/// arg the send's type.
-pub const RUN_SC_SEND: u32 = 310;
-/// Selects `get_connection_verify` (`get_connection_verify_no_ssl` for a close) and, when
-/// found, the reactor, port and socket of the connection, asserting the thread owns it: 0, or
-/// `send::FOUND` with the `OP_SC_FLAGS` and `send::OPEN` bits and the send's length above bit 32.
-pub const OP_SC_VERIFY: u32 = 1040;
-/// The connection's and socket's `send::*` flag bits.
-pub const OP_SC_FLAGS: u32 = 1041;
-/// `swoole_set_last_error(SW_ERROR_OUTPUT_SEND_YIELD)`.
-pub const OP_SC_YIELD_ERROR: u32 = 1042;
-/// `reactor->close(reactor, socket)`.
-pub const OP_SC_CLOSE: u32 = 1043;
-/// `reactor->set(socket, arg)`, `del`, `add(socket, arg)`, with `send::READ`/`WRITE` bits.
-pub const OP_SC_SET: u32 = 1044;
-pub const OP_SC_DEL: u32 = 1045;
-pub const OP_SC_ADD: u32 = 1046;
-/// `reactor->remove_read_event(socket)`, `add_read_event(socket)`.
-pub const OP_SC_REMOVE_READ: u32 = 1047;
-pub const OP_SC_ADD_READ: u32 = 1048;
-/// `send` of the bytes left, the result; skip arg sent bytes.
-pub const OP_SC_SEND: u32 = 1049;
-pub const OP_SC_ADVANCE: u32 = 1050;
-/// `last_send_time = microtime()`.
-pub const OP_SC_TOUCH_SEND: u32 = 1051;
-/// An output buffer when there is none.
-pub const OP_SC_ENSURE_BUFFER: u32 = 1052;
-/// A close chunk queued and `close_queued = 1`.
-pub const OP_SC_QUEUE_CLOSE: u32 = 1053;
-/// `sendfile_async` of the task; its result.
-pub const OP_SC_SENDFILE: u32 = 1054;
-/// The output buffer holds `buffer_size` or more; `overflow = 1`; `high_watermark = 1`.
-pub const OP_SC_OUT_FULL: u32 = 1055;
-pub const OP_SC_OVERFLOW: u32 = 1056;
-pub const OP_SC_HIGH_WATERMARK: u32 = 1057;
-/// The data appended and `send_queued_bytes` updated; the buffer reached the port's
-/// high watermark; `SW_SERVER_EVENT_BUFFER_FULL` notified and `high_watermark = 1`.
-pub const OP_SC_APPEND: u32 = 1058;
-pub const OP_SC_OUT_HIGH: u32 = 1059;
-pub const OP_SC_NOTIFY_FULL: u32 = 1060;
-/// The socket has a send timer; one for the port's idle time is added.
-pub const OP_SC_HAS_SEND_TIMER: u32 = 1061;
-pub const OP_SC_IDLE_TIMER: u32 = 1062;
-/// The socket has its writable event; it is added.
-pub const OP_SC_WRITABLE: u32 = 1063;
-pub const OP_SC_ADD_WRITE: u32 = 1064;
-
-pub const LOG_SC_NO_SESSION_DATA: u32 = 1110;
-pub const LOG_SC_NO_SESSION_EVENT: u32 = 1111;
-pub const LOG_SC_SOCKET_OVERFLOW: u32 = 1112;
-pub const LOG_SC_CLOSED_BY_CLIENT: u32 = 1113;
-pub const LOG_SC_CONN_OVERFLOW: u32 = 1114;
 
 // `Server::start` (`RUN_START`). `OP_LC_CLAIM_START`, `OP_LC_START_TIME` and
 // `OP_LC_DAEMONIZE` read and write the Rust records; the rest are native effects.

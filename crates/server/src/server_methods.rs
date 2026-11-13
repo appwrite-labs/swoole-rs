@@ -9,9 +9,8 @@ use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::CCast;
 
-use crate::base_factory::{SEND_DATA, SendData};
 use crate::hybrid::hybrid;
-use crate::ops::{RUN_BASE_CREATE, RUN_SC_SEND, RUN_ST_SEND};
+use crate::ops::RUN_BASE_CREATE;
 use crate::ops::{
     RUN_CREATE, RUN_DESTROY, RUN_START, RUN_START_CHECK, RUN_START_MASTER_THREAD,
     RUN_STORE_LISTEN_SOCKET,
@@ -25,13 +24,9 @@ pub struct NativeContext<'a> {
     pub(crate) serv: *mut c_void,
     pub(crate) reactor: *mut c_void,
     pub(crate) port: *mut c_void,
-    pub(crate) sock: *mut c_void,
     /// The connection the operation acts on or selects.
     pub(crate) conn: Option<crate::Connection<'a>>,
     pub(crate) send: *mut c_void,
-    pub(crate) data: *const c_void,
-    pub(crate) length: u32,
-    pub(crate) session_id: c_long,
     pub(crate) object: *mut c_void,
 }
 
@@ -41,12 +36,8 @@ impl NativeContext<'_> {
             serv,
             reactor: ptr::null_mut(),
             port: ptr::null_mut(),
-            sock: ptr::null_mut(),
             conn: None,
             send: ptr::null_mut(),
-            data: ptr::null(),
-            length: 0,
-            session_id: 0,
             object: ptr::null_mut(),
         }
     }
@@ -297,33 +288,7 @@ pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
 
 pub use crate::dispatch::{add_port, add_systemd_socket};
 
-/// `Server::send(session_id, data, length)`: the operation reads the `SendData` it lends.
-/// The length narrows to `uint32_t`, as the C++ callers' `ZSTR_LEN` did.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
-pub fn send(serv: view::Server<'_>, session_id: c_long, data: &[u8]) -> bool {
-    let length = data.len().c_cast::<u32>();
-    let data: *const c_void = data.as_ptr().cast();
-    let mut send = SendData {
-        info: DataHead {
-            fd: session_id,
-            kind: SEND_DATA,
-            len: length,
-            ..DataHead::default()
-        },
-        data: data.cast(),
-    };
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.send = (&raw mut send).cast();
-    ctx.session_id = session_id;
-    ctx.data = data;
-    ctx.length = length;
-    let arg = ctx.send.expose_provenance() as u64;
-    // SAFETY: the live server; the data and the SendData live for the call.
-    unsafe { run(RUN_ST_SEND, arg, &mut ctx) != 0 }
-}
+pub use crate::send::{send, send_to_connection};
 
 /// `Server::set_document_root(path)`, before the server starts.
 #[expect(
@@ -389,25 +354,6 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
     let id = u16::try_from(id).unwrap_or(u16::MAX);
     serv.worker_pipe(id, false)
         .is_some_and(|pipe| pipe.take_kernel_nobufs())
-}
-
-/// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`.
-///
-/// # Safety
-/// `send`'s data is live for the call.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "callers ignore the result where upstream's do"
-)]
-pub unsafe fn send_to_connection(serv: view::Server<'_>, send: &SendData) -> c_int {
-    let header = send;
-    let mut ctx = NativeContext::new(serv.raw());
-    ctx.send = ptr::from_ref(send).cast_mut().cast();
-    ctx.session_id = header.info.fd;
-    ctx.data = header.data.cast();
-    ctx.length = header.info.len;
-    // SAFETY: as the caller guarantees.
-    c_int::narrow(unsafe { run(RUN_SC_SEND, header.info.kind.into(), &mut ctx) })
 }
 
 pub use crate::dispatch::sendfile;
@@ -558,26 +504,17 @@ mod tests {
     use std::sync::Mutex;
 
     /// The send fields of each call: op, arg, serv, send, data, length and session.
-    type Sent = (u32, u64, usize, usize, usize, u32, c_long);
+    type Sent = (u32, u64, usize, usize);
     static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
 
     pub(super) unsafe fn fake(op: u32, arg: u64, ctx: &mut NativeContext<'_>) -> i64 {
         SENT.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((
-                op,
-                arg,
-                ctx.serv.addr(),
-                ctx.send.addr(),
-                ctx.data.addr(),
-                ctx.length,
-                ctx.session_id,
-            ));
+            .push((op, arg, ctx.serv.addr(), ctx.send.addr()));
         ctx.port = ptr::without_provenance_mut(0x50);
         ctx.object = ptr::without_provenance_mut(0x70);
         match op {
-            RUN_BASE_CREATE | RUN_ST_SEND => 1,
-            RUN_SC_SEND => -1,
+            RUN_BASE_CREATE => 1,
             _ => 0,
         }
     }
@@ -598,7 +535,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .last()
-            .unwrap_or(&(0, 0, 0, 0, 0, 0, 0))
+            .unwrap_or(&(0, 0, 0, 0))
     }
 
     #[test]
@@ -611,16 +548,7 @@ mod tests {
         let at = |a: usize| ptr::without_provenance_mut::<c_void>(a);
         unsafe {
             let data = at(0x80);
-            let bytes = [0u8; 4];
-            let at_bytes = bytes.as_ptr().addr();
-            assert!(send(server(), 9, &bytes), "send's 1 is true");
-            assert_eq!(
-                sent(),
-                (RUN_ST_SEND, sent().3 as u64, sv, sent().3, at_bytes, 4, 9),
-                "send context, with its SendData lent"
-            );
-            assert_ne!(sent().3, 0, "a SendData is lent");
-            let mut task = SendData {
+            let mut task = crate::SendData {
                 info: DataHead {
                     fd: 13,
                     len: 5,
@@ -630,12 +558,6 @@ mod tests {
                 data: data.cast_const().cast(),
             };
             let task_at = (&raw mut task).cast::<c_void>();
-            assert_eq!(send_to_connection(server(), &task), -1, "SW_ERR");
-            assert_eq!(
-                sent(),
-                (RUN_SC_SEND, 2, sv, task_at.addr(), 0x80, 5, 13),
-                "send_to_connection reads the SendData"
-            );
 
             assert_eq!(
                 create_base_factory(server()).addr(),

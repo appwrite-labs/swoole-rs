@@ -148,11 +148,6 @@ pub(crate) trait Host {
     fn worker_id(&mut self) -> Effect<u64> {
         self.get(ops::OP_WORKER_ID)
     }
-    /// A base-mode send made without native code (see `send::send_now`); `None`
-    /// leaves all of it to `send_to_connection`.
-    fn send_now(&mut self, _send: &base_factory::SendData) -> Effect<Option<i64>> {
-        Ok(None)
-    }
 }
 
 /// The state of a server without one, which native code never passes.
@@ -213,11 +208,6 @@ impl Host for Native<'_, '_> {
         Ok(u64::from(swoole_rs_process::methods::swoole_get_worker_id()))
     }
 
-    fn send_now(&mut self, send: &base_factory::SendData) -> Effect<Option<i64>> {
-        // SAFETY: native code lends `send`.
-        Ok(unsafe { send::send_now(self.state, send) })
-    }
-
     // A null test on the hot runners; out of line it cost ~33 instructions a message (#1435).
     #[inline(always)]
     fn state(&mut self) -> Effect<&ServerState> {
@@ -268,19 +258,7 @@ pub(crate) unsafe fn run_method(
         server,
         reactor: None,
     };
-    match (operation, state) {
-        // Outside `run`'s match, with the state known and no reactor context, so
-        // each op a send makes folds to its answer (#2964, #3335).
-        (ops::RUN_ST_SEND, _) => {
-            let send = core::ptr::with_exposed_provenance::<base_factory::SendData>(
-                usize::try_from(arg).unwrap_or(0),
-            );
-            // SAFETY: `server_methods::send` lends the live `SendData` it built for the call.
-            state::send(&mut native, unsafe { &*send }).map(i64::from)
-        }
-        _ => run(&mut native, operation, arg),
-    }
-    .unwrap_or(SW_ERR)
+    run(&mut native, operation, arg).unwrap_or(SW_ERR)
 }
 
 fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
@@ -305,7 +283,6 @@ fn run<H: Host>(h: &mut H, operation: u32, arg: u64) -> crate::Effect<i64> {
         }
         _ => match reactor_io::run(h, operation, arg)? {
             Some(result) => result,
-            None if operation == ops::RUN_SC_SEND => send::send_to_connection(h, arg, None)?,
             None => reactor_thread::run(h, operation, arg)?,
         },
     })
