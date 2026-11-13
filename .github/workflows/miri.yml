@@ -2,6 +2,8 @@ name: Miri
 # The crates' unit tests, interpreted by Miri for undefined behaviour in their unsafe
 # code. Tests Miri can't run in reasonable time, or that call native code, carry
 # #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
+# tests/dev/test_miri.py fails when a crate with unsafe code is missing from both the
+# `paths` and a `-p` below, unless it lists the crate with why Miri can't run it.
 on:
   schedule:
     - cron: '0 3 * * *'
@@ -26,6 +28,7 @@ on:
       - crates/memory/**
       - crates/ossupport/**
       - crates/process/**
+      - crates/protocols-ffi/**
       - crates/reactor/**
       - crates/server/**
       - crates/timer/**
@@ -55,7 +58,7 @@ jobs:
           - name: leaf
             packages: >-
               -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-error-ffi
-              -p swoole-rs-framing -p swoole-rs-http2 -p swoole-rs-httpbindings
+              -p swoole-rs-framing -p swoole-rs-http2 -p swoole-rs-httpbindings -p swoole-rs-protocols-ffi
           - name: core
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: >-
