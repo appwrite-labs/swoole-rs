@@ -94,7 +94,7 @@ pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     let lock =
         lock.unwrap_or_else(|| swoole_rs_corebase::fatal("no shared memory for a worker lock"));
     let lock = lock.write(SharedMutex::new());
-    if lock.init() != 0 {
+    if lock.init().is_err() {
         swoole_rs_corebase::fatal("a worker lock can't be initialized");
     }
     worker.set_lock(Some(lock));

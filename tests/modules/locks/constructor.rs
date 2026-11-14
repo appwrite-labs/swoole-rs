@@ -328,7 +328,7 @@ fn a_shared_mutex_returns_the_first_error() {
         let mut mutex = SharedMutex::new();
         let row = faulted(3, stage, || {
             let result = mutex.init();
-            (result == 0, Some(result))
+            (result.is_ok(), Some(result.err().unwrap_or(0)))
         });
         check(&row, 3, true, stage, 0);
     }
