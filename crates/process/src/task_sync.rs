@@ -98,13 +98,15 @@ impl<'a> ResultSlot<'a> {
     /// [`Packed::from_bytes`].
     #[must_use]
     pub fn copy(self) -> Vec<u8> {
-        let word = |word: &AtomicU32| word.load(Ordering::Relaxed).to_ne_bytes();
-        let mut bytes: Vec<u8> = self.0.iter().take(HEAD / 4).flat_map(word).collect();
-        let len = bytes
-            .get(HEAD_LEN..)
-            .and_then(<[u8]>::first_chunk)
-            .map_or(0, |len| u32::from_ne_bytes(*len) as usize);
-        bytes.extend(self.data().iter().take(len.div_ceil(4)).flat_map(word));
+        let len = self
+            .0
+            .get(HEAD_LEN / 4)
+            .map_or(0, |len| len.load(Ordering::Relaxed) as usize);
+        let words = (HEAD + len).div_ceil(4).min(self.0.len());
+        let mut bytes = Vec::with_capacity(words * 4);
+        for word in self.0.iter().take(words) {
+            bytes.extend_from_slice(&word.load(Ordering::Relaxed).to_ne_bytes());
+        }
         bytes.truncate(HEAD + len);
         bytes
     }
@@ -168,9 +170,15 @@ impl<'a> ResultSlot<'a> {
 
 /// Copies `data` over the start of `words`; the bytes after it stay.
 fn write_words(words: &[AtomicU32], data: &[u8]) {
-    for (word, chunk) in words.iter().zip(data.chunks(4)) {
+    let (chunks, tail) = data.as_chunks::<4>();
+    let mut words = words.iter();
+    // Chunks first: `zip` stops on them without taking the tail's word.
+    for (chunk, word) in chunks.iter().zip(words.by_ref()) {
+        word.store(u32::from_ne_bytes(*chunk), Ordering::Relaxed);
+    }
+    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
         let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
-        for (to, from) in bytes.iter_mut().zip(chunk) {
+        for (to, from) in bytes.iter_mut().zip(tail) {
             *to = *from;
         }
         word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
