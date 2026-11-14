@@ -555,7 +555,8 @@ fn set_option(
                 0 => param.outputs.returncode = 0,
                 1 => {
                     let activate = param.inputs.activate != 0;
-                    param.outputs.returncode = enable_crypto(stream, &socket, activate)?;
+                    let enabled = enable_crypto(stream, &socket, activate)?;
+                    param.outputs.returncode = if enabled { 1 } else { -1 };
                 }
                 _ => {}
             }
@@ -608,18 +609,12 @@ fn xport_api(
     let p = unsafe { &mut *param };
     match p.op {
         xport::LISTEN => {
-            p.outputs.returncode = if socket.listen(p.inputs.backlog) {
-                0
-            } else {
-                -1
-            }
+            p.outputs.returncode = status(socket.listen(p.inputs.backlog));
         }
         xport::CONNECT | xport::CONNECT_ASYNC => {
-            let mut code = connect(stream, socket, p);
-            if code == 0 && socket.ssl_enabled() && enable_crypto(stream, socket, true)? < 0 {
-                code = -1;
-            }
-            p.outputs.returncode = code;
+            let connected = connect(stream, socket, p)
+                && (!socket.ssl_enabled() || enable_crypto(stream, socket, true)?);
+            p.outputs.returncode = status(connected);
         }
         xport::BIND => {
             if socket.domain() != libc::AF_UNIX {
@@ -637,10 +632,10 @@ fn xport_api(
                     socket.set_option(libc::SOL_SOCKET, libc::SO_BROADCAST, 1, true);
                 }
             }
-            p.outputs.returncode = bind(socket, p);
+            p.outputs.returncode = status(bind(socket, p));
         }
         xport::ACCEPT => {
-            p.outputs.returncode = accept(stream, socket, p)?;
+            p.outputs.returncode = status(accept(stream, socket, p)?);
         }
         xport::GET_NAME => {
             let mut unwanted = 0;
@@ -726,10 +721,10 @@ fn oob(param: &mut php_stream_xport_param) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// `socket_connect`: 0, or -1 with the error.
-fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
+/// `socket_connect`: whether it connected; false with the error.
+fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xport_param) -> bool {
     if socket.fd() < 0 {
-        return FAILURE;
+        return false;
     }
     let inet = socket.is_inet();
     let parsed = target(inet, param);
@@ -737,22 +732,22 @@ fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xpor
         socket.set_nodelay(1);
     }
     let Some((host, port)) = parsed else {
-        return FAILURE;
+        return false;
     };
     if let Some(bindto) = context_option(stream, c"socket", c"bindto") {
         let Some(name) = bindto.bytes() else {
             set_error(param, b"local_addr context option is not a string.");
-            return FAILURE;
+            return false;
         };
         let Some((local, local_port)) = parse_address(name, param) else {
-            return FAILURE;
+            return false;
         };
         let local = match local.as_bytes() {
             b"0" | b"" => c"0.0.0.0",
             _ => local.as_c_str(),
         };
         if !socket.bind(local, local_port) {
-            return FAILURE;
+            return false;
         }
     }
     if !param.inputs.timeout.is_null() {
@@ -763,9 +758,9 @@ fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xpor
         if let Some(message) = socket.message() {
             param.outputs.error_text = string::copy(message.to_bytes());
         }
-        return -1;
+        return false;
     }
-    0
+    true
 }
 
 /// The transport parameter's name: on an `inet` socket the host and port it
@@ -785,13 +780,18 @@ fn target(inet: bool, param: &mut php_stream_xport_param) -> Option<(CString, i3
     }
 }
 
-/// `socket_bind`: 0, or -1.
-fn bind(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
+/// `socket_bind`: whether it bound.
+fn bind(socket: &Socket, param: &mut php_stream_xport_param) -> bool {
     let Some((host, port)) = target(socket.is_inet(), param) else {
         socket.set_error(libc::EINVAL);
-        return -1;
+        return false;
     };
-    if socket.bind(&host, port) { 0 } else { -1 }
+    socket.bind(&host, port)
+}
+
+/// `SUCCESS` or `FAILURE`.
+fn status(done: bool) -> c_int {
+    if done { SUCCESS } else { FAILURE }
 }
 
 /// `socket_accept`: `SUCCESS` with the client stream, or `FAILURE`.
@@ -799,7 +799,7 @@ fn accept(
     stream: *mut php_stream,
     socket: &Socket,
     param: &mut php_stream_xport_param,
-) -> Result<c_int, Bailout> {
+) -> Result<bool, Bailout> {
     param.outputs.client = ptr::null_mut();
     let nodelay = option_true(stream, c"socket", c"tcp_nodelay");
     if !param.inputs.timeout.is_null() {
@@ -821,7 +821,7 @@ fn accept(
             param.outputs.error_text =
                 string::copy(swoole_rs_corebase::sys::strerror(code).as_bytes());
         }
-        return Ok(FAILURE);
+        return Ok(false);
     };
     // The peer's name, as upstream reports it: from an empty address.
     let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
@@ -840,7 +840,7 @@ fn accept(
         });
     }
     param.outputs.client = connection;
-    Ok(SUCCESS)
+    Ok(true)
 }
 
 /// The output slots of the names the transport parameter wants: `textaddr` and
@@ -918,30 +918,30 @@ fn recvfrom(socket: &Socket, param: &mut php_stream_xport_param) -> c_int {
     returncode(received)
 }
 
-/// `socket_enable_crypto`: 1, or -1.
+/// `socket_enable_crypto`: whether it succeeded (upstream's 1, else -1).
 fn enable_crypto(
     stream: *mut php_stream,
     socket: &Socket,
     activate: bool,
-) -> Result<c_int, Bailout> {
+) -> Result<bool, Bailout> {
     let context = context(stream);
     if activate && !socket.ssl_available() {
         socket.enable_ssl();
         if !ssl_set_options(socket, context)? || !socket.ssl_handshake() {
-            return Ok(-1);
+            return Ok(false);
         }
     } else if !activate && socket.ssl_available() && socket.has_ssl() {
         socket.ssl_close();
-        return Ok(-1);
+        return Ok(false);
     }
     if !context.is_null()
         && socket.ssl_available()
         && option_true(stream, c"ssl", c"capture_peer_cert")
         && !capture_peer_certs(stream, socket)?
     {
-        return Ok(-1);
+        return Ok(false);
     }
-    Ok(1)
+    Ok(true)
 }
 
 /// `php_openssl_capture_peer_certs`: the `peer_certificate` (and with
