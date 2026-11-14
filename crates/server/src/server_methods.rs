@@ -14,16 +14,10 @@ use crate::hybrid::hybrid;
 use crate::view;
 use swoole_rs_corebase::{DataHead, log};
 
-/// `Server::start()`.
+/// `Server::start()`: false when it could not start.
 #[must_use]
-pub fn start(serv: view::Server<'_>) -> c_int {
+pub fn start(serv: view::Server<'_>) -> bool {
     crate::startup::start(serv)
-}
-
-/// `Server::start_check()`.
-#[must_use]
-pub fn start_check(serv: view::Server<'_>) -> c_int {
-    crate::startup::start_check(serv)
 }
 
 /// `Server::store_listen_socket()`.
@@ -44,11 +38,11 @@ pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
 
 pub use crate::control::shutdown;
 
-/// `Server::create()`: `SW_ERR` once created, else the hook and then startup's create.
+/// `Server::create()`: false once created, else the hook and then startup's create.
 #[must_use]
-pub fn create(serv: view::Server<'_>) -> c_int {
+pub fn create(serv: view::Server<'_>) -> bool {
     if !serv.config().factory_.is_null() {
-        return -1;
+        return false;
     }
     serv.call_hook(view::ServerHook::BeforeCreate);
     crate::startup::create(serv)
