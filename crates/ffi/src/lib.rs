@@ -152,7 +152,11 @@ static HTTP_HOOKS: swoole_rs_phpserver::HttpHooks = swoole_rs_phpserver::HttpHoo
 #[cfg(feature = "php")]
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_reactor_init() -> i32 {
-    swoole_rs_phpevents::reactor_init()
+    if swoole_rs_phpevents::reactor_init() {
+        0
+    } else {
+        -1
+    }
 }
 
 /// `php_swoole_convert_to_fd(value)` (crates/phpevents): C lends the zval

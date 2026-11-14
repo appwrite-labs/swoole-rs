@@ -170,7 +170,7 @@ fn start(call: &Call) {
     let Some(scheduler) = idle(call, "started", "start") else {
         return;
     };
-    if host::reactor_init() < 0 {
+    if !host::reactor_init() {
         call.set_bool(false);
         return;
     }
