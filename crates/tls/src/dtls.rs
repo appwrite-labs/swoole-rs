@@ -406,7 +406,7 @@ pub unsafe fn swr_v1_tls_dtls_open(
     let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
     // SAFETY: as the caller promises.
     let context = unsafe { crate::owner_fields(context) }.context.as_deref();
-    if crate::upstream::socket_ssl_create(live, context, server) < 0 {
+    if !crate::upstream::socket_ssl_create(live, context, server) {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return fail;
     }

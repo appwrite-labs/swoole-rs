@@ -1232,7 +1232,7 @@ fn ssl_handshake(this: Handle) -> bool {
                 .as_ref()
                 .and_then(swoole_rs_tls::SslContext::try_clone)
         });
-        if socket_ssl_create(this.socket(), context.as_deref(), SSL_CLIENT) < 0 {
+        if !socket_ssl_create(this.socket(), context.as_deref(), SSL_CLIENT) {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return false;
         }
@@ -1758,7 +1758,7 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
     } else {
         sendfile_sync(socket, file, offset, length)
     };
-    if sent < 0 {
+    if !sent {
         log::set_last_error(errno());
         return false;
     }
