@@ -18,7 +18,6 @@ const WRONG_OPERATION: i32 = 509;
 struct Listener {
     co: *mut c_void,
     signo: Cell<i32>,
-    resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
 
 /// Which listener each signal wakes (upstream's `listeners`). A non-null slot owns
@@ -131,7 +130,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     waiting.signo.set(signo);
     // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
     // every slot before it returns.
-    unsafe { (waiting.resume)(waiting.co) };
+    unsafe { (NATIVE.resume)(waiting.co) };
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -157,7 +156,6 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Signalled {
     let waiting = Rc::new(Listener {
         co,
         signo: Cell::new(-1),
-        resume: ops.resume,
     });
     let failed = |last_error| Signalled {
         signo: -1,

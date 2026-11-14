@@ -10,7 +10,8 @@ bool swr_zend_array_is_list(const zend_array *array);
 
 /* SW_HASHTABLE_FOREACH_START2's step, without ZVAL_DEREF: the element at or after
  * `*position` (null past the end), with its string key in `*key` (null for an int
- * key, which goes in `*index`); `*position` moves past it. Start at 0. */
+ * key, which goes in `*index`); `*position` moves past it. Past the end, `*key` and
+ * `*index` are left as they were. Start at 0. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index);
 
 /* _zend_handle_numeric_str: whether a string key is a canonical integer. */

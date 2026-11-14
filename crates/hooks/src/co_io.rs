@@ -76,8 +76,9 @@ pub(crate) struct Ops {
     pub strerror: fn(c_int) -> *const c_char,
     /// `Coroutine::get_current_safe()`.
     pub current: fn() -> *mut c_void,
-    /// A coroutine's id.
-    pub cid: fn(*mut c_void) -> c_long,
+    /// `get_bound_cid(event)`: the id of the coroutine `get_bound_co(event)` picks
+    /// on the socket, or 0.
+    pub cid: fn(Co, u32) -> c_long,
     /// `Coroutine::print_socket_bound_error(fd, event, cid)`.
     pub bound_error: fn(c_int, &CStr, c_long),
     /// `System::sleep(0.01)`.
@@ -87,8 +88,9 @@ pub(crate) struct Ops {
     pub reactor: fn(Co, u32, bool) -> bool,
     /// `remove_read_event`/`remove_write_event`.
     pub remove: fn(Co, u32),
-    /// Resumes a parked coroutine.
-    pub resume: unsafe extern "C-unwind" fn(*mut c_void),
+    /// Resumes the coroutine bound to the socket for `event` (`SW_EVENT_READ`, else
+    /// writing), if one is.
+    pub resume: fn(Co, u32),
     /// `socket->ssl_shutdown()`.
     pub ssl_shutdown: fn(Co),
     /// `socket->check_liveness()`, errno set when it fails.
@@ -106,12 +108,12 @@ pub(crate) static NATIVE: Ops = Ops {
     set_last_error: swoole_rs_corebase::log::set_last_error,
     strerror: |error| swoole_rs_error_ffi::swoole_strerror(error),
     current: || crate::wait_event::native::current(),
-    cid: native::cid,
+    cid: native::bound_cid,
     bound_error: native::bound_error,
     sleep: native::sleep,
     reactor: native::reactor,
     remove: native::remove,
-    resume: swoole_rs_coroutine::resume,
+    resume: native::resume,
     ssl_shutdown: native::ssl_shutdown,
     liveness: native::liveness,
     suspend: native::suspend,
@@ -268,9 +270,24 @@ mod native {
         super::borrowed_err(socket, error, message);
     }
 
-    pub(super) fn cid(co: *mut c_void) -> c_long {
-        // SAFETY: a live coroutine, which starts with its Rust state.
+    /// [`super::Ops::cid`].
+    pub(super) fn bound_cid(socket: Co, event: u32) -> c_long {
+        let co = socket.with_state(|state| state.bound_co(event));
+        if co.is_null() {
+            return 0;
+        }
+        // SAFETY: a bound coroutine is suspended in its operation on this socket,
+        // which unbinds it before it returns (`SocketState::bind`), so it is live;
+        // its record starts with its Rust state.
         unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).cid }
+    }
+
+    /// [`super::Ops::resume`].
+    pub(super) fn resume(socket: Co, event: u32) {
+        let co = socket.with_state(|state| state.co(event));
+        // SAFETY: null, which resumes nothing, or the coroutine bound for `event`,
+        // suspended in its operation on this socket until it unbinds itself.
+        unsafe { swoole_rs_coroutine::resume(co) };
     }
 
     pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {
@@ -381,8 +398,7 @@ impl Co {
     /// `get_bound_cid(event)`: the id of the coroutine holding `event`, or 0.
     #[must_use]
     pub fn bound_cid(self, event: u32) -> c_long {
-        let co = self.with_state(|state| state.bound_co(event));
-        if co.is_null() { 0 } else { (NATIVE.cid)(co) }
+        (NATIVE.cid)(self, event)
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds `event`.
@@ -507,14 +523,9 @@ pub(crate) fn timer_fired(socket: Co, event: u32) {
     resume_bound(socket, event);
 }
 
-/// Resumes the coroutine bound to `socket` for `event`, if one is: a direction's
-/// coroutine is bound only while it is parked in its wait on the socket, which
-/// unbinds it as soon as it runs again.
+/// Resumes the coroutine bound to `socket` for `event`, if one is.
 pub(crate) fn resume_bound(socket: Co, event: u32) {
-    let co = socket.with_state(|state| state.co(event));
-    // SAFETY: null, which resumes nothing, or the coroutine bound for `event`, parked
-    // in its wait on this socket.
-    unsafe { (NATIVE.resume)(co) };
+    (NATIVE.resume)(socket, event);
 }
 
 /// A recording host for the operations' tests. Each thread records its own events.
@@ -557,8 +568,14 @@ pub(crate) mod test_host {
         }
     }
 
-    extern "C-unwind" fn resume(co: *mut c_void) {
-        let cid = unsafe { *co.cast::<c_long>() };
+    /// A test coroutine is a `c_long` holding its id.
+    fn bound_id(co: *mut c_void) -> Option<c_long> {
+        (!co.is_null()).then(|| unsafe { *co.cast::<c_long>() })
+    }
+    fn resume(socket: Co, event: u32) {
+        let Some(cid) = bound_id(socket.with_state(|state| state.co(event))) else {
+            return;
+        };
         log(format!("resume:{cid}"));
         hook(&ON_RESUME, |f| f(cid));
     }
@@ -609,9 +626,10 @@ pub(crate) mod test_host {
     fn current() -> *mut c_void {
         ptr::dangling_mut::<u64>().cast()
     }
-    /// A test coroutine is a `c_long` holding its id.
-    fn cid(co: *mut c_void) -> c_long {
-        let cid = unsafe { *co.cast::<c_long>() };
+    fn cid(socket: Co, event: u32) -> c_long {
+        let Some(cid) = bound_id(socket.with_state(|state| state.bound_co(event))) else {
+            return 0;
+        };
         log(format!("cid:{cid}"));
         cid
     }
@@ -845,9 +863,8 @@ mod tests {
             let mut cells = ids;
             bind(&socket, bound, &mut cells);
             let (cid, name, effects) = upstream_bound(100, bound, ids, event);
+            assert_eq!((NATIVE.cid)(socket.co(), event), cid);
             let state = unsafe { &*socket.state() };
-            let co = state.bound_co(event);
-            assert_eq!(if co.is_null() { 0 } else { (NATIVE.cid)(co) }, cid);
             assert_eq!(state.event_name(event).to_str(), Ok(name), "scenario {k}");
             take();
             check_bound(socket.co(), event);

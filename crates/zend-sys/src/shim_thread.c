@@ -14,20 +14,22 @@ bool swr_zend_array_is_list(const zend_array *array) {
  * after *position, which then points past it. */
 zval *swr_zend_hash_next(const HashTable *table, HashPosition *position, zend_string **key, zend_ulong *index) {
     for (uint32_t at = *position; at < table->nNumUsed; at++) {
-        zval *value;
         if (HT_IS_PACKED(table)) {
-            value = table->arPacked + at;
-            *key = NULL;
-            *index = at;
+            zval *value = table->arPacked + at;
+            if (Z_TYPE_P(value) != IS_UNDEF) {
+                *key = NULL;
+                *index = at;
+                *position = at + 1;
+                return value;
+            }
         } else {
             Bucket *bucket = table->arData + at;
-            value = &bucket->val;
-            *key = bucket->key;
-            *index = bucket->h;
-        }
-        if (Z_TYPE_P(value) != IS_UNDEF) {
-            *position = at + 1;
-            return value;
+            if (Z_TYPE(bucket->val) != IS_UNDEF) {
+                *key = bucket->key;
+                *index = bucket->h;
+                *position = at + 1;
+                return &bucket->val;
+            }
         }
     }
     *position = table->nNumUsed;

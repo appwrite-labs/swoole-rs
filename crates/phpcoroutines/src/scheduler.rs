@@ -15,7 +15,7 @@ use swoole_rs_zend::{
     Call, Callable, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Parsed,
     Value,
     bailout::{self, Bailout},
-    kind, message,
+    message,
     sys::{IS_FALSE, IS_NULL, ZEND_ACC_FINAL},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -374,7 +374,7 @@ fn can_exit() -> Result<bool, Bailout> {
     // The last reference once the condition replaced itself: a bailout its
     // destructor deferred is raised by the reactor's callback.
     drop(handle);
-    bailout::outcome(kind(&retval) != IS_FALSE)
+    bailout::outcome(Value::of(&mut retval).kind() != IS_FALSE)
 }
 
 /// RSHUTDOWN: drop the PHP name resolvers and the exit condition.

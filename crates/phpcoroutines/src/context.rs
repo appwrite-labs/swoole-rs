@@ -477,7 +477,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
 #[inline]
 pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<*mut zval>)> {
     let task = ctx.defers(Vec::pop)?;
-    let returned = ctx.with(|context| swoole_rs_zend::kind(&context.return_value)) != IS_UNDEF;
+    let returned = ctx.with(|context| Value::of(&mut context.return_value).kind()) != IS_UNDEF;
     Some((task, returned.then(|| ctx.return_value())))
 }
 

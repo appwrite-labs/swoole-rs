@@ -3,7 +3,7 @@
 use crate::{
     Class, Value, ZStr,
     bailout::{self, Bailout},
-    sys::{IS_RESOURCE, swr_zend_event_socket_fd, swr_zend_stream_select_fd, zend_long},
+    sys::{IS_RESOURCE, swr_zend_stream_select_fd, zend_long},
 };
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr;
@@ -29,6 +29,10 @@ unsafe extern "C" {
         file: &mut *const c_char,
         line: &mut c_int,
     ) -> bool;
+    /// An ext/sockets `Socket`'s descriptor, with `closed` set when it was
+    /// closed; -2 for any other value, or without ext/sockets. It reads the
+    /// class table and the value only.
+    safe fn swr_zend_event_socket_fd(value: &Value, closed: &mut u8) -> c_int;
     /// `zend_memory_usage`: it reads the allocator's statistics.
     safe fn zend_memory_usage(real: bool) -> usize;
     /// Clears the executor's in-shutdown flag and returns whether it was set;
@@ -107,8 +111,7 @@ impl Value {
     pub fn php_socket_fd(&self) -> Option<(c_int, bool)> {
         self.object()?;
         let mut closed = 0;
-        // SAFETY: a live object zval.
-        let fd = unsafe { swr_zend_event_socket_fd(self.as_ptr(), &raw mut closed) };
+        let fd = swr_zend_event_socket_fd(self, &mut closed);
         (fd != -2).then_some((fd, closed != 0))
     }
 }

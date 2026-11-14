@@ -29,9 +29,6 @@ zend_resource *swr_zend_stream_expose(php_stream *stream);
 /* php_stream_to_zval: `value` holds the stream's resource, in place of what it
  * held, which is not released. */
 void swr_zend_stream_to_zval(php_stream *stream, zval *value);
-/* (double) time->tv_sec and (double) time->tv_usec: their widths differ by
- * platform (suseconds_t), which no one Rust cast handles lint-free. */
-void swr_zend_stream_timeval(const struct timeval *time, double *seconds, double *micros);
 /* EG(active). */
 bool swr_zend_stream_vm_active(void);
 /* php_stream_from_zval_no_verify: null if not a stream. */

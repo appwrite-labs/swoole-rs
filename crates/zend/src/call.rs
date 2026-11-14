@@ -22,14 +22,6 @@ use std::{ffi::CStr, ptr};
 /// (`ZEND_CALL_FRAME_SLOT`).
 const FRAME_SLOT: usize = size_of::<zend_execute_data>().div_ceil(size_of::<zval>());
 
-/// `Z_TYPE`.
-#[must_use]
-#[inline]
-pub fn kind(value: &zval) -> u32 {
-    // SAFETY: every zval sets `u1.type_info`, and any four bytes are a `u32`.
-    unsafe { value.u1.type_info & 0xff }
-}
-
 /// The arguments did not parse; Zend has raised the error (or a user error
 /// handler bailed out of a coercion's deprecation, which is deferred).
 #[derive(Debug)]

@@ -7,6 +7,7 @@ void swr_zend_event_restore_shutdown(uint8_t previous);
 /* zend_read_property_ex, including any magic-method bailout, contained in C. */
 int swr_zend_event_property(zval *object, zend_string *name, zval **result);
 /* An ext/sockets Socket object's descriptor, with *closed set when it was
- * closed; -2 when object is no Socket or PHP has no ext/sockets. */
+ * closed; -2 when the value is no Socket (or no object) or PHP has no
+ * ext/sockets. It reads the class table and the object only. */
 int swr_zend_event_socket_fd(zval *object, uint8_t *closed);
 #endif

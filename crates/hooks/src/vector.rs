@@ -427,7 +427,7 @@ mod tests {
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while ready(socket, event, false).is_null() {
+            while ready(socket, event, false).is_none() {
                 log("again");
             }
             if failure == 3 {
