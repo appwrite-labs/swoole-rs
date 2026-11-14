@@ -4,7 +4,7 @@
 use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
-use swoole_rs_clients::dns::{DnsExchange, query};
+use swoole_rs_clients::dns::{DnsExchange, RecvError, query};
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_http::multipart_parser::MultipartParser;
 use swoole_rs_http2::{
@@ -64,7 +64,7 @@ impl DnsExchange for Exchange<'_> {
         true
     }
 
-    fn recv(&mut self, out: &mut [u8]) -> isize {
+    fn recv(&mut self, out: &mut [u8]) -> Result<usize, RecvError> {
         let mut reply = self.reply.to_vec();
         if self.echo_id {
             for (byte, id) in reply.iter_mut().zip(&self.query) {
@@ -73,7 +73,7 @@ impl DnsExchange for Exchange<'_> {
         }
         let n = reply.len().min(out.len());
         out[..n].copy_from_slice(&reply[..n]);
-        n as isize
+        Ok(n)
     }
 
     fn push(&mut self, text: &[u8]) {

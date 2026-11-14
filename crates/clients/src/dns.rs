@@ -38,11 +38,35 @@ pub const INVALID_DOMAIN: c_int = -1;
 pub trait DnsExchange {
     /// Sends the query to the DNS server; false on failure.
     fn send(&mut self, data: &[u8]) -> bool;
-    /// Receives into `buffer`: the length, 0/-1 on failure, `-ECANCELED` if the
-    /// coroutine was cancelled.
-    fn recv(&mut self, buffer: &mut [u8]) -> isize;
+    /// Receives into `buffer`: the length, or why not.
+    ///
+    /// # Errors
+    /// The [`RecvError`] that ended the receive.
+    fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError>;
     /// Collects one address of the answer in text form.
     fn push(&mut self, address: &[u8]);
+}
+
+/// Why a DNS receive got no answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecvError {
+    /// The receive failed.
+    Failed,
+    /// The coroutine was cancelled.
+    Canceled,
+}
+
+/// A socket `recv`'s result `n` as a [`DnsExchange::recv`] result: a failed or
+/// empty receive is `Canceled` when the socket's error is `ECANCELED`.
+///
+/// # Errors
+/// [`RecvError::Canceled`] for a cancelled empty receive, else `Failed` for a
+/// negative one.
+pub fn received(n: isize, canceled: bool) -> Result<usize, RecvError> {
+    if n <= 0 && canceled {
+        return Err(RecvError::Canceled);
+    }
+    usize::try_from(n).map_err(|_| RecvError::Failed)
 }
 
 fn u16_at(packet: &[u8], at: usize) -> u16 {
@@ -169,13 +193,10 @@ pub fn query(
     if !exchange.send(packet.get(..steps).unwrap_or_default()) {
         return RESOLVE_FAILED;
     }
-    let received = exchange.recv(packet.get_mut(..PACKET - 1).unwrap_or_default());
-    let Ok(received @ 1..) = usize::try_from(received) else {
-        return if received == -isize::try_from(libc::ECANCELED).unwrap_or(0) {
-            CANCELED
-        } else {
-            RESOLVE_FAILED
-        };
+    let received = match exchange.recv(packet.get_mut(..PACKET - 1).unwrap_or_default()) {
+        Ok(received @ 1..) => received,
+        Err(RecvError::Canceled) => return CANCELED,
+        Ok(0) | Err(RecvError::Failed) => return RESOLVE_FAILED,
     };
     let received = received.min(PACKET - 1);
     put(&mut packet, received, &[0]);
@@ -227,8 +248,11 @@ pub fn query(
 pub trait DnsSocket {
     /// `sendto(host, port, data)`; false on failure.
     fn sendto(&mut self, host: &CStr, port: c_int, data: &[u8]) -> bool;
-    /// `recv` into `buffer`, as [`Recv`].
-    fn recv(&mut self, buffer: &mut [u8]) -> isize;
+    /// `recv` into `buffer`, as [`DnsExchange::recv`].
+    ///
+    /// # Errors
+    /// The [`RecvError`] that ended the receive.
+    fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError>;
 }
 
 struct Exchange<S> {
@@ -244,7 +268,7 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
         self.socket.sendto(host, self.port, data)
     }
 
-    fn recv(&mut self, buffer: &mut [u8]) -> isize {
+    fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError> {
         self.socket.recv(buffer)
     }
 
@@ -385,15 +409,15 @@ mod tests {
             self.query = data.to_vec();
             true
         }
-        fn recv(&mut self, out: &mut [u8]) -> isize {
+        fn recv(&mut self, out: &mut [u8]) -> Result<usize, RecvError> {
             if self.cancelled {
-                return -isize::try_from(libc::ECANCELED).unwrap();
+                return Err(RecvError::Canceled);
             }
             let id = [self.query[0], self.query[1]];
             self.reply[..2].copy_from_slice(&id);
             let n = self.reply.len().min(out.len());
             out[..n].copy_from_slice(&self.reply[..n]);
-            isize::try_from(n).unwrap()
+            Ok(n)
         }
         fn push(&mut self, text: &[u8]) {
             self.results.push(String::from_utf8(text.to_vec()).unwrap());
