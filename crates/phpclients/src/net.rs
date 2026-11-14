@@ -1226,11 +1226,11 @@ fn close(call: &Call) {
         || conn.flag(state::Flag::ShutdownWrite)
         || !conn.alive()
     {
-        let Some(result) = bailed(conn.cli.run(state::close)) else {
+        let Some(closed) = bailed(conn.cli.run(state::close)) else {
             return call.set_bool(false);
         };
         bailed(release(object, conn));
-        return call.set_bool(result >= 0);
+        return call.set_bool(closed);
     }
     let pushed = {
         let mut pool = long_connections();

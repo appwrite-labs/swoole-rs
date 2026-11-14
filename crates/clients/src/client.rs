@@ -750,20 +750,25 @@ fn event_client(event: &Event) -> Option<Handle> {
     Some(Handle(socket.read(|socket| socket.object).cast()))
 }
 
+/// A handler's success as the reactor's `SW_OK`/`SW_ERR`.
+const fn status(ok: bool) -> c_int {
+    if ok { OK } else { ERR }
+}
+
 extern "C" fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
-    event_client(event).map_or(ERR, on_read)
+    status(event_client(event).is_some_and(on_read))
 }
 
 extern "C" fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
-    event_client(event).map_or(ERR, on_datagram)
+    status(event_client(event).is_some_and(on_datagram))
 }
 
 extern "C" fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
-    event_client(event).map_or(ERR, |this| on_write(this, reactor, event))
+    status(event_client(event).is_some_and(|this| on_write(this, reactor, event)))
 }
 
 extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
-    event_client(event).map_or(ERR, |this| on_error(this, reactor, event))
+    status(event_client(event).is_some_and(|this| on_error(this, reactor, event)))
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
@@ -989,15 +994,15 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     unsafe { get(this.protocol(), record.socket.cast(), &mut packet) }
 }
 
-/// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
-/// released the client, else `close(2)`'s result.
+/// `Client::close()`: false without a socket, when already closed or when `close(2)`
+/// fails; true when it closed or `onClose` released the client.
 #[expect(
     clippy::must_use_candidate,
     reason = "most callers close for the effect"
 )]
-pub fn close(this: Handle) -> c_int {
+pub fn close(this: Handle) -> bool {
     if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
-        return ERR;
+        return false;
     }
     this.set(Flag::Closed, true);
     let saved = this.socket();
@@ -1033,10 +1038,10 @@ pub fn close(this: Handle) -> c_int {
     let Some(fd) = saved
         .edit(|socket| (!socket.object.is_null()).then(|| core::mem::replace(&mut socket.fd, -1)))
     else {
-        return OK;
+        return true;
     };
     // Once: -1 marks the client's descriptor closed.
-    swoole_rs_corebase::sys::close(fd)
+    swoole_rs_corebase::sys::close(fd) == 0
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
@@ -1728,18 +1733,18 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
 }
 
 /// A handshake in the read or write handler failed: close and report.
-fn connect_failed(this: Handle) -> c_int {
+fn connect_failed(this: Handle) -> bool {
     this.set(Flag::Active, false);
     close(this);
     if this.has(ClientEvent::Error) {
         this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
-    OK
+    true
 }
 
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
-fn on_read(this: Handle) -> c_int {
+fn on_read(this: Handle) -> bool {
     let Tail { str: buf, size } = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
@@ -1756,7 +1761,7 @@ fn on_read(this: Handle) -> c_int {
         this.input_clear();
         if !do_ssl_handshake {
             this.on_connect();
-            return OK;
+            return true;
         }
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
@@ -1779,12 +1784,12 @@ fn on_read(this: Handle) -> c_int {
             return connect_failed(this);
         }
         if this.proxy_state(Proxy::Socks5) != Some(SOCKS5_READY) {
-            return OK;
+            return true;
         }
         this.input_clear();
         if !do_ssl_handshake {
             this.on_connect();
-            return OK;
+            return true;
         }
     }
     if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
@@ -1795,7 +1800,7 @@ fn on_read(this: Handle) -> c_int {
         if this.tls_state() == SSL_STATE_READY {
             this.on_connect();
         }
-        return OK;
+        return true;
     }
     // No reference crosses the receiving callback, which may destroy the client.
     let record = this.record();
@@ -1816,7 +1821,7 @@ fn on_read(this: Handle) -> c_int {
         if n < 0 && !released && !this.flag(Flag::Closed) {
             close(this);
         }
-        return OK;
+        return true;
     }
     let n = this.input_recv();
     if n < 0 {
@@ -1828,21 +1833,21 @@ fn on_read(this: Handle) -> c_int {
                     c"Client_onStreamRead",
                     format_args!("Read from socket[{fd}] failed"),
                 );
-                OK
+                true
             }
             Caught::Close => close(this),
-            Caught::Wait | Caught::Invalid | Caught::ReduceSize => OK,
+            Caught::Wait | Caught::Invalid | Caught::ReduceSize => true,
         };
     }
     if n == 0 {
         return close(this);
     }
     this.call(ClientEvent::Receive, buf, n.cast_unsigned());
-    OK
+    true
 }
 
 /// `Client_onDgramRead`, on a live async datagram client.
-fn on_datagram(this: Handle) -> c_int {
+fn on_datagram(this: Handle) -> bool {
     #[expect(
         clippy::large_stack_arrays,
         reason = "upstream's stack buffer: nothing to drop if the callback longjmps"
@@ -1855,19 +1860,19 @@ fn on_datagram(this: Handle) -> c_int {
         this.recvfrom(&mut buffer, 0)
     };
     if n < 0 {
-        return ERR;
+        return false;
     }
     this.call(
         ClientEvent::Receive,
         buffer.as_ptr().cast(),
         n.cast_unsigned(),
     );
-    OK
+    true
 }
 
 /// `Client_onWrite`: drain queued output, or finish an async connect, on a live
 /// async stream client; `reactor` and `event` are the handler's.
-fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
         if this.flag(Flag::OpenSsl) && this.tls_state() == SSL_STATE_WAIT_STREAM {
             if !ssl_handshake(this) {
@@ -1876,15 +1881,15 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
             }
             if this.tls_state() == SSL_STATE_READY {
                 this.on_connect();
-                return OK;
+                return true;
             }
             if this.socket().read(|socket| socket.tls.want_read) {
                 this.event(EventOp::Set, EVENT_READ);
             }
-            return OK;
+            return true;
         }
         if writable_callback(reactor, event) < 0 {
-            return ERR;
+            return false;
         }
         if this.has(ClientEvent::BufferEmpty)
             && this.flag(Flag::HighWatermark)
@@ -1893,7 +1898,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
             this.set(Flag::HighWatermark, false);
             this.call(ClientEvent::BufferEmpty, core::ptr::null(), 0);
         }
-        return OK;
+        return true;
     }
     let mut error = 0;
     let read = ops::socket_error(this, &mut error);
@@ -1901,7 +1906,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if !read {
         let fd = this.socket().fd();
         log::sys_warning(c"Client_onWrite", format_args!("getsockopt({fd}) failed"));
-        return ERR;
+        return false;
     }
     if error != 0 {
         return write_failed(this);
@@ -1911,13 +1916,13 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_WAIT) {
         let length = this.socks5_negotiate();
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
-        return this.socks5_send(length).c_cast::<c_int>();
+        return this.socks5_send(length) >= 0;
     }
     if this.proxy_state(Proxy::Http) == Some(HTTP_PROXY_WAIT) {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
         let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
-        return send(this, &request, 0).c_cast::<c_int>();
+        return send(this, &request, 0) >= 0;
     }
     if this.flag(Flag::OpenSsl) {
         if !ssl_handshake(this) {
@@ -1926,27 +1931,27 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
         }
         this.socket()
             .edit(|socket| socket.tls.state = SSL_STATE_WAIT_STREAM);
-        return OK;
+        return true;
     }
     this.on_connect();
-    OK
+    true
 }
 
 /// The write handler's failure: unlike the read handler's, `onError` is required.
-fn write_failed(this: Handle) -> c_int {
+fn write_failed(this: Handle) -> bool {
     this.set(Flag::Active, false);
     close(this);
     this.call(ClientEvent::Error, core::ptr::null(), 0);
-    OK
+    true
 }
 
 /// `Client_onError`, as [`on_write`].
-fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
         return close(this);
     }
     on_write(this, reactor, event);
-    OK
+    true
 }
 
 /// `Client_onTimeout`: the async connect of the client timed out.

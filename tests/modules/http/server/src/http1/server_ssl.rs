@@ -224,7 +224,7 @@ impl SyncClient {
         if !self.created || client.flag(Flag::Closed) {
             return false;
         }
-        let _ = native::close(self.handle());
+        native::close(self.handle());
         self.created = false;
         true
     }
