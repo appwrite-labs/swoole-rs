@@ -499,7 +499,7 @@ impl Handle {
         listener(event, data, length);
     }
 
-    fn event(self, op: EventOp, events: c_int) -> c_int {
+    fn event(self, op: EventOp, events: c_int) -> bool {
         ops::event(self, op, events)
     }
 
@@ -1018,7 +1018,7 @@ pub fn close(this: Handle) -> c_int {
     }
     if this.flag(Flag::Async) {
         if !saved.read(|socket| socket.removed) {
-            this.event(EventOp::Del, 0);
+            _ = this.event(EventOp::Del, 0);
         }
         this.timer_clear();
         if this.flag(Flag::Active) {
@@ -1069,30 +1069,28 @@ pub fn shutdown(this: Handle, how: c_int) -> bool {
 /// `Client::sleep()`: stop reading (keeping write interest). Whether it worked.
 #[must_use]
 pub fn sleep(this: Handle) -> bool {
-    let code = if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
+    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EventOp::Set, EVENT_WRITE)
     } else {
         this.event(EventOp::Del, 0)
-    };
-    code >= 0
+    }
 }
 
 /// `Client::wakeup()`: read again. Whether it worked.
 #[must_use]
 pub fn wakeup(this: Handle) -> bool {
-    let code = if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
+    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EventOp::Set, EVENT_READ | EVENT_WRITE)
     } else {
         this.event(EventOp::Add, EVENT_READ)
-    };
-    code >= 0
+    }
 }
 
 /// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake: whether it
 /// worked.
 #[must_use]
 pub fn ssl_wait(this: Handle) -> bool {
-    this.event(EventOp::Set, EVENT_WRITE) >= 0
+    this.event(EventOp::Set, EVENT_WRITE)
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
@@ -1427,7 +1425,11 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
                     return ERR;
                 }
             }
-            return this.event(EventOp::Add, EVENT_WRITE);
+            return if this.event(EventOp::Add, EVENT_WRITE) {
+                OK
+            } else {
+                ERR
+            };
         }
         break ret;
     };
@@ -1499,7 +1501,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         fd_clean(fd);
     }
     if is_async && this.has(ClientEvent::Connect) {
-        if this.event(EventOp::Add, EVENT_READ) < 0 {
+        if !this.event(EventOp::Add, EVENT_READ) {
             return ERR;
         }
         this.on_connect();
@@ -1593,12 +1595,12 @@ mod ops {
         }
     }
 
-    /// The reactor's `swoole_event_*` on the socket; -1 without a socket
-    /// or a reactor. The client's socket stays live while it is registered: `close`
-    /// deletes it from the reactor before the record is freed.
-    pub(super) fn event(this: Handle, op: EventOp, events: c_int) -> c_int {
+    /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
+    /// socket or a reactor. The client's socket stays live while it is registered:
+    /// `close` deletes it from the reactor before the record is freed.
+    pub(super) fn event(this: Handle, op: EventOp, events: c_int) -> bool {
         let Some(socket) = this.get().socket() else {
-            return -1;
+            return false;
         };
         match op {
             EventOp::Add => event_api::event_add(socket, events),
@@ -1715,7 +1717,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && this.event(EventOp::AddOrUpdate, EVENT_WRITE) == ERR {
+    if is_async && !this.event(EventOp::AddOrUpdate, EVENT_WRITE) {
         return false;
     }
     true

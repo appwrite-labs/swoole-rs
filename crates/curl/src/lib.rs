@@ -267,10 +267,10 @@ impl Multi {
         0
     }
 
-    /// `Multi::set_event`.
-    fn set_event(&self, sockfd: curl_socket_t, action: c_int) -> c_int {
+    /// `Multi::set_event`: whether the socket is in the reactor for `action`.
+    fn set_event(&self, sockfd: curl_socket_t, action: c_int) -> bool {
         if !host::event_available() {
-            return -1;
+            return false;
         }
         host::install_handlers();
         let known = self.sockets.borrow().get(&sockfd).cloned();
@@ -300,10 +300,10 @@ impl Multi {
         }
     }
 
-    /// `Multi::del_event`.
-    fn del_event(&self, sockfd: curl_socket_t) -> c_int {
+    /// `Multi::del_event`: whether curl's socket was known.
+    fn del_event(&self, sockfd: curl_socket_t) -> bool {
         let Some(socket) = self.sockets.borrow_mut().remove(&sockfd) else {
-            return ERR;
+            return false;
         };
         self.active
             .borrow_mut()
@@ -312,7 +312,7 @@ impl Multi {
         // is out of the map, and the selector skips a deleted socket.
         unsafe { socket.socket.free() };
         socket.deleted.set(true);
-        OK
+        true
     }
 
     fn add_handle(&self, handle: &mut Handle) -> CURLMcode {
@@ -560,11 +560,12 @@ extern "C" fn handle_socket(
     multi: &Multi,
     _socketp: *mut c_void,
 ) -> c_int {
-    match action {
+    let done = match action {
         CURL_POLL_IN | CURL_POLL_OUT | CURL_POLL_INOUT => multi.set_event(sockfd, action),
         CURL_POLL_REMOVE => multi.del_event(sockfd),
         _ => swoole_rs_corebase::fatal("curl asked for an unknown poll action"),
-    }
+    };
+    if done { OK } else { ERR }
 }
 
 /// `Multi::handle_timeout`, curl's timer callback.

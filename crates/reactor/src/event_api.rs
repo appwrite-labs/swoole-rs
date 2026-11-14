@@ -88,58 +88,50 @@ pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_i
     unsafe { reactor_change(current(), socket, 0, events) }
 }
 
-/// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; -1 without one.
-fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) -> c_int {
-    running().map_or(-1, |reactor| {
-        crate::reactor_upstream::change(reactor, socket, op, events)
-    })
+/// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; false
+/// without one.
+fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) -> bool {
+    running().is_some_and(|reactor| crate::reactor_upstream::change(reactor, socket, op, events))
 }
 
-/// [`swoole_event_add`] of a socket that is never freed while registered; -1 without
-/// a reactor.
+/// [`swoole_event_add`] of a socket that is never freed while registered: whether it
+/// worked, false without a reactor.
 #[must_use]
-pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> c_int {
+pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> bool {
     change(socket, crate::ChangeOp::Add, events)
 }
 
 /// `int swoole_event_set(Socket *socket, int events)` of a socket that is never freed
-/// while registered (kqueue's set registers its address again); -1 without a reactor.
+/// while registered (kqueue's set registers its address again): whether it worked,
+/// false without a reactor.
 #[must_use]
-pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> c_int {
+pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> bool {
     change(socket, crate::ChangeOp::Set, events)
 }
 
 /// `Reactor::interest(socket, kind, event)` on the thread's reactor, of a socket that
-/// is never freed while registered: the change's result, 0 when nothing changes, -1
-/// without a reactor.
+/// is never freed while registered: whether the change worked, true when nothing
+/// changes, false without a reactor.
 #[must_use]
-pub fn event_interest(
-    socket: crate::Socket<'static>,
-    kind: crate::Interest,
-    event: c_int,
-) -> c_int {
-    running().map_or(-1, |reactor| {
-        crate::reactor_upstream::interest(reactor, socket, kind, event)
-    })
+pub fn event_interest(socket: crate::Socket<'static>, kind: crate::Interest, event: c_int) -> bool {
+    running().is_some_and(|reactor| crate::reactor_upstream::interest(reactor, socket, kind, event))
 }
 
-/// `int swoole_event_del(Socket *socket)`: -1 without a reactor. Any live socket: a
-/// removal leaves its address nowhere.
+/// `int swoole_event_del(Socket *socket)`: whether it worked, false without a reactor.
+/// Any live socket: a removal leaves its address nowhere.
 #[must_use]
-pub fn event_del(socket: crate::Socket<'_>) -> c_int {
-    running().map_or(-1, |reactor| {
-        crate::reactor_upstream::reactor_del(reactor, socket)
-    })
+pub fn event_del(socket: crate::Socket<'_>) -> bool {
+    running().is_some_and(|reactor| crate::reactor_upstream::reactor_del(reactor, socket))
 }
 
 /// `int swoole_event_add_or_update(Socket *socket, int event)` (`add_read_event` or
-/// `add_write_event`) of a socket that is never freed while registered: -1 without a
-/// reactor, or for an event that is neither `SW_EVENT_READ` nor `SW_EVENT_WRITE`, where
-/// upstream asserts.
+/// `add_write_event`) of a socket that is never freed while registered: whether it
+/// worked, false without a reactor or for an event that is neither `SW_EVENT_READ` nor
+/// `SW_EVENT_WRITE`, where upstream asserts.
 #[must_use]
-pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> c_int {
+pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> bool {
     let (Some(reactor), Some(kind)) = (running(), direction(event)) else {
-        return -1;
+        return false;
     };
     crate::reactor_upstream::interest(reactor, socket, kind, 0)
 }

@@ -42,20 +42,20 @@ pub(crate) mod host {
         pub(crate) fn removed(self) -> bool {
             unsafe { (*self.0)[1] != 0 }
         }
-        pub(crate) fn add(self, events: c_int) -> c_int {
+        pub(crate) fn add(self, events: c_int) -> bool {
             log(format!("add {events}"));
             unsafe { *self.0 = [events, 0] };
-            0
+            true
         }
-        pub(crate) fn set(self, events: c_int) -> c_int {
+        pub(crate) fn set(self, events: c_int) -> bool {
             log(format!("set {events}"));
             unsafe { (*self.0)[0] = events };
-            0
+            true
         }
-        pub(crate) fn del(self) -> c_int {
+        pub(crate) fn del(self) -> bool {
             log("del".into());
             unsafe { *self.0 = [0, 1] };
-            0
+            true
         }
         pub(crate) unsafe fn free(self) {
             log("free".into());

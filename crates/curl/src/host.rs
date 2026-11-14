@@ -91,15 +91,15 @@ impl ReactorSocket {
         self.0.read(|socket| socket.removed)
     }
 
-    pub(crate) fn add(self, events: c_int) -> c_int {
+    pub(crate) fn add(self, events: c_int) -> bool {
         event_api::event_add(self.0, events)
     }
 
-    pub(crate) fn set(self, events: c_int) -> c_int {
+    pub(crate) fn set(self, events: c_int) -> bool {
         event_api::event_set(self.0, events)
     }
 
-    pub(crate) fn del(self) -> c_int {
+    pub(crate) fn del(self) -> bool {
         event_api::event_del(self.0)
     }
 
