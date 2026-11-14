@@ -1,7 +1,7 @@
 //! Upstream `StaticHandler::try_serve_index_file` and `make_index_page`.
-use super::{HttpStaticContext, StaticEffects, StaticText::Index};
+use super::{HttpStaticContext, StaticEffects, StaticFileKind, StaticText::Index};
 use crate::index_page::{HttpIndexPage, index_page};
-use crate::static_path::{DIRECTORY, FILE, static_index_path};
+use crate::static_path::static_index_path;
 
 impl HttpStaticContext {
     /// Upstream's `try_serve_index_file`: with index `files` configured and a
@@ -13,7 +13,10 @@ impl HttpStaticContext {
         autoindex: bool,
         effects: &impl StaticEffects,
     ) -> bool {
-        if files.is_empty() || !self.facts.file_ready || self.facts.kind & DIRECTORY == 0 {
+        if files.is_empty()
+            || !self.facts.file_ready
+            || self.facts.kind != StaticFileKind::Directory
+        {
             return true;
         }
         if !self.get_dir_files(effects) {
@@ -58,7 +61,7 @@ impl HttpStaticContext {
         {
             return false;
         }
-        self.stat(effects) == 1 && self.facts.kind & FILE != 0
+        self.stat(effects) == 1 && self.facts.kind == StaticFileKind::File
     }
     /// Upstream's `make_index_page`: the directory's listing, `css` in its head and
     /// `powered` in its foot.
@@ -106,9 +109,9 @@ mod tests {
         fn stat(&self, path: &[u8]) -> Option<crate::HttpStaticObservation> {
             Some(crate::HttpStaticObservation {
                 kind: if path.ends_with(b"/files") {
-                    DIRECTORY
+                    StaticFileKind::Directory
                 } else {
-                    FILE
+                    StaticFileKind::File
                 },
                 ..Default::default()
             })
