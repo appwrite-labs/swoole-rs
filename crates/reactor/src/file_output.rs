@@ -67,19 +67,20 @@ impl SocketFileRequest {
     }
 
     /// Range validation over the descriptor, `length` 0 meaning to the end of the
-    /// file: 0 valid, 1 open, 2 stat, 3 empty, 4 range.
-    pub fn check(&mut self, length: usize) -> c_int {
+    /// file.
+    /// # Errors
+    /// Why the range is refused.
+    pub fn check(&mut self, length: usize) -> Result<(), crate::RangeError> {
         if self.file.descriptor() == -1 {
             crate::socket_sync::set_errno(self.open_error);
-            return 1;
+            return Err(crate::RangeError::Open);
         }
-        let status = crate::sendfile_range(
+        crate::sendfile_range(
             self.file.descriptor(),
             self.fields.begin,
             length,
             &mut self.fields.end,
-        );
-        if status == 0 { 0 } else { status + 1 }
+        )
     }
 
     /// The remaining range, with the original unsigned size conversion.
@@ -135,7 +136,7 @@ mod tests {
         };
         let opened = file(fd);
         assert!(opened.is_some());
-        assert_eq!(request.check(0), 0);
+        assert_eq!(request.check(0), Ok(()));
         assert_eq!(request.fields().end, 6);
         assert_eq!(request.length(), 4);
         drop(request);
@@ -148,15 +149,18 @@ mod tests {
     #[test]
     fn failed_open_remains_a_request_and_invalid_ranges_match_legacy() {
         let missing = c"/nonexistent/swoole-sendfile-request";
-        assert_eq!(SocketFileRequest::open(missing, 0).unwrap().check(0), 1);
+        assert_eq!(
+            SocketFileRequest::open(missing, 0).unwrap().check(0),
+            Err(crate::RangeError::Open)
+        );
         let path =
             std::env::temp_dir().join(format!("swoole-request-range-{}", std::process::id()));
         std::fs::write(&path, b"abcdef").unwrap();
         let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let mut request = SocketFileRequest::open(&name, -1).unwrap();
-        assert_eq!(request.check(0), 4);
+        assert_eq!(request.check(0), Err(crate::RangeError::Outside));
         request.fields().begin = 1;
-        assert_eq!(request.check(3), 0);
+        assert_eq!(request.check(3), Ok(()));
         assert_eq!(request.fields().end, 4);
         drop(request);
         std::fs::remove_file(path).unwrap();

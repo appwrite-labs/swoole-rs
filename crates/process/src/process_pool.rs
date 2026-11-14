@@ -460,8 +460,8 @@ pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
 pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
 /// `onWorkerError`.
 pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
-/// `onWorkerNotFound`: 1 when the pid was handled.
-pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
+/// `onWorkerNotFound`.
+pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus);
 
 /// What a pool's owner installs ([`PoolRef::install`]): the object its hooks read
 /// as the pool's `ptr`, and the hooks. `None` leaves what the pool has.
@@ -610,13 +610,11 @@ impl PoolRef<'_> {
         }
     }
 
-    /// `onWorkerNotFound(pool, status)`: its result, or `None` without one.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "callers ignore the result where upstream's do"
-    )]
-    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) -> Option<c_int> {
-        Some(self.on_worker_not_found()?(self, status))
+    /// `onWorkerNotFound(pool, status)`; nothing without one.
+    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) {
+        if let Some(hook) = self.on_worker_not_found() {
+            hook(self, status);
+        }
     }
 }
 

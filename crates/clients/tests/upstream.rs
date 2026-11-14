@@ -620,10 +620,14 @@ fn rust_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {
     if n > QUESTION - 3 || source.get(n) == Some(&b'.') {
         return INVALID_DOMAIN;
     }
-    domain_encode(
+    if domain_encode(
         source.get(..n).unwrap_or_default(),
         dest.get_mut(..QUESTION).unwrap_or_default(),
-    )
+    ) {
+        0
+    } else {
+        -1
+    }
 }
 
 fn upstream_encode(source: &[u8], n: usize, dest: &mut [u8]) -> c_int {

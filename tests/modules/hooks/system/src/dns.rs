@@ -67,7 +67,7 @@ fn set_dns_server(server: &str) {
 
 /// `swoole_load_resolv_conf()`: `SwooleG.dns_resolvconf_path` is `SW_DNS_RESOLV_CONF`.
 fn load_resolv_conf_() -> bool {
-    dns::load_resolv_conf(dns::RESOLV_CONF) > 0
+    dns::load_resolv_conf(dns::RESOLV_CONF)
 }
 
 /// `swoole_get_dns_server()`: the configured server, read from resolv.conf while none is.
