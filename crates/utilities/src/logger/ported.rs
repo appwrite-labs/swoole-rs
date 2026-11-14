@@ -299,7 +299,13 @@ fn ignore_error() {
 
     // swoole_error_log(SW_LOG_WARNING, code, ...)
     let error_log = |code, message: &CStr| {
-        swr_v1_utils_log(log::LOG_ERROR, LOG_WARNING, code, c"ignore_error", message);
+        swr_v1_utils_log(
+            log::LogKind::Error,
+            LOG_WARNING,
+            code,
+            c"ignore_error",
+            message,
+        );
     };
     error_log(ignored_errcode, c"error 1");
     error_log(errcode, c"error 2");

@@ -93,7 +93,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
     match result {
         Ok(value) => return value,
         Err(WriteError::TooLarge) => log::error_log(
-            log::LOG_WARNING,
+            log::LogLevel::SW_LOG_WARNING as c_int,
             SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,
             origin,
             format_args!("data packet is too large, cannot exceed the socket buffer size"),
@@ -101,7 +101,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
         Err(WriteError::Overflow(queued)) => {
             let (fd, size) = socket.read(|record| (record.fd, record.output.buffer_size));
             log::error_log(
-                log::LOG_WARNING,
+                log::LogLevel::SW_LOG_WARNING as c_int,
                 SW_ERROR_OUTPUT_BUFFER_OVERFLOW,
                 origin,
                 format_args!("socket#{fd} output buffer overflow: ({queued}/{size})"),
@@ -152,7 +152,7 @@ pub unsafe extern "C-unwind" fn reactor_writev(
 ) -> isize {
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         log::error_log(
-            log::LOG_WARNING,
+            log::LogLevel::SW_LOG_WARNING as c_int,
             SW_ERROR_OPERATION_NOT_SUPPORT,
             c"Reactor::_writev",
             format_args!("does not support SSL"),

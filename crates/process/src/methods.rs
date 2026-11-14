@@ -530,11 +530,17 @@ pub(crate) mod tests {
 
     static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
 
-    fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    fn record(
+        kind: swoole_rs_corebase::log::LogKind,
+        level: c_int,
+        code: c_int,
+        origin: &CStr,
+        message: &CStr,
+    ) {
         let text = |s: &CStr| s.to_string_lossy().into_owned();
         if let Ok(mut logged) = LOGGED.lock() {
             logged.push((
-                kind,
+                kind as c_int,
                 level,
                 code,
                 text(origin),

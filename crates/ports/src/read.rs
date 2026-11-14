@@ -882,9 +882,15 @@ pub(crate) mod tests {
     }
 
     /// The crate's test log host; methods.rs's tests install it too.
-    pub(crate) fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    pub(crate) fn record(
+        kind: log::LogKind,
+        level: c_int,
+        code: c_int,
+        origin: &CStr,
+        message: &CStr,
+    ) {
         // As crates/utilities' host, the production one, does.
-        if matches!(kind, log::LOG_SYS_WARNING | log::LOG_ERROR) {
+        if matches!(kind, log::LogKind::SysWarning | log::LogKind::Error) {
             log::set_last_error(code);
         }
         // The log host is process-wide and other tests' threads log through it too, so this
