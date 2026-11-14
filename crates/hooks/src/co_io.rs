@@ -372,9 +372,9 @@ impl Co {
         set_err(self, error);
     }
 
-    /// `set_err(code, message)`, copying the message; non-zero when the copy failed.
+    /// `set_err(code, message)`, copying the message; false when the copy failed.
     #[must_use]
-    pub fn set_error(self, error: c_int, message: &[u8]) -> c_int {
+    pub fn set_error(self, error: c_int, message: &[u8]) -> bool {
         owned_err(self, error, message)
     }
 
@@ -1061,12 +1061,12 @@ mod tests {
         assert_eq!(errno(), libc::EIO);
         assert_eq!(take(), ["last-error:5"]);
         let (first, second) = ([b'a'; 100], [b'b'; 600]);
-        assert_eq!(owned_err(co, libc::ERANGE, &first), 0);
+        assert!(owned_err(co, libc::ERANGE, &first));
         assert_eq!(message(co), first);
-        assert_eq!(owned_err(co, libc::ENOSPC, &second), 0);
+        assert!(owned_err(co, libc::ENOSPC, &second));
         assert_eq!((co.err_code(), errno()), (libc::ENOSPC, libc::ENOSPC));
         assert_eq!(message(co), second);
-        assert_eq!(owned_err(co, 0, b"a\0b"), 0);
+        assert!(owned_err(co, 0, b"a\0b"));
         assert_eq!(
             unsafe { core::slice::from_raw_parts(co.err_msg().cast::<u8>(), 3) },
             b"a\0b"
@@ -1116,26 +1116,26 @@ pub(crate) fn borrowed_err(socket: Co, error: c_int, message: Message) {
 
 /// `set_err(error, message)` with owned text: the code, errno and last error, then
 /// the message once the record's string holds a copy. A failed copy (allocation)
-/// leaves the previous message and returns nonzero.
+/// leaves the previous message and returns false.
 #[expect(
     clippy::must_use_candidate,
     reason = "only callers that report allocation failure read it"
 )]
-pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> c_int {
+pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> bool {
     socket.set_err_code(error);
     set_errno(error);
     (NATIVE.set_last_error)(error);
     // The metadata's first slot owns the error string.
-    let Some((status, view)) = socket.with_extra(|extra| {
+    let Some((stored, view)) = socket.with_extra(|extra| {
         let slot = &mut extra.strings[0];
         (slot.set(message), slot.view())
     }) else {
-        return -1;
+        return false;
     };
-    if status == 0 {
+    if stored {
         // SAFETY: the record's own error string, whose assignment left stable,
         // terminated bytes.
         unsafe { socket.set_err_msg(view.data) };
     }
-    status
+    stored
 }

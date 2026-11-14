@@ -2044,8 +2044,7 @@ fn recv_packet() {
 
 fn set_error() {
     let sock = Sock::new(SW_SOCK_TCP);
-    let status = sock.co().set_error(1000, TEST_STR);
-    assert_eq!(status, 0);
+    assert!(sock.co().set_error(1000, TEST_STR));
 
     assert_eq!(sock.err_code(), 1000);
     // SAFETY: the record's error text, NUL-terminated.

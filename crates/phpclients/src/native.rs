@@ -224,7 +224,7 @@ impl Co {
 
     /// `set_err(code, message)`.
     pub(crate) fn set_error(self, code: c_int, message: &[u8]) {
-        if self.0.set_error(code, message) != 0 {
+        if !self.0.set_error(code, message) {
             // std::bad_alloc, which upstream leaves uncaught.
             swoole_rs_corebase::fatal("out of memory storing a socket error");
         }

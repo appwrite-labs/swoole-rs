@@ -123,7 +123,7 @@ impl ResolverRequest {
     ) -> PreparedResolver {
         let mut record = Self::boxed(family, socktype, protocol);
         let [name_slot, service_slot, _] = &mut record.strings;
-        if name_slot.set(name) != 0 || service_slot.set(service) != 0 {
+        if !name_slot.set(name) || !service_slot.set(service) {
             return PreparedResolver {
                 owner: ptr::null_mut(),
                 fields: ptr::null_mut(),
@@ -210,9 +210,10 @@ impl ResolverRequest {
         };
         let text = terminated(&text);
         // SAFETY: a slot that nothing reads while this sets it (see `copy`).
-        match unsafe { self.strings[2].set_shared(&text) } {
-            0 => Ok(()),
-            _ => Err(ResolveError::Alloc),
+        if unsafe { self.strings[2].set_shared(&text) } {
+            Ok(())
+        } else {
+            Err(ResolveError::Alloc)
         }
     }
 

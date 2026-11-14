@@ -332,7 +332,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let info = socket.info;
     config.set_listening_socket(Box::new(socket).into_socket());
     config.r#type = kind;
-    if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
+    if !with_host(&info, |host| config.host.set(host.to_bytes())) {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
     config.port.set(swr_v1_clients_address_port(&info));

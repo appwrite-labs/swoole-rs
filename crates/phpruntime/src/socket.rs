@@ -536,7 +536,7 @@ pub mod co {
 
     /// `set_err(code, message)`, copying the message.
     pub fn set_error(socket: Co, code: c_int, message: &[u8]) {
-        if socket.set_error(code, message) != 0 {
+        if !socket.set_error(code, message) {
             // std::bad_alloc, which upstream leaves uncaught.
             swoole_rs_corebase::fatal("out of memory storing a socket error");
         }
