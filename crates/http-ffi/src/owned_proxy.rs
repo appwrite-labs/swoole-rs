@@ -14,8 +14,10 @@ const HANDSHAKE_FAILED: i32 = 7103;
 pub fn http_proxy(host: &[u8], port: i32, user: &[u8], password: &[u8]) -> Box<ProxyState> {
     let proxy = ProxyState::new(false);
     let authenticated = !user.is_empty() && !password.is_empty();
-    let result = proxy.configure([host, user, password], port, authenticated, -1);
-    if result.status != 0 {
+    if proxy
+        .configure([host, user, password], port, authenticated, -1)
+        .is_err()
+    {
         swoole_rs_corebase::fatal("the HTTP proxy settings can't be stored");
     }
     proxy
@@ -116,7 +118,11 @@ mod tests {
             Self(http_proxy(host, port, user, password))
         }
         fn set(&self, index: usize, value: &[u8]) -> i32 {
-            self.0.set_string(index, value)
+            if self.0.set_string(index, value) {
+                0
+            } else {
+                -2
+            }
         }
         fn get(&self, index: usize) -> Vec<u8> {
             self.0.string(index).to_vec()

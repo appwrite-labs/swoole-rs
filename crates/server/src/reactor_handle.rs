@@ -86,7 +86,7 @@ impl Reactor {
     pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> bool {
         // SAFETY: a live socket, which stays live while it is registered.
         let sock = unsafe { Socket::from_ptr(sock.as_ptr()) };
-        sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events) == 0)
+        sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
     }
     /// `Reactor::interest`'s `kind` of `sock`: whether it applied.
     pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> bool {

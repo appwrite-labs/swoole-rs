@@ -329,7 +329,12 @@ impl<'a> Client<'a> {
     }
 
     pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
-        native::connect(self.handle(), &cstring(host), port, timeout, flags)
+        // `Client::connect`'s SW_OK or SW_ERR.
+        if native::connect(self.handle(), &cstring(host), port, timeout, flags) {
+            SW_OK
+        } else {
+            -1
+        }
     }
 
     fn send(&self, data: &[u8], flags: c_int) -> isize {
@@ -350,7 +355,11 @@ impl<'a> Client<'a> {
     }
 
     fn close(&self) -> c_int {
-        native::close(self.handle())
+        if native::close(self.handle()) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     pub(super) fn shutdown(&self, how: c_int) -> c_int {

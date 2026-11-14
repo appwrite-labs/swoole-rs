@@ -1,9 +1,5 @@
 //! The global functions of `php_swoole.cc`, each as upstream parses and answers.
-use crate::{
-    constants::VERSION,
-    log_put,
-    module::{CALL_USER_SHUTDOWNFUNC_BEGIN, RINIT_END},
-};
+use crate::{constants::VERSION, log_put, module::ReqStatus};
 use std::{
     ffi::{CStr, c_char, c_int},
     ptr,
@@ -264,8 +260,8 @@ fn mime_type_list(call: &Call) {
 
 fn shutdown_begin(call: &Call) {
     let status = &crate::module::globals().req_status;
-    if status.get() == RINIT_END {
-        status.set(CALL_USER_SHUTDOWNFUNC_BEGIN);
+    if status.get() == ReqStatus::RinitEnd {
+        status.set(ReqStatus::CallUserShutdownfuncBegin);
         call.set_bool(true);
     } else {
         swoole_rs_zend::bailout::defer(report(

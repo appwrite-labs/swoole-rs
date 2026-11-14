@@ -173,8 +173,8 @@ mod descriptor {
         socket().map_or(0, |socket| socket.read(|record| record.events))
     }
 
-    pub(super) fn add(events: i32) -> i32 {
-        socket().map_or(-1, |socket| event_add(socket, events))
+    pub(super) fn add(events: i32) -> bool {
+        socket().is_some_and(|socket| event_add(socket, events))
     }
 
     pub(super) fn del() {

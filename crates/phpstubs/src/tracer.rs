@@ -6,15 +6,15 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_swoole_tracer_leak_detect: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_tracer_leak_detect: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::IS_VOID, false),
     a::arg_type(c"threshold", 0, false, z::IS_LONG, false, Some(c"64")),
 ]);
-pub static arginfo_swoole_tracer_prof_begin: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_tracer_prof_begin: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"options", 0, false, z::IS_ARRAY, true, Some(c"null")),
 ]);
-pub static arginfo_swoole_tracer_prof_end: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_tracer_prof_end: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"output_file", 0, false, z::IS_STRING, false, None),
 ]);

@@ -465,19 +465,19 @@ impl Co {
         self.record()
             .socket
             .get()
-            .is_some_and(|network| change(network, events) == 0)
+            .is_some_and(|network| change(network, events))
     }
 
     /// `Reactor::interest(socket, kind, 0)` of the open socket on the thread's reactor,
-    /// registered as [`Co::register`] registers it: the change's result, 0 when nothing
-    /// changes, -1 without a socket or a reactor.
+    /// registered as [`Co::register`] registers it: whether the change worked, true when
+    /// nothing changes, false without a socket or a reactor.
     #[must_use]
-    pub fn interest(self, kind: swoole_rs_reactor::Interest) -> c_int {
+    pub fn interest(self, kind: swoole_rs_reactor::Interest) -> bool {
         let interest = swoole_rs_reactor::event_api::event_interest;
         self.record()
             .socket
             .get()
-            .map_or(-1, |network| interest(network, kind, 0))
+            .is_some_and(|network| interest(network, kind, 0))
     }
 
     /// The record's metadata, `None` once released.

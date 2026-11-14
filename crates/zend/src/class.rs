@@ -1,10 +1,11 @@
 //! Internal classes registered at MINIT, with their object handlers.
 use crate::{
     Minit, Parent, Value, ZStr,
+    arginfo::Table,
     sys::{
         HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry,
-        zend_function_entry, zend_hash_find, zend_long, zend_object, zend_object_handlers,
-        zend_string, zend_throw_error, zend_throw_exception, zval,
+        zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string,
+        zend_throw_error, zend_throw_exception, zval,
     },
 };
 use std::{
@@ -159,19 +160,18 @@ impl Class {
         }
     }
 
-    /// Register `name` with `methods` (none when empty), extending `parent`,
+    /// Register `name` with `methods` (or [`Table::NONE`]), extending `parent`,
     /// then let `configure` adjust the entry and a copy of the standard
     /// handlers (Swoole's `SW_INIT_CLASS_ENTRY` followed by its
     /// `SW_SET_CLASS_*` macros), and `layout` install its own.
     /// # Panics
-    /// `methods` is neither empty nor `PHP_FE_END`-terminated, or `layout` is
-    /// not this class's: a [`CustomClass`](crate::CustomClass) registers with
+    /// `layout` is not this class's: a [`CustomClass`](crate::CustomClass) registers with
     /// its own, any other class with none.
     pub(crate) fn register_child(
         &self,
         _minit: &Minit,
         name: &CStr,
-        methods: &'static [zend_function_entry],
+        methods: Table,
         parent: Option<Parent>,
         layout: Option<Layout>,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
@@ -183,18 +183,10 @@ impl Class {
             ),
             Some(layout) => assert!(ptr::eq(self, layout.0), "a CustomClass's own layout"),
         }
-        let methods = if methods.is_empty() {
-            ptr::null()
-        } else {
-            assert!(
-                methods.last().is_some_and(|end| end.fname.is_null()),
-                "a method table ends with PHP_FE_END"
-            );
-            methods.as_ptr()
-        };
+        let methods = methods.as_ptr();
         let parent = parent.map_or(ptr::null_mut(), Parent::entry);
         // SAFETY: MINIT (the token), with a NUL-terminated name, a static,
-        // terminated table or none, and a registered parent or none.
+        // terminated table of typed rows or none, and a registered parent or none.
         let entry =
             unsafe { swr_zend_register_class(name.as_ptr(), name.count_bytes(), methods, parent) };
         let mut handlers = std_object_handlers;

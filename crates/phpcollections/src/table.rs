@@ -96,7 +96,7 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn table_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_object::<Held>(c"Swoole\\Table", METHODS.rows(), 0);
+    minit.register_object::<Held>(c"Swoole\\Table", METHODS.table(), 0);
     minit.implements(&TABLE, minit.iterator());
     minit.implements(&TABLE, minit.countable());
     minit.property_null(&TABLE, c"size", ZEND_ACC_PUBLIC);

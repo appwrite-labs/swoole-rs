@@ -6,49 +6,49 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Thread_Map___construct: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map___construct: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin(0, 0),
     a::arg_type(c"array", 0, false, z::IS_ARRAY, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Thread_Map_offsetGet: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_offsetGet: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Thread_Map_offsetExists: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_offsetExists: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Thread_Map_offsetSet: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_offsetSet: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_VOID, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Thread_Map_offsetUnset: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_offsetUnset: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Thread_Map_find: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_find: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, None),
 ]);
 pub static arginfo_class_Swoole_Thread_Map_count: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
 pub static arginfo_class_Swoole_Thread_Map_keys: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
 pub use self::arginfo_class_Swoole_Thread_Map_keys as arginfo_class_Swoole_Thread_Map_values;
-pub static arginfo_class_Swoole_Thread_Map_incr: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_incr: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, Some(c"1")),
 ]);
 pub use self::arginfo_class_Swoole_Thread_Map_incr as arginfo_class_Swoole_Thread_Map_decr;
-pub static arginfo_class_Swoole_Thread_Map_add: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Map_add: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, None),
 ]);
 pub use self::arginfo_class_Swoole_Thread_Map_add as arginfo_class_Swoole_Thread_Map_update;
 pub static arginfo_class_Swoole_Thread_Map_clean: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
 pub use self::arginfo_class_Swoole_Thread_Map_clean as arginfo_class_Swoole_Thread_Map_sort;
 pub use self::arginfo_class_Swoole_Thread_Map_keys as arginfo_class_Swoole_Thread_Map_toArray;

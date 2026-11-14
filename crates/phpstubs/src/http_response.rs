@@ -6,26 +6,26 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Http_Response_write: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_write: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"content", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Http_Response_end: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_end: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"content", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_sendfile: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_sendfile: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_redirect: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_redirect: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"location", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"http_code", 0, false, z::IS_LONG, false, Some(c"302")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_cookie: a::ArgInfo<11> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_cookie: a::ArgInfo<11> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_class_mask(
         c"name_or_object",
@@ -45,7 +45,7 @@ pub static arginfo_class_Swoole_Http_Response_cookie: a::ArgInfo<11> = a::ArgInf
     a::arg_type(c"priority", 0, false, z::IS_STRING, false, Some(c"''")),
     a::arg_type(c"partitioned", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_rawcookie: a::ArgInfo<11> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_rawcookie: a::ArgInfo<11> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"value", 0, false, z::IS_STRING, false, Some(c"''")),
@@ -58,17 +58,17 @@ pub static arginfo_class_Swoole_Http_Response_rawcookie: a::ArgInfo<11> = a::Arg
     a::arg_type(c"priority", 0, false, z::IS_STRING, false, Some(c"''")),
     a::arg_type(c"partitioned", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_header: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_header: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_mask(c"value", 0, false, z::MAY_BE_STRING | z::MAY_BE_ARRAY, None),
     a::arg_type(c"format", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
 pub static arginfo_class_Swoole_Http_Response_initHeader: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
 pub use self::arginfo_class_Swoole_Http_Response_initHeader as arginfo_class_Swoole_Http_Response_isWritable;
 pub use self::arginfo_class_Swoole_Http_Response_initHeader as arginfo_class_Swoole_Http_Response_detach;
-pub static arginfo_class_Swoole_Http_Response_create: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_create: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_class_mask(0, 0, c"Swoole\\Http\\Response", z::MAY_BE_FALSE),
     a::arg_mask(
         c"server",
@@ -80,7 +80,7 @@ pub static arginfo_class_Swoole_Http_Response_create: a::ArgInfo<3> = a::ArgInfo
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
 pub use self::arginfo_class_Swoole_Http_Response_initHeader as arginfo_class_Swoole_Http_Response_upgrade;
-pub static arginfo_class_Swoole_Http_Response_push: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_push: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_class_mask(
         c"data",
@@ -107,7 +107,7 @@ pub static arginfo_class_Swoole_Http_Response_push: a::ArgInfo<4> = a::ArgInfo([
         Some(c"SWOOLE_WEBSOCKET_FLAG_FIN"),
     ),
 ]);
-pub static arginfo_class_Swoole_Http_Response_recv: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_recv: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class_mask(
         0,
         0,
@@ -117,16 +117,16 @@ pub static arginfo_class_Swoole_Http_Response_recv: a::ArgInfo<2> = a::ArgInfo([
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
 ]);
 pub use self::arginfo_class_Swoole_Http_Response_initHeader as arginfo_class_Swoole_Http_Response_close;
-pub static arginfo_class_Swoole_Http_Response_trailer: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_trailer: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"value", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Http_Response_ping: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_ping: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_goaway: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_goaway: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(
         c"error_code",
@@ -138,12 +138,12 @@ pub static arginfo_class_Swoole_Http_Response_goaway: a::ArgInfo<3> = a::ArgInfo
     ),
     a::arg_type(c"debug_data", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_status: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_status: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"http_code", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Response_disconnect: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Response_disconnect: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(
         c"code",
@@ -156,4 +156,4 @@ pub static arginfo_class_Swoole_Http_Response_disconnect: a::ArgInfo<3> = a::Arg
     a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
 ]);
 pub static arginfo_class_Swoole_Http_Response___destruct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
+    a::ArgInfo::new([a::begin(0, 0)]);

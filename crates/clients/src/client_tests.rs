@@ -83,9 +83,9 @@ pub(super) mod ops {
         log("connect Async");
         mock(|m| m.connect_async.pop()).unwrap_or(Connect::Error)
     }
-    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> c_int {
+    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> bool {
         log(format!("event {op:?} {events}"));
-        OK
+        true
     }
     pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> bool {
         *error = mock(|m| m.socket_error);
@@ -316,7 +316,7 @@ fn free(client: *mut Client) {
 }
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
-fn writable(client: *mut Client) -> c_int {
+fn writable(client: *mut Client) -> bool {
     let mut event = unsafe { swoole_rs_reactor::Event::new(0, 0, 0, core::ptr::null_mut()) };
     // SAFETY: the mocked effects never touch the reactor.
     let reactor = unsafe { Running::new(core::ptr::null_mut()) };
@@ -329,7 +329,11 @@ fn flag(client: *mut Client, name: Flag) -> bool {
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
-    super::connect(Handle(client), host, 80, timeout, flags)
+    if super::connect(Handle(client), host, 80, timeout, flags) {
+        OK
+    } else {
+        ERR
+    }
 }
 
 #[test]
@@ -369,10 +373,10 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
 fn async_close_detaches_then_runs_on_close_once() {
     let client = client(1, true, true);
     Handle(client).set(Flag::Active, true);
-    assert_eq!(close(Handle(client)), ERR, "close(-1) fails");
+    assert!(!close(Handle(client)), "close(-1) fails");
     assert_eq!(taken(), ["event Del 0", "call Close 0"]);
     assert!(flag(client, Flag::Closed) && !flag(client, Flag::Active));
-    assert_eq!(close(Handle(client)), ERR);
+    assert!(!close(Handle(client)));
     assert_eq!(taken(), Vec::<String>::new());
     free(client);
 }
@@ -382,7 +386,7 @@ fn close_returns_zero_when_on_close_released_the_client() {
     let client = client(1, true, true);
     Handle(client).set(Flag::Active, true);
     mock(|m| m.releases = Some(ClientEvent::Close));
-    assert_eq!(close(Handle(client)), OK);
+    assert!(close(Handle(client)));
     assert_eq!(sock().fd, -1);
     free(client);
 }
@@ -533,8 +537,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     set_proxy(client, false);
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 100);
-    let result = writable(client);
-    assert_eq!(result, 3);
+    assert!(writable(client));
     assert_eq!(taken(), ["event Set 512", "write 3"]);
     assert_eq!(
         Handle(client).proxy_state(Proxy::Socks5),
@@ -602,7 +605,7 @@ fn stream_read_delivers_data_and_closes_at_eof() {
     Handle(client).set(Flag::Active, true);
     Handle(client).input_init();
     mock(|m| m.io = vec![5]);
-    assert_eq!(on_read(Handle(client)), OK);
+    assert!(on_read(Handle(client)));
     assert_eq!(taken(), ["recv 65536", "call Receive 5"]);
     mock(|m| m.io = vec![0]);
     on_read(Handle(client));
@@ -653,10 +656,10 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle(client).input_init();
         (*fields).open_length_check = true;
-        assert_eq!(on_read(Handle(client)), OK);
+        assert!(on_read(Handle(client)));
         assert!(taken().contains(&"framed false".to_owned()));
         (*fields).open_eof_check = true;
-        assert_eq!(on_read(Handle(client)), OK);
+        assert!(on_read(Handle(client)));
         assert!(taken().contains(&"framed true".to_owned()));
     }
     free(client);

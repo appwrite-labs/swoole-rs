@@ -79,8 +79,8 @@ pub(crate) trait Connection {
     /// One framed receive into the current buffer: negative closes the connection.
     fn receive(&mut self, framing: Framing) -> i64;
     /// Hands on `length` bytes from the buffer's start; the connection's request is
-    /// read afresh afterwards. Negative closes the connection.
-    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64;
+    /// read afresh afterwards. False closes the connection.
+    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool;
     /// `!socket->removed && conn->active`: a closed connection's slot is not read.
     fn active(&mut self) -> bool;
     fn upgrade(&mut self) -> Upgrade;
@@ -138,8 +138,6 @@ enum Log {
     TooLarge,
 }
 
-const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
-const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
 /// `SW_HTTP_PRI`, `SW_HTTP_HEADER_MAX_SIZE`, `sizeof(SW_HTTP2_PRI_STRING) - 1`,
 /// `SW_BUFFER_SIZE_BIG`.
 const HTTP_PRI: u8 = 27;
@@ -163,9 +161,10 @@ fn set_offset(n: &mut impl Connection, value: u64) {
     n.buffer().offset = value.cast_signed();
 }
 
-/// `ListenPort::readable_callback_*`: `SW_OK`, or `SW_ERR` when an EOF port has no buffer.
+/// `ListenPort::readable_callback_*`: false when an EOF port has no buffer or a raw
+/// port's dispatch failed.
 #[inline(always)]
-pub(crate) fn readable(kind: Readable, n: &mut impl Connection) -> i32 {
+pub(crate) fn readable(kind: Readable, n: &mut impl Connection) -> bool {
     match kind {
         Readable::Raw => raw(n),
         Readable::Length => framed(n, Framing::Length, true),
@@ -195,28 +194,28 @@ fn read_error(n: &mut impl Connection) -> Failure {
     }
 }
 
-fn raw(n: &mut impl Connection) -> i32 {
+fn raw(n: &mut impl Connection) -> bool {
     n.use_recv_buffer();
     let received = n.recv(true);
     if received < 0 {
         if let Failure::Close = read_error(n) {
             n.close();
         }
-        return SW_OK;
+        return true;
     }
     if received == 0 {
         n.close();
-        return SW_OK;
+        return true;
     }
     let length = received.cast_unsigned();
     set_offset(n, length);
     n.buffer().length = size(received);
-    i32::try_from(n.dispatch(Dispatch::Task, length)).unwrap_or(SW_ERR)
+    n.dispatch(Dispatch::Task, length)
 }
 
 /// Length and Redis framing; length (and EOF) ports free a large drained buffer.
 #[inline(always)]
-fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> i32 {
+fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> bool {
     n.use_recv_buffer();
     if n.receive(framing) < 0 {
         n.close_errno();
@@ -225,20 +224,20 @@ fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> i32 {
     if release {
         n.release(true);
     }
-    SW_OK
+    true
 }
 
-fn eof(n: &mut impl Connection) -> i32 {
+fn eof(n: &mut impl Connection) -> bool {
     if !n.use_recv_buffer() {
         n.close();
-        return SW_ERR;
+        return false;
     }
     if n.receive(Framing::Eof) < 0 {
         n.close_errno();
         n.close();
     }
     n.release(true);
-    SW_OK
+    true
 }
 
 /// Where the HTTP reader goes next; upstream's labels.
@@ -251,7 +250,7 @@ enum Step {
     Done,
 }
 
-fn http(n: &mut impl Connection) -> i32 {
+fn http(n: &mut impl Connection) -> bool {
     let upgrade = n.upgrade();
     if upgrade.websocket {
         if !upgrade.upgraded {
@@ -276,10 +275,10 @@ fn http(n: &mut impl Connection) -> i32 {
             Step::Close => {
                 n.destroy_request();
                 n.close();
-                return SW_OK;
+                return true;
             }
             Step::Length => return framed(n, Framing::Length, true),
-            Step::Done => return SW_OK,
+            Step::Done => return true,
         }
     }
 }
@@ -482,7 +481,7 @@ fn bodyless(n: &mut impl Connection) -> Option<Step> {
     set_offset(n, header_length);
     if !(n.static_handler() && n.serve_static()) {
         let header_length = u64::from(n.request().header_length);
-        if n.dispatch(Dispatch::Request, header_length) < 0 {
+        if !n.dispatch(Dispatch::Request, header_length) {
             return Some(Step::Close);
         }
     }
@@ -561,7 +560,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
     } else {
         Dispatch::Request
     };
-    if n.dispatch(dispatch, request_length) < 0 {
+    if !n.dispatch(dispatch, request_length) {
         return Step::Close;
     }
     if n.active() {
@@ -781,7 +780,7 @@ pub(crate) mod tests {
             self.effects.push(Effect::Receive(framing));
             0
         }
-        fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
+        fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
             if dispatch == Dispatch::Upload {
                 self.effects.push(Effect::Upload);
             }
@@ -790,7 +789,7 @@ pub(crate) mod tests {
             let url = self.req.url_offset as usize;
             self.urls
                 .push(self.bytes[url..url + self.req.url_length as usize].to_vec());
-            0
+            true
         }
         fn active(&mut self) -> bool {
             true
@@ -906,10 +905,14 @@ pub(crate) mod tests {
             .collect()
     }
 
+    const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
+    const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
+
+    /// The readable callback's status, as upstream returns it.
     fn run(kind: Readable, fake: &mut Fake) -> i32 {
         log::swr_v1_core_set_log_host(record);
         fake.point();
-        readable(kind, fake)
+        if readable(kind, fake) { SW_OK } else { SW_ERR }
     }
 
     const GET: &[u8] = b"GET / HTTP/1.1\r\n\r\n";

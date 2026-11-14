@@ -210,7 +210,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     minit.register_child(
         &SERVER,
         c"Swoole\\WebSocket\\Server",
-        SERVER_METHODS.rows(),
+        SERVER_METHODS.table(),
         http_server,
         |entry, _| {
             if !serializable {
@@ -221,7 +221,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     minit.register(
         &FRAME,
         c"Swoole\\WebSocket\\Frame",
-        FRAME_METHODS.rows(),
+        FRAME_METHODS.table(),
         |_, _| {},
     );
     minit.implements(&FRAME, minit.stringable());
@@ -244,7 +244,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     minit.register_child(
         &CLOSE_FRAME,
         c"Swoole\\WebSocket\\CloseFrame",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         frame,
         |_, _| {},
     );

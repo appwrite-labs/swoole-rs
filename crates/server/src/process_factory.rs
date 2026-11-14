@@ -57,6 +57,11 @@ fn worker_id(id: i64) -> u16 {
     u16::try_from(id & 0xffff).unwrap_or_default()
 }
 
+/// `schedule_worker(fd, nullptr)`'s `int`: the worker's id or a negative result.
+fn scheduled(serv: view::Server<'_>, fd: c_int) -> i64 {
+    schedule_worker(serv, fd, None).map_or_else(i64::from, i64::from)
+}
+
 /// This process's worker id, as `swoole_get_worker_id()`'s `int`.
 fn current_worker() -> i64 {
     i64::from(swoole_get_worker_id().cast_signed())
@@ -69,14 +74,16 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
     let fd = u32::try_from(send.info().fd & 0xffff_ffff)
         .unwrap_or_default()
         .cast_signed();
-    let target = schedule_worker(serv, fd, Some(send));
-    if target < 0 {
-        if target != DISPATCH_DISCARD_PACKET && target != DISPATCH_CLOSE_CONNECTION {
-            let m = format_args!("invalid target worker id[{target}]");
-            log::warning(c"ProcessFactory::dispatch", m);
+    let target = match schedule_worker(serv, fd, Some(send)) {
+        Ok(target) => target,
+        Err(target) => {
+            if target != DISPATCH_DISCARD_PACKET && target != DISPATCH_CLOSE_CONNECTION {
+                let m = format_args!("invalid target worker id[{target}]");
+                log::warning(c"ProcessFactory::dispatch", m);
+            }
+            return false;
         }
-        return false;
-    }
+    };
     let (kind, event) = (send.info().kind, send.info().event());
     if event.is_some_and(ServerEvent::is_stream) {
         let conn = serv.state().connection(fd.into(), Lookup::ByFd);
@@ -141,7 +148,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     }
     if conn.overflow() && matches!(event, Some(ServerEvent::SendData | ServerEvent::SendFile)) {
         // `process_is_supported_send_yield`: the worker that owns the connection waits.
-        let owner = || i64::from(schedule_worker(serv, conn.fd(), None)) == current_worker();
+        let owner = || scheduled(serv, conn.fd()) == current_worker();
         if config.send_yield.get() && config.hash_dispatch() && owner() {
             log::set_last_error(OUTPUT_SEND_YIELD);
         } else {
@@ -186,7 +193,7 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
     if conn.close_actively() {
         let hash = config.hash_dispatch();
         let worker = if hash {
-            i64::from(schedule_worker(serv, conn.fd(), None))
+            scheduled(serv, conn.fd())
         } else {
             i64::from(conn.fd())
                 .checked_rem(config.worker_num.get().into())

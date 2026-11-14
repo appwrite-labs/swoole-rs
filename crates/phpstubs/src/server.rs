@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Server___construct: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server___construct: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin(0, 0),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, Some(c"'0.0.0.0'")),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"0")),
@@ -20,17 +20,18 @@ pub static arginfo_class_Swoole_Server___construct: a::ArgInfo<5> = a::ArgInfo([
         Some(c"SWOOLE_SOCK_TCP"),
     ),
 ]);
-pub static arginfo_class_Swoole_Server___destruct: a::ArgInfo<1> = a::ArgInfo([a::begin(0, 0)]);
-pub static arginfo_class_Swoole_Server_set: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server___destruct: a::ArgInfo<1> =
+    a::ArgInfo::new([a::begin(0, 0)]);
+pub static arginfo_class_Swoole_Server_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_on: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_on: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"event_name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_getCallback: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_getCallback: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class_mask(
         1,
         0,
@@ -39,40 +40,40 @@ pub static arginfo_class_Swoole_Server_getCallback: a::ArgInfo<2> = a::ArgInfo([
     ),
     a::arg_type(c"event_name", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_listen: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_listen: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_class_mask(3, 0, c"Swoole\\Server\\Port", z::MAY_BE_FALSE),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"sock_type", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_sendMessage: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_sendMessage: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"message", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"dst_worker_id", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_addProcess: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_addProcess: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_class(c"process", 0, false, c"Swoole\\Process", false, None),
 ]);
-pub static arginfo_class_Swoole_Server_addCommand: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_addCommand: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"accepted_process_types", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
 pub static arginfo_class_Swoole_Server_start: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Server_stop: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_class_Swoole_Server_stop: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"workerId", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Server_send: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_send: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_mask(c"fd", 0, false, z::MAY_BE_LONG | z::MAY_BE_STRING, None),
     a::arg_type(c"send_data", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"serverSocket", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Server_sendfile: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_sendfile: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"conn_fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
@@ -80,41 +81,41 @@ pub static arginfo_class_Swoole_Server_sendfile: a::ArgInfo<5> = a::ArgInfo([
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Server_stats: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
-pub static arginfo_class_Swoole_Server_bind: a::ArgInfo<3> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+pub static arginfo_class_Swoole_Server_bind: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"uid", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_sendto: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_sendto: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_type(c"ip", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"send_data", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"server_socket", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Server_sendwait: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_sendwait: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"conn_fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"send_data", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_exists: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_exists: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_protect: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_protect: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"is_protected", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
-pub static arginfo_class_Swoole_Server_close: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_close: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"reset", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub use self::arginfo_class_Swoole_Server_exists as arginfo_class_Swoole_Server_pause;
 pub use self::arginfo_class_Swoole_Server_exists as arginfo_class_Swoole_Server_resume;
-pub static arginfo_class_Swoole_Server_task: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_task: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"taskWorkerIndex", 0, false, z::IS_LONG, false, Some(c"-1")),
@@ -127,27 +128,27 @@ pub static arginfo_class_Swoole_Server_task: a::ArgInfo<4> = a::ArgInfo([
         Some(c"null"),
     ),
 ]);
-pub static arginfo_class_Swoole_Server_taskwait: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_taskwait: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0.5")),
     a::arg_type(c"taskWorkerIndex", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Server_taskWaitMulti: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_taskWaitMulti: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY),
     a::arg_type(c"tasks", 0, false, z::IS_ARRAY, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0.5")),
 ]);
-pub static arginfo_class_Swoole_Server_taskCo: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_taskCo: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"tasks", 0, false, z::IS_ARRAY, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0.5")),
 ]);
-pub static arginfo_class_Swoole_Server_finish: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_finish: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_reload: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_reload: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(
         c"only_reload_taskworker",
@@ -159,7 +160,7 @@ pub static arginfo_class_Swoole_Server_reload: a::ArgInfo<2> = a::ArgInfo([
     ),
 ]);
 pub use self::arginfo_class_Swoole_Server_start as arginfo_class_Swoole_Server_shutdown;
-pub static arginfo_class_Swoole_Server_heartbeat: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_heartbeat: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY),
     a::arg_type(
         c"ifCloseConnection",
@@ -170,7 +171,7 @@ pub static arginfo_class_Swoole_Server_heartbeat: a::ArgInfo<2> = a::ArgInfo([
         Some(c"true"),
     ),
 ]);
-pub static arginfo_class_Swoole_Server_command: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_command: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_mask(4, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING | z::MAY_BE_ARRAY),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"process_id", 0, false, z::IS_LONG, false, None),
@@ -178,28 +179,28 @@ pub static arginfo_class_Swoole_Server_command: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"json_decode", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
-pub static arginfo_class_Swoole_Server_getClientList: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_getClientList: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY),
     a::arg_type(c"start_fd", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"find_count", 0, false, z::IS_LONG, false, Some(c"10")),
 ]);
-pub static arginfo_class_Swoole_Server_getClientInfo: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_getClientInfo: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"reactor_id", 0, false, z::IS_LONG, false, Some(c"-1")),
     a::arg_type(c"ignoreError", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub static arginfo_class_Swoole_Server_getWorkerId: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE)]);
-pub static arginfo_class_Swoole_Server_getWorkerPid: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE)]);
+pub static arginfo_class_Swoole_Server_getWorkerPid: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"worker_id", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
 pub use self::arginfo_class_Swoole_Server_getWorkerPid as arginfo_class_Swoole_Server_getWorkerStatus;
 pub static arginfo_class_Swoole_Server_getManagerPid: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
 pub use self::arginfo_class_Swoole_Server_getManagerPid as arginfo_class_Swoole_Server_getMasterPid;
-pub static arginfo_class_Swoole_Server_getSocket: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_getSocket: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class_mask(0, 0, c"Socket", z::MAY_BE_FALSE),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
@@ -207,36 +208,37 @@ pub use self::arginfo_class_Swoole_Server___destruct as arginfo_class_Swoole_Con
 pub use self::arginfo_class_Swoole_Server___destruct as arginfo_class_Swoole_Connection_Iterator___destruct;
 pub use self::arginfo_class_Swoole_Server_getManagerPid as arginfo_class_Swoole_Server_getLastError;
 pub static arginfo_class_Swoole_Connection_Iterator_rewind: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
 pub use self::arginfo_class_Swoole_Connection_Iterator_rewind as arginfo_class_Swoole_Connection_Iterator_next;
 pub static arginfo_class_Swoole_Connection_Iterator_current: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_MIXED, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
 pub use self::arginfo_class_Swoole_Connection_Iterator_current as arginfo_class_Swoole_Connection_Iterator_key;
 pub use self::arginfo_class_Swoole_Server_getManagerPid as arginfo_class_Swoole_Connection_Iterator_count;
 pub use self::arginfo_class_Swoole_Server_start as arginfo_class_Swoole_Connection_Iterator_valid;
-pub static arginfo_class_Swoole_Connection_Iterator_offsetExists: a::ArgInfo<2> = a::ArgInfo([
-    a::begin_type(1, 0, z::_IS_BOOL, false),
-    a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
-]);
-pub static arginfo_class_Swoole_Connection_Iterator_offsetGet: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Connection_Iterator_offsetExists: a::ArgInfo<2> =
+    a::ArgInfo::new([
+        a::begin_type(1, 0, z::_IS_BOOL, false),
+        a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
+    ]);
+pub static arginfo_class_Swoole_Connection_Iterator_offsetGet: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Connection_Iterator_offsetSet: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Connection_Iterator_offsetSet: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_VOID, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Connection_Iterator_offsetUnset: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Connection_Iterator_offsetUnset: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
 ]);
 pub use self::arginfo_class_Swoole_Server_finish as arginfo_class_Swoole_Server_Task_finish;
-pub static arginfo_class_Swoole_Server_Task_pack: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_Task_pack: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_Task_unpack: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_Task_unpack: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_MIXED, false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);

@@ -5,6 +5,7 @@ use crate::{DispatchMode, Mode};
 use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
+use swoole_rs_corebase::HookType;
 use swoole_rs_corebase::ServerEvent;
 
 use swoole_rs_buffer::string::CppString;
@@ -20,7 +21,7 @@ use swoole_rs_process::worker_record::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 
-use super::{HANDLER_IGNORE, Wait};
+use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
@@ -29,10 +30,6 @@ use crate::view;
 /// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
-/// `swGlobalHookType`'s worker and shutdown hooks.
-const HOOK_BEFORE_WORKER_START: c_int = 2;
-const HOOK_BEFORE_SERVER_SHUTDOWN: c_int = 6;
-const HOOK_BEFORE_WORKER_STOP: c_int = 8;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const INVALID_PARAMS: c_int = 505;
@@ -206,11 +203,11 @@ fn client_cert(data: &[u8]) -> CppString {
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
-fn global_hook(serv: view::Server<'_>, worker: Worker<'_>, hook: c_int) {
+fn global_hook(serv: view::Server<'_>, worker: Worker<'_>, hook: HookType) {
     if !swoole_rs_corebase::swoole_isset_hook(hook) {
         return;
     }
-    if hook == HOOK_BEFORE_SERVER_SHUTDOWN {
+    if hook == HookType::BEFORE_SERVER_SHUTDOWN {
         serv.call_hook(view::ServerHook::BeforeShutdown);
         return;
     }
@@ -250,7 +247,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
     if serv.config().open_cpu_affinity.get() {
         set_cpu_affinity(serv.config(), worker.id());
     }
-    global_hook(serv, worker, HOOK_BEFORE_WORKER_START);
+    global_hook(serv, worker, HookType::BEFORE_WORKER_START);
     log::set_last_error(0);
     swoole_rs_error::swoole_clear_last_error_msg();
     let callbacks = &serv.state().callbacks;
@@ -259,7 +256,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
 
 /// `Server::call_worker_stop_callback(worker)`.
 pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'_>) {
-    global_hook(serv, worker, HOOK_BEFORE_WORKER_STOP);
+    global_hook(serv, worker, HookType::BEFORE_WORKER_STOP);
     serv.state()
         .callbacks
         .worker(WorkerSlot::Stop, serv, worker);
@@ -351,7 +348,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Base if event_worker => {
             let pool = crate::shared::ServerShared::of(serv).event_pool();
             if worker.id() == 0 && !pool.running() {
-                global_hook(serv, worker, HOOK_BEFORE_SERVER_SHUTDOWN);
+                global_hook(serv, worker, HookType::BEFORE_SERVER_SHUTDOWN);
                 serv.state()
                     .callbacks
                     .call_server(ServerSlot::BeforeShutdown, serv);
@@ -476,42 +473,25 @@ pub fn worker_signal_init(serv: view::Server<'_>) {
     if serv.config().mode_ == Mode::Thread {
         return;
     }
-    for (signo, handler) in super::signals(HANDLER_IGNORE) {
+    for (signo, handler) in super::signals(SignalHandler::Ignore) {
         swr_workers_signal_set(signo, handler, worker_signal_handler);
     }
 }
 
 /// Installs `handler` (one of [`super::signals`]'s) for `signo`, `own` for the worker's
-/// own; SIGRTMIN only where Linux names it.
-pub(crate) fn swr_workers_signal_set(signo: c_int, handler: u64, own: extern "C" fn(c_int)) {
+/// own.
+pub(crate) fn swr_workers_signal_set(
+    signo: c_int,
+    handler: SignalHandler,
+    own: extern "C" fn(c_int),
+) {
     use swoole_rs_reactor::signal_upstream::{self, Handler};
-    #[cfg(target_os = "linux")]
-    let signo = if signo == super::SIGNAL_RTMIN {
-        libc::SIGRTMIN()
-    } else {
-        signo
-    };
-    #[cfg(not(target_os = "linux"))]
-    if signo == super::SIGNAL_RTMIN {
-        return;
-    }
     let handler = match handler {
-        super::HANDLER_NONE => Handler::NONE,
-        HANDLER_IGNORE => Handler::IGNORE,
-        _ => Handler::new(own),
+        SignalHandler::None => Handler::NONE,
+        SignalHandler::Ignore => Handler::IGNORE,
+        SignalHandler::Own => Handler::new(own),
     };
     _ = signal_upstream::set(signo, handler, false);
-}
-
-/// Whether `signo` is SIGRTMIN, which only Linux has.
-fn is_sigrtmin(signo: c_int) -> bool {
-    #[cfg(target_os = "linux")]
-    return signo == libc::SIGRTMIN();
-    #[cfg(not(target_os = "linux"))]
-    {
-        _ = signo;
-        false
-    }
 }
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
@@ -532,7 +512,7 @@ pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
             } else {
                 swr_v1_worker_shutdown(worker);
             }
-        } else if (signo == libc::SIGWINCH || is_sigrtmin(signo))
+        } else if (signo == libc::SIGWINCH || super::sigrtmin() == Some(signo))
             && let Some(logger) = swoole_rs_utilities::process_logger()
         {
             logger.reopen();

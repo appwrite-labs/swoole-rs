@@ -100,8 +100,6 @@ pub(crate) const SW_ERROR_CO_NOT_EXISTS: c_int = 10016;
 pub(crate) const SW_ERROR_CO_CANCELED: c_int = 10017;
 const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
 const SW_ERROR_CO_OUT_OF_COROUTINE: c_int = 10001;
-/// `SW_GLOBAL_HOOK_ON_CORO_START` (`+ 1` is `_STOP`).
-const HOOK_ON_CORO_START: c_int = 3;
 
 /// Whether `bit` of the host's flags is set.
 pub(crate) fn flag(bit: u32) -> bool {
@@ -113,7 +111,7 @@ pub(crate) fn flag(bit: u32) -> bool {
         FIBER_MOCK => g.enable_fiber_mock.get(),
         PREEMPTIVE => g.enable_preemptive_scheduler.get(),
         SHUTDOWN_FUNCTIONS => {
-            g.req_status.get() == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN
+            g.req_status.get() == swoole_rs_phpswoole::ReqStatus::CallUserShutdownfuncBegin
         }
         // SAFETY: the process's server, read once here.
         SERVER_STARTED => unsafe { swoole_rs_server::view::Server::current() }
@@ -609,7 +607,12 @@ pub(crate) fn deadlock_check() -> Result<(), bailout::Bailout> {
 
 /// The `SW_GLOBAL_HOOK_ON_CORO_START` (`stop`: `_STOP`) hook, when set.
 pub(crate) fn coro_hook(stop: bool, task: *mut c_void) {
-    let kind = HOOK_ON_CORO_START + c_int::from(stop);
+    use swoole_rs_corebase::HookType;
+    let kind = if stop {
+        HookType::ON_CORO_STOP
+    } else {
+        HookType::ON_CORO_START
+    };
     if swoole_rs_corebase::swoole_isset_hook(kind) {
         // SAFETY: the hook's argument is the coroutine's context.
         unsafe { swoole_rs_corebase::swoole_call_hook(kind, task) };

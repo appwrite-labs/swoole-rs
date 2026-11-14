@@ -258,7 +258,7 @@ pub fn php_swoole_process_pool_minit(minit: &Minit) {
     // SAFETY: `zend_try` over a C body, in which the pool's Rust worker loops call
     // PHP and which they leave before re-raising, and Zend's bailout.
     unsafe { swoole_rs_process::pool::set_bailout(swoole_rs_zend::sys::swr_zend_try, raise) };
-    minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.rows(), 0);
+    minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.table(), 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
     }
@@ -928,9 +928,10 @@ fn get_process(call: &Call) {
                         props.long(c"pipe", i64::from(pipe));
                     }
                 }
-                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-                // The Process object takes the copy.
-                set_worker_of(&object, copy, true, c_int::from(view.is_async()));
+                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe
+                // type, so an async pool's pipe reads as a stream. The Process object takes
+                // the copy.
+                set_worker_of(&object, copy, true, view.is_async());
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }

@@ -85,8 +85,8 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn atomic_minit(minit: &Minit) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    minit.register_object::<Atomic>(c"Swoole\\Atomic", ATOMIC_METHODS.rows(), 0);
-    minit.register_object::<Long>(c"Swoole\\Atomic\\Long", LONG_METHODS.rows(), 0);
+    minit.register_object::<Atomic>(c"Swoole\\Atomic", ATOMIC_METHODS.table(), 0);
+    minit.register_object::<Long>(c"Swoole\\Atomic\\Long", LONG_METHODS.table(), 0);
     Ok(())
 }
 

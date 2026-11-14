@@ -184,17 +184,17 @@ method_table! {
 pub fn thread_locks_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<ThreadAtomic>(
         c"Swoole\\Thread\\Atomic",
-        ATOMIC_METHODS.rows(),
+        ATOMIC_METHODS.table(),
         ZEND_ACC_FINAL,
     );
     minit.register_object::<ThreadLong>(
         c"Swoole\\Thread\\Atomic\\Long",
-        LONG_METHODS.rows(),
+        LONG_METHODS.table(),
         ZEND_ACC_FINAL,
     );
     minit.register_object::<ThreadLock>(
         c"Swoole\\Thread\\Lock",
-        LOCK_METHODS.rows(),
+        LOCK_METHODS.table(),
         ZEND_ACC_FINAL,
     );
     for &kind in Kind::ALL {
@@ -341,8 +341,8 @@ mod tests {
         let Resource::Lock(lock) = &*resource else {
             unreachable!("made as a lock");
         };
-        assert_eq!(lock.lock(2, -1, 0), 0, "locks");
-        assert_eq!(lock.unlock(), 0, "unlocks");
+        assert_eq!(lock.lock(2, -1, 0), Ok(()), "locks");
+        assert_eq!(lock.unlock(), Ok(()), "unlocks");
         let shared = Arc::clone(&resource);
         drop(resource);
         assert!(matches!(*shared, Resource::Lock(_)), "alive while shared");

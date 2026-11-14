@@ -14,9 +14,8 @@ use std::ptr;
 const FORK_EXEC: c_int = 2;
 const FORK_DAEMON: c_int = 4;
 const FORK_PRECHECK: c_int = 8;
-/// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_GLOBAL_HOOK_AFTER_FORK`.
+/// `SW_ERROR_OPERATION_NOT_SUPPORT`.
 const OPERATION_NOT_SUPPORT: c_int = 507;
-const HOOK_AFTER_FORK: c_int = 12;
 
 /// `swoole::ThreadGlobal`, `SwooleTG`: Rust holds each thread's, and native code
 /// reaches it through `swr_v1_core_thread_global` (swoole.h's `SwooleTG`), whose
@@ -286,7 +285,7 @@ pub extern "C-unwind" fn swoole_fork(flags: c_int) -> libc::pid_t {
     }
     (host.signal_clear)();
     crate::signal_mask::restore_after_fork(previous, true);
-    if crate::swoole_isset_hook(HOOK_AFTER_FORK) {
+    if crate::swoole_isset_hook(crate::HookType::AFTER_FORK) {
         crate::hook::call_after_fork();
     }
     0

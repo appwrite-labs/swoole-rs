@@ -6,16 +6,16 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Redis_Server_setHandler: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Redis_Server_setHandler: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Redis_Server_getHandler: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Redis_Server_getHandler: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(1, 0, c"Closure", false),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Redis_Server_format: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Redis_Server_format: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, Some(c"null")),

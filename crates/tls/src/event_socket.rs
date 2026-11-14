@@ -32,21 +32,21 @@ impl EventSocket {
         self.0.read(|record| record.removed)
     }
 
-    /// `swoole_event_add(socket, events)`.
+    /// `swoole_event_add(socket, events)`: whether it worked.
     #[must_use]
-    pub fn add(&self, events: c_int) -> c_int {
+    pub fn add(&self, events: c_int) -> bool {
         event_api::event_add(self.0, events)
     }
 
-    /// `swoole_event_set(socket, events)`.
+    /// `swoole_event_set(socket, events)`: whether it worked.
     #[must_use]
-    pub fn set(&self, events: c_int) -> c_int {
+    pub fn set(&self, events: c_int) -> bool {
         event_api::event_set(self.0, events)
     }
 
-    /// `swoole_event_del(socket)`.
+    /// `swoole_event_del(socket)`: whether it worked.
     #[must_use]
-    pub fn del(&self) -> c_int {
+    pub fn del(&self) -> bool {
         event_api::event_del(self.0)
     }
 

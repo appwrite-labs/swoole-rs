@@ -102,7 +102,7 @@ pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) ->
 /// `ReactorThread_onClose`: the peer closed.
 pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::peer_close(serv, reactor, event)
+        crate::conn_io::status(crate::conn_io::peer_close(serv, reactor, event))
     })
 }
 
@@ -123,7 +123,7 @@ pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ReactorThread_onWrite`: a connection is writable.
 pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::write(serv, reactor, event)
+        crate::conn_io::status(crate::conn_io::write(serv, reactor, event))
     })
 }
 
@@ -141,7 +141,7 @@ pub unsafe extern "C-unwind" fn close_connection(
     let serv = unsafe { server(reactor) };
     // SAFETY: per the caller.
     let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
-    crate::conn_io::close_connection(serv, reactor, sock)
+    crate::conn_io::status(crate::conn_io::close_connection(serv, reactor, sock))
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and

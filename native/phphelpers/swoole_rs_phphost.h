@@ -39,7 +39,7 @@ BEGIN_EXTERN_C()
 #error "require PHP version 8.5 or earlier"
 #endif
 
-// The php_swoole_req_status value C reads (crates/phpswoole's RSHUTDOWN_BEGIN).
+// The php_swoole_req_status value C reads (crates/phpswoole's ReqStatus::RshutdownBegin).
 enum {
     PHP_SWOOLE_RSHUTDOWN_BEGIN = 3,
 };

@@ -326,14 +326,14 @@ impl Request<'_> {
 }
 
 /// `Reactor::add`, `set` or `del` of the request's socket with `events` on the state's
-/// backend: 0, -1 after logging the failure through `log`, or -2 when add cannot
-/// allocate. `log` reaches no reactor.
+/// backend: whether it worked, after logging a failure through `log`. An add that
+/// cannot allocate is upstream's `bad_alloc`. `log` reaches no reactor.
 pub(crate) fn apply(
     state: &mut ReactorState,
     request: Request<'_>,
     events: c_int,
     log: ChangeLog,
-) -> c_int {
+) -> bool {
     let (socket, op) = match request {
         Request::Add(socket) => (socket, ChangeOp::Add),
         Request::Set(socket) => (socket, ChangeOp::Set),
@@ -367,14 +367,10 @@ pub(crate) fn apply(
         ))]
         Backend::Kqueue(..) => change.kqueue(state.backend_fd, token),
     };
-    if !done {
-        return -1;
+    if done && !state.record(socket, change.op, events) {
+        std::alloc::handle_alloc_error(std::alloc::Layout::new::<crate::SocketRecord>());
     }
-    if state.record(socket, change.op, events) {
-        0
-    } else {
-        -2
-    }
+    done
 }
 
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
@@ -426,12 +422,13 @@ mod tests {
         log: ChangeLog,
     ) -> c_int {
         let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
-        apply(
+        let done = apply(
             unsafe { &mut *owner },
             Request::new(socket, ChangeOp::from_code(op)),
             events,
             log,
-        )
+        );
+        if done { 0 } else { -1 }
     }
 
     const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;

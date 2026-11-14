@@ -57,13 +57,13 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_static(&TIMER, c"Swoole\\Timer", METHODS.rows());
-    minit.function_aliases(&TIMER, &METHODS, &ALIASES)?;
+    minit.register_static(&TIMER, c"Swoole\\Timer", METHODS.table());
+    minit.function_aliases(&TIMER, METHODS.table(), &ALIASES)?;
     let parent = minit.array_iterator();
     minit.register_child(
         &ITERATOR,
         c"Swoole\\Timer\\Iterator",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         parent,
         |_, _| {},
     );

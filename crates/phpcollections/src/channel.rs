@@ -99,7 +99,7 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn channel_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_object::<Chan>(c"Swoole\\Coroutine\\Channel", METHODS.rows(), 0);
+    minit.register_object::<Chan>(c"Swoole\\Coroutine\\Channel", METHODS.table(), 0);
     if swoole_rs_phpswoole::globals().use_shortname.get() {
         minit.alias(&CHANNEL, c"Co\\Channel")?;
         minit.alias(&CHANNEL, c"Chan")?;

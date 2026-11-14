@@ -6,22 +6,22 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_Scheduler_add: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Scheduler_add: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"func", 0, false, z::IS_CALLABLE, false, None),
     a::arg_type(c"param", 0, true, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Scheduler_parallel: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Scheduler_parallel: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_VOID, false),
     a::arg_type(c"n", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"func", 0, false, z::IS_CALLABLE, false, None),
     a::arg_type(c"param", 0, true, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Scheduler_set: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Scheduler_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Scheduler_getOptions: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, true)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, true)]);
 pub static arginfo_class_Swoole_Coroutine_Scheduler_start: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);

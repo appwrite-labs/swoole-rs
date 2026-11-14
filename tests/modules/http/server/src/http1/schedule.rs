@@ -83,7 +83,7 @@ fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> &'static mut C
 }
 
 fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::SendData>) -> usize {
-    let worker_id = server_methods::schedule_worker(serv.view(), fd, data);
+    let worker_id = server_methods::schedule_worker(serv.view(), fd, data).unwrap();
     usize::try_from(worker_id).unwrap()
 }
 

@@ -339,7 +339,7 @@ pub fn client() -> &'static Class {
 /// A registration bailed out.
 pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let methods = if built_with(Switch::Sockets) {
-        METHODS.rows()
+        METHODS.table()
     } else {
         METHODS.without(&[c"getSocket"])
     };
@@ -347,7 +347,7 @@ pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Client\\Exception",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.parent(swoole_rs_phpswoole::exception()),
         |_, _| {},
     );
@@ -740,13 +740,13 @@ fn connect(call: &Call) {
     }
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, int(port), timeout, int(flags));
-    let Some(result) = bailed(conn.cli.run(connect)) else {
+    let Some(connected) = bailed(conn.cli.run(connect)) else {
         return call.set_bool(false);
     };
     if conn.released(object) {
         return call.set_bool(false);
     }
-    if result < 0 {
+    if !connected {
         set_err_code(object, last_error());
         if conn.flag(state::Flag::AsyncConnect) {
             return call.set_bool(true);
@@ -1227,11 +1227,11 @@ fn close(call: &Call) {
         || conn.flag(state::Flag::ShutdownWrite)
         || !conn.alive()
     {
-        let Some(result) = bailed(conn.cli.run(state::close)) else {
+        let Some(closed) = bailed(conn.cli.run(state::close)) else {
             return call.set_bool(false);
         };
         bailed(release(object, conn));
-        return call.set_bool(result >= 0);
+        return call.set_bool(closed);
     }
     let pushed = {
         let mut pool = long_connections();

@@ -38,8 +38,6 @@ const SW_FD_CO_EVENT: c_int = 8;
 const SW_FD_USER: c_int = 16;
 const SW_FD_STREAM_CLIENT: c_int = 17;
 // enum swGlobalHookType.
-const SW_GLOBAL_HOOK_ON_REACTOR_CREATE: c_int = 5;
-const SW_GLOBAL_HOOK_ON_REACTOR_DESTROY: c_int = 9;
 // Reactor::Type and Reactor::EndCallback.
 const TYPE_AUTO: c_int = 0;
 const TYPE_EPOLL: c_int = 1;
@@ -190,16 +188,36 @@ unsafe fn handle(socket: Sock) -> Socket<'static> {
     unsafe { Socket::from_ptr(socket) }.unwrap()
 }
 
+/// SW_OK or SW_ERR for `ok`.
+fn status(ok: bool) -> c_int {
+    if ok { SW_OK } else { SW_ERR }
+}
+
 unsafe fn add(reactor: Running<'_>, socket: Sock, events: c_int) -> c_int {
-    reactor_upstream::change(reactor, unsafe { handle(socket) }, ChangeOp::Add, events)
+    status(reactor_upstream::change(
+        reactor,
+        unsafe { handle(socket) },
+        ChangeOp::Add,
+        events,
+    ))
 }
 
 unsafe fn set(reactor: Running<'_>, socket: Sock, events: c_int) -> c_int {
-    reactor_upstream::change(reactor, unsafe { handle(socket) }, ChangeOp::Set, events)
+    status(reactor_upstream::change(
+        reactor,
+        unsafe { handle(socket) },
+        ChangeOp::Set,
+        events,
+    ))
 }
 
 unsafe fn del(reactor: Running<'_>, socket: Sock) -> c_int {
-    reactor_upstream::change(reactor, unsafe { handle(socket) }, ChangeOp::Del, 0)
+    status(reactor_upstream::change(
+        reactor,
+        unsafe { handle(socket) },
+        ChangeOp::Del,
+        0,
+    ))
 }
 
 fn ev_socket(event: &Event) -> Sock {
@@ -265,7 +283,7 @@ fn get_handler(reactor: Running<'_>, fd_type: c_int, event: c_int) -> usize {
         .map_or(0, |handler| handler as usize)
 }
 
-fn add_hook(kind: c_int, f: unsafe extern "C" fn(*mut c_void)) {
+fn add_hook(kind: swoole_rs_ffi::HookType, f: unsafe extern "C" fn(*mut c_void)) {
     swoole_rs_ffi::swoole_add_hook(kind, f, 1);
 }
 
@@ -317,7 +335,7 @@ unsafe fn create_failure() {
     unsafe {
         assert!(tg_reactor().is_null());
         REACTOR_DESTROY_COUNT.store(0, Relaxed);
-        add_hook(SW_GLOBAL_HOOK_ON_REACTOR_DESTROY, count_destroy);
+        add_hook(swoole_rs_ffi::HookType::ON_REACTOR_DESTROY, count_destroy);
 
         let mut original_limit = [0u64; 2];
         assert_eq!(getrlimit(RLIMIT_NOFILE, &mut original_limit), 0);
@@ -405,7 +423,7 @@ unsafe fn wait() {
             event_api::swoole_event_get_socket((*sock(&p, false)).fields.fd),
             sock(&p, false).cast()
         );
-        assert_eq!(ret, SW_OK);
+        assert!(ret);
 
         assert_eq!(pair_write(&p, HELLO), HELLO.len() as isize);
 
@@ -427,9 +445,9 @@ unsafe fn get_missing_socket() {
         expect_eq!(event_api::swoole_event_get_socket(fd), null_mut());
         expect_eq!(!get_socket(tg(), fd).is_null(), false);
         expect_eq!(event_num(tg()), 0);
-        expect_eq!(event_api::event_add(handle(socket), SW_EVENT_READ), SW_OK);
+        expect_eq!(event_api::event_add(handle(socket), SW_EVENT_READ), true);
         expect_eq!(event_api::swoole_event_get_socket(fd), socket.cast());
-        expect_eq!(event_api::event_del(handle(socket)), SW_OK);
+        expect_eq!(event_api::event_del(handle(socket)), true);
         expect_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
         pair_delete(p);
     }
@@ -449,10 +467,7 @@ unsafe fn write_case() {
         assert!(!tg_reactor().is_null());
 
         event_api::swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, Some(read_hello));
-        assert_eq!(
-            event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ),
-            SW_OK
-        );
+        assert!(event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ));
 
         let n = event_api::event_write(handle(sock(&p, true)), HELLO);
         assert_eq!(n, HELLO.len() as isize);
@@ -588,10 +603,7 @@ unsafe fn write_2m() {
         socket_pair::set_blocking(&mut p, false);
         let _ = socket_pair::unix_socket_set_buffer_size(&p, 65536);
 
-        assert_eq!(
-            event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ),
-            SW_OK
-        );
+        assert!(event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ));
 
         let data = random_data();
 
@@ -974,16 +986,10 @@ unsafe fn add_or_update() {
         assert!(!tg_reactor().is_null());
 
         let socket = sock(&p, false);
-        assert_eq!(
-            event_api::add_or_update(handle(socket), SW_EVENT_READ),
-            SW_OK
-        );
+        assert!(event_api::add_or_update(handle(socket), SW_EVENT_READ));
         assert!((*socket).fields.events & SW_EVENT_READ != 0);
 
-        assert_eq!(
-            event_api::add_or_update(handle(socket), SW_EVENT_WRITE),
-            SW_OK
-        );
+        assert!(event_api::add_or_update(handle(socket), SW_EVENT_WRITE));
         assert!((*socket).fields.events & SW_EVENT_READ != 0);
         assert!((*socket).fields.events & SW_EVENT_WRITE != 0);
 
@@ -1081,8 +1087,8 @@ unsafe fn hook() {
         REACTOR_CREATE_COUNT.store(0, Relaxed);
         REACTOR_DESTROY_COUNT.store(0, Relaxed);
 
-        add_hook(SW_GLOBAL_HOOK_ON_REACTOR_CREATE, hook_create);
-        add_hook(SW_GLOBAL_HOOK_ON_REACTOR_DESTROY, hook_destroy);
+        add_hook(swoole_rs_ffi::HookType::ON_REACTOR_CREATE, hook_create);
+        add_hook(swoole_rs_ffi::HookType::ON_REACTOR_DESTROY, hook_destroy);
 
         local_reactor(TYPE_POLL, |reactor| reactor_test_func(reactor));
 
@@ -1291,10 +1297,10 @@ unsafe fn handle_fail() {
         let socket = sock(&p, false);
         (*socket).fields.object = ptr::from_ref::<SocketPair>(&p).cast_mut().cast();
 
-        assert_eq!(
-            event_api::event_add(handle(socket), SW_EVENT_READ | SW_EVENT_WRITE),
-            SW_OK
-        );
+        assert!(event_api::event_add(
+            handle(socket),
+            SW_EVENT_READ | SW_EVENT_WRITE
+        ));
 
         assert_eq!(event_api::swoole_event_wait(), SW_OK);
         assert!(tg_reactor().is_null());

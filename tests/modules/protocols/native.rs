@@ -789,7 +789,11 @@ impl Pair {
             2 => (r.password, r.password_length) = field(value),
             _ => (r.target_host, r.target_host_length) = field(value),
         }
-        self.candidate.set_string(index, value)
+        if self.candidate.set_string(index, value) {
+            0
+        } else {
+            -2
+        }
     }
 
     /// Sets the dns tunnel and target port on both.
@@ -958,20 +962,16 @@ fn candidate_create(
         return Ok(None);
     }
     let proxy = ProxyState::new(true);
-    let mut status = proxy.set_string(0, host);
+    let mut set = proxy.set_string(0, host);
     proxy.update(|fields| {
         fields.port = port;
         fields.dns_tunnel = 1;
         fields.socket_type = socket_type;
     });
     if config == 2 {
-        status |= proxy.set_string(1, user) | proxy.set_string(2, password);
+        set &= proxy.set_string(1, user) & proxy.set_string(2, password);
     }
-    if status == 0 {
-        Ok(Some(proxy))
-    } else {
-        Err(status)
-    }
+    if set { Ok(Some(proxy)) } else { Err(-2) }
 }
 
 /// `native.cc`'s `create` over credential lengths around the 250-byte limit (with an

@@ -112,7 +112,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
         Ok(())
     };
     let methods = if host::flag(host::CORO_TIME) {
-        COROUTINE_METHODS.rows()
+        COROUTINE_METHODS.table()
     } else {
         COROUTINE_METHODS.without(&[c"getExecuteTime"])
     };
@@ -121,7 +121,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &ITERATOR,
         c"Swoole\\Coroutine\\Iterator",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.array_iterator(),
         |_, _| {},
     );
@@ -129,7 +129,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &CONTEXT,
         c"Swoole\\Coroutine\\Context",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.array_object(),
         |_, _| {},
     );
@@ -150,7 +150,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &EXIT,
         c"Swoole\\ExitException",
-        EXIT_EXCEPTION_METHODS.rows(),
+        EXIT_EXCEPTION_METHODS.table(),
         exception,
         |_, _| {},
     );
@@ -158,9 +158,21 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.property_long(&EXIT, c"status", 0, ZEND_ACC_PRIVATE);
     let final_class = |entry: &mut zend_class_entry, _: &mut _| entry.ce_flags |= ZEND_ACC_FINAL;
     let canceled = c"Swoole\\Coroutine\\CanceledException";
-    minit.register_child(&CANCELED, canceled, &[], minit.exception(), final_class);
+    minit.register_child(
+        &CANCELED,
+        canceled,
+        swoole_rs_zend::arginfo::Table::NONE,
+        minit.exception(),
+        final_class,
+    );
     let timeout = c"Swoole\\Coroutine\\TimeoutException";
-    minit.register_child(&TIMEOUT, timeout, &[], minit.exception(), final_class);
+    minit.register_child(
+        &TIMEOUT,
+        timeout,
+        swoole_rs_zend::arginfo::Table::NONE,
+        minit.exception(),
+        final_class,
+    );
     minit.long_constant(c"SWOOLE_EXIT_IN_COROUTINE", EXIT_IN_COROUTINE);
     minit.long_constant(c"SWOOLE_EXIT_IN_SERVER", EXIT_IN_SERVER);
     if host::flag(host::CLI) {

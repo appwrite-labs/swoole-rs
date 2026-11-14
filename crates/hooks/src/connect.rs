@@ -551,7 +551,8 @@ impl Co {
                 0 => None,
                 config => {
                     let owner = ProxyState::new(true);
-                    owner.configure([host, user, password], port, config == 2, self.kind());
+                    // An allocation failure leaves the strings it didn't reach empty.
+                    _ = owner.configure([host, user, password], port, config == 2, self.kind());
                     Some(owner)
                 }
             }

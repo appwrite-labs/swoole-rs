@@ -200,7 +200,7 @@ method_table! {
 /// is `SWOOLE_SOCKETS_SUPPORT`.
 pub(crate) fn minit(minit: &Minit, sockets: bool) {
     let methods = if sockets {
-        METHODS.rows()
+        METHODS.table()
     } else {
         METHODS.without(&[c"getSocket"])
     };

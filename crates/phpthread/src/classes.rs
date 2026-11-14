@@ -94,7 +94,7 @@ method_table! {
 
 /// `php_swoole_thread_map_minit`: final, `ArrayAccess` and `Countable`.
 pub fn map_minit(minit: &Minit) {
-    minit.register_object::<Map>(c"Swoole\\Thread\\Map", MAP_METHODS.rows(), ZEND_ACC_FINAL);
+    minit.register_object::<Map>(c"Swoole\\Thread\\Map", MAP_METHODS.table(), ZEND_ACC_FINAL);
     minit.implements(&MAP, minit.array_access());
     minit.implements(&MAP, minit.countable());
 }
@@ -120,7 +120,7 @@ method_table! {
 pub fn arraylist_minit(minit: &Minit) {
     minit.register_object::<List>(
         c"Swoole\\Thread\\ArrayList",
-        ARRAYLIST_METHODS.rows(),
+        ARRAYLIST_METHODS.table(),
         ZEND_ACC_FINAL,
     );
     minit.implements(&LIST, minit.array_access());
@@ -142,7 +142,7 @@ method_table! {
 pub fn queue_minit(minit: &Minit) {
     minit.register_object::<QueueObject>(
         c"Swoole\\Thread\\Queue",
-        QUEUE_METHODS.rows(),
+        QUEUE_METHODS.table(),
         ZEND_ACC_FINAL,
     );
     minit.implements(&QUEUE, minit.countable());

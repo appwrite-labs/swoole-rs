@@ -99,7 +99,7 @@ pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &ASYNC,
         c"Swoole\\Async\\Client",
-        METHODS.rows(),
+        METHODS.table(),
         minit.parent(&net::CLIENT),
         configure,
     );
@@ -372,12 +372,12 @@ fn connect(call: &Call) {
 
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, net::int(port), timeout, net::int(flags));
-    let Some(result) = bailed(fresh.cli.run(connect)) else {
+    let Some(connected) = bailed(fresh.cli.run(connect)) else {
         return call.set_bool(false);
     };
     // Only the object holds the connection now, so a release below destroys it.
     drop(fresh);
-    if result >= 0 {
+    if connected {
         return call.set_bool(true);
     }
     let failure = errno();
@@ -413,7 +413,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(state::close)).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(state::close)) == Some(true));
 }
 
 /// `on(string $host, callable $callback): bool`.

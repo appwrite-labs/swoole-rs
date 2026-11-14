@@ -6,38 +6,38 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_ssh2_connect: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_ssh2_connect: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"22")),
     a::arg_type(c"methods", 0, false, z::IS_ARRAY, true, Some(c"null")),
     a::arg_type(c"callbacks", 0, false, z::IS_ARRAY, true, Some(c"null")),
 ]);
-pub static arginfo_ssh2_disconnect: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ssh2_disconnect: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
 ]);
-pub static arginfo_ssh2_methods_negotiated: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ssh2_methods_negotiated: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_ARRAY, false),
     a::arg(c"session", 0, false, None),
 ]);
-pub static arginfo_ssh2_fingerprint: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_fingerprint: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"flags", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ssh2_auth_none: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_auth_none: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_auth_password: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_auth_password: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"password", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_auth_pubkey_file: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ssh2_auth_pubkey_file: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(4, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
@@ -45,7 +45,7 @@ pub static arginfo_ssh2_auth_pubkey_file: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"privkeyfile", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"passphrase", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_ssh2_auth_pubkey: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ssh2_auth_pubkey: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(4, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
@@ -53,7 +53,7 @@ pub static arginfo_ssh2_auth_pubkey: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"privkey", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"passphrase", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_ssh2_auth_hostbased_file: a::ArgInfo<8> = a::ArgInfo([
+pub static arginfo_ssh2_auth_hostbased_file: a::ArgInfo<8> = a::ArgInfo::new([
     a::begin_type(5, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
@@ -70,20 +70,20 @@ pub static arginfo_ssh2_auth_hostbased_file: a::ArgInfo<8> = a::ArgInfo([
         Some(c"null"),
     ),
 ]);
-pub static arginfo_ssh2_forward_listen: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_ssh2_forward_listen: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_class_mask(2, 0, c"resource", z::MAY_BE_FALSE),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, Some(c"'127.0.0.1'")),
     a::arg_type(c"max_connections", 0, false, z::IS_LONG, false, Some(c"1")),
 ]);
-pub static arginfo_ssh2_forward_accept: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_forward_accept: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_class_mask(1, 0, c"resource", z::MAY_BE_FALSE),
     a::arg_class(c"listener", 0, false, c"resource", false, None),
     a::arg_type(c"host", 1, false, z::IS_STRING, true, Some(c"null")),
     a::arg_type(c"port", 1, false, z::IS_LONG, true, Some(c"null")),
 ]);
-pub static arginfo_ssh2_shell: a::ArgInfo<7> = a::ArgInfo([
+pub static arginfo_ssh2_shell: a::ArgInfo<7> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(
@@ -106,13 +106,13 @@ pub static arginfo_ssh2_shell: a::ArgInfo<7> = a::ArgInfo([
         Some(c"0"),
     ),
 ]);
-pub static arginfo_ssh2_shell_resize: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_shell_resize: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"width", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"height", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_ssh2_exec: a::ArgInfo<8> = a::ArgInfo([
+pub static arginfo_ssh2_exec: a::ArgInfo<8> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
@@ -129,89 +129,89 @@ pub static arginfo_ssh2_exec: a::ArgInfo<8> = a::ArgInfo([
         Some(c"0"),
     ),
 ]);
-pub static arginfo_ssh2_tunnel: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_tunnel: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin(3, 0),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_ssh2_scp_recv: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_scp_recv: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"remote_file", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"local_file", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_scp_send: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_ssh2_scp_send: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"session", 0, false, None),
     a::arg_type(c"local_file", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"remote_file", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"create_mode", 0, false, z::IS_LONG, false, Some(c"0644")),
 ]);
-pub static arginfo_ssh2_fetch_stream: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_fetch_stream: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"channel", 0, false, None),
     a::arg_type(c"streamid", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_ssh2_send_eof: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ssh2_send_eof: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg(c"channel", 0, false, None),
 ]);
 pub static arginfo_ssh2_sftp: a::ArgInfo<2> =
-    a::ArgInfo([a::begin(1, 0), a::arg(c"session", 0, false, None)]);
-pub static arginfo_ssh2_sftp_rename: a::ArgInfo<4> = a::ArgInfo([
+    a::ArgInfo::new([a::begin(1, 0), a::arg(c"session", 0, false, None)]);
+pub static arginfo_ssh2_sftp_rename: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"from", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"to", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_sftp_unlink: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_unlink: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_sftp_mkdir: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_mkdir: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"dirname", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"0777")),
     a::arg_type(c"recursive", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_ssh2_sftp_rmdir: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_rmdir: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"dirname", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_sftp_chmod: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_chmod: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_ssh2_sftp_stat: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_stat: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
 ]);
 pub use self::arginfo_ssh2_sftp_stat as arginfo_ssh2_sftp_lstat;
-pub static arginfo_ssh2_sftp_symlink: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_symlink: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"target", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"link", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_sftp_readlink: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_readlink: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"link", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ssh2_sftp_realpath: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ssh2_sftp_realpath: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(2, 0),
     a::arg(c"sftp", 0, false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
 ]);
 pub use self::arginfo_ssh2_sftp as arginfo_ssh2_publickey_init;
-pub static arginfo_ssh2_publickey_add: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ssh2_publickey_add: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"pkey", 0, false, None),
     a::arg_type(c"algoname", 0, false, z::IS_STRING, false, None),
@@ -219,12 +219,12 @@ pub static arginfo_ssh2_publickey_add: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"overwrite", 0, false, z::_IS_BOOL, false, Some(c"false")),
     a::arg_type(c"attributes", 0, false, z::IS_ARRAY, true, Some(c"null")),
 ]);
-pub static arginfo_ssh2_publickey_remove: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ssh2_publickey_remove: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg(c"pkey", 0, false, None),
     a::arg_type(c"algoname", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"blob", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_ssh2_publickey_list: a::ArgInfo<2> =
-    a::ArgInfo([a::begin(1, 0), a::arg(c"pkey", 0, false, None)]);
+    a::ArgInfo::new([a::begin(1, 0), a::arg(c"pkey", 0, false, None)]);
 pub use self::arginfo_ssh2_auth_none as arginfo_ssh2_auth_agent;

@@ -17,16 +17,8 @@ pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event
     handler(reactor, event)
 }
 
-/// A change's status: `-2` (add could not allocate) is upstream's `bad_alloc`.
-fn changed(result: c_int) -> c_int {
-    if result == -2 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<SocketRecord>());
-    }
-    result
-}
-
-/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`: `Reactor::add`
-/// or `set` of a socket that is never freed while registered.
+/// `Reactor::add` or `set` of a socket that is never freed while registered: whether
+/// it worked.
 /// A registered record's address stays in the registry and with the kernel until its
 /// removal, which a `'static` record outlives: it is live until an unsafe free, whose
 /// caller answers for every user left, the reactor among them, or its `del`.
@@ -36,29 +28,29 @@ pub fn change(
     socket: crate::Socket<'static>,
     op: crate::ChangeOp,
     events: c_int,
-) -> c_int {
+) -> bool {
     let request = crate::change::Request::new(socket, op);
     // The log reaches no reactor.
-    changed(reactor.with(|state| crate::change::apply(state, request, events, swr_v1_reactor_log)))
+    reactor.with(|state| crate::change::apply(state, request, events, swr_v1_reactor_log))
 }
 
-/// `Reactor::interest` of a socket that is never freed while registered, as [`change`] takes one: the change's result, or 0
-/// when nothing changes.
+/// `Reactor::interest` of a socket that is never freed while registered, as [`change`]
+/// takes one: whether the change worked, true when nothing changes.
 #[must_use]
 pub fn interest(
     reactor: crate::Running<'_>,
     socket: crate::Socket<'static>,
     kind: crate::Interest,
     event: c_int,
-) -> c_int {
+) -> bool {
     crate::change::interest_change(socket, kind, event)
-        .map_or(0, |(op, events)| change(reactor, socket, op, events))
+        .is_none_or(|(op, events)| change(reactor, socket, op, events))
 }
 
 /// `int Reactor::del(Socket *socket)` of any live socket: a removal leaves the
-/// record's address neither in the registry nor with the kernel.
+/// record's address neither in the registry nor with the kernel. Whether it worked.
 #[must_use]
-pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_int {
+pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bool {
     let request = crate::change::Request::Del(socket);
     // The log reaches no reactor.
     reactor.with(|state| crate::change::apply(state, request, 0, swr_v1_reactor_log))
@@ -90,7 +82,11 @@ pub unsafe extern "C" fn reactor_interest(
     };
     // SAFETY: as the caller promises.
     let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
-    change(reactor, record, op, events)
+    if change(reactor, record, op, events) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:

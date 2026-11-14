@@ -20,7 +20,12 @@ static ERROR: Class = Class::new();
 /// `Swoole\Thread\Error` with its readonly `code`, registered after
 /// `Swoole\Thread` as upstream's MINIT does.
 pub(crate) fn error_minit(minit: &Minit) {
-    minit.register(&ERROR, c"Swoole\\Thread\\Error", &[], |_, _| {});
+    minit.register(
+        &ERROR,
+        c"Swoole\\Thread\\Error",
+        swoole_rs_zend::arginfo::Table::NONE,
+        |_, _| {},
+    );
     minit.property_long(&ERROR, c"code", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
 }
 

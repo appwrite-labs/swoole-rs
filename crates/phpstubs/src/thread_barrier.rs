@@ -6,9 +6,9 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Thread_Barrier___construct: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Barrier___construct: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg_type(c"count", 0, false, z::IS_LONG, false, None),
 ]);
 pub static arginfo_class_Swoole_Thread_Barrier_wait: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);

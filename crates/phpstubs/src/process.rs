@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Process___construct: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process___construct: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
     a::arg_type(
@@ -34,31 +34,32 @@ pub static arginfo_class_Swoole_Process___construct: a::ArgInfo<5> = a::ArgInfo(
         Some(c"false"),
     ),
 ]);
-pub static arginfo_class_Swoole_Process___destruct: a::ArgInfo<1> = a::ArgInfo([a::begin(0, 0)]);
-pub static arginfo_class_Swoole_Process_useQueue: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process___destruct: a::ArgInfo<1> =
+    a::ArgInfo::new([a::begin(0, 0)]);
+pub static arginfo_class_Swoole_Process_useQueue: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"2")),
     a::arg_type(c"capacity", 0, false, z::IS_LONG, false, Some(c"-1")),
 ]);
 pub static arginfo_class_Swoole_Process_statQueue: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
 pub static arginfo_class_Swoole_Process_freeQueue: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Process_pop: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_class_Swoole_Process_pop: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"size", 0, false, z::IS_LONG, false, Some(c"65536")),
 ]);
-pub static arginfo_class_Swoole_Process_push: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_push: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Process_kill: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_kill: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"pid", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"signal_no", 0, false, z::IS_LONG, false, Some(c"SIGTERM")),
 ]);
-pub static arginfo_class_Swoole_Process_signal: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_signal: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"signal_no", 0, false, z::IS_LONG, false, None),
     a::arg_mask(
@@ -69,81 +70,81 @@ pub static arginfo_class_Swoole_Process_signal: a::ArgInfo<3> = a::ArgInfo([
         Some(c"null"),
     ),
 ]);
-pub static arginfo_class_Swoole_Process_alarm: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_alarm: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"usec", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Process_wait: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_wait: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"blocking", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
-pub static arginfo_class_Swoole_Process_daemon: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_daemon: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"nochdir", 0, false, z::_IS_BOOL, false, Some(c"true")),
     a::arg_type(c"noclose", 0, false, z::_IS_BOOL, false, Some(c"true")),
     a::arg_type(c"pipes", 0, false, z::IS_ARRAY, false, Some(c"[]")),
 ]);
-pub static arginfo_class_Swoole_Process_setAffinity: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_setAffinity: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"cpu_settings", 0, false, z::IS_ARRAY, false, None),
 ]);
 pub static arginfo_class_Swoole_Process_getAffinity: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
-pub static arginfo_class_Swoole_Process_set: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+pub static arginfo_class_Swoole_Process_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
-pub static arginfo_class_Swoole_Process_setTimeout: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_setTimeout: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"seconds", 0, false, z::IS_DOUBLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Process_setBlocking: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_setBlocking: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"blocking", 0, false, z::_IS_BOOL, false, None),
 ]);
-pub static arginfo_class_Swoole_Process_setPriority: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_setPriority: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"which", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"priority", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"who", 0, false, z::IS_LONG, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Process_getPriority: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_getPriority: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"which", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"who", 0, false, z::IS_LONG, true, Some(c"null")),
 ]);
 pub static arginfo_class_Swoole_Process_start: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_BOOL | z::MAY_BE_LONG)]);
-pub static arginfo_class_Swoole_Process_write: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_BOOL | z::MAY_BE_LONG)]);
+pub static arginfo_class_Swoole_Process_write: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Process_read: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_read: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING),
     a::arg_type(c"size", 0, false, z::IS_LONG, false, Some(c"8192")),
 ]);
-pub static arginfo_class_Swoole_Process_close: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_close: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"which", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Process_exit: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_exit: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::IS_VOID, false),
     a::arg_type(c"exit_code", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Process_exec: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_exec: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"exec_file", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"args", 0, false, z::IS_ARRAY, false, None),
 ]);
 pub static arginfo_class_Swoole_Process_exportSocket: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_class_mask(
+    a::ArgInfo::new([a::begin_class_mask(
         0,
         0,
         c"Swoole\\Coroutine\\Socket",
         z::MAY_BE_FALSE,
     )]);
-pub static arginfo_class_Swoole_Process_name: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Process_name: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"process_name", 0, false, z::IS_STRING, false, None),
 ]);
