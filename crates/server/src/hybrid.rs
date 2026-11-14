@@ -230,8 +230,8 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
-    /// Runs `step`: negative when it failed, else 0 or what it returns.
-    fn step(&self, _serv: Server<'_>, _step: Step) -> c_int {
+    /// Runs `step`: whether it succeeded.
+    fn step(&self, _serv: Server<'_>, _step: Step) -> bool {
         missing()
     }
 
@@ -452,9 +452,9 @@ pub(crate) mod tests {
             hear(Call::Process(to, send.info.fd, send.info.kind))
         }
 
-        fn step(&self, _: Server<'_>, step: Step) -> c_int {
+        fn step(&self, _: Server<'_>, step: Step) -> bool {
             hear(Call::Step(step));
-            if FAILING.get() == Some(step) { -1 } else { 0 }
+            FAILING.get() != Some(step)
         }
 
         /// A failed handshake.

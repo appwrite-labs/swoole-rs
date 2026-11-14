@@ -70,7 +70,11 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
 extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     // SAFETY: a reactor process pool's `ptr` is its live server.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    super::main_loop(serv, worker)
+    if super::main_loop(serv, worker) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
