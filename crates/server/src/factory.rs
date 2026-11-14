@@ -13,13 +13,12 @@ use swoole_rs_corebase::DataHead;
 use crate::state::ServerState;
 
 /// [`crate::hybrid::Step`] over `serv`, in the master.
-fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {
+fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> bool {
     use crate::hybrid::Step;
     use swoole_rs_reactor::signal_upstream::{self, Handler};
     /// `SW_FD_PIPE` and `SW_EVENT_READ`.
     const SW_FD_PIPE: c_int = 3;
     const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-    let ok = |done: bool| if done { 0 } else { -1 };
     let state = serv.state();
     match step {
         Step::Daemon => {
@@ -33,9 +32,9 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
                 _ => swoole_rs_corebase::swoole_redirect_stdout_file(c"/dev/null"),
             }
             // The master, before it starts any thread.
-            return swoole_rs_ossupport::swoole_daemon(0, 1);
+            return swoole_rs_ossupport::swoole_daemon(0, 1) >= 0;
         }
-        Step::FactoryStart => return ok(start(serv)),
+        Step::FactoryStart => return start(serv),
         // In the master, after the process factory forks and before any reactor
         // thread, base-mode worker or worker thread starts.
         Step::InitProtocols => {
@@ -43,7 +42,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
                 (crate::port_config::methods().init_protocol)(port.config());
             }
         }
-        Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
+        Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv) >= 0,
         Step::TimerReinit => {
             if swoole_rs_timer::thread_timer_detached() {
                 swoole_rs_timer::thread_timer_reinit(false);
@@ -70,10 +69,10 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
                 .config_ref()
                 .master_timer
                 .store(node, core::sync::atomic::Ordering::Relaxed);
-            return ok(!node.is_null());
+            return !node.is_null();
         }
         Step::EventFree => _ = swoole_rs_reactor::swoole_event_free(),
-        Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait(),
+        Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait() >= 0,
         Step::ReactorBarrier | Step::ManagerBarrier => {
             let manager = step == Step::ManagerBarrier;
             swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, manager));
@@ -92,29 +91,28 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         Step::DeleteFactory => delete(state),
         Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
             let Some(port) = state.tables_ref().ports().get(index) else {
-                return -1;
+                return false;
             };
             let (methods, config) = (crate::port_config::methods(), port.config());
-            let failed = match step {
-                Step::Listen(_) => !(methods.listen)(config),
-                Step::CreatePortSocket(_) => !(methods.create_socket)(config),
+            return match step {
+                Step::Listen(_) => (methods.listen)(config),
+                Step::CreatePortSocket(_) => (methods.create_socket)(config),
                 _ => {
                     (methods.close_socket)(config);
-                    false
+                    true
                 }
             };
-            return if failed { -1 } else { 0 };
         }
-        Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
+        Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv) >= 0,
         Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
-        Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
-        Step::StartManager => return crate::manager::native::start_manager_process(serv),
-        Step::EventInit => return swoole_rs_reactor::swoole_event_init(0),
+        Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv) >= 0,
+        Step::StartManager => return crate::manager::native::start_manager_process(serv) >= 0,
+        Step::EventInit => return swoole_rs_reactor::swoole_event_init(0) >= 0,
         Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),
         Step::WorkerStart(id) | Step::WorkerStop(id) => {
             let Some(worker) = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX)) else {
-                return -1;
+                return false;
             };
             if step == Step::WorkerStart(id) {
                 crate::event_worker::native::worker_start_callback(serv, worker);
@@ -137,11 +135,11 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
             config
                 .heartbeat_timer
                 .store(node, core::sync::atomic::Ordering::Relaxed);
-            return ok(!node.is_null());
+            return !node.is_null();
         }
-        Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait(),
+        Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait() >= 0,
     }
-    0
+    true
 }
 
 /// `Server::accept_command_result`: the master's command pipe is readable; a
@@ -345,7 +343,7 @@ impl crate::hybrid::Hybrid for Linked {
         crate::task_worker::native::init(serv)
     }
 
-    fn step(&self, serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c_int {
+    fn step(&self, serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> bool {
         lifecycle_step(serv, step)
     }
 
