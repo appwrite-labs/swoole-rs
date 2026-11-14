@@ -52,7 +52,7 @@ fn run(name: &str, rounds: usize) -> u64 {
                 let chunk = if name == "buffer-16k" { 16384 } else { 1024 };
                 let mut owner = buffer::Buffer::create(chunk).unwrap();
                 for _ in 0..rounds {
-                    assert_eq!(owner.append(&bytes), 0);
+                    assert!(owner.append(&bytes).is_ok());
                     while let Ok(view) = owner.front() {
                         sum = sum.wrapping_add(*view.data as u64 + view.length as u64);
                         assert!(owner.pop().unwrap().token().is_null());
