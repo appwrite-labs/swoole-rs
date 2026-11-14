@@ -507,9 +507,9 @@ fn get_option(call: &Call) {
         };
     } else if level == i64::from(libc::IPPROTO_IPV6) {
         match multicast::get_ipv6(call, socket, level_int, name_int) {
-            Ok(0) | Err(Stop) => return,
-            Ok(-1) => return call.set_bool(false),
-            Ok(_) => {}
+            Ok(Some(true)) | Err(Stop) => return,
+            Ok(Some(false)) => return call.set_bool(false),
+            Ok(None) => {}
         }
     }
     if name == i64::from(libc::SO_LINGER) {
@@ -621,9 +621,8 @@ fn set_option(call: &Call) {
         };
         let Ok(result) = result else { return };
         match result {
-            1 => plain = true,
-            0 => return call.set_bool(true),
-            _ => return call.set_bool(false),
+            None => plain = true,
+            Some(ok) => return call.set_bool(ok),
         }
     }
     // The option, set once every argument is read.

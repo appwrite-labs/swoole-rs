@@ -1,9 +1,9 @@
 //! `Coroutine\Socket::setOption` and `getOption` at `IPPROTO_IP` and
 //! `IPPROTO_IPV6`: multicast membership, interface, TTL, hops and loop, and
 //! `IPV6_PKTINFO`, as the ext/sockets helpers upstream copies
-//! (`thirdparty/php/sockets`) handle them. Each returns upstream's `SUCCESS`
-//! (0), `FAILURE` (-1) or 1 for an option it leaves to the caller, and
-//! `Err(Stop)` once a warning's handler bailed out.
+//! (`thirdparty/php/sockets`) handle them. Each returns a [`Handled`]: `None` for an
+//! option it leaves to the caller, else whether it succeeded (upstream's `SUCCESS`
+//! or `FAILURE`), and `Err(Stop)` once a warning's handler bailed out.
 use crate::{
     native::Co,
     socket_options::{Stop, checked, errno, fd, long, string, text},
@@ -23,11 +23,8 @@ use swoole_rs_zend::{
     sys::{IS_LONG, swr_zend_convert_to_array},
 };
 
-const SUCCESS: c_int = 0;
-const FAILURE: c_int = -1;
-const UNHANDLED: c_int = 1;
-/// `_php_mcast_*`: failed, and the warning is already out.
-const REPORTED: c_int = -2;
+/// An option's result: `None` leaves it to the caller, else whether it succeeded.
+pub(crate) type Handled = Result<Option<bool>, Stop>;
 /// `MAXFQDNLEN`.
 const MAXFQDNLEN: usize = 255;
 
@@ -174,12 +171,12 @@ fn apply<T: swoole_rs_corebase::sys::Pod>(
     level: c_int,
     name: c_int,
     value: &T,
-) -> Result<c_int, Stop> {
+) -> Handled {
     if setsockopt(s.fd, level, name, value) != 0 {
         socket_error(s.socket, "unable to set socket option", errno())?;
-        return Ok(FAILURE);
+        return Ok(Some(false));
     }
-    Ok(SUCCESS)
+    Ok(Some(true))
 }
 
 /// `inet_pton`: the address `text` spells in full, as dotted quads or IPv6
@@ -356,26 +353,20 @@ fn address(s: Sock, table: &Array, key: &CStr) -> Result<Option<AddressStorage>,
 }
 
 /// `php_do_mcast_opt`: a membership change named by `name`.
-fn membership(
-    s: Sock,
-    level: c_int,
-    name: c_int,
-    source: bool,
-    value: &Value,
-) -> Result<c_int, Stop> {
+fn membership(s: Sock, level: c_int, name: c_int, source: bool, value: &Value) -> Handled {
     // SAFETY: the live argument, converted in place as upstream does; nothing
     // borrows what it held before.
     unsafe { swr_zend_convert_to_array(value.as_ptr()) };
     // The argument's array now, live for the call.
     let Some(table) = value.array() else {
-        return Ok(FAILURE);
+        return Ok(Some(false));
     };
     let Some(group) = address(s, table, c"group")? else {
-        return Ok(FAILURE);
+        return Ok(Some(false));
     };
     let source = if source {
         let Some(source) = address(s, table, c"source")? else {
-            return Ok(FAILURE);
+            return Ok(Some(false));
         };
         Some(source)
     } else {
@@ -384,18 +375,16 @@ fn membership(
     let mut index = 0;
     if let Some(value) = table.find(b"interface") {
         let Some(found) = interface(value)? else {
-            return Ok(FAILURE);
+            return Ok(Some(false));
         };
         index = found;
     }
-    let result = change(s, level, name, &group, source.as_ref(), index)?;
-    if result != 0 {
-        if result != REPORTED {
-            socket_error(s.socket, "unable to set socket option", errno())?;
-        }
-        return Ok(FAILURE);
+    // `None`: failed, and the warning is already out.
+    let changed = change(s, level, name, &group, source.as_ref(), index)?;
+    if changed == Some(false) {
+        socket_error(s.socket, "unable to set socket option", errno())?;
     }
-    Ok(SUCCESS)
+    Ok(Some(changed == Some(true)))
 }
 
 /// The RFC 3678 requests: `name` is the request itself.
@@ -411,8 +400,8 @@ fn change(
     group: &AddressStorage,
     source: Option<&AddressStorage>,
     index: c_uint,
-) -> Result<c_int, Stop> {
-    Ok(if let Some(source) = source {
+) -> Result<Option<bool>, Stop> {
+    let result = if let Some(source) = source {
         let mut request: libc::group_source_req = zeroed();
         request.gsr_interface = index;
         request.gsr_group = stored(group);
@@ -423,7 +412,8 @@ fn change(
         request.gr_interface = index;
         request.gr_group = stored(group);
         setsockopt(s.fd, level, name, &request)
-    })
+    };
+    Ok(Some(result == 0))
 }
 
 /// `IP_ADD_MEMBERSHIP` and `IP_DROP_MEMBERSHIP`; upstream picks the request
@@ -436,7 +426,7 @@ fn change(
     group: &AddressStorage,
     _source: Option<&AddressStorage>,
     index: c_uint,
-) -> Result<c_int, Stop> {
+) -> Result<Option<bool>, Stop> {
     let join = name == libc::IP_ADD_MEMBERSHIP;
     if s.kind == libc::AF_INET {
         let interface = if index == 0 {
@@ -445,7 +435,7 @@ fn change(
             }
         } else {
             let Some(address) = interface_address(s, index)? else {
-                return Ok(REPORTED);
+                return Ok(None);
             };
             address
         };
@@ -459,7 +449,7 @@ fn change(
         } else {
             libc::IP_DROP_MEMBERSHIP
         };
-        Ok(setsockopt(s.fd, level, name, &request))
+        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
     } else if s.kind == libc::AF_INET6 {
         let request = libc::ipv6_mreq {
             // As above, as a sockaddr_in6.
@@ -471,7 +461,7 @@ fn change(
         } else {
             libc::IPV6_LEAVE_GROUP
         };
-        Ok(setsockopt(s.fd, level, name, &request))
+        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
     } else {
         let option = if join {
             "MCAST_JOIN_GROUP"
@@ -479,7 +469,7 @@ fn change(
             "MCAST_LEAVE_GROUP"
         };
         warn(format!("Option {option} is inapplicable to this socket type").as_bytes())?;
-        Ok(REPORTED)
+        Ok(None)
     }
 }
 
@@ -563,7 +553,7 @@ pub(crate) fn interface_index(address: in_addr) -> Result<Option<c_uint>, Stop> 
 }
 
 /// `php_do_setsockopt_ip_mcast`.
-pub(crate) fn set_ip(socket: Co, level: c_int, name: c_int, value: &Value) -> Result<c_int, Stop> {
+pub(crate) fn set_ip(socket: Co, level: c_int, name: c_int, value: &Value) -> Handled {
     let s = Sock::of(socket);
     if let Some(&(_, source)) = MEMBERSHIP.iter().find(|(option, _)| *option == name) {
         return membership(s, level, name, source, value);
@@ -571,10 +561,10 @@ pub(crate) fn set_ip(socket: Co, level: c_int, name: c_int, value: &Value) -> Re
     match name {
         libc::IP_MULTICAST_IF => {
             let Some(index) = interface(value)? else {
-                return Ok(FAILURE);
+                return Ok(Some(false));
             };
             let Some(address) = interface_address(s, index)? else {
-                return Ok(FAILURE);
+                return Ok(Some(false));
             };
             apply(s, level, name, &address)
         }
@@ -582,22 +572,17 @@ pub(crate) fn set_ip(socket: Co, level: c_int, name: c_int, value: &Value) -> Re
         libc::IP_MULTICAST_TTL => {
             let Ok(ttl) = u8::try_from(long(value)?) else {
                 warn(b"Expected a value between 0 and 255")?;
-                return Ok(FAILURE);
+                return Ok(Some(false));
             };
             apply(s, level, name, &ttl)
         }
-        _ => Ok(UNHANDLED),
+        _ => Ok(None),
     }
 }
 
 /// `php_do_setsockopt_ipv6_mcast`, then `php_do_setsockopt_ipv6_rfc3542` for
 /// what it leaves.
-pub(crate) fn set_ipv6(
-    socket: Co,
-    level: c_int,
-    name: c_int,
-    value: &Value,
-) -> Result<c_int, Stop> {
+pub(crate) fn set_ipv6(socket: Co, level: c_int, name: c_int, value: &Value) -> Handled {
     let s = Sock::of(socket);
     if let Some(&(_, source)) = MEMBERSHIP.iter().find(|(option, _)| *option == name) {
         return membership(s, level, name, source, value);
@@ -605,7 +590,7 @@ pub(crate) fn set_ipv6(
     match name {
         libc::IPV6_MULTICAST_IF => {
             let Some(index) = interface(value)? else {
-                return Ok(FAILURE);
+                return Ok(Some(false));
             };
             apply(s, level, name, &index)
         }
@@ -614,25 +599,25 @@ pub(crate) fn set_ipv6(
             let hops = long(value)?;
             if !(-1..=255).contains(&hops) {
                 warn(b"Expected a value between -1 and 255")?;
-                return Ok(FAILURE);
+                return Ok(Some(false));
             }
             apply(s, level, name, &c_int::try_from(hops).unwrap_or(-1))
         }
         #[cfg(not(target_vendor = "apple"))]
         _ => set_pktinfo(s, level, name, value),
         #[cfg(target_vendor = "apple")]
-        _ => Ok(UNHANDLED),
+        _ => Ok(None),
     }
 }
 
 /// `IPV6_PKTINFO` (RFC 3542), which Apple's headers leave out by default.
 #[cfg(not(target_vendor = "apple"))]
-fn set_pktinfo(s: Sock, level: c_int, name: c_int, value: &Value) -> Result<c_int, Stop> {
+fn set_pktinfo(s: Sock, level: c_int, name: c_int, value: &Value) -> Handled {
     if name != libc::IPV6_PKTINFO {
-        return Ok(UNHANDLED);
+        return Ok(None);
     }
     let Some(info) = pktinfo(s, value)? else {
-        return Ok(FAILURE);
+        return Ok(Some(false));
     };
     apply(s, level, name, &info)
 }
@@ -706,21 +691,21 @@ fn pktinfo(s: Sock, value: &Value) -> Result<Option<libc::in6_pktinfo>, Stop> {
 /// `php_do_getsockopt_ipv6_rfc3542`: `IPV6_PKTINFO` as
 /// `["addr" => string, "ifindex" => int]`, returned by `call`.
 #[cfg(not(target_vendor = "apple"))]
-pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Result<c_int, Stop> {
+pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Handled {
     if name != libc::IPV6_PKTINFO {
-        return Ok(UNHANDLED);
+        return Ok(None);
     }
     let mut info: libc::in6_pktinfo = zeroed();
     if crate::socket_options::getsockopt(fd(socket), level, name, &mut info).is_none() {
         socket_error(socket, "unable to get socket option", errno())?;
-        return Ok(FAILURE);
+        return Ok(Some(false));
     }
     let shown = inet6_text(Ipv6Addr::from(info.ipi6_addr.s6_addr));
     let mut result = swoole_rs_zend::OwnedArray::default();
     result.insert_bytes(b"addr", Some(shown.as_bytes()));
     result.insert_long(b"ifindex", i64::from(info.ipi6_ifindex));
     call.set_owned(result.into_owned());
-    Ok(SUCCESS)
+    Ok(Some(true))
 }
 
 /// `inet_ntop(AF_INET6)`: RFC 5952 text, with the IPv4-compatible and
@@ -743,13 +728,8 @@ fn inet6_text(address: Ipv6Addr) -> String {
     clippy::unnecessary_wraps,
     reason = "the signature of the other platforms'"
 )]
-pub(crate) fn get_ipv6(
-    _call: &Call,
-    _socket: Co,
-    _level: c_int,
-    _name: c_int,
-) -> Result<c_int, Stop> {
-    Ok(UNHANDLED)
+pub(crate) fn get_ipv6(_call: &Call, _socket: Co, _level: c_int, _name: c_int) -> Handled {
+    Ok(None)
 }
 
 #[cfg(test)]
