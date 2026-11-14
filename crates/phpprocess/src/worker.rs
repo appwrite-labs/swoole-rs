@@ -164,57 +164,56 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
     swoole_rs_process::worker_globals::set_current_worker(worker.raw());
 }
 
-/// Read up to `buffer`'s capacity from the pipe: the length read, or -1.
-pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut ZBuf, blocking: bool) -> isize {
-    let Some(socket) = pipe(worker) else {
-        return -1;
-    };
+/// Read up to `buffer`'s capacity from the pipe: the length read, or `None`.
+pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut ZBuf, blocking: bool) -> Option<usize> {
+    let socket = pipe(worker)?;
     // An empty buffer: its whole capacity.
     let spare = buffer.spare_capacity_mut();
-    if blocking {
+    let read = if blocking {
         read_sync(socket, spare)
     } else {
         swoole_rs_corebase::sys::read(socket.fd(), spare)
-    }
+    };
+    usize::try_from(read).ok()
 }
 
-/// Write `data` to the pipe: the length written, or -1.
-pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> isize {
-    let Some(socket) = pipe(worker) else {
-        return -1;
-    };
+/// Write `data` to the pipe: the length written, or `None`.
+pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Option<usize> {
+    let socket = pipe(worker)?;
     let (bytes, length) = (data.as_ptr().cast(), data.len());
-    if !blocking && event_api::swoole_event_is_available() {
+    let written = if !blocking && event_api::swoole_event_is_available() {
         // SAFETY: a live socket and `length` readable bytes.
-        return unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) };
-    }
-    send_sync(socket, data, 0)
+        unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) }
+    } else {
+        send_sync(socket, data, 0)
+    };
+    usize::try_from(written).ok()
 }
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,
-/// then free the pair); -1 when the worker owns no pipe object.
-pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> c_int {
+/// then free the pair); false when it failed or the worker owns no pipe object.
+pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> bool {
     let fd = pipe(worker).map_or(-1, Socket::fd);
     let pair = worker.pipe_object().cast::<SocketPair>();
     if pair.is_null() {
-        return -1;
+        return false;
     }
     match which {
-        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD),
-        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR),
+        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD) == 0,
+        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR) == 0,
         _ => {
             // SAFETY: the worker's live pair, boxed as [`open_pipe`] and crates/server's
             // pools make them; the record keeps it unless it is deleted below, and
             // nothing else touches it meanwhile.
             let mut owned = ManuallyDrop::new(unsafe { Box::from_raw(pair) });
-            let ret = c_int::from(socket_pair::close(&mut owned, which.c_cast::<c_int>()));
-            if ret >= 0 && which == 0 {
+            let closed = socket_pair::close(&mut owned, which.c_cast::<c_int>());
+            if closed && which == 0 {
                 // The record forgets the pair's ends before they go; upstream deletes
                 // the pair even when shared.
                 worker.clear_pipes();
                 delete_pair(ManuallyDrop::into_inner(owned));
             }
-            ret
+            closed
         }
     }
 }
