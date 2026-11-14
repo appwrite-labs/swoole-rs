@@ -33,8 +33,8 @@ const TIMEOUT_ALL: c_int = 15;
 pub(crate) struct WorkerView {
     pub id: u32,
     pub pid: i32,
-    /// `pipe_current`'s fd, or -1 without one.
-    pub pipe: i32,
+    /// `pipe_current`'s fd, while there is one.
+    pub pipe: Option<c_int>,
     pub pipe_object: bool,
     pub redirect_stdin: bool,
     pub redirect_stdout: bool,
@@ -108,20 +108,20 @@ pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
     worker.set_shared(false);
 }
 
-/// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or -1.
-pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> c_int {
+/// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or none.
+pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> Option<c_int> {
     let mut built = Box::new(socket_pair::unix_socket(true, socket_type));
     let (master, end) = (built.master_socket, built.worker_socket);
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
-        return -1;
+        return None;
     }
     let pair = Box::into_raw(built);
     // SAFETY: the two ends of the pair just boxed, which lives until `pipe_close`
     // or the slot's drop deletes it; `pipe_close` clears the record's pipes first.
     unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
     worker.use_pipe(true);
-    pipe(worker).map_or(-1, Socket::fd)
+    pipe(worker).map(Socket::fd)
 }
 
 /// The worker's current pipe end, while it has one.
@@ -130,11 +130,10 @@ fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
 }
 
 pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
-    let pipe = pipe(worker).map_or(-1, Socket::fd);
     WorkerView {
         id: worker.id(),
         pid: worker.pid(),
-        pipe,
+        pipe: pipe(worker).map(Socket::fd),
         pipe_object: !worker.pipe_object().is_null(),
         redirect_stdin: worker.redirect_stdin(),
         redirect_stdout: worker.redirect_stdout(),
