@@ -111,9 +111,15 @@ pub fn swr_v1_core_name_resolver_resolve(
         let Some(resolver) = next else {
             return false;
         };
-        index += 1;
         if (resolver.resolve)(resolver.private_data(), name, context, out) || context.is_final {
             return true;
+        }
+        // The resolver's code may have unlinked it: then the next one moved into its
+        // place. An earlier unlink moves it back a place, so the next one is here too.
+        let same =
+            |r: &Resolver| (r.private_data, r.kind) == (resolver.private_data, resolver.kind);
+        if resolvers().get(index).is_some_and(same) {
+            index += 1;
         }
     }
 }
@@ -139,6 +145,11 @@ mod tests {
         name == b"name1"
     }
 
+    fn leave(_: *mut c_void, _: &[u8], _: &mut NameResolverContext, _: &mut Vec<u8>) -> bool {
+        swr_v1_core_name_resolver_remove(|_, kind| kind == 3);
+        false
+    }
+
     fn lookup(name: &str) -> (bool, Vec<u8>) {
         let mut context = NameResolverContext::default();
         let mut out = Vec::new();
@@ -153,6 +164,10 @@ mod tests {
         assert_eq!(lookup("name1"), (true, b"127.0.0.2".to_vec()));
         assert_eq!(lookup("stop"), (true, Vec::new()));
         assert_eq!(lookup("localhost"), (false, Vec::new()));
+        // One that unlinks itself mid-lookup: the next is still asked.
+        swr_v1_core_name_resolver_add(leave, core::ptr::null_mut(), 3, false);
+        assert_eq!(lookup("name1"), (true, b"127.0.0.2".to_vec()));
+        assert!(swr_v1_core_name_resolver_remove(|_, kind| kind == 3).is_null());
         let of_kind = |_, kind| kind == 2;
         assert!(!swr_v1_core_name_resolver_remove(of_kind).is_null());
         assert_eq!(lookup("name1"), (false, Vec::new()));
