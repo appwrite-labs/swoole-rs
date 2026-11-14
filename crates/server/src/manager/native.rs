@@ -263,9 +263,10 @@ impl Reaping<'_> {
             let Some(worker) = worker_at(self.serv, id) else {
                 continue;
             };
-            // A copy of the record, whose pid and id the task snapshots.
-            let worker = worker.get();
-            self.reload(|task| task.add_workers(&[worker]));
+            if let Some(task) = self.active_reload() {
+                // A copy of the record, whose pid and id the task snapshots.
+                task.add_workers(&[worker.get()]);
+            }
         }
     }
 
@@ -302,8 +303,11 @@ impl Reap for Reaping<'_> {
         self.serv.event_pool_ref().reload_init()
     }
 
-    fn reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        self.serv.event_pool_ref().with_reload_task(f)
+    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
+        let task = self.serv.event_pool_ref().reload_task();
+        // SAFETY: the event pool's reload, live until `drop_reload_task`, which only
+        // the manager's loop touches, one step at a time.
+        unsafe { task.cast::<ReloadTask>().as_mut() }
     }
 
     fn wait(&mut self, nonblock: bool) -> Waited {
@@ -367,7 +371,9 @@ impl Reap for Reaping<'_> {
                 if !config.reload_async.get() {
                     return ReloadStart::KillOne;
                 }
-                self.reload(|task| task.kill_all(libc::SIGTERM, methods::reload_warn));
+                if let Some(task) = self.active_reload() {
+                    task.kill_all(libc::SIGTERM, methods::reload_warn);
+                }
                 ReloadStart::Signalled
             }
             Reload::NoTaskWorkers => {

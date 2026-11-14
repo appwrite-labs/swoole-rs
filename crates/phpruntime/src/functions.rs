@@ -62,11 +62,34 @@ impl Entry {
         NonNull::new(found.cast()).map(Self)
     }
 
-    /// The function, borrowed for `f`, which runs no PHP code and reaches it
-    /// through no other entry.
+    /// The function, borrowed for `f`.
+    ///
+    /// # Panics
+    /// Inside another `with` on this thread: two entries may name one function.
     fn with<R>(self, f: impl FnOnce(&mut zend_internal_function) -> R) -> R {
-        // SAFETY: a live internal function (`find`); the borrow ends with `f`.
+        thread_local! {
+            static BORROWED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        struct Lent;
+        impl Drop for Lent {
+            fn drop(&mut self) {
+                BORROWED.set(false);
+            }
+        }
+        assert!(
+            !BORROWED.replace(true),
+            "an internal function borrowed twice"
+        );
+        let _lent = Lent;
+        // SAFETY: a live internal function (`find`), borrowed by no other `with` on
+        // this thread; the borrow ends with `f`, which takes no `Entry`'s `&mut` again.
         f(unsafe { &mut *self.0.as_ptr() })
+    }
+
+    /// A copy of the function's record, for its handler and arginfo: no borrow.
+    fn read(self) -> zend_internal_function {
+        // SAFETY: a live internal function (`find`), copied whole; nothing is borrowed.
+        unsafe { self.0.as_ptr().read() }
     }
 }
 
@@ -314,7 +337,8 @@ pub(crate) fn copy_to_thread() {
     };
     for (key, record) in hooked {
         let main = record.function;
-        let (handler, arg_info) = main.with(|main| (main.handler, main.arg_info));
+        let main_record = main.read();
+        let (handler, arg_info) = (main_record.handler, main_record.arg_info);
         if same(handler, record.ori_handler) {
             continue;
         }
@@ -658,7 +682,8 @@ fn native_curl(requested: &mut u32, installed: u32) {
                 let Some(replacement) = Entry::find(native.to_bytes()) else {
                     continue;
                 };
-                let (handler, arg_info) = replacement.with(|f| (f.handler, f.arg_info));
+                let replaced = replacement.read();
+                let (handler, arg_info) = (replaced.handler, replaced.arg_info);
                 hook(name, handler, arg_info);
             }
             Some(false) => unhook(name),

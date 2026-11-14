@@ -352,22 +352,6 @@ impl<'a> PoolRef<'a> {
         unsafe { &*self.raw }
     }
 
-    /// `f` over the reload in progress; `None` without one. The reload is out of the
-    /// record while `f` runs, so a `drop_reload_task` inside `f` finds none to free,
-    /// and a reload `f` starts is replaced (and leaked) when this one goes back.
-    pub fn with_reload_task<R>(self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        let task = self.reload_task();
-        if task.is_null() {
-            return None;
-        }
-        self.set_reload_task(ptr::null_mut());
-        // SAFETY: non-null, so the reload `reload` boxed, which only `drop_reload_task`
-        // frees, through the field, which no longer names it while `f` runs.
-        let result = f(unsafe { &mut *task });
-        self.set_reload_task(task);
-        Some(result)
-    }
-
     /// The pool's message queue's message and byte counts (`msgctl(IPC_STAT)`),
     /// or `None` for a pool without one or a failed stat.
     #[must_use]
@@ -1984,8 +1968,9 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
         self.reload_init()
     }
 
-    fn reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        self.p.with_reload_task(f)
+    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
+        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
+        unsafe { Pool::reload_task(self).as_mut() }
     }
 
     fn wait(&mut self, nonblock: bool) -> Waited {
@@ -2009,11 +1994,11 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
             .filter_map(|i| self.record().worker(i))
             .map(|worker| (worker.pid(), worker.id()))
             .collect();
-        self.p.with_reload_task(|task| {
+        if let Some(task) = self.active_reload() {
             for (pid, id) in workers {
                 task.add(pid, id);
             }
-        });
+        }
         ReloadStart::KillOne
     }
 

@@ -473,15 +473,6 @@ impl ServerConfig {
         self.ipc_max_size.store(size, Relaxed);
     }
 
-    /// `serv->gs`: the server's shared record, once `swr_v1_server_new` has mapped it.
-    pub(crate) fn shared(&self) -> Option<&crate::shared::ServerShared> {
-        let gs = self.gs.as_ptr().cast::<crate::shared::ServerShared>();
-        // SAFETY: null, or the `ServerGS` `swr_v1_server_new` maps, which stays mapped
-        // until a `&mut` of this configuration frees it; its writers keep to the
-        // server's own synchronization.
-        unsafe { gs.as_ref() }
-    }
-
     /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
         let pipe = self.pipe_command.0.load(Acquire);

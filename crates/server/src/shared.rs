@@ -98,8 +98,9 @@ pub(crate) struct ServerShared {
 impl ServerShared {
     /// The live server's record, which `swr_v1_server_new` maps for its life.
     pub(crate) fn of(serv: crate::view::Server<'_>) -> &Self {
-        let shared = serv.config().shared();
-        shared.unwrap_or_else(|| swoole_rs_corebase::log::fatal("serv->gs is unmapped"))
+        let gs = serv.config().gs.as_ptr().cast::<Self>();
+        // SAFETY: as above; its writers keep to the server's own synchronization.
+        unsafe { &*gs }
     }
     /// `serv->get_task_worker_pool()`.
     pub(crate) fn task_pool(&self) -> &swoole_rs_process::process_pool::PoolRecord {
@@ -113,7 +114,9 @@ impl ServerShared {
 
 /// The server's shared counters (`serv->gs`), once configured.
 pub(crate) fn server_counters(state: &crate::ServerState) -> Option<&ServerCounters> {
-    state.config_ref().shared().map(|gs| &gs.counters)
+    let gs = state.config_ref().gs.as_ptr().cast::<ServerCounters>();
+    // SAFETY: a non-null `gs` is the server's shared counters, which stay mapped.
+    unsafe { gs.as_ref() }
 }
 
 /// The counters of the port a session arrived on (`get_port_by_session_id(id)->gs`).
@@ -174,7 +177,7 @@ mod tests {
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
         use crate::records::{ConnectionRecord, SessionRecord};
-        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
+        let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
         let counters = gs.as_ptr().cast::<ServerCounters>();
         // SAFETY: a fresh mapping of a whole `ServerCounters`.
         unsafe { counters.write(ServerCounters::default()) };

@@ -98,7 +98,24 @@ fn socket_error(socket: Co, message: &str, error: c_int) -> Result<(), Stop> {
 
 /// `h_errno`, as `-10000 - h_errno` reports a host lookup failure.
 fn host_error() -> c_int {
-    -10000 - swoole_rs_hooks::stdio::thread_h_errno()
+    #[cfg(target_os = "linux")]
+    {
+        unsafe extern "C" {
+            /// glibc's per-thread `h_errno` slot: no arguments, and it only
+            /// returns the calling thread's address.
+            safe fn __h_errno_location() -> *mut c_int;
+        }
+        // SAFETY: the calling thread's live slot.
+        -10000 - unsafe { *__h_errno_location() }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        unsafe extern "C" {
+            static h_errno: c_int;
+        }
+        // SAFETY: libc's resolver error.
+        -10000 - unsafe { h_errno }
+    }
 }
 
 fn socklen<T>() -> socklen_t {
