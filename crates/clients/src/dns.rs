@@ -108,10 +108,10 @@ pub fn set_dns_server(server: &[u8]) {
 }
 
 /// `swoole_load_resolv_conf`'s read: the first `nameserver` of the file at `path`
-/// becomes the DNS server. 1 found, 0 none, -1 the file did not open (warned with
-/// open's errno).
+/// becomes the DNS server: whether there was one. A file that did not open is
+/// warned with open's errno.
 #[must_use]
-pub fn load_resolv_conf(path: &CStr) -> c_int {
+pub fn load_resolv_conf(path: &CStr) -> bool {
     match resolv_conf(path) {
         Err(_) => {
             let path = path.to_string_lossy();
@@ -119,12 +119,12 @@ pub fn load_resolv_conf(path: &CStr) -> c_int {
                 c"swoole_load_resolv_conf",
                 format_args!("fopen({path}) failed"),
             );
-            -1
+            false
         }
-        Ok(None) => 0,
+        Ok(None) => false,
         Ok(Some(server)) => {
             set_dns_server(&server);
-            1
+            true
         }
     }
 }
@@ -156,7 +156,7 @@ pub fn query(
         return INVALID_DOMAIN;
     }
     let question = packet.get_mut(HEADER..).unwrap_or_default();
-    if domain_encode(name, question) < 0 {
+    if !domain_encode(name, question) {
         return INVALID_DOMAIN;
     }
     let mut steps = HEADER + c_len(question) + 1;
@@ -277,7 +277,7 @@ pub fn lookup<S: DnsSocket>(
 ) -> Vec<Vec<u8>> {
     let (mut host, mut port) = server();
     if host.len() == 1 {
-        if load_resolv_conf(RESOLV_CONF) <= 0 {
+        if !load_resolv_conf(RESOLV_CONF) {
             log::set_last_error(ErrorCode::SW_ERROR_DNSLOOKUP_NO_SERVER as c_int);
             return Vec::new();
         }
@@ -511,7 +511,7 @@ mod tests {
             assert_eq!(host.pop(), Some(0));
             (String::from_utf8(host).unwrap(), port)
         };
-        assert_eq!(load_resolv_conf(&path), 1);
+        assert!(load_resolv_conf(&path));
         assert_eq!(server(), ("10.0.0.53".to_string(), 53));
         for (text, expected) in [
             ("127.0.0.1:5353", ("127.0.0.1", 5353)),
@@ -526,7 +526,7 @@ mod tests {
             set_dns_server(text.as_bytes());
             assert_eq!(server(), (expected.0.to_string(), expected.1), "{text}");
         }
-        assert_eq!(load_resolv_conf(c"/nonexistent/resolv.conf"), -1);
+        assert!(!load_resolv_conf(c"/nonexistent/resolv.conf"));
         assert_eq!(
             server(),
             ("10.0.0.1".to_string(), 53),

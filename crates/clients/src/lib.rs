@@ -197,15 +197,15 @@ pub fn cookie(bytes: &[u8]) -> CookiePlan {
     }
 }
 
-/// `domain_encode`: `input` as DNS labels into `output`; -1 when `output` cannot
+/// `domain_encode`: `input` as DNS labels into `output`; false when `output` cannot
 /// hold `input.len() + 3` bytes.
-pub fn domain_encode(input: &[u8], output: &mut [u8]) -> i32 {
+pub fn domain_encode(input: &[u8], output: &mut [u8]) -> bool {
     let Some(output) = input
         .len()
         .checked_add(3)
         .and_then(|required| output.get_mut(..required))
     else {
-        return -1;
+        return false;
     };
     // `[len]label[len]label` with each dot turned into the next label's length
     // byte, then two NULs.
@@ -215,14 +215,14 @@ pub fn domain_encode(input: &[u8], output: &mut [u8]) -> i32 {
         let length_byte = label.len().c_cast::<u8>();
         let slot = output.get_mut(start..=start + label.len());
         let Some((head, body)) = slot.and_then(<[u8]>::split_first_mut) else {
-            return -1;
+            return false;
         };
         *head = length_byte;
         body.copy_from_slice(label);
         start += label.len() + 1;
     }
     output.get_mut(start..).unwrap_or_default().fill(0);
-    0
+    true
 }
 
 /// `domain_decode` over `bytes`, whose plain `char` is signed when `signed_char`;
