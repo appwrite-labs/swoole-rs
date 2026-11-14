@@ -659,7 +659,7 @@ fn datagram_peer_is_a_snapshot() {
         (*fields).remote_addr.kind = 4;
     }
     let mut result = SocketAddress::default();
-    assert_eq!(Handle(client).peer_name(&mut result), OK);
+    assert!(Handle(client).peer_name(&mut result));
     unsafe { (*fields).remote_addr.len = 29 };
     assert_eq!(result.len, 17);
     assert_eq!(result.kind, 4);

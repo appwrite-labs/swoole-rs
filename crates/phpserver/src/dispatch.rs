@@ -17,7 +17,6 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
-use swoole_rs_phpcoroutines::call_handler_lent;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
@@ -96,8 +95,7 @@ pub(crate) fn invoke(
     retval: Option<&Value>,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    // The coroutine leaf and the reporter run inside C traps.
-    let called = call_handler_lent(cb, args, retval, coroutine);
+    let called = swoole_rs_phpcoroutines::call_args(cb, args, retval, coroutine);
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         Bailout
@@ -1001,7 +999,9 @@ fn call_unlimited(
     args: &mut [zval],
     retval: &Value,
 ) -> Result<bool, Bailout> {
-    swoole_rs_zend::with_unlimited_stack(|| call_handler_lent(callable, args, Some(retval), false))
+    swoole_rs_zend::with_unlimited_stack(|| {
+        swoole_rs_phpcoroutines::call_args(callable, args, Some(retval), false)
+    })
 }
 
 /// `php_swoole_server_dispatch_func`: `dispatch_func($server, $fd, $type[, $data])`'s

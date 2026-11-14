@@ -52,11 +52,11 @@ pub trait TaskHost {
 /// `Server::MultiTask`: tasks packed, and their results unpacked, by index.
 pub trait MultiTask {
     fn count(&self) -> u16;
-    /// Packs task `index` into `event`: its id, negative when it failed.
+    /// Packs task `index` into `event`: its id, or `None` when it failed.
     ///
     /// # Errors
     /// PHP bailed out (a user `__serialize`).
-    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed>;
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed>;
     /// Task `index`'s result, a packed `EventData`.
     ///
     /// # Errors
@@ -126,10 +126,28 @@ impl<'a> ResultSlot<'a> {
         }
     }
 
-    /// The slot's `EventData`, for a result a task worker has finished writing.
-    #[must_use]
-    pub const fn as_ptr(self) -> *const u8 {
-        self.0.as_ptr().cast()
+    /// `f` over a copy of the slot's `EventData`, for a result a task worker has
+    /// finished writing: its head and the `len` bytes that head counts, read a word
+    /// at a time, for [`Packed::from_bytes`]. A small result is copied on the stack.
+    pub fn read<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
+        let len = self
+            .0
+            .get(HEAD_LEN / 4)
+            .map_or(0, |len| len.load(Ordering::Relaxed) as usize);
+        let size = HEAD.saturating_add(len);
+        let words = size.min(EVENT_SIZE).next_multiple_of(4);
+        let mut small = [0u8; 512];
+        let mut large = Vec::new();
+        let bytes = if words <= small.len() {
+            small.get_mut(..words).unwrap_or_default()
+        } else {
+            large.resize(words, 0);
+            large.as_mut_slice()
+        };
+        for (to, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(self.0) {
+            *to = word.load(Ordering::Relaxed).to_ne_bytes();
+        }
+        f(bytes.get(..size).unwrap_or(bytes))
     }
 
     /// Zeroes the slot's head. Upstream zeroes the whole slot; its head is what is
@@ -301,13 +319,11 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
     ) -> Result<bool, Bailed> {
         self.result.clear();
         let mut path = [0; TASK_TMP_PATH_SIZE];
-        let fd = make_tmpfile(&task_tmpfile(), &mut path);
-        if fd < 0 {
+        // Upstream keeps only the path, so the file closes at once.
+        if make_tmpfile(&task_tmpfile(), &mut path).is_none() {
             set_last_error(errno());
             return Ok(false);
         }
-        // `fd` is open and owned here; upstream keeps only the path.
-        swoole_rs_corebase::sys::close(fd);
         let Ok(path) = CStr::from_bytes_until_nul(&path) else {
             return Ok(false);
         };
@@ -351,23 +367,23 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         let mut indexes = Vec::with_capacity(usize::from(count));
         let mut event = TaskBuffer::default();
         for index in 0..count {
-            let mut task_id = multi.pack(index, &mut event)?;
-            let mut failed = task_id < 0;
-            if failed {
-                log::warning(c"task_sync", format_args!("task pack failed"));
-            } else {
+            // The task's id once it is dispatched.
+            let task_id = if let Some(id) = multi.pack(index, &mut event)? {
                 event.add_flags(TASK_WAITALL);
                 tasks.tasking.fetch_add(1, Ordering::SeqCst);
                 let mut worker_id: c_int = -1;
-                if tasks.task(event.packed(), &mut worker_id, true)? {
+                let dispatched = tasks.task(event.packed(), &mut worker_id, true)?;
+                if dispatched {
                     tasks.tasking.fetch_sub(1, Ordering::SeqCst);
                 } else {
                     log::warning(c"task_sync", format_args!("failed to dispatch task"));
-                    task_id = -1;
-                    failed = true;
                 }
-            }
-            if failed {
+                dispatched.then_some(id)
+            } else {
+                log::warning(c"task_sync", format_args!("task pack failed"));
+                None
+            };
+            if task_id.is_none() {
                 multi.fail(index);
                 pending -= 1;
             }
@@ -413,7 +429,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
 /// `indexes` (sorted by id).
 fn unpack_all(
     multi: &mut impl MultiTask,
-    indexes: &[(i64, u16)],
+    indexes: &[(Option<i64>, u16)],
     content: &CppString,
 ) -> Result<(), Bailed> {
     let bytes = content.view();
@@ -427,7 +443,7 @@ fn unpack_all(
                 .copied()
                 .unwrap_or_default(),
         );
-        if let Ok(found) = indexes.binary_search_by_key(&task_id, |&(id, _)| id)
+        if let Ok(found) = indexes.binary_search_by_key(&Some(task_id), |&(id, _)| id)
             && let Some(&(_, index)) = indexes.get(found)
             && let Some(record) = Packed::from_bytes(record)
         {
@@ -499,10 +515,11 @@ mod tests {
         fn count(&self) -> u16 {
             u16::try_from(self.packs.len()).unwrap()
         }
-        fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
+        fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
             let id = self.packs[usize::from(index)];
             event.set_fd(id);
-            Ok(id)
+            // The script's -1 is a failed pack.
+            Ok((id >= 0).then_some(id))
         }
         fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
             let id = result.head().fd;

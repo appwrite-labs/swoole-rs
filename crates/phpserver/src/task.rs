@@ -14,7 +14,6 @@ use std::{
     collections::HashMap,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
-    ptr,
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
@@ -26,11 +25,14 @@ use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
-    process_pool::{PoolRef, SW_IPC_MAX_SIZE},
+    process_pool::PoolRef,
     task_file::{Packed, TaskBuffer},
-    task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting},
+    task_sync::{Bailed, MultiTask, TaskHost, Tasks, Waiting},
 };
-use swoole_rs_server::{task_worker::native::finish, view};
+use swoole_rs_server::{
+    task_worker::{native::finish, result_slot},
+    view,
+};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout,
@@ -137,12 +139,8 @@ fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
     tasks.host.lock = serv
         .worker_record(id)
         .and_then(swoole_rs_process::worker_record::Worker::lock);
-    let results = ptr::NonNull::new(serv.config().task_results.as_ptr().cast::<u8>())?;
-    let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
-    let slot = ptr::NonNull::new(results.as_ptr().wrapping_add(usize::from(id) * size))?;
-    // SAFETY: this worker's slot of the server's `task_results`, shared memory that
-    // holds an `EventData` per worker for as long as the server lives.
-    Some(tasks.waiting(unsafe { ResultSlot::new(slot) }))
+    let slot = result_slot(serv, id)?;
+    Some(tasks.waiting(slot))
 }
 
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
@@ -158,9 +156,9 @@ impl MultiTask for Multi<'_> {
         self.count
     }
 
-    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
         let Some(data) = self.tasks.and_then(|tasks| tasks.index(u64::from(index))) else {
-            return Ok(-1);
+            return Ok(None);
         };
         encode(data, event).map_err(|Bailout| Bailed)
     }
@@ -184,7 +182,7 @@ struct TaskCo {
     co: Coroutine,
     result: RefCell<Owned>,
     /// Set once every task is sent, as upstream.
-    list: RefCell<Vec<i64>>,
+    list: RefCell<Vec<Option<i64>>>,
     count: Cell<u32>,
 }
 
@@ -248,15 +246,15 @@ fn encoded<R>(data: &Value, each: impl FnOnce(&[u8], bool) -> R) -> Result<Optio
 }
 
 /// `php_swoole_server_task_pack`: pack `data` into `buf`; the task id, or -1.
-fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<i64, Bailout> {
+fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<Option<i64>, Bailout> {
     let packed = encoded(data, |payload, serialized| {
-        let id = if buf.pack(payload) { buf.head().fd } else { -1 };
+        let id = buf.pack(payload).then(|| buf.head().fd);
         (id, serialized)
     })?;
     let Some((id, serialized)) = packed else {
-        return Ok(-1);
+        return Ok(None);
     };
-    if id < 0 {
+    if id.is_none() {
         event_warning(c"large task pack failed")?;
     }
     if serialized {
@@ -270,9 +268,17 @@ fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<i64, Bailout> {
 /// `None` when its temporary file can't be read. A value a bailout interrupted
 /// is leaked.
 pub(crate) fn decode(task: Packed<'_>) -> Result<Option<(Owned, bool)>, Bailout> {
-    let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
-    // SAFETY: this thread's live buffer.
-    let Some((data, flags)) = task.unpack(unsafe { &mut *buffer }) else {
+    // Upstream reads a temporary file into `sw_tg_buffer()`; this reads it into its
+    // own buffer, which unserialize's PHP code can't reach.
+    let mut buffer = CppString::EMPTY;
+    let decoded = decode_into(task, &mut buffer);
+    buffer.dispose();
+    decoded
+}
+
+/// [`decode`] with `buffer` for a temporary file's bytes.
+fn decode_into(task: Packed<'_>, buffer: &mut CppString) -> Result<Option<(Owned, bool)>, Bailout> {
+    let Some((data, flags)) = task.unpack(buffer) else {
         return Ok(None);
     };
     if u32::from(flags) & SERIALIZE == 0 {
@@ -323,12 +329,12 @@ pub(crate) fn finish_task(
     Ok(finished.unwrap_or(false))
 }
 
-/// `php_swoole_server_task_pack`: the task id, or -1; a trapped bailout waits
+/// `php_swoole_server_task_pack`: the task id, or `None`; a trapped bailout waits
 /// for the handler's end.
-pub(crate) fn pack(data: &Value, buf: &mut TaskBuffer) -> i64 {
+pub(crate) fn pack(data: &Value, buf: &mut TaskBuffer) -> Option<i64> {
     encode(data, buf).unwrap_or_else(|bailout| {
         bailout.defer();
-        -1
+        None
     })
 }
 
@@ -398,10 +404,9 @@ fn task(call: &Call) {
         return call.set_bool(false);
     };
     let mut buf = TaskBuffer::default();
-    let id = pack(data, &mut buf);
-    if id < 0 {
+    let Some(id) = pack(data, &mut buf) else {
         return call.set_bool(false);
-    }
+    };
     let callback = call.value(3).filter(|zfn| zfn.truthy());
     if !facts.worker {
         flag(&mut buf, NOREPLY);
@@ -438,10 +443,9 @@ fn taskwait(call: &Call) {
         return call.set_bool(false);
     };
     let mut buf = TaskBuffer::default();
-    let id = pack(data, &mut buf);
-    if id < 0 {
+    let Some(id) = pack(data, &mut buf) else {
         return call.set_bool(false);
-    }
+    };
     let mut dst = dst.c_cast::<c_int>();
     let Some(co) = Coroutine::current() else {
         let Some(mut tasks) = wait_state(serv) else {
@@ -449,12 +453,10 @@ fn taskwait(call: &Call) {
         };
         let done = match tasks.task_sync(buf.packed(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
-            Ok(true) => {
-                // SAFETY: the result the task worker packed into the slot before
-                // it notified this worker.
-                let result = unsafe { Packed::from_raw(tasks.result().as_ptr().cast()) };
-                return_decoded(call, decode(result))
-            }
+            Ok(true) => tasks.result().read(|result| {
+                Packed::from_bytes(result)
+                    .is_some_and(|result| return_decoded(call, decode(result)))
+            }),
             Ok(false) => false,
             Err(Bailed) => {
                 Bailout.defer();
@@ -569,20 +571,16 @@ fn task_co(call: &Call, fill_false: bool) {
     for (_, ztask) in tasks.into_iter().flat_map(Array::entries) {
         let index = list.len() as u64;
         let mut buf = TaskBuffer::default();
-        let mut id = pack(ztask, &mut buf);
-        let mut dispatched = false;
-        if id < 0 {
-            fatal(E_WARNING, c"failed to pack task");
-        } else {
+        // The task's id once it is dispatched.
+        let id = if let Some(id) = pack(ztask, &mut buf) {
             flag(&mut buf, NONBLOCK | COROUTINE);
             let mut dst: c_int = -1;
-            if dispatch(serv, &mut buf, &mut dst) {
-                dispatched = true;
-            } else {
-                id = -1;
-            }
-        }
-        if dispatched {
+            dispatch(serv, &mut buf, &mut dst).then_some(id)
+        } else {
+            fatal(E_WARNING, c"failed to pack task");
+            None
+        };
+        if let Some(id) = id {
             pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
         } else {
             if let Some(array) = task_co.result.borrow_mut().array_mut() {
@@ -607,7 +605,7 @@ fn task_co(call: &Call, fill_false: bool) {
                 if fill_false {
                     array.update_index(j as u64, Owned::bool(false));
                 }
-                if let Some(&id) = task_co.list.borrow().get(j) {
+                if let Some(&Some(id)) = task_co.list.borrow().get(j) {
                     pending(serv, |p| p.coroutines.remove(&id));
                 }
             }
@@ -624,7 +622,7 @@ fn pack_method(call: &Call) {
         return call.set_bool(false);
     };
     let mut buf = TaskBuffer::default();
-    if pack(data, &mut buf) < 0 {
+    if pack(data, &mut buf).is_none() {
         return call.set_bool(false);
     }
     flag(&mut buf, NONBLOCK | NOREPLY);
@@ -802,7 +800,7 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
     };
     let (index, single) = {
         let list = task_co.list.borrow();
-        (list.iter().position(|&t| t == id), list.is_empty())
+        (list.iter().position(|&t| t == Some(id)), list.is_empty())
     };
     if single {
         // ZVAL_COPY_VALUE: the result takes the value.

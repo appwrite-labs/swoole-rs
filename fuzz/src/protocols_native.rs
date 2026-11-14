@@ -166,6 +166,7 @@ impl Socks5Proxy<'_> {
 
     fn pack_auth_request(&mut self) -> i64 {
         socks_auth(self.username, self.password, &mut self.buf)
+            .map_or(-1, |size| i64::try_from(size).unwrap_or(-1))
     }
 
     /// The shim's `Address::assign`: `inet_pton` of the host up to its first NUL, for
@@ -195,10 +196,8 @@ impl Socks5Proxy<'_> {
                 None => return -1,
             }
         };
-        match socks_connect(kind, &address, self.target_port, &mut self.buf) {
-            -2 => -1,
-            size => size,
-        }
+        socks_connect(kind, &address, self.target_port, &mut self.buf)
+            .map_or(-1, |size| i64::try_from(size).unwrap_or(-1))
     }
 
     fn handshake(&mut self, data: &[u8], send: &mut dyn FnMut(&[u8]) -> i64) -> bool {

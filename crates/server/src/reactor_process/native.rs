@@ -27,7 +27,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
     workers.event_pool.reset();
     let pool_ref = serv.event_pool_ref();
     let ipc = IpcMode::UnixSock.code().into();
-    if swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) < 0 {
+    if !swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) {
         return -1;
     }
     swoole_rs_process::methods::set_max_request(

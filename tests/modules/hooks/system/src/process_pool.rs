@@ -287,14 +287,15 @@ unsafe extern "C" {
 // whose layout the fixture checks against the records'.
 unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe {
+    let created = unsafe {
         pm::create(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             worker_num,
             key,
             ipc_mode,
         )
-    }
+    };
+    if created { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_listen_host(

@@ -270,10 +270,10 @@ impl<'a> Socket<'a> {
             && self.edit(|record| std::mem::take(&mut record.kernel_nobufs))
     }
 
-    /// `Socket::wait_event`: waits outside any borrow, since the wait runs signal handlers that
-    /// may reach other sockets.
+    /// `Socket::wait_event`: whether an event came. It waits outside any borrow, since the
+    /// wait runs signal handlers that may reach other sockets.
     #[must_use]
-    pub fn wait_event(self, timeout_ms: c_int, events: c_int) -> c_int {
+    pub fn wait_event(self, timeout_ms: c_int, events: c_int) -> bool {
         let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
         crate::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
     }

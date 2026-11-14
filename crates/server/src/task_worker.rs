@@ -9,9 +9,21 @@ use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::log;
+use swoole_rs_process::task_sync::ResultSlot;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod native;
+
+/// `serv->task_results[worker_id]`: the event worker's result slot, which task
+/// workers answer its `taskwait`s in; `None` before the server made the slots, and
+/// past the last.
+#[must_use]
+pub fn result_slot(serv: crate::view::Server<'_>, worker_id: u16) -> Option<ResultSlot<'_>> {
+    const WORDS: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize / 4;
+    let start = usize::from(worker_id) * WORDS;
+    let words = crate::shared::words(&serv.config().task_results).get(start..start + WORDS)?;
+    words.try_into().ok().map(ResultSlot::of)
+}
 
 /// `swoole::TaskFlag` bits.
 const TASK_CALLBACK: u16 = 1 << 3;

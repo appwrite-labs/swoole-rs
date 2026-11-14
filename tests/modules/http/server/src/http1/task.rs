@@ -893,13 +893,9 @@ impl MultiTask for Multi<'_> {
         u16::try_from(self.tasks.len()).unwrap()
     }
 
-    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
         let task = &self.tasks[usize::from(index)];
-        if event.pack(task) {
-            Ok(event.head().fd)
-        } else {
-            Ok(-1)
-        }
+        Ok(event.pack(task).then(|| event.head().fd))
     }
 
     fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {

@@ -388,7 +388,11 @@ impl<'a> Client<'a> {
     }
 
     fn bind(&self, host: &str, port: c_int) -> c_int {
-        self.handle().bind(&cstring(host), port)
+        if self.handle().bind(&cstring(host), port) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     fn sendto(&self, host: &str, port: c_int, data: &[u8]) -> c_int {
@@ -403,7 +407,11 @@ impl<'a> Client<'a> {
     /// `get_peer_name(&addr)`, then the address's `get_addr()` and `get_port()`.
     fn get_peer_name(&self) -> (c_int, String, c_int) {
         let mut address = SocketAddress::default();
-        let result = self.handle().peer_name(&mut address);
+        let result = if self.handle().peer_name(&mut address) {
+            SW_OK
+        } else {
+            SW_ERR
+        };
         let address = (&raw const address).cast();
         // SAFETY: the address Rust filled.
         let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };
@@ -1457,8 +1465,8 @@ fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
             // SAFETY: `i` is within the stack, whose certificates the SSL keeps alive.
             let cert = unsafe { swoole_rs_tls::CertRef::new(OPENSSL_sk_value(chain, i).cast()) };
             // `_ssl_read_x509_file`, which fails without a certificate.
-            let rv = cert.map_or(-1, |cert| cert.pem(&mut buffer));
-            (rv > 0).then(|| buffer[..rv as usize].to_vec())
+            let rv = cert.and_then(|cert| cert.pem(&mut buffer).ok());
+            rv.filter(|&n| n > 0).map(|n| buffer[..n].to_vec())
         })
         .collect()
 }

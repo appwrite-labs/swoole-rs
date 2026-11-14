@@ -177,10 +177,7 @@ use swoole_rs_tls::upstream::writev_sync;
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 #[cfg(not(feature = "upstream-symbols"))]
 fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
-    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
-    let fd = socket.fd();
-    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
+    swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
 /// `allocator`'s `malloc(size)`: a new block of `size` bytes, or null when it has

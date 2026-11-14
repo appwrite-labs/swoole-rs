@@ -9,8 +9,6 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::ReadSlot;
 
 /// `SW_OK`, `SW_ERR` and `SW_BACKLOG`.
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 const BACKLOG: c_int = 512;
 
 /// `time<std::chrono::milliseconds>(true)`, from native code so the clock is the
@@ -29,54 +27,50 @@ pub extern "C" fn steady_ms() -> f64 {
         .c_cast::<f64>()
 }
 
-fn status(ok: bool) -> c_int {
-    if ok { OK } else { ERR }
-}
-
 impl SocketFields {
     /// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
-    pub fn get_name(&mut self) -> c_int {
+    pub fn get_name(&mut self) -> bool {
         if self.info.local_name(self.fd) != 0 {
-            return ERR;
+            return false;
         }
         self.info.kind = self.socket_type;
-        OK
+        true
     }
 
     /// `Socket::get_peer_name`: getpeername(2) into `address`, typed as the socket.
-    pub fn get_peer_name(&self, address: &mut SocketAddress) -> c_int {
+    pub fn get_peer_name(&self, address: &mut SocketAddress) -> bool {
         address.kind = self.socket_type;
-        status(address.peer_name(self.fd) == 0)
+        address.peer_name(self.fd) == 0
     }
 
     /// `Socket::bind(address)`: bind(2), marking the socket bound.
-    pub fn bind(&mut self, address: &SocketAddress) -> c_int {
+    pub fn bind(&mut self, address: &SocketAddress) -> bool {
         if address.bind(self.fd) != 0 {
-            return ERR;
+            return false;
         }
         self.bound = true;
-        OK
+        true
     }
 
     /// `Socket::listen`: a backlog of 0 or less takes `SW_BACKLOG`; marks the socket
     /// listening.
-    pub fn listen(&mut self, backlog: c_int) -> c_int {
+    pub fn listen(&mut self, backlog: c_int) -> bool {
         let backlog = if backlog <= 0 { BACKLOG } else { backlog };
         if swoole_rs_corebase::sys::listen(self.fd, backlog) != 0 {
-            return ERR;
+            return false;
         }
         self.listened = true;
-        OK
+        true
     }
 
-    /// `Socket::set_tcp_nopush`: `TCP_CORK`, recorded in the flag; -1 where unsupported.
-    pub fn set_tcp_nopush(&mut self, nopush: c_int) -> c_int {
+    /// `Socket::set_tcp_nopush`: `TCP_CORK`, recorded in the flag; false where unsupported.
+    pub fn set_tcp_nopush(&mut self, nopush: c_int) -> bool {
         if !crate::swr_v1_socket_tcp_nopush(self.fd, nopush) {
-            return ERR;
+            return false;
         }
         // Upstream's 1-bit field keeps the int's low bit.
         self.tcp_nopush = nopush & 1 != 0;
-        OK
+        true
     }
 
     /// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`] (-1 leaves a flag
@@ -432,24 +426,21 @@ mod tests {
         let length = (size_of::<libc::sockaddr_in>()).c_cast::<libc::socklen_t>();
         // SAFETY: a live local record and sockaddr_in.
         unsafe {
-            assert_eq!(
-                socket.bind(&{
-                    let mut local: SocketAddress = std::mem::zeroed();
-                    std::ptr::copy_nonoverlapping(
-                        (&raw const address).cast::<u8>(),
-                        (&raw mut local.addr).cast::<u8>(),
-                        length as usize,
-                    );
-                    local.len = length;
-                    local
-                }),
-                OK
-            );
-            assert_eq!(socket.listen(0), OK);
-            assert_eq!(socket.get_name(), OK);
+            assert!(socket.bind(&{
+                let mut local: SocketAddress = std::mem::zeroed();
+                std::ptr::copy_nonoverlapping(
+                    (&raw const address).cast::<u8>(),
+                    (&raw mut local.addr).cast::<u8>(),
+                    length as usize,
+                );
+                local.len = length;
+                local
+            }));
+            assert!(socket.listen(0));
+            assert!(socket.get_name());
             assert!(socket.set_tcp_nodelay(1));
             let mut peer = socket.info;
-            assert_eq!(socket.get_peer_name(&mut peer), ERR);
+            assert!(!socket.get_peer_name(&mut peer));
             assert_eq!(peer.kind, 1);
         }
         assert_eq!(
@@ -468,8 +459,8 @@ mod tests {
         assert_eq!((socket.timeouts.write, socket.timeouts.read), (1.5, 0.25));
         close(&[socket]);
         let mut closed = SocketRecord::with_fd(-1, 0);
-        assert_eq!(closed.listen(0), ERR);
-        assert_eq!(closed.get_name(), ERR);
+        assert!(!closed.listen(0));
+        assert!(!closed.get_name());
         assert!(!closed.set_fd_option(1, 1).ok);
         assert!(!closed.set_kernel_timeout(true, 3.0));
         assert_eq!(

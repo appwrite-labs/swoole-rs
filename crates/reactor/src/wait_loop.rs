@@ -15,10 +15,6 @@ use swoole_rs_corebase::log;
 pub(crate) enum BackendKind {
     Poll,
     Epoll,
-    #[cfg_attr(
-        target_os = "linux",
-        expect(dead_code, reason = "only the BSDs open a kqueue backend")
-    )]
     Kqueue,
 }
 

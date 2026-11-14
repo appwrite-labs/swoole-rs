@@ -163,8 +163,7 @@ pub fn socket_ssl_peer_chain_pem(socket: Socket<'_>) -> Vec<Vec<u8>> {
     };
     let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     ssl.each_peer_cert(|cert| {
-        let written = read_x509(cert, &mut pem);
-        if let Some(bytes) = usize::try_from(written).ok().filter(|&n| n > 0) {
+        if let Some(bytes) = read_x509(cert, &mut pem).filter(|&n| n > 0) {
             chain.extend(pem.get(..bytes).map(<[u8]>::to_vec));
         }
     });
@@ -646,31 +645,28 @@ pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
 }
 
 /// `int Socket::ssl_get_peer_certificate(char *buf, size_t n) const`: the peer
-/// certificate's PEM into `buffer`: its length, or `SW_ERR`.
-pub fn socket_ssl_peer_certificate_pem(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> c_int {
-    ssl_get_peer_certificate(socket).map_or(-1, |cert| read_x509(cert.get(), buffer))
+/// certificate's PEM into `buffer`: its length, or `None` (upstream's `SW_ERR`).
+pub fn socket_ssl_peer_certificate_pem(
+    socket: Socket<'_>,
+    buffer: &mut [impl ReadSlot],
+) -> Option<usize> {
+    ssl_get_peer_certificate(socket).and_then(|cert| read_x509(cert.get(), buffer))
 }
 
 /// `_ssl_read_x509_file` without consuming: the certificate as PEM into `buffer`,
-/// warning and returning -1 on failure.
-fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> c_int {
-    warn_x509(cert.pem(buffer))
-}
-
-/// `_ssl_read_x509_file`'s warnings for [`CertRef::pem`]'s result.
-fn warn_x509(written: c_int) -> c_int {
-    match written {
-        -1 => log::warning(
-            c"network::_ssl_read_x509_file",
-            format_args!("BIO_new() failed"),
-        ),
-        -2 => log::warning(
-            c"network::_ssl_read_x509_file",
-            format_args!("PEM_write_bio_X509() failed"),
-        ),
-        _ => return written,
-    }
-    -1
+/// warning as upstream does when a step before the read fails.
+fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
+    let step = match cert.pem(buffer) {
+        Ok(written) => return Some(written),
+        Err(crate::PemError::Read) => return None,
+        Err(crate::PemError::Bio) => "BIO_new",
+        Err(crate::PemError::Write) => "PEM_write_bio_X509",
+    };
+    log::warning(
+        c"network::_ssl_read_x509_file",
+        format_args!("{step}() failed"),
+    );
+    None
 }
 
 /// `bool Socket::ssl_get_peer_certificate(String *buf) const`: the peer certificate's
@@ -680,8 +676,7 @@ pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppSt
     let (at, size) = (buffer.as_mut_ptr(), buffer.size());
     // SAFETY: the String's allocation of `size` bytes, borrowed with it.
     let mut bytes = unsafe { Fill::from_raw(at.cast(), size) };
-    let n = socket_ssl_peer_certificate_pem(socket, bytes.slots());
-    let Ok(n) = usize::try_from(n) else {
+    let Some(n) = socket_ssl_peer_certificate_pem(socket, bytes.slots()) else {
         return false;
     };
     // SAFETY: the PEM is the allocation's first `n` bytes, written just above.
@@ -1149,7 +1144,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
-fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
+fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     let kind = socket.read(|record| record.socket_type);
     let mut address = SocketAddress::default();
     let text = host.to_bytes();
@@ -1175,7 +1170,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     });
     if error != 0 {
         log::set_last_error(error);
-        return -1;
+        return false;
     }
     socket.edit(|record| record.bind(&address))
 }
@@ -1219,19 +1214,19 @@ pub extern "C-unwind" fn make_server_socket(
     let address = address.get();
     let host = address.to_string_lossy();
     // Bound, listening when a stream, and named; else the warning for what failed.
-    let served = if bind_host(record, address, port) < 0 {
+    let served = if !bind_host(record, address, port) {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
+    } else if type_is(kind, CLASS_STREAM) && !record.edit(|record| record.listen(backlog)) {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if record.edit(SocketFields::get_name) < 0 {
+    } else if !record.edit(SocketFields::get_name) {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         false
     } else {
@@ -1282,7 +1277,7 @@ mod tests {
             unsafe { Socket::from_ptr(socket.cast_mut()) }.unwrap(),
             &mut [0_u8; 64],
         );
-        assert_eq!(n, -1);
+        assert_eq!(n, None);
         let mut string = CppString::EMPTY;
         string.alloc(64, None);
         string.append(b"content");
