@@ -11,17 +11,17 @@ use swoole_rs_reactor::{Event, Socket};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
-use crate::{SW_ERR, SW_OK, ServerState, view};
+use crate::{ServerState, view};
 
 /// `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
 const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
-/// those for connections the server already closed.
-pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+/// those for connections the server already closed; false when the pipe failed.
+pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let Some(sock) = event.socket() else {
-        return int(SW_ERR);
+        return false;
     };
     while let Some(front) = sock.read(|s| {
         let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
@@ -32,13 +32,7 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         let message = unsafe { core::slice::from_raw_parts(front.data, front.length as usize) };
         if !discard(serv.state(), message) && swoole_rs_tls::upstream::send(sock, message, 0) < 0 {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-            return int(
-                if sock.catch_error(errno) == swoole_rs_reactor::Caught::Wait {
-                    SW_OK
-                } else {
-                    SW_ERR
-                },
-            );
+            return sock.catch_error(errno) == swoole_rs_reactor::Caught::Wait;
         }
         pop(sock);
     }
@@ -46,11 +40,7 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         let m = format_args!("reactor->set({}) failed", event.fd());
         log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }
-    int(SW_OK)
-}
-
-fn int(ret: i64) -> c_int {
-    c_int::try_from(ret).unwrap_or(-1)
+    true
 }
 
 fn pop(sock: Socket<'_>) {
@@ -102,6 +92,9 @@ pub(crate) fn owns(n: i64, reactors: u16, id: u16) -> bool {
 mod tests {
     use super::*;
     use crate::fixture::LiveServer;
+
+    const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+    const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
     use swoole_rs_buffer::cpp::swr_cpp_buffer_count;
@@ -169,11 +162,16 @@ mod tests {
                 sock,
             }
         }
+        /// The handler's status, as upstream returns it.
         fn write(&self) -> c_int {
             // SAFETY: the pipe's live record.
             let event =
                 unsafe { Event::new(self.ours.as_raw_fd(), 0, FD_PIPE, self.sock.as_ptr().cast()) };
-            pipe_write(self.live.server(), self.live.reactor(), &event)
+            if pipe_write(self.live.server(), self.live.reactor(), &event) {
+                SW_OK
+            } else {
+                SW_ERR
+            }
         }
         fn conn(&self) -> crate::records::Connection<'_> {
             self.live.state().connection(1, Lookup::Verified).unwrap()
@@ -202,7 +200,7 @@ mod tests {
             message(SendData, 9, b"gone"),
         ];
         let p = Pipe::new(&messages);
-        assert_eq!(p.write(), int(SW_OK));
+        assert_eq!(p.write(), SW_OK);
         assert_eq!(p.received(), messages);
         assert_eq!(p.queued(), 0);
         assert!(
@@ -226,7 +224,7 @@ mod tests {
             .config_ref()
             .discard_timeout_request
             .set(true);
-        assert_eq!(p.write(), int(SW_OK));
+        assert_eq!(p.write(), SW_OK);
         assert_eq!(p.received(), messages.get(2..).unwrap());
         assert_eq!(p.queued(), 0);
     }
@@ -236,15 +234,11 @@ mod tests {
     fn a_full_pipe_waits_and_a_closed_one_fails() {
         let p = Pipe::new(&[message(SendData, 9, b"later")]);
         while p.ours.send(b"fill").is_ok() {}
-        assert_eq!(
-            p.write(),
-            int(SW_OK),
-            "it waits for the next writable event"
-        );
+        assert_eq!(p.write(), SW_OK, "it waits for the next writable event");
         assert_eq!(p.queued(), 1, "with the message still queued");
         let p = Pipe::new(&[message(SendData, 9, b"never")]);
         p.ours.shutdown(std::net::Shutdown::Write).unwrap();
-        assert_eq!(p.write(), int(SW_ERR));
+        assert_eq!(p.write(), SW_ERR);
         assert_eq!(p.queued(), 1);
     }
 }

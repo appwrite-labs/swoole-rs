@@ -204,7 +204,7 @@ pub(crate) trait Hybrid: Sync {
         _port: crate::view::Port<'_>,
         _peer: &swoole_rs_corebase::net_types::SocketAddress,
         _data: &[u8],
-    ) -> c_int {
+    ) -> bool {
         missing()
     }
 
@@ -442,9 +442,9 @@ pub(crate) mod tests {
             _: crate::view::Port<'_>,
             _: &swoole_rs_corebase::net_types::SocketAddress,
             data: &[u8],
-        ) -> c_int {
+        ) -> bool {
             hear(Call::DtlsAccept(u32::try_from(data.len()).unwrap()));
-            0
+            true
         }
 
         fn process_factory(&self, _: Server<'_>) -> *mut core::ffi::c_void {
