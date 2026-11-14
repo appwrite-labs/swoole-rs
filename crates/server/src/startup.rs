@@ -434,6 +434,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         conn.set_object(ls);
+        conn.listen(listen);
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -888,6 +889,16 @@ mod tests {
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
         assert_eq!(conn.object().addr(), port, "the slot holds its port");
+        let listed = conn.port().map(|port| port.raw().addr());
+        assert_eq!(listed, Some(port), "as its listening port");
+        let mut unrelated = 0_u64;
+        conn.set_object((&raw mut unrelated).cast());
+        let found = live
+            .state()
+            .port_by_server_fd(fd)
+            .map(|port| port.raw().addr());
+        assert_eq!(found, Some(port), "whatever the public object holds");
+        conn.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(

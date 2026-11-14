@@ -465,6 +465,7 @@ struct Connection {
     lock: u32,
     closed: u32,
     server_fd: c_int,
+    port: Native,
 }
 
 /// The offsets `detail::check_server_layouts` checks for record 3, in its order.
@@ -512,6 +513,7 @@ const CONNECTION_OFFSETS: &[usize] = &[
     offset_of!(Connection, lock),
     offset_of!(Connection, closed),
     offset_of!(Connection, server_fd),
+    offset_of!(Connection, port),
 ];
 
 /// The pointers that head a `Server` (crates/server/src/view.rs).

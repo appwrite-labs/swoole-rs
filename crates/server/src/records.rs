@@ -68,7 +68,13 @@ pub struct ConnectionRecord {
     pub lock: AtomicU32,
     pub closed: AtomicU32,
     pub server_fd: c_int,
+    /// A listening socket's slot: its port, which only [`Connection::listen`] writes,
+    /// so it is null or one of the server's ports; null on every other slot.
+    port: *mut c_void,
 }
+
+/// `offsetof(Connection, port)`, for `layout`: the field is private.
+pub(crate) const PORT_OFFSET: usize = core::mem::offset_of!(ConnectionRecord, port);
 
 impl ConnectionRecord {
     /// Whether the slot holds a connection (`active`).
@@ -238,6 +244,21 @@ impl<'a> Connection<'a> {
     field!(atomic recv_queued_bytes: AtomicU32);
     field!(atomic lock: AtomicU32);
     field!(atomic closed: AtomicU32);
+    field!(@[] port_ptr = port, set_port_ptr: *mut c_void);
+
+    /// Records this slot as `port`'s listening socket (`Server::store_listen_socket`).
+    pub(crate) fn listen(self, port: crate::view::Port<'a>) {
+        self.set_port_ptr(port.raw());
+    }
+
+    /// The port whose listening socket has this slot, as [`Self::listen`] recorded it,
+    /// or `None` on any other slot.
+    #[must_use]
+    pub(crate) fn port(self) -> Option<crate::view::Port<'a>> {
+        // SAFETY: null, or the port `listen` stored: one of the server's, which live
+        // as long as it and its slots.
+        unsafe { crate::view::Port::from_raw(self.port_ptr()) }
+    }
 
     /// Whether the slot holds a connection (`active`).
     #[must_use]
