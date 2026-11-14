@@ -9,7 +9,7 @@ pub(crate) struct HttpRangeFormat<'a> {
     pub(crate) length: usize,
     pub(crate) filesize: usize,
     pub(crate) part: u32,
-    pub(crate) separator: u32,
+    pub(crate) separator: bool,
 }
 
 /// The prefix of a rendering that fits `output`, and the whole rendering's length.
@@ -43,7 +43,7 @@ fn render(
         out.append(boundary)?;
         return out.append(b"--\r\n");
     }
-    if input.separator != 0 {
+    if input.separator {
         out.append(b"\r\n")?;
     }
     out.append(b"--")?;
@@ -68,7 +68,7 @@ fn rendered_length(input: &HttpRangeFormat<'_>, boundary: &[u8], mime: &[u8]) ->
     } else {
         let digits = |value: usize| value.checked_ilog10().map_or(1, |n| n as usize + 1);
         b"--\r\nContent-Type: \r\nContent-Range: bytes -/\r\n\r\n".len()
-            + usize::from(input.separator != 0) * 2
+            + usize::from(input.separator) * 2
             + digits(input.offset)
             + digits(input.offset.wrapping_add(input.length).wrapping_sub(1))
             + digits(input.filesize)
@@ -143,7 +143,7 @@ mod tests {
             length: 5,
             filesize: 10,
             part: 0,
-            separator: 1,
+            separator: true,
         };
         let mut output = [0xa5; 128];
         let mut n = 0;
@@ -162,7 +162,7 @@ mod tests {
             for length in [0usize, 1, 17] {
                 for filesize in [0usize, 10, usize::MAX] {
                     for part in [0, 1] {
-                        for separator in [0, 1] {
+                        for separator in [false, true] {
                             let input = HttpRangeFormat {
                                 boundary: b"boundary",
                                 mime: b"text/plain",
@@ -177,7 +177,7 @@ mod tests {
                             } else {
                                 format!(
                                     "{}--boundary\r\nContent-Type: text/plain\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
-                                    if separator == 0 { "" } else { "\r\n" },
+                                    if separator { "\r\n" } else { "" },
                                     offset,
                                     offset.wrapping_add(length).wrapping_sub(1),
                                     filesize
@@ -213,7 +213,7 @@ mod tests {
             length: 1,
             filesize: 1,
             part: 2,
-            separator: 0,
+            separator: false,
         };
         let mut storage = [0xa5; 16];
         let mut written = 99;
