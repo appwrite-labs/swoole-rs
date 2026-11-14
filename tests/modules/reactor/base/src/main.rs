@@ -326,7 +326,11 @@ unsafe fn running(reactor: *mut Reactor) -> swoole_rs_ffi::Running<'static> {
 unsafe fn event_add_or_update(socket: *mut Socket, event: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
-    swoole_rs_ffi::event_api::add_or_update(socket, event)
+    if swoole_rs_ffi::event_api::add_or_update(socket, event) {
+        SW_OK
+    } else {
+        SW_ERR
+    }
 }
 
 /// `swoole_event_del(socket)`, which is crates/reactor's.
@@ -336,7 +340,11 @@ unsafe fn event_add_or_update(socket: *mut Socket, event: c_int) -> c_int {
 unsafe fn event_del(socket: *mut Socket) -> c_int {
     // SAFETY: as the caller guarantees.
     let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
-    swoole_rs_ffi::event_api::event_del(socket)
+    if swoole_rs_ffi::event_api::event_del(socket) {
+        SW_OK
+    } else {
+        SW_ERR
+    }
 }
 
 /// `pair->write(data, len)`, which is crates/tls's.

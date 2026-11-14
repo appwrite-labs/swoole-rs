@@ -251,7 +251,7 @@ pub(crate) mod native {
             // The record is this watch's until `release` frees it.
             let watch = Self(Socket::new(Box::leak(Box::new(record))));
             // A fresh record this watch owns until `release`, off the reactor by then.
-            if event_add(watch.0, events) < 0 {
+            if !event_add(watch.0, events) {
                 let error = log::last_error();
                 watch.release();
                 return Err(error);

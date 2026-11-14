@@ -143,7 +143,7 @@ fn create() -> Iouring {
         swoole_rs_reactor::Priority::IouringSubmit,
         submit,
     );
-    if event_add(socket, EVENT_READ) < 0 {
+    if !event_add(socket, EVENT_READ) {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),

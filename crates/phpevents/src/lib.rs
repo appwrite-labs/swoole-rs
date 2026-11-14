@@ -243,7 +243,7 @@ fn add(call: &Call) {
         return;
     }
     let socket = EventSocket::new(fd, FD_USER);
-    if socket.add(events_of(events)) < 0 {
+    if !socket.add(events_of(events)) {
         fatal_warning(c"swoole_event_add failed");
         socket.free(false);
         call.set_bool(false);
@@ -368,10 +368,12 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let status = SOCKETS.with_borrow(php, |sockets| {
-        sockets.get(fd).map(|r| r.socket.set(events_of(events)))
+    let set = SOCKETS.with_borrow(php, |sockets| {
+        sockets
+            .get(fd)
+            .is_some_and(|r| r.socket.set(events_of(events)))
     });
-    if status.is_none_or(|status| status < 0) {
+    if !set {
         fatal_warning(c"Swoole\\Event::set failed");
         call.set_bool(false);
         return;
@@ -411,7 +413,7 @@ fn del(call: &Call) {
     let deleted = registered.socket.del();
     // The fd stays the user's.
     registered.socket.free(true);
-    call.set_bool(deleted == 0);
+    call.set_bool(deleted);
 }
 
 /// `Swoole\Event::defer`'s callable: run, then released, even when it bails out.

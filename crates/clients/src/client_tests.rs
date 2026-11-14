@@ -83,9 +83,9 @@ pub(super) mod ops {
         log("connect Async");
         mock(|m| m.connect_async.pop()).unwrap_or(Connect::Error)
     }
-    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> c_int {
+    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> bool {
         log(format!("event {op:?} {events}"));
-        OK
+        true
     }
     pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> bool {
         *error = mock(|m| m.socket_error);
