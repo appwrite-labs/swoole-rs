@@ -463,7 +463,7 @@ fn ping(call: &Call) {
             return None;
         }
         if flags & HTTP2 != 0 {
-            match send::http2(ctx, send::HTTP2_PING, None, 0, 0) {
+            match send::http2(ctx, send::Http2::Ping) {
                 Ok(done) => call.set_bool(done),
                 Err(bailout) => bailout.defer(),
             }
