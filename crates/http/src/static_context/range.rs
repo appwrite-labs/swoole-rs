@@ -1,16 +1,20 @@
 //! Upstream `StaticHandler::parse_range`, the lazy boundary and the content type: the
 //! range parser and the response's accounting, stepped between the caller's effects.
 use super::{BOUNDARY_SIZE, HttpStaticContext, StaticEffects};
+use crate::range::{HttpRangeState, RangeStep};
 use crate::range_response::HttpRangeFormat;
 use crate::static_meta::{static_boundary, static_multipart};
-use crate::{HttpRangeState, HttpSpan, INVALID, OVERFLOW};
+use crate::{INVALID, OVERFLOW};
 
 #[derive(Default, Clone, Copy)]
 enum Stage {
     #[default]
     Idle,
     Parsing,
-    Header,
+    Header {
+        offset: usize,
+        length: usize,
+    },
     CommitHeader,
     Finish,
     AfterFull,
@@ -26,7 +30,6 @@ enum Stage {
 pub(super) struct HttpContextRange {
     stage: Stage,
     cursor: HttpRangeState,
-    part: HttpSpan,
     last_length: usize,
     written: usize,
     length: usize,
@@ -209,31 +212,28 @@ impl HttpStaticContext {
         }
         loop {
             match self.range.stage {
-                Stage::Parsing => {
-                    let result =
-                        self.range
-                            .cursor
-                            .step(input, self.facts.filesize, &mut self.range.part);
-                    if result < 0 {
+                Stage::Parsing => match self.range.cursor.step(input, self.facts.filesize) {
+                    Err(()) => {
                         self.facts.status = 416;
                         self.range.stage = Stage::Done;
                         return Ok(Effect::Done);
                     }
-                    match result {
-                        0 => self.range.stage = Stage::Finish,
-                        2 => {
-                            self.facts.content_length = self.facts.filesize;
-                            let result = self.full_task();
-                            self.range.stage = Stage::Done;
-                            return result.map(|()| Effect::Done);
-                        }
-                        _ => {
-                            self.range.last_length = self.range.part.length;
-                            self.range.stage = Stage::Header;
-                            return Ok(Effect::Header);
-                        }
+                    Ok(RangeStep::Done) => self.range.stage = Stage::Finish,
+                    Ok(RangeStep::Ignore) => {
+                        self.facts.content_length = self.facts.filesize;
+                        let result = self.full_task();
+                        self.range.stage = Stage::Done;
+                        return result.map(|()| Effect::Done);
                     }
-                }
+                    Ok(RangeStep::Part(part)) => {
+                        self.range.last_length = part.length;
+                        self.range.stage = Stage::Header {
+                            offset: part.offset,
+                            length: part.length,
+                        };
+                        return Ok(Effect::Header);
+                    }
+                },
                 Stage::CommitHeader => {
                     self.facts.content_length = self
                         .facts
@@ -264,19 +264,19 @@ impl HttpStaticContext {
     /// the caller applies before the next step.
     fn range_resume(&mut self, observed: &Observation<'_>) -> Result<bool, i32> {
         match self.range.stage {
-            Stage::Header => {
+            Stage::Header { offset, length } => {
                 let format = HttpRangeFormat {
                     boundary: &self.boundary,
                     mime: observed.mime,
-                    offset: self.range.part.offset,
-                    length: self.range.part.length,
+                    offset,
+                    length,
                     filesize: self.facts.filesize,
                     part: 0,
                     separator: u32::from(self.tasks.count() != 0),
                 };
                 let result = self.tasks.prepare_range(
-                    i64::try_from(self.range.part.offset).unwrap_or(i64::MAX),
-                    self.range.part.length,
+                    i64::try_from(offset).unwrap_or(i64::MAX),
+                    length,
                     &format,
                     &mut self.range.written,
                 );

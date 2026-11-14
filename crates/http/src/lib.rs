@@ -48,7 +48,6 @@ pub use status_buffer::{STATUS_CODES, status_message};
 mod static_headers;
 mod static_path;
 pub use maps::{method, method_string};
-use range::HttpRangeState;
 pub use static_headers::{HttpStaticHeaders, StaticHead, StaticRange, static_headers};
 pub use static_path::{HttpStaticPath, StaticPhase, location_match};
 
