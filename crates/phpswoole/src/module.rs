@@ -55,7 +55,7 @@ pub struct Globals {
     profile: Cell<bool>,
     leak_detection: Cell<bool>,
     socket_buffer_size: Cell<i64>,
-    pub req_status: Cell<c_int>,
+    pub req_status: Cell<ReqStatus>,
     in_autoload: Cell<*mut HashTable>,
 }
 
@@ -72,12 +72,16 @@ pub(crate) const INI_OFFSETS: [usize; 10] = [
     std::mem::offset_of!(Globals, leak_detection),
 ];
 
-/// `php_swoole_req_status`.
-const RINIT_BEGIN: c_int = 0;
-pub(crate) const RINIT_END: c_int = 1;
-pub const CALL_USER_SHUTDOWNFUNC_BEGIN: c_int = 2;
-pub const RSHUTDOWN_BEGIN: c_int = 3;
-pub const RSHUTDOWN_END: c_int = 4;
+/// `php_swoole_req_status`, which C reads as an `int` through `SWOOLE_G`.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReqStatus {
+    RinitBegin = 0,
+    RinitEnd = 1,
+    CallUserShutdownfuncBegin = 2,
+    RshutdownBegin = 3,
+    RshutdownEnd = 4,
+}
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
 const SOCKET_BUFFER_SIZE: i64 = 8 * 1024 * 1024;
 pub(crate) const PHP_FATAL_ERROR: i32 = 503;
@@ -99,7 +103,7 @@ static mut swoole_globals: Globals = Globals {
     profile: Cell::new(false),
     leak_detection: Cell::new(false),
     socket_buffer_size: Cell::new(0),
-    req_status: Cell::new(0),
+    req_status: Cell::new(ReqStatus::RinitBegin),
     in_autoload: Cell::new(std::ptr::null_mut()),
 };
 
@@ -581,7 +585,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     if !globals.cli.get() {
         return SUCCESS;
     }
-    globals.req_status.set(RINIT_BEGIN);
+    globals.req_status.set(ReqStatus::RinitBegin);
     // Task files go to `sys_get_temp_dir()`: `/tmp` does not exist everywhere
     // (Android, termux).
     let directory = swr_zend_temporary_directory();
@@ -616,7 +620,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
-    globals.req_status.set(RINIT_END);
+    globals.req_status.set(ReqStatus::RinitEnd);
     SUCCESS
 }
 
@@ -628,7 +632,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
     if !globals.cli.get() {
         return SUCCESS;
     }
-    globals.req_status.set(RSHUTDOWN_BEGIN);
+    globals.req_status.set(ReqStatus::RshutdownBegin);
     let Some(families) = families() else {
         return SUCCESS;
     };
@@ -653,7 +657,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
-    globals.req_status.set(RSHUTDOWN_END);
+    globals.req_status.set(ReqStatus::RshutdownEnd);
     // Do not close stdout and stderr.
     for name in [c"STDOUT", c"STDERR"] {
         // SAFETY: a constant's name; the shim checks the resource's type.
@@ -696,7 +700,7 @@ fn set_process_name(call: &Call) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CALL_USER_SHUTDOWNFUNC_BEGIN, Globals, RINIT_END, RSHUTDOWN_BEGIN, RSHUTDOWN_END};
+    use super::{Globals, ReqStatus};
     use std::mem::{offset_of, size_of};
 
     #[test]
@@ -708,10 +712,15 @@ mod tests {
         assert_eq!(offset_of!(Globals, in_autoload), 40);
         assert_eq!(size_of::<Globals>(), 48);
         assert_eq!(
-            (RINIT_END, CALL_USER_SHUTDOWNFUNC_BEGIN, RSHUTDOWN_END),
+            (
+                ReqStatus::RinitEnd as i32,
+                ReqStatus::CallUserShutdownfuncBegin as i32,
+                ReqStatus::RshutdownEnd as i32
+            ),
             (1, 2, 4)
         );
         let header = include_str!("../../../native/phphelpers/swoole_rs_phphost.h");
-        assert!(header.contains(&format!("PHP_SWOOLE_RSHUTDOWN_BEGIN = {RSHUTDOWN_BEGIN},")));
+        let begin = ReqStatus::RshutdownBegin as i32;
+        assert!(header.contains(&format!("PHP_SWOOLE_RSHUTDOWN_BEGIN = {begin},")));
     }
 }
