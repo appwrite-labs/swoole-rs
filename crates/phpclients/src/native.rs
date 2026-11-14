@@ -648,8 +648,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
 /// `ssl_get_peer_certificate` into a buffer of `sw_tg_buffer()`'s size.
 pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
     let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
-    let length = swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut buffer);
-    let length = usize::try_from(length).ok()?;
+    let length = swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut buffer)?;
     Some(ZString::new(buffer.get(..length).unwrap_or(&buffer)))
 }
 

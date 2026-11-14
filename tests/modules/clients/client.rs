@@ -1465,8 +1465,8 @@ fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
             // SAFETY: `i` is within the stack, whose certificates the SSL keeps alive.
             let cert = unsafe { swoole_rs_tls::CertRef::new(OPENSSL_sk_value(chain, i).cast()) };
             // `_ssl_read_x509_file`, which fails without a certificate.
-            let rv = cert.map_or(-1, |cert| cert.pem(&mut buffer));
-            (rv > 0).then(|| buffer[..rv as usize].to_vec())
+            let rv = cert.and_then(|cert| cert.pem(&mut buffer).ok());
+            rv.filter(|&n| n > 0).map(|n| buffer[..n].to_vec())
         })
         .collect()
 }

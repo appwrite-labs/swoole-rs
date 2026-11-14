@@ -531,7 +531,7 @@ impl Sock {
         let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.record().socket.cast()) };
         let length =
             swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket.unwrap(), &mut pem);
-        pem.truncate(usize::try_from(length).unwrap_or(0));
+        pem.truncate(length.unwrap_or(0));
         pem
     }
 
