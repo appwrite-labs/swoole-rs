@@ -1251,7 +1251,8 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
 
 /// Dispatches a `GethostbynameRequest` for the server host to the async pool,
 /// completing in [`resolved`].
-fn dns_lookup(this: Handle) -> c_int {
+/// Whether the pool took the lookup.
+fn dns_lookup(this: Handle) -> bool {
     let request = {
         let host = this.get().server_host.borrow();
         crate::resolver::Request::new(this.get().domain, 0, 0, host.to_bytes(), b"")
@@ -1269,11 +1270,7 @@ fn dns_lookup(this: Handle) -> c_int {
         callback: Some(resolve_completed),
     };
     // The pool's copy holds its own reference to the request.
-    if async_dispatch(&event).is_null() {
-        ERR
-    } else {
-        OK
-    }
+    !async_dispatch(&event).is_null()
 }
 
 /// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
@@ -1301,8 +1298,9 @@ extern "C" fn resolve_completed(event: &AsyncEvent) {
 }
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
+/// Whether it connected, or, async, began to.
 #[must_use]
-pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> c_int {
+pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> bool {
     if !this.flag(Flag::Stream) {
         udp_connect(this, host, port, timeout, flags)
     } else if this.flag(Flag::Async) {
@@ -1313,34 +1311,33 @@ pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_in
 }
 
 /// `Client_tcp_connect_sync`: connect, then the proxy handshake and TLS.
-fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblock: bool) -> c_int {
+fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblock: bool) -> bool {
     this.set_timeout(timeout);
     if timeout > 0.0 {
         ops::kernel_timeout(this, timeout);
     }
     if !inet_addr(this, host, port) {
-        return ERR;
+        return false;
     }
     if nonblock {
         return match ops::connect_async(this) {
-            Connect::Ready => OK,
+            Connect::Ready => true,
             Connect::Wait => {
                 this.set(Flag::AsyncConnect, true);
-                ERR
+                false
             }
-            Connect::Error => ERR,
+            Connect::Error => false,
         };
     }
-    let ret = ops::connect(this, ConnectMode::Sync);
-    if ret < 0 {
-        return ret;
+    if ops::connect(this, ConnectMode::Sync) < 0 {
+        return false;
     }
     this.set(Flag::Active, true);
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
     if this.proxy_state(Proxy::Socks5).is_some() {
         if this.socks5_send(this.socks5_negotiate()) < 0 {
-            return ERR;
+            return false;
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         // Each answer lands at the start of the emptied buffer.
@@ -1358,7 +1355,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             }
         });
         if !ready {
-            return ERR;
+            return false;
         }
     } else if this.proxy_state(Proxy::Http).is_some()
         && !with_thread_buffer(|shared| {
@@ -1370,16 +1367,13 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             n > 0 && http_handshake(shared, n.cast_unsigned())
         })
     {
-        return ERR;
+        return false;
     }
-    if this.flag(Flag::OpenSsl) && !ssl_handshake(this) {
-        return ERR;
-    }
-    ret
+    !this.flag(Flag::OpenSsl) || ssl_handshake(this)
 }
 
 /// `Client_tcp_connect_async`: a nonblocking connect finished by the write handler.
-fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_int {
+fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bool {
     if ![
         ClientEvent::Connect,
         ClientEvent::Error,
@@ -1393,7 +1387,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
             c"Client_tcp_connect_async",
             format_args!("onConnect/onError/onReceive/onClose callback have not set"),
         );
-        return ERR;
+        return false;
     }
     this.set_timeout(timeout);
     this.input_init();
@@ -1403,12 +1397,12 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
         this.get().high_watermark.set(mark);
     }
     if !inet_addr(this, host, port) {
-        return ERR;
+        return false;
     }
     if this.flag(Flag::WaitDns) {
         return dns_lookup(this);
     }
-    let ret = loop {
+    loop {
         let ret = ops::connect(this, ConnectMode::Raw);
         let error = errno();
         if ret < 0 && error == libc::EINTR {
@@ -1422,17 +1416,13 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
                 let timer = add_fn_sec_id(timeout, false, move || on_timeout(this));
                 this.get().timer.set(timer);
                 if timer.is_none() {
-                    return ERR;
+                    return false;
                 }
             }
-            return if this.event(EventOp::Add, EVENT_WRITE) {
-                OK
-            } else {
-                ERR
-            };
+            return this.event(EventOp::Add, EVENT_WRITE);
         }
-        break ret;
-    };
+        break;
+    }
     this.set(Flag::Active, false);
     this.mark_removed();
     close(this);
@@ -1440,11 +1430,11 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
         this.set(Flag::OnerrorCalled, true);
         this.call(ClientEvent::Error, core::ptr::null(), 0);
     }
-    ret
+    false
 }
 
 /// `Client_udp_connect`.
-fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect: c_int) -> c_int {
+fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect: c_int) -> bool {
     let is_async = this.flag(Flag::Async);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
@@ -1452,14 +1442,14 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     }
     this.get().sock_flags.set(udp_connect);
     if !inet_addr(this, host, port) {
-        return ERR;
+        return false;
     }
     if is_async && !this.has(ClientEvent::Receive) {
         log::warning(
             c"Client_udp_connect",
             format_args!("`onReceive` callback have not set"),
         );
-        return ERR;
+        return false;
     }
     if this.flag(Flag::WaitDns) && is_async {
         // Without onError a failed lookup would go unreported.
@@ -1468,7 +1458,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
                 c"Client_udp_connect",
                 format_args!("`onError` callback have not set"),
             );
-            return ERR;
+            return false;
         }
         return dns_lookup(this);
     }
@@ -1480,7 +1470,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         this.set_timeout(timeout);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM && !bind_unix(this) {
-        return ERR;
+        return false;
     }
     let mut udp_connect = udp_connect;
     if this.flag(Flag::OpenSsl) {
@@ -1496,20 +1486,17 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
                 this.set(Flag::OnerrorCalled, true);
                 this.call(ClientEvent::Error, core::ptr::null(), 0);
             }
-            return ERR;
+            return false;
         }
         fd_clean(fd);
     }
     if is_async && this.has(ClientEvent::Connect) {
         if !this.event(EventOp::Add, EVENT_READ) {
-            return ERR;
+            return false;
         }
         this.on_connect();
     }
-    if this.flag(Flag::OpenSsl) && !ssl_handshake(this) {
-        return ERR;
-    }
-    OK
+    !this.flag(Flag::OpenSsl) || ssl_handshake(this)
 }
 
 /// Binds a Unix datagram client to `/tmp/swoole-client.<pid>.<fd>.sock`, its
@@ -1991,7 +1978,7 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
         // The application can't see connect's result here, so onError reports it.
         let timeout = this.socket().read(|socket| socket.timeouts.connect);
         let (port, flags) = (this.get().server_port.get(), this.get().sock_flags.get());
-        if connect(this, address, port, timeout, flags) != ERR || this.flag(Flag::OnerrorCalled) {
+        if connect(this, address, port, timeout, flags) || this.flag(Flag::OnerrorCalled) {
             return;
         }
     } else {

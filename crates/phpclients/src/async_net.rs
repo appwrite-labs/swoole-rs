@@ -372,12 +372,12 @@ fn connect(call: &Call) {
 
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, net::int(port), timeout, net::int(flags));
-    let Some(result) = bailed(fresh.cli.run(connect)) else {
+    let Some(connected) = bailed(fresh.cli.run(connect)) else {
         return call.set_bool(false);
     };
     // Only the object holds the connection now, so a release below destroys it.
     drop(fresh);
-    if result >= 0 {
+    if connected {
         return call.set_bool(true);
     }
     let failure = errno();
