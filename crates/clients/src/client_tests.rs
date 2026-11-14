@@ -9,7 +9,7 @@ const TLS_HOST_NAME: usize = 8;
 #[derive(Default)]
 struct Mock {
     log: Vec<String>,
-    connect: Vec<c_int>,
+    connect: Vec<bool>,
     connect_async: Vec<Connect>,
     io: Vec<isize>,
     ssl_connect_ready: bool,
@@ -71,13 +71,13 @@ pub(super) mod ops {
         }
         true
     }
-    pub(in super::super) fn connect(_: Handle, mode: ConnectMode) -> c_int {
+    pub(in super::super) fn connect(_: Handle, mode: ConnectMode) -> bool {
         log(format!("connect {mode:?}"));
-        let ret = mock(|m| m.connect.pop()).unwrap_or(0);
-        if ret < 0 {
+        let connected = mock(|m| m.connect.pop()).unwrap_or(true);
+        if !connected {
             set_errno(libc::EINPROGRESS);
         }
-        ret
+        connected
     }
     pub(in super::super) fn connect_async(_: Handle) -> Connect {
         log("connect Async");
@@ -409,7 +409,7 @@ fn async_connect_needs_every_callback() {
 #[test]
 fn async_connect_in_progress_adds_a_timer_and_write_interest() {
     let client = client(1, true, true);
-    mock(|m| m.connect = vec![-1]);
+    mock(|m| m.connect = vec![false]);
     let result = connect(client, c"example.test", 2.5, 0);
     assert_eq!(result, OK);
     assert_eq!(

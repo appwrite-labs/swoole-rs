@@ -1335,7 +1335,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             Connect::Error => false,
         };
     }
-    if ops::connect(this, ConnectMode::Sync) < 0 {
+    if !ops::connect(this, ConnectMode::Sync) {
         return false;
     }
     this.set(Flag::Active, true);
@@ -1409,15 +1409,15 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bo
         return dns_lookup(this);
     }
     loop {
-        let ret = ops::connect(this, ConnectMode::Raw);
+        let connected = ops::connect(this, ConnectMode::Raw);
         let error = errno();
-        if ret < 0 && error == libc::EINTR {
+        if !connected && error == libc::EINTR {
             continue;
         }
-        if ret == 0 || error == libc::EINPROGRESS {
+        if connected || error == libc::EINPROGRESS {
             // A finished connect needs no timeout timer; either way the write
             // handler runs the proxy and TLS handshakes.
-            if ret < 0 && timeout > 0.0 {
+            if !connected && timeout > 0.0 {
                 // The client deletes the timer before it goes.
                 let timer = add_fn_sec_id(timeout, false, move || on_timeout(this));
                 this.get().timer.set(timer);
@@ -1484,7 +1484,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         enable_dtls(this);
     }
     if udp_connect == 1 {
-        if ops::connect(this, ConnectMode::Raw) != 0 {
+        if !ops::connect(this, ConnectMode::Raw) {
             this.set(Flag::Active, false);
             this.mark_removed();
             close(this);
@@ -1578,12 +1578,13 @@ mod ops {
             .edit(|socket| socket_upstream::socket_connect_async(socket, address))
     }
 
-    /// Connects the socket to `server_addr`, by `mode`; errno is the call's.
-    pub(super) fn connect(this: Handle, mode: ConnectMode) -> c_int {
+    /// Connects the socket to `server_addr`, by `mode`: whether it connected, else
+    /// errno is the call's.
+    pub(super) fn connect(this: Handle, mode: ConnectMode) -> bool {
         let socket = this.socket();
         let address = &this.record().server_addr;
         match mode {
-            ConnectMode::Sync => socket_upstream::connect_sync(socket, address),
+            ConnectMode::Sync => socket_upstream::connect_sync(socket, address) >= 0,
             ConnectMode::Raw => address.connect(socket.fd()),
         }
     }
