@@ -1,5 +1,6 @@
 //! Header metadata and cookie tokenization with native work between pure steps.
 use super::{HttpSpan, INVALID, tail};
+use std::ops::Range;
 fn space(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t'..=b'\r')
 }
@@ -169,14 +170,11 @@ pub fn header_info(
     state.flags |= 16;
     0
 }
-#[repr(C)]
+/// Byte ranges in the mutated cookie buffer; `None` means no '=' was present.
 #[derive(Default)]
 pub struct HttpCookie {
-    pub key_offset: usize,
-    pub key_length: usize,
-    pub value_offset: usize,
-    pub value_length: usize,
-    pub has_value: u32,
+    pub key: Range<usize>,
+    pub value: Option<Range<usize>>,
 }
 /// The byte at `at`, which must lie before the buffer's end.
 fn get(data: &[u8], at: usize) -> Result<u8, i32> {
@@ -216,20 +214,15 @@ pub fn cookie_next(data: &mut [u8], cursor: &mut usize) -> Result<Option<HttpCoo
         if key == end || equal == Some(key) {
             continue;
         }
-        let (key_length, value_offset, value_length) = if let Some(equal) = equal {
+        let value = equal.map(|equal| {
             if let Some(byte) = data.get_mut(equal) {
                 *byte = 0;
             }
-            (equal - key, equal + 1, end - equal - 1)
-        } else {
-            (end - key, 0, 0)
-        };
+            equal + 1..end
+        });
         return Ok(Some(HttpCookie {
-            key_offset: key,
-            key_length,
-            value_offset,
-            value_length,
-            has_value: u32::from(equal.is_some()),
+            key: key..equal.unwrap_or(end),
+            value,
         }));
     }
 }
@@ -309,16 +302,16 @@ mod tests {
         let mut data = b";; a =x=y; =bad;novalue;\tlast=\0".to_vec();
         let mut cursor = 0;
         let mut result = Vec::new();
+        let mut present = Vec::new();
         while let Some(out) = cookie_next(&mut data, &mut cursor).unwrap() {
+            present.push(out.value.is_some());
             result.push((
-                data[out.key_offset..out.key_offset + out.key_length].to_vec(),
-                if out.has_value != 0 {
-                    data[out.value_offset..out.value_offset + out.value_length].to_vec()
-                } else {
-                    Vec::new()
-                },
+                data[out.key].to_vec(),
+                out.value
+                    .map_or_else(Vec::new, |range| data[range].to_vec()),
             ));
         }
+        assert_eq!(present, [true, false, true]);
         assert_eq!(
             result,
             vec![
