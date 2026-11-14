@@ -981,20 +981,20 @@ pub(crate) fn pool_dispatch<'a>(
     workers: impl Fn(usize) -> Option<Record<'a>>,
     start_id: u16,
     queue: bool,
-    target: &mut c_int,
+    index: u32,
     event: &[u8],
     blocking: bool,
 ) -> bool {
     let size = u32::try_from(event.len()).unwrap_or(u32::MAX);
-    *target += c_int::from(start_id);
-    let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
-    let Some(worker) = workers(index) else {
+    // The worker's id, as upstream's `*dst_worker_id += start_id` leaves it.
+    let target = i64::from(index) + i64::from(start_id);
+    let Some(worker) = workers(index as usize) else {
         let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(
             &call,
             Warning::Send {
                 size: i64::from(size),
-                worker: i64::from(*target),
+                worker: target,
             },
         );
         return false;
@@ -1008,7 +1008,7 @@ pub(crate) fn pool_dispatch<'a>(
             &call,
             Warning::Send {
                 size: i64::from(size),
-                worker: i64::from(*target),
+                worker: target,
             },
         );
         return false;
@@ -1395,7 +1395,6 @@ mod tests {
         with(|s| *s = Script::default());
         let mut workers = records(&[true, true]);
         let workers: Vec<_> = workers.iter_mut().map(Record::from).collect();
-        let mut target = 5;
         let event = [0u8; 4];
         let mut pool = crate::process_pool::PoolRecord::empty();
         let sent = pool_dispatch(
@@ -1404,7 +1403,7 @@ mod tests {
             |index| workers.get(index).copied(),
             0,
             false,
-            &mut target,
+            5,
             &event,
             false,
         );
