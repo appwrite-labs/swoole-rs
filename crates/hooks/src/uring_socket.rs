@@ -522,23 +522,28 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
 
 /// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed
 /// (as without a session from [`tls_session`]).
-pub(crate) fn tls_step(socket: Co) -> c_int {
+pub(crate) fn tls_step(socket: Co) -> crate::connect::Step {
+    use crate::connect::Step;
     let Some(ops) = of(socket) else {
-        return -1;
+        return Step::Failed;
     };
     let Some(session) = ops.tls.ssl else {
-        return -1;
+        return Step::Failed;
     };
     let rc = session.do_handshake();
     if rc == 1 {
-        return 1;
+        return Step::Ready;
     }
     let function = if socket.ssl_is_server() {
         c"ssl_accept"
     } else {
         c"ssl_connect"
     };
-    if ops.tls.perform(rc, function) { 0 } else { -1 }
+    if ops.tls.perform(rc, function) {
+        Step::Again
+    } else {
+        Step::Failed
+    }
 }
 
 #[cfg(test)]
