@@ -568,12 +568,11 @@ impl Co {
         });
     }
 
-    /// The socket's HTTP proxy owner, or null.
-    #[must_use]
-    pub fn http_proxy(self) -> *mut ProxyState {
-        self.with_extra(|extra| extra.proxies[1].as_deref().map_or(null(), from_ref))
-            .unwrap_or(null())
-            .cast_mut()
+    /// `f` over the socket's HTTP proxy owner; None without one. `f` must not
+    /// reach the socket's metadata again (a nested loan panics).
+    pub fn with_http_proxy<T>(self, f: impl FnOnce(&ProxyState) -> T) -> Option<T> {
+        self.with_extra(|extra| extra.proxies[1].as_deref().map(f))
+            .flatten()
     }
 }
 
