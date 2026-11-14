@@ -97,16 +97,18 @@ pub fn swr_v1_socket_fd_option(fd: c_int, nonblock: c_int, cloexec: c_int) -> So
     SocketOptionResult { ok: true, warnings }
 }
 
-/// `set_tcp_nopush`: `TCP_CORK` where the platform has it, else -1.
+/// `set_tcp_nopush`: `TCP_CORK`, whether it took; false where the platform has none.
 #[must_use]
-pub fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
+pub fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> bool {
     #[cfg(target_os = "linux")]
-    if swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush) {
-        return 0;
+    {
+        swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush)
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (fd, nopush);
-    -1
+    {
+        let _ = (fd, nopush);
+        false
+    }
 }
 
 /// `set_tcp_nodelay`'s setsockopt.
@@ -130,7 +132,7 @@ pub fn swr_v1_socket_cork(fd: c_int, state: &mut CorkState) -> SocketOptionResul
         return SocketOptionResult::default();
     }
     if HAS_CORK {
-        if swr_v1_socket_tcp_nopush(fd, 1) < 0 {
+        if !swr_v1_socket_tcp_nopush(fd, 1) {
             return SocketOptionResult {
                 ok: false,
                 warnings: 1,
@@ -160,7 +162,7 @@ pub fn swr_v1_socket_uncork(
         return SocketOptionResult::default();
     }
     if HAS_CORK {
-        if swr_v1_socket_tcp_nopush(fd, 0) < 0 {
+        if !swr_v1_socket_tcp_nopush(fd, 0) {
             return SocketOptionResult {
                 ok: false,
                 warnings: 1,

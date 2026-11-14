@@ -71,7 +71,7 @@ impl SocketFields {
 
     /// `Socket::set_tcp_nopush`: `TCP_CORK`, recorded in the flag; -1 where unsupported.
     pub fn set_tcp_nopush(&mut self, nopush: c_int) -> c_int {
-        if crate::swr_v1_socket_tcp_nopush(self.fd, nopush) < 0 {
+        if !crate::swr_v1_socket_tcp_nopush(self.fd, nopush) {
             return ERR;
         }
         // Upstream's 1-bit field keeps the int's low bit.
