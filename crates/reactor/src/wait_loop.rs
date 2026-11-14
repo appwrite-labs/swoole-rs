@@ -392,7 +392,7 @@ mod kqueue_signal {
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub(super) struct Signal {
-        handler: Option<swoole_rs_process::signal::Callback>,
+        handler: swoole_rs_process::signal::Handler,
         signo: u16,
         activated: bool,
     }
@@ -405,7 +405,7 @@ mod kqueue_signal {
         }
         let signo = c_int::from(signal.signo);
         match signal.handler {
-            None => {
+            swoole_rs_process::signal::Handler::NONE => {
                 let name = swoole_rs_process::signal::signal_name(signo);
                 let name = name.as_cstr();
                 log::error_log(
@@ -418,11 +418,7 @@ mod kqueue_signal {
                     ),
                 );
             }
-            Some(handler) if (handler as *const ()).addr() != libc::SIG_IGN => {
-                // SAFETY: the signal's registered handler (the type's invariant).
-                unsafe { handler(signo) };
-            }
-            Some(_) => {}
+            handler => handler.call(signo),
         }
     }
 }

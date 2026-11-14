@@ -75,9 +75,6 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static CALLBACK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// A registered signal handler, `SignalHandler`: native code's, sound to call with
-/// the signal it was registered for.
-pub type Callback = unsafe extern "C" fn(c_int);
 /// A signal's handler as the table holds it: none, `SIG_IGN`, or a function to call
 /// with the signal's number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
