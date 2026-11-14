@@ -344,7 +344,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
 /// `ListenPort::close()`: drops the TLS context and DTLS map, frees the socket
 /// and unlinks a Unix socket's path.
 pub(crate) fn close(port: view::Port<'_>) {
-    if port.config().ssl != 0 {
+    if port.config().ssl {
         // SAFETY: the server closes its ports as it shuts down, once nothing else
         // reads their settings (`PortMethods::close`), and no borrow of them is
         // held here: only the context is replaced.

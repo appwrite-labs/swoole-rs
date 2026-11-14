@@ -60,7 +60,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
             disable_accept(serv);
             return;
         }
-        if port.config().ssl != 0 {
+        if port.config().ssl {
             if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock)) {
                 abort(serv, reactor, Some(port), sock);
                 return;
@@ -219,7 +219,7 @@ pub fn add<'a>(
         }
     }
     init(serv, conn, ls, sock, server_fd, reactor_id);
-    if ls.ssl == 0 {
+    if !ls.ssl {
         sock.edit(|s| s.direct_send = true);
     }
 

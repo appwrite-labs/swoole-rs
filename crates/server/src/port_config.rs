@@ -143,7 +143,7 @@ pub struct PortConfig {
     pub buffer_high_watermark: Setting<u32>,
     pub buffer_low_watermark: Setting<u32>,
     pub r#type: c_int,
-    pub ssl: u8,
+    pub ssl: bool,
     pub port: Setting<c_int>,
     /// The listening socket's record (`network::Socket *`), or null: stored by
     /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
@@ -323,7 +323,7 @@ impl PortConfig {
             buffer_high_watermark: Setting::new(0),
             buffer_low_watermark: Setting::new(0),
             r#type: 1,
-            ssl: 0,
+            ssl: false,
             port: Setting::new(0),
             socket: AtomicPtr::new(core::ptr::null_mut()),
             // Zero is the original native empty sentinel.

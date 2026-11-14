@@ -145,7 +145,7 @@ impl PortInfo {
             port: config.port.get().into(),
             kind: config.r#type.into(),
             fd: port.fd().into(),
-            ssl: config.ssl != 0,
+            ssl: config.ssl,
         }
     }
 }
@@ -1070,7 +1070,7 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
         dgram: crate::port_settings::is_dgram(c.r#type),
         // `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream socket.
         stream: matches!(c.r#type, 1 | 3 | 5),
-        ssl: c.ssl != 0,
+        ssl: c.ssl,
         ssl_verify_without_ca: c.ssl_verify_without_ca(),
     }
 }

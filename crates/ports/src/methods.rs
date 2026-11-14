@@ -595,7 +595,7 @@ mod tests {
         let mut fresh = Fresh::new();
         let at = fresh.at();
         let config = unsafe { port_config::of(at) };
-        config.ssl = 1;
+        config.ssl = true;
         assert!(ssl_context_init(at), "a stream port's context");
         let context = config.ssl_context.clone().expect("published");
         let fields = unsafe { swoole_rs_tls::owner_fields(&context) };
