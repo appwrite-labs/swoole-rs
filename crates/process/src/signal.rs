@@ -78,6 +78,47 @@ static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 /// A registered signal handler, `SignalHandler`: native code's, sound to call with
 /// the signal it was registered for.
 pub type Callback = unsafe extern "C" fn(c_int);
+/// A signal's handler as the table holds it: none, `SIG_IGN`, or a function to call
+/// with the signal's number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Handler(pub(crate) usize);
+
+impl Handler {
+    pub const NONE: Self = Self(SIG_DFL);
+    pub const IGNORE: Self = Self(SIG_IGN);
+
+    #[must_use]
+    pub fn new(handler: extern "C" fn(c_int)) -> Self {
+        Self(address(handler))
+    }
+
+    /// # Safety
+    /// `handler` is 0, `SIG_IGN`, or a `SignalHandler` that is sound to call with
+    /// any signal number and that nothing unloads.
+    #[must_use]
+    pub const unsafe fn from_raw(handler: usize) -> Self {
+        Self(handler)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+
+    /// Runs the handler with `signo`; nothing for [`Self::NONE`] or [`Self::IGNORE`].
+    pub fn call(self, signo: c_int) {
+        if self == Self::NONE || self == Self::IGNORE {
+            return;
+        }
+        let pointer = std::ptr::with_exposed_provenance::<()>(self.0);
+        // SAFETY: any other handler came from `new` or as `from_raw` requires: a
+        // `SignalHandler` sound to call with any signal number.
+        let handler = unsafe { std::mem::transmute::<*const (), extern "C" fn(c_int)>(pointer) };
+        handler(signo);
+    }
+}
+
 /// `swoole_signal_callback`: runs the registered handler, or warns.
 pub type Dispatch = extern "C" fn(c_int);
 /// Whether this thread has a reactor (`sw_reactor()`).
@@ -247,7 +288,7 @@ pub extern "C" fn swoole_signal_dispatch() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lookup {
     /// Call the registered handler.
-    Handler(usize),
+    Handler(Handler),
     /// The number is out of range.
     OutOfRange,
     /// Nothing is registered (`SIG_DFL`).
@@ -260,12 +301,11 @@ impl Lookup {
     /// `swoole_signal_get_handler`: the registered handler, `SIG_DFL` or `SIG_IGN`,
     /// and 0 out of range.
     #[must_use]
-    pub fn handler(self) -> usize {
+    pub fn handler(self) -> Handler {
         match self {
             Self::Handler(handler) => handler,
-            Self::OutOfRange => 0,
-            Self::Default => SIG_DFL,
-            Self::Ignored => SIG_IGN,
+            Self::OutOfRange | Self::Default => Handler::NONE,
+            Self::Ignored => Handler::IGNORE,
         }
     }
 }
@@ -279,7 +319,7 @@ pub fn signal_lookup(signo: c_int) -> Lookup {
     match slot.handler.load(Relaxed) {
         SIG_DFL => Lookup::Default,
         SIG_IGN => Lookup::Ignored,
-        handler => Lookup::Handler(handler),
+        handler => Lookup::Handler(Handler(handler)),
     }
 }
 
@@ -407,7 +447,10 @@ mod tests {
         let handler = record as *const () as usize;
         signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Handler(handler));
+        assert_eq!(
+            signal_lookup(libc::SIGUSR1),
+            Lookup::Handler(Handler(handler))
+        );
         // SAFETY: SIGUSR1 has the immediate handler installed above.
         unsafe { libc::raise(libc::SIGUSR1) };
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR1);
