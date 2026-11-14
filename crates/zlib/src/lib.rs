@@ -37,7 +37,6 @@ struct Version(*const c_char);
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
-    fn zError(status: c_int) -> *const c_char;
     /// The running library's static version string.
     safe fn zlibVersion() -> Version;
     // zlib's own declarations of the calls that take only the stream, typed as the
@@ -213,16 +212,24 @@ impl Drop for Stream {
     }
 }
 
-/// zlib's message for a status (`zError`).
+/// zlib's message for a status (`zError`): its `z_errmsg` table, indexed from
+/// `Z_NEED_DICT` (2) down to `Z_VERSION_ERROR` (-6); empty for any other number.
 #[must_use]
 pub fn error(status: c_int) -> &'static CStr {
-    // zlib's statuses run from Z_VERSION_ERROR (-6) to Z_NEED_DICT (2); it has no
-    // message for any other number.
-    if !(-6..=2).contains(&status) {
-        return c"";
-    }
-    // SAFETY: one of zlib's own statuses, each of which has a message.
-    let message = unsafe { zError(status) };
-    // SAFETY: zError returns a static, NUL-terminated string for any status.
-    unsafe { CStr::from_ptr(message) }
+    const MESSAGES: [&CStr; 9] = [
+        c"need dictionary",
+        c"stream end",
+        c"",
+        c"file error",
+        c"stream error",
+        c"data error",
+        c"insufficient memory",
+        c"buffer error",
+        c"incompatible version",
+    ];
+    usize::try_from(2 - i64::from(status))
+        .ok()
+        .and_then(|index| MESSAGES.get(index))
+        .copied()
+        .unwrap_or(c"")
 }

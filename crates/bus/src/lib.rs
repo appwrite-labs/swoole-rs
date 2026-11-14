@@ -183,6 +183,15 @@ fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
     unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
 }
 
+/// `allocator`'s `malloc(size)`: a new block of `size` bytes, or null when it has
+/// none to give (or no `malloc`).
+fn malloc(allocator: TrustedAllocator, size: usize) -> *mut std::ffi::c_void {
+    allocator.get().malloc.map_or(ptr::null_mut(), |malloc| {
+        // SAFETY: a trusted allocator's `malloc`, which takes any size.
+        unsafe { malloc(size) }
+    })
+}
+
 fn aligned(size: usize) -> usize {
     size.wrapping_add(ALIGNMENT - 1) & !(ALIGNMENT - 1)
 }
@@ -334,13 +343,12 @@ impl Bus {
         let fresh = state.data.is_null();
         let allocator = if fresh { default } else { state.allocator };
         let calls = allocator.get();
-        let data = match (fresh, calls.malloc, calls.realloc) {
-            // SAFETY: a trusted allocator's `malloc`, which takes any size.
-            (true, Some(malloc), _) => unsafe { malloc(state.size) },
+        let data = match (fresh, calls.realloc) {
+            (true, _) => malloc(allocator, state.size),
             // SAFETY: the packet's block, which this allocator made (`Packet`), so
             // its `realloc` takes it back; the packet names the new block below.
-            (false, _, Some(realloc)) => unsafe { realloc(state.data.cast(), state.size) },
-            _ => ptr::null_mut(),
+            (false, Some(realloc)) => unsafe { realloc(state.data.cast(), state.size) },
+            (false, None) => ptr::null_mut(),
         };
         if data.is_null() {
             // `throw std::bad_alloc()`, which nothing catches.
@@ -676,12 +684,7 @@ impl Bus {
     /// passes below need one set. A buffer already set is forgotten, not freed.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
         self.buffer_size.set(size);
-        let malloc = allocator.get().malloc;
-        // SAFETY: a trusted allocator's `malloc`, which takes any size.
-        let buffer = malloc.map_or(ptr::null_mut(), |malloc| unsafe {
-            malloc(size.max(BUFFER_MIN))
-        });
-        let buffer = buffer.cast::<BusHead>();
+        let buffer = malloc(allocator, size.max(BUFFER_MIN)).cast::<BusHead>();
         self.buffer.set(buffer);
         self.buffer_owner.set(Some(allocator));
         if !buffer.is_null() {

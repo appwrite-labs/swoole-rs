@@ -25,6 +25,13 @@ unsafe extern "C" {
     safe fn setuid(uid: libc::uid_t) -> c_int;
     #[link_name = "pthread_self"]
     safe fn libc_pthread_self() -> libc::pthread_t;
+    /// The calling thread's kernel id.
+    #[cfg(target_os = "freebsd")]
+    safe fn pthread_getthreadid_np() -> c_int;
+    #[cfg(target_os = "openbsd")]
+    safe fn getthrid() -> libc::pid_t;
+    #[cfg(target_os = "netbsd")]
+    safe fn _lwp_self() -> libc::lwpid_t;
     /// Darwin's: names the calling thread, reading `name` up to its NUL.
     #[cfg(target_vendor = "apple")]
     safe fn pthread_setname_np(name: Text<'_>) -> c_int;
@@ -217,18 +224,15 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     }
     #[cfg(target_os = "freebsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::pthread_getthreadid_np() })
+        c_long::from(pthread_getthreadid_np())
     }
     #[cfg(target_os = "openbsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::getthrid() })
+        c_long::from(getthrid())
     }
     #[cfg(target_os = "netbsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::_lwp_self() })
+        c_long::from(_lwp_self())
     }
 }
 

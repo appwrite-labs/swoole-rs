@@ -4,6 +4,7 @@
 use libc::{c_char, c_int, off_t};
 use std::ffi::CStr;
 use std::marker::PhantomData;
+use std::os::fd::OwnedFd;
 use std::ptr::NonNull;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::{self, ReadSlot, errno};
@@ -79,21 +80,22 @@ impl<'a> Template<'a> {
 }
 
 // libc's, over a template they write only before its NUL; a template without the
-// `XXXXXX` suffix is an error they return.
+// `XXXXXX` suffix is an error they return. The descriptor they return is a new one
+// the caller owns, or -1 (`None`: `OwnedFd` never holds -1).
 unsafe extern "C" {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    safe fn mkostemp(template: Template<'_>, flags: c_int) -> c_int;
+    safe fn mkostemp(template: Template<'_>, flags: c_int) -> Option<OwnedFd>;
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    safe fn mkstemp(template: Template<'_>) -> c_int;
+    safe fn mkstemp(template: Template<'_>) -> Option<OwnedFd>;
 }
 
 /// `swoole_tmpfile`: `mkostemp(O_WRONLY | O_CREAT)` on Linux, `mkstemp` elsewhere, over
-/// the `XXXXXX` template up to the first NUL in `template`; -1 with `EINVAL` when
-/// there is none.
-pub(crate) fn tmpfile(template: &mut [u8]) -> c_int {
+/// the `XXXXXX` template up to the first NUL in `template`: the new descriptor, or
+/// none (errno `EINVAL` when there is no NUL).
+pub(crate) fn tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
     let Some(template) = Template::new(template) else {
         sys::set_errno(libc::EINVAL);
-        return -1;
+        return None;
     };
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let fd = mkostemp(template, libc::O_WRONLY | libc::O_CREAT);
@@ -185,13 +187,43 @@ pub fn swr_v1_os_sendfile(
     Sendfile { result, warn: 0 }
 }
 
+#[cfg(target_vendor = "apple")]
+unsafe extern "C" {
+    /// Darwin's `sendfile(2)`: reads its descriptors and offset, reads and writes
+    /// the one `off_t` length it is lent, and reads the header/trailer vectors only
+    /// when given some.
+    safe fn sendfile(
+        fd: c_int,
+        s: c_int,
+        offset: off_t,
+        len: &mut off_t,
+        hdtr: Option<&mut libc::sf_hdtr>,
+        flags: c_int,
+    ) -> c_int;
+}
+
+#[cfg(target_os = "freebsd")]
+unsafe extern "C" {
+    /// FreeBSD's `sendfile(2)`: reads its descriptors, offset and count, writes the
+    /// one `off_t` progress it is lent, and reads the header/trailer vectors only
+    /// when given some.
+    safe fn sendfile(
+        fd: c_int,
+        s: c_int,
+        offset: off_t,
+        nbytes: usize,
+        hdtr: Option<&mut libc::sf_hdtr>,
+        sbytes: &mut off_t,
+        flags: c_int,
+    ) -> c_int;
+}
+
 /// One Darwin `sendfile`: `length` is in/out, so a retry sends what the
 /// interrupted call reported (upstream reuses its `size`). Returns the result and
 /// the progress to add to the offset.
 #[cfg(target_vendor = "apple")]
 fn sendfile_once(out_fd: c_int, in_fd: c_int, at: off_t, length: &mut off_t) -> (c_int, off_t) {
-    // SAFETY: `length` is a live in/out length; no header/trailer vectors.
-    let ret = unsafe { libc::sendfile(in_fd, out_fd, at, length, std::ptr::null_mut(), 0) };
+    let ret = sendfile(in_fd, out_fd, at, length, None, 0);
     (ret, *length)
 }
 
@@ -199,18 +231,8 @@ fn sendfile_once(out_fd: c_int, in_fd: c_int, at: off_t, length: &mut off_t) -> 
 #[cfg(target_os = "freebsd")]
 fn sendfile_once(out_fd: c_int, in_fd: c_int, at: off_t, length: &mut off_t) -> (c_int, off_t) {
     let mut sent: off_t = 0;
-    // SAFETY: `sent` is a live out-parameter; no header/trailer vectors.
-    let ret = unsafe {
-        libc::sendfile(
-            in_fd,
-            out_fd,
-            at,
-            length.unsigned_abs().try_into().unwrap_or(usize::MAX),
-            std::ptr::null_mut(),
-            &raw mut sent,
-            0,
-        )
-    };
+    let count = length.unsigned_abs().try_into().unwrap_or(usize::MAX);
+    let ret = sendfile(in_fd, out_fd, at, count, None, &mut sent, 0);
     (ret, sent)
 }
 
@@ -379,7 +401,7 @@ mod tests {
     fn open_close_and_tmpfile_follow_upstream() {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let mut template = *b"/tmp/swr-ossupport-XXXXXX\0";
-        let fd = tmpfile(&mut template);
+        let fd = tmpfile(&mut template).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
         let reopened = file_open(fd, path, libc::O_RDONLY, 0);

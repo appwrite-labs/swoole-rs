@@ -351,6 +351,15 @@ impl CppString {
         Some(unsafe { bytes.assume_init_mut() })
     }
 
+    /// Replaces the content with what `read` writes into the allocation's first
+    /// `length` bytes, [`zeroed`](Self::zeroed) first (none when the allocation is
+    /// shorter): as many as it returns, at most `length`.
+    pub fn read_zeroed(&mut self, length: usize, read: impl FnOnce(&mut [u8]) -> usize) {
+        let bytes = self.zeroed(length).unwrap_or_default();
+        let room = bytes.len();
+        self.length = read(bytes).min(room);
+    }
+
     /// The allocated bytes after the content, for a read to fill before `grow`. They are
     /// uninitialized, so safe code can only write them.
     pub fn spare(&mut self) -> &mut [MaybeUninit<u8>] {

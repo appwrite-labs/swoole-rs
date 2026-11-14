@@ -8,7 +8,7 @@ thread_local! {
     static EVENT: Cell<c_int> = const { Cell::new(0) };
 }
 
-unsafe extern "C" fn wait(_session: *mut LIBSSH2_SESSION, event: c_int) -> bool {
+extern "C" fn wait(_session: Session, event: c_int) -> bool {
     EVENT.with(|seen| seen.set(event));
     WAITS.with(|waits| waits.set(waits.get() + 1));
     WAITABLE.with(|left| {
