@@ -320,7 +320,11 @@ fn flag(client: *mut Client, name: Flag) -> bool {
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
-    super::connect(Handle(client), host, 80, timeout, flags)
+    if super::connect(Handle(client), host, 80, timeout, flags) {
+        OK
+    } else {
+        ERR
+    }
 }
 
 #[test]

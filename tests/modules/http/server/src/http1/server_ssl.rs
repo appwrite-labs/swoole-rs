@@ -185,8 +185,7 @@ impl SyncClient {
             return false;
         }
         let host = CString::new(host).unwrap();
-        let connected = native::connect(self.handle(), &host, port, -1.0, self.dgram.into());
-        if connected < 0 {
+        if !native::connect(self.handle(), &host, port, -1.0, self.dgram.into()) {
             return false;
         }
         self.connected = true;

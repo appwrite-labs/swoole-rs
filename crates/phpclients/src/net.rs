@@ -739,13 +739,13 @@ fn connect(call: &Call) {
     }
     let host_text = native::c_text(host);
     let connect = |h| state::connect(h, &host_text, int(port), timeout, int(flags));
-    let Some(result) = bailed(conn.cli.run(connect)) else {
+    let Some(connected) = bailed(conn.cli.run(connect)) else {
         return call.set_bool(false);
     };
     if conn.released(object) {
         return call.set_bool(false);
     }
-    if result < 0 {
+    if !connected {
         set_err_code(object, last_error());
         if conn.flag(state::Flag::AsyncConnect) {
             return call.set_bool(true);

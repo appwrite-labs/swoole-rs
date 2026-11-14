@@ -1712,7 +1712,7 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     listen(client, events, std::rc::Rc::new(clean_client_event));
     let host = CString::new(TEST_HOST).unwrap();
     let port = CLEAN_PORT.load(Ordering::SeqCst).into();
-    let connected = native::connect(clean_client(), &host, port, -1.0, 0) >= 0;
+    let connected = native::connect(clean_client(), &host, port, -1.0, 0);
     expect(connected, "ac.connect(TEST_HOST, port->get_port())");
 }
 
