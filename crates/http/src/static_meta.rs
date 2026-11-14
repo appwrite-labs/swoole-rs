@@ -27,12 +27,12 @@ pub(crate) fn static_content_type(boundary: &[u8]) -> Result<Vec<u8>, i32> {
     Ok(value)
 }
 /// Publish 404 only for the terminal location match; no native callback occurs.
-pub(crate) fn static_catch(last: u32, status: &mut i32) -> i32 {
+pub(crate) fn static_catch(last: u32, status: &mut i32) -> bool {
     if last == 0 {
-        return 0;
+        return false;
     }
     *status = 404;
-    1
+    true
 }
 
 #[cfg(test)]
@@ -49,9 +49,9 @@ mod tests {
         assert!(!static_multipart(1));
         assert!(static_multipart(2));
         let mut status = 200;
-        assert_eq!(static_catch(0, &mut status), 0);
+        assert!(!static_catch(0, &mut status));
         assert_eq!(status, 200);
-        assert_eq!(static_catch(1, &mut status), 1);
+        assert!(static_catch(1, &mut status));
         assert_eq!(status, 404);
     }
 }
