@@ -6,11 +6,10 @@ use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
+use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::net_types::{
-    GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
-};
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
 use swoole_rs_reactor::{Running, SocketFields, SocketRecord};
 #[cfg(not(test))]
@@ -318,7 +317,7 @@ const CALLBACKS: Callbacks = {
         http_length: http::get_package_length,
         http_length_size: http::get_package_length_size,
         http2_length: http::http2_length,
-        websocket_length: swoole_rs_websocket_ffi::frame_api::get_package_length,
+        websocket_length: crate::http_routes::websocket_length,
     }
 };
 
@@ -355,7 +354,7 @@ fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
 /// framing it stores in `protocol`.
 fn init_protocol_callbacks(
     config: &PortConfig,
-    protocol: &mut swoole_rs_corebase::net_types::Protocol,
+    protocol: &mut swoole_rs_clients::protocol::Protocol,
 ) -> Reader {
     let c = &CALLBACKS;
     if config.open_eof_check.get() {
@@ -537,7 +536,8 @@ mod tests {
     fn ssl_context_init(at: *mut c_void) -> bool {
         crate::lifecycle::ssl_context_init(unsafe { port_config::of(at) })
     }
-    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+    use swoole_rs_clients::protocol::Protocol;
+    use swoole_rs_corebase::net_types::PacketLength;
 
     /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
     /// C++, which `socket_free` reaches under `upstream-symbols`.
@@ -567,8 +567,8 @@ mod tests {
     /// Stub callbacks, each body distinct so that no two share an address.
     pub(super) unsafe extern "C-unwind" fn package<const N: u8>(
         _: *const Protocol,
-        _: *mut c_void,
-        _: *const c_void,
+        _: swoole_rs_reactor::Socket<'_>,
+        _: &swoole_rs_corebase::net_types::RecvData,
     ) -> c_int {
         N.into()
     }

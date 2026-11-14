@@ -685,32 +685,20 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 #[test]
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
-    let socket = Handle(client).socket_ptr();
+    let socket = Handle(client).socket();
     let mut package = RecvData {
         info: swoole_rs_corebase::DataHead::default(),
-        data: c"data".as_ptr(),
+        data: c"data".as_ptr().cast(),
     };
     package.info.len = 4;
     assert_eq!(
-        unsafe {
-            on_package(
-                core::ptr::null(),
-                socket.cast(),
-                (&raw const package).cast(),
-            )
-        },
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         OK
     );
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
     assert_eq!(
-        unsafe {
-            on_package(
-                core::ptr::null(),
-                socket.cast(),
-                (&raw const package).cast(),
-            )
-        },
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         ERR
     );
     free(client);

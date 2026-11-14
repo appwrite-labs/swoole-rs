@@ -2,16 +2,16 @@
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
-//! the buffer and the protocol's callbacks; `default_length_func`, under its upstream
-//! symbol; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
+//! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
 use core::ffi::{CStr, c_int, c_void};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_corebase::net_types::{PacketLength, RecvData};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
@@ -27,13 +27,6 @@ use swoole_rs_server::ConnectionRecord;
 const LOG_WARNING: c_int = 4;
 const LOG_ERROR: c_int = 5;
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const u8,
-}
 
 /// One receive: what each effect acts on, live for the receive.
 pub(crate) struct Recv<'a> {
@@ -154,9 +147,7 @@ unsafe fn dispatch(protocol: &Protocol, socket: Socket<'_>, data: *const u8, len
     };
     match protocol.on_package {
         // SAFETY: upstream's call, over the live protocol, socket and packet.
-        Some(on_package) => unsafe {
-            on_package(protocol, socket.as_ptr().cast(), (&raw const packet).cast())
-        },
+        Some(on_package) => unsafe { on_package(protocol, socket, &packet) },
         None => -1,
     }
 }
@@ -426,12 +417,6 @@ pub const FRAMING: Framing = unsafe { Framing::new(client_recv::<true>, client_r
 ///
 /// # Safety
 /// A live protocol and socket, and a packet whose `buf` holds `buf_size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"
-    )
-)]
 pub unsafe extern "C" fn default_length_func(
     p: *const Protocol,
     socket: *mut c_void,
@@ -516,13 +501,11 @@ mod tests {
 
     unsafe extern "C-unwind" fn record(
         _: *const Protocol,
-        _: *mut c_void,
-        packet: *const c_void,
+        _: Socket<'_>,
+        packet: &RecvData,
     ) -> c_int {
-        let packet = packet.cast::<RecvData>();
         // SAFETY: the receive's packet, `len` bytes at `data`.
-        let bytes =
-            unsafe { core::slice::from_raw_parts((*packet).data, (*packet).info.len as usize) };
+        let bytes = unsafe { core::slice::from_raw_parts(packet.data, packet.info.len as usize) };
         PACKAGES.with_borrow_mut(|p| p.push(bytes.to_vec()));
         0
     }

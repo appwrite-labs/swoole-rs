@@ -2,16 +2,11 @@
 //! [`recv_packet`] loop over the connection's own records.
 use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
+use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_corebase::net_types::RecvData;
+use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const u8,
-}
 
 /// The connection's protocol, socket, receive buffer and request. The buffer and
 /// request stay raw: `onPackage` may free both.
@@ -80,14 +75,7 @@ impl RespConnection for Connection<'_> {
             return Dispatched::Failed;
         };
         // SAFETY: upstream's call, over the live protocol, socket and packet.
-        if unsafe {
-            on_package(
-                self.protocol,
-                self.socket.as_ptr().cast(),
-                (&raw const data).cast(),
-            )
-        } < 0
-        {
+        if unsafe { on_package(self.protocol, self.socket, &data) } < 0 {
             return Dispatched::Failed;
         }
         if self.socket.read(|s| s.removed) {

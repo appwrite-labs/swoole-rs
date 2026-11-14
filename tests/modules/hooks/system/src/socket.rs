@@ -202,8 +202,6 @@ unsafe extern "C" {
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
-    #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
-    static default_length_func: c_void;
     #[link_name = "_Z16swoole_type_sizec"]
     fn swoole_type_size(kind: c_char) -> c_int;
     #[link_name = "_Z11swoole_randii"]
@@ -470,7 +468,8 @@ impl Sock {
         record.protocol.package_length_size =
             u8::try_from(unsafe { swoole_type_size(kind as c_char) }).unwrap();
         record.protocol.package_body_offset = body_offset;
-        record.protocol.get_package_length = &raw const default_length_func;
+        record.protocol.get_package_length =
+            swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
         record.protocol.package_max_length = max_length;
         record.open_length_check = true;
     }

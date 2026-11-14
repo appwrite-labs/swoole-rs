@@ -4,8 +4,8 @@
 //! contexts (crates/ports).
 use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use swoole_rs_clients::protocol::{GetPackageLength, Protocol};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_types::{GetPackageLength, Protocol};
 use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
@@ -504,7 +504,8 @@ mod tests {
         collections::HashMap,
         ptr::NonNull,
     };
-    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+    use swoole_rs_clients::protocol::Protocol;
+    use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_server::port_config::swr_v1_port_config_new;
 
     /// The mock settings' `package_length_func` callback.

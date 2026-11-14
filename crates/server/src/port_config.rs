@@ -5,9 +5,9 @@ use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
 use std::sync::{Mutex, OnceLock, RwLock};
 
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::Socket;
 use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
 

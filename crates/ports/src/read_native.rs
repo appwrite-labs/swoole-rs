@@ -2,7 +2,7 @@
 //! the server: the records Rust lays out for the reactor's event and server, the
 //! connection, its socket and receive buffer, the port's protocol and the server's
 //! settings. Logs name the upstream function that wrote them.
-use core::ffi::{CStr, c_int, c_void};
+use core::ffi::{CStr, c_int};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
@@ -13,6 +13,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
+use swoole_rs_corebase::net_types::RecvData;
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
@@ -24,7 +25,7 @@ use swoole_rs_server::{Connection as Slot, ConnectionRecord, ServerConfig, view}
 use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
-use crate::http_routes::exports::{Frames, RecvData, dispatch_task};
+use crate::http_routes::exports::{Frames, dispatch_task};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -267,7 +268,6 @@ impl Connection for Read<'_> {
             data: self.string().as_mut_ptr(),
         };
         let proto = self.port.protocol.as_ptr().cast_const();
-        let rdata: *const c_void = (&raw const data).cast();
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -279,7 +279,7 @@ impl Connection for Read<'_> {
             -1
         } else {
             // SAFETY: the port's protocol, the live socket and its data.
-            unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) }
+            unsafe { dispatch_task(proto, self.socket, &data) }
         };
         if dispatch == Dispatch::Task {
             return i64::from(result);

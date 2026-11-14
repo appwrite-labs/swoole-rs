@@ -15,8 +15,9 @@ use std::{
     ffi::{CStr, CString},
     ptr,
 };
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,

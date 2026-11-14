@@ -10,6 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
+use crate::protocol::Protocol;
 use core::cell::{Cell, OnceCell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -24,7 +25,7 @@ use swoole_rs_corebase::constants::{
     EventType, FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType, TimeoutType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
@@ -713,31 +714,18 @@ use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
 #[cfg(test)]
 use tests::{add_fn_sec_id, del_id};
 
-/// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
-#[repr(C)]
-struct RecvData {
-    info: swoole_rs_corebase::DataHead,
-    data: *const c_char,
-}
-
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close.
 /// # Safety
-/// `conn` is a client's socket record (or null), whose free is deferred past the call.
+/// `socket` is a client's socket, whose free is deferred past the call.
 unsafe extern "C-unwind" fn on_package(
     _: *const Protocol,
-    conn: *mut c_void,
-    package: *const c_void,
+    socket: Socket<'_>,
+    package: &RecvData,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let Some(socket) = (unsafe { Socket::from_ptr(conn.cast()) }) else {
-        return ERR;
-    };
-    // SAFETY: per the caller, the package.
-    let package = unsafe { &*package.cast::<RecvData>() };
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data,
+        package.data.cast(),
         package.info.len as usize,
     );
     if socket.read(|socket| socket.output.close_wait) {

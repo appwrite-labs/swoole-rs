@@ -1,8 +1,7 @@
 //! The reactor-thread entry points that were master.cc's: the reactor handlers
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
-//! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
-//! they make is Rust's.
+//! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
 
 use swoole_rs_corebase::DataHead;
@@ -176,22 +175,17 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
-/// a data frame to the workers.
+/// a data frame to the workers. A port protocol's `onPackage`.
 ///
 /// # Safety
-/// `proto` is a live server port's protocol, `socket` a live session socket and
-/// `rdata` the frame.
+/// `proto` is a live server port's protocol (its `private_data_2` the server) and
+/// `socket` a live session socket of that port.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
-    )
-)]
+#[must_use]
 pub unsafe extern "C-unwind" fn dispatch_task(
-    proto: *const swoole_rs_corebase::net_types::Protocol,
-    socket: *mut c_void,
-    rdata: *const c_void,
+    proto: *const swoole_rs_clients::protocol::Protocol,
+    socket: swoole_rs_reactor::Socket<'_>,
+    rdata: &swoole_rs_corebase::net_types::RecvData,
 ) -> c_int {
     use core::sync::atomic::Ordering::SeqCst;
     // SAFETY: per the caller; a port's protocol keeps its server.
@@ -199,16 +193,10 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // SAFETY: per the caller, a live server's.
     let server = unsafe { view::Server::from_raw(serv) };
     let state = server.state();
-    // SAFETY: per the caller, a live session socket.
-    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket.cast()) }) else {
-        return -1;
-    };
     // A session socket's object is its live connection.
     let conn = socket
         .read(|s| s.object)
         .cast::<crate::records::ConnectionRecord>();
-    // SAFETY: per the caller.
-    let rdata = unsafe { &*rdata.cast::<RecvData>() };
     let len = rdata.info.len;
     // The slot is read only before the dispatch, as upstream does: base and thread mode
     // run the callback inline, and a close there hands the slot to the accept that reuses

@@ -767,7 +767,6 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
- "swoole-rs-websocket-ffi",
  "swoole-rs-zend",
 ]
 
