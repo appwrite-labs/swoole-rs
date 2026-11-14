@@ -911,36 +911,6 @@ pub enum Callback {
     WorkerStop,
 }
 
-/// One `ProcessPool` method, with its arguments, which [`run_op`] runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Run {
-    CreateMessageBox(u64),
-    CreateMessageBus,
-    SetProtocol(Protocol),
-    StartCheck,
-    Start,
-    Spawn,
-    Stop,
-    Detach,
-    KillAll(c_int),
-    ReopenLogger,
-    Shutdown,
-    Reload,
-    DropReloadTask,
-    /// `run_with_*_protocol`, or `run_async` for none.
-    Main(Option<Protocol>),
-    Wait,
-    Destroy,
-    SetType(u8),
-    SetStartId(u16),
-    SetMaxRequest {
-        max: u32,
-        grace: u32,
-    },
-    FreeMessageBox,
-    Signal(c_int),
-}
-
 /// What a pool operation asks of native code.
 pub(crate) trait PoolHost {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) -> i64;
@@ -963,7 +933,7 @@ pub(crate) trait PoolHost {
     fn free_box(&mut self);
 }
 
-struct Native<'a> {
+pub(crate) struct Native<'a> {
     native: &'a dyn PoolNative,
     pool: PoolRef<'a>,
 }
@@ -1160,7 +1130,7 @@ fn log(kind: Log, arg: u64) {
 }
 
 /// One operation over a pool: its record and the native side.
-struct Pool<'a, H> {
+pub(crate) struct Pool<'a, H> {
     h: H,
     p: PoolRef<'a>,
 }
@@ -1427,7 +1397,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create_message_box`.
-    fn create_message_box(&mut self, size: u64) -> bool {
+    pub(crate) fn create_message_box(&mut self, size: u64) -> bool {
         let message_box = self.h.new_box(size);
         if message_box.is_null() {
             return false;
@@ -1437,7 +1407,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create_message_bus`.
-    fn create_message_bus(&mut self) -> bool {
+    pub(crate) fn create_message_bus(&mut self) -> bool {
         if self.ipc_mode() != IpcMode::UnixSock {
             self.op(Op::Log(Log::NeedsUnixsock), 0);
             return false;
@@ -1482,13 +1452,13 @@ impl<H: PoolHost> Pool<'_, H> {
     /// - `SW_PROTOCOL_STREAM`: a 4-byte payload length in network byte order, then
     ///   the payload; the receiver reads the length, allocates, then reads that
     ///   many bytes.
-    fn set_protocol(&mut self, protocol: Protocol) {
+    pub(crate) fn set_protocol(&mut self, protocol: Protocol) {
         self.op(Op::MainLoop, u64::from(protocol.code().cast_unsigned()));
         self.set_protocol_type(protocol.code());
     }
 
     /// `ProcessPool::start_check`.
-    fn start_check(&mut self) -> bool {
+    pub(crate) fn start_check(&mut self) -> bool {
         if self.ipc_mode() == IpcMode::Socket
             && self
                 .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
@@ -1516,7 +1486,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::start`.
-    fn start(&mut self) -> Result<bool, Bailed> {
+    pub(crate) fn start(&mut self) -> Result<bool, Bailed> {
         if !self.start_check() {
             return Ok(false);
         }
@@ -1533,7 +1503,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
     /// -1 for a `worker` that is none of the pool's ([`PoolRecord::own`]).
-    fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
+    pub(crate) fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
         let Some(old) = self.record().own(worker).map(Worker::pid) else {
             return Ok(SW_ERR);
         };
@@ -1576,7 +1546,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::stop`.
-    fn stop(&mut self, worker: *mut WorkerRecord) {
+    pub(crate) fn stop(&mut self, worker: *mut WorkerRecord) {
         self.on(worker, Op::WorkerShutdown, 0);
         if self.op(Op::EventAvailable, 0) == 0 {
             return;
@@ -1588,7 +1558,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::detach`.
-    fn detach(&mut self) -> bool {
+    pub(crate) fn detach(&mut self) -> bool {
         if !self.running() || self.message_box().is_null() {
             return false;
         }
@@ -1606,7 +1576,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `Swoole\Process\Pool`'s signal handler (upstream's
     /// `process_pool_signal_handler`), in `worker` or (null) the master.
-    fn signal(&mut self, signo: c_int, worker: *mut WorkerRecord) -> Result<(), Bailed> {
+    pub(crate) fn signal(&mut self, signo: c_int, worker: *mut WorkerRecord) -> Result<(), Bailed> {
         match signo {
             libc::SIGTERM => {
                 self.set_running(false);
@@ -1626,14 +1596,14 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::kill_all_workers`.
-    fn kill_all_workers(&mut self, signo: c_int) {
+    pub(crate) fn kill_all_workers(&mut self, signo: c_int) {
         for index in 0..self.worker_num() {
             kill(self.worker_at(index).pid(), signo);
         }
     }
 
     /// `ProcessPool::reopen_logger`.
-    fn reopen_logger(&mut self) {
+    pub(crate) fn reopen_logger(&mut self) {
         self.op(Op::ReopenLogger, 0);
         if self.op(Op::IsMaster, 0) != 0 {
             self.kill_all_workers(libc::SIGWINCH);
@@ -1641,7 +1611,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::shutdown`.
-    fn shutdown(&mut self) -> bool {
+    pub(crate) fn shutdown(&mut self) -> bool {
         if self.op(Op::IsMaster, 0) != 0 {
             self.set_running(false);
             true
@@ -1651,7 +1621,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::reload`.
-    fn reload(&mut self) -> Result<bool, Bailed> {
+    pub(crate) fn reload(&mut self) -> Result<bool, Bailed> {
         if !self.reload_task().is_null() {
             return Ok(false);
         }
@@ -1669,7 +1639,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::drop_reload_task`: free the reload, and its timer with it.
-    fn drop_reload_task(&mut self) {
+    pub(crate) fn drop_reload_task(&mut self) {
         let task = self.reload_task();
         self.set_reload_task(ptr::null_mut());
         if !task.is_null() {
@@ -1812,7 +1782,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
-    fn wait(&mut self) -> Result<i64, Bailed> {
+    pub(crate) fn wait(&mut self) -> Result<i64, Bailed> {
         reaper::run(self);
 
         self.set_running(false);
@@ -1931,7 +1901,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::destroy`.
-    fn destroy(&mut self) {
+    pub(crate) fn destroy(&mut self) {
         self.set_kill_timer(None);
         if !self.pipes().is_null() {
             self.op(Op::FreePipes, 0);
@@ -2025,7 +1995,7 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
 }
 
 /// Run `f` over the pool with the native side.
-fn with<T>(
+pub(crate) fn with<T>(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
     f: impl FnOnce(&mut Pool<'_, Native<'_>>) -> T,
@@ -2035,10 +2005,6 @@ fn with<T>(
         p: pool,
     };
     f(&mut pool)
-}
-
-fn raise_or(result: Result<i64, Bailed>) -> i64 {
-    result.unwrap_or(RAISE)
 }
 
 /// `ProcessPool::create(worker_num, key, mode)`.
@@ -2109,86 +2075,37 @@ pub fn pool_run_main(
     protocol: Option<Protocol>,
 ) -> i64 {
     match pool.worker_of(worker.raw()) {
-        Some(worker) => run_op(native, pool, Some(worker), Run::Main(protocol)),
+        Some(worker) => with(native, pool, |p| p.main(worker.raw(), protocol)),
         None => SW_ERR,
     }
 }
 
-/// One `ProcessPool` method on `pool` and, for those over one, `worker`,
-/// one of the pool's ([`PoolRef::worker_of`]): the C++ method's return value, or
-/// [`RAISE`].
-pub(crate) fn run_op(
-    native: &dyn PoolNative,
-    pool: PoolRef<'_>,
-    worker: Option<Worker<'_>>,
-    run: Run,
-) -> i64 {
-    let worker = worker.map_or(ptr::null_mut(), Worker::raw);
-    with(native, pool, |p| p.run(worker, run))
-}
-
 impl<H: PoolHost> Pool<'_, H> {
-    fn run(&mut self, worker: *mut WorkerRecord, run: Run) -> i64 {
-        match run {
-            Run::CreateMessageBox(size) => self.create_message_box(size).into(),
-            Run::CreateMessageBus => self.create_message_bus().into(),
-            Run::SetProtocol(protocol) => {
-                self.set_protocol(protocol);
-                SW_OK
-            }
-            Run::StartCheck => self.start_check().into(),
-            Run::Start => raise_or(self.start().map(i64::from)),
-            Run::Spawn => raise_or(self.spawn(worker)),
-            Run::Stop => {
-                self.stop(worker);
-                SW_OK
-            }
-            Run::Detach => self.detach().into(),
-            Run::KillAll(signo) => {
-                self.kill_all_workers(signo);
-                SW_OK
-            }
-            Run::ReopenLogger => {
-                self.reopen_logger();
-                SW_OK
-            }
-            Run::Shutdown => self.shutdown().into(),
-            Run::Reload => raise_or(self.reload().map(i64::from)),
-            Run::DropReloadTask => {
-                self.drop_reload_task();
-                SW_OK
-            }
-            Run::Main(protocol) => self.main(worker, protocol),
-            Run::Wait => raise_or(self.wait()),
-            Run::Destroy => {
-                self.destroy();
-                SW_OK
-            }
-            Run::SetType(kind) => {
-                self.set_kind(kind);
-                for index in 0..self.worker_num() {
-                    self.worker_at(index).set_kind(kind);
-                }
-                SW_OK
-            }
-            Run::SetStartId(start_id) => {
-                self.set_start_id(start_id);
-                for index in 0..self.worker_num() {
-                    self.worker_at(index).set_id(u32::from(start_id) + index);
-                }
-                SW_OK
-            }
-            Run::Signal(signo) => raise_or(self.signal(signo, worker).map(|()| SW_OK)),
-            Run::FreeMessageBox => {
-                self.h.free_box();
-                SW_OK
-            }
-            Run::SetMaxRequest { max, grace } => {
-                self.set_max_request(max);
-                self.set_max_request_grace(grace);
-                SW_OK
-            }
+    /// `ProcessPool::set_type(type)`: the pool's and each worker's.
+    pub(crate) fn set_type(&mut self, kind: u8) {
+        self.set_kind(kind);
+        for index in 0..self.worker_num() {
+            self.worker_at(index).set_kind(kind);
         }
+    }
+
+    /// `ProcessPool::set_start_id(start_id)`: the workers numbered from it.
+    pub(crate) fn number_from(&mut self, start_id: u16) {
+        self.set_start_id(start_id);
+        for index in 0..self.worker_num() {
+            self.worker_at(index).set_id(u32::from(start_id) + index);
+        }
+    }
+
+    /// `ProcessPool::set_max_request(max_request, max_request_grace)`.
+    pub(crate) fn set_max_requests(&mut self, max: u32, grace: u32) {
+        self.set_max_request(max);
+        self.set_max_request_grace(grace);
+    }
+
+    /// `ProcessPool::free_message_box`.
+    pub(crate) fn free_message_box(&mut self) {
+        self.h.free_box();
     }
 }
 
