@@ -50,8 +50,9 @@ const BUFFER_SIZE_BIG: usize = 65536;
 /// `SW_CLIENT_CONNECT_TIMEOUT`.
 pub(crate) const CONNECT_TIMEOUT: f64 = 0.5;
 /// `SW_ERROR_CLIENT_NO_CONNECTION` and `SW_ERROR_INVALID_PARAMS`.
-const NO_CONNECTION: c_int = 5001;
-pub(crate) const INVALID_PARAMS: c_int = 505;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
+pub(crate) const INVALID_PARAMS: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 
 /// One connection: the `network::Client` and what the PHP layer keeps with it
 /// (upstream's `keep`, `server_id`, `reuse_count`, `buffer` and

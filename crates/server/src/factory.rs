@@ -347,7 +347,7 @@ impl crate::hybrid::Hybrid for Linked {
         port: crate::view::Port<'_>,
         peer: &swoole_rs_corebase::net_types::SocketAddress,
         data: &[u8],
-    ) -> c_int {
+    ) -> bool {
         let single_thread = serv.state().config_ref().single_thread.get();
         crate::dtls::on_packet(serv, single_thread, reactor, port, peer, data)
     }

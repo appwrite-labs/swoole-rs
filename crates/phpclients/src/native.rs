@@ -42,7 +42,7 @@ pub(crate) const TIMEOUT_RDWR: c_int = TIMEOUT_READ | TIMEOUT_WRITE;
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
-const WRONG_OPERATION: c_int = 509;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 /// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE - sizeof(DataHead)`.
 #[expect(clippy::cast_possible_truncation, reason = "a u16 field's value")]
 const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 40) as u16;
@@ -113,16 +113,6 @@ impl NewSocket {
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
     swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
-}
-
-/// Whether the build has an optional SSL option: the host name (0) or grease
-/// (1, `BoringSSL`'s).
-pub(crate) fn ssl_supports(option: c_int) -> bool {
-    match option {
-        0 => built_with(Switch::TlsHostName),
-        1 => built_with(Switch::BoringSsl),
-        _ => false,
-    }
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
@@ -447,24 +437,30 @@ impl Co {
         self.0.ssl_handshake()
     }
 
-    /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
-    pub(crate) fn set_flag(self, flag: c_int, value: bool) {
-        match flag {
-            0 => self.0.set_open_length_check(value),
-            1 => self.0.set_open_eof_check(value),
-            _ => self.0.set_http2(value),
-        }
+    /// `open_length_check = value`.
+    pub(crate) fn set_length_check(self, value: bool) {
+        self.0.set_open_length_check(value);
     }
 
-    /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
-    pub(crate) fn protocol_preset(self, kind: c_int) {
+    /// `open_eof_check = value`.
+    pub(crate) fn set_eof_check(self, value: bool) {
+        self.0.set_open_eof_check(value);
+    }
+
+    /// `http2 = value`.
+    pub(crate) fn set_http2(self, value: bool) {
+        self.0.set_http2(value);
+    }
+
+    /// `mqtt::set_protocol`.
+    pub(crate) fn mqtt_protocol(self) {
+        self.0.edit_protocol(|protocol| mqtt_set_protocol(protocol));
+    }
+
+    /// `Protocol::default_length_func`.
+    pub(crate) fn length_protocol(self) {
         self.0.edit_protocol(|protocol| {
-            if kind == 0 {
-                mqtt_set_protocol(protocol);
-            } else {
-                protocol.get_package_length =
-                    Some(swoole_rs_ports::framing_recv::default_length_func);
-            }
+            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
         });
     }
 

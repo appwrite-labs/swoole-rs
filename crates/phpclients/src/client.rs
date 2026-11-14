@@ -24,7 +24,7 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `SW_PHP_CLIENT_BUFFER_SIZE`.
 const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
-const NO_CONNECTION: c_int = 5001;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 
 /// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; ... }`: the
 /// `Coroutine\Socket` object, from connect until its close, whose core socket
@@ -285,7 +285,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     }
     let socket = create_socket(call, data, kind)?;
     if let Some(settings) = setting(call) {
-        crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
+        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::All);
     }
     Some(socket)
 }
@@ -335,7 +335,7 @@ fn set(call: &Call) {
     call.set_bool(crate::socket_options::apply(
         socket,
         array,
-        crate::socket_options::ALL,
+        swoole_rs_phpswoole::SocketSettings::All,
     ));
 }
 
@@ -615,7 +615,7 @@ fn enable_ssl(call: &Call) {
     }
     let settings = setting(call).filter(|settings| settings.count() > 0);
     if let Some(settings) = settings {
-        crate::socket_options::apply(socket, settings, crate::socket_options::SSL);
+        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::Ssl);
     }
     if !socket.ssl_handshake() {
         report_socket(call, socket);

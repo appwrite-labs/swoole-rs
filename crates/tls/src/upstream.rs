@@ -42,8 +42,8 @@ unsafe extern "C" {
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const LOG_WARNING: c_int = 4;
-const FILE_EMPTY: c_int = 702;
-const INVALID_PARAMS: c_int = 505;
+const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `SW_SOCKET_CORK_MIN_SIZE`.
 const CORK_MIN_SIZE: usize = 65536;
 /// `SW_FD_STREAM_SERVER`.
@@ -888,7 +888,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> bool {
         );
     }
     output.detached.dispose();
-    output.result.code >= 0
+    !output.result.failed
 }
 
 /// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
@@ -902,7 +902,7 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     let hooks = Output(socket);
     // The effects send the request's file and never reach the queue itself.
-    let (code, detached) = with_queue(socket, |queue| {
+    let (failed, detached) = with_queue(socket, |queue| {
         let Some(queue) = queue else {
             swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
         };
@@ -915,7 +915,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
         if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
-            return (0, None);
+            return (false, None);
         }
         let result = request.sent(&hooks, rv, requested);
         socket.edit(|record| result.publish(&mut record.output));
@@ -936,12 +936,12 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         } else {
             None
         };
-        (result.code, detached)
+        (result.failed, detached)
     });
     if let Some(detached) = detached {
         detached.dispose();
     }
-    code >= 0
+    !failed
 }
 
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:

@@ -26,10 +26,10 @@ const FD_AIO: c_int = 5;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_WRONG_OPERATION`, `SW_ERROR_AIO_BAD_REQUEST`
 /// and `SW_ERROR_AIO_CANCELED`.
-const SYSTEM_CALL_FAIL: c_int = 502;
-const WRONG_OPERATION: c_int = 509;
-const AIO_BAD_REQUEST: c_int = 4001;
-const AIO_CANCELED: c_int = 4002;
+const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const AIO_BAD_REQUEST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_AIO_BAD_REQUEST as c_int;
+const AIO_CANCELED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_AIO_CANCELED as c_int;
 
 /// `swoole::AsyncThreads`, opaque to native code: the events in flight, the
 /// completion pipe (the master end writes, the worker end reads) and the pool.

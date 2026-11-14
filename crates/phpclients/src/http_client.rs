@@ -74,12 +74,13 @@ impl ErrorStatus {
     }
 }
 /// `SW_ERROR_*`.
-const INVALID_PARAMS: c_int = 505;
-const NO_CONNECTION: c_int = 5001;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
-const INVALID_PROTOCOL: c_int = 7102;
-const HANDSHAKE_FAILED: c_int = 8504;
-const PACK_FAILED: c_int = 8505;
+const INVALID_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_INVALID_PROTOCOL as c_int;
+const HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED as c_int;
+const PACK_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
 /// `SW_EVENT_WRITE` and `SW_EVENT_RDWR`.
 const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const EVENT_RDWR: c_int = (1 << 9) | (1 << 10);
@@ -527,7 +528,7 @@ impl Client {
             }
         }
         if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, array, crate::socket_options::ALL);
+            crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
                 socket.skip_proxy_handshake();
             }

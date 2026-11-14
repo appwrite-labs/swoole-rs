@@ -44,10 +44,11 @@ const SETTING_HEADER_TABLE_SIZE: u16 = 1;
 const INIT_WINDOW_SIZE: usize = 3;
 const MAX_FRAME_SIZE: usize = 4;
 /// Swoole error codes and log levels.
-const PHP_FATAL_ERROR: c_int = 503;
-const NO_PAYLOAD: c_int = 550;
-const STREAM_NOT_FOUND: c_int = 3003;
-const STREAM_IGNORE: c_int = 3004;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
+const STREAM_NOT_FOUND: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
+const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
 const LOG_WARNING: c_int = 4;
 
 use swoole_rs_phphttp::decimal;

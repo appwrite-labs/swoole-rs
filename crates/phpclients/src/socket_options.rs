@@ -17,6 +17,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
+use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
@@ -36,19 +37,8 @@ const SOCK_UDP6: c_int = 4;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const OPERATION_NOT_SUPPORT: i64 = 507;
-/// `socket_settings`'s `which`.
-pub(crate) const ALL: c_int = 0;
-pub(crate) const PROTOCOL: c_int = 1;
-pub(crate) const SSL: c_int = 2;
-/// `swoole_socket_coro_set_flag`'s flags.
-const FLAG_LENGTH: c_int = 0;
-const FLAG_EOF: c_int = 1;
-const FLAG_HTTP2: c_int = 2;
-
-/// `swoole_socket_coro_ssl_supports`'s optional settings.
-const SSL_HOST_NAME: c_int = 0;
-const SSL_GREASE: c_int = 1;
+const OPERATION_NOT_SUPPORT: i64 =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header, or -1 past 65535.
@@ -139,36 +129,34 @@ fn edit(socket: Co, f: impl FnOnce(&mut Protocol)) {
     socket.handle().edit_protocol(f);
 }
 
-/// The settings `which` names applied to `socket` (`ALL`, `PROTOCOL`, `SSL`):
-/// whether they all applied. Stops at a pending bailout, for the caller's
-/// handler to raise.
-pub(crate) fn apply(socket: Co, settings: &Array, which: c_int) -> bool {
+/// The settings `which` names applied to `socket`: whether they all applied. Stops
+/// at a pending bailout, for the caller's handler to raise.
+pub(crate) fn apply(socket: Co, settings: &Array, which: Settings) -> bool {
     let applied = match which {
-        ALL => set(settings, socket),
-        PROTOCOL => set_protocol(settings, socket),
-        _ => set_ssl(settings, socket),
+        Settings::All => set(settings, socket),
+        Settings::Protocol => set_protocol(settings, socket),
+        Settings::Ssl => set_ssl(settings, socket),
     };
     applied.unwrap_or(false)
 }
 
 /// `php_swoole_socket_set(socket, settings)`: every setting, as [`socket_settings`].
 pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> bool {
-    let applied = apply(socket.into(), settings, ALL);
+    let applied = apply(socket.into(), settings, Settings::All);
     bailout::finish();
     applied
 }
 
 /// [`apply`] for callers that raise no bailout of their own (crates/phpruntime,
 /// through crates/phpswoole's families): it raises one. Settings that are no
-/// array apply nothing. `which` is 0 for every setting, 1 for the protocol ones
-/// (`php_swoole_socket_set_protocol`) and 2 for the SSL ones.
+/// array apply nothing.
 /// # Safety
 /// It raises a pending bailout: the caller is inside a trap, or the frames the
 /// jump skips own only values of the request's heap, which Zend reclaims.
 pub unsafe fn socket_settings(
     socket: swoole_rs_hooks::co_socket::Co,
     settings: &Value,
-    which: c_int,
+    which: Settings,
 ) -> bool {
     let settings = settings.array();
     let applied = settings.is_some_and(|settings| apply(socket.into(), settings, which));
@@ -185,19 +173,19 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
         enable_ssl(socket);
     }
     if let Some(v) = s.get(b"open_http2_protocol") {
-        socket.set_flag(FLAG_HTTP2, v.truthy());
+        socket.set_http2(v.truthy());
     }
     if !socket.ssl_context().is_null() && !set_ssl(s, socket)? {
         ret = false;
     }
     if let Some(v) = s.get(b"open_eof_check") {
-        socket.set_flag(FLAG_EOF, v.truthy());
+        socket.set_eof_check(v.truthy());
     }
     if let Some(v) = s.get(b"open_eof_split") {
         let split = v.truthy();
         edit(socket, |p| p.split_by_eof = split);
         if split {
-            socket.set_flag(FLAG_EOF, true);
+            socket.set_eof_check(true);
         }
     }
     if let Some(v) = s.get(b"package_eof") {
@@ -221,7 +209,7 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
         }
     }
     if let Some(v) = s.get(b"open_fastcgi_protocol") {
-        socket.set_flag(FLAG_LENGTH, v.truthy());
+        socket.set_length_check(v.truthy());
         edit(socket, |p| {
             p.package_length_size = 8;
             p.package_length_offset = 0;
@@ -231,14 +219,14 @@ fn set_protocol(s: &Array, socket: Co) -> Result<bool, Stop> {
     }
     if let Some(v) = s.get(b"open_mqtt_protocol") {
         let mqtt = v.truthy();
-        socket.set_flag(FLAG_LENGTH, mqtt);
+        socket.set_length_check(mqtt);
         if mqtt {
-            socket.protocol_preset(0);
+            socket.mqtt_protocol();
         }
     }
     if let Some(v) = s.get(b"open_length_check") {
-        socket.set_flag(FLAG_LENGTH, v.truthy());
-        socket.protocol_preset(1);
+        socket.set_length_check(v.truthy());
+        socket.length_protocol();
     }
     if let Some(v) = s.get(b"package_length_type") {
         let kind = string(v)?.first().copied().unwrap_or(0);
@@ -441,7 +429,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     if let Some(v) = s.get(b"ssl_passphrase") {
         text(Text::Passphrase, v)?;
     }
-    if native::ssl_supports(SSL_HOST_NAME)
+    if built_with(Switch::TlsHostName)
         && let Some(v) = s.get(b"ssl_host_name")
     {
         text(Text::HostName, v)?;
@@ -467,7 +455,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     if let Some(v) = s.get(b"ssl_ecdh_curve") {
         text(Text::EcdhCurve, v)?;
     }
-    if native::ssl_supports(SSL_GREASE)
+    if built_with(Switch::BoringSsl)
         && let Some(v) = s.get(b"ssl_grease")
     {
         set(tls::Value::Grease(clamp_u8(long(v)?)));

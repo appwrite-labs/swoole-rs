@@ -337,10 +337,10 @@ impl Socket {
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // crates/phpclients ignores settings that are no array; 2 applies
-                // the SSL ones.
+                // crates/phpclients ignores settings that are no array.
+                let ssl = swoole_rs_phpswoole::SocketSettings::Ssl;
                 // SAFETY: inside the trap below.
-                applied = unsafe { (families.socket_settings)(socket, settings, 2) };
+                applied = unsafe { (families.socket_settings)(socket, settings, ssl) };
             }
         };
         // SAFETY: the body holds copies and the result slot; the settings' warnings
@@ -383,8 +383,8 @@ pub enum Report {
 /// The error handler bailed out.
 pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
     /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-    const FATAL: i32 = 503;
-    const NOTICE: i32 = 510;
+    const FATAL: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
+    const NOTICE: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32;
     match kind {
         Report::Docref => {}
         Report::Fatal => set_last_error(FATAL),

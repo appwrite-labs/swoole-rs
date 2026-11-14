@@ -122,7 +122,7 @@ fn handler<'a>(reactor: Running<'_>) -> (view::Server<'a>, Reactor) {
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
     let (serv, reactor) = handler(reactor);
-    crate::reactor_thread::packet_received(serv, reactor, event)
+    crate::conn_io::status(crate::reactor_thread::packet_received(serv, reactor, event))
 }
 
 /// `ReactorThread_onClose`: the peer closed.
@@ -134,7 +134,7 @@ pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     let (serv, reactor) = handler(reactor);
-    crate::reactor_io::pipe_write(serv, reactor, event)
+    crate::conn_io::status(crate::reactor_io::pipe_write(serv, reactor, event))
 }
 
 /// `ReactorThread_onRead`: a connection is readable.

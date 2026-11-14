@@ -26,6 +26,7 @@ use swoole_rs_phpclients::{get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
+use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_zend::{
     Array, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props, Value,
     ZString, bailout, handlers, method_table, string,
@@ -534,7 +535,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     };
     // SAFETY: a bailout here skips this frame's copies of the settings and the
     // callable, which are the request heap's.
-    if !unsafe { socket_settings(socket, &settings, 1) } {
+    if !unsafe { socket_settings(socket, &settings, SocketSettings::Protocol) } {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());

@@ -231,8 +231,8 @@ mod native {
 
     /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and
     /// `SW_LOG_WARNING`.
-    const TOO_LARGE: c_int = 1201;
-    const NOT_FOUND: c_int = 1202;
+    const TOO_LARGE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
+    const NOT_FOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_NOT_FOUND as c_int;
     const LOG_WARNING: c_int = 4;
 
     fn packet_fail(socket: Co, kind: crate::packet::Failure, length: isize) {

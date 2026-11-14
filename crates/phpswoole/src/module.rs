@@ -84,7 +84,7 @@ pub enum ReqStatus {
 }
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
 const SOCKET_BUFFER_SIZE: i64 = 8 * 1024 * 1024;
-pub(crate) const PHP_FATAL_ERROR: i32 = 503;
+pub(crate) const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 /// `SUCCESS`.
 const SUCCESS: c_int = 0;
 
@@ -162,6 +162,17 @@ pub struct MinitArgs<'a> {
     pub thread: bool,
 }
 
+/// Which of a socket's settings [`Families::socket_settings`] applies.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SocketSettings {
+    /// Every setting (`php_swoole_socket_set`).
+    All,
+    /// The protocol ones (`php_swoole_socket_set_protocol`).
+    Protocol,
+    /// The SSL ones (`php_swoole_socket_set_ssl`).
+    Ssl,
+}
+
 /// The hooks of the crates above this one in the dependency graph
 /// (crates/phpcoroutines, phpthread, phpserver and phpclients), which it runs where
 /// upstream's phases did, and which crates/phpruntime and phpprocess, between
@@ -223,11 +234,10 @@ pub struct Families {
     pub client_minit: [Minit; 5],
     /// `php_swoole_name_resolver_minit`.
     pub name_resolver_minit: Minit,
-    /// `php_swoole_socket_set(socket, settings)` over a coroutine socket, for
-    /// crates/phpruntime; `which` 2 applies only the SSL ones
-    /// (`php_swoole_socket_set_ssl`). Raises a bailout it caught.
+    /// The settings `which` names applied to a coroutine socket, for
+    /// crates/phpruntime. Raises a bailout it caught.
     pub socket_settings:
-        unsafe fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, c_int) -> bool,
+        unsafe fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, SocketSettings) -> bool,
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
     pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,

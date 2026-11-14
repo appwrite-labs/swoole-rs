@@ -72,7 +72,7 @@ fn connect(family: c_int, addr: AddressStorage, len: libc::socklen_t) -> io::Res
     set_flags(fd, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, true)?;
     set_flags(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, true)?;
     let address = SocketAddress { addr, len, kind: 0 };
-    if address.connect(fd) < 0 && errno() != libc::EINPROGRESS {
+    if !address.connect(fd) && errno() != libc::EINPROGRESS {
         return Err(io::Error::last_os_error());
     }
     Ok(socket)

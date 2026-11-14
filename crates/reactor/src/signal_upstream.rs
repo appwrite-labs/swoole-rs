@@ -23,7 +23,8 @@ const FD_SIGNAL: c_int = 9;
 #[cfg(target_os = "linux")]
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const LOG_WARNING: c_int = 4;
-const UNREGISTERED_SIGNAL: c_int = 721;
+const UNREGISTERED_SIGNAL: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
 
 // crates/tls's `Socket::free`, the same archive; declared, since crates/tls
 // depends on this crate.

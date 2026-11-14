@@ -96,7 +96,7 @@ fn accept<'s>(
         if kind == SOCK_UDP6 {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
-        if sa.connect(fd) < 0 {
+        if !sa.connect(fd) {
             let (host, port) = swoole_rs_tls::upstream::peer(sa);
             log::sys_warning(origin, format_args!("connect({host}:{port}) failed"));
             break 'setup;
@@ -134,7 +134,7 @@ fn appended(queued: bool) {
 /// `ReactorThread_onPacketReceived` on a DTLS port: the datagram `data` from `peer`,
 /// which arrived on `port` (a DTLS port of `serv`, on `reactor`), opens a session and
 /// starts its handshake; once listened, the new connection is incoming on its reactor
-/// thread. `SW_ERR` when no session could be made, as on a port without DTLS.
+/// thread. False when no session could be made, as on a port without DTLS.
 pub(crate) fn on_packet(
     serv: crate::view::Server<'_>,
     single_thread: bool,
@@ -142,25 +142,21 @@ pub(crate) fn on_packet(
     port: crate::view::Port<'_>,
     peer: &SocketAddress,
     data: &[u8],
-) -> c_int {
+) -> bool {
     // The session `dtls_create` made over the socket: `session->socket` is `record`.
     let Some((session, record)) = accept(serv, port, peer) else {
-        return -1;
+        return false;
     };
     // SAFETY: the live session.
     let session = unsafe { &*session };
     appended(swr_v1_tls_dtls_append(session, data));
     if !dtls_session_listen(session) {
-        return crate::conn_io::status(crate::conn_io::close_connection(
-            serv,
-            reactor,
-            Some(record),
-        ));
+        return crate::conn_io::close_connection(serv, reactor, Some(record));
     }
     // A session socket's connection is its fd's slot.
     let fd = libc::c_long::from(record.fd());
     let Some(conn) = serv.state().connection(fd, crate::records::Lookup::ByFd) else {
-        return -1;
+        return false;
     };
     let failed = if single_thread {
         !crate::server_methods::connection_incoming(serv, reactor, conn)
@@ -178,7 +174,7 @@ pub(crate) fn on_packet(
         // The reactor's own close, which is what the caller passes as `_close`.
         reactor.close(record);
     }
-    0
+    true
 }
 
 /// `ReactorThread_onRead` on a DTLS port, whose settings are `port`: the next datagram

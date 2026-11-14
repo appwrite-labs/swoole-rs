@@ -18,7 +18,7 @@ use swoole_rs_zend::{
     Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zval},
+    sys::{swr_zend_http_release_objects, zend_object, zval},
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
@@ -434,10 +434,6 @@ pub(crate) unsafe fn free(mut ctx: Ctx) {
         || state.stream_id > 0
     {
         return;
-    }
-    if !state.request.path.is_null() {
-        // SAFETY: the path the parser copied into request memory.
-        unsafe { swr_zend_efree(state.request.path.cast()) };
     }
     parse::parse_free(state);
     // SAFETY: `alloc`'s, which nothing references any more; the drop

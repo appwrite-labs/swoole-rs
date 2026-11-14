@@ -238,7 +238,8 @@ const BIO_TYPE_SOURCE_SINK: c_int = 0x0400;
 const BIO_FLAGS_READ: c_int = 0x01;
 const BIO_FLAGS_RWS: c_int = 0x07;
 const BIO_FLAGS_SHOULD_RETRY: c_int = 0x08;
-const SSL_CREATE_SESSION_FAILED: c_int = 1020;
+const SSL_CREATE_SESSION_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 
 /// The OpenSSL 3 `BIO_CTRL_*` commands the BIO answers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

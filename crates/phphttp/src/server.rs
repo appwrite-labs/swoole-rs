@@ -27,6 +27,7 @@ use swoole_rs_phpserver::{
     php_swoole_server_isset_callback, php_swoole_server_on_close, php_swoole_server_on_receive,
 };
 use swoole_rs_phpswoole::MinitArgs;
+use swoole_rs_process::worker_globals::with_current;
 use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
 use swoole_rs_zend::sys::{
@@ -623,9 +624,9 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
 }
 
 /// The counters of the worker serving requests, for one admission or release.
+/// `sw_worker()->concurrency`, which the master resets as it retires the
+/// worker, goes through [`with_current`].
 struct Worker {
-    /// `Worker::concurrency`, which the master resets as it retires the worker.
-    concurrency: &'static AtomicU32,
     /// `ServerGS::concurrency`, shared by every worker.
     server_concurrency: &'static AtomicU32,
     max_concurrency: u32,
@@ -637,14 +638,8 @@ struct Worker {
 fn worker() -> Option<Worker> {
     // SAFETY: a worker's server, which outlives the worker's requests.
     let server = unsafe { view::Server::<'static>::current() }?;
-    let current = swoole_rs_process::worker_globals::current_worker();
-    if current.is_null() {
-        return None;
-    }
+    with_current(|_| ())?;
     Some(Worker {
-        // SAFETY: the current worker's live record; the borrow covers only its
-        // atomic counter.
-        concurrency: unsafe { &(*current).concurrency },
         server_concurrency: &server.counters().concurrency,
         max_concurrency: server.config().worker_max_concurrency.get(),
         shutdown: swoole_rs_process::methods::worker_is_shutdown(),
@@ -666,7 +661,9 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
-    if worker.concurrency.fetch_add(1, SeqCst) >= worker.max_concurrency {
+    if with_current(|current| current.add_concurrency()).unwrap_or_default()
+        >= worker.max_concurrency
+    {
         QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
         return false;
     }
@@ -689,7 +686,7 @@ pub(crate) fn release_request() {
         return;
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
-    worker.concurrency.fetch_sub(1, SeqCst);
+    with_current(|current| current.sub_concurrency());
     if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
         // Upstream dereferences `sw_reactor()` here unchecked.
         if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {

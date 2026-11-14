@@ -594,6 +594,17 @@ impl<'a> Worker<'a> {
         self.concurrency().load(Ordering::SeqCst)
     }
 
+    /// `worker->concurrency++`, returning what it was.
+    #[must_use]
+    pub fn add_concurrency(self) -> u32 {
+        self.concurrency().fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// `worker->concurrency--`.
+    pub fn sub_concurrency(self) {
+        self.concurrency().fetch_sub(1, Ordering::SeqCst);
+    }
+
     /// `worker->concurrency`.
     fn concurrency(&self) -> &AtomicU32 {
         // SAFETY: `new`'s contract: a live record, for longer than this borrow; the

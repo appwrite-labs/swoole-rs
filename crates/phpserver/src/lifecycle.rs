@@ -59,11 +59,22 @@ pub(crate) enum Install {
     AdminCommands,
 }
 
-/// Protocol flags (`protocols`, `PortFacts`).
-const HTTP: u32 = 1;
-const WEBSOCKET: u32 = 2;
-const HTTP2: u32 = 4;
-const REDIS: u32 = 8;
+/// A port's `open_*_protocol` switches.
+#[derive(Clone, Copy, Default)]
+struct Protocols {
+    http: bool,
+    websocket: bool,
+    http2: bool,
+    redis: bool,
+}
+
+/// Only HTTP.
+const HTTP: Protocols = Protocols {
+    http: true,
+    websocket: false,
+    http2: false,
+    redis: false,
+};
 
 /// `SW_SOCK_TCP`.
 const SOCK_TCP: i64 = 1;
@@ -91,10 +102,13 @@ pub(crate) enum ServerCallback {
 const CALLBACKS: usize = ServerCallback::PipeMessage as usize + 1;
 pub(crate) use swoole_rs_ports::PortCallback;
 /// Error codes.
-const SW_ERROR_INVALID_PARAMS: c_int = 505;
-const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
-const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
-const SW_ERROR_SERVER_UNRELATED_THREAD: c_int = 9016;
+const SW_ERROR_INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+const SW_ERROR_SERVER_UNRELATED_THREAD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_UNRELATED_THREAD as c_int;
 /// What kind of Server an object is, its most derived class.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -107,7 +121,7 @@ enum Kind {
 /// What `start()` checks of a `ListenPort`.
 struct PortFacts<'a> {
     port: view::Port<'a>,
-    protocols: u32,
+    protocols: Protocols,
     dgram: bool,
     stream: bool,
     ssl: bool,
@@ -1047,15 +1061,12 @@ fn port_facts(object: &Value) -> PortFacts<'_> {
     let c = port.config();
     PortFacts {
         port,
-        protocols: [
-            (c.open_http_protocol.get(), HTTP),
-            (c.open_websocket_protocol.get(), WEBSOCKET),
-            (c.open_http2_protocol.get(), HTTP2),
-            (c.open_redis_protocol.get(), REDIS),
-        ]
-        .iter()
-        .filter(|(on, _)| *on)
-        .fold(0, |flags, (_, flag)| flags | flag),
+        protocols: Protocols {
+            http: c.open_http_protocol.get(),
+            websocket: c.open_websocket_protocol.get(),
+            http2: c.open_http2_protocol.get(),
+            redis: c.open_redis_protocol.get(),
+        },
         dgram: crate::port_settings::is_dgram(c.r#type),
         // `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream socket.
         stream: matches!(c.r#type, 1 | 3 | 5),
@@ -1068,20 +1079,20 @@ fn isset(serv: view::Server<'_>, port: view::Port<'_>, kind: PortCallback) -> bo
     crate::instance::php_swoole_server_isset_callback(serv, Some(port), kind)
 }
 
-/// Optionally `clear_protocol()`, then turn on each protocol in `flags`.
-fn protocols(port: view::Port<'_>, flags: u32, clear: bool) {
+/// Optionally `clear_protocol()`, then turn on each protocol in `on`.
+fn protocols(port: view::Port<'_>, on: Protocols, clear: bool) {
     let c = port.config();
     if clear {
         swoole_rs_ports::methods::clear_protocol(c);
     }
     c.open_http_protocol
-        .set(c.open_http_protocol.get() || (flags & HTTP != 0));
+        .set(c.open_http_protocol.get() || on.http);
     c.open_websocket_protocol
-        .set(c.open_websocket_protocol.get() || (flags & WEBSOCKET != 0));
+        .set(c.open_websocket_protocol.get() || on.websocket);
     c.open_http2_protocol
-        .set(c.open_http2_protocol.get() || (flags & HTTP2 != 0));
+        .set(c.open_http2_protocol.get() || on.http2);
     c.open_redis_protocol
-        .set(c.open_redis_protocol.get() || (flags & REDIS != 0));
+        .set(c.open_redis_protocol.get() || on.redis);
 }
 
 fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
@@ -1144,7 +1155,11 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 settings.insert_bool(b"open_mqtt_protocol", false);
                 settings.insert_bool(b"open_eof_check", false);
                 settings.insert_bool(b"open_length_check", false);
-                protocols(primary.port, REDIS, true);
+                let redis = Protocols {
+                    redis: true,
+                    ..Protocols::default()
+                };
+                protocols(primary.port, redis, true);
                 put(serv, Install::RedisReceive);
             } else if http_server {
                 if kind == Kind::WebSocket {
@@ -1158,16 +1173,18 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 settings.insert_bool(b"open_mqtt_protocol", false);
                 settings.insert_bool(b"open_eof_check", false);
                 settings.insert_bool(b"open_length_check", false);
-                let mut flags = HTTP;
-                if primary.protocols & HTTP2 != 0 {
+                let on = Protocols {
+                    http2: primary.protocols.http2,
+                    websocket: primary.protocols.websocket || kind == Kind::WebSocket,
+                    ..HTTP
+                };
+                if on.http2 {
                     settings.insert_bool(b"open_http2_protocol", true);
-                    flags |= HTTP2;
                 }
-                if primary.protocols & WEBSOCKET != 0 || kind == Kind::WebSocket {
+                if on.websocket {
                     settings.insert_bool(b"open_websocket_protocol", true);
-                    flags |= WEBSOCKET;
                 }
-                protocols(primary.port, flags, true);
+                protocols(primary.port, on, true);
                 find_http_port = true;
                 put(serv, Install::HttpReceive);
             } else {
@@ -1219,21 +1236,21 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                 c"server open verify peer require `ssl_client_cert_file` or `ssl_capath` or `ssl_cafile` config",
             );
         }
-        if port.protocols & HTTP2 != 0 && !fact(serv, Fact::HashDispatch) {
+        if port.protocols.http2 && !fact(serv, Fact::HashDispatch) {
             return stop(
                 E_ERROR,
                 c"server dispatch mode should be FDMOD(2) or IPMOD(4) if open_http2_protocol is true",
             );
         }
-        let mut http = port.protocols & HTTP != 0;
-        if !http && port.protocols & (WEBSOCKET | HTTP2) != 0 {
+        let mut http = port.protocols.http;
+        if !http && (port.protocols.websocket || port.protocols.http2) {
             protocols(port.port, HTTP, false);
             http = true;
         }
         if http {
             find_http_port = true;
             let receive = isset(serv, port.port, PortCallback::Receive);
-            if port.protocols & WEBSOCKET != 0 {
+            if port.protocols.websocket {
                 if !isset(serv, port.port, PortCallback::Message) && !receive {
                     return stop(E_ERROR, c"require onMessage callback");
                 }
@@ -1250,7 +1267,7 @@ fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), 
                     return Err(Stop);
                 }
             }
-        } else if port.protocols & REDIS == 0
+        } else if !port.protocols.redis
             && port.stream
             && !isset(serv, port.port, PortCallback::Receive)
         {
@@ -1329,7 +1346,8 @@ fn start(call: &Call) {
 }
 
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
-pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
+pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int;
 
 /// `php_swoole_server_send_yield`: wait in the session's queue until its
 /// output buffer drains, then send; repeat while the send asks to yield again.

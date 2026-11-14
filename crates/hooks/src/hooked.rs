@@ -22,7 +22,7 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
 /// `SW_ERROR_INVALID_PARAMS`.
-const INVALID_PARAMS: c_int = 505;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 
 /// How the hooked fds' sockets (`SocketImpl`: `coroutine::Socket`, or `UringSocket`
 /// with `--enable-uring-socket`) are made and deleted: Rust's own (`co_socket`), or
@@ -178,16 +178,11 @@ pub unsafe extern "C" fn swoole_coroutine_recv(
 /// Hooked `connect(2)` of `fd` to `address`.
 #[must_use]
 pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
-    match hooked(fd) {
-        Some((_, socket)) => {
-            if socket.connect_addr(address) {
-                0
-            } else {
-                -1
-            }
-        }
+    let connected = match hooked(fd) {
+        Some((_, socket)) => socket.connect_addr(address),
         None => address.connect(fd),
-    }
+    };
+    if connected { 0 } else { -1 }
 }
 
 /// `accept(2)` on `fd`, the peer's address and its length into `peer`.
