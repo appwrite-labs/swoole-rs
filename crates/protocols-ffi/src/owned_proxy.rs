@@ -5,8 +5,8 @@ use std::ffi::{c_char, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
-    SocksConfig, SocksError, SocksSend, socks_auth, socks_config, socks_connect, socks_negotiate,
-    socks_strerror, socks_transition,
+    ConnectRefusal, SocksConfig, SocksError, SocksSend, socks_auth, socks_config, socks_connect,
+    socks_negotiate, socks_strerror, socks_transition,
 };
 
 /// `SW_LOG_NOTICE`.
@@ -33,34 +33,49 @@ impl<'a> Socks5Proxy<'a> {
     }
 }
 
+/// The request a packet holds.
+#[derive(Clone, Copy)]
+enum Request {
+    Negotiate,
+    Auth,
+    Connect,
+}
+
 struct Packet {
-    size: i64,
-    diagnostic: i32,
+    size: Option<usize>,
+    /// Upstream's notice for a refused connect request.
+    notice: Option<&'static str>,
     last_error: i32,
 }
 
-/// Packs negotiate (0), authentication (1) or connect (2) into the owner's packet.
-fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
+/// A packet size as `ssize_t`: -1 for none.
+fn ssize(size: Option<usize>) -> isize {
+    size.and_then(|size| isize::try_from(size).ok())
+        .unwrap_or(-1)
+}
+
+/// Packs `request` into the owner's packet.
+fn packet(proxy: &Socks5Proxy<'_>, request: Request) -> Packet {
     let owner = proxy.owner;
     let fields = owner.fields();
     let mut result = Packet {
-        size: -1,
-        diagnostic: 0,
+        size: None,
+        notice: None,
         last_error: 0,
     };
     let Some(mut buffer) = owner.packet() else {
         return result;
     };
     let buffer = &mut buffer[..];
-    match action {
-        0 => {
+    match request {
+        Request::Negotiate => {
             if let Some(method) = socks_negotiate(!owner.string(1).is_empty(), buffer) {
                 owner.update(|fields| fields.method = method);
-                result.size = 3;
+                result.size = Some(3);
             }
         }
-        1 => result.size = socks_auth(&owner.string(1), &owner.string(2), buffer),
-        2 => {
+        Request::Auth => result.size = socks_auth(&owner.string(1), &owner.string(2), buffer),
+        Request::Connect => {
             // Preserve the initialized prefix even when literal address validation fails.
             if let Some(prefix) = buffer.get_mut(..3) {
                 prefix.copy_from_slice(&[5, 1, 0]);
@@ -82,7 +97,9 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                     false,
                 );
                 if error != 0 {
-                    result.diagnostic = 1;
+                    result.notice = Some(
+                        "When disable SOCKS5 proxy DNS tunnel connection, the destination host must be an IP address.",
+                    );
                     result.last_error = error;
                     return result;
                 }
@@ -96,18 +113,19 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
                     inet6 = address.v6().sin6_addr.s6_addr;
                     (4, &inet6)
                 } else {
-                    result.diagnostic = 2;
+                    result.notice = Some("Unsupported socket type for SOCKS5");
                     return result;
                 }
             };
             let port = fields.target_port.c_cast::<u16>();
-            result.size = socks_connect(kind, address, port, buffer);
-            if result.size == -2 {
-                result.size = -1;
-                result.diagnostic = 3;
+            match socks_connect(kind, address, port, buffer) {
+                Ok(size) => result.size = Some(size),
+                Err(ConnectRefusal::DomainTooLong) => {
+                    result.notice = Some("SOCKS5 target host is too long, max length is 255 bytes");
+                }
+                Err(ConnectRefusal::Invalid) => {}
             }
         }
-        _ => {}
     }
     result
 }
@@ -116,35 +134,25 @@ fn packet(proxy: &Socks5Proxy<'_>, action: u32) -> Packet {
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv")]
 #[must_use]
 pub extern "C" fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
-    let size = packet(proxy, 0).size;
-    isize::try_from(size).unwrap_or(-1)
+    ssize(packet(proxy, Request::Negotiate).size)
 }
 
 /// `ssize_t Socks5Proxy::pack_auth_request()`.
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy17pack_auth_requestEv")]
 #[must_use]
 pub extern "C" fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> isize {
-    let size = packet(proxy, 1).size;
-    isize::try_from(size).unwrap_or(-1)
+    ssize(packet(proxy, Request::Auth).size)
 }
 
 /// `ssize_t Socks5Proxy::pack_connect_request()`, with upstream's notices.
 #[unsafe(export_name = "_ZN6swoole11Socks5Proxy20pack_connect_requestEv")]
 #[must_use]
 pub extern "C" fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
-    let result = packet(proxy, 2);
+    let result = packet(proxy, Request::Connect);
     if result.last_error != 0 {
         log::set_last_error(result.last_error);
     }
-    let message = match result.diagnostic {
-        1 => {
-            "When disable SOCKS5 proxy DNS tunnel connection, the destination host must be an IP address."
-        }
-        2 => "Unsupported socket type for SOCKS5",
-        3 => "SOCKS5 target host is too long, max length is 255 bytes",
-        _ => "",
-    };
-    if !message.is_empty() {
+    if let Some(message) = result.notice {
         log::error_log(
             NOTICE,
             HANDSHAKE_FAILED,
@@ -152,7 +160,7 @@ pub extern "C" fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
             format_args!("{message}"),
         );
     }
-    isize::try_from(result.size).unwrap_or(-1)
+    ssize(result.size)
 }
 
 /// `ssize_t Socks5Proxy::handshake_step(const char *, size_t)`: applies a server

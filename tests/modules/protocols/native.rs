@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use swoole_rs_corebase::{set_errno, sys::errno};
 use swoole_rs_oracle::{protocols as pinned, resp_stream};
 use swoole_rs_protocols::{
-    Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
+    ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
     resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
 };
 use swoole_rs_protocols_ffi::{Dispatched, RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
@@ -526,9 +526,12 @@ fn bounded_failures_leave_output() {
     let untouched = [0xa5u8; 16];
     let mut output = untouched;
     assert_eq!(mqtt_frame_length(&[]), 0);
-    assert_eq!(socks_auth(&[], &[], &mut output[..2]), -1);
+    assert_eq!(socks_auth(&[], &[], &mut output[..2]), None);
     assert_eq!(output, untouched);
-    assert_eq!(socks_connect(1, &untouched[..3], 80, &mut output), -1);
+    assert_eq!(
+        socks_connect(1, &untouched[..3], 80, &mut output),
+        Err(ConnectRefusal::Invalid)
+    );
     assert_eq!(output, untouched);
     assert_eq!(resp_format(8, &[], i64::MIN, Some(&mut output[..1])), 0);
     assert_eq!(output, untouched);
