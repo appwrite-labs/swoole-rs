@@ -65,12 +65,19 @@ pub struct Config {
     pub probe_ftruncate: bool,
 }
 
-/// [`open`]'s outcome. Status 0 ready; 2 the ring could not be created (errno
-/// set, no engine); 3 the opcode probe failed; 4 no futex opcodes; 5 no ftruncate
-/// opcode; 6 the async worker limit failed (errno set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenError {
+    Create,
+    Probe,
+    Futex,
+    Ftruncate,
+    Workers,
+}
+
+/// A created ring remains owned even when its probe or worker setup failed.
 pub struct Opened {
     pub uring: Option<Rc<Uring>>,
-    pub status: c_int,
+    pub status: Result<(), OpenError>,
 }
 
 struct Event {
@@ -331,20 +338,21 @@ pub fn open(config: Config, host: &'static Host) -> Opened {
             set_errno(error.raw_os_error().unwrap_or(0));
             return Opened {
                 uring: None,
-                status: 2,
+                status: Err(OpenError::Create),
             };
         }
     };
-    let mut status = probe(&ring, config);
-    if status == 0
-        && config.workers > 0
-        && let Err(error) = ring
-            .submitter()
+    let status = probe(&ring, config).and_then(|()| {
+        if config.workers == 0 {
+            return Ok(());
+        }
+        ring.submitter()
             .register_iowq_max_workers(&mut [config.workers; 2])
-    {
-        set_errno(error.raw_os_error().unwrap_or(0));
-        status = 6;
-    }
+            .map_err(|error| {
+                set_errno(error.raw_os_error().unwrap_or(0));
+                OpenError::Workers
+            })
+    });
     let engine = Uring {
         ring: RefCell::new(ring),
         host,
@@ -359,23 +367,23 @@ pub fn open(config: Config, host: &'static Host) -> Opened {
 }
 
 /// Whether the running kernel has the opcodes this build was configured with.
-fn probe(ring: &IoUring, config: Config) -> c_int {
+fn probe(ring: &IoUring, config: Config) -> Result<(), OpenError> {
     if !config.probe_futex && !config.probe_ftruncate {
-        return 0;
+        return Ok(());
     }
     let mut probe = Probe::new();
     if ring.submitter().register_probe(&mut probe).is_err() {
-        return 3;
+        return Err(OpenError::Probe);
     }
     if config.probe_futex
         && !(probe.is_supported(opcode::FutexWait::CODE)
             && probe.is_supported(opcode::FutexWake::CODE))
     {
-        4
+        Err(OpenError::Futex)
     } else if config.probe_ftruncate && !probe.is_supported(opcode::Ftruncate::CODE) {
-        5
+        Err(OpenError::Ftruncate)
     } else {
-        0
+        Ok(())
     }
 }
 
@@ -836,7 +844,7 @@ pub(crate) mod testing {
     /// An engine as `SwooleG.iouring_*` configures it, for `test`.
     pub(crate) fn with_config(config: Config, test: impl FnOnce()) {
         let opened = open(config, &HOST);
-        assert_eq!(opened.status, 0, "io_uring is available");
+        assert_eq!(opened.status, Ok(()), "io_uring is available");
         ENGINE.set(opened.uring);
         test();
         ENGINE.set(None);
