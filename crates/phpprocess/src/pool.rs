@@ -928,9 +928,10 @@ fn get_process(call: &Call) {
                         props.long(c"pipe", i64::from(pipe));
                     }
                 }
-                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe type.
-                // The Process object takes the copy.
-                set_worker_of(&object, copy, true, c_int::from(view.is_async()));
+                // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe
+                // type, so an async pool's pipe reads as a stream. The Process object takes
+                // the copy.
+                set_worker_of(&object, copy, true, view.is_async());
                 // The table takes the new object's reference.
                 workers.update_index(key, object);
             }

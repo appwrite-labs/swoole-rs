@@ -70,7 +70,8 @@ struct Process {
     /// Dropped first, as the C++ object's free releases it before the worker.
     socket: RefCell<Option<Owned>>,
     worker: WorkerSlot,
-    pipe_type: Cell<c_int>,
+    /// Whether its pipe type is `PIPE_TYPE_STREAM`, all `exportSocket` asks of it.
+    stream_pipe: Cell<bool>,
     enable_coroutine: Cell<bool>,
     blocking: Cell<bool>,
 }
@@ -116,12 +117,12 @@ pub(crate) fn set_worker_of(
     object: &Value,
     worker: WorkerRecord,
     enable_coroutine: bool,
-    pipe_type: c_int,
+    stream_pipe: bool,
 ) {
     if let Some(process) = object.custom::<Process>()
         && process.worker.set(worker)
     {
-        configure(process, enable_coroutine, pipe_type);
+        configure(process, enable_coroutine, stream_pipe);
     }
 }
 
@@ -267,8 +268,8 @@ pub fn checked_worker(object: &Value) -> Option<Worker<'_>> {
 }
 
 /// `php_swoole_process_set_worker`'s flags, once the object has its worker.
-fn configure(process: &Process, enable_coroutine: bool, pipe_type: c_int) {
-    process.pipe_type.set(pipe_type);
+fn configure(process: &Process, enable_coroutine: bool, stream_pipe: bool) {
+    process.stream_pipe.set(stream_pipe);
     process.enable_coroutine.set(enable_coroutine);
     process.blocking.set(true);
 }
@@ -425,7 +426,9 @@ fn construct(call: &Call) {
     if let Some((props, callback)) = object.props(Some(&PROCESS)).zip(call.value(1)) {
         props.value(c"callback", callback);
     }
-    configure(process, enable_coroutine, pipe_type.c_cast::<c_int>());
+    // Upstream keeps the pipe type as an `int`.
+    let stream_pipe = i64::from(pipe_type.c_cast::<c_int>()) == PIPE_TYPE_STREAM;
+    configure(process, enable_coroutine, stream_pipe);
 }
 
 fn destruct(_call: &Call) {}
@@ -766,8 +769,7 @@ fn export_socket(call: &Call) {
     };
     let mut socket = process.socket.borrow_mut();
     if socket.is_none() {
-        let stream = i64::from(process.pipe_type.get()) == PIPE_TYPE_STREAM;
-        *socket = host::dup_socket(pipe, stream);
+        *socket = host::dup_socket(pipe, process.stream_pipe.get());
     }
     match socket.as_ref() {
         // The object keeps its reference; the return value takes a new one.
