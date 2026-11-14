@@ -313,7 +313,7 @@ pub fn swr_v1_server_add_command(
 ) -> bool {
     let add = crate::commands::AddCommand {
         name,
-        accepted_types,
+        accepted_types: accepted_types.into(),
         handler,
     };
     crate::commands::add_command(serv, &add)
@@ -332,7 +332,7 @@ pub fn swr_v1_server_command(
     let send = crate::commands::SendCommand {
         serv,
         process_id,
-        process_type,
+        process_type: process_type.into(),
         name,
         message,
         callback,
