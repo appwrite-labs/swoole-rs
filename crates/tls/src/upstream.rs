@@ -888,7 +888,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> bool {
         );
     }
     output.detached.dispose();
-    output.result.code >= 0
+    !output.result.failed
 }
 
 /// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
@@ -902,7 +902,7 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     let hooks = Output(socket);
     // The effects send the request's file and never reach the queue itself.
-    let (code, detached) = with_queue(socket, |queue| {
+    let (failed, detached) = with_queue(socket, |queue| {
         let Some(queue) = queue else {
             swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
         };
@@ -915,7 +915,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
         if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
-            return (0, None);
+            return (false, None);
         }
         let result = request.sent(&hooks, rv, requested);
         socket.edit(|record| result.publish(&mut record.output));
@@ -936,12 +936,12 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         } else {
             None
         };
-        (result.code, detached)
+        (result.failed, detached)
     });
     if let Some(detached) = detached {
         detached.dispose();
     }
-    code >= 0
+    !failed
 }
 
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
