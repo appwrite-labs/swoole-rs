@@ -53,31 +53,29 @@ fn exception() -> &'static Class {
     swoole_rs_phpswoole::exception()
 }
 
-/// The pool a Pool object owns, and the copy of `$this`'s zval its hooks read.
-/// Both are reached in place: the pool's workers keep the record's address, and
-/// the pool keeps the copy's.
+thread_local! {
+    /// The object whose `start` runs on this thread, copied without a reference
+    /// (upstream's `sw_zval_dup` into `pool->ptr`): the call keeps it alive, and
+    /// every pool hook runs beneath it on its thread, a worker's in the child it
+    /// forked. Undefined otherwise.
+    static OWNER: Cell<zval> = const { Cell::new(swoole_rs_zend::UNDEF) };
+}
+
+/// The pool a Pool object owns, reached in place: the pool's workers keep the
+/// record's address.
 struct Pool {
     record: UnsafeCell<PoolRecord>,
-    /// Copied without a reference, as upstream's `sw_zval_dup`.
-    object: UnsafeCell<zval>,
     /// `create` succeeded, so dropping this destroys the pool.
     created: Cell<bool>,
 }
 
 impl Pool {
-    /// `ProcessPool::create` in a zeroed pool that keeps a copy of `$this`'s zval;
-    /// on failure, none, with `errno` set. It is shared so that handing it to its
-    /// object moves no claim to the record, as moving a `Box` would.
-    fn create(
-        worker_num: u32,
-        key: c_int,
-        ipc: c_int,
-        object: &Value,
-        async_: bool,
-    ) -> Option<Rc<Self>> {
+    /// `ProcessPool::create` in a zeroed pool; on failure, none, with `errno`
+    /// set. It is shared so that handing it to its object moves no claim to the
+    /// record, as moving a `Box` would.
+    fn create(worker_num: u32, key: c_int, ipc: c_int, async_: bool) -> Option<Rc<Self>> {
         let pool = Rc::new(Self {
             record: UnsafeCell::new(PoolRecord::empty()),
-            object: UnsafeCell::new(object.copy_value()),
             created: Cell::new(false),
         });
         if methods::create(pool.handle(), worker_num, key, ipc) < 0 {
@@ -337,16 +335,17 @@ fn signal(pool: PoolRef<'_>, signo: c_int) {
     methods::signal(pool, signo, CURRENT_WORKER.load(Ordering::Acquire).cast());
 }
 
-/// The object a pool callback belongs to, and its data.
-fn owner(pool: PoolRef<'_>) -> Option<(&Value, &PoolObject)> {
-    // SAFETY: null, or its `Pool`'s copy of its object zval, which `start`
-    // installed with the hooks and which lives as long as the record.
-    let object = unsafe { Value::from_ptr(pool.ptr().cast()) }?;
+/// The object a pool callback belongs to ([`OWNER`], copied into `slot`), and
+/// its data.
+fn owner(slot: &mut zval) -> Option<(&Value, &PoolObject)> {
+    *slot = OWNER.get();
+    let object = Value::of(slot);
     Some((object, object.custom()?))
 }
 
 extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    let Some((object, this)) = owner(pool) else {
+    let mut slot = swoole_rs_zend::UNDEF;
+    let Some((object, this)) = owner(&mut slot) else {
         return;
     };
     clean();
@@ -392,7 +391,8 @@ fn worker_signals(term: bool) {
 }
 
 extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
-    let Some((object, this)) = owner(pool) else {
+    let mut slot = swoole_rs_zend::UNDEF;
+    let Some((object, this)) = owner(&mut slot) else {
         return;
     };
     let data = message_data(pool, message);
@@ -415,8 +415,9 @@ extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
     swoole_rs_zend::bailout::finish();
 }
 
-fn worker_stopped(pool: PoolRef<'_>, worker: Worker<'_>, exit: bool) {
-    let Some((object, this)) = owner(pool) else {
+fn worker_stopped(worker: Worker<'_>, exit: bool) {
+    let mut slot = swoole_rs_zend::UNDEF;
+    let Some((object, this)) = owner(&mut slot) else {
         return;
     };
     update_bool(object, c"running", false);
@@ -432,18 +433,19 @@ fn worker_stopped(pool: PoolRef<'_>, worker: Worker<'_>, exit: bool) {
     }
 }
 
-extern "C-unwind" fn on_worker_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool, worker, false);
+extern "C-unwind" fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
+    worker_stopped(worker, false);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_worker_exit(pool: PoolRef<'_>, worker: Worker<'_>) {
-    worker_stopped(pool, worker, true);
+extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
+    worker_stopped(worker, true);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
-    if let Some((object, this)) = owner(pool) {
+extern "C-unwind" fn on_start(_: PoolRef<'_>) {
+    let mut slot = swoole_rs_zend::UNDEF;
+    if let Some((object, this)) = owner(&mut slot) {
         update_long(object, c"master_pid", getpid());
         update_bool(object, c"running", true);
         methods::set_worker_type(WorkerType::Master);
@@ -455,8 +457,9 @@ extern "C-unwind" fn on_start(pool: PoolRef<'_>) {
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_shutdown(pool: PoolRef<'_>) {
-    if let Some((object, this)) = owner(pool) {
+extern "C-unwind" fn on_shutdown(_: PoolRef<'_>) {
+    let mut slot = swoole_rs_zend::UNDEF;
+    if let Some((object, this)) = owner(&mut slot) {
         update_bool(object, c"running", false);
         update_bool(object, c"workerRunning", false);
         if let Some(callable) = this.on_shutdown.get() {
@@ -539,7 +542,6 @@ fn construct(call: &Call) {
         worker_num.c_cast::<u32>(),
         key.c_cast::<c_int>(),
         ipc_type.c_cast::<c_int>(),
-        this_value,
         coroutine,
     );
     let Some(made) = made else {
@@ -825,7 +827,6 @@ fn start(call: &Call) {
     let message: MessageFn = on_message;
     let exit: WorkerFn = on_worker_exit;
     let hooks = Hooks {
-        ptr: Some(pool.object.get().cast()),
         on_message: with_message.then_some(message),
         on_start: Some(on_start),
         on_shutdown: Some(on_shutdown),
@@ -834,14 +835,21 @@ fn start(call: &Call) {
         on_worker_exit: with_exit.then_some(exit),
         ..Hooks::default()
     };
-    // SAFETY: each hook reads the pool's `ptr` as its `Pool`'s copy of its object
-    // (`owner`), which lives until the `Pool` drops, destroying the pool.
+    // SAFETY: no hook reads the pool's `ptr`; each finds its object in `OWNER`.
     unsafe { view.install(&hooks) };
-    if methods::start(view) < 0 {
+    OWNER.set(
+        call.this_value()
+            .map_or(swoole_rs_zend::UNDEF, Value::copy_value),
+    );
+    let started = methods::start(view) >= 0;
+    if started {
+        methods::wait(view);
+    }
+    OWNER.set(swoole_rs_zend::UNDEF);
+    if !started {
         call.set_bool(false);
         return;
     }
-    methods::wait(view);
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     for (signo, old) in signals.iter().zip(previous) {
         if *signo != 0 {
