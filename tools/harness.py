@@ -203,6 +203,9 @@ def run_isolated(command, *, timeout=15, cwd=None, env=None):
                 # uncertainty must also make an otherwise successful run fail.
                 result.stderr += f'\nProcess-group cleanup failed: {error}\n'
                 result.returncode = result.returncode or 125
+        finally:
+            proc.stdout.close()
+            proc.stderr.close()
 
 
 def request(port, path='/', method='GET', body=None, headers=None):
