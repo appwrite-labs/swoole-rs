@@ -10,7 +10,6 @@
 )]
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot};
 use crate::hybrid::hybrid;
-use crate::reactor_entry::RecvData;
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
@@ -27,7 +26,8 @@ use swoole_rs_process::methods::swoole_get_worker_id;
 use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
-/// `swoole::SendData`: an event's head and the payload it lends for `'a`.
+/// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
+/// two fields): an event's head and the payload it lends for `'a`.
 ///
 /// The fields are private to this module so that the pair keeps one invariant, which
 /// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
@@ -94,20 +94,12 @@ impl<'a> SendData<'a> {
     /// The payload's `info.len` bytes; none for a null `data`.
     #[must_use]
     pub fn payload(&self) -> &'a [u8] {
-        let len = self.info.len as usize;
-        if len == 0 || self.data.is_null() {
+        if self.data.is_null() {
             return &[];
         }
         // SAFETY: the fields' invariant: `info.len` bytes at `data`, readable and
         // unwritten for `'a`.
-        unsafe { core::slice::from_raw_parts(self.data.cast(), len) }
-    }
-
-    /// The event as the `RecvData` a callback reads: the same head and payload.
-    pub(crate) fn as_recv(&self) -> &RecvData {
-        // SAFETY: `RecvData` is `repr(C)` with the same two leading fields; its
-        // payload invariant is this one, for a borrow no longer than `'a`.
-        unsafe { &*core::ptr::from_ref(self).cast::<RecvData>() }
+        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
     }
 
     /// The head's fd.
@@ -364,12 +356,9 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         }
         c.set_last_dispatch_time(task.info.time);
     }
-    let mut recv = RecvData {
-        info: task.info,
-        data: task.data.cast(),
-    };
+    let mut recv = *task;
     if task.info.len > 0 {
-        recv.info.flags = DATA_PTR | (task.info.flags & POP_PTR);
+        recv.set_flags(DATA_PTR | (task.info.flags & POP_PTR));
     }
     let slot = if dgram {
         ReceiveSlot::Packet
@@ -556,6 +545,7 @@ mod tests {
     use crate::callbacks::{Callback, Ctx};
     use crate::conn_io::tests::{accepted, closed, queue, session};
     use crate::hybrid::tests::{Call, calls};
+    use crate::reactor_entry::RecvData;
     use std::cell::RefCell;
     use swoole_rs_process::worker_globals::set_current_worker;
 

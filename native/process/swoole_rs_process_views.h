@@ -74,7 +74,8 @@
     void * message_bus = nullptr; \
     swr_v1_process_reload_task * reload_task = nullptr; \
     void * ptr; \
-    struct { uint64_t generation; long id; void *cancel; } kill_timer = {};
+    struct { uint64_t generation; long id; void *cancel; } kill_timer = {}; \
+    const void * ptr_key = nullptr;
 #define SWR_SOCKET_PAIR_RECORD_FIELDS \
     bool blocking; \
     double timeout; \

@@ -5,7 +5,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
 use swoole_rs_memory::members::Shm;
-use swoole_rs_process::process_pool::PoolRef;
+use swoole_rs_process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
 #[repr(C)]
 pub struct PortCounters {
@@ -123,6 +123,57 @@ impl ServerShared {
         let [_, event] = &self.pools;
         PoolRef::from(event)
     }
+}
+
+/// The key a server's own pools hold it under: private, so only [`hold_server`] and
+/// [`workers_start`] store an object under it, each a server in its own pools.
+static SERVER: PoolObjectKey = PoolObjectKey::new();
+
+/// `pool->ptr = serv` for both of `serv`'s pools, which [`pool_server`] reads back.
+/// The pools live in the record `serv` maps for its life and frees before itself.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(
+        dead_code,
+        reason = "only the hybrid's pools run the hooks that read it"
+    )
+)]
+pub(crate) fn hold_server(serv: crate::view::Server<'_>) {
+    let shared = ServerShared::of(serv);
+    for pool in [shared.task_pool(), shared.event_pool()] {
+        pool.hold(&SERVER, serv.raw());
+    }
+}
+
+/// Startup's `LC_PREPARE_WORKERS`: publish the event pool, which holds `serv` as
+/// [`hold_server`] does, and number the workers.
+pub(crate) fn workers_start(serv: crate::view::Server<'_>) {
+    let users = (0..).map_while(|index| serv.pending_worker(index));
+    // `serv.workers()` lends `serv`'s own event pool.
+    swoole_rs_process::server_workers::swr_v1_process_server_workers_start(
+        &serv.workers(),
+        (&SERVER, serv.raw()),
+        users,
+    );
+}
+
+/// The server `pool` belongs to, when it is one of a server's own pools that holds it
+/// ([`hold_server`]); `None` for any other pool.
+#[cfg_attr(
+    not(all(feature = "upstream-symbols", not(test))),
+    expect(
+        dead_code,
+        reason = "only the hybrid's pools run the hooks that read it"
+    )
+)]
+#[inline]
+pub(crate) fn pool_server(pool: PoolRef<'_>) -> Option<crate::view::Server<'_>> {
+    let serv = pool.object_of(&SERVER)?;
+    // SAFETY: only `hold_server` and `workers_start` hold an object under the private
+    // `SERVER` key, each a server in its own pools. Those live in the shared record the
+    // server maps when it is made and frees in its teardown, which runs no pool hook and
+    // reads no pool's server: a pool live for `'_` holds a live server.
+    Some(unsafe { crate::view::Server::from_raw(serv) })
 }
 
 /// The server's shared counters (`serv->gs`), once configured.

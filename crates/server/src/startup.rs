@@ -52,7 +52,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
         return false;
     }
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
-    crate::worker_methods::workers_start(serv);
+    crate::shared::workers_start(serv);
     state.set_running(true);
     if !hybrid().step(serv, Step::FactoryStart) {
         return false;

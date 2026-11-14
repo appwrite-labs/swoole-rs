@@ -4,11 +4,9 @@ use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::{Hooks, IpcMode, PoolRef};
-use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running};
 
-use crate::base_factory::SendData;
 use crate::callbacks::TaskSlot;
 use crate::objects::Bus;
 use crate::reactor_handle::{EVENT_READ, Reactor};
@@ -33,14 +31,13 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
         config.max_request.get(),
         config.max_request_grace.get(),
     );
+    crate::shared::hold_server(serv);
     let hooks = Hooks {
-        ptr: Some(serv.raw()),
         main_loop: Some(main_loop),
         on_worker_not_found: Some(worker_not_found),
         ..Hooks::default()
     };
-    // SAFETY: both hooks read the pool's `ptr` as the server that owns the pool, which
-    // is what this sets it to; the server outlives its event pool.
+    // SAFETY: both hooks read the pool's server through `pool_server`, which checks it.
     unsafe { pool_ref.install(&hooks) };
     pool_ref.set_max_wait_time(config.max_wait_time.get());
     pool_ref.set_use_msgqueue(false);
@@ -52,8 +49,9 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
 extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    // SAFETY: a reactor process pool's `ptr` is its live server.
-    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
+    let Some(serv) = crate::shared::pool_server(pool) else {
+        return -1;
+    };
     if super::main_loop(serv, worker) {
         0
     } else {
@@ -64,9 +62,9 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
 extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
-    // SAFETY: a reactor process pool's `ptr` is its live server, as `main_loop`'s.
-    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    crate::manager::native::restart_worker_process(serv, status);
+    if let Some(serv) = crate::shared::pool_server(pool) {
+        crate::manager::native::restart_worker_process(serv, status);
+    }
 }
 
 /// This thread's reactor reads its pipes with [`on_pipe_read`].
@@ -93,11 +91,11 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
     let state = serv.state();
     let info = bus.head();
     match info.event() {
-        Some(ServerEvent::PipeMessage) => state.callbacks.pipe_message(serv, event_data(serv)),
+        Some(ServerEvent::PipeMessage) => {
+            _ = bus.with_event(|event| state.callbacks.pipe_message(serv, event));
+        }
         Some(ServerEvent::Finish) => {
-            _ = state
-                .callbacks
-                .task(TaskSlot::Finish, serv, event_data(serv));
+            _ = bus.with_event(|event| state.callbacks.task(TaskSlot::Finish, serv, event));
         }
         Some(ServerEvent::Shutdown) => {
             if let Some(worker) = serv.worker_record(reactor.handle().id()) {
@@ -105,11 +103,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
             }
         }
         Some(ServerEvent::SendFile) => {
-            // The bus's `PipeBuffer`: the message's head, then its data.
-            let data = bus.buffer().wrapping_add(1).cast();
-            // SAFETY: the `info.len` bytes the bus read behind the head, which it keeps
-            // until it reads again, which this thread alone does, after the call.
-            crate::factory::finish(serv, &unsafe { SendData::from_raw(info, data) });
+            bus.with_message(&info, |send| crate::factory::finish(serv, send));
         }
         Some(ServerEvent::SendData) => {
             let workers = serv.workers();
@@ -118,14 +112,9 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
                 + workers.user_count() as u64;
             let worker = info.reactor_id;
             if u64::try_from(worker).is_ok_and(|id| id < all) {
-                let packet = bus.packet();
                 let mut info = info;
                 info.kind = ServerEvent::RecvData.code();
-                info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-                // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it
-                // pops or reads again, which this thread alone does, after the call.
-                let send = unsafe { SendData::from_raw(info, packet.data) };
-                crate::factory::finish(serv, &send);
+                bus.with_message(&info, |send| crate::factory::finish(serv, send));
             } else {
                 let m = format_args!("invalid worker_id={worker}");
                 swoole_rs_corebase::log::warning(c"ReactorProcess_onPipeRead", m);
@@ -150,13 +139,4 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
         _ => {}
     }
     true
-}
-
-/// The event `serv`'s bus just read, as its sender packed it: an `EventData`, its
-/// head and the payload the head counts.
-fn event_data(serv: view::Server<'_>) -> Packed<'_> {
-    let buffer = serv.state().message_bus().buffer();
-    // SAFETY: called once the bus has read a whole event into its buffer, which only
-    // this thread's next read replaces, after the callback it is lent to returns.
-    unsafe { Packed::from_raw(buffer.cast()) }
 }

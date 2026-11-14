@@ -4,45 +4,18 @@
 //! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
 
-use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
+use crate::base_factory::SendData;
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-/// `swoole::RecvData`.
-#[repr(C)]
-pub struct RecvData {
-    pub(crate) info: DataHead,
-    pub(crate) data: *const c_void,
-}
+/// `swoole::RecvData`: the head and payload a receive or dispatch callback reads,
+/// which is a [`SendData`]'s.
+pub type RecvData<'a> = SendData<'a>;
 
-impl RecvData {
-    /// The event's head.
-    #[must_use]
-    pub fn info(&self) -> &DataHead {
-        &self.info
-    }
-
-    /// Where the event's payload starts: `info.len` bytes, or what the head's
-    /// flags say it is.
-    #[must_use]
-    pub fn data(&self) -> *const c_void {
-        self.data
-    }
-
-    /// The payload's `info.len` bytes; none for a null `data`.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        if self.data.is_null() {
-            return &[];
-        }
-        // SAFETY: whoever lends a `RecvData` points `data` at `info.len` bytes live
-        // for the borrow, and its fields are private to this crate.
-        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
-    }
-
+impl SendData<'_> {
     /// An `onPacket` payload: the `DgramPacket` head's socket type and sender,
     /// and the datagram that follows it; `None` if the payload is too short.
     #[must_use]
@@ -215,7 +188,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if len > 0 {
             c.recv_queued_bytes.fetch_add(len, SeqCst);
         }
-        let info = DataHead {
+        let info = swoole_rs_corebase::DataHead {
             server_fd: crate::base_factory::low16(c.server_fd),
             reactor_id: c.reactor_id.into(),
             ext_flags: rdata.info.ext_flags,
@@ -223,11 +196,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             time: c.last_recv_time,
             fd: c.fd.into(),
             len,
-            ..DataHead::default()
+            ..swoole_rs_corebase::DataHead::default()
         };
         // SAFETY: the caller's `RecvData`, whose `len` bytes at `data` (or null) stay
         // readable and unwritten until the dispatch returns.
-        let task = unsafe { crate::base_factory::SendData::from_raw(info, rdata.data.cast()) };
+        let task = unsafe { SendData::from_raw(info, rdata.data.cast()) };
         (
             server.port_of_fd(c.fd),
             c.reactor_id,

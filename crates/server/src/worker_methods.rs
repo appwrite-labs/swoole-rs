@@ -9,9 +9,7 @@ use swoole_rs_process::worker_record::WorkerType;
 
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::server_workers::{
-    swr_v1_process_server_worker_by_pid, swr_v1_process_server_workers_start,
-};
+use swoole_rs_process::server_workers::swr_v1_process_server_worker_by_pid;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init};
 
 use crate::view;
@@ -24,13 +22,6 @@ const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c
 pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
     let registry = serv.config().worker_registry.as_deref();
     swr_v1_process_server_worker_by_pid(&serv.workers(), registry, pid)
-}
-
-/// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
-pub(crate) fn workers_start(serv: view::Server<'_>) {
-    let users = (0..).map_while(|index| serv.pending_worker(index));
-    // SAFETY: the server that owns the event pool, and outlives it.
-    unsafe { swr_v1_process_server_workers_start(&serv.workers(), serv.raw(), users) };
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.

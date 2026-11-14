@@ -1,7 +1,7 @@
 //! Server startup's worker-array publication and ordered lookup. Native calls
 //! enter here between the daemon/fork and factory/user callbacks, so no Rust
 //! frame spans a fork hook, PHP bailout or whole-thread exit.
-use crate::process_pool::PoolRef;
+use crate::process_pool::{PoolObjectKey, PoolRef};
 use crate::worker_record::Worker;
 use crate::worker_record::WorkerRecord;
 use core::ffi::c_void;
@@ -108,19 +108,15 @@ impl<'a> ServerWorkers<'a> {
 /// Publish the event pool and initialize worker identities before the factory
 /// starts. `users` are the original ordered configuration list, of which the first
 /// `user_count` are numbered; lookup still uses the distinct shared user array
-/// after creation.
-///
-/// # Safety
-/// `server` is the server whose event pool `view` lends, live as long as the pool:
-/// the pool's hooks read it as that server.
-pub unsafe fn swr_v1_process_server_workers_start<'w>(
+/// after creation. The event pool holds `server` under `key` ([`PoolRef::hold`]).
+pub fn swr_v1_process_server_workers_start<'w>(
     view: &ServerWorkers<'_>,
-    server: *mut c_void,
+    (key, server): (&'static PoolObjectKey, *mut c_void),
     users: impl IntoIterator<Item = Worker<'w>>,
 ) {
     // Startup owns the event pool before the factory starts; a field at a time.
     let pool = view.event_pool;
-    pool.set_ptr(server);
+    pool.hold(key, server);
     // The canonical event array, live for the pool's worker count (`new`'s contract).
     pool.set_workers(view.event_workers);
     pool.set_worker_num(view.event_count);
@@ -281,6 +277,7 @@ mod tests {
 
     #[test]
     fn startup_publishes_arrays_and_lookup_preserves_aliases_and_categories() {
+        static SERVER: PoolObjectKey = PoolObjectKey::new();
         let mut events = [worker(), worker()];
         let mut tasks = [worker()];
         let mut users = [worker(), worker(), worker()];
@@ -305,13 +302,11 @@ mod tests {
             )
         };
         let mut server = 0_u8;
-        unsafe {
-            swr_v1_process_server_workers_start(
-                &view,
-                (&raw mut server).cast(),
-                pending_ptrs.map(|worker| Worker::new(worker)),
-            );
-        }
+        swr_v1_process_server_workers_start(
+            &view,
+            (&SERVER, (&raw mut server).cast()),
+            pending_ptrs.map(|worker| unsafe { Worker::new(worker) }),
+        );
         assert_eq!(event_pool.workers, events_ptr);
         assert_eq!(event_pool.ptr, (&raw mut server).cast());
         assert_eq!(

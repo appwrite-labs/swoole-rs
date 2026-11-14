@@ -326,23 +326,22 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     // SAFETY: this reactor thread's own record in the server's live array, which
     // holds one for each reactor id.
     ctx.thread = unsafe { thread.as_ref() };
-    pipe_read(&mut ctx, event).unwrap_or(-1)
+    pipe_read(&ctx, event).unwrap_or(-1)
 }
 
 /// `ReactorThread_onPipeRead`: the messages workers send their reactor thread,
 /// until the pipe is drained.
-fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
+fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let (serv, reactor) = (ctx.serv, ctx.reactor?);
     let state = serv.state();
     let thread = ctx.thread_record()?;
     let bus = thread.message_bus();
     let sock = event.socket()?;
-    ctx.resp = bus.buffer();
     loop {
         if bus.read_dgram(sock) <= 0 {
             return Some(0);
         }
-        let head = *ctx.message()?;
+        let head = bus.head();
         let session = head.fd;
         match head.event() {
             Some(ServerEvent::Incoming) => {
@@ -370,16 +369,11 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
             Some(ServerEvent::ShutdownSignal) => {
                 swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
             }
-            Some(ServerEvent::Finish | ServerEvent::PipeMessage) => {
-                // SAFETY: the bus's buffer: its `EventData`, its head and the payload it
-                // counts.
-                let event =
-                    unsafe { swoole_rs_process::task_file::Packed::from_raw(ctx.resp.cast()) };
-                if head.event() == Some(ServerEvent::Finish) {
-                    let _ = state.callbacks.task(TaskSlot::Finish, serv, event);
-                } else {
-                    state.callbacks.pipe_message(serv, event);
-                }
+            Some(ServerEvent::Finish) => {
+                _ = bus.with_event(|event| state.callbacks.task(TaskSlot::Finish, serv, event));
+            }
+            Some(ServerEvent::PipeMessage) => {
+                _ = bus.with_event(|event| state.callbacks.pipe_message(serv, event));
             }
             Some(ServerEvent::CloseForce) => {
                 crate::reactor_thread::close(serv, reactor, session);
@@ -388,10 +382,8 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 factory::end(serv, session, CLOSE_ACTIVELY);
             }
             _ => {
-                bus.with_packet(|data| {
-                    let mut info = head;
-                    info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-                    methods::send_event_to_connection(serv, &info, data);
+                bus.with_message(&head, |message| {
+                    methods::send_event_to_connection(serv, message.info(), message.payload());
                 });
             }
         }

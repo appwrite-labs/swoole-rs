@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::c_int;
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{CoreAllocator, DataHead, TrustedAllocator};
+use swoole_rs_corebase::{CoreAllocator, TrustedAllocator};
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -14,9 +14,8 @@ use crate::view;
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
-/// under, and what the ops before it found. The entry points (`reactor_entry`) build
-/// it: one of the server's reactor threads, and (null or live while the context is) a
-/// worker's message in this thread's bus. Its readers only test for null.
+/// under, and the reactor thread an op found. The entry points (`reactor_entry`) build
+/// it.
 #[cfg_attr(
     not(all(feature = "upstream-symbols", not(test))),
     expect(dead_code, reason = "only the reactor threads' shutdown reads it")
@@ -25,8 +24,6 @@ pub(crate) struct ReactorContext<'a> {
     pub(crate) serv: view::Server<'a>,
     pub(crate) reactor: Option<Reactor>,
     pub(crate) thread: Option<&'a ThreadRecord>,
-    /// The `PipeBuffer` read from a worker, which starts with its head.
-    pub(crate) resp: *const DataHead,
 }
 
 impl<'a> ReactorContext<'a> {
@@ -43,7 +40,6 @@ impl<'a> ReactorContext<'a> {
             serv,
             reactor,
             thread: None,
-            resp: core::ptr::null(),
         }
     }
 
@@ -54,16 +50,6 @@ impl<'a> ReactorContext<'a> {
     )]
     pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
         self.thread
-    }
-
-    /// The worker's message the pipe read stored.
-    #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
-        expect(dead_code, reason = "only the reactor threads' ops call it")
-    )]
-    pub(crate) fn message(&self) -> Option<&'a DataHead> {
-        // SAFETY: null or the head of this thread's bus buffer, as the struct says.
-        unsafe { self.resp.as_ref() }
     }
 }
 
