@@ -12,7 +12,7 @@ use std::{
     ffi::{CString, c_int, c_void},
     sync::atomic::Ordering::Relaxed,
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
@@ -212,18 +212,15 @@ fn write(call: &Call) {
     }
 }
 
-/// `PHP_SWOOLE_HOOK_AFTER_RESPONSE` (`SW_GLOBAL_HOOK_USER + 3`).
-const HOOK_AFTER_RESPONSE: c_int = 27;
-
 /// `http_response_after`: the server's and the hooks' after-response step.
 fn after(ctx: Ctx) -> Result<(), Bailout> {
     unsafe extern "C" fn hooks(ctx: *mut c_void) {
         // SAFETY: the hooks take the context, as upstream passed it. The
         // frame owns nothing a bailout out of a hook would skip.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_AFTER_RESPONSE, ctx) };
+        unsafe { swoole_call_hook(HookType::AFTER_RESPONSE, ctx) };
     }
     context::after_response(ctx);
-    if !swoole_rs_corebase::swoole_isset_hook(HOOK_AFTER_RESPONSE) {
+    if !swoole_isset_hook(HookType::AFTER_RESPONSE) {
         return Ok(());
     }
     // SAFETY: a live context; the trap's setjmp sits in C, below `hooks`.
