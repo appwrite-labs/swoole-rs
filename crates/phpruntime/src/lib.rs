@@ -37,6 +37,7 @@ pub use putenv::*;
 pub use socket::{Report, check_reactor, co, convert_to_fd, coroutine_check, report, strerror};
 pub use stream::*;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::HookType;
 
 use std::{
     ffi::{CStr, c_void},
@@ -325,7 +326,7 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
         );
         return Ok(false);
     }
-    call_hook(BEFORE_ENABLE_HOOK, &mut requested);
+    call_hook(HookType::BEFORE_ENABLE_HOOK, &mut requested);
     let mut unavailable = 0;
     if !swoole_rs_zend::module_loaded(c"sockets") {
         unavailable |= flags::SOCKETS;
@@ -341,17 +342,13 @@ pub fn enable_hook(mut requested: u32) -> Result<bool, Bailout> {
     functions::hook_all(requested, installed)?;
     mongodb(requested, installed)?;
 
-    call_hook(BEFORE_ENABLE_HOOK + 1, &mut requested);
+    call_hook(HookType::AFTER_ENABLE_HOOK, &mut requested);
     HOOKED.store(requested, Ordering::Relaxed);
     Ok(true)
 }
 
-/// `PHP_SWOOLE_HOOK_BEFORE_ENABLE_HOOK` (`SW_GLOBAL_HOOK_USER`); the after
-/// hook follows it.
-const BEFORE_ENABLE_HOOK: i32 = 24;
-
 /// `swoole_call_hook(kind, flags)` if a hook of `kind` is set.
-fn call_hook(kind: i32, flags: &mut u32) {
+fn call_hook(kind: HookType, flags: &mut u32) {
     if swoole_rs_corebase::swoole_isset_hook(kind) {
         // SAFETY: the enable-hook callbacks take the flags word.
         unsafe { swoole_rs_corebase::swoole_call_hook(kind, std::ptr::from_mut(flags).cast()) };

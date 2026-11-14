@@ -479,10 +479,12 @@ extern "C" fn load_library_body() {
 /// MINIT's first step: Swoole's core, its after-fork hook, and the bug
 /// report's PHP version.
 extern "C" fn core_startup() {
-    /// `SW_GLOBAL_HOOK_AFTER_FORK`.
-    const AFTER_FORK: c_int = 12;
     swoole_init();
-    swoole_rs_corebase::swoole_add_hook(AFTER_FORK, swr_zend_after_fork, 0);
+    swoole_rs_corebase::swoole_add_hook(
+        swoole_rs_corebase::HookType::AFTER_FORK,
+        swr_zend_after_fork,
+        0,
+    );
     let version = swr_zend_php_version().get().to_bytes();
     swoole_rs_corebase::bug_report_append(&[b"PHP_VERSION : ", version, b"\n"].concat());
 }

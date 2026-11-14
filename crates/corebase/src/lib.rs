@@ -57,7 +57,7 @@ pub use signal_mask::{
 mod thread;
 pub mod worker_registry;
 pub use global::*;
-pub use hook::{swoole_add_hook, swoole_call_hook, swoole_isset_hook};
+pub use hook::{HookType, swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
     DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, sw_calloc, sw_free,
     sw_malloc, swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit,

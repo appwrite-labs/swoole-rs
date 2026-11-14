@@ -9,6 +9,7 @@ use crate::{PollSnapshot, Socket, SocketRecord, handlers::Handlers, registry::Re
 use libc::{c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
+use swoole_rs_corebase::HookType;
 
 pub type ReactorWrite =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
@@ -311,10 +312,6 @@ fn output<T>(count: usize) -> Vec<MaybeUninit<T>> {
     entries
 }
 
-/// `SW_GLOBAL_HOOK_ON_REACTOR_CREATE` and `SW_GLOBAL_HOOK_ON_REACTOR_DESTROY`.
-const HOOK_ON_REACTOR_CREATE: c_int = 5;
-const HOOK_ON_REACTOR_DESTROY: c_int = 9;
-
 #[cfg(feature = "upstream-symbols")]
 // crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
 // under their upstream symbols; declared, since both depend on this crate.
@@ -370,9 +367,9 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
         owner.handlers.defaults[0].set(Some(reactor_writable_callback));
     }
     let state = ReactorState::into_raw(owner);
-    if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_CREATE) {
+    if swoole_rs_corebase::swoole_isset_hook(HookType::ON_REACTOR_CREATE) {
         // SAFETY: hooks receive the live `Reactor`.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_CREATE, state.cast()) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_CREATE, state.cast()) };
     }
     // SAFETY: the live state; the hook has returned.
     crate::callbacks::install_builtins(unsafe { &mut (*state).callbacks });
@@ -398,9 +395,9 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
     drop(cycle_tasks);
     crate::deferred::run_destroy(handle);
     handle.with(ReactorState::close_backend);
-    if swoole_rs_corebase::swoole_isset_hook(HOOK_ON_REACTOR_DESTROY) {
+    if swoole_rs_corebase::swoole_isset_hook(HookType::ON_REACTOR_DESTROY) {
         // SAFETY: hooks receive the live `Reactor`.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HOOK_ON_REACTOR_DESTROY, reactor) };
+        unsafe { swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_DESTROY, reactor) };
     }
     // A disposer can defer again through the reactor's head (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
