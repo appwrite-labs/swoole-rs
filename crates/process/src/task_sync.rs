@@ -172,7 +172,8 @@ impl<'a> ResultSlot<'a> {
 fn copy_words(words: &[AtomicU32], data: &[u8]) {
     let (whole, tail) = data.as_chunks::<4>();
     let mut words = words.iter();
-    for (word, &bytes) in words.by_ref().zip(whole) {
+    // `whole` leads the zip, so its end takes no word from `words`.
+    for (&bytes, word) in whole.iter().zip(words.by_ref()) {
         word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
     }
     if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
@@ -446,6 +447,19 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_words_keeps_the_tail_in_place() {
+        let words: Vec<AtomicU32> = (0..20).map(|_| AtomicU32::new(u32::MAX)).collect();
+        let data: Vec<u8> = (0..59).collect();
+        copy_words(&words, &data);
+        let read: Vec<u8> = words
+            .iter()
+            .flat_map(|word| word.load(Ordering::Relaxed).to_ne_bytes())
+            .collect();
+        assert_eq!(read[..59], data[..]);
+        assert!(read[59..].iter().all(|&byte| byte == 0xff));
+    }
 
     /// A scripted server: dispatch results, notifications.
     #[derive(Default)]
