@@ -82,29 +82,14 @@ pub struct ReactorDeferred {
 }
 
 /// Appends `task` to the queue in `slot` (a reactor's `defer_tasks` or
-/// `destroy_callbacks`), creating it on first use: 0, or -2 when it cannot allocate
-/// (nothing is queued).
-fn push(slot: &mut Option<Box<ReactorDeferred>>, task: Task) -> i32 {
-    let queue = if let Some(queue) = slot {
-        queue
-    } else {
-        let Some(owner) = swoole_rs_buffer::try_box(ReactorDeferred::default) else {
-            return -2;
-        };
-        slot.insert(owner)
-    };
-    if queue.tasks.try_reserve(1).is_err() {
-        return -2;
-    }
-    queue.tasks.push_back(task);
-    0
+/// `destroy_callbacks`), creating it on first use.
+fn push(slot: &mut Option<Box<ReactorDeferred>>, task: Task) {
+    slot.get_or_insert_default().tasks.push_back(task);
 }
 
 /// Appends `value` to the reactor's `defer_tasks`.
 pub(crate) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
-    if push(&mut fields.defer_tasks, Task::Value(Box::new(value))) != 0 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
-    }
+    push(&mut fields.defer_tasks, Task::Value(Box::new(value)));
 }
 
 /// Frees the queue in `slot`, disposing of the tasks that never ran, and empties the
@@ -140,12 +125,7 @@ pub unsafe fn defer(call: DeferCall, data: *mut c_void, dispose: Option<DeferDis
         data,
         dispose,
     };
-    crate::event_api::field_mut(|fields| {
-        if push(&mut fields.defer_tasks, task) != 0 {
-            std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
-        }
-    })
-    .is_some()
+    crate::event_api::field_mut(|fields| push(&mut fields.defer_tasks, task)).is_some()
 }
 
 /// `reactor->add_destroy_callback(fn, data)`.
@@ -171,9 +151,7 @@ fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) 
         data,
         dispose: None,
     };
-    if push(&mut fields.destroy_callbacks, task) != 0 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
-    }
+    push(&mut fields.destroy_callbacks, task);
 }
 
 /// The `PRIORITY_DEFER_TASK` end callback over `Reactor::defer_tasks`: the queue is
@@ -224,7 +202,7 @@ pub(crate) mod tests {
             data,
             dispose,
         };
-        assert_eq!(push(unsafe { &mut (*fields).defer_tasks }, task), 0);
+        push(unsafe { &mut (*fields).defer_tasks }, task);
     }
     use std::cell::RefCell;
 
@@ -265,13 +243,13 @@ pub(crate) mod tests {
         call: DeferCall,
         data: *mut c_void,
         dispose: Option<DeferDispose>,
-    ) -> i32 {
+    ) {
         let task = Task::Native {
             call,
             data,
             dispose,
         };
-        push(slot, task)
+        push(slot, task);
     }
 
     /// base.cc's `Reactor::defer` and the defer end callback: FIFO, a task's own defer
@@ -347,7 +325,7 @@ pub(crate) mod tests {
             defer(fields, record, token(1), None);
             defer(fields, escape, token(2), None);
             let slot = &raw mut (*fields).defer_tasks;
-            assert_eq!(push_native(&mut *slot, record, token(3), Some(disposed)), 0);
+            push_native(&mut *slot, record, token(3), Some(disposed));
             let owner = std::panic::AssertUnwindSafe(state.owner);
             assert!(std::panic::catch_unwind(move || run_defer(running(*owner))).is_err());
             assert_eq!(take(), [1, 2]);
@@ -369,7 +347,7 @@ pub(crate) mod tests {
             unsafe {
                 let queue = &raw mut (*state.fields).destroy_callbacks;
                 for i in 0..count {
-                    assert_eq!(push_native(&mut *queue, record, token(i), None), 0);
+                    push_native(&mut *queue, record, token(i), None);
                 }
                 assert_eq!(take(), []);
                 run_destroy(reactor);

@@ -370,7 +370,11 @@ pub(crate) fn apply(
     if !done {
         return -1;
     }
-    state.record(socket, change.op, events)
+    if state.record(socket, change.op, events) {
+        0
+    } else {
+        -2
+    }
 }
 
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
