@@ -150,7 +150,7 @@ impl ReactorPrepared {
 /// `Reactor::type_` for a requested type (`Reactor::Type`: auto 0, epoll 1, kqueue 2,
 /// poll 3), and the backend that opens for it: auto picks epoll, else kqueue when
 /// `SwooleG.enable_kqueue`, else poll; a type not compiled in opens poll.
-fn select(requested: c_int) -> (c_int, c_int) {
+fn select(requested: c_int) -> (c_int, BackendKind) {
     let linux = cfg!(target_os = "linux");
     let bsd = cfg!(any(
         target_os = "macos",
@@ -166,9 +166,9 @@ fn select(requested: c_int) -> (c_int, c_int) {
         _ => requested,
     };
     let opened = match selected {
-        1 if linux => 1,
-        2 if bsd => 2,
-        _ => 3,
+        1 if linux => BackendKind::Epoll,
+        2 if bsd => BackendKind::Kqueue,
+        _ => BackendKind::Poll,
     };
     (selected, opened)
 }
@@ -229,7 +229,7 @@ impl ReactorState {
             running_defer: Vec::new(),
         });
         if !owner.open_backend(opened, count) {
-            let (origin, call) = if opened == 1 {
+            let (origin, call) = if opened == BackendKind::Epoll {
                 (c"ReactorEpoll::ReactorEpoll", "epoll_create")
             } else {
                 (c"ReactorKqueue::ReactorKqueue", "kqueue")
@@ -255,11 +255,11 @@ impl ReactorState {
         state
     }
 
-    /// Opens backend `kind` (1 epoll, 2 kqueue, 3 poll) for `count` events: false when
-    /// the kernel refuses its descriptor, errno being the kernel's.
-    fn open_backend(&mut self, kind: c_int, count: c_int) -> bool {
+    /// Opens backend `kind` for `count` events: false when the kernel refuses its
+    /// descriptor, errno being the kernel's.
+    fn open_backend(&mut self, kind: BackendKind, count: c_int) -> bool {
         #[cfg(target_os = "linux")]
-        if kind == 1 {
+        if kind == BackendKind::Epoll {
             // Upstream's fixed size hint.
             self.backend_fd = swoole_rs_corebase::sys::epoll_create(512);
         }
@@ -270,10 +270,10 @@ impl ReactorState {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        if kind == 2 {
+        if kind == BackendKind::Kqueue {
             self.backend_fd = swoole_rs_corebase::sys::kqueue();
         }
-        if kind != 3 && self.backend_fd < 0 {
+        if kind != BackendKind::Poll && self.backend_fd < 0 {
             return false;
         }
         let Ok(length) = usize::try_from(count) else {
@@ -281,7 +281,7 @@ impl ReactorState {
         };
         self.backend = match kind {
             #[cfg(target_os = "linux")]
-            1 => Backend::Epoll(output(length)),
+            BackendKind::Epoll => Backend::Epoll(output(length)),
             #[cfg(any(
                 target_os = "macos",
                 target_os = "freebsd",
@@ -289,7 +289,7 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            2 => Backend::Kqueue(output(length), count),
+            BackendKind::Kqueue => Backend::Kqueue(output(length), count),
             _ => Backend::Poll(PollSnapshot::new(length)),
         };
         self.backend_limit = count;
