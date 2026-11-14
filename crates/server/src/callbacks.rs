@@ -51,10 +51,10 @@ pub type Ctx = *mut c_void;
 pub type ServerFn = extern "C" fn(Ctx, Server<'_>);
 /// `void (Server *, DataInfo *)`.
 pub type EventFn = extern "C" fn(Ctx, Server<'_>, &DataHead);
-/// `int (Server *, RecvData *)`.
-pub type ReceiveFn = extern "C" fn(Ctx, Server<'_>, &RecvData) -> c_int;
-/// `int (Server *, EventData *)`.
-pub type TaskFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>) -> c_int;
+/// `int (Server *, RecvData *)`: whether it succeeded (`SW_OK`).
+pub type ReceiveFn = extern "C" fn(Ctx, Server<'_>, &RecvData) -> bool;
+/// `int (Server *, EventData *)`: whether it succeeded (`SW_OK`).
+pub type TaskFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>) -> bool;
 /// `void (Server *, EventData *)`.
 pub type MessageFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>);
 /// `void (Server *, Worker *)`, of a worker this thread or process runs.
@@ -460,16 +460,16 @@ impl ServerCallbacks {
         }
     }
 
-    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; -1 when the slot is
+    /// `serv->onReceive(serv, data)` or `onPacket(serv, data)`; false when the slot is
     /// empty. Inlined, as [`ServerCallbacks::event`] is: every request calls it.
     #[inline(always)]
-    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> c_int {
+    pub(crate) fn receive(&self, slot: ReceiveSlot, serv: Server<'_>, data: &RecvData) -> bool {
         let slot = match slot {
             ReceiveSlot::Receive => &self.receive,
             ReceiveSlot::Packet => &self.packet,
         };
         slot.get()
-            .map_or(-1, |(invoke, ctx)| invoke(ctx, serv, data))
+            .is_some_and(|(invoke, ctx)| invoke(ctx, serv, data))
     }
 }
 
@@ -495,16 +495,16 @@ pub(crate) enum WorkerSlot {
 /// argument is a live handle or a reference its caller lends for the call.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 impl ServerCallbacks {
-    /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
+    /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; false when the slot is
     /// empty. A caller that discards the result (onFinish) still calls through the
-    /// int type the slot holds.
-    pub(crate) fn task(&self, slot: TaskSlot, serv: Server<'_>, task: Packed<'_>) -> c_int {
+    /// type the slot holds.
+    pub(crate) fn task(&self, slot: TaskSlot, serv: Server<'_>, task: Packed<'_>) -> bool {
         let slot = match slot {
             TaskSlot::Task => &self.task,
             TaskSlot::Finish => &self.finish,
         };
         slot.get()
-            .map_or(-1, |(invoke, ctx)| invoke(ctx, serv, task))
+            .is_some_and(|(invoke, ctx)| invoke(ctx, serv, task))
     }
 
     /// `serv->onPipeMessage(serv, message)`; nothing when the slot is empty.

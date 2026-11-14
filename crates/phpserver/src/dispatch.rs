@@ -506,9 +506,6 @@ fn relay(bailed: bool) {
     }
 }
 
-/// `SW_OK` / `SW_ERR`.
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SocketType`s of a datagram's sender.
 const UDP: c_int = 2;
 const UDP6: c_int = 4;
@@ -591,27 +588,22 @@ extern "C" fn on_worker_error_slot(
     ));
 }
 
-/// `SW_OK` for `ok`, else `SW_ERR`: what the server's int slots return.
-const fn code(ok: bool) -> c_int {
-    if ok { SW_OK } else { SW_ERR }
-}
-
 /// A task event's result, or its bailout raised.
-fn task_result(outcome: Result<bool, Bailout>) -> c_int {
+fn task_result(outcome: Result<bool, Bailout>) -> bool {
     let ok = outcome.unwrap_or_else(|bailed| {
         bailed.defer();
         true
     });
     // A callable's release can leave one pending behind an `Ok`.
     bailout::finish();
-    code(ok)
+    ok
 }
 
-extern "C" fn on_task(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+extern "C" fn on_task(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> bool {
     task_result(crate::task::on_task(server, task))
 }
 
-extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> bool {
     task_result(crate::task::on_finish(server, task))
 }
 
@@ -646,9 +638,9 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     });
 }
 
-extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> bool {
     php_swoole_server_on_receive(server, request);
-    SW_OK
+    true
 }
 
 /// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
@@ -673,43 +665,43 @@ pub(crate) fn http() -> Option<&'static HttpHooks> {
     HTTP.get().copied()
 }
 
-extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    code(http().is_none_or(|http| (http.on_receive)(server, request)))
+extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> bool {
+    http().is_none_or(|http| (http.on_receive)(server, request))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
-extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> bool {
     let fd = request.info().fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
             c"php_swoole_redis_server_onReceive",
             format_args!("connection[{fd}] is closed"),
         );
-        return SW_ERR;
+        return false;
     };
     if !server
         .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_redis_protocol.get())
     {
         php_swoole_server_on_receive(server, request);
-        return SW_OK;
+        return true;
     }
     let Some(redis) = crate::server::redis_receive() else {
         php_swoole_server_on_receive(server, request);
-        return SW_OK;
+        return true;
     };
     let data = php_swoole_get_recv_data(server, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     // The relay's longjmp would skip `data`'s release.
     drop(data);
     relay(result.is_err());
-    code(result.unwrap_or(false))
+    result.unwrap_or(false)
 }
 
-extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> bool {
     let Some((socket_type, socket_addr, data)) = request.datagram() else {
-        return SW_ERR;
+        return false;
     };
     let info = request.info();
     // The sender, of the packet's socket type: an IP address and port, or a path.
@@ -738,7 +730,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
             info.time,
         ));
     });
-    SW_OK
+    true
 }
 
 extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {

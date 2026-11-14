@@ -176,7 +176,7 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
         data: packet.data.cast(),
     };
     recv.info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-    if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
+    if serv.state().callbacks.receive(slot, serv, &recv) {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
     }

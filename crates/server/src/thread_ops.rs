@@ -375,7 +375,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 let event =
                     unsafe { swoole_rs_process::task_file::Packed::from_raw(ctx.resp.cast()) };
                 if head.event() == Some(ServerEvent::Finish) {
-                    let _ = state.callbacks.task(TaskSlot::Finish, serv, event);
+                    state.callbacks.task(TaskSlot::Finish, serv, event);
                 } else {
                     state.callbacks.pipe_message(serv, event);
                 }

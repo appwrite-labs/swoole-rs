@@ -124,10 +124,10 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
         }
         Some(ServerEvent::CommandRequest) => command(serv, worker, task),
         _ => {
-            let ret = callbacks.task(TaskSlot::Task, serv, task);
+            let ok = callbacks.task(TaskSlot::Task, serv, task);
             // Only server tasks count as requests, not pipe messages or commands.
             worker.add_request_count();
-            ret
+            if ok { OK } else { ERR }
         }
     };
     worker.set_status(WorkerStatus::busy(false));

@@ -380,7 +380,7 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
     } else {
         ReceiveSlot::Receive
     };
-    if state.callbacks.receive(slot, serv, &recv) == 0 {
+    if state.callbacks.receive(slot, serv, &recv) {
         worker.add_request_count();
         if let Some(gs) = crate::shared::server_counters(state) {
             gs.request_count.fetch_add(1, Ordering::SeqCst);
@@ -576,10 +576,10 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn on_receive(_: Ctx, _: view::Server<'_>, data: &RecvData) -> c_int {
+    extern "C" fn on_receive(_: Ctx, _: view::Server<'_>, data: &RecvData) -> bool {
         let i = data.info;
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
-        0
+        true
     }
 
     extern "C" fn closing(_: Ctx, _: view::Server<'_>, i: &DataHead) {

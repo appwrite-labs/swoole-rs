@@ -95,7 +95,7 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
     match info.event() {
         Some(ServerEvent::PipeMessage) => state.callbacks.pipe_message(serv, event_data(serv)),
         Some(ServerEvent::Finish) => {
-            _ = state
+            state
                 .callbacks
                 .task(TaskSlot::Finish, serv, event_data(serv));
         }
