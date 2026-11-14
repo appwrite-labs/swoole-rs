@@ -80,6 +80,18 @@ impl Event {
         }
     }
 
+    /// An event over `socket`, a record live until an unsafe free whose caller answers
+    /// for the events left.
+    #[must_use]
+    pub fn of(fd: c_int, reactor_id: i16, fd_type: c_int, socket: Option<Socket<'static>>) -> Self {
+        Self {
+            fd,
+            reactor_id,
+            fd_type,
+            socket: socket.map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast()),
+        }
+    }
+
     /// An event with no socket, which the wait loop fills.
     pub(crate) const fn empty() -> Self {
         Self {

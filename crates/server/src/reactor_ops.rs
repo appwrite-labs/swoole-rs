@@ -1,7 +1,7 @@
 //! A reactor thread's context and record, and the connection and socket checks
 //! its handlers share.
 use core::cell::Cell;
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 
 use swoole_rs_buffer::cpp::CppBuffer;
 use swoole_rs_corebase::{CoreAllocator, DataHead, TrustedAllocator};
@@ -96,7 +96,7 @@ pub(crate) struct ThreadRecord {
     pub(crate) notify_pipe: Cell<*mut SocketRecord>,
     pub(crate) dispatch_count: Cell<u64>,
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
-    pub(crate) heartbeat_timer: Cell<*mut c_void>,
+    pub(crate) heartbeat_timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
     /// `message_bus`: its Rust bus, then the allocator of its buffer and packets.
     pub(crate) bus: PoolBus,
 }
@@ -205,7 +205,7 @@ impl ThreadRecord {
                 notify_pipe: Cell::new(core::ptr::null_mut()),
                 dispatch_count: Cell::new(0),
                 pipe_command: Cell::new(core::ptr::null_mut()),
-                heartbeat_timer: Cell::new(core::ptr::null_mut()),
+                heartbeat_timer: Cell::new(None),
                 bus: PoolBus {
                     bus: swoole_rs_bus::MessageBus::create(size),
                     // A record's own allocator, which every `Bus` carries.

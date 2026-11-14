@@ -124,8 +124,10 @@ pub(crate) fn defer(pending: Pending) {
 pub(crate) fn unconstructed(list: bool) {
     let message = c"must call constructor first";
     if list {
-        // SAFETY: from the outermost Rust frame, which owns nothing.
-        unsafe { swoole_rs_corebase::fatal_error(SW_ERROR_WRONG_OPERATION as c_int, message) };
+        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
+            SW_ERROR_WRONG_OPERATION as c_int,
+            message,
+        ));
     } else {
         swoole_rs_corebase::log::set_last_error(SW_ERROR_PHP_FATAL_ERROR as c_int);
         bailout::raise(swoole_rs_zend::report(E_ERROR, message));

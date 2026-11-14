@@ -302,14 +302,14 @@ fn get_init_msec() {
     });
 }
 
-unsafe extern "C" fn yield_resume_on_yield(_: *mut c_void) {
+extern "C" fn yield_resume_on_yield(_: swoole_rs_coroutine::CoroutineTask) {
     let task = get_current_task().cast::<c_long>();
     assert!(!task.is_null());
     // SAFETY: the task is the case's live `cid2`.
     assert_eq!(unsafe { *task }, get_current_cid());
 }
 
-unsafe extern "C" fn yield_resume_on_resume(_: *mut c_void) {
+extern "C" fn yield_resume_on_resume(_: swoole_rs_coroutine::CoroutineTask) {
     assert!(get_current().is_null());
 }
 

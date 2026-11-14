@@ -6,7 +6,9 @@
 //! With `php`, MINIT ([`minit`]) registers the driver with PDO.
 //!
 //! The exports keep upstream's names: `native/hooks/php_swoole_odbc.h` declares them and
-//! the driver's macros call them.
+//! the driver's macros call them. Upstream's pass-throughs (`SQLGetInfo`,
+//! `SQLGetDiagRec`, `SQLCloseCursor`, `SQLRowCount`, `SQLFreeHandle`), which only
+//! traced, are not redirected: the driver calls ODBC for those.
 #![cfg_attr(
     not(test),
     deny(
@@ -21,31 +23,22 @@ pub mod minit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
     RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
-    SQLExecute, SQLFreeHandle, SQLGetData, SQLGetDiagRec, SQLGetInfo, SQLHANDLE, SQLHDBC, SQLHSTMT,
-    SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN, SQLSMALLINT,
-    SQLULEN, SQLUSMALLINT,
+    SQLExecute, SQLGetData, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER,
+    SQLPrepare, SQLPutData, SQLRETURN, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
-/// A statement or connection handle the driver handed over: live, as ODBC's
-/// own calls require, for as long as the value is used. The exports that pass
-/// nothing else by pointer take them in place of the `SQLHSTMT` and `SQLHDBC`
-/// they have the layout of. Nothing here makes one, and neither is `Send` nor `Sync`:
-/// they reach the pool only through [`offload`].
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Statement(SQLHSTMT);
+/// A connection handle the driver handed over: live, as ODBC's own calls
+/// require, for as long as the value is used. [`swoole_odbc_SQLDisconnect`]
+/// takes one in place of the `SQLHDBC` it has the layout of. Nothing here makes
+/// one, and it is neither `Send` nor `Sync`: it reaches the pool only through
+/// [`offload`].
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Connection(SQLHDBC);
 
-// ODBC's own declarations of the calls that take only a handle, typed as the
-// handle it is, and at most the one value they write. None reads a bound buffer
-// nor runs a callback.
+// ODBC's own declaration of `SQLDisconnect`, typed as the handle it takes. It
+// reads no bound buffer and runs no callback.
 unsafe extern "C" {
-    #[link_name = "SQLRowCount"]
-    safe fn row_count(statement: Statement, row_count: &mut SQLLEN) -> SQLRETURN;
-    #[link_name = "SQLCloseCursor"]
-    safe fn close_cursor(statement: Statement) -> SQLRETURN;
     #[link_name = "SQLDisconnect"]
     safe fn disconnect(connection: Connection) -> SQLRETURN;
 }
@@ -142,50 +135,6 @@ pub unsafe extern "C" fn swoole_odbc_SQLExecDirect(
     offload(|| unsafe { SQLExecDirect(statement, text, length) })
 }
 
-/// `swoole_odbc_SQLGetInfo`: called through.
-/// # Safety
-/// As `SQLGetInfo`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLGetInfo(
-    connection: SQLHDBC,
-    info_type: SQLUSMALLINT,
-    value: SQLPOINTER,
-    buffer_length: SQLSMALLINT,
-    string_length: *mut SQLSMALLINT,
-) -> SQLRETURN {
-    // SAFETY: per the caller.
-    unsafe { SQLGetInfo(connection, info_type, value, buffer_length, string_length) }
-}
-
-/// `swoole_odbc_SQLGetDiagRec`: called through.
-/// # Safety
-/// As `SQLGetDiagRec`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLGetDiagRec(
-    handle_type: SQLSMALLINT,
-    handle: SQLHANDLE,
-    record: SQLSMALLINT,
-    sqlstate: *mut SQLCHAR,
-    native_error: *mut SQLINTEGER,
-    message: *mut SQLCHAR,
-    buffer_length: SQLSMALLINT,
-    text_length: *mut SQLSMALLINT,
-) -> SQLRETURN {
-    // SAFETY: per the caller.
-    unsafe {
-        SQLGetDiagRec(
-            handle_type,
-            handle,
-            record,
-            sqlstate,
-            native_error,
-            message,
-            buffer_length,
-            text_length,
-        )
-    }
-}
-
 /// `swoole_odbc_SQLPrepare`.
 /// # Safety
 /// As `SQLPrepare`.
@@ -206,13 +155,6 @@ pub unsafe extern "C" fn swoole_odbc_SQLPrepare(
 pub unsafe extern "C" fn swoole_odbc_SQLExecute(statement: SQLHSTMT) -> SQLRETURN {
     // SAFETY: per the caller.
     offload(|| unsafe { SQLExecute(statement) })
-}
-
-/// `swoole_odbc_SQLCloseCursor`: called through. `SQLCloseCursor`'s whole
-/// contract is the live statement the type carries.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_odbc_SQLCloseCursor(statement: Statement) -> SQLRETURN {
-    close_cursor(statement)
 }
 
 /// `swoole_odbc_SQLPutData`.
@@ -286,25 +228,6 @@ pub unsafe extern "C" fn swoole_odbc_SQLDescribeCol(
             )
         }
     })
-}
-
-/// `swoole_odbc_SQLRowCount`: called through. `SQLRowCount`'s whole contract is the
-/// live statement and the count's slot, which the types carry.
-#[unsafe(no_mangle)]
-pub extern "C" fn swoole_odbc_SQLRowCount(statement: Statement, count: &mut SQLLEN) -> SQLRETURN {
-    row_count(statement, count)
-}
-
-/// `swoole_odbc_SQLFreeHandle`: called through.
-/// # Safety
-/// As `SQLFreeHandle`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLFreeHandle(
-    handle_type: SQLSMALLINT,
-    handle: SQLHANDLE,
-) -> SQLRETURN {
-    // SAFETY: per the caller.
-    unsafe { SQLFreeHandle(handle_type, handle) }
 }
 
 /// `swoole_odbc_SQLEndTran`.

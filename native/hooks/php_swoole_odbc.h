@@ -22,38 +22,25 @@ RETCODE swoole_odbc_SQLConnect(SQLHDBC dbc, SQLCHAR *server, SQLSMALLINT server_
 SQLRETURN SQL_API swoole_odbc_SQLDriverConnect(SQLHDBC dbc, SQLHWND hwnd, SQLCHAR *in, SQLSMALLINT in_len, SQLCHAR *out,
                                                SQLSMALLINT out_max, SQLSMALLINT *out_len, SQLUSMALLINT completion);
 SQLRETURN SQL_API swoole_odbc_SQLExecDirect(SQLHSTMT stmt, SQLCHAR *text, SQLINTEGER text_len);
-SQLRETURN SQL_API swoole_odbc_SQLGetInfo(SQLHDBC dbc, SQLUSMALLINT type, SQLPOINTER value, SQLSMALLINT buffer_len,
-                                         SQLSMALLINT *len);
-SQLRETURN SQL_API swoole_odbc_SQLGetDiagRec(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT record,
-                                            SQLCHAR *sqlstate, SQLINTEGER *native_error, SQLCHAR *message,
-                                            SQLSMALLINT buffer_len, SQLSMALLINT *len);
 SQLRETURN SQL_API swoole_odbc_SQLPrepare(SQLHSTMT stmt, SQLCHAR *text, SQLINTEGER text_len);
 SQLRETURN SQL_API swoole_odbc_SQLExecute(SQLHSTMT stmt);
-SQLRETURN SQL_API swoole_odbc_SQLCloseCursor(SQLHSTMT stmt);
 SQLRETURN SQL_API swoole_odbc_SQLPutData(SQLHSTMT stmt, SQLPOINTER data, SQLLEN len_or_ind);
 SQLRETURN SQL_API swoole_odbc_SQLGetData(SQLHSTMT stmt, SQLUSMALLINT column, SQLSMALLINT target_type, SQLPOINTER target,
                                          SQLLEN buffer_len, SQLLEN *len_or_ind);
-SQLRETURN SQL_API swoole_odbc_SQLRowCount(SQLHSTMT stmt, SQLLEN *rows);
 SQLRETURN SQL_API swoole_odbc_SQLDescribeCol(SQLHSTMT stmt, SQLUSMALLINT column, SQLCHAR *name, SQLSMALLINT buffer_len,
                                              SQLSMALLINT *name_len, SQLSMALLINT *data_type, SQLULEN *size,
                                              SQLSMALLINT *decimal_digits, SQLSMALLINT *nullable);
 SQLRETURN SQL_API swoole_odbc_SQLEndTran(SQLSMALLINT handle_type, SQLHANDLE handle, SQLSMALLINT completion);
-SQLRETURN SQL_API swoole_odbc_SQLFreeHandle(SQLSMALLINT handle_type, SQLHANDLE handle);
 SQLRETURN SQL_API swoole_odbc_SQLDisconnect(SQLHDBC dbc);
 #define SQLConnect swoole_odbc_SQLConnect
 #define SQLDriverConnect swoole_odbc_SQLDriverConnect
 #define SQLExecDirect swoole_odbc_SQLExecDirect
-#define SQLGetInfo swoole_odbc_SQLGetInfo
-#define SQLGetDiagRec swoole_odbc_SQLGetDiagRec
 #define SQLPrepare swoole_odbc_SQLPrepare
 #define SQLExecute swoole_odbc_SQLExecute
-#define SQLCloseCursor swoole_odbc_SQLCloseCursor
 #define SQLGetData swoole_odbc_SQLGetData
 #define SQLPutData swoole_odbc_SQLPutData
-#define SQLRowCount swoole_odbc_SQLRowCount
 #define SQLDescribeCol swoole_odbc_SQLDescribeCol
 #define SQLEndTran swoole_odbc_SQLEndTran
-#define SQLFreeHandle swoole_odbc_SQLFreeHandle
 #define SQLDisconnect swoole_odbc_SQLDisconnect
 END_EXTERN_C()
 #endif

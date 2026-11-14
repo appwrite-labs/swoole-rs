@@ -2,16 +2,31 @@
 //! byte-slice and copied return values.
 use super::{Call, Invalid};
 use crate::{
-    ZStr,
+    Function, ZStr,
+    bailout::Bailout,
     sys::{
         _zend_expected_type_Z_EXPECTED_PATH, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
-        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_parse_str_or_long, zend_string,
-        zval,
+        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_call_known,
+        swr_zend_try_parse_str_or_long, zend_string, zval,
     },
 };
 use std::ptr;
 
 impl Call {
+    /// `zend_call_known_function(function, NULL, NULL, return_value, argc,
+    /// argv, NULL)` under `zend_try`, into this call's return slot.
+    /// # Errors
+    /// The function bailed out.
+    pub fn call_known(&self, function: Function<'_>, argv: &mut [zval]) -> Result<(), Bailout> {
+        // A frame's argument count plus one at most.
+        let count = u32::try_from(argv.len()).unwrap_or(u32::MAX);
+        // SAFETY: a live function, per its type, and this call's return slot;
+        // Zend reads `count` arguments, copies them, and keeps no pointer to `argv`.
+        let bailed = unsafe {
+            swr_zend_try_call_known(function.as_ptr(), self.value, count, argv.as_mut_ptr())
+        };
+        if bailed != 0 { Err(Bailout) } else { Ok(()) }
+    }
     /// `Z_PARAM_STR_OR_NULL`: as `str`, but a passed null is `None`.
     /// # Errors
     /// The argument is not a string or null under the caller's typing mode;

@@ -17,8 +17,8 @@ pub trait FlushEffects {
     /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`.
     fn close(&self) -> c_int;
     fn trigger_close(&self) -> c_int;
-    /// `swoole_timer_del(socket->send_timer)`.
-    fn delete_timer(&self);
+    /// `swoole_timer_del(socket->send_timer)` of the socket's `timer`.
+    fn delete_timer(&self, timer: swoole_rs_corebase::timer_key::Held);
     fn remove_write_event(&self);
     /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`, whether it came.
     fn wait_writable(&self) -> bool;
@@ -59,10 +59,10 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
     };
     // Empty, unless deleting the timer queued output.
     let mut empty = true;
-    if !timer.is_null() {
-        ops.delete_timer();
+    if let Some(timer) = timer {
+        ops.delete_timer(timer);
         empty = socket.edit(|record| {
-            record.output.send_timer = std::ptr::null_mut();
+            record.output.send_timer = None;
             record.output.empty()
         });
     }
@@ -91,7 +91,6 @@ mod tests {
     use super::*;
     use crate::{SocketOutput, SocketRecord};
     use std::cell::RefCell;
-    use std::ffi::c_void;
     use swoole_rs_buffer::cpp::{
         CppBuffer, new_buffer, swr_cpp_buffer_pop, swr_cpp_buffer_typed_close,
     };
@@ -103,11 +102,8 @@ mod tests {
             match kind {
                 EntryKind::Close => swr_cpp_buffer_typed_close(buffer),
                 EntryKind::Sendfile => {
-                    unsafe extern "C" fn keep(_: *mut c_void) {}
                     let handle = buffer.queue();
-                    let status = unsafe {
-                        (*handle).push(EntryKind::Sendfile, std::ptr::dangling_mut(), Some(keep))
-                    };
+                    let status = unsafe { (*handle).push_file(Box::new(())) };
                     assert_eq!(status, Ok(()));
                 }
                 EntryKind::Data => buffer.append(b"x"),
@@ -163,7 +159,7 @@ mod tests {
             record("trigger_close");
             8
         }
-        fn delete_timer(&self) {
+        fn delete_timer(&self, _: swoole_rs_corebase::timer_key::Held) {
             record("delete_timer");
         }
         fn remove_write_event(&self) {
@@ -177,11 +173,7 @@ mod tests {
     fn block(timer: bool) -> SocketOutput {
         SocketOutput {
             out_buffer: None,
-            send_timer: if timer {
-                std::ptr::dangling_mut::<c_void>()
-            } else {
-                std::ptr::null_mut()
-            },
+            send_timer: timer.then(|| swoole_rs_corebase::timer_key::Held::detached(1)),
             buffer_size: 0,
             close_wait: false,
             nonblock: false,
@@ -272,7 +264,6 @@ mod tests {
         use crate::{SocketOutput, SocketRecord};
         use std::cell::RefCell;
         use std::collections::VecDeque;
-        use std::ffi::c_void;
 
         #[derive(Default)]
         struct Facade {
@@ -318,7 +309,7 @@ mod tests {
                 effect("trigger-close");
                 SW_OK
             }
-            fn delete_timer(&self) {
+            fn delete_timer(&self, _: swoole_rs_corebase::timer_key::Held) {
                 effect("timer");
             }
             fn remove_write_event(&self) {
@@ -336,11 +327,7 @@ mod tests {
             let mut record = SocketRecord::new();
             record.output = SocketOutput {
                 out_buffer: Some(buffer),
-                send_timer: if timer {
-                    std::ptr::dangling_mut::<c_void>()
-                } else {
-                    std::ptr::null_mut()
-                },
+                send_timer: timer.then(|| swoole_rs_corebase::timer_key::Held::detached(1)),
                 buffer_size: 0,
                 close_wait: false,
                 nonblock: true,
@@ -369,7 +356,7 @@ mod tests {
                 trace.push(format!("removed={removed}"));
                 trace
             });
-            trace.push(format!("timer={}", u8::from(!send_timer.is_null())));
+            trace.push(format!("timer={}", u8::from(send_timer.is_some())));
             trace
         }
 

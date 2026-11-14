@@ -5,9 +5,9 @@
 //! lazy creation, unit conversion and warnings, over the Rust-owned timer
 //! (`owner.rs`).
 use crate::owner::{Callback, Closure, Owner as Timer, Plain, TimerNode};
-use std::cell::Cell;
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::CCast;
+pub use swoole_rs_corebase::timer_key::Held;
 use swoole_rs_corebase::{log, swoole_print_backtrace};
 
 /// `SW_ERR` and `SW_TIMER_MIN_SEC`.
@@ -20,52 +20,7 @@ pub(crate) fn timer() -> *mut Timer {
 
 /// Publishes `timer` (or null) as this thread's.
 pub(crate) fn publish(timer: *mut Timer) {
-    if !timer.is_null() {
-        GENERATION.set(GENERATION.get() + 1);
-    }
     swoole_rs_corebase::set_thread_timer(timer.cast());
-}
-
-thread_local! {
-    /// How many timers this thread has published. Ids restart with each, so a
-    /// [`Held`] id is good only for the timer that issued it.
-    static GENERATION: Cell<u64> = const { Cell::new(0) };
-}
-
-/// A timer's id, as a holder keeps it: with the thread timer that issued it, since
-/// a thread whose timer was freed and made again numbers its timers from the start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Held {
-    generation: u64,
-    id: c_long,
-}
-
-impl Held {
-    fn issued(id: c_long) -> Self {
-        Self {
-            generation: GENERATION.get(),
-            id,
-        }
-    }
-
-    /// An id no timer issued, which names none: for a holder's tests.
-    #[must_use]
-    pub const fn detached(id: c_long) -> Self {
-        Self { generation: 0, id }
-    }
-
-    /// The generation of the thread timer that issued the id, then the id: what a
-    /// holder that cannot name this type keeps (crates/process's `ArmedTimer`), for
-    /// [`cancel_issued`].
-    #[must_use]
-    pub const fn parts(self) -> (u64, c_long) {
-        (self.generation, self.id)
-    }
-
-    /// The id, while this thread's timer is still the one that issued it.
-    fn live(self) -> Option<c_long> {
-        (GENERATION.get() == self.generation).then_some(self.id)
-    }
 }
 
 /// This thread's timer, if it has one.
@@ -136,10 +91,16 @@ fn sec2msec(timeout: f64) -> c_long {
 
 /// Adds `node` to this thread's timer, creating it on first use: the node and its id.
 fn add(ms: c_long, persistent: bool, node: TimerNode) -> Option<(*mut TimerNode, c_long)> {
-    if timer().is_null() {
+    created()?.add(ms, persistent, node)
+}
+
+/// This thread's timer, created on first use.
+fn created<'a>() -> Option<&'a Timer> {
+    // One thread-local read when the timer exists, the usual case.
+    current().or_else(|| {
         swoole_timer_create(false);
-    }
-    current()?.add(ms, persistent, node)
+        current()
+    })
 }
 
 /// The node [`add`] added, or null.
@@ -212,68 +173,64 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     .cast()
 }
 
-/// `swoole_timer_add(ms, persistent, ...)` of `f`: the node, or null.
+/// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
 #[must_use]
-pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> *mut c_void {
-    node(add(ms, persistent, TimerNode::closure(Closure::new(f)))).cast()
+pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
+    let timer = created()?;
+    let (_, id) = timer.add(ms, persistent, TimerNode::closure(Closure::new(f)))?;
+    let held = Held::new(timer.generation(), id);
+    if held.is_none() {
+        // An id past what a `Held` packs: as if the add had failed.
+        timer.remove(id);
+    }
+    held
 }
 
 /// [`add_fn`] of `timeout` seconds, at least `SW_TIMER_MIN_SEC`.
 #[must_use]
-pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + Copy + 'static) -> *mut c_void {
+pub fn add_fn_sec(timeout: f64, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
     add_fn(sec2msec(timeout), persistent, f)
 }
 
-/// [`add_fn`]'s timer id, or none.
-#[must_use]
-pub fn add_fn_id(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<c_long> {
-    add(ms, persistent, TimerNode::closure(Closure::new(f))).map(|(_, id)| id)
-}
-
-/// [`add_fn`]'s timer, held by id, or none.
-#[must_use]
-pub fn add_fn_held(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
-    add_fn_id(ms, persistent, f).map(Held::issued)
-}
-
-/// [`add_fn_sec`]'s timer, held by id, or none.
-#[must_use]
-pub fn add_fn_sec_id(
-    timeout: f64,
-    persistent: bool,
-    f: impl Fn() + Copy + 'static,
-) -> Option<Held> {
-    add_fn_held(sec2msec(timeout), persistent, f)
+/// This thread's timer and the held timer's id, while that timer is the one that
+/// issued it.
+fn issuer(timer: Option<&Timer>, held: Held) -> Option<(&Timer, c_long)> {
+    timer
+        .filter(|timer| timer.generation() == held.generation())
+        .map(|timer| (timer, held.id()))
 }
 
 /// [`swoole_timer_del`] of a held timer. A timer never reuses an id, so one that
 /// already fired is left alone, as is one whose thread timer has since been freed.
 pub fn del_id(held: Held) {
-    if let Some(id) = held.live()
-        && let Some(timer) = available(c"swoole_timer_del")
-    {
+    if let Some((timer, id)) = issuer(available(c"swoole_timer_del"), held) {
         timer.remove(id);
     }
 }
 
 /// [`del_id`] without the warning when the thread has no timer.
 pub fn cancel_held(held: Held) {
-    if let Some(id) = held.live() {
-        timer_cancel(id);
+    if let Some((timer, id)) = issuer(current(), held) {
+        timer.remove(id);
     }
 }
 
-/// [`cancel_held`] of a held timer kept as its [`Held::parts`]: parts no timer
-/// issued name none, or at worst another timer of this thread, as any id does.
+/// [`cancel_held`] of a held timer kept as its generation and id (crates/process's
+/// `ArmedTimer`): parts no timer issued name none, or at worst another timer of this
+/// thread, as any id does.
 pub extern "C-unwind" fn cancel_issued(generation: u64, id: c_long) {
-    cancel_held(Held { generation, id });
+    if let Some(held) = u16::try_from(generation)
+        .ok()
+        .and_then(|generation| Held::new(generation, id))
+    {
+        cancel_held(held);
+    }
 }
 
-/// Deletes timer `id` if this thread's timer still holds it, quietly otherwise:
-/// a timer never reuses an id, so one that already fired is left alone.
-fn timer_cancel(id: c_long) {
-    if let Some(timer) = current() {
-        timer.remove(id);
+/// [`swoole_timer_delay`] of a held timer, left alone as [`del_id`] leaves one.
+pub fn delay_held(held: Held, delay_ms: c_long) {
+    if let Some((timer, id)) = issuer(available(c"swoole_timer_delay"), held) {
+        timer.delay(id, None, delay_ms);
     }
 }
 
@@ -336,7 +293,7 @@ pub unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut TimerNode, delay_m
     // SAFETY: null or a live node, as the caller promises.
     let fields = unsafe { node.as_ref() }.map(|node| (node.id, node.exec_msec));
     if let Some((id, exec_msec)) = fields {
-        timer.delay(id, exec_msec, delay_ms);
+        timer.delay(id, Some(exec_msec), delay_ms);
     }
 }
 
@@ -440,23 +397,5 @@ pub mod php {
         if let Some(timer) = current() {
             timer.abandon(bailout);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{GENERATION, Held};
-
-    #[test]
-    fn a_held_id_names_only_the_timer_that_issued_it() {
-        // As publishing a thread's first timer does.
-        GENERATION.set(GENERATION.get() + 1);
-        let held = Held::issued(3);
-        assert_eq!(held.live(), Some(3));
-        assert_eq!(Held::detached(3).live(), None);
-        // The timer is freed and the next one published, numbering from the start.
-        GENERATION.set(GENERATION.get() + 1);
-        assert_eq!(held.live(), None);
-        assert_eq!(Held::issued(3).live(), Some(3));
     }
 }

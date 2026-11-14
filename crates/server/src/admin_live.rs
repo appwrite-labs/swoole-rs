@@ -213,13 +213,15 @@ impl Facts for Live<'_> {
         while fd <= gs.max_fd() {
             let conn = self.serv.at(fd);
             fd += 1;
-            let Some(conn) = conn.filter(|conn| conn.is_active() && !conn.socket_ptr().is_null())
+            let Some((conn, socket)) = conn
+                .filter(|conn| conn.is_active())
+                .and_then(|conn| Some((conn, conn.socket()?)))
             else {
                 continue;
             };
             let owner = i64::from(conn.reactor_id());
             let other_worker = || worker.is_some_and(|id| owner != i64::from(id));
-            if live(conn.socket_ptr()).read(|s| s.fd_type) != FD_SESSION
+            if socket.read(|s| s.fd_type) != FD_SESSION
                 || (mode == Mode::Process && owner != reactor_id)
                 || (mode == Mode::Base && other_worker())
             {
@@ -243,9 +245,13 @@ impl Facts for Live<'_> {
         let config = config.unwrap_or_else(|| {
             swoole_rs_corebase::fatal("an admin command on a connection without a port")
         });
-        let listener = live(config.socket_ptr()).read(|s| s.info);
+        let dead = || swoole_rs_corebase::fatal("an admin command on a dead socket");
+        let listener = config
+            .listening_socket()
+            .unwrap_or_else(dead)
+            .read(|s| s.info);
         let (received, sent) =
-            live(conn.socket_ptr()).read(|s| (s.total_recv_bytes, s.total_send_bytes));
+            (conn.socket().unwrap_or_else(dead)).read(|s| (s.total_recv_bytes, s.total_send_bytes));
         Connection {
             session_id: conn.session_id(),
             reactor_id: conn.reactor_id().into(),

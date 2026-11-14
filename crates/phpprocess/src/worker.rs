@@ -111,7 +111,7 @@ pub(crate) fn set_id(worker: Worker<'_>, id: u32) {
 /// A `UnixSocket` of `socket_type` for the worker; the master end's fd, or none.
 pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> Option<c_int> {
     let mut built = Box::new(socket_pair::unix_socket(true, socket_type));
-    let (master, end) = (built.master_socket, built.worker_socket);
+    let (master, end) = built.raw_ends();
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
         return None;

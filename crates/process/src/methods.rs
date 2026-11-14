@@ -190,13 +190,15 @@ pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> isize
 }
 
 #[cfg(feature = "upstream-symbols")]
-// crates/tls defines it under its upstream symbol; declared, since
-// crates/tls (through crates/reactor) depends on this crate.
+// crates/tls defines it under its upstream symbol, as a safe Rust fn taking
+// plain values and a `CText` (the same repr as `Text`); declared, since
+// crates/tls (through crates/reactor) depends on this crate. It returns a native
+// socket the caller owns, or null.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    fn make_server_socket(
+    safe fn make_server_socket(
         kind: c_int,
-        host: *const std::ffi::c_char,
+        host: swoole_rs_corebase::sys::Text<'_>,
         port: c_int,
         backlog: c_int,
     ) -> *mut c_void;
@@ -223,9 +225,7 @@ pub fn listen_socket(
     backlog: c_int,
 ) -> bool {
     listen(pool.record(), host, port, || {
-        // SAFETY: crates/tls's `make_server_socket` over a NUL-terminated host, read
-        // for the call: a native socket the caller owns, or null.
-        unsafe { make_server_socket(kind, host.as_ptr(), port, backlog) }
+        make_server_socket(kind, host.into(), port, backlog)
     })
 }
 

@@ -40,8 +40,8 @@ fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
 /// `serv->get_all_worker_num()`.
 fn all_worker_num(serv: view::Server<'_>) -> u32 {
     let workers = serv.workers();
-    let users = u32::try_from(workers.user_count).unwrap_or(u32::MAX);
-    workers.event_count + workers.task_count + users
+    let users = u32::try_from(workers.user_count()).unwrap_or(u32::MAX);
+    workers.event_count() + workers.task_count() + users
 }
 
 /// The manager thread's slot, after every worker's; the master's is next.
@@ -115,7 +115,7 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
     crate::process_factory::native::create_worker_pipes(serv)
         && create_event_workers(serv)
         && (config.task_worker_num.get() == 0 || start_check(serv.task_pool_ref()))
-        && (serv.workers().user_count == 0 || user_workers())
+        && (serv.user_worker_num() == 0 || user_workers())
 }
 
 /// `Server::start_worker_threads`: the task, event and user worker threads, the
@@ -129,7 +129,7 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
     for id in 0..workers {
         spawn(serv, id, WorkerType::Event);
     }
-    let users = u32::try_from(serv.workers().user_count).unwrap_or(u32::MAX);
+    let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
     for id in 0..users {
         spawn(serv, tasks + workers + id, WorkerType::User);
     }
@@ -231,8 +231,12 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     let mut main = Main { serv, slot, worker };
     let factory = manager(serv);
     let thread = factory.thread(id as usize);
-    // SAFETY: `thread_main` over the `Main` it is lent, which outlives the call.
-    unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };
+    // `serv->worker_thread_start(thread, fn)`: the registered starter runs
+    // `thread_main` over the `Main` it is lent, which outlives the call.
+    match worker_thread_start() {
+        Some(start) => start(thread, thread_main, (&raw mut main).cast()),
+        None => run_main(&main),
+    }
     if bus.is_some() {
         swoole_rs_corebase::set_thread_message_bus(core::ptr::null_mut());
     }
@@ -278,13 +282,18 @@ struct Main<'a> {
     worker: Option<Worker<'a>>,
 }
 
-/// A thread's main inside `worker_thread_start`.
+/// [`run_main`] as the `fn(void *)` a registered starter runs.
 ///
 /// # Safety
 /// `main` is [`body`]'s live `Main`, lent for the call.
 unsafe extern "C" fn thread_main(main: *mut c_void) {
     // SAFETY: per the caller.
-    let Main { serv, slot, worker } = unsafe { &*main.cast::<Main<'_>>() };
+    run_main(unsafe { &*main.cast::<Main<'_>>() });
+}
+
+/// A thread's main inside `worker_thread_start`.
+fn run_main(main: &Main<'_>) {
+    let Main { serv, slot, worker } = main;
     let serv = *serv;
     let Some(worker) = *worker else {
         let callbacks = &serv.state().callbacks;

@@ -53,7 +53,7 @@ fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
 
 /// `Server::heartbeat_check`'s timer, which `reactor` arms for itself and runs on
 /// its thread.
-fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> *mut c_void {
+fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_timer::Held> {
     let msec = c_long::from(state.config_ref().heartbeat_check_interval.get()) * 1000;
     swoole_rs_timer::add_fn(msec, true, move || {
         // SAFETY: a server reactor whose `ptr` is its live server, which outlives its
@@ -225,9 +225,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
     if config.heartbeat_check_interval.get() >= 1 {
         if single {
             let timer = heartbeat_timer(state, reactor);
-            config
-                .heartbeat_timer
-                .store(timer, core::sync::atomic::Ordering::Relaxed);
+            config.heartbeat_timer.store(timer);
         } else {
             ServerState::start_thread(serv, heartbeat_main, HEARTBEAT);
         }
@@ -422,10 +420,8 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         }
     }
     let thread = ctx.thread_record()?;
-    let timer = thread.heartbeat_timer.replace(ptr::null_mut());
-    if !timer.is_null() {
-        // SAFETY: the thread's live heartbeat timer.
-        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
+    if let Some(timer) = thread.heartbeat_timer.take() {
+        swoole_rs_timer::del_id(timer);
     }
     swoole_rs_reactor::defer_destroy_value(reactor.handle(), CloseConnections(reactor));
     if config.mode_ == Mode::Thread {

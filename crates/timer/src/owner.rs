@@ -266,7 +266,12 @@ pub struct Owner {
     pending_bailout: Cell<Option<Bailout>>,
     base_time: i64,
     next_msec: Cell<i64>,
+    /// Which timer this is, for its [`crate::Held`] ids: never 0.
+    generation: u16,
 }
+
+/// The generation the last timer made took.
+static GENERATIONS: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
 impl Owner {
     /// `new Timer(manually_trigger)`.
@@ -280,6 +285,7 @@ impl Owner {
             pending_bailout: Cell::new(None),
             base_time: absolute_msec(),
             next_msec: Cell::new(-1),
+            generation: next_generation(),
         });
         timer.init(manually_trigger);
         Box::into_raw(timer)
@@ -291,6 +297,10 @@ impl Owner {
 
     pub(crate) fn next_msec(&self) -> i64 {
         self.next_msec.get()
+    }
+
+    pub(crate) fn generation(&self) -> u16 {
+        self.generation
     }
 
     pub(crate) fn count(&self) -> usize {
@@ -447,14 +457,14 @@ impl Owner {
         }
     }
 
-    /// Moves node `id`'s deadline, now `exec_msec`, to `delay_ms` from now. The node's
-    /// fields come by value: `apply` writes the node, so no reference to it may be live.
-    pub(crate) fn delay(&self, id: i64, exec_msec: i64, delay_ms: c_long) {
-        let Some(deadline) = swr_v1_timer_delay_deadline(self.relative_msec(), exec_msec, delay_ms)
-        else {
-            return;
-        };
-        let updated = self.queue.borrow_mut().update(id, deadline);
+    /// Moves node `id`'s deadline, now `exec_msec` (its queued deadline for `None`), to
+    /// `delay_ms` from now. The node's fields come by value: `apply` writes the node, so
+    /// no reference to it may be live.
+    pub(crate) fn delay(&self, id: i64, exec_msec: Option<i64>, delay_ms: c_long) {
+        let now = self.relative_msec();
+        let updated = self.queue.borrow_mut().reschedule(id, |deadline| {
+            swr_v1_timer_delay_deadline(now, exec_msec.unwrap_or(deadline), delay_ms)
+        });
         if let Ok(view) = updated {
             apply(&view);
         }
@@ -576,6 +586,18 @@ impl Owner {
         // The record's drop frees the drained queue.
         if status != Status::Empty || !self.queue.borrow().idle() {
             swoole_rs_corebase::fatal("a timer queue still busy when dropped");
+        }
+    }
+}
+
+/// A new timer's generation: the next after the last, skipping 0, which
+/// [`crate::Held::detached`] names.
+fn next_generation() -> u16 {
+    use std::sync::atomic::Ordering::Relaxed;
+    loop {
+        let generation = GENERATIONS.fetch_add(1, Relaxed).wrapping_add(1);
+        if generation != 0 {
+            return generation;
         }
     }
 }
@@ -878,7 +900,7 @@ mod tests {
                     t.update(unsafe { (*n).id }, 100_000);
                 } else {
                     let (id, exec_msec) = unsafe { ((*n).id, (*n).exec_msec) };
-                    t.delay(id, exec_msec, 100_000);
+                    t.delay(id, Some(exec_msec), 100_000);
                 }
                 flag.set(true);
             }),

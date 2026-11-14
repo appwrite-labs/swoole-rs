@@ -50,9 +50,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::Ignore(signo) => _ = signal_upstream::set(signo, Handler::NONE, false),
         Step::Handle(signo) => {
-            let handler = crate::server_methods::master_signal_handler as *const () as usize;
-            // SAFETY: the master's handler, which runs while `SwooleG.server` is live.
-            let handler = unsafe { Handler::from_raw(handler) };
+            let handler = Handler::new(crate::server_methods::master_signal_handler);
             _ = signal_upstream::set(signo, handler, false);
         }
         Step::CommandHandler => {
@@ -64,12 +62,9 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             );
         }
         Step::MasterTimer => {
-            let node = crate::server_methods::master_timer(serv);
-            state
-                .config_ref()
-                .master_timer
-                .store(node, core::sync::atomic::Ordering::Relaxed);
-            return !node.is_null();
+            let timer = crate::server_methods::master_timer(serv);
+            state.config_ref().master_timer.store(timer);
+            return timer.is_some();
         }
         Step::EventFree => _ = swoole_rs_reactor::swoole_event_free(),
         Step::EventWait => return swoole_rs_reactor::event_api::swoole_event_wait() >= 0,
@@ -126,16 +121,14 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             // `ReactorProcess_onTimeout` on the reactor arming it, which outlives its
             // timers.
             let reactor = crate::reactor_handle::Reactor::thread();
-            let node = swoole_rs_timer::add_fn(msec, true, move || {
+            let timer = swoole_rs_timer::add_fn(msec, true, move || {
                 crate::reactor_process::with_server(reactor, |serv| {
                     crate::reactor_process::heartbeat(serv, reactor);
                     0
                 });
             });
-            config
-                .heartbeat_timer
-                .store(node, core::sync::atomic::Ordering::Relaxed);
-            return !node.is_null();
+            config.heartbeat_timer.store(timer);
+            return timer.is_some();
         }
         Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait() >= 0,
     }

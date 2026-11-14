@@ -755,10 +755,10 @@ mod tests {
         conn.set_closing(false);
         conn.closed().store(0, Ordering::Relaxed);
         let sock = conn.socket().unwrap();
-        conn.set_socket(core::ptr::null_mut());
+        conn.set_socket(None);
         conn.set_close_force(true);
         assert!(!end(serv, 1, 0), "no socket");
-        conn.set_socket(sock.as_ptr().cast());
+        conn.set_socket(Some(sock));
         conn.active().store(0, Ordering::Relaxed);
         assert!(!end(serv, 1, 0), "no connection");
         conn.active().store(1, Ordering::Relaxed);

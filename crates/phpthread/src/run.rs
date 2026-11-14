@@ -6,8 +6,9 @@
 use crate::{Arguments, request, thread};
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_int, c_void},
-    ptr,
+    ffi::{CStr, CString, c_char, c_int, c_void},
+    marker::PhantomData,
+    ptr::{self, NonNull},
     sync::{
         Mutex, PoisonError,
         atomic::{AtomicUsize, Ordering},
@@ -16,12 +17,49 @@ use std::{
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
     sys::{
-        PHP_STREAM_FLAG_NO_CLOSE, swr_zend_bailout_to, swr_zend_register_stream_constant,
-        swr_zend_stream_close, swr_zend_stream_fd, swr_zend_stream_open, swr_zend_thread_enter,
+        PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_enter,
         swr_zend_thread_leave, swr_zend_thread_main_request, swr_zend_thread_request,
         swr_zend_thread_set_argv,
     },
 };
+
+/// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
+/// before its script runs: no user stream wrapper, error handler or constant
+/// exists yet, so closing it, casting it or registering it as a constant runs
+/// no PHP code. Only the prologue makes one.
+#[repr(transparent)]
+struct Stdio(NonNull<php_stream>);
+
+/// A [`Stdio`] lent for one call.
+#[repr(transparent)]
+struct Lent<'a>(NonNull<php_stream>, PhantomData<&'a mut Stdio>);
+
+impl Stdio {
+    /// `PHP_STREAM_FLAG_NO_CLOSE`, so the stream outlives its resource, then
+    /// its descriptor in `fd`: whether the cast succeeded.
+    fn keep_open(&mut self, fd: &mut c_int) -> bool {
+        // SAFETY: a live stream, per the type, borrowed through its one handle
+        // for this statement.
+        unsafe { self.0.as_mut() }.flags |= PHP_STREAM_FLAG_NO_CLOSE;
+        stdio_fd(Lent(self.0, PhantomData), fd)
+    }
+}
+
+// The prologue's stdio streams (`Stdio`).
+unsafe extern "C" {
+    /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)`, or none.
+    #[link_name = "swr_zend_stream_open"]
+    fn stdio_open(path: *const c_char, mode: *const c_char) -> Option<Stdio>;
+    /// `php_stream_close`.
+    #[link_name = "swr_zend_stream_close"]
+    safe fn stdio_close(stream: Stdio);
+    /// `php_stream_cast(stream, PHP_STREAM_AS_FD, fd, 0) == SUCCESS`.
+    #[link_name = "swr_zend_stream_fd"]
+    safe fn stdio_fd(stream: Lent<'_>, fd: &mut c_int) -> bool;
+    /// Register the stream's resource as the constant `name`, which takes it.
+    #[link_name = "swr_zend_register_stream_constant"]
+    safe fn stdio_constant(name: swoole_rs_corebase::sys::Text<'_>, stream: Stdio);
+}
 
 // crates/zend-sys' shims that take nothing and can't run PHP or bail out: the calling
 // thread's exit mark and native scopes (`shim_guard.c`), and TSRM's process state.
@@ -153,24 +191,22 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
         (c"php://stderr", c"wb", c"STDERR"),
     ];
     let opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: in a request, with NUL-terminated strings.
-    let streams =
-        names.map(|(path, mode, _)| unsafe { swr_zend_stream_open(path.as_ptr(), mode.as_ptr()) });
+    // SAFETY: the thread's request, before its script runs, with NUL-terminated
+    // strings: each opens one of PHP's own stdio streams, a `Stdio`.
+    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.as_ptr(), mode.as_ptr()) });
     drop(opening);
-    if streams.iter().any(|stream| stream.is_null()) {
-        for stream in streams.into_iter().filter(|stream| !stream.is_null()) {
-            // SAFETY: a stream opened above.
-            unsafe { swr_zend_stream_close(stream) };
-        }
+    let [Some(stdin), Some(stdout), Some(stderr)] = streams else {
+        streams
+            .into_iter()
+            .flatten()
+            .for_each(|stream| stdio_close(stream));
         return;
-    }
+    };
+    let mut streams = [stdin, stdout, stderr];
     let mut fds = [-1; 3];
     let mut casted = true;
-    for (stream, fd) in streams.iter().zip(&mut fds) {
-        // SAFETY: a stream opened above.
-        unsafe { (**stream).flags |= PHP_STREAM_FLAG_NO_CLOSE };
-        // SAFETY: as above.
-        casted &= unsafe { swr_zend_stream_fd(*stream, fd) };
+    for (stream, fd) in streams.iter_mut().zip(&mut fds) {
+        casted &= stream.keep_open(fd);
     }
     request::keep_stdio(fds);
     if !casted {
@@ -180,8 +216,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
         );
     }
     for (stream, (_, _, name)) in streams.into_iter().zip(names) {
-        // SAFETY: a stream opened above; Zend takes the constant's value.
-        unsafe { swr_zend_register_stream_constant(name.as_ptr(), stream) };
+        stdio_constant(name.into(), stream);
     }
 }
 

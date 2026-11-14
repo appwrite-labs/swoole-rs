@@ -1,7 +1,6 @@
-//! The queue's front cursor and its native tokens (sendfile requests, CLOSE markers).
+//! The queue's front cursor and its tokens (sendfile requests, CLOSE markers).
 use super::{Buffer, Entry, Error, c_void};
-
-type Dispose = Option<unsafe extern "C" fn(*mut c_void)>;
+use std::any::Any;
 
 /// `BufferChunk::Type`: what a queued entry holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -9,7 +8,7 @@ type Dispose = Option<unsafe extern "C" fn(*mut c_void)>;
 pub enum Kind {
     #[default]
     Data = 0,
-    /// A native sendfile request.
+    /// A sendfile request.
     Sendfile = 1,
     /// A payload-free CLOSE marker.
     Close = 2,
@@ -17,8 +16,8 @@ pub enum Kind {
 
 pub(super) struct Token {
     kind: Kind,
-    value: *mut c_void,
-    dispose: Dispose,
+    /// The queued request, which the queue owns; none for a CLOSE marker.
+    value: Option<Box<dyn Any>>,
 }
 
 #[derive(Default)]
@@ -39,57 +38,42 @@ pub struct Front {
     pub generation: u64,
 }
 
-/// A popped entry's native token and its disposer, which [`Detached::dispose`] runs once.
+/// The address of a queued request, null without one: what [`Front::token`] and
+/// [`Detached::token`] show.
+fn address(value: Option<&dyn Any>) -> *mut c_void {
+    value.map_or(std::ptr::null_mut(), |value| {
+        std::ptr::from_ref(value).cast::<c_void>().cast_mut()
+    })
+}
+
+/// A popped entry's request, which [`Detached::dispose`] drops.
 #[derive(Default)]
 pub struct Detached {
-    token: *mut c_void,
-    dispose: Dispose,
+    token: Option<Box<dyn Any>>,
 }
 
 impl Detached {
-    /// The popped token, null for a data entry or a CLOSE marker.
+    /// The popped request's address, null for a data entry or a CLOSE marker.
     #[must_use]
-    pub const fn token(&self) -> *mut c_void {
-        self.token
+    pub fn token(&self) -> *mut c_void {
+        address(self.token.as_deref())
     }
 
-    /// Hands the token to its disposer, if it has one.
+    /// Drops the request, if there is one.
     pub fn dispose(self) {
-        if let Some(dispose) = self.dispose {
-            // SAFETY: `push`'s caller handed the queue this token for `dispose` to free;
-            // it left the queue in this `Detached`, which isn't `Copy` and is consumed here.
-            unsafe { dispose(self.token) };
-        }
+        drop(self.token);
     }
 }
 
 impl Buffer {
-    /// Transfer a native sendfile token, or enqueue a payload-free CLOSE marker (with or
-    /// without a token); a data entry has no token, so is `Invalid`. Custody transfers on
-    /// `Ok` only.
+    /// Queue a sendfile request, which the queue owns until its entry is popped. A
+    /// refused one is dropped.
     /// # Errors
-    /// `Invalid` for a data kind or a token that does not match it, `NoMem` when the queue
-    /// cannot grow.
-    /// # Safety
-    /// `value` is unique to this queue, and `dispose(value)` is sound once and doesn't
-    /// unwind; Rust stores the function address and only [`Detached::dispose`] calls it.
-    pub unsafe fn push(
-        &mut self,
-        kind: Kind,
-        value: *mut c_void,
-        dispose: Dispose,
-    ) -> Result<(), Error> {
-        if !match kind {
-            Kind::Sendfile => !value.is_null() && dispose.is_some(),
-            Kind::Close => value.is_null() == dispose.is_none(),
-            Kind::Data => false,
-        } {
-            return Err(Error::Invalid);
-        }
+    /// `NoMem` when the queue cannot grow.
+    pub fn push_file(&mut self, request: Box<dyn Any>) -> Result<(), Error> {
         self.push_token(Token {
-            kind,
-            value,
-            dispose,
+            kind: Kind::Sendfile,
+            value: Some(request),
         })
     }
 
@@ -99,8 +83,7 @@ impl Buffer {
     pub fn push_close(&mut self) -> Result<(), Error> {
         self.push_token(Token {
             kind: Kind::Close,
-            value: std::ptr::null_mut(),
-            dispose: None,
+            value: None,
         })
     }
 
@@ -129,10 +112,20 @@ impl Buffer {
             }
             Some(Entry::TypedToken(token)) => {
                 result.kind = token.kind;
-                result.token = token.value;
+                result.token = address(token.value.as_deref());
             }
         }
         Ok(result)
+    }
+
+    /// The first entry's sendfile request, when it is a `T`.
+    pub fn front_file<T: Any>(&mut self) -> Option<&mut T> {
+        match self.entries.front_mut() {
+            Some(Entry::TypedToken(Token {
+                value: Some(value), ..
+            })) => value.downcast_mut(),
+            _ => None,
+        }
     }
 
     /// The first entry's bytes, sent ones included: empty for a token or an empty queue.
@@ -177,10 +170,7 @@ impl Buffer {
                 self.recycle(bytes);
                 Detached::default()
             }
-            Entry::TypedToken(token) => Detached {
-                token: token.value,
-                dispose: token.dispose,
-            },
+            Entry::TypedToken(token) => Detached { token: token.value },
         };
         self.cursor.offset = 0;
         self.cursor.generation = self.cursor.generation.wrapping_add(1);
@@ -191,10 +181,14 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{mem, ptr, slice};
+    use std::{cell::Cell, mem, ptr, rc::Rc, slice};
 
-    unsafe extern "C" fn never_called(_: *mut c_void) {
-        panic!("Rust must never invoke Native disposal");
+    /// A queued request that counts its drops.
+    struct Payload(u32, Rc<Cell<u32>>);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            self.1.set(self.1.get() + 1);
+        }
     }
 
     #[test]
@@ -206,10 +200,7 @@ mod tests {
         assert_eq!(mem::offset_of!(Front, generation), 32);
         let mut queue = Buffer::create(3).unwrap();
         assert_eq!(queue.append(b"abcdefg"), Ok(()));
-        assert_eq!(
-            unsafe { queue.push(Kind::Close, ptr::null_mut(), None) },
-            Ok(())
-        );
+        assert_eq!(queue.push_close(), Ok(()));
         let mut total = 7;
         for bytes in [b"abc".as_slice(), b"def".as_slice(), b"g".as_slice()] {
             let view = queue.front().unwrap();
@@ -227,7 +218,7 @@ mod tests {
             assert_eq!(queue.length, total);
             assert_eq!(queue.consume(generation, 1, view.length - 1), Ok(()));
             let detached = queue.pop().unwrap();
-            assert!(detached.token.is_null() && detached.dispose.is_none());
+            assert!(detached.token.is_none());
             total -= u32::try_from(bytes.len()).unwrap();
             assert_eq!(queue.length, total);
         }
@@ -235,20 +226,21 @@ mod tests {
         assert_eq!(queue.front_data(), b"");
         queue.pop().unwrap();
         assert_eq!(queue.front().err(), Some(Error::Empty));
-        let mut native_payload = 37u32;
-        let token = ptr::from_mut(&mut native_payload).cast();
-        // One reified pointer: each cast of `never_called` may get its own address.
-        let dispose: unsafe extern "C" fn(*mut c_void) = never_called;
-        assert_eq!(
-            unsafe { queue.push(Kind::Sendfile, token, Some(dispose)) },
-            Ok(())
-        );
+        let drops = Rc::new(Cell::new(0));
+        let payload = Box::new(Payload(37, Rc::clone(&drops)));
+        let token = ptr::from_ref(&*payload).cast_mut().cast();
+        assert_eq!(queue.push_file(payload), Ok(()));
         let view = queue.front().unwrap();
         assert_eq!((view.kind, view.token), (Kind::Sendfile, token));
+        assert_eq!(
+            queue.front_file::<Payload>().map(|payload| payload.0),
+            Some(37)
+        );
         let detached = queue.pop().unwrap();
-        assert_eq!(detached.token, token);
-        assert!(std::ptr::fn_addr_eq(detached.dispose.unwrap(), dispose));
-        assert_eq!(native_payload, 37);
+        assert_eq!(detached.token(), token);
+        assert_eq!(drops.get(), 0, "popping leaves the request to its caller");
+        detached.dispose();
+        assert_eq!(drops.get(), 1);
         assert!(queue.release().is_ok());
     }
 }

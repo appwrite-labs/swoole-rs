@@ -9,7 +9,6 @@
 //! (`dtls_sessions`), each with a reference to its context.
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{MutexGuard, PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
@@ -331,7 +330,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     };
     socket.removed = true;
     let info = socket.info;
-    *config.socket.get_mut() = socket.into_raw().cast();
+    config.set_listening_socket(Box::new(socket).into_socket());
     config.r#type = kind;
     if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
@@ -353,7 +352,7 @@ pub(crate) fn close(port: view::Port<'_>) {
     }
     let config = port.config();
     // Taken first, so nothing finds the record once it is freed.
-    let socket = config.socket.swap(ptr::null_mut(), Relaxed);
+    let socket = config.take_socket_ptr();
     if !socket.is_null() {
         // SAFETY: the port's live socket, which nothing uses after.
         unsafe { socket_free(socket.cast()) };

@@ -3,11 +3,10 @@
 use crate::{
     asynchronous as a, constants::SHORTNAME, functions as f, implicit, interfaces as i, module, vm,
 };
-use std::ffi::CStr;
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
     method_table,
-    sys::{self as z, zend_function_entry, zend_internal_arg_info},
+    sys::{self as z, zend_function_entry},
 };
 
 /// `swr_v1_phpswoole_minit` flag: the build has `SW_STDEXT`.
@@ -244,32 +243,22 @@ pub(crate) fn register_aliases(
     if flags & SHORTNAME == 0 {
         return Ok(());
     }
-    let aliases: [(&CStr, &CStr, *const zend_internal_arg_info); 3] = [
-        (
-            c"swoole_coroutine_create",
-            c"go",
-            s::arginfo_swoole_coroutine_create.0.as_ptr(),
-        ),
-        (
-            c"swoole_coroutine_defer",
-            c"defer",
-            s::arginfo_swoole_coroutine_defer.0.as_ptr(),
-        ),
-        (
+    minit.function_alias(
+        c"swoole_coroutine_create",
+        c"go",
+        &s::arginfo_swoole_coroutine_create,
+    )?;
+    minit.function_alias(
+        c"swoole_coroutine_defer",
+        c"defer",
+        &s::arginfo_swoole_coroutine_defer,
+    )?;
+    if flags & STDEXT != 0 {
+        minit.function_alias(
             c"swoole_typed_array",
             c"typed_array",
-            stdext::arginfo_swoole_typed_array.0.as_ptr(),
-        ),
-    ];
-    let count = if flags & STDEXT == 0 { 2 } else { 3 };
-    for (origin, alias, arg_info) in aliases.iter().take(count) {
-        let target = minit.compiler_functions();
-        // SAFETY: at MINIT, after Zend registered the module's internal
-        // functions in the compiler's table; these static names and arginfo
-        // remain live while the registry performs the contained registration.
-        unsafe {
-            swoole_rs_zend::registration::function_alias(target, origin, target, alias, *arg_info)
-        }?;
+            &stdext::arginfo_swoole_typed_array,
+        )?;
     }
     Ok(())
 }

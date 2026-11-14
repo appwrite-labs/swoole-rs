@@ -10,8 +10,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
-    ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_get_worker_pid,
-    swoole_set_worker_id, worker_type,
+    ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_globals::{
@@ -189,30 +188,24 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: R
 /// The session's client certificate, sent with its connect event.
 fn store_client_cert(serv: view::Server<'_>, info: &DataHead) {
     if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified) {
-        conn.set_ssl_client_cert(bus(serv).with_packet(client_cert).cast());
-        conn.set_ssl_client_cert_pid(swoole_get_worker_pid());
+        conn.store_client_cert(bus(serv).with_packet(client_cert));
     }
 }
 
 /// Frees the session's client certificate, if this worker stored it.
 fn free_client_cert(serv: view::Server<'_>, info: &DataHead) {
-    if let Some(conn) = serv.state().connection(info.fd, Lookup::Verified)
-        && !conn.ssl_client_cert().is_null()
-        && conn.ssl_client_cert_pid() == swoole_get_worker_pid()
-    {
-        // SAFETY: this worker's certificate, which `client_cert` made.
-        let mut cert = unsafe { Box::from_raw(conn.ssl_client_cert().cast::<CppString>()) };
+    let conn = serv.state().connection(info.fd, Lookup::Verified);
+    if let Some(mut cert) = conn.and_then(crate::Connection::take_client_cert) {
         cert.dispose();
-        conn.set_ssl_client_cert(core::ptr::null_mut());
     }
 }
 
 /// `new String(data, length)`: the connection's client certificate.
-fn client_cert(data: &[u8]) -> *mut CppString {
-    let mut cert = Box::new(CppString::EMPTY);
+fn client_cert(data: &[u8]) -> CppString {
+    let mut cert = CppString::EMPTY;
     cert.alloc(data.len(), None);
     cert.append(data);
-    Box::into_raw(cert)
+    cert
 }
 
 /// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
