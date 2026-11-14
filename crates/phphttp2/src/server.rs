@@ -49,8 +49,6 @@ const NO_PAYLOAD: c_int = 550;
 const STREAM_NOT_FOUND: c_int = 3003;
 const STREAM_IGNORE: c_int = 3004;
 const LOG_WARNING: c_int = 4;
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
@@ -827,7 +825,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
 
 /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
 /// connection, whose session (and settings context) the first data makes.
-fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) -> c_int {
+fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) -> bool {
     let session_id = request.info().fd;
     let session = SessionState::find(session_id).or_else(|| {
         let default_ctx = Ctx::server_context(view, session_id);
@@ -847,7 +845,7 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) 
     // Released before a deferred bailout can jump past it.
     drop(zdata);
     bailout::finish();
-    if parsed { SW_OK } else { SW_ERR }
+    parsed
 }
 
 /// `php_swoole_http2_server_onClose`: the connection's session goes.

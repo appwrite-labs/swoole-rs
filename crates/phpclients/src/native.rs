@@ -11,7 +11,7 @@ use std::{
 };
 use swoole_rs_clients::{
     address::{swr_v1_clients_address_port, with_host},
-    client::{self, Client, Op},
+    client::{self, Client},
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -576,20 +576,17 @@ impl Cli {
         self.0
     }
 
-    /// Run `op` inside `zend_try`.
+    /// Run `op`, one of crates/clients' client methods, inside `zend_try`.
     /// # Errors
     /// PHP code it ran bailed out.
-    pub(crate) fn run(self, op: Op<'_>) -> Result<i64, Bailout> {
+    pub(crate) fn run<T: Default>(
+        self,
+        op: impl FnOnce(client::Handle) -> T,
+    ) -> Result<T, Bailout> {
+        let (handle, mut result) = (self.handle(), T::default());
         // crates/clients' operations own nothing a bailout would skip dropping.
-        let (handle, mut result) = (self.handle(), 0);
-        swoole_rs_zend::contain_with(|| result = handle.run(op))?;
+        swoole_rs_zend::contain_with(|| result = op(handle))?;
         Ok(result)
-    }
-
-    /// Run an `op` that cannot reach PHP code (a sync client's send or plain
-    /// receive), without the `zend_try` frame.
-    pub(crate) fn run_plain(self, op: Op<'_>) -> i64 {
-        self.handle().run(op)
     }
 }
 

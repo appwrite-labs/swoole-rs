@@ -47,9 +47,6 @@ const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
     (c"MAP", format::MAP),
 ];
 
-/// `SW_OK`/`SW_ERR`.
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const PHP_FATAL_ERROR: c_int = 503;
 const PHP_RUNTIME_NOTICE: c_int = 510;
@@ -170,14 +167,14 @@ fn get_handler(call: &Call) {
 }
 
 /// `php_swoole_redis_server_onReceive` on a Redis port: parse the request,
-/// then run its command's handler and send back a string it returns. `SW_OK`
-/// or `SW_ERR`, or the bailout for crates/phpserver to re-raise.
+/// then run its command's handler and send back a string it returns. Whether it
+/// succeeded, or the bailout for crates/phpserver to re-raise.
 fn receive(
     serv: view::Server<'_>,
     fd: c_long,
     zdata: &Owned,
     coroutine: bool,
-) -> Result<c_int, bailout::Bailout> {
+) -> Result<bool, bailout::Bailout> {
     // `php_swoole_get_recv_data` leaves a string.
     let data = zdata.bytes().unwrap_or_default();
     let mut params = OwnedArray::default();
@@ -203,7 +200,7 @@ fn receive(
     };
     if result.is_err() {
         server_methods::close(serv, fd, false);
-        return Ok(OK);
+        return Ok(true);
     }
     if command.len() >= MAX_COMMAND_SIZE {
         let head = command.get(..8).unwrap_or(command);
@@ -212,7 +209,7 @@ fn receive(
         message.extend_from_slice(format!("...](length={}) is too long", command.len()).as_bytes());
         report(false, E_WARNING, &message)?;
         server_methods::close(serv, fd, false);
-        return Ok(OK);
+        return Ok(true);
     }
     let key = handler_key(command);
     let Some(callable) = HANDLERS.with_borrow(|map| map.get(&key).cloned()) else {
@@ -220,7 +217,7 @@ fn receive(
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");
         let sent = server_methods::send(serv, fd, &reply);
-        return Ok(if sent { OK } else { ERR });
+        return Ok(sent);
     };
     let args = [Owned::long(fd), params.into_owned()];
     let retval = Owned::default();
@@ -239,5 +236,5 @@ fn receive(
     if let Some(reply) = retval.bytes() {
         server_methods::send(serv, fd, reply);
     }
-    Ok(OK)
+    Ok(true)
 }

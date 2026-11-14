@@ -58,14 +58,14 @@ pub fn server_class_ref() -> &'static Class {
 }
 
 /// crates/phpredis' `onReceive` of a Redis port: the server, the request's
-/// session, its payload and whether handlers run in a coroutine; `SW_OK` or
-/// `SW_ERR`, or the handler's bailout.
+/// session, its payload and whether handlers run in a coroutine; whether it
+/// succeeded, or the handler's bailout.
 pub type RedisReceive = fn(
     view::Server<'_>,
     c_long,
     &swoole_rs_zend::Owned,
     bool,
-) -> Result<c_int, swoole_rs_zend::bailout::Bailout>;
+) -> Result<bool, swoole_rs_zend::bailout::Bailout>;
 
 static REDIS_RECEIVE: std::sync::OnceLock<RedisReceive> = std::sync::OnceLock::new();
 

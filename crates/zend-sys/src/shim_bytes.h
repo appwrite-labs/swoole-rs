@@ -7,8 +7,10 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_BYTES_H
 #define SWOOLE_RS_ZEND_SHIM_BYTES_H
 
-#include <sys/uio.h>
+/* shim.h (php.h) first: a system header before it fixes glibc's feature macros
+ * without _GNU_SOURCE, and zend_operators.h's memrchr goes undeclared. */
 #include "shim.h"
+#include <sys/uio.h>
 
 /* zend_hash_func: the hash a zend_string of these bytes caches. */
 zend_ulong swr_bytes_hash(struct iovec key);

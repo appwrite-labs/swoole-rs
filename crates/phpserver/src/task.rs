@@ -54,8 +54,6 @@ const SW_ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
 /// `SW_ERROR_TASK_TIMEOUT`, `SW_LOG_WARNING`.
 const SW_ERROR_TASK_TIMEOUT: c_int = 2003;
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `DATA`'s `Swoole\Server\TaskResult`.
 const TASK_RESULT: usize = 4;
 
@@ -666,11 +664,11 @@ fn unpack(task: Packed<'_>) -> Result<Option<Owned>, Bailout> {
 }
 
 /// `php_swoole_server_onTask`, for a live server and the task it received.
-pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
+pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<bool, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
     let Some(data) = unpack(task)? else {
-        return Ok(SW_ERR);
+        return Ok(false);
     };
     let facts = facts(server);
     let info = info(task);
@@ -710,19 +708,19 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
     });
     drop(retval);
     drop(data);
-    outcome.map(|()| SW_OK)
+    outcome.map(|()| true)
 }
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
-pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
+pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<bool, Bailout> {
     let info = info(task);
     let id = info.id;
     let Some(data) = unpack(task)? else {
-        return Ok(SW_ERR);
+        return Ok(false);
     };
     let mut flags = info.flags.c_cast::<u32>();
     if flags & COROUTINE != 0 {
-        return resume(server, id, data).map(|()| SW_OK);
+        return resume(server, id, data).map(|()| true);
     }
     let cb = if flags & CALLBACK != 0 {
         // Its own reference: the callback may replace the pending entry.
@@ -739,7 +737,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     let Some(cb) = cb else {
         let outcome = event_warning(c"require 'onFinish' callback");
         drop(data);
-        return outcome.map(|()| SW_ERR);
+        return outcome.map(|()| false);
     };
     let facts = facts(server);
     // `data` is the last argument, or the event's property.
@@ -765,7 +763,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         drop(pending(server, |p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
     }
     drop(args);
-    outcome.map(|()| SW_OK)
+    outcome.map(|()| true)
 }
 
 /// A coroutine task's result: into `taskwait`'s return value, or at its index

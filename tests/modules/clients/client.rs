@@ -23,7 +23,7 @@ use super::{
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::io::{Read, Write};
-use swoole_rs_clients::client::{ClientEvent, Flag, Handle, Op};
+use swoole_rs_clients::client::{self as native, ClientEvent, Flag, Handle};
 use swoole_rs_corebase::net_types::SocketAddress;
 
 const GREETER: &[u8] = b"Hello Swoole\0";
@@ -42,6 +42,11 @@ const TEST_SOCKS5_PROXY_USER: &str = "user";
 const TEST_SOCKS5_PROXY_PASSWORD: &str = "password";
 
 const SW_OK: c_int = 0;
+
+/// A method's `SW_OK` or `SW_ERR`, as the C++ client returns it.
+fn code(ok: bool) -> c_int {
+    if ok { SW_OK } else { SW_ERR }
+}
 const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
 const SW_SOCK_RAW6: c_int = 8;
 const SW_BUFFER_SIZE_BIG: usize = 65536;
@@ -332,59 +337,41 @@ impl<'a> Client<'a> {
         unsafe { Handle::new(self.state.cast()) }
     }
 
-    /// `op` on the client: its result.
-    fn run(&self, op: Op<'_>) -> i64 {
-        self.handle().run(op)
-    }
-
-    /// An operation's `int` result.
-    fn int(&self, op: Op<'_>) -> c_int {
-        c_int::try_from(self.run(op)).unwrap()
-    }
-
     pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
-        let host = cstring(host);
-        self.int(Op::Connect {
-            host: &host,
-            port,
-            timeout,
-            flags,
-        })
+        native::connect(self.handle(), &cstring(host), port, timeout, flags)
     }
 
     fn send(&self, data: &[u8], flags: c_int) -> isize {
-        let sent = self.run(Op::Send { data, flags });
-        isize::try_from(sent).unwrap()
+        native::send(self.handle(), data, flags)
     }
 
     fn sendfile(&self, file: &str, offset: i64, length: usize) -> c_int {
-        let file = cstring(file);
-        self.int(Op::Sendfile {
-            file: &file,
+        code(native::sendfile(
+            self.handle(),
+            &cstring(file),
             offset,
             length,
-        })
+        ))
     }
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
-        let read = self.run(Op::Recv { buffer: buf, flags });
-        isize::try_from(read).unwrap()
+        native::recv(self.handle(), buf, flags)
     }
 
     fn close(&self) -> c_int {
-        self.int(Op::Close)
+        native::close(self.handle())
     }
 
     pub(super) fn shutdown(&self, how: c_int) -> c_int {
-        self.int(Op::Shutdown(how))
+        code(native::shutdown(self.handle(), how))
     }
 
     fn sleep(&self) -> c_int {
-        self.int(Op::Sleep)
+        code(native::sleep(self.handle()))
     }
 
     fn wakeup(&self) -> c_int {
-        self.int(Op::Wakeup)
+        code(native::wakeup(self.handle()))
     }
 
     fn bind(&self, host: &str, port: c_int) -> c_int {
@@ -396,12 +383,7 @@ impl<'a> Client<'a> {
     }
 
     fn sendto(&self, host: &str, port: c_int, data: &[u8]) -> c_int {
-        let host = cstring(host);
-        self.int(Op::Sendto {
-            host: &host,
-            port,
-            data,
-        })
+        code(native::sendto(self.handle(), &cstring(host), port, data))
     }
 
     /// `get_peer_name(&addr)`, then the address's `get_addr()` and `get_port()`.
@@ -429,11 +411,11 @@ impl<'a> Client<'a> {
     }
 
     fn ssl_handshake(&self) -> c_int {
-        self.int(Op::SslHandshake)
+        code(native::ssl_handshake(self.handle()))
     }
 
     fn ssl_verify(&self, allow_self_signed: bool) -> c_int {
-        self.int(Op::SslVerify(allow_self_signed))
+        code(native::ssl_verify(self.handle(), allow_self_signed))
     }
 
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned

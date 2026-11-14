@@ -112,10 +112,6 @@ const WEBSOCKET_INCOMPLETE_PACKET: c_int = 8507;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
-/// `SW_OK`/`SW_ERR`.
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.
 #[must_use]
@@ -885,19 +881,19 @@ fn dispatch(
 /// `swoole_websocket_onMessage`: a frame `Server::dispatch_frame` delivered,
 /// answered by policy or handed to `onMessage` as a Frame. A bailout in the
 /// handler is raised last, over this frame only.
-pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> c_int {
+pub(crate) fn on_message(server: view::Server<'_>, request: &RecvData) -> bool {
     let result = message(server, request);
-    let code = *result.as_ref().unwrap_or(&OK);
+    let ok = *result.as_ref().unwrap_or(&true);
     bailout::raise(result.map(|_| ()));
-    code
+    ok
 }
 
-fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout::Bailout> {
+fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::Bailout> {
     let info = request.info();
     let (fd, server_fd, ext_flags) = (info.fd, c_int::from(info.server_fd), info.ext_flags);
     let server = view;
     let Some(settings) = port_frames(server, fd) else {
-        return Ok(ERR);
+        return Ok(false);
     };
     let mut data = php_swoole_get_recv_data(view, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
@@ -908,12 +904,12 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
         {
             server_methods::send(server, fd, pong.bytes());
         }
-        return Ok(OK);
+        return Ok(true);
     }
     // RFC 7692: the payload is deflated.
     if flags & FLAG_RSV1 != 0 {
         let Some(plain) = uncompress(data.bytes().unwrap_or_default()) else {
-            return Ok(OK);
+            return Ok(true);
         };
         data = plain;
     }
@@ -927,7 +923,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<c_int, bailout:
     }
     // SAFETY: the Frame built above.
     unsafe { zval_ptr_dtor(&raw mut args[1]) };
-    Ok(OK)
+    Ok(true)
 }
 
 /// `swoole_websocket_onHandshake`: the handshake, then `onOpen`, or a reset.

@@ -177,7 +177,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         exit_after_max_wait_time(serv);
     }
     if mode == Mode::Thread {
-        hybrid().thread_mode(serv, crate::thread_mode::ThreadOp::StopWorkers);
+        hybrid().stop_worker_threads(serv);
     }
     if mode == Mode::Process && serv.config().single_thread.get() {
         hybrid().thread0_shutdown(serv);
@@ -435,8 +435,8 @@ mod tests {
 
         set_mode(&live, Mode::Thread);
         stop_master_thread(serv);
-        let stop = crate::thread_mode::ThreadOp::StopWorkers;
-        assert_eq!(calls(), [Call::ThreadMode(stop)], "the worker threads stop");
+        let stop = Call::StopWorkerThreads;
+        assert_eq!(calls(), [stop], "the worker threads stop");
     }
 
     #[test]

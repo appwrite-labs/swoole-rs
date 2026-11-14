@@ -191,21 +191,24 @@ fn cached(
 /// `onReceive`, or parse it into a new context and run its handler. A
 /// bailout (a handshake's `onOpen`, the handler's `exit()`) is raised last.
 #[must_use]
-pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> bool {
     let info = request.info();
     match receive(server, request) {
-        Route::Closed => -1,
-        Route::Tcp => php_swoole_server_on_receive(server, request),
+        Route::Closed => false,
+        Route::Tcp => {
+            php_swoole_server_on_receive(server, request);
+            true
+        }
         Route::WebSocket => websocket::on_message(server, request),
         Route::Http2 => {
             // `receive` verified the session.
             let (Some(conn), Some(http2)) = (server.verified(info.fd), crate::http2::server())
             else {
-                return -1;
+                return false;
             };
             (http2.on_receive)(server, conn, request)
         }
-        Route::Request | Route::Done => 0,
+        Route::Request | Route::Done => true,
     }
 }
 

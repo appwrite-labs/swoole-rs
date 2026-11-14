@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::ServerEvent;
 
 use crate::base_factory::SendData;
-use crate::thread_mode::{ThreadManager, ThreadOp};
+use crate::thread_mode::ThreadManager;
 use swoole_rs_corebase::DataHead;
 
 use crate::state::ServerState;
@@ -380,8 +380,20 @@ impl crate::hybrid::Hybrid for Linked {
         sent > 0
     }
 
-    fn thread_mode(&self, serv: crate::view::Server<'_>, operation: ThreadOp) -> i64 {
-        crate::thread_mode::native::run(serv, operation)
+    fn create_thread_factory(&self, serv: crate::view::Server<'_>) -> *mut c_void {
+        crate::thread_mode::native::create_factory(serv)
+    }
+
+    fn destroy_thread_factory(&self, serv: crate::view::Server<'_>) {
+        crate::thread_mode::native::destroy_factory(serv);
+    }
+
+    fn start_worker_threads(&self, serv: crate::view::Server<'_>) -> bool {
+        crate::thread_mode::native::start_worker_threads(serv)
+    }
+
+    fn stop_worker_threads(&self, serv: crate::view::Server<'_>) {
+        crate::thread_mode::native::stop_worker_threads(serv);
     }
 
     fn stop_single_worker(&self, serv: crate::view::Server<'_>) {

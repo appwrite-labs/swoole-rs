@@ -85,7 +85,7 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> bo
                     Dispatched::Kept => {}
                 }
                 c.clear();
-                zero(c.view().2);
+                *c.view().2 = RespRequest::default();
                 return true;
             }
             RespAction::TooBig => {
@@ -119,13 +119,6 @@ pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
         *slot = fresh;
     }
     *slot
-}
-
-/// A fresh request state, its padding zeroed too, as upstream's `memset` and native
-/// code comparing whole states expect.
-fn zero(request: &mut RespRequest) {
-    // SAFETY: an exclusive RespRequest, whose fields all take zero (`RespState::TotalLine`).
-    unsafe { core::ptr::from_mut(request).write_bytes(0, 1) };
 }
 
 #[cfg(test)]
