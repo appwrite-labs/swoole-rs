@@ -391,7 +391,7 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
         return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length) >= 0
+    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length)
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's

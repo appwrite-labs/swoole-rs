@@ -144,13 +144,13 @@ pub(super) mod net {
         io("recvfrom_sync", buffer.len())
     }
 }
-pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
+pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
     log("sendfile false");
-    OK
+    true
 }
-pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
+pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
     log("sendfile true");
-    OK
+    true
 }
 /// crates/reactor's, which reads the thread's reactor.
 pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> isize {
@@ -228,9 +228,9 @@ pub(super) fn socket_ssl_create(
     _: Socket<'_>,
     _: Option<&swoole_rs_tls::SslCtx>,
     flags: c_int,
-) -> c_int {
+) -> bool {
     log(format!("ssl session {flags}"));
-    OK
+    true
 }
 pub(super) fn socket_ssl_connect(_: Socket<'_>) -> bool {
     log("ssl connect");

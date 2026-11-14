@@ -360,18 +360,18 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
-        let ret = match kind {
+        let sent = match kind {
             EntryKind::Close => return reactor.close(sock),
             EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
             EntryKind::Data => {
-                let ret = tls::socket_handle_send(sock);
-                if ret == OK {
+                let sent = tls::socket_handle_send(sock);
+                if sent {
                     conn.set_send_queued_bytes(output(sock).0);
                 }
-                ret
+                sent
             }
         };
-        if ret < 0 {
+        if !sent {
             let (close_wait, send_wait) = sock.read(|s| (s.output.close_wait, s.output.send_wait));
             if close_wait {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
