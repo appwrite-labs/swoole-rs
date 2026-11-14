@@ -18,7 +18,6 @@ use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buf
 const FD_PIPE: c_int = 3;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const TIMEOUT_ALL: c_int = 15;
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
 const CLOSE_MASTER: c_int = 1;
 const CLOSE_WORKER: c_int = 2;
@@ -197,7 +196,7 @@ pub fn clean(this: &SocketPair) {
         return;
     };
     let mut buffer = [0_u8; 1024];
-    while socket.wait_event(0, EVENT_READ) == OK {
+    while socket.wait_event(0, EVENT_READ) {
         if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= 0 {
             break;
         }
