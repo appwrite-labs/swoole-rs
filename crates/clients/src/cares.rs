@@ -190,7 +190,7 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         .find(|&&(watched, _)| watched == fd)
         .map(|&(_, wrapper)| wrapper);
     let wrapper = if let Some(wrapper) = registered {
-        if events == 0 {
+        if events.is_empty() {
             // Remove the registered native socket before detaching its descriptor.
             _ = event_api::event_del(wrapper);
             // `Socket::free` of a wrapper whose descriptor c-ares keeps.
@@ -216,7 +216,7 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         }
         wrapper
     } else {
-        if events == 0 {
+        if events.is_empty() {
             log::warning(ORIGIN, format_args!("error events, fd={fd}"));
             return;
         }
@@ -229,12 +229,12 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
     };
-    if !wrapper.read(|wrapper| wrapper.events).is_empty() {
-        // Update this registered wrapper, which lives until it is detached above.
-        _ = event_api::event_set(wrapper, events);
-    } else {
+    if wrapper.read(|wrapper| wrapper.events).is_empty() {
         // Register this fresh wrapper.
         _ = event_api::event_add(wrapper, events);
+    } else {
+        // Update this registered wrapper, which lives until it is detached above.
+        _ = event_api::event_set(wrapper, events);
     }
 }
 extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {
