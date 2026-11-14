@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_error::ErrorCode as E;
-use swoole_rs_process::command::{CommandInput, Rejected, Rejection, Target, route};
+use swoole_rs_process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use {
     swoole_rs_corebase::{CCast, DataHead, ServerEvent},
@@ -29,7 +29,7 @@ pub type CommandCallback = Arc<dyn Fn(&[u8])>;
 
 struct Command {
     id: i32,
-    accepted_types: i32,
+    accepted_types: ProcessTypes,
 }
 
 pub(crate) struct Commands {
@@ -70,7 +70,7 @@ fn commands(state: &ServerState) -> MutexGuard<'_, Commands> {
 /// Each command's name, id and accepted process types, in name order, for the
 /// admin server's listing.
 #[cfg(any(test, feature = "upstream-symbols"))]
-pub(crate) fn listing(state: &ServerState) -> Vec<(Vec<u8>, i32, i32)> {
+pub(crate) fn listing(state: &ServerState) -> Vec<(Vec<u8>, i32, ProcessTypes)> {
     let commands = commands(state);
     let named = commands.named.iter();
     named
@@ -226,7 +226,7 @@ fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>
 /// `Server::add_command`'s arguments.
 pub(crate) struct AddCommand<'a> {
     pub name: &'a [u8],
-    pub accepted_types: i32,
+    pub accepted_types: ProcessTypes,
     pub handler: CommandHandler,
 }
 
@@ -270,7 +270,7 @@ fn new_command_pipe(serv: Server<'_>) -> bool {
 pub(crate) struct SendCommand<'a> {
     pub serv: crate::view::Server<'a>,
     pub process_id: u32,
-    pub process_type: i32,
+    pub process_type: ProcessTypes,
     pub name: &'a [u8],
     pub message: &'a [u8],
     pub callback: CommandCallback,
@@ -303,7 +303,7 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
         base_mode: mode == Mode::Base,
         master: swoole_rs_process::methods::worker_type()
             == Some(swoole_rs_process::worker_record::WorkerType::Master),
-        accepted_types: found.map_or(0, |(_, types)| types),
+        accepted_types: found.map_or(ProcessTypes(0), |(_, types)| types),
         worker_id: worker_id.filter(|_| mode == Mode::Base).unwrap_or(0),
         process_id: send.process_id,
         process_type: send.process_type,
@@ -443,10 +443,10 @@ mod tests {
         live.counters().start.store(1, Relaxed);
     }
 
-    fn add(live: &LiveServer, name: &[u8], types: i32) -> bool {
+    fn add(live: &LiveServer, name: &[u8], types: impl Into<ProcessTypes>) -> bool {
         let add = AddCommand {
             name,
-            accepted_types: types,
+            accepted_types: types.into(),
             handler: handler(b"re:"),
         };
         add_command(live.server(), &add)
@@ -505,7 +505,10 @@ mod tests {
         let live = live(Mode::Base);
         let name = b"admin\0command";
         assert!(add(&live, name, 62));
-        assert_eq!(listing(live.state()), [(name.to_vec(), 1, 62)]);
+        assert_eq!(
+            listing(live.state()),
+            [(name.to_vec(), 1, ProcessTypes(62))]
+        );
         let mut reply = Vec::new();
         super::handler(live.state(), 1).unwrap()(live.server(), b"x", &mut reply);
         assert_eq!(reply, b"re:x");
@@ -517,22 +520,21 @@ mod tests {
     fn send<'a>(
         live: &'a LiveServer,
         name: &'a [u8],
-        process_type: i32,
+        process_type: impl Into<ProcessTypes>,
         out: &Out,
     ) -> SendCommand<'a> {
         let out = out.clone();
         SendCommand {
             serv: live.server(),
             process_id: 0,
-            process_type,
+            process_type: process_type.into(),
             name,
             message: b"ping",
             callback: Arc::new(move |message| *out.lock().unwrap() = message.to_vec()),
         }
     }
 
-    const MASTER: i32 = swoole_rs_process::command::MASTER;
-    const EVENT_WORKER: i32 = swoole_rs_process::command::EVENT_WORKER;
+    use swoole_rs_process::command::{EVENT_WORKER, MASTER};
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
