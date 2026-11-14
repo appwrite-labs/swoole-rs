@@ -23,7 +23,8 @@ pub(crate) fn cli() -> bool {
 
 /// `SWOOLE_G(req_status) == PHP_SWOOLE_RSHUTDOWN_BEGIN`.
 pub(crate) fn shutdown_begun() -> bool {
-    swoole_rs_phpswoole::globals().req_status.get() == swoole_rs_phpswoole::RSHUTDOWN_BEGIN
+    swoole_rs_phpswoole::globals().req_status.get()
+        == swoole_rs_phpswoole::ReqStatus::RshutdownBegin
 }
 
 /// Why async-io is refused in this server process (`is_sync_process`), if it is.

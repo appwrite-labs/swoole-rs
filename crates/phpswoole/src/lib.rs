@@ -46,11 +46,10 @@ pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
 pub use memory::{sw_zend_string_allocator, zend_string_allocator, zend_string_buffers};
 pub use module::{
-    CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
-    ProcessSteps, RSHUTDOWN_BEGIN, RSHUTDOWN_END, RuntimeSteps, codecs, display_errors,
-    enable_library, families, globals, load_library, php_swoole_register_shutdown_function,
-    swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown,
-    zif_swoole_set_process_name,
+    Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps, ReqStatus,
+    RuntimeSteps, codecs, display_errors, enable_library, families, globals, load_library,
+    php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
+    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
@@ -187,7 +186,7 @@ fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
 /// `php_swoole_check_reactor()`: this thread's event loop, unless the request
 /// is shutting down.
 pub fn check_reactor() {
-    let shutting_down = module::globals().req_status.get() == RSHUTDOWN_BEGIN;
+    let shutting_down = module::globals().req_status.get() == ReqStatus::RshutdownBegin;
     if !shutting_down && swoole_rs_corebase::thread_reactor().is_null() {
         php_swoole_reactor_init();
     }

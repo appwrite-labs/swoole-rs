@@ -111,7 +111,7 @@ pub(crate) fn flag(bit: u32) -> bool {
         FIBER_MOCK => g.enable_fiber_mock.get(),
         PREEMPTIVE => g.enable_preemptive_scheduler.get(),
         SHUTDOWN_FUNCTIONS => {
-            g.req_status.get() == swoole_rs_phpswoole::CALL_USER_SHUTDOWNFUNC_BEGIN
+            g.req_status.get() == swoole_rs_phpswoole::ReqStatus::CallUserShutdownfuncBegin
         }
         // SAFETY: the process's server, read once here.
         SERVER_STARTED => unsafe { swoole_rs_server::view::Server::current() }
