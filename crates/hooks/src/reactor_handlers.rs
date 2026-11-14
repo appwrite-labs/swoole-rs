@@ -100,6 +100,11 @@ fn defer_resume(co: Parked) {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::unnecessary_wraps,
+    reason = "the fakes have EventWaitOps' signatures and assert what fired while parked"
+)]
 mod tests {
     use super::*;
     use crate::wait_event::{EventWaitOps, Registered, swr_v1_hook_wait_event};
@@ -147,7 +152,6 @@ mod tests {
         }
     }
 
-    #[expect(clippy::unnecessary_wraps, reason = "EventWaitOps::add's signature")]
     fn add(fd: i32, _: i32, waiter: Registered) -> Result<Socket, i32> {
         let socket = SocketRecord::with_fd(fd, FdType::SW_FD_CO_EVENT as c_int).into_raw();
         unsafe { (*socket).fields.object = waiter.as_ptr() };
@@ -155,7 +159,7 @@ mod tests {
         Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    fn park(_: f64) -> i32 {
+    fn park(_: f64) -> Result<(), i32> {
         let mut event =
             unsafe { Event::new(7, 0, FdType::SW_FD_CO_EVENT as c_int, SOCKET.get().cast()) };
         for events in [WRITE, READ] {
@@ -165,7 +169,7 @@ mod tests {
                 0
             );
         }
-        0
+        Ok(())
     }
 
     #[test]

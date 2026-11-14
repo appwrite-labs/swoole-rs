@@ -22,8 +22,8 @@ pub struct EventWaitOps<S> {
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; the last error if the reactor refuses it.
     pub(crate) add: fn(fd: i32, events: i32, waiter: Registered) -> Result<S, i32>,
-    /// `co->yield_ex(timeout)`: 0, or the last error if it timed out or was cancelled.
-    pub(crate) park: fn(timeout: f64) -> i32,
+    /// `co->yield_ex(timeout)`: the last error if it timed out or was cancelled.
+    pub(crate) park: fn(timeout: f64) -> Result<(), i32>,
 }
 
 /// A parked `wait_event` (the object of its reactor socket): its coroutine and the
@@ -87,19 +87,15 @@ fn park<S>(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps<S>) -> Result<
         Registered((&raw const waiter).cast_mut().cast()),
     )?;
     let park = ops.park;
-    let error = park(timeout);
-    if error != 0 && waiter.revents.get() != 0 {
+    let parked = park(timeout);
+    if parked.is_err() && waiter.revents.get() != 0 {
         // An event fired in the loop pass that timed out or cancelled the
         // wait, and its deferred resume is still queued: take it here, or it
         // resumes this coroutine wherever it next waits, or after it ends.
-        park(0.0);
+        _ = park(0.0);
     }
     drop(socket);
-    if error == 0 {
-        Ok(waiter.revents.get())
-    } else {
-        Err(error)
-    }
+    parked.map(|()| waiter.revents.get())
 }
 
 /// What `wait_event` returns.
@@ -277,11 +273,11 @@ pub(crate) mod native {
         }
     }
 
-    pub(super) fn park(timeout: f64) -> i32 {
+    pub(super) fn park(timeout: f64) -> Result<(), i32> {
         if crate::resolve::park_for(timeout) {
-            0
+            Ok(())
         } else {
-            log::last_error()
+            Err(log::last_error())
         }
     }
 }
@@ -339,6 +335,11 @@ pub fn swr_v1_hook_wait_event<S>(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    clippy::unnecessary_wraps,
+    reason = "the fakes have EventWaitOps' signatures and assert what fired while parked"
+)]
 mod tests {
     use super::*;
 
@@ -377,15 +378,15 @@ mod tests {
         Ok(Socket)
     }
     /// The reactor fires an error then a read before the deferred resume runs.
-    fn fires_error(_: f64) -> i32 {
+    fn fires_error(_: f64) -> Result<(), i32> {
         assert_eq!(event_ready(waiter(), ERROR).map(|co| co.0), Some(CO));
         assert!(event_ready(waiter(), READ).is_none());
-        0
+        Ok(())
     }
-    fn times_out(_: f64) -> i32 {
-        libc::ETIMEDOUT
+    fn times_out(_: f64) -> Result<(), i32> {
+        Err(libc::ETIMEDOUT)
     }
-    fn unused(_: f64) -> i32 {
+    fn unused(_: f64) -> Result<(), i32> {
         unreachable!()
     }
     thread_local! {
@@ -393,14 +394,14 @@ mod tests {
     }
     /// A read fires, then the timer times the wait out before the deferred
     /// resume runs; the second park takes that resume.
-    fn fires_then_times_out(timeout: f64) -> i32 {
+    fn fires_then_times_out(timeout: f64) -> Result<(), i32> {
         PARKS.set(PARKS.get() + 1);
         if PARKS.get() == 2 {
             assert_eq!(timeout, 0.0);
-            return 0;
+            return Ok(());
         }
         assert_eq!(event_ready(waiter(), READ).map(|co| co.0), Some(CO));
-        libc::ETIMEDOUT
+        Err(libc::ETIMEDOUT)
     }
 
     #[test]
@@ -413,7 +414,7 @@ mod tests {
         assert_eq!(ADDED.get(), 0);
     }
 
-    fn wait(fd: i32, events: i32, timeout: f64, park: fn(f64) -> i32) -> WaitEvent {
+    fn wait(fd: i32, events: i32, timeout: f64, park: fn(f64) -> Result<(), i32>) -> WaitEvent {
         let ops = EventWaitOps { current, add, park };
         swr_v1_hook_wait_event(fd, events, timeout, &ops)
     }
