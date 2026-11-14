@@ -301,13 +301,11 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
     ) -> Result<bool, Bailed> {
         self.result.clear();
         let mut path = [0; TASK_TMP_PATH_SIZE];
-        let fd = make_tmpfile(&task_tmpfile(), &mut path);
-        if fd < 0 {
+        // Upstream keeps only the path, so the file closes at once.
+        if make_tmpfile(&task_tmpfile(), &mut path).is_none() {
             set_last_error(errno());
             return Ok(false);
         }
-        // `fd` is open and owned here; upstream keeps only the path.
-        swoole_rs_corebase::sys::close(fd);
         let Ok(path) = CStr::from_bytes_until_nul(&path) else {
             return Ok(false);
         };

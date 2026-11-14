@@ -338,7 +338,7 @@ impl crate::hybrid::Hybrid for Linked {
         };
         let pool_ref = serv.task_pool_ref();
         let ipc = c_int::from(ipc.code());
-        if pool::create(pool_ref, config.task_worker_num.get(), key, ipc) < 0 {
+        if !pool::create(pool_ref, config.task_worker_num.get(), key, ipc) {
             return false;
         }
         let (max, grace) = (
