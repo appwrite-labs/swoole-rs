@@ -13,6 +13,7 @@ use core::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::Worker as Record;
 use swoole_rs_process::worker_record::WorkerType;
+use swoole_rs_reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
 pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
@@ -48,7 +49,6 @@ use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free}
 /// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
 const FD_PIPE: c_int = 3;
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
@@ -306,7 +306,7 @@ fn loop_ops(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
         }
         Op::PipeHandler => {
             let handler = if arg == 0 { recv_packet } else { recv_message };
-            swoole_event_set_handler(FD_PIPE, EVENT_READ, Some(handler));
+            swoole_event_set_handler(FD_PIPE, Events::READ.bits(), Some(handler));
             0
         }
         Op::TimerSelect => {
@@ -429,7 +429,7 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
         }
         Op::AddPipe => {
             let added = worker_pipe(worker, false)
-                .is_some_and(|pipe| Reactor::thread().add(pipe, EVENT_READ));
+                .is_some_and(|pipe| Reactor::thread().add(pipe, Events::READ));
             if added { 0 } else { -1 }
         }
         Op::PushStop => {
@@ -625,7 +625,7 @@ impl PoolNative for Native {
             let ready = c
                 .worker()
                 .and_then(|worker| worker_pipe(worker, false))
-                .is_some_and(|pipe| pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ));
+                .is_some_and(|pipe| pipe.wait_event(next.c_cast::<c_int>(), Events::READ));
             if ready { 0 } else { -1 }
         });
     }

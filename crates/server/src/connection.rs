@@ -2,13 +2,14 @@
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
-use crate::reactor_handle::{EVENT_READ, Reactor};
+use crate::reactor_handle::Reactor;
 use crate::records::{ConnectionRecord, Lookup};
 use crate::{Connection, Mode, view};
 
@@ -341,10 +342,10 @@ pub(crate) fn incoming(
         });
     }
     if !sock.read(|s| s.ssl().is_null()) {
-        return reactor.add(sock, EVENT_READ);
+        return reactor.add(sock, Events::READ);
     }
     // Delayed receive waits for the resume command.
-    if !serv.config().enable_delay_receive.get() && !reactor.add(sock, EVENT_READ) {
+    if !serv.config().enable_delay_receive.get() && !reactor.add(sock, Events::READ) {
         return false;
     }
     if serv.has_callback(crate::callbacks::CallbackKind::Connect)
@@ -424,7 +425,7 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
 
 /// The accept retry timer: accept on stream ports again.
 pub(crate) fn enable_accept(serv: view::Server<'_>) {
-    for_stream_ports(serv, |reactor, sock| reactor.add(sock, EVENT_READ));
+    for_stream_ports(serv, |reactor, sock| reactor.add(sock, Events::READ));
     let tables = serv.state().tables_ref();
     tables.enable_accept_timer.store(None);
 }
@@ -674,7 +675,7 @@ mod tests {
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert!(live.reactor().add(listener, EVENT_READ), "reading");
+        assert!(live.reactor().add(listener, Events::READ), "reading");
         disable_accept(live.server());
         let tables = live.state().tables_ref();
         assert!(tables.enable_accept_timer.is_some(), "armed");
@@ -689,7 +690,7 @@ mod tests {
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert!(live.reactor().add(listener, EVENT_READ), "reading");
+        assert!(live.reactor().add(listener, Events::READ), "reading");
         let tables = live.state().tables_ref();
         let armed = || tables.enable_accept_timer.is_some();
         assert!(accept_failed(live.server(), libc::EINTR), "EINTR retries");
@@ -746,7 +747,7 @@ mod tests {
 
     /// Whether the reactor reads `sock`.
     fn reading(sock: Socket<'_>) -> bool {
-        sock.read(|s| !s.removed && s.events & EVENT_READ != 0)
+        sock.read(|s| !s.removed && s.events.intersects(Events::READ))
     }
 
     fn set_tables_max(live: &LiveServer, max: u32) {

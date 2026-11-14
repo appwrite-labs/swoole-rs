@@ -7,6 +7,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::HookType;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
@@ -24,7 +25,7 @@ use swoole_rs_reactor::{Event, Running, Socket};
 
 use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
-use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
+use crate::objects::{Bus, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
@@ -603,8 +604,8 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     if let Some(pipe) = worker_pipe(worker, false) {
         set_nonblock(pipe);
         reactor.handle().set_object(serv.raw());
-        reactor.add(pipe, EVENT_READ);
-        reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
+        reactor.add(pipe, Events::READ);
+        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }
     if matches!(
         config.dispatch(),

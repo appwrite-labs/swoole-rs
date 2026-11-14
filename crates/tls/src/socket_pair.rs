@@ -16,7 +16,7 @@ use swoole_rs_reactor::{
     SOCKET_DEFAULTS, Socket, SocketRecord, TimeoutKind, swr_v1_socket_buffer_size,
 };
 
-/// `SW_FD_PIPE` and `SW_OK`.
+/// `SW_FD_PIPE`.
 const FD_PIPE: c_int = 3;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
 const CLOSE_MASTER: c_int = 1;

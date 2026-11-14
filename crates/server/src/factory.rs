@@ -5,6 +5,7 @@
 use core::ffi::{c_int, c_long, c_void};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use crate::base_factory::SendData;
 use crate::thread_mode::ThreadManager;
@@ -18,7 +19,6 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
     use swoole_rs_reactor::signal_upstream::{self, Handler};
     /// `SW_FD_PIPE` and `SW_EVENT_READ`.
     const SW_FD_PIPE: c_int = 3;
-    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
     let state = serv.state();
     match step {
         Step::Daemon => {
@@ -55,11 +55,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         }
         Step::CommandHandler => {
             let handler: swoole_rs_reactor::Handler = accept_command_result;
-            crate::reactor_handle::Reactor::thread().set_handler(
-                SW_FD_PIPE,
-                SW_EVENT_READ,
-                handler,
-            );
+            crate::reactor_handle::Reactor::thread().set_handler(SW_FD_PIPE, Events::READ, handler);
         }
         Step::MasterTimer => {
             let timer = crate::server_methods::master_timer(serv);

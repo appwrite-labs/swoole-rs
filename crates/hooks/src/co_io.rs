@@ -283,7 +283,10 @@ mod native {
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        socket.register(add, events.cast_signed())
+        socket.register(
+            add,
+            swoole_rs_reactor::Events::from_bits(events.cast_signed()),
+        )
     }
 
     pub(super) fn remove(socket: Co, event: u32) {

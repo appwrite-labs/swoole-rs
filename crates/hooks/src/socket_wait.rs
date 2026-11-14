@@ -34,7 +34,7 @@ impl Wait {
                     return CLOSE_WAIT;
                 }
                 let tls = !record.ssl().is_null();
-                let mut status = record.events.cast_unsigned() & (READ | WRITE);
+                let mut status = record.events.bits().cast_unsigned() & (READ | WRITE);
                 if core::mem::take(&mut record.kernel_nobufs) {
                     status |= NOBUFS;
                 }
@@ -294,7 +294,8 @@ mod tests {
         record.tls.want_read = status & WANT_READ != 0;
         record.tls.want_write = status & WANT_WRITE != 0;
         record.removed = status & REMOVED != 0;
-        record.events = (status & (READ | WRITE)).cast_signed();
+        record.events =
+            swoole_rs_reactor::Events::from_bits((status & (READ | WRITE)).cast_signed());
         socket
     }
 

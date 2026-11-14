@@ -159,7 +159,7 @@ impl<'a> Bus<'a> {
     }
 }
 
-pub(crate) use crate::reactor_handle::{EVENT_READ, Reactor};
+pub(crate) use crate::reactor_handle::Reactor;
 
 impl Reactor {
     /// `reactor->drain_write_buffer(sock)`.

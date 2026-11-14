@@ -2,6 +2,7 @@
 //! protocol, heartbeats and the threads' lifecycle.
 use core::ffi::{c_int, c_long, c_void};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::{DataHead, log, microtime};
@@ -20,8 +21,6 @@ use crate::{Mode, ServerState, view};
 const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const FD_SESSION: c_int = 0;
 const FD_DGRAM_SERVER: c_int = 2;
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
@@ -183,9 +182,9 @@ pub(crate) fn init_reactor(serv: view::Server<'_>, reactor: Reactor) {
     if serv.state().config_ref().have_dgram_sock.get() {
         swoole_rs_buffer::string::with_thread_buffer(|b| b.extend(b.size().wrapping_mul(2)));
     }
-    reactor.set_handler(FD_DGRAM_SERVER, SW_EVENT_READ, on_packet_received);
-    reactor.set_handler(FD_SESSION, SW_EVENT_WRITE, on_write);
-    reactor.set_handler(FD_SESSION, SW_EVENT_READ, on_read);
+    reactor.set_handler(FD_DGRAM_SERVER, Events::READ, on_packet_received);
+    reactor.set_handler(FD_SESSION, Events::WRITE, on_write);
+    reactor.set_handler(FD_SESSION, Events::READ, on_read);
 }
 
 /// `Server::join_reactor_thread`: tell each running reactor thread to shut down,
@@ -363,7 +362,7 @@ mod tests {
         live.reactor().change(
             conn.socket().unwrap(),
             swoole_rs_reactor::ChangeOp::Add,
-            SW_EVENT_READ,
+            Events::READ,
         );
         close(serv, reactor, 1);
         assert_eq!(handled(), [], "a forced close closes now");
@@ -392,15 +391,17 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn init_reactor_sets_the_session_handlers() {
-        use swoole_rs_reactor::reactor_upstream::reactor_isset_handler as isset;
+        use swoole_rs_reactor::reactor_upstream::reactor_isset_handler;
+        let isset =
+            |running, fd_type, event: Events| reactor_isset_handler(running, fd_type, event.bits());
         let live = crate::fixture::LiveServer::new();
         let running = live.reactor().handle();
-        assert!(!isset(running, FD_SESSION, SW_EVENT_READ));
+        assert!(!isset(running, FD_SESSION, Events::READ));
         init_reactor(live.server(), live.reactor());
         for (fd_type, event) in [
-            (FD_SESSION, SW_EVENT_READ),
-            (FD_SESSION, SW_EVENT_WRITE),
-            (FD_DGRAM_SERVER, SW_EVENT_READ),
+            (FD_SESSION, Events::READ),
+            (FD_SESSION, Events::WRITE),
+            (FD_DGRAM_SERVER, Events::READ),
         ] {
             assert!(isset(running, fd_type, event), "{fd_type} {event}");
         }

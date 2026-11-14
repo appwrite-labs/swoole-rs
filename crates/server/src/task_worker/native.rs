@@ -18,6 +18,7 @@ use swoole_rs_process::task_sync::ResultSlot;
 use swoole_rs_process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::callbacks::TaskSlot;
@@ -25,7 +26,7 @@ use crate::event_worker::native::{
     call_worker_stop_callback, stop_async_worker, swr_workers_signal_set, worker_signal_handler,
     worker_start_callback,
 };
-use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, worker_pipe};
+use crate::objects::{Reactor, in_worker_bus, set_nonblock, worker_pipe};
 use crate::view;
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
@@ -36,7 +37,6 @@ const TASK_WAITALL: u16 = 1 << 4;
 /// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
@@ -212,8 +212,8 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
         set_nonblock(pipe);
         let reactor = Reactor::thread();
         reactor.handle().set_object(pool.raw().cast());
-        reactor.add(pipe, EVENT_READ);
-        reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
+        reactor.add(pipe, Events::READ);
+        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     });
     // A task's result may be larger than a pipe's buffer: let every worker's grow.
     let workers = config.worker_num.get() + config.task_worker_num.get();
@@ -337,7 +337,7 @@ pub fn finish(
             },
             || {
                 pipe.master_end()
-                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE))
+                    .is_some_and(|socket| socket.wait_event(-1, Events::WRITE))
             },
         )
     };

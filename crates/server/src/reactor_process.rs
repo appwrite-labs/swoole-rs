@@ -5,11 +5,12 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::worker_record::{Worker, WorkerType};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running};
 
 use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};
-use crate::reactor_handle::{EVENT_READ, Reactor};
+use crate::reactor_handle::Reactor;
 use crate::view;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -103,7 +104,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
             count.store(0, Relaxed);
         }
         if port
-            .with_socket(|socket| reactor.add(socket, EVENT_READ))
+            .with_socket(|socket| reactor.add(socket, Events::READ))
             .is_none_or(|added| !added)
         {
             return false;
@@ -116,7 +117,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     running.set_close(Some(crate::reactor_entry::close_connection));
     reactor.set_handler(
         FD_STREAM_SERVER,
-        EVENT_READ,
+        Events::READ,
         crate::server_methods::accept_connection,
     );
     reactor.set_error_handler(on_close);
@@ -177,7 +178,7 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
     };
     view::set_nonblock(pipe_worker);
     view::set_nonblock(pipe_master);
-    reactor.add(pipe_worker, EVENT_READ) && reactor.add(pipe_master, EVENT_READ)
+    reactor.add(pipe_worker, Events::READ) && reactor.add(pipe_master, Events::READ)
 }
 
 /// `run` over the server of `reactor`, a reactor process's reactor: the one

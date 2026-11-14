@@ -73,7 +73,7 @@ fn out_buffer_length(socket: &SocketFields) -> u64 {
 fn socket(s: &SocketFields) -> Socket {
     Socket {
         fd: s.fd.into(),
-        events: s.events.into(),
+        events: s.events.bits().into(),
         socket_type: s.socket_type.into(),
         fd_type: s.fd_type.into(),
         port: port(&s.info),
