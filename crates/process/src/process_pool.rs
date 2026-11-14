@@ -1861,9 +1861,9 @@ impl<H: PoolHost> Pool<'_, H> {
         self.push_event(&head, data)
     }
     /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
-    /// listener, or a worker's pipe or queue (scheduled when `*worker_id` is
-    /// negative). An `event` shorter than its head's length is refused.
-    fn dispatch(&mut self, event: &[u8], worker_id: &mut c_int, blocking: bool) -> bool {
+    /// listener, or `worker`'s pipe or queue (scheduled when None). An `event`
+    /// shorter than its head's length is refused.
+    fn dispatch(&mut self, event: &[u8], worker: Option<u32>, blocking: bool) -> bool {
         let Some(&len) = event.get(EVENT_LEN..).and_then(<[u8]>::first_chunk) else {
             return false;
         };
@@ -1880,13 +1880,13 @@ impl<H: PoolHost> Pool<'_, H> {
                 .unwrap_or_else(|| send(None));
             return sent;
         }
-        if *worker_id < 0 {
-            *worker_id = if self.schedule_by_sysvmsg() {
+        let worker = worker.unwrap_or_else(|| {
+            if self.schedule_by_sysvmsg() {
                 0
             } else {
-                self.schedule().cast_signed()
-            };
-        }
+                self.schedule()
+            }
+        });
         let Some(native) = self.h.native() else {
             return false;
         };
@@ -1902,7 +1902,7 @@ impl<H: PoolHost> Pool<'_, H> {
             workers,
             self.start_id(),
             self.use_msgqueue(),
-            worker_id,
+            worker,
             event,
             blocking,
         )
@@ -2065,10 +2065,10 @@ pub fn swr_v1_process_pool_dispatch_event(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
     event: &[u8],
-    worker_id: &mut c_int,
+    worker: Option<u32>,
     blocking: bool,
 ) -> bool {
-    with(native, pool, |p| p.dispatch(event, worker_id, blocking))
+    with(native, pool, |p| p.dispatch(event, worker, blocking))
 }
 
 /// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).
@@ -2556,10 +2556,9 @@ mod tests {
         let mut event = [0u8; 64];
         event[EVENT_LEN] = 3;
         event[HEAD_SIZE as usize..][..3].copy_from_slice(b"abc");
-        let mut worker_id = -1;
         // Blocking, then over a stream (upstream's async dispatch).
         for blocking in [true, false] {
-            assert!(pool.dispatch(&event, &mut worker_id, blocking));
+            assert!(pool.dispatch(&event, None, blocking));
             let mut received = Vec::new();
             listener
                 .accept()
@@ -2581,7 +2580,7 @@ mod tests {
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc = ipc;
         for blocking in [true, false] {
-            assert!(!pool.dispatch(&event, &mut worker_id, blocking));
+            assert!(!pool.dispatch(&event, None, blocking));
         }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.
