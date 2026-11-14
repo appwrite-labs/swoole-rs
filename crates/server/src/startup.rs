@@ -4,7 +4,6 @@ use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
 use crate::shared::{PortCounters, ServerCounters};
-use crate::thread_mode::ThreadOp;
 use crate::{Mode, TaskIpcMode, view};
 use core::ffi::c_int;
 use core::mem::offset_of;
@@ -66,7 +65,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
         Mode::Thread => {
             // Before the worker threads start, which read it in onWorkerStart.
             set_master_pid(gs);
-            hybrid().thread_mode(serv, ThreadOp::StartWorkers) >= 0
+            hybrid().start_worker_threads(serv)
         }
     };
     if !started {
@@ -140,10 +139,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     let factory = match state.config_ref().mode_ {
         Mode::Base => crate::base_factory::create(serv),
         Mode::Process => hybrid().process_factory(serv),
-        Mode::Thread => {
-            let made = hybrid().thread_mode(serv, ThreadOp::CreateFactory);
-            core::ptr::with_exposed_provenance_mut(usize::try_from(made).unwrap_or(0))
-        }
+        Mode::Thread => hybrid().create_thread_factory(serv),
     };
     config().factory_ = factory;
     if factory.is_null() {
@@ -495,7 +491,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     match mode {
         Mode::Base => destroy_base_factory(state),
         Mode::Process => _ = hybrid().step(serv, Step::DestroyProcessFactory),
-        Mode::Thread => _ = hybrid().thread_mode(serv, ThreadOp::DestroyFactory),
+        Mode::Thread => hybrid().destroy_thread_factory(serv),
     }
     if config().task_worker_num.get() > 0 {
         config().task_results.free();
@@ -585,7 +581,7 @@ mod tests {
         for (mode, run) in [
             (Mode::Base, steps(&base)),
             (Mode::Process, steps(&[StartProcess])),
-            (Mode::Thread, vec![Call::ThreadMode(ThreadOp::StartWorkers)]),
+            (Mode::Thread, vec![Call::StartWorkerThreads]),
         ] {
             set_mode(&live, mode);
             live.counters().start.store(0, SeqCst);

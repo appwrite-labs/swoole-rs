@@ -107,8 +107,23 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
-    /// Thread mode's `Server` method `operation`.
-    fn thread_mode(&self, _serv: Server<'_>, _operation: crate::thread_mode::ThreadOp) -> i64 {
+    /// `Server::create_thread_factory`: the factory, null when it failed.
+    fn create_thread_factory(&self, _serv: Server<'_>) -> *mut core::ffi::c_void {
+        missing()
+    }
+
+    /// `Server::destroy_thread_factory`.
+    fn destroy_thread_factory(&self, _serv: Server<'_>) {
+        missing()
+    }
+
+    /// `Server::start_worker_threads`: whether the master thread's loop ran.
+    fn start_worker_threads(&self, _serv: Server<'_>) -> bool {
+        missing()
+    }
+
+    /// `Server::stop_worker_threads`.
+    fn stop_worker_threads(&self, _serv: Server<'_>) {
         missing()
     }
 
@@ -277,7 +292,9 @@ pub(crate) mod tests {
         Notify(c_long, i16, u8, u16),
         /// The worker, the message's kind and the bytes sent: the head and its payload.
         Pipe(u32, u8, usize),
-        ThreadMode(crate::thread_mode::ThreadOp),
+        DestroyThreadFactory,
+        StartWorkerThreads,
+        StopWorkerThreads,
         StopSingleWorker,
         SendShutdown,
         Thread0Shutdown,
@@ -354,9 +371,20 @@ pub(crate) mod tests {
             hear(Call::Pipe(worker_id, message.head().kind, sent))
         }
 
-        fn thread_mode(&self, _: Server<'_>, operation: crate::thread_mode::ThreadOp) -> i64 {
-            hear(Call::ThreadMode(operation));
-            0
+        fn create_thread_factory(&self, _: Server<'_>) -> *mut core::ffi::c_void {
+            core::ptr::null_mut()
+        }
+
+        fn destroy_thread_factory(&self, _: Server<'_>) {
+            hear(Call::DestroyThreadFactory);
+        }
+
+        fn start_worker_threads(&self, _: Server<'_>) -> bool {
+            hear(Call::StartWorkerThreads)
+        }
+
+        fn stop_worker_threads(&self, _: Server<'_>) {
+            hear(Call::StopWorkerThreads);
         }
 
         fn stop_single_worker(&self, _: Server<'_>) {
