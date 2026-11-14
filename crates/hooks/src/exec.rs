@@ -18,15 +18,13 @@ const CHUNK: usize = 1 << 16;
 /// Outside a coroutine it raises upstream's fatal error, which does not return.
 pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
     crate::wait_event::native::current();
-    let mut pid = 0;
-    let fd = swoole_rs_corebase::swoole_shell_exec(command, &mut pid, errors);
-    if fd < 0 {
+    let Some((fd, pid)) = swoole_rs_corebase::swoole_shell_exec(command, errors) else {
         swoole_rs_corebase::log::sys_warning(
             c"exec",
             format_args!("Unable to execute '{}'", command.to_string_lossy()),
         );
         return None;
-    }
+    };
     // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
     let socket = crate::co_socket::make(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
     let mut output = Vec::new();

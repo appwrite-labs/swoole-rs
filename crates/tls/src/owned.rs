@@ -677,7 +677,7 @@ mod tests {
     fn socket_session_hostname_precedence_and_record_identity() {
         use std::os::fd::AsRawFd;
         unsafe {
-            crate::swr_v1_tls_init();
+            crate::swr_v1_tls_init().unwrap();
             let (_peer, stream) = std::os::unix::net::UnixStream::pair().unwrap();
             for (explicit, disabled, automatic, expected) in [
                 (
