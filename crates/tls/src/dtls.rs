@@ -80,39 +80,39 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_free(owner: *mut DtlsSession) {
 
 /// One read(2) of at most `size` bytes from `fd` into a new `dtls::Buffer`, queued as a
 /// datagram whose length is the read's result as upstream's `uint16_t` header takes it;
-/// -1 when the queue can't grow.
-pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> c_int {
+/// false when the queue can't grow.
+pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> bool {
     let mut bytes = Box::new_uninit_slice(size);
     let read = swoole_rs_corebase::sys::read(fd, &mut bytes);
     let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
-        return -1;
+        return false;
     }
     queue.push_back(Datagram {
         bytes,
         length: read.c_cast::<u16>(),
     });
-    0
+    true
 }
 
 /// A copy of `data` queued as one datagram: as many of its bytes as upstream's `u16`
-/// header counts; -1 when it can't allocate.
-pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> c_int {
+/// header counts; false when it can't allocate.
+pub fn swr_v1_tls_dtls_append(owner: &DtlsSession, data: &[u8]) -> bool {
     let mut queue = owner.queue.borrow_mut();
     if queue.try_reserve(1).is_err() {
-        return -1;
+        return false;
     }
     let length = usize::from(data.len().c_cast::<u16>());
     let mut bytes = Vec::new();
     if bytes.try_reserve_exact(length).is_err() {
-        return -1;
+        return false;
     }
     bytes.extend(data.iter().take(length).map(|&byte| MaybeUninit::new(byte)));
     queue.push_back(Datagram {
         bytes: bytes.into_boxed_slice(),
         length: length.c_cast::<u16>(),
     });
-    0
+    true
 }
 
 /// The front datagram's length, as much of it as `requested` bytes hold, copied into
@@ -491,7 +491,7 @@ mod tests {
             unsafe { &*self.0 }
         }
         fn append(&self, bytes: &[u8]) {
-            assert_eq!(swr_v1_tls_dtls_append(self.session(), bytes), 0);
+            assert!(swr_v1_tls_dtls_append(self.session(), bytes));
         }
         fn read(&self, count: usize) -> (Option<c_int>, Vec<u8>) {
             let mut bytes = vec![0x55; count];
@@ -568,7 +568,7 @@ mod tests {
         let owner = Owner::new(&raw mut socket);
         let [read, write] = swoole_rs_corebase::sys::pipe().unwrap();
         assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), 3);
-        assert_eq!(dtls_session_receive(owner.session(), read, 5), 0);
+        assert!(dtls_session_receive(owner.session(), read, 5));
         swoole_rs_corebase::sys::close(read);
         swoole_rs_corebase::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");

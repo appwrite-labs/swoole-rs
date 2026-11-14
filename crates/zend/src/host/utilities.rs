@@ -14,7 +14,9 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_class_alias(
     // SAFETY: the SDK supplies its original alias and registered CE.
     let result = unsafe { crate::registration::class_alias(name, length, entry, true) };
     match result {
-        Ok(value) => value,
+        // Zend's `SUCCESS` or `FAILURE`.
+        Ok(true) => 0,
+        Ok(false) => -1,
         Err(error) => {
             error.defer();
             bailout::finish();
