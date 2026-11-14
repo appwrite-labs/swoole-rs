@@ -591,15 +591,20 @@ extern "C" fn on_worker_error_slot(
     ));
 }
 
+/// `SW_OK` for `ok`, else `SW_ERR`: what the server's int slots return.
+const fn code(ok: bool) -> c_int {
+    if ok { SW_OK } else { SW_ERR }
+}
+
 /// A task event's result, or its bailout raised.
-fn task_result(outcome: Result<c_int, Bailout>) -> c_int {
-    let result = outcome.unwrap_or_else(|bailed| {
+fn task_result(outcome: Result<bool, Bailout>) -> c_int {
+    let ok = outcome.unwrap_or_else(|bailed| {
         bailed.defer();
-        SW_OK
+        true
     });
     // A callable's release can leave one pending behind an `Ok`.
     bailout::finish();
-    result
+    code(ok)
 }
 
 extern "C" fn on_task(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
@@ -626,11 +631,10 @@ extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Pa
 
 /// `php_swoole_server_onReceive`: the port's `onReceive`, if any (and
 /// crates/phphttp's fallback).
-#[must_use]
-pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData) {
     let info = request.info();
     let Some(cb) = port_callback(server, info.server_fd, PortCallback::Receive) else {
-        return SW_OK;
+        return;
     };
     let config = server.config();
     let (owned, mut argv, argc) = receive_args(server, request, config.event_object.get());
@@ -640,17 +644,17 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
         Ok(succeeded) => receive_done(server, succeeded, info.fd, owned),
         Err(Bailout) => leak([owned]),
     });
-    SW_OK
 }
 
 extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    php_swoole_server_on_receive(server, request)
+    php_swoole_server_on_receive(server, request);
+    SW_OK
 }
 
 /// crates/phphttp's `Swoole\Http\Server` hooks, which crates/ffi registers.
 pub struct HttpHooks {
-    /// `php_swoole_http_server_onReceive`.
-    pub on_receive: fn(view::Server<'_>, &RecvData) -> c_int,
+    /// `php_swoole_http_server_onReceive`: whether it succeeded.
+    pub on_receive: fn(view::Server<'_>, &RecvData) -> bool,
     /// `php_swoole_http_server_onClose`.
     pub on_close: fn(view::Server<'_>, &DataHead),
     /// `swoole_http_server_can_cache_session_addr`.
@@ -670,7 +674,7 @@ pub(crate) fn http() -> Option<&'static HttpHooks> {
 }
 
 extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
-    http().map_or(SW_OK, |http| (http.on_receive)(server, request))
+    code(http().is_none_or(|http| (http.on_receive)(server, request)))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
@@ -688,17 +692,19 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
         .port_of_fd(conn.fd())
         .is_some_and(|port| port.open_redis_protocol.get())
     {
-        return php_swoole_server_on_receive(server, request);
+        php_swoole_server_on_receive(server, request);
+        return SW_OK;
     }
     let Some(redis) = crate::server::redis_receive() else {
-        return php_swoole_server_on_receive(server, request);
+        php_swoole_server_on_receive(server, request);
+        return SW_OK;
     };
     let data = php_swoole_get_recv_data(server, request);
     let result = redis(server, fd, &data, coroutine_enabled(server));
     // The relay's longjmp would skip `data`'s release.
     drop(data);
     relay(result.is_err());
-    result.unwrap_or(SW_ERR)
+    code(result.unwrap_or(false))
 }
 
 extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
